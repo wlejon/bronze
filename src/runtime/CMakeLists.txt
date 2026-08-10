@@ -3,7 +3,9 @@ bronze_add_module(runtime
         value.cpp
         heap.cpp
         gc.cpp
+        string.cpp
     TEST_SOURCES
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp
+        ../../tests/runtime/string_test.cpp
 )
