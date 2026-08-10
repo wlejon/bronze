@@ -4,8 +4,16 @@ bronze_add_module(runtime
         heap.cpp
         gc.cpp
         string.cpp
+        shape.cpp
+        object.cpp
+        array.cpp
+        fn.cpp
     TEST_SOURCES
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp
         ../../tests/runtime/string_test.cpp
+        ../../tests/runtime/shape_test.cpp
+        ../../tests/runtime/object_test.cpp
+        ../../tests/runtime/array_test.cpp
+        ../../tests/runtime/fn_test.cpp
 )
