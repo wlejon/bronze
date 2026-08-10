@@ -16,6 +16,7 @@ enum class Tag : uint16_t {
     Undefined = 0xFFF6,
     Hole      = 0xFFF7,
     Symbol    = 0xFFF8,
+    Forwarded = 0xFFFE,
 };
 
 constexpr uint64_t kCanonicalNaNBits = 0x7FF8000000000000ULL;

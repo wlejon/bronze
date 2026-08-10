@@ -47,6 +47,13 @@ class Heap {
 public:
     using CollectionHook = std::function<void(Heap&)>;
 
+    struct Semispace {
+        uint8_t* base{nullptr};
+        size_t size{0};
+        size_t committed_bytes{0};
+        uint8_t* bump_ptr{nullptr};
+    };
+
     explicit Heap(size_t reserve_bytes = 1024 * 1024 * 1024, size_t initial_commit_bytes = 64 * 1024);
     ~Heap();
 
@@ -59,20 +66,33 @@ public:
     void set_collection_hook(CollectionHook hook) { collection_hook_ = std::move(hook); }
     void collect();
 
-    uintptr_t base_address() const noexcept { return reinterpret_cast<uintptr_t>(reserved_base_); }
+    void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
+    bool gc_stress() const noexcept { return gc_stress_mode_; }
+
+    uintptr_t base_address() const noexcept { return reinterpret_cast<uintptr_t>(from_space_.base); }
     size_t reserved_size() const noexcept { return reserved_bytes_; }
-    size_t committed_size() const noexcept { return committed_bytes_; }
+    size_t committed_size() const noexcept { return from_space_.committed_bytes; }
     size_t used_size() const noexcept {
-        return bump_ptr_ - static_cast<const uint8_t*>(reserved_base_);
+        return from_space_.bump_ptr - from_space_.base;
     }
 
+    const Semispace& from_space() const noexcept { return from_space_; }
+    const Semispace& to_space() const noexcept { return to_space_; }
+
 private:
-    bool ensure_commit(size_t required_bytes);
+    bool ensure_commit(Semispace& space, size_t required_bytes);
+    void* allocate_in_space(Semispace& space, size_t bytes);
+    void forward_value(Value& val);
 
     void* reserved_base_{nullptr};
     size_t reserved_bytes_{0};
-    size_t committed_bytes_{0};
-    uint8_t* bump_ptr_{nullptr};
+    size_t semispace_size_{0};
+
+    Semispace from_space_;
+    Semispace to_space_;
+
+    bool gc_stress_mode_{false};
+    bool in_gc_{false};
     CollectionHook collection_hook_;
 };
 

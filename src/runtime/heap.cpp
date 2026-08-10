@@ -1,4 +1,7 @@
+#define _CRT_SECURE_NO_WARNINGS
+
 #include "runtime/heap.h"
+#include "runtime/gc.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -14,6 +17,8 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <new>
 #include <stdexcept>
 
@@ -79,11 +84,28 @@ void VirtualMemory::release(void* ptr, size_t bytes) {
 Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     : reserved_bytes_(reserve_bytes) {
     reserved_base_ = VirtualMemory::reserve(reserved_bytes_);
-    bump_ptr_ = static_cast<uint8_t*>(reserved_base_);
+    semispace_size_ = reserved_bytes_ / 2;
+
+    from_space_.base = static_cast<uint8_t*>(reserved_base_);
+    from_space_.size = semispace_size_;
+    from_space_.committed_bytes = 0;
+    from_space_.bump_ptr = from_space_.base;
+
+    to_space_.base = static_cast<uint8_t*>(reserved_base_) + semispace_size_;
+    to_space_.size = semispace_size_;
+    to_space_.committed_bytes = 0;
+    to_space_.bump_ptr = to_space_.base;
 
     if (initial_commit_bytes > 0) {
-        size_t commit_target = std::min(initial_commit_bytes, reserved_bytes_);
-        ensure_commit(commit_target);
+        size_t commit_target = std::min(initial_commit_bytes, semispace_size_);
+        ensure_commit(from_space_, commit_target);
+    }
+
+    const char* env_stress = std::getenv("BRONZE_GC_STRESS");
+    if (env_stress && (std::strcmp(env_stress, "1") == 0 ||
+                       std::strcmp(env_stress, "true") == 0 ||
+                       std::strcmp(env_stress, "ON") == 0)) {
+        gc_stress_mode_ = true;
     }
 }
 
@@ -94,56 +116,82 @@ Heap::~Heap() {
     }
 }
 
-bool Heap::ensure_commit(size_t required_bytes) {
-    if (required_bytes <= committed_bytes_) {
+bool Heap::ensure_commit(Semispace& space, size_t required_bytes) {
+    if (required_bytes <= space.committed_bytes) {
         return true;
     }
-    if (required_bytes > reserved_bytes_) {
+    if (required_bytes > space.size) {
         return false;
     }
 
     constexpr size_t kPageStep = 64 * 1024;
     size_t target_commit = (required_bytes + kPageStep - 1) & ~(kPageStep - 1);
-    target_commit = std::min(target_commit, reserved_bytes_);
-    size_t commit_size = target_commit - committed_bytes_;
-    uint8_t* commit_addr = static_cast<uint8_t*>(reserved_base_) + committed_bytes_;
+    target_commit = std::min(target_commit, space.size);
+    size_t commit_size = target_commit - space.committed_bytes;
+    uint8_t* commit_addr = space.base + space.committed_bytes;
 
     if (!VirtualMemory::commit(commit_addr, commit_size)) {
         return false;
     }
 
-    committed_bytes_ = target_commit;
+    space.committed_bytes = target_commit;
     return true;
 }
 
-void Heap::collect() {
-    if (collection_hook_) {
-        collection_hook_(*this);
+void* Heap::allocate_in_space(Semispace& space, size_t bytes) {
+    size_t aligned_bytes = (bytes + 7) & ~static_cast<size_t>(7);
+    size_t current_used = space.bump_ptr - space.base;
+    size_t needed = current_used + aligned_bytes;
+
+    if (needed > space.size) {
+        throw std::bad_alloc();
     }
+
+    if (needed > space.committed_bytes) {
+        if (!ensure_commit(space, needed)) {
+            throw std::bad_alloc();
+        }
+    }
+
+    uint8_t* ptr = space.bump_ptr;
+    space.bump_ptr += aligned_bytes;
+    return ptr;
 }
 
 void* Heap::allocate_raw(size_t bytes) {
+    if (gc_stress_mode_ && !in_gc_) {
+        collect();
+    }
+
     size_t aligned_bytes = (bytes + 7) & ~static_cast<size_t>(7);
-    size_t current_used = used_size();
+    size_t current_used = from_space_.bump_ptr - from_space_.base;
     size_t needed = current_used + aligned_bytes;
 
-    if (needed > committed_bytes_) {
-        if (!ensure_commit(needed)) {
-            collect();
-            if (used_size() + aligned_bytes > committed_bytes_) {
-                if (!ensure_commit(used_size() + aligned_bytes)) {
+    if (needed > from_space_.size || needed > from_space_.committed_bytes) {
+        if (!ensure_commit(from_space_, needed)) {
+            if (!in_gc_) {
+                collect();
+                current_used = from_space_.bump_ptr - from_space_.base;
+                needed = current_used + aligned_bytes;
+                if (!ensure_commit(from_space_, needed)) {
                     throw std::bad_alloc();
                 }
+            } else {
+                throw std::bad_alloc();
             }
         }
     }
 
-    uint8_t* ptr = bump_ptr_;
-    bump_ptr_ += aligned_bytes;
+    uint8_t* ptr = from_space_.bump_ptr;
+    from_space_.bump_ptr += aligned_bytes;
     return ptr;
 }
 
 HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
+    if (gc_stress_mode_ && !in_gc_) {
+        collect();
+    }
+
     size_t total_bytes = sizeof(HeapObjectHeader) + bytes;
     void* mem = allocate_raw(total_bytes);
     auto* header = static_cast<HeapObjectHeader*>(mem);
@@ -151,6 +199,105 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
     header->flags = 0;
     header->size = static_cast<uint32_t>((total_bytes + 7) & ~static_cast<size_t>(7));
     return header;
+}
+
+static bool is_valid_object_tag(uint16_t tag) noexcept {
+    return (tag >= 0xFFF1 && tag <= 0xFFF8) || tag == static_cast<uint16_t>(Tag::Forwarded);
+}
+
+void Heap::forward_value(Value& val) {
+    if (!val.isPointer()) {
+        return;
+    }
+
+    void* payload_ptr = val.asObject<void>();
+    if (!payload_ptr) {
+        return;
+    }
+
+    auto* raw_ptr = static_cast<uint8_t*>(payload_ptr);
+    if (raw_ptr < from_space_.base || raw_ptr >= from_space_.bump_ptr) {
+        return;
+    }
+
+    auto* p1 = reinterpret_cast<HeapObjectHeader*>(raw_ptr);
+    auto* p2 = p1 - 1;
+    HeapObjectHeader* header = nullptr;
+
+    if (reinterpret_cast<uint8_t*>(p2) >= from_space_.base && is_valid_object_tag(p2->tag)) {
+        header = p2;
+    } else if (is_valid_object_tag(p1->tag)) {
+        header = p1;
+    } else {
+        return;
+    }
+
+    size_t offset = raw_ptr - reinterpret_cast<uint8_t*>(header);
+
+    if (header->tag == static_cast<uint16_t>(Tag::Forwarded)) {
+        auto* new_hdr = *reinterpret_cast<HeapObjectHeader**>(header->payload());
+        uint8_t* updated_ptr = reinterpret_cast<uint8_t*>(new_hdr) + offset;
+        val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(updated_ptr));
+        return;
+    }
+
+    size_t total_size = header->size;
+    uint8_t* new_mem = static_cast<uint8_t*>(allocate_in_space(to_space_, total_size));
+    std::memcpy(new_mem, header, total_size);
+    auto* new_hdr = reinterpret_cast<HeapObjectHeader*>(new_mem);
+
+    header->tag = static_cast<uint16_t>(Tag::Forwarded);
+    *reinterpret_cast<HeapObjectHeader**>(header->payload()) = new_hdr;
+
+    uint8_t* updated_ptr = reinterpret_cast<uint8_t*>(new_hdr) + offset;
+    val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(updated_ptr));
+}
+
+void Heap::collect() {
+    if (in_gc_) {
+        return;
+    }
+
+    in_gc_ = true;
+
+    if (collection_hook_) {
+        collection_hook_(*this);
+    }
+
+    to_space_.bump_ptr = to_space_.base;
+
+    for (ShadowStackFrame* frame = ShadowStackFrame::current(); frame != nullptr; frame = frame->prev()) {
+        Value** root_slots = frame->roots();
+        size_t count = frame->count();
+        for (size_t i = 0; i < count; ++i) {
+            if (root_slots[i]) {
+                forward_value(*root_slots[i]);
+            }
+        }
+    }
+
+    uint8_t* scan_ptr = to_space_.base;
+    while (scan_ptr < to_space_.bump_ptr) {
+        auto* scan_hdr = reinterpret_cast<HeapObjectHeader*>(scan_ptr);
+        size_t obj_size = scan_hdr->size;
+
+        if (scan_hdr->tag != static_cast<uint16_t>(Tag::String)) {
+            uint8_t* payload_start = reinterpret_cast<uint8_t*>(scan_hdr->payload());
+            size_t payload_bytes = obj_size - sizeof(HeapObjectHeader);
+            size_t num_slots = payload_bytes / sizeof(Value);
+            auto* slots = reinterpret_cast<Value*>(payload_start);
+            for (size_t i = 0; i < num_slots; ++i) {
+                forward_value(slots[i]);
+            }
+        }
+
+        scan_ptr += obj_size;
+    }
+
+    from_space_.bump_ptr = from_space_.base;
+    std::swap(from_space_, to_space_);
+
+    in_gc_ = false;
 }
 
 NonMovingArena::NonMovingArena(size_t chunk_size) : chunk_size_(chunk_size) {}

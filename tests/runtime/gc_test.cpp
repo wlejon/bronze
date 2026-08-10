@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/string.h"
 
 using namespace bronze;
 
@@ -181,4 +183,67 @@ TEST_CASE("non moving arena allocation and pointer stability") {
     CHECK(first->id == 101);
     CHECK(first->weight == 75.5);
     CHECK(std::string(first->name) == "alpha");
+}
+
+TEST_CASE("semispace copying collection reclaims unrooted memory and relocates rooted objects") {
+    Heap heap(1024 * 1024, 64 * 1024);
+    ShadowStackFrame frame;
+
+    StringHeader* unrooted_str = StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
+    CHECK(unrooted_str != nullptr);
+
+    Rooted<Value> rootS2(heap, Value::fromString(StringHeader::createFromUTF8(heap, "rooted_surviving_string")));
+    CHECK(rootS2.get().isString());
+
+    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    Value* slots = raw_obj->payload<Value>();
+    slots[0] = rootS2.get();
+    slots[1] = Value::fromDouble(999.888);
+
+    Rooted<Value> rootObj(heap, Value::fromObject(raw_obj->payload()));
+    CHECK(rootObj.get().isObject());
+
+    size_t used_before = heap.used_size();
+    heap.collect();
+    size_t used_after = heap.used_size();
+
+    CHECK(used_after < used_before);
+
+    CHECK(rootS2.get().isString());
+    auto* s2_relocated = rootS2.get().asString<StringHeader>();
+    CHECK(s2_relocated != nullptr);
+    CHECK(s2_relocated->charCodeAt(0) == 'r');
+    CHECK(s2_relocated->length == 23);
+
+    CHECK(rootObj.get().isObject());
+    Value* relocated_slots = rootObj.get().asObject<Value>();
+    CHECK(relocated_slots[0].isString());
+    CHECK(relocated_slots[0] == rootS2.get());
+    CHECK(relocated_slots[1].isNumber());
+    CHECK(relocated_slots[1].asNumber() == 999.888);
+}
+
+TEST_CASE("gc stress mode triggers collection on every allocation") {
+    Heap heap(2 * 1024 * 1024, 128 * 1024);
+    heap.set_gc_stress(true);
+    CHECK(heap.gc_stress() == true);
+
+    ShadowStackFrame frame;
+    std::vector<std::unique_ptr<Rooted<Value>>> roots;
+
+    for (int i = 0; i < 30; ++i) {
+        std::string text = "stress_string_" + std::to_string(i);
+        StringHeader* s = StringHeader::createFromUTF8(heap, text);
+        roots.push_back(std::make_unique<Rooted<Value>>(heap, Value::fromString(s)));
+
+        for (int j = 0; j <= i; ++j) {
+            std::string expected = "stress_string_" + std::to_string(j);
+            Value val = roots[j]->get();
+            CHECK(val.isString());
+            auto* hdr = val.asString<StringHeader>();
+            CHECK(hdr != nullptr);
+            CHECK(hdr->length == expected.length());
+            CHECK(hdr->charCodeAt(0) == 's');
+        }
+    }
 }
