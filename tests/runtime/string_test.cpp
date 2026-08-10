@@ -70,21 +70,22 @@ TEST_CASE("non-ascii string indexing and surrogate pair access") {
 
 TEST_CASE("string equality and mixed representation equality") {
     Heap heap;
+    ShadowStackFrame frame;
 
-    StringHeader* lat1 = StringHeader::createFromUTF8(heap, "TestString");
-    StringHeader* lat2 = StringHeader::createFromUTF8(heap, "TestString");
-    StringHeader* lat3 = StringHeader::createFromUTF8(heap, "OtherString");
+    Rooted<StringHeader*> lat1(StringHeader::createFromUTF8(heap, "TestString"));
+    Rooted<StringHeader*> lat2(StringHeader::createFromUTF8(heap, "TestString"));
+    Rooted<StringHeader*> lat3(StringHeader::createFromUTF8(heap, "OtherString"));
 
-    CHECK(lat1->equals(*lat2));
-    CHECK(lat2->equals(*lat1));
-    CHECK(!lat1->equals(*lat3));
+    CHECK(lat1.get()->equals(*lat2.get()));
+    CHECK(lat2.get()->equals(*lat1.get()));
+    CHECK(!lat1.get()->equals(*lat3.get()));
 
     uint16_t u16_buf[] = {'T', 'e', 's', 't', 'S', 't', 'r', 'i', 'n', 'g'};
-    StringHeader* utf1 = StringHeader::createUTF16(heap, u16_buf, 10);
+    Rooted<StringHeader*> utf1(StringHeader::createUTF16(heap, u16_buf, 10));
 
-    CHECK(utf1->isUTF16());
-    CHECK(lat1->equals(*utf1));
-    CHECK(utf1->equals(*lat1));
+    CHECK(utf1.get()->isUTF16());
+    CHECK(lat1.get()->equals(*utf1.get()));
+    CHECK(utf1.get()->equals(*lat1.get()));
 }
 
 TEST_CASE("hash computation and caching") {

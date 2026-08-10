@@ -1,5 +1,7 @@
 bronze_add_module(runtime
     SOURCES
+        fatal.cpp
+        number_format.cpp
         value.cpp
         heap.cpp
         gc.cpp
@@ -10,6 +12,7 @@ bronze_add_module(runtime
         fn.cpp
         rt_helpers.cpp
     TEST_SOURCES
+        ../../tests/runtime/number_format_test.cpp
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp
         ../../tests/runtime/string_test.cpp

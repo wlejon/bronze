@@ -6,11 +6,13 @@
 
 using namespace bronze;
 
-static Value dummyAdd(Value thisArg, uint32_t argc, Value* argv) {
-    (void)thisArg;
-    double a = (argc > 0 && argv[0].isNumber()) ? argv[0].asNumber() : 0.0;
-    double b = (argc > 1 && argv[1].isNumber()) ? argv[1].asNumber() : 0.0;
-    return Value::fromDouble(a + b);
+static uint64_t dummyAdd(uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+    (void)thisBits;
+    Value a0 = (argc > 0) ? Value(argvBits[0]) : Value::fromUndefined();
+    Value a1 = (argc > 1) ? Value(argvBits[1]) : Value::fromUndefined();
+    double a = a0.isNumber() ? a0.asNumber() : 0.0;
+    double b = a1.isNumber() ? a1.asNumber() : 0.0;
+    return Value::fromDouble(a + b).rawBits();
 }
 
 TEST_CASE("FunctionHeader dynamic call execution and arity adaptation") {

@@ -1,6 +1,7 @@
 #include "runtime/rt_helpers.h"
 
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -10,6 +11,7 @@
 
 #include "runtime/array.h"
 #include "runtime/fn.h"
+#include "runtime/number_format.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/string.h"
@@ -22,19 +24,38 @@ static NonMovingArena g_arena;
 static std::vector<std::string> g_keyStrings;
 static std::vector<InlineCache> g_inlineCaches;
 
-static Value bronze_builtin_string_char_code_at(Value thisArg, uint32_t argc, Value* argv) {
-    if (!thisArg.isString()) return Value::fromDouble(0.0);
+static uint64_t bronze_builtin_string_char_code_at(uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+    Value thisArg(thisBits);
+    if (!thisArg.isString()) return Value::fromDouble(0.0).rawBits();
     StringHeader* str = thisArg.asString<StringHeader>();
     uint32_t idx = 0;
-    if (argc > 0 && argv[0].isNumber()) {
-        idx = static_cast<uint32_t>(argv[0].asNumber());
-    } else if (argc > 0 && argv[0].isInt32()) {
-        idx = static_cast<uint32_t>(argv[0].payload());
+    if (argc > 0) {
+        Value arg0(argvBits[0]);
+        if (arg0.isNumber()) {
+            idx = static_cast<uint32_t>(arg0.asNumber());
+        } else if (arg0.isInt32()) {
+            idx = static_cast<uint32_t>(arg0.payload());
+        }
     }
-    return Value::fromDouble(str->charCodeAt(idx));
+    return Value::fromDouble(str->charCodeAt(idx)).rawBits();
 }
 
 static FunctionHeader* g_charCodeAtFn = nullptr;
+
+static Value valueToString(Value v) {
+    if (v.isString()) return v;
+    if (v.isNumber()) {
+        char buf[64];
+        size_t len = formatJsNumber(v.asNumber(), buf);
+        StringHeader* sh = StringHeader::createFromUTF8(g_heap, std::string_view(buf, len));
+        return Value::fromString(sh);
+    } else if (v.isBool()) {
+        StringHeader* sh = StringHeader::createFromUTF8(g_heap, v.asBool() ? "true" : "false");
+        return Value::fromString(sh);
+    }
+    StringHeader* sh = StringHeader::createFromUTF8(g_heap, "");
+    return Value::fromString(sh);
+}
 
 extern "C" {
 
@@ -188,12 +209,12 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
     Value calleeVal(calleeBits);
     Value thisVal(thisBits);
     if (!calleeVal.isObject()) {
-        std::cerr << "Hard runtime error: Attempted to call non-object dynamic value" << std::endl;
+        std::cerr << "Hard runtime error: Attempted to call non-object dynamic value (" << std::hex << calleeBits << ")" << std::endl;
         std::abort();
     }
     HeapObjectHeader* hdr = calleeVal.asObject<HeapObjectHeader>();
     if (hdr->flags != 2) {
-        std::cerr << "Hard runtime error: Attempted to call non-function object" << std::endl;
+        std::cerr << "Hard runtime error: Attempted to call non-function object (flags=" << hdr->flags << ")" << std::endl;
         std::abort();
     }
     FunctionHeader* fn = reinterpret_cast<FunctionHeader*>(hdr);
@@ -208,25 +229,54 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
 uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
     Value aVal(aBits);
     Value bVal(bBits);
-    Rooted<Value> aRoot(aVal);
-    Rooted<Value> bRoot(bVal);
+    Rooted<Value> aRoot(valueToString(aVal));
+    Rooted<Value> bRoot(valueToString(bVal));
     Value res = StringHeader::concat(g_heap, aRoot, bRoot);
     return res.rawBits();
+}
+
+uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
+    Value aVal(aBits);
+    Value bVal(bBits);
+    if (aVal.isString() || bVal.isString()) {
+        Rooted<Value> aRoot(valueToString(aVal));
+        Rooted<Value> bRoot(valueToString(bVal));
+        Value res = StringHeader::concat(g_heap, aRoot, bRoot);
+        return res.rawBits();
+    }
+    double aNum = bronze_unbox_f64(aBits);
+    double bNum = bronze_unbox_f64(bBits);
+    return Value::fromDouble(aNum + bNum).rawBits();
 }
 
 void bronze_print_value(uint64_t valBits) {
     Value v(valBits);
     if (v.isNumber()) {
+        double num = v.asNumber();
         char buf[64];
-        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v.asNumber());
-        if (ec == std::errc{}) {
-            *ptr++ = '\n';
-            std::fwrite(buf, 1, static_cast<size_t>(ptr - buf), stdout);
+        size_t len = 0;
+        // console.log distinguishes -0 (inspect formatting), unlike
+        // ToString(Number) which yields "0" — node prints "-0" here.
+        if (num == 0.0 && std::signbit(num)) {
+            buf[len++] = '-';
         }
+        len += formatJsNumber(num, buf + len);
+        buf[len++] = '\n';
+        std::fwrite(buf, 1, len, stdout);
     } else if (v.isString()) {
         StringHeader* str = v.asString<StringHeader>();
         if (str->isLatin1()) {
-            std::fwrite(str->latin1Data(), 1, str->getLength(), stdout);
+            const char* data = str->latin1Data();
+            uint32_t len = str->getLength();
+            for (uint32_t i = 0; i < len; ++i) {
+                unsigned char c = static_cast<unsigned char>(data[i]);
+                if (c <= 0x7F) {
+                    std::fputc(c, stdout);
+                } else {
+                    std::fputc(static_cast<char>(0xC0 | (c >> 6)), stdout);
+                    std::fputc(static_cast<char>(0x80 | (c & 0x3F)), stdout);
+                }
+            }
         } else {
             const uint16_t* u16 = str->utf16Data();
             uint32_t len = str->getLength();

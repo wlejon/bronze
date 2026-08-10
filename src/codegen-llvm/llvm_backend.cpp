@@ -98,6 +98,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 
     llvm::Function* fnStrAdd = getOrDeclareFunc("bronze_string_concat",
         llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx)}, false));
+    llvm::Function* fnDynAdd = getOrDeclareFunc("bronze_dynamic_add",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx)}, false));
     llvm::Function* fnPrintValue = getOrDeclareFunc("bronze_print_value",
         llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
     llvm::Function* fnRegisterKeyString = getOrDeclareFunc("bronze_register_key_string",
@@ -178,6 +180,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             wBuilder.CreateRet(wBuilder.CreateCall(fnBoxI32, {callRes}));
         } else if (func.returnType == il::Type::Bool) {
             wBuilder.CreateRet(wBuilder.CreateCall(fnBoxBool, {callRes}));
+        } else if (func.returnType == il::Type::Dynamic) {
+            wBuilder.CreateRet(callRes);
         } else {
             wBuilder.CreateRet(callRes);
         }
@@ -362,7 +366,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Add instruction");
                         return false;
                     }
-                    if (inst.type == il::Type::Dynamic || inst.type == il::Type::Str) {
+                    if (inst.type == il::Type::Dynamic) {
+                        values[inst.result] = builder.CreateCall(fnDynAdd, {lhs, rhs});
+                    } else if (inst.type == il::Type::Str) {
                         values[inst.result] = builder.CreateCall(fnStrAdd, {lhs, rhs});
                     } else if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
                         if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());

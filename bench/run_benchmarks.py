@@ -34,7 +34,7 @@ def main():
     bench_dir = Path(__file__).parent.resolve()
     bronze_cli = get_bronze_path()
     
-    benchmarks = ["fib.js", "numeric_loop.js"]
+    benchmarks = ["fib.js", "numeric_loop.js", "property_access.js"]
     results = []
 
     print(f"=== Bronze Microbenchmark Suite ===")

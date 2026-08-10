@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <stdexcept>
+
 #include "runtime/array.h"
+#include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 
@@ -28,7 +31,10 @@ TEST_CASE("ArrayHeader element access and bounds") {
     CHECK(arr.get()->getElem(1).asNumber() == 20.0);
     CHECK(arr.get()->getElem(2).isUndefined());
 
-    // Out-of-bounds write throws runtime exception
+    // Out-of-bounds write is a hard error; observe it via a throwing
+    // fatal handler (the default handler aborts, which doctest can't see)
+    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
     Rooted<Value> v_oob(Value::fromDouble(99.0));
     CHECK_THROWS_AS(arr.get()->setElem(heap, 10, v_oob), std::runtime_error);
+    setFatalHandler(nullptr);
 }

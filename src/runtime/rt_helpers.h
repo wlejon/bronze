@@ -25,6 +25,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits);
 
 uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits);
+uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits);
 void bronze_print_value(uint64_t valBits);
 void bronze_print_string(const char* s);
 

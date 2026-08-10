@@ -50,4 +50,7 @@ a perf smoke against node from the first day.
 
 - 2026-08-10: fib.js | bronze: 7.36ms | node: 31.03ms | 4.22x speedup (stdout byte match verified)
 - 2026-08-10: numeric_loop.js | bronze: 7.44ms | node: 30.00ms | 4.03x speedup (stdout byte match verified)
+- 2026-08-10 (dynamic substrate landed): fib.js | bronze: 9.52ms | node: 34.64ms | 3.64x (byte match)
+- 2026-08-10 (dynamic substrate landed): numeric_loop.js | bronze: 9.41ms | node: 33.70ms | 3.58x (byte match)
+- 2026-08-10: property_access.js | bronze: 894.36ms | node: 34.03ms | **0.04x — 26x slower** (byte match). First dynamic-path bench: every property access and dynamic call crosses into C++ runtime helpers with no inline-cache fast path in generated code. This is the baseline gap that inference (phase 3) and IL-level IC fast paths must close — recorded on day one so no broc-style surprise is possible.
 

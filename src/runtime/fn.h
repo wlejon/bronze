@@ -9,7 +9,13 @@
 
 namespace bronze {
 
-using NativeFunctionCode = Value (*)(Value thisArg, uint32_t argc, Value* argv);
+// ABI boundary with generated code: primitives only, u64 in / u64 out.
+// `Value` (or any C++ class) must never appear in a signature that
+// generated code calls or is called through — under the MSVC x64 ABI a
+// class with user-defined constructors is returned via a hidden sret
+// pointer in RCX, shifting every argument one register over versus the
+// (i64, i32, ptr) -> i64 convention LLVM-emitted wrappers use.
+using NativeFunctionCode = uint64_t (*)(uint64_t thisArgBits, uint32_t argc, const uint64_t* argvBits);
 
 struct FunctionHeader {
     HeapObjectHeader header;

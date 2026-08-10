@@ -40,7 +40,7 @@ TEST_CASE("CLI driver il command produces canonical IL") {
     std::string ilOutput;
     int status = bronze::cli::runIl(jsPath.string(), &ilOutput);
     CHECK(status == 0);
-    CHECK(ilOutput.find("func add(%0: f64, %1: f64) -> f64") != std::string::npos);
+    CHECK(ilOutput.find("func add(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
     CHECK(ilOutput.find("func main() -> void") != std::string::npos);
 
     std::filesystem::remove(jsPath);
@@ -55,7 +55,7 @@ TEST_CASE("CLI driver build command compiles and links executable") {
         std::filesystem::remove(exePath, ec);
     }
 
-    writeTestFile(jsPath, "function main() {\n  return 40 + 2;\n}\n");
+    writeTestFile(jsPath, "console.log(40 + 2);\n");
 
     std::string err;
     int status = bronze::cli::runBuild(jsPath.string(), exePath.string(), &err);

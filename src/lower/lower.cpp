@@ -36,9 +36,13 @@ public:
                 fn.name = fnDecl->name;
                 fn.isExported = fnDecl->isExported;
                 for (const auto& param : fnDecl->params) {
-                    auto pType = mapTypeAnnotation(param.typeAnnotation, fnDecl->span, diags_);
-                    if (!pType) return std::nullopt;
-                    fn.params.push_back({param.name, *pType});
+                    if (!param.typeAnnotation.empty()) {
+                        auto pType = mapTypeAnnotation(param.typeAnnotation, fnDecl->span, diags_);
+                        if (!pType) return std::nullopt;
+                        fn.params.push_back({param.name, *pType});
+                    } else {
+                        fn.params.push_back({param.name, il::Type::Dynamic});
+                    }
                 }
                 if (!fnDecl->returnType.empty()) {
                     auto rType = mapTypeAnnotation(fnDecl->returnType, fnDecl->span, diags_);
@@ -187,9 +191,9 @@ private:
 
                 if (ilFn.returnType == il::Type::Void) {
                     ilFn.returnType = val->type;
-                } else if (ilFn.returnType == il::Type::Dynamic && val->type != il::Type::Dynamic) {
+                } else if (ilFn.returnType == il::Type::Dynamic) {
                     val = boxValueIfNeeded(*val, ilFn);
-                } else if (ilFn.returnType != il::Type::Dynamic && val->type == il::Type::Dynamic) {
+                } else if (val->type == il::Type::Dynamic) {
                     val = unboxValueIfNeeded(*val, ilFn.returnType, ilFn);
                 }
 
@@ -316,9 +320,13 @@ private:
             newFn.name = fnName;
             newFn.returnType = il::Type::Dynamic;
             for (const auto& param : fnExpr->params) {
-                auto pType = mapTypeAnnotation(param.typeAnnotation, fnExpr->span, diags_);
-                if (!pType) return std::nullopt;
-                newFn.params.push_back({param.name, *pType});
+                if (!param.typeAnnotation.empty()) {
+                    auto pType = mapTypeAnnotation(param.typeAnnotation, fnExpr->span, diags_);
+                    if (!pType) return std::nullopt;
+                    newFn.params.push_back({param.name, *pType});
+                } else {
+                    newFn.params.push_back({param.name, il::Type::Dynamic});
+                }
             }
             if (!fnExpr->returnType.empty()) {
                 auto rType = mapTypeAnnotation(fnExpr->returnType, fnExpr->span, diags_);
@@ -326,19 +334,31 @@ private:
                 newFn.returnType = *rType;
             }
             newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
-            uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
-            functionIndices_[fnName] = createdFnIdx;
-            ilModule_.functions.push_back(std::move(newFn));
 
-            std::unordered_map<std::string, Value> fnEnv;
+            std::unordered_map<std::string, Value> fnEnv = env;
             for (uint32_t i = 0; i < fnExpr->params.size(); ++i) {
-                fnEnv[fnExpr->params[i].name] = {i, ilModule_.functions[createdFnIdx].params[i].type};
+                fnEnv[fnExpr->params[i].name] = {i, newFn.params[i].type};
             }
             std::vector<const ast::Stmt*> stmts;
             for (const auto& s : fnExpr->body) stmts.push_back(s.get());
-            if (!lowerStmtList(stmts, ilModule_.functions[createdFnIdx], &fnEnv)) {
+            if (!lowerStmtList(stmts, newFn, &fnEnv)) {
                 return std::nullopt;
             }
+            bool hasRet = false;
+            for (const auto& inst : newFn.body) {
+                if (inst.op == il::Op::Ret) { hasRet = true; break; }
+            }
+            if (!hasRet) {
+                il::Instruction retInst;
+                retInst.op = il::Op::Ret;
+                retInst.type = il::Type::Void;
+                retInst.result = il::kNoValue;
+                newFn.body.push_back(retInst);
+            }
+
+            uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
+            functionIndices_[fnName] = createdFnIdx;
+            ilModule_.functions.push_back(std::move(newFn));
 
             il::ValueId res = ilFn.valueCount++;
             il::Instruction inst;
@@ -576,44 +596,47 @@ private:
             }
 
             if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-                auto it = functionIndices_.find(calleeIdent->name);
-                if (it != functionIndices_.end()) {
-                    uint32_t calleeIdx = it->second;
-                    const auto& calleeFn = ilModule_.functions[calleeIdx];
+                auto envIt = env.find(calleeIdent->name);
+                if (envIt == env.end()) {
+                    auto it = functionIndices_.find(calleeIdent->name);
+                    if (it != functionIndices_.end()) {
+                        uint32_t calleeIdx = it->second;
+                        const auto& calleeFn = ilModule_.functions[calleeIdx];
 
-                    if (call->args.size() != calleeFn.params.size()) {
-                        diags_.error(call->span, "argument count mismatch in call to " + calleeIdent->name);
-                        return std::nullopt;
-                    }
-
-                    std::vector<il::ValueId> argVals;
-                    for (size_t i = 0; i < call->args.size(); ++i) {
-                        auto argVal = lowerExpr(*call->args[i], ilFn, env);
-                        if (!argVal) return std::nullopt;
-                        if (calleeFn.params[i].type == il::Type::Dynamic) {
-                            argVal = boxValueIfNeeded(*argVal, ilFn);
-                        } else if (argVal->type == il::Type::Dynamic) {
-                            argVal = unboxValueIfNeeded(*argVal, calleeFn.params[i].type, ilFn);
+                        if (call->args.size() != calleeFn.params.size()) {
+                            diags_.error(call->span, "argument count mismatch in call to " + calleeIdent->name);
+                            return std::nullopt;
                         }
-                        argVals.push_back(argVal->id);
+
+                        std::vector<il::ValueId> argVals;
+                        for (size_t i = 0; i < call->args.size(); ++i) {
+                            auto argVal = lowerExpr(*call->args[i], ilFn, env);
+                            if (!argVal) return std::nullopt;
+                            if (calleeFn.params[i].type == il::Type::Dynamic) {
+                                argVal = boxValueIfNeeded(*argVal, ilFn);
+                            } else if (argVal->type == il::Type::Dynamic) {
+                                argVal = unboxValueIfNeeded(*argVal, calleeFn.params[i].type, ilFn);
+                            }
+                            argVals.push_back(argVal->id);
+                        }
+
+                        il::Instruction inst;
+                        inst.op = il::Op::Call;
+                        inst.calleeIndex = calleeIdx;
+                        inst.operands = std::move(argVals);
+                        inst.type = calleeFn.returnType;
+
+                        il::ValueId res = il::kNoValue;
+                        if (calleeFn.returnType != il::Type::Void) {
+                            res = ilFn.valueCount++;
+                            inst.result = res;
+                        } else {
+                            inst.result = il::kNoValue;
+                        }
+
+                        ilFn.body.push_back(inst);
+                        return Value{res, calleeFn.returnType};
                     }
-
-                    il::Instruction inst;
-                    inst.op = il::Op::Call;
-                    inst.calleeIndex = calleeIdx;
-                    inst.operands = std::move(argVals);
-                    inst.type = calleeFn.returnType;
-
-                    il::ValueId res = il::kNoValue;
-                    if (calleeFn.returnType != il::Type::Void) {
-                        res = ilFn.valueCount++;
-                        inst.result = res;
-                    } else {
-                        inst.result = il::kNoValue;
-                    }
-
-                    ilFn.body.push_back(inst);
-                    return Value{res, calleeFn.returnType};
                 }
             }
 

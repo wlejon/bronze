@@ -22,8 +22,9 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
         std::abort();
     }
 
+    static_assert(sizeof(Value) == sizeof(uint64_t) && alignof(Value) == alignof(uint64_t));
     if (arity == 0 || argc >= arity) {
-        return code(thisArg, argc, argv);
+        return Value(code(thisArg.rawBits(), argc, reinterpret_cast<const uint64_t*>(argv)));
     }
 
     // Arity adaptation: extend args with undefined up to arity
@@ -32,7 +33,7 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
         args[i] = argv[i];
     }
 
-    return code(thisArg, arity, args.data());
+    return Value(code(thisArg.rawBits(), arity, reinterpret_cast<const uint64_t*>(args.data())));
 }
 
 }  // namespace bronze
