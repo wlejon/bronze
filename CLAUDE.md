@@ -35,6 +35,14 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   targets only; the CLI is the composition root.
 - Recursive descent for parsers, visitor for AST traversal (house
   preference).
+- **The generated-code ABI lives in `src/abi/bronze_abi.h`, and only
+  there.** Pure C, primitives only (u64 in / u64 out); every helper
+  generated code calls is an X(...) line in its registry, which expands
+  into both the C prototypes and codegen-llvm's LLVM declarations. Never
+  hand-declare a runtime symbol in the backend, and never put a C++ type
+  in a signature generated code touches — MSVC returns classes via hidden
+  sret, which silently shifts every argument register (the 2026-08-10
+  dynamic-call crash).
 
 ## Docs index
 

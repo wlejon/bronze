@@ -27,7 +27,9 @@ if(BRONZE_WITH_LLVM)
     set(LLVM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm" CACHE PATH "")
 endif()
 
-project(bronze VERSION 0.1.0 LANGUAGES CXX)
+# C is enabled solely for src/abi/abi_check.c, which compiles the
+# generated-code ABI header as pure C to keep C++ types out of it.
+project(bronze VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +40,7 @@ include(cmake/bronze_module.cmake)
 enable_testing()
 find_package(doctest CONFIG REQUIRED)
 
+add_subdirectory(src/abi)
 add_subdirectory(src/support)
 add_subdirectory(src/lex)
 add_subdirectory(src/ast)

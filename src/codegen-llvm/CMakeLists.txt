@@ -6,6 +6,7 @@ bronze_add_module(codegen_llvm
     SOURCES
         llvm_backend.cpp
     DEPS
+        abi
         codegen
         il
         support

@@ -118,9 +118,8 @@ uint64_t bronze_create_array(uint32_t length) {
     return Value::fromObject(arr).rawBits();
 }
 
-uint64_t bronze_create_function(void* code, uint32_t arity) {
-    auto fnCode = reinterpret_cast<NativeFunctionCode>(code);
-    FunctionHeader* fn = FunctionHeader::create(g_heap, fnCode, nullptr, arity);
+uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity) {
+    FunctionHeader* fn = FunctionHeader::create(g_heap, code, nullptr, arity);
     fn->header.flags = 2;
     return Value::fromObject(fn).rawBits();
 }

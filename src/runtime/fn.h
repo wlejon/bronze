@@ -3,19 +3,17 @@
 #include <cstdint>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/value.h"
 
 namespace bronze {
 
-// ABI boundary with generated code: primitives only, u64 in / u64 out.
-// `Value` (or any C++ class) must never appear in a signature that
-// generated code calls or is called through — under the MSVC x64 ABI a
-// class with user-defined constructors is returned via a hidden sret
-// pointer in RCX, shifting every argument one register over versus the
-// (i64, i32, ptr) -> i64 convention LLVM-emitted wrappers use.
-using NativeFunctionCode = uint64_t (*)(uint64_t thisArgBits, uint32_t argc, const uint64_t* argvBits);
+// The primitives-only shape generated code is entered through; declared
+// in the pure-C ABI registry (src/abi/bronze_abi.h) so a C++ class type
+// can never leak into it — see the header for the sret-shift rationale.
+using NativeFunctionCode = bronze_fn_code;
 
 struct FunctionHeader {
     HeapObjectHeader header;

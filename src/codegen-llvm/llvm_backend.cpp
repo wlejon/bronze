@@ -23,9 +23,19 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
 
+#include "abi/bronze_abi.h"
 #include "il/print.h"
 
 namespace bronze {
+
+// One llvm::Function* per entry in the ABI registry, named after the
+// runtime symbol itself; populated in emitObject from the same X-macro
+// list that declares the C prototypes, so the two sides cannot drift.
+struct AbiFns {
+#define BRONZE_ABI_FIELD(name, RET, PARAMS) llvm::Function* name;
+    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_FIELD)
+#undef BRONZE_ABI_FIELD
+};
 
 static llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
     switch (type) {
@@ -59,51 +69,36 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         return fn;
     };
 
-    llvm::Function* fnBoxF64 = getOrDeclareFunc("bronze_box_f64",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getDoubleTy(ctx)}, false));
-    llvm::Function* fnBoxI32 = getOrDeclareFunc("bronze_box_i32",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt32Ty(ctx)}, false));
-    llvm::Function* fnBoxBool = getOrDeclareFunc("bronze_box_bool",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt1Ty(ctx)}, false));
-    llvm::Function* fnBoxStr = getOrDeclareFunc("bronze_box_str",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::PointerType::getUnqual(ctx)}, false));
-    (void)fnBoxStr;
-    llvm::Function* fnBoxStrKey = getOrDeclareFunc("bronze_box_str_key",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt32Ty(ctx)}, false));
-
-    llvm::Function* fnUnboxF64 = getOrDeclareFunc("bronze_unbox_f64",
-        llvm::FunctionType::get(llvm::Type::getDoubleTy(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
-    llvm::Function* fnUnboxI32 = getOrDeclareFunc("bronze_unbox_i32",
-        llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
-    llvm::Function* fnUnboxBool = getOrDeclareFunc("bronze_unbox_bool",
-        llvm::FunctionType::get(llvm::Type::getInt1Ty(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
-
-    llvm::Function* fnCreateObject = getOrDeclareFunc("bronze_create_object",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {}, false));
-    llvm::Function* fnCreateArray = getOrDeclareFunc("bronze_create_array",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt32Ty(ctx)}, false));
-    llvm::Function* fnCreateFunction = getOrDeclareFunc("bronze_create_function",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::PointerType::getUnqual(ctx), llvm::Type::getInt32Ty(ctx)}, false));
-
-    llvm::Function* fnPropGet = getOrDeclareFunc("bronze_prop_get",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx),
-            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false));
-    llvm::Function* fnPropSet = getOrDeclareFunc("bronze_prop_set",
-        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false));
-
-    llvm::Function* fnDynCall = getOrDeclareFunc("bronze_dynamic_call",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx),
-            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::PointerType::getUnqual(ctx)}, false));
-
-    llvm::Function* fnStrAdd = getOrDeclareFunc("bronze_string_concat",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx)}, false));
-    llvm::Function* fnDynAdd = getOrDeclareFunc("bronze_dynamic_add",
-        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx)}, false));
-    llvm::Function* fnPrintValue = getOrDeclareFunc("bronze_print_value",
-        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
-    llvm::Function* fnRegisterKeyString = getOrDeclareFunc("bronze_register_key_string",
-        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {llvm::Type::getInt32Ty(ctx), llvm::PointerType::getUnqual(ctx)}, false));
+    // Declare every ABI helper from the registry (src/abi/bronze_abi.h) by
+    // rebinding its type tokens to llvm::Type*.
+#define BRONZE_ABI_U64    llvm::Type::getInt64Ty(ctx)
+#define BRONZE_ABI_U32    llvm::Type::getInt32Ty(ctx)
+#define BRONZE_ABI_I32    llvm::Type::getInt32Ty(ctx)
+#define BRONZE_ABI_F64    llvm::Type::getDoubleTy(ctx)
+#define BRONZE_ABI_BOOL   llvm::Type::getInt1Ty(ctx)
+#define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_VOID   llvm::Type::getVoidTy(ctx)
+#define BRONZE_ABI_NOARGS
+#define BRONZE_ABI_UNPAREN(...) __VA_ARGS__
+    AbiFns abi;
+#define BRONZE_ABI_LLVM_DECLARE(name, RET, PARAMS) \
+    abi.name = getOrDeclareFunc(#name, \
+        llvm::FunctionType::get(RET, {BRONZE_ABI_UNPAREN PARAMS}, false));
+    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
+#undef BRONZE_ABI_LLVM_DECLARE
+#undef BRONZE_ABI_UNPAREN
+#undef BRONZE_ABI_U64
+#undef BRONZE_ABI_U32
+#undef BRONZE_ABI_I32
+#undef BRONZE_ABI_F64
+#undef BRONZE_ABI_BOOL
+#undef BRONZE_ABI_CSTR
+#undef BRONZE_ABI_PU64
+#undef BRONZE_ABI_FNPTR
+#undef BRONZE_ABI_VOID
+#undef BRONZE_ABI_NOARGS
 
     std::vector<llvm::Function*> llvmFunctions;
     llvmFunctions.reserve(module.functions.size());
@@ -161,11 +156,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             llvm::Value* rawBits = wBuilder.CreateLoad(wBuilder.getInt64Ty(), slotPtr);
             il::Type pType = func.params[p].type;
             if (pType == il::Type::F64) {
-                callArgs.push_back(wBuilder.CreateCall(fnUnboxF64, {rawBits}));
+                callArgs.push_back(wBuilder.CreateCall(abi.bronze_unbox_f64, {rawBits}));
             } else if (pType == il::Type::I32) {
-                callArgs.push_back(wBuilder.CreateCall(fnUnboxI32, {rawBits}));
+                callArgs.push_back(wBuilder.CreateCall(abi.bronze_unbox_i32, {rawBits}));
             } else if (pType == il::Type::Bool) {
-                callArgs.push_back(wBuilder.CreateCall(fnUnboxBool, {rawBits}));
+                callArgs.push_back(wBuilder.CreateCall(abi.bronze_unbox_bool, {rawBits}));
             } else {
                 callArgs.push_back(rawBits);
             }
@@ -175,11 +170,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         if (func.returnType == il::Type::Void) {
             wBuilder.CreateRet(wBuilder.getInt64(0xFFF6000000000000ULL));
         } else if (func.returnType == il::Type::F64) {
-            wBuilder.CreateRet(wBuilder.CreateCall(fnBoxF64, {callRes}));
+            wBuilder.CreateRet(wBuilder.CreateCall(abi.bronze_box_f64, {callRes}));
         } else if (func.returnType == il::Type::I32) {
-            wBuilder.CreateRet(wBuilder.CreateCall(fnBoxI32, {callRes}));
+            wBuilder.CreateRet(wBuilder.CreateCall(abi.bronze_box_i32, {callRes}));
         } else if (func.returnType == il::Type::Bool) {
-            wBuilder.CreateRet(wBuilder.CreateCall(fnBoxBool, {callRes}));
+            wBuilder.CreateRet(wBuilder.CreateCall(abi.bronze_box_bool, {callRes}));
         } else if (func.returnType == il::Type::Dynamic) {
             wBuilder.CreateRet(callRes);
         } else {
@@ -197,7 +192,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         if (func.name == "main") {
             for (size_t k = 0; k < module.keyConstants.size(); ++k) {
                 llvm::Value* globalStr = builder.CreateGlobalStringPtr(module.keyConstants[k]);
-                builder.CreateCall(fnRegisterKeyString, {builder.getInt32(static_cast<uint32_t>(k)), globalStr});
+                builder.CreateCall(abi.bronze_register_key_string, {builder.getInt32(static_cast<uint32_t>(k)), globalStr});
             }
         }
 
@@ -226,7 +221,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     if (inst.result == il::kNoValue) break;
                     if (inst.boxType == il::Type::Str) {
                         llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
-                        values[inst.result] = builder.CreateCall(fnBoxStrKey, {kIdx});
+                        values[inst.result] = builder.CreateCall(abi.bronze_box_str_key, {kIdx});
                     } else {
                         if (inst.operands.empty()) {
                             diags.error(Span{}, "Invalid operands for Box");
@@ -237,9 +232,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                             diags.error(Span{}, "Undefined value in Box instruction");
                             return false;
                         }
-                        llvm::Function* targetBoxFn = fnBoxF64;
-                        if (inst.boxType == il::Type::I32) targetBoxFn = fnBoxI32;
-                        else if (inst.boxType == il::Type::Bool) targetBoxFn = fnBoxBool;
+                        llvm::Function* targetBoxFn = abi.bronze_box_f64;
+                        if (inst.boxType == il::Type::I32) targetBoxFn = abi.bronze_box_i32;
+                        else if (inst.boxType == il::Type::Bool) targetBoxFn = abi.bronze_box_bool;
                         values[inst.result] = builder.CreateCall(targetBoxFn, {srcVal});
                     }
                     break;
@@ -254,22 +249,22 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Unbox instruction");
                         return false;
                     }
-                    llvm::Function* targetUnboxFn = fnUnboxF64;
-                    if (inst.type == il::Type::I32) targetUnboxFn = fnUnboxI32;
-                    else if (inst.type == il::Type::Bool) targetUnboxFn = fnUnboxBool;
+                    llvm::Function* targetUnboxFn = abi.bronze_unbox_f64;
+                    if (inst.type == il::Type::I32) targetUnboxFn = abi.bronze_unbox_i32;
+                    else if (inst.type == il::Type::Bool) targetUnboxFn = abi.bronze_unbox_bool;
                     values[inst.result] = builder.CreateCall(targetUnboxFn, {srcVal});
                     break;
                 }
                 case il::Op::CreateObject: {
                     if (inst.result != il::kNoValue) {
-                        values[inst.result] = builder.CreateCall(fnCreateObject, {});
+                        values[inst.result] = builder.CreateCall(abi.bronze_create_object, {});
                     }
                     break;
                 }
                 case il::Op::CreateArray: {
                     if (inst.result != il::kNoValue) {
                         llvm::Value* lenVal = builder.getInt32(inst.immI32);
-                        values[inst.result] = builder.CreateCall(fnCreateArray, {lenVal});
+                        values[inst.result] = builder.CreateCall(abi.bronze_create_array, {lenVal});
                     }
                     break;
                 }
@@ -277,7 +272,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     if (inst.result != il::kNoValue) {
                         llvm::Value* targetWrapper = wrapperFunctions[inst.calleeIndex];
                         llvm::Value* arityVal = builder.getInt32(inst.immI32);
-                        values[inst.result] = builder.CreateCall(fnCreateFunction, {targetWrapper, arityVal});
+                        values[inst.result] = builder.CreateCall(abi.bronze_create_function, {targetWrapper, arityVal});
                     }
                     break;
                 }
@@ -285,7 +280,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     if (!inst.operands.empty()) {
                         llvm::Value* val = values[inst.operands[0]];
                         if (val) {
-                            builder.CreateCall(fnPrintValue, {val});
+                            builder.CreateCall(abi.bronze_print_value, {val});
                         }
                     }
                     break;
@@ -302,7 +297,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
                     llvm::Value* icIdx = builder.getInt32(inst.icIndex);
-                    values[inst.result] = builder.CreateCall(fnPropGet, {objVal, kIdx, icIdx});
+                    values[inst.result] = builder.CreateCall(abi.bronze_prop_get, {objVal, kIdx, icIdx});
                     break;
                 }
                 case il::Op::PropSet: {
@@ -318,7 +313,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
                     llvm::Value* icIdx = builder.getInt32(inst.icIndex);
-                    builder.CreateCall(fnPropSet, {objVal, kIdx, valVal, icIdx});
+                    builder.CreateCall(abi.bronze_prop_set, {objVal, kIdx, valVal, icIdx});
                     break;
                 }
                 case il::Op::DynamicCall: {
@@ -349,7 +344,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     } else {
                         argvPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
                     }
-                    llvm::Value* callRes = builder.CreateCall(fnDynCall, {calleeVal, thisVal, builder.getInt32(argc), argvPtr});
+                    llvm::Value* callRes = builder.CreateCall(abi.bronze_dynamic_call, {calleeVal, thisVal, builder.getInt32(argc), argvPtr});
                     if (inst.result != il::kNoValue) {
                         values[inst.result] = callRes;
                     }
@@ -367,9 +362,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         return false;
                     }
                     if (inst.type == il::Type::Dynamic) {
-                        values[inst.result] = builder.CreateCall(fnDynAdd, {lhs, rhs});
+                        values[inst.result] = builder.CreateCall(abi.bronze_dynamic_add, {lhs, rhs});
                     } else if (inst.type == il::Type::Str) {
-                        values[inst.result] = builder.CreateCall(fnStrAdd, {lhs, rhs});
+                        values[inst.result] = builder.CreateCall(abi.bronze_string_concat, {lhs, rhs});
                     } else if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
                         if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
                         if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());

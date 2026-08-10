@@ -11,6 +11,8 @@ bronze_add_module(runtime
         array.cpp
         fn.cpp
         rt_helpers.cpp
+    DEPS
+        abi
     TEST_SOURCES
         ../../tests/runtime/number_format_test.cpp
         ../../tests/runtime/value_test.cpp
