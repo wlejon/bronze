@@ -1,6 +1,7 @@
 #include "runtime/shape.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
 namespace bronze {
@@ -8,6 +9,7 @@ namespace bronze {
 Shape* Shape::createRoot(NonMovingArena& arena, Shape* prototype) {
     return arena.create<Shape>(nullptr, nullptr, 0, prototype);
 }
+
 
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot) {
     (void)heap;
@@ -48,8 +50,11 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     }
 
     out_slot = next_slot;
-    Shape* next_shape = arena.create<Shape>(this, prop_str, next_slot, prototype);
-    transitions.push_back(ShapeTransition{prop_str, next_shape});
+    // Shapes are immortal and non-moving, so they must never point into
+    // the movable heap: property names are copied into the arena.
+    StringHeader* interned = StringHeader::internToArena(arena, prop_str);
+    Shape* next_shape = arena.create<Shape>(this, interned, next_slot, prototype);
+    transitions.push_back(ShapeTransition{interned, next_shape});
     return next_shape;
 }
 

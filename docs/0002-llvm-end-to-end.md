@@ -64,4 +64,15 @@ a perf smoke against node from the first day.
     876.0ms. The dynamic-dispatch gap is now cleanly visible in one number:
     ~0.9µs per iteration of two prop.get helper calls + boxing. This is the
     number inference (0006) and generated-code IC fast paths must attack.
+- 2026-08-10 (out-of-line slots landed, property keys interned): fib
+  118.4/113.4ms, numeric_loop 88.1/82.8ms (both noise-level vs above);
+  property_access.js — avg 144.5ms / min 138.1ms — **6.2x faster**. The
+  890ms number was mostly self-inflicted allocation: every prop access
+  built a fresh key string (≈48MB of garbage over the run — enough to
+  trigger mid-run collection, which generated code cannot survive; see
+  0004). Keys are now interned into the immortal arena once at
+  registration, and the IC-hit path touches no key, no std::string, and no
+  root registration. Remaining ~0.14µs/iteration is the helper-call +
+  boxing overhead that inference and generated-code IC fast paths attack
+  next.
 

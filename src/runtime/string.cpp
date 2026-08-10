@@ -260,4 +260,13 @@ Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     }
 }
 
+StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHeader* src) {
+    size_t data_bytes =
+        src->isUTF16() ? static_cast<size_t>(src->length) * sizeof(uint16_t) : src->length;
+    size_t total = sizeof(StringHeader) + data_bytes;
+    void* mem = arena.allocate(total, alignof(StringHeader));
+    std::memcpy(mem, src, total);
+    return static_cast<StringHeader*>(mem);
+}
+
 }  // namespace bronze

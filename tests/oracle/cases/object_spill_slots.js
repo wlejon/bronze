@@ -1,0 +1,15 @@
+const o = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 };
+console.log(o.a);
+console.log(o.b);
+console.log(o.c);
+console.log(o.d);
+console.log(o.e);
+console.log(o.f);
+console.log(o.g);
+console.log(o.h);
+o.i = 9;
+o.j = 10;
+console.log(o.i + o.j);
+console.log(o.e + o.h);
+o.f = 60;
+console.log(o.f);

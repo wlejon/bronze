@@ -23,6 +23,9 @@ struct StringHeader {
     static StringHeader* createUTF16(Heap& heap, const uint16_t* str, uint32_t len);
     static StringHeader* createFromUTF8(Heap& heap, const char* str, uint32_t utf8_len);
     static StringHeader* createFromUTF8(Heap& heap, std::string_view sv);
+    // Immortal, non-moving copy for consumers that must never point into
+    // the movable heap (shape keys, the compiled key-constant table).
+    static StringHeader* internToArena(NonMovingArena& arena, const StringHeader* src);
 
     bool isLatin1() const noexcept { return (flags & kUTF16Flag) == 0; }
     bool isUTF16() const noexcept { return (flags & kUTF16Flag) != 0; }

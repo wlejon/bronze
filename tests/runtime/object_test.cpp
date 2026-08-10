@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <string>
+
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
@@ -48,4 +50,54 @@ TEST_CASE("ObjectHeader property access and inline cache") {
     // Fast path IC hit
     Value res_a_ic = obj.get()->getProp(heap, key_a, &ic_get_a);
     CHECK(res_a_ic.asNumber() == 10.0);
+}
+
+TEST_CASE("properties beyond the inline slots spill to the overflow block") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena));
+    constexpr uint32_t kProps = 12;
+    static_assert(kProps > ObjectHeader::kInlineSlots);
+
+    for (uint32_t i = 0; i < kProps; ++i) {
+        std::string name = "p" + std::to_string(i);
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, name)));
+        Rooted<Value> val(Value::fromDouble(static_cast<double>(i) * 1.5));
+        ObjectHeader* live = obj.get()->setProp(heap, arena, key, val);
+        obj = live;
+    }
+
+    CHECK(obj.get()->overflowCapacity() >= kProps - ObjectHeader::kInlineSlots);
+
+    for (uint32_t i = 0; i < kProps; ++i) {
+        std::string name = "p" + std::to_string(i);
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, name)));
+        Value v = obj.get()->getProp(heap, key);
+        CHECK(v.isNumber());
+        CHECK(v.asNumber() == static_cast<double>(i) * 1.5);
+    }
+
+    // Overwrite one out-of-line property in place (no new transition).
+    {
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "p9")));
+        Rooted<Value> val(Value::fromDouble(-4.25));
+        obj = obj.get()->setProp(heap, arena, key, val);
+        Rooted<Value> key2(Value::fromString(StringHeader::createFromUTF8(heap, "p9")));
+        CHECK(obj.get()->getProp(heap, key2).asNumber() == -4.25);
+    }
+
+    // Rooted string values stored out-of-line survive an explicit collection.
+    {
+        Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "s")));
+        Rooted<Value> val(Value::fromString(StringHeader::createFromUTF8(heap, "spilled")));
+        obj = obj.get()->setProp(heap, arena, key, val);
+        heap.collect();
+        Rooted<Value> key2(Value::fromString(StringHeader::createFromUTF8(heap, "s")));
+        Value v = obj.get()->getProp(heap, key2);
+        REQUIRE(v.isString());
+        CHECK(v.asString<StringHeader>()->length == 7);
+        CHECK(v.asString<StringHeader>()->charCodeAt(0) == 's');
+    }
 }

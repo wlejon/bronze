@@ -21,10 +21,17 @@
 
 namespace bronze::runtime {
 
-static Heap g_heap(64 * 1024 * 1024);
+// Reservation is virtual (commit is on demand), so reserve generously:
+// generated code cannot yet survive a moving collection (its SSA values
+// are unrooted — see docs/0004), so headroom delays that day of reckoning.
+static Heap g_heap(512 * 1024 * 1024);
 static NonMovingArena g_arena;
 static std::vector<std::string> g_keyStrings;
+// The same keys as immortal arena strings: property paths use these
+// directly so a property access allocates nothing.
+static std::vector<StringHeader*> g_keyHeaders;
 static std::vector<InlineCache> g_inlineCaches;
+static const std::string g_emptyKey;
 
 static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
@@ -174,7 +181,20 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity) {
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) {
     Value objVal(objBits);
-    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
+
+    // IC-hit fast path first: a shape match needs no key at all.
+    if (objVal.isObject()) {
+        HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
+        if (fastHdr->flags == 0 && icIndex < g_inlineCaches.size()) {
+            const InlineCache& fastIc = g_inlineCaches[icIndex];
+            auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
+            if (fastIc.cached_shape && fastIc.cached_shape == fastObj->shape) {
+                return fastObj->getSlot(fastIc.cached_slot).rawBits();
+            }
+        }
+    }
+
+    const std::string& keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : g_emptyKey;
 
     if (objVal.isString()) {
         StringHeader* str = objVal.asString<StringHeader>();
@@ -214,8 +234,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
         g_inlineCaches.resize(icIndex + 1);
     }
     InlineCache* ic = &g_inlineCaches[icIndex];
-    StringHeader* propName = StringHeader::createFromUTF8(g_heap, std::string_view(keyStr));
-    Rooted<Value> key(Value::fromString(propName));
+    if (keyIndex >= g_keyHeaders.size() || !g_keyHeaders[keyIndex]) {
+        fatal("property access with an unregistered key index");
+    }
+    // Interned arena key: no allocation on the property path.
+    Rooted<Value> key(Value::fromString(g_keyHeaders[keyIndex]));
     ObjectHeader* obj = objVal.asObject<ObjectHeader>();
     Value result = obj->getProp(g_heap, key, ic);
     return result.rawBits();
@@ -227,7 +250,19 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (!objVal.isObject()) return;
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
+
+    // IC-hit fast path: a shape match writes the slot with no key and no
+    // rooting (nothing below can allocate).
+    if (hdr->flags == 0 && icIndex < g_inlineCaches.size()) {
+        const InlineCache& fastIc = g_inlineCaches[icIndex];
+        auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
+        if (fastIc.cached_shape && fastIc.cached_shape == fastObj->shape) {
+            fastObj->setSlot(fastIc.cached_slot, valVal);
+            return;
+        }
+    }
+
+    const std::string& keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : g_emptyKey;
 
     if (hdr->flags == 1) {
         // Array
@@ -245,8 +280,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         g_inlineCaches.resize(icIndex + 1);
     }
     InlineCache* ic = &g_inlineCaches[icIndex];
-    StringHeader* propName = StringHeader::createFromUTF8(g_heap, std::string_view(keyStr));
-    Rooted<Value> key(Value::fromString(propName));
+    if (keyIndex >= g_keyHeaders.size() || !g_keyHeaders[keyIndex]) {
+        fatal("property write with an unregistered key index");
+    }
+    // Interned arena key: no allocation before the object is dereferenced.
+    // setProp itself may still allocate (overflow growth); it re-derives
+    // the object through its own root, but this caller's objBits raw value
+    // is dead after the call, so that is safe.
+    Rooted<Value> key(Value::fromString(g_keyHeaders[keyIndex]));
     Rooted<Value> val(valVal);
     ObjectHeader* obj = objVal.asObject<ObjectHeader>();
     obj->setProp(g_heap, g_arena, key, val, ic);
@@ -376,8 +417,11 @@ void bronze_print_string(const char* s) {
 void bronze_register_key_string(uint32_t index, const char* str) {
     if (index >= g_keyStrings.size()) {
         g_keyStrings.resize(index + 1);
+        g_keyHeaders.resize(index + 1, nullptr);
     }
     g_keyStrings[index] = str ? str : "";
+    StringHeader* tmp = StringHeader::createFromUTF8(g_heap, std::string_view(g_keyStrings[index]));
+    g_keyHeaders[index] = StringHeader::internToArena(g_arena, tmp);
 }
 
 }  // extern "C"
