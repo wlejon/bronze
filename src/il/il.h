@@ -5,9 +5,11 @@
 
 namespace bronze::il {
 
-// bronze IL: a typed, SSA, mid-level IR. Static layouts are the DEFAULT
-// representation (types come from TS annotations/inference); dynamic values
-// are an explicit, boundary-only type — the inverse of broc's design.
+// bronze IL: a typed, SSA, mid-level IR. Static layouts are used wherever
+// analysis can PROVE them (inference-first; TS annotations are untrusted
+// hints); Dynamic is the explicit fallback type for code the analysis
+// cannot type — wild JS must always compile. The inverse of broc's design,
+// where dynamic was the substrate rather than the fallback.
 //
 // Deliberately tiny today: enough structure to carry lower→codegen work and
 // to pin the canonical text form. Every addition must keep print(parse(x))

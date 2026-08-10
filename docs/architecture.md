@@ -8,7 +8,8 @@ tokens
    │  src/parse    — recursive descent, consumes ALL input or errors
    ▼
 AST (src/ast)      — plain structs + visitor; canonical s-expr dump
-   │  types        — (phase 3) TS annotations/inference → typed layouts
+   │  types        — (phase 3) inference-first: shapes/layouts proven by
+   │                 analysis; TS annotations are untrusted hints when present
    ▼
 IL  (src/il)       — typed SSA, canonical text form; static layouts default,
    │                 `dynamic` type only at declared boundaries

@@ -1,7 +1,10 @@
 # bronze
 
-AOT compiler for typed TypeScript: native code with native data layouts by
-default, dynamic representations only at explicitly declared boundaries.
+AOT compiler for JavaScript — real-world, untyped JS (three.js is the bar).
+Native code with native data layouts wherever analysis can prove them;
+`dynamic` representation where it cannot. TypeScript annotations, when
+present, are optimization hints — never required, never trusted for
+correctness.
 C++ implementation, own typed SSA IL, LLVM backend. Sibling of `bro`
 (engine) and `brokit`.
 

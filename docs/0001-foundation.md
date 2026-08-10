@@ -17,9 +17,12 @@ representation of statically compiled TS.
 
 bronze inverts the defaults:
 
-- **Typed, static representation is the rule.** TS type annotations and
-  inference produce struct layouts and typed IL ops. Untyped/dynamic values
-  are an explicit boundary type (`dynamic` in the IL), not the substrate.
+- **Static representation wherever analysis proves it.** The input is wild
+  JavaScript (three.js must compile — no strictness the ecosystem doesn't
+  have). Shape/type INFERENCE produces struct layouts and typed IL ops; TS
+  annotations, when present, are untrusted hints that seed inference.
+  `dynamic` in the IL is the explicit fallback for what analysis cannot
+  type — the fallback, not the substrate (broc's inversion).
 - **Faster than node is a stated goal**, not a hoped-for side effect.
 - **C++ implementation.** The TS implementation forced an interpreter/eval
   face, node heap ceilings, and a runaway-prone iteration loop.
@@ -34,7 +37,7 @@ bronze inverts the defaults:
 | 1 | Name: `bronze` | bro family; casting metal → finished native form |
 | 2 | Impl language: C++20 | User call; matches bro/brokit house stack |
 | 3 | Build: CMake + vcpkg (pinned baseline), Ninja + clang-cl dev preset | Same as bro; fast iteration |
-| 4 | Source language: typed TypeScript subset, growing | Product goal unchanged: web-stack apps shipped native |
+| 4 | Source language: JavaScript — wild, untyped, real-world (three.js must compile). TS annotations are untrusted optimization hints only | Product goal unchanged: web-stack apps shipped native; no strictness the ecosystem doesn't have |
 | 5 | Own typed SSA IL with canonical text form | Carry broc's proven differential-ratchet discipline |
 | 6 | LLVM as production backend, behind `BRONZE_WITH_LLVM` | Perf goal; heavy dep must never tax daily iteration |
 | 7 | Parser: recursive descent; AST: visitor pattern | User preference; standard, debuggable |
@@ -63,9 +66,10 @@ bronze inverts the defaults:
    `codegen-llvm` implements `Backend::emitObject` for the current IL op
    set; `bronze build main.ts` → exe printing a number. Perf smoke vs node
    from day one.
-3. **Types**: real type expression tree, checker for the subset, TS types →
-   IL types/layouts. The trust/check policy for unsound TS types gets its
-   own numbered doc.
+3. **Types**: inference-first — shape and type analysis over untyped JS
+   producing IL types/layouts, with `dynamic` as the proven-safe fallback;
+   TS annotations consumed as untrusted hints. The hint-trust/verify policy
+   gets its own numbered doc.
 4. **Language growth**: strings (ownership model decision), structs/
    interfaces → layouts, control flow (loops), modules/imports.
 5. **Dynamic boundary**: the `dynamic` type's runtime and the QuickJS

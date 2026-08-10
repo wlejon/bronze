@@ -11,7 +11,7 @@
 namespace {
 
 constexpr const char* kUsage =
-    "bronze — AOT compiler for typed TypeScript (native-first, LLVM backend)\n"
+    "bronze — AOT compiler for JavaScript (native-first, LLVM backend)\n"
     "\n"
     "Usage:\n"
     "  bronze lex <file>     Tokenize and print one token per line\n"
