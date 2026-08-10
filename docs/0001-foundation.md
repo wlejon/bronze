@@ -1,0 +1,83 @@
+# 0001 — Foundation: goals, decisions, and phase plan
+
+Date: 2026-08-10. Status: active.
+
+## Why bronze exists (and why broc was retired)
+
+broc (D:\projects\broc) reached genuine milestones — a self-hosted
+TS-implemented compiler whose native output was byte-identical to its node
+output, all the way to a subset self-compilation fixpoint. But its
+foundation contradicted the product goal: it used QuickJS `JSValue` as the
+universal value representation, so every object/string/property operation
+in compiled output paid dynamic-JS prices. Measured result: ~50x slower
+than node on compiler workloads, with a memory model (refcount + pool
+frames) that pinned ~5x node's live set. QuickJS was wanted for
+*dynamically loaded code* (UI layer); it was never supposed to be the
+representation of statically compiled TS.
+
+bronze inverts the defaults:
+
+- **Typed, static representation is the rule.** TS type annotations and
+  inference produce struct layouts and typed IL ops. Untyped/dynamic values
+  are an explicit boundary type (`dynamic` in the IL), not the substrate.
+- **Faster than node is a stated goal**, not a hoped-for side effect.
+- **C++ implementation.** The TS implementation forced an interpreter/eval
+  face, node heap ceilings, and a runaway-prone iteration loop.
+- **LLVM backend** (constraint lifted 2026-08-10): world-class codegen for
+  free rather than years of hand-rolled optimizer work. Own mid-level IL so
+  the frontend never welds to LLVM.
+
+## Decisions
+
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | Name: `bronze` | bro family; casting metal → finished native form |
+| 2 | Impl language: C++20 | User call; matches bro/brokit house stack |
+| 3 | Build: CMake + vcpkg (pinned baseline), Ninja + clang-cl dev preset | Same as bro; fast iteration |
+| 4 | Source language: typed TypeScript subset, growing | Product goal unchanged: web-stack apps shipped native |
+| 5 | Own typed SSA IL with canonical text form | Carry broc's proven differential-ratchet discipline |
+| 6 | LLVM as production backend, behind `BRONZE_WITH_LLVM` | Perf goal; heavy dep must never tax daily iteration |
+| 7 | Parser: recursive descent; AST: visitor pattern | User preference; standard, debuggable |
+| 8 | Hard errors over silent fallbacks, everywhere | broc lesson: every silent path eventually lied |
+| 9 | Full input consumption enforced in every parser | broc's .form parser silently dropped modules 2..N |
+| 10 | Deterministic output only: no locale, no map-order, `to_chars` floats | broc shipped a localeCompare bug and a map-order bug |
+
+## What carries over from broc (methodology, not code)
+
+- **Differential ratchets**: every stage has a canonical text dump
+  (`ast::dump`, `il::print`) compared byte-for-byte in tests. Ratchet lists
+  only grow.
+- **Scoped tests per module** with one full proof before each commit.
+- **Big-library isolation**: the failure mode where touching anything
+  rebuilt QuickJS/duplicated 60MB MASM assemblies must not recur. LLVM is
+  feature-gated in vcpkg, provisioned once, binary-cached.
+- **Loud boundaries**: unimplemented paths are configure-time or runtime
+  hard errors with instructions, never quiet no-ops.
+
+## Phases
+
+1. **Foundation (this doc, done)**: repo, build, module pattern, lexer,
+   recursive-descent parser for the TS core, AST+visitor+dump, IL model +
+   canonical printer, CLI (`lex`, `parse`), tests per module.
+2. **LLVM provisioning + minimal end-to-end**: vcpkg `llvm` feature build;
+   `codegen-llvm` implements `Backend::emitObject` for the current IL op
+   set; `bronze build main.ts` → exe printing a number. Perf smoke vs node
+   from day one.
+3. **Types**: real type expression tree, checker for the subset, TS types →
+   IL types/layouts. The trust/check policy for unsound TS types gets its
+   own numbered doc.
+4. **Language growth**: strings (ownership model decision), structs/
+   interfaces → layouts, control flow (loops), modules/imports.
+5. **Dynamic boundary**: the `dynamic` type's runtime and the QuickJS
+   interop seam for hot-loaded UI code — as a boundary module, never as the
+   default representation.
+
+## Provisioning LLVM (phase 2, one-time)
+
+```
+D:\vcpkg\vcpkg install --triplet x64-windows --x-feature=llvm
+```
+
+Expect hours of build time and significant disk; it is cached afterwards.
+Then configure with `-DBRONZE_WITH_LLVM=ON`. Never make the default build
+depend on it.

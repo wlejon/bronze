@@ -1,0 +1,5 @@
+add_executable(bronze main.cpp)
+target_link_libraries(bronze PRIVATE bronze::parse bronze::lex bronze::ast bronze::support)
+if(MSVC)
+    target_compile_options(bronze PRIVATE /W4 /WX /permissive-)
+endif()

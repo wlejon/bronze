@@ -1,0 +1,21 @@
+{
+  "$comment": "builtin-baseline pins every port to the versions at that microsoft/vcpkg commit (same commit bro pins) so builds are reproducible. Default install is SMALL — heavyweight deps live behind features so day-to-day configure/build never rebuilds them by accident. LLVM: `cmake --preset dev -DBRONZE_WITH_LLVM=ON` after provisioning with `vcpkg install --x-feature=llvm` (one-time, hours; cached afterwards).",
+  "name": "bronze",
+  "version": "0.1.0",
+  "builtin-baseline": "0b88aacde46a853151730fbe7d0b7ee45f4b6864",
+  "dependencies": [
+    "doctest"
+  ],
+  "features": {
+    "llvm": {
+      "description": "LLVM backend for bronze_codegen_llvm (BRONZE_WITH_LLVM=ON)",
+      "dependencies": [
+        {
+          "name": "llvm",
+          "default-features": false,
+          "features": ["target-x86"]
+        }
+      ]
+    }
+  }
+}
