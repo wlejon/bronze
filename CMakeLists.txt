@@ -21,16 +21,17 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
+option(BRONZE_WITH_LLVM "Build the LLVM codegen backend" OFF)
+if(BRONZE_WITH_LLVM)
+    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows")
+    set(LLVM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm" CACHE PATH "")
+endif()
+
 project(bronze VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Heavy dependencies are OPT-IN so the default configure/build/test loop
-# never touches them. BRONZE_WITH_LLVM requires the vcpkg 'llvm' feature to
-# have been provisioned (see vcpkg.json / docs/0001-foundation.md).
-option(BRONZE_WITH_LLVM "Build the LLVM codegen backend" OFF)
 
 include(cmake/bronze_module.cmake)
 
@@ -47,4 +48,5 @@ add_subdirectory(src/codegen)
 if(BRONZE_WITH_LLVM)
     add_subdirectory(src/codegen-llvm)
 endif()
+add_subdirectory(src/rt)
 add_subdirectory(src/cli)

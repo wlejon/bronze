@@ -1,8 +1,18 @@
-# LLVM backend — lands in foundation phase 2 (docs/0001-foundation.md).
-# The gate exists now so the build graph and provisioning workflow are
-# settled before the heavy dependency arrives. Enabling the option before
-# the backend exists is a loud configure error, not a stub.
-message(FATAL_ERROR
-    "BRONZE_WITH_LLVM=ON but src/codegen-llvm is not implemented yet. "
-    "Provision LLVM first (vcpkg install --x-feature=llvm, one-time build), "
-    "then implement Backend::emitObject here. See docs/0001-foundation.md phase 2.")
+find_package(LLVM CONFIG REQUIRED)
+
+llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target x86codegen x86asmparser passes)
+
+bronze_add_module(codegen_llvm
+    SOURCES
+        llvm_backend.cpp
+    DEPS
+        codegen
+        il
+        support
+    TEST_SOURCES
+        ../../tests/codegen_llvm/codegen_llvm_test.cpp
+)
+
+target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(bronze_codegen_llvm PUBLIC ${LLVM_DEFINITIONS})
+target_link_libraries(bronze_codegen_llvm PUBLIC ${llvm_libs})
