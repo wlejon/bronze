@@ -78,8 +78,30 @@ public:
         });
         emit(")");
     }
+    void visit(const BoolLit& n) override { emit(std::string("(bool ") + (n.value ? "true" : "false") + ")"); }
+    void visit(const NullLit&) override { emit("(null)"); }
+    void visit(const UndefinedLit&) override { emit("(undefined)"); }
+    void visit(const Unary& n) override {
+        emit(std::string("(unary ") + unaryOpName(n.op));
+        indented([&] { n.operand->accept(*this); });
+        emit(")");
+    }
+    void visit(const Ternary& n) override {
+        emit("(ternary");
+        indented([&] {
+            n.condition->accept(*this);
+            n.thenExpr->accept(*this);
+            n.elseExpr->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const BlockStmt& n) override {
+        emit("(block");
+        indented([&] { for (const auto& s : n.stmts) s->accept(*this); });
+        emit(")");
+    }
     void visit(const VarDecl& n) override {
-        std::string head = std::string("(") + (n.isConst ? "const " : "let ") + n.name;
+        std::string head = std::string("(") + (n.isConst ? "const " : n.isVar ? "var " : "let ") + n.name;
         if (!n.typeAnnotation.empty()) head += ": " + n.typeAnnotation;
         emit(head);
         if (n.init) {
@@ -116,6 +138,39 @@ public:
         });
         emit(")");
     }
+    void visit(const WhileStmt& n) override {
+        emit("(while");
+        indented([&] {
+            n.condition->accept(*this);
+            for (const auto& s : n.body) s->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const DoWhileStmt& n) override {
+        emit("(do-while");
+        indented([&] {
+            for (const auto& s : n.body) s->accept(*this);
+            n.condition->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const ForStmt& n) override {
+        emit("(for");
+        indented([&] {
+            if (n.init) n.init->accept(*this);
+            if (n.condition) n.condition->accept(*this);
+            if (n.update) n.update->accept(*this);
+            for (const auto& s : n.body) s->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const BreakStmt& n) override { emit("(break" + (n.label.empty() ? "" : " " + n.label) + ")"); }
+    void visit(const ContinueStmt& n) override { emit("(continue" + (n.label.empty() ? "" : " " + n.label) + ")"); }
+    void visit(const SwitchStmt&) override { emit("(switch)"); }
+    void visit(const ForInStmt&) override { emit("(for-in)"); }
+    void visit(const ForOfStmt&) override { emit("(for-of)"); }
+    void visit(const TryStmt&) override { emit("(try)"); }
+    void visit(const ThrowStmt&) override { emit("(throw)"); }
     void visit(const FunctionDecl& n) override {
         std::string head = "(function " + n.name + " (";
         for (size_t i = 0; i < n.params.size(); ++i) {

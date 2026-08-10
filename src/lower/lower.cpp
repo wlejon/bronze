@@ -1,6 +1,12 @@
 #include "lower/lower.h"
 
+#include <algorithm>
+#include <limits>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "lower/assigned_set.h"
 
 namespace bronze::lower {
 namespace {
@@ -75,15 +81,16 @@ public:
             mainFn.returnType = il::Type::Void;
             mainFn.valueCount = 0;
             mainFn.blocks.push_back(il::Block{.id = 0});
+            currentBlockIdx_ = 0;
             if (!lowerStmtList(topLevelStmts, mainFn)) {
                 return std::nullopt;
             }
-            auto& insts = mainFn.blocks.back().instructions;
+            auto& insts = mainFn.blocks[currentBlockIdx_].instructions;
             if (insts.empty() || !il::isTerminator(insts.back().op)) {
                 il::Instruction retInst;
                 retInst.op = il::Op::Ret;
                 retInst.type = il::Type::Void;
-                insts.push_back(retInst);
+                emitInst(mainFn, retInst);
             }
             ilModule_.functions.push_back(std::move(mainFn));
         }
@@ -109,6 +116,32 @@ private:
         il::Type type;
     };
 
+    struct VarBinding {
+        std::string name;
+        il::Type type = il::Type::Dynamic;
+        bool isConst = false;
+        bool isLet = false;
+        bool isVar = false;
+        bool isInitialized = true;
+        uint32_t declOrder = 0;
+        size_t scopeDepth = 0;
+        il::ValueId valueId = il::kNoValue;
+    };
+
+    struct LoopContext {
+        il::BlockId headerBlock = il::kNoBlock;
+        il::BlockId updateBlock = il::kNoBlock;
+        il::BlockId exitBlock = il::kNoBlock;
+        std::vector<std::string> loopVars;
+    };
+
+    std::vector<VarBinding> varBindings_;
+    std::unordered_map<std::string, size_t> activeVarMap_;
+    size_t currentScopeDepth_ = 0;
+    uint32_t varDeclCounter_ = 0;
+    std::vector<LoopContext> loopStack_;
+    size_t currentBlockIdx_ = 0;
+
     uint32_t getKeyConstantIndex(const std::string& key) {
         auto it = keyConstants_.find(key);
         if (it != keyConstants_.end()) return it->second;
@@ -117,11 +150,27 @@ private:
         return idx;
     }
 
+    il::BlockId createBlock(il::Function& ilFn) {
+        il::BlockId id = static_cast<il::BlockId>(ilFn.blocks.size());
+        ilFn.blocks.push_back(il::Block{.id = id});
+        return id;
+    }
+
+    void setCurrentBlock(size_t blockIdx) {
+        currentBlockIdx_ = blockIdx;
+    }
+
     void emitInst(il::Function& ilFn, const il::Instruction& inst) {
-        if (ilFn.blocks.empty()) {
-            ilFn.blocks.push_back(il::Block{.id = 0});
+        if (currentBlockIdx_ >= ilFn.blocks.size()) {
+            ilFn.blocks.push_back(il::Block{.id = static_cast<il::BlockId>(currentBlockIdx_)});
         }
-        ilFn.blocks.back().instructions.push_back(inst);
+        ilFn.blocks[currentBlockIdx_].instructions.push_back(inst);
+    }
+
+    bool currentBlockIsTerminated(const il::Function& ilFn) const {
+        if (currentBlockIdx_ >= ilFn.blocks.size()) return false;
+        const auto& insts = ilFn.blocks[currentBlockIdx_].instructions;
+        return !insts.empty() && il::isTerminator(insts.back().op);
     }
 
     Value boxValueIfNeeded(Value val, il::Function& ilFn) {
@@ -139,6 +188,10 @@ private:
 
     Value unboxValueIfNeeded(Value val, il::Type targetType, il::Function& ilFn) {
         if (val.type == targetType) return val;
+        if (val.type == il::Type::Bool && targetType == il::Type::F64) {
+            // ToNumber(bool) — route through the boxed form.
+            val = boxValueIfNeeded(val, ilFn);
+        }
         if (val.type == il::Type::Dynamic) {
             il::ValueId res = ilFn.valueCount++;
             il::Instruction inst;
@@ -149,68 +202,281 @@ private:
             emitInst(ilFn, inst);
             return Value{res, targetType};
         }
+        diags_.error(Span{}, std::string("cannot convert ") + il::typeName(val.type) + " to " +
+                                 il::typeName(targetType));
         return val;
     }
 
-    bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
+    // Conform a value flowing along a branch edge to the target block
+    // parameter's type. Box into dynamic params; unbox out of dynamic
+    // values (runtime-checked); anything else is a type conflict.
+    Value coerceToType(Value val, il::Type target, il::Function& ilFn) {
+        if (val.type == target) return val;
+        if (target == il::Type::Dynamic) return boxValueIfNeeded(val, ilFn);
+        return unboxValueIfNeeded(val, target, ilFn);
+    }
+
+    // Current values of the given variables, coerced (in the current block)
+    // to the target block's parameter types, in parameter order.
+    std::vector<il::ValueId> collectEdgeArgs(const std::vector<std::string>& vars,
+                                             il::BlockId target, il::Function& ilFn) {
+        std::vector<il::ValueId> args;
+        for (size_t i = 0; i < vars.size(); ++i) {
+            const auto& b = varBindings_[activeVarMap_[vars[i]]];
+            args.push_back(coerceToType(Value{b.valueId, b.type},
+                                        ilFn.blocks[target].params[i].type, ilFn).id);
+        }
+        return args;
+    }
+
+    std::vector<std::string> getActiveVarsInDeclOrder() const {
+        std::vector<const VarBinding*> active;
+        for (const auto& entry : activeVarMap_) {
+            active.push_back(&varBindings_[entry.second]);
+        }
+        std::sort(active.begin(), active.end(), [](const VarBinding* a, const VarBinding* b) {
+            return a->declOrder < b->declOrder;
+        });
+        std::vector<std::string> names;
+        for (const auto* b : active) {
+            names.push_back(b->name);
+        }
+        return names;
+    }
+
+    bool declareVariable(const std::string& name, il::Type type, bool isConst, bool isLet, bool isVar,
+                         bool isInitialized, il::ValueId valId, Span span) {
+        auto it = activeVarMap_.find(name);
+        if (it != activeVarMap_.end()) {
+            const auto& existing = varBindings_[it->second];
+            if (existing.scopeDepth == currentScopeDepth_ && !isVar) {
+                diags_.error(span, "redeclaration of variable '" + name + "' in same scope");
+                return false;
+            }
+        }
+        VarBinding b;
+        b.name = name;
+        b.type = type;
+        b.isConst = isConst;
+        b.isLet = isLet;
+        b.isVar = isVar;
+        b.isInitialized = isInitialized;
+        b.declOrder = varDeclCounter_++;
+        b.scopeDepth = currentScopeDepth_;
+        b.valueId = valId;
+
+        size_t idx = varBindings_.size();
+        varBindings_.push_back(b);
+        activeVarMap_[name] = idx;
+        return true;
+    }
+
+    void enterScope() {
+        currentScopeDepth_++;
+    }
+
+    void exitScope() {
+        std::vector<std::string> toRemove;
+        for (const auto& entry : activeVarMap_) {
+            if (varBindings_[entry.second].scopeDepth == currentScopeDepth_ && !varBindings_[entry.second].isVar) {
+                toRemove.push_back(entry.first);
+            }
+        }
+        for (const auto& name : toRemove) {
+            activeVarMap_.erase(name);
+        }
+        currentScopeDepth_--;
+    }
+
+    Value lowerCondition(const ast::Expr& expr, il::Function& ilFn) {
+        auto valOpt = lowerExpr(expr, ilFn);
+        if (!valOpt) return Value{il::kNoValue, il::Type::Bool};
+        return lowerConditionFromVal(*valOpt, ilFn);
+    }
+
+    Value lowerConditionFromVal(Value val, il::Function& ilFn) {
+        if (val.type == il::Type::Bool) return val;
+        if (val.type == il::Type::F64) {
+            il::ValueId zeroRes = ilFn.valueCount++;
+            il::Instruction zeroInst;
+            zeroInst.op = il::Op::ConstF64;
+            zeroInst.type = il::Type::F64;
+            zeroInst.result = zeroRes;
+            zeroInst.immF64 = 0.0;
+            emitInst(ilFn, zeroInst);
+
+            il::ValueId cmpRes = ilFn.valueCount++;
+            il::Instruction cmpInst;
+            cmpInst.op = il::Op::CmpNe;
+            cmpInst.type = il::Type::Bool;
+            cmpInst.result = cmpRes;
+            cmpInst.operands = {val.id, zeroRes};
+            emitInst(ilFn, cmpInst);
+            return Value{cmpRes, il::Type::Bool};
+        }
+        if (val.type == il::Type::I32) {
+            il::ValueId zeroRes = ilFn.valueCount++;
+            il::Instruction zeroInst;
+            zeroInst.op = il::Op::ConstI32;
+            zeroInst.type = il::Type::I32;
+            zeroInst.result = zeroRes;
+            zeroInst.immI32 = 0;
+            emitInst(ilFn, zeroInst);
+
+            il::ValueId cmpRes = ilFn.valueCount++;
+            il::Instruction cmpInst;
+            cmpInst.op = il::Op::CmpNe;
+            cmpInst.type = il::Type::Bool;
+            cmpInst.result = cmpRes;
+            cmpInst.operands = {val.id, zeroRes};
+            emitInst(ilFn, cmpInst);
+            return Value{cmpRes, il::Type::Bool};
+        }
+        // Dynamic
+        return unboxValueIfNeeded(val, il::Type::Bool, ilFn);
+    }
+
+    bool lowerFunctionBody(const std::string& name, const std::vector<ast::Param>& params,
+                           const std::string& returnTypeAnnotation, const std::vector<ast::StmtPtr>& body,
+                           il::Function& ilFn) {
+        (void)name;
+        (void)returnTypeAnnotation;
         ilFn.blocks.push_back(il::Block{.id = 0});
-        std::unordered_map<std::string, Value> env;
-        for (uint32_t i = 0; i < fnDecl.params.size(); ++i) {
-            env[fnDecl.params[i].name] = {i, ilFn.params[i].type};
+        currentBlockIdx_ = 0;
+        varBindings_.clear();
+        activeVarMap_.clear();
+        currentScopeDepth_ = 0;
+        varDeclCounter_ = 0;
+        loopStack_.clear();
+
+        for (uint32_t i = 0; i < params.size(); ++i) {
+            declareVariable(params[i].name, ilFn.params[i].type, /*isConst=*/false,
+                            /*isLet=*/false, /*isVar=*/false, /*isInitialized=*/true, i, Span{});
         }
+
         std::vector<const ast::Stmt*> stmts;
-        for (const auto& s : fnDecl.body) {
-            stmts.push_back(s.get());
-        }
-        if (!lowerStmtList(stmts, ilFn, &env)) return false;
-        auto& insts = ilFn.blocks.back().instructions;
-        if (insts.empty() || !il::isTerminator(insts.back().op)) {
-            il::Instruction retInst;
-            retInst.op = il::Op::Ret;
-            retInst.type = ilFn.returnType;
-            insts.push_back(retInst);
+        for (const auto& s : body) stmts.push_back(s.get());
+        if (!lowerStmtList(stmts, ilFn)) return false;
+
+        if (!currentBlockIsTerminated(ilFn)) {
+            if (currentBlockIdx_ < ilFn.blocks.size()) {
+                // A tail block no edge targets (e.g. the join of an if whose
+                // arms both return) is unreachable; give it any well-typed
+                // ret. A reachable tail means the function can actually fall
+                // off the end, which yields undefined.
+                bool reachable = currentBlockIdx_ == 0;
+                for (const auto& block : ilFn.blocks) {
+                    for (const auto& inst : block.instructions) {
+                        if (inst.op == il::Op::Jump || inst.op == il::Op::Branch) {
+                            if (inst.target.block == currentBlockIdx_ ||
+                                (inst.op == il::Op::Branch && inst.elseTarget.block == currentBlockIdx_)) {
+                                reachable = true;
+                            }
+                        }
+                    }
+                }
+
+                il::Instruction retInst;
+                retInst.op = il::Op::Ret;
+                if (ilFn.returnType == il::Type::Void) {
+                    retInst.type = il::Type::Void;
+                } else if (ilFn.returnType == il::Type::Dynamic ||
+                           (!reachable && ilFn.returnType != il::Type::Str)) {
+                    Value retVal{il::kNoValue, il::Type::Void};
+                    if (ilFn.returnType == il::Type::Dynamic) {
+                        il::ValueId undefVal = ilFn.valueCount++;
+                        il::Instruction constInst;
+                        constInst.op = il::Op::ConstUndefined;
+                        constInst.type = il::Type::Dynamic;
+                        constInst.result = undefVal;
+                        emitInst(ilFn, constInst);
+                        retVal = Value{undefVal, il::Type::Dynamic};
+                    } else {
+                        il::ValueId dummyVal = ilFn.valueCount++;
+                        il::Instruction constInst;
+                        constInst.op = ilFn.returnType == il::Type::Bool ? il::Op::ConstBool
+                                       : ilFn.returnType == il::Type::I32 ? il::Op::ConstI32
+                                                                          : il::Op::ConstF64;
+                        constInst.type = ilFn.returnType;
+                        constInst.result = dummyVal;
+                        emitInst(ilFn, constInst);
+                        retVal = Value{dummyVal, ilFn.returnType};
+                    }
+                    retInst.type = retVal.type;
+                    retInst.operands = {retVal.id};
+                } else {
+                    diags_.error(Span{}, "function " + ilFn.name +
+                                             " can fall off the end but returns typed " +
+                                             il::typeName(ilFn.returnType) +
+                                             "; falling off yields undefined");
+                    return false;
+                }
+                emitInst(ilFn, retInst);
+            }
         }
         return true;
     }
 
-    bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn,
-                       std::unordered_map<std::string, Value>* parentEnv = nullptr) {
-        std::unordered_map<std::string, Value> env;
-        if (parentEnv) env = *parentEnv;
+    bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
+        return lowerFunctionBody(fnDecl.name, fnDecl.params, fnDecl.returnType, fnDecl.body, ilFn);
+    }
 
+    bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn) {
         for (const auto* stmt : stmts) {
-            if (!lowerStmt(*stmt, ilFn, env)) {
-                return false;
-            }
+            if (!lowerStmt(*stmt, ilFn)) return false;
         }
         return true;
     }
 
-    bool lowerStmt(const ast::Stmt& stmt, il::Function& ilFn, std::unordered_map<std::string, Value>& env) {
-        if (const auto* varDecl = dynamic_cast<const ast::VarDecl*>(&stmt)) {
-            if (!varDecl->init) {
-                diags_.error(varDecl->span, "variable declaration missing initializer");
-                return false;
-            }
-            auto initVal = lowerExpr(*varDecl->init, ilFn, env);
-            if (!initVal) return false;
+    bool lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
+        if (const auto* blockStmt = dynamic_cast<const ast::BlockStmt*>(&stmt)) {
+            enterScope();
+            std::vector<const ast::Stmt*> stmts;
+            for (const auto& s : blockStmt->stmts) stmts.push_back(s.get());
+            if (!lowerStmtList(stmts, ilFn)) return false;
+            exitScope();
+            return true;
+        }
 
-            if (!varDecl->typeAnnotation.empty()) {
-                auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
-                if (!annType) return false;
-                if (*annType == il::Type::Dynamic && initVal->type != il::Type::Dynamic) {
-                    initVal = boxValueIfNeeded(*initVal, ilFn);
-                } else if (*annType != il::Type::Dynamic && initVal->type == il::Type::Dynamic) {
-                    initVal = unboxValueIfNeeded(*initVal, *annType, ilFn);
+        if (const auto* varDecl = dynamic_cast<const ast::VarDecl*>(&stmt)) {
+            il::ValueId initId = il::kNoValue;
+            il::Type declType = il::Type::Dynamic;
+
+            if (varDecl->init) {
+                auto initVal = lowerExpr(*varDecl->init, ilFn);
+                if (!initVal) return false;
+                declType = initVal->type;
+
+                if (!varDecl->typeAnnotation.empty()) {
+                    auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
+                    if (!annType) return false;
+                    if (*annType == il::Type::Dynamic && initVal->type != il::Type::Dynamic) {
+                        initVal = boxValueIfNeeded(*initVal, ilFn);
+                    } else if (*annType != il::Type::Dynamic && initVal->type == il::Type::Dynamic) {
+                        initVal = unboxValueIfNeeded(*initVal, *annType, ilFn);
+                    }
+                    declType = *annType;
+                }
+                initId = initVal->id;
+            } else {
+                if (!varDecl->typeAnnotation.empty()) {
+                    auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
+                    if (!annType) return false;
+                    declType = *annType;
                 }
             }
-            env[varDecl->name] = *initVal;
-            return true;
+
+            bool isConst = varDecl->isConst;
+            bool isVar = varDecl->isVar;
+            bool isLet = !isConst && !isVar;
+            bool isInitialized = varDecl->init != nullptr;
+
+            return declareVariable(varDecl->name, declType, isConst, isLet, isVar, isInitialized, initId, varDecl->span);
         }
 
         if (const auto* retStmt = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
             if (retStmt->value) {
-                auto val = lowerExpr(*retStmt->value, ilFn, env);
+                auto val = lowerExpr(*retStmt->value, ilFn);
                 if (!val) return false;
 
                 if (ilFn.returnType == il::Type::Void) {
@@ -238,13 +504,563 @@ private:
         }
 
         if (const auto* exprStmt = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
-            auto val = lowerExpr(*exprStmt->expr, ilFn, env);
+            auto val = lowerExpr(*exprStmt->expr, ilFn);
             if (!val) return false;
             return true;
         }
 
         if (const auto* ifStmt = dynamic_cast<const ast::IfStmt*>(&stmt)) {
-            diags_.error(ifStmt->span, "unsupported AST node: IfStmt");
+            Value condVal = lowerCondition(*ifStmt->condition, ilFn);
+            if (condVal.id == il::kNoValue) return false;
+
+            il::BlockId bThen = createBlock(ilFn);
+            il::BlockId bElse = createBlock(ilFn);
+            il::BlockId bJoin = createBlock(ilFn);
+
+            auto envBefore = activeVarMap_;
+            size_t entryBlockIdx = currentBlockIdx_;
+
+            // Assignments rebind varBindings_ entries in place, so each arm
+            // must start from a value snapshot of the pre-if state, and the
+            // join must compare snapshots, not the (shared) live slots.
+            struct VarState {
+                il::ValueId valueId;
+                il::Type type;
+            };
+            auto snapshot = [&]() {
+                std::unordered_map<std::string, VarState> snap;
+                for (const auto& [name, idx] : envBefore) {
+                    snap[name] = VarState{varBindings_[idx].valueId, varBindings_[idx].type};
+                }
+                return snap;
+            };
+            auto restore = [&](const std::unordered_map<std::string, VarState>& snap) {
+                for (const auto& [name, idx] : envBefore) {
+                    varBindings_[idx].valueId = snap.at(name).valueId;
+                    varBindings_[idx].type = snap.at(name).type;
+                }
+            };
+            auto stateBefore = snapshot();
+
+            // Then branch
+            setCurrentBlock(bThen);
+            enterScope();
+            std::vector<const ast::Stmt*> thenStmts;
+            for (const auto& s : ifStmt->thenBody) thenStmts.push_back(s.get());
+            if (!lowerStmtList(thenStmts, ilFn)) return false;
+            exitScope();
+            auto stateThenEnd = snapshot();
+            bool thenReaches = !currentBlockIsTerminated(ilFn);
+            size_t thenEndBlockIdx = currentBlockIdx_;
+
+            // Else branch, from the pre-if state
+            activeVarMap_ = envBefore;
+            restore(stateBefore);
+            setCurrentBlock(bElse);
+            enterScope();
+            std::vector<const ast::Stmt*> elseStmts;
+            for (const auto& s : ifStmt->elseBody) elseStmts.push_back(s.get());
+            if (!lowerStmtList(elseStmts, ilFn)) return false;
+            exitScope();
+            auto stateElseEnd = snapshot();
+            bool elseReaches = !currentBlockIsTerminated(ilFn);
+            size_t elseEndBlockIdx = currentBlockIdx_;
+
+            // Emit branch instruction in entry block
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condVal.id};
+            brInst.target = il::BlockTarget{.block = bThen, .args = {}};
+            brInst.elseTarget = il::BlockTarget{.block = bElse, .args = {}};
+            ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+            activeVarMap_ = envBefore;
+
+            if (!thenReaches && !elseReaches) {
+                // Both arms terminated; bJoin stays as the (unreachable)
+                // continuation so later statements have a home.
+                restore(stateBefore);
+                setCurrentBlock(bJoin);
+                return true;
+            }
+
+            if (thenReaches != elseReaches) {
+                // Single live edge: no join parameters, the reachable arm's
+                // values flow through directly.
+                const auto& liveState = thenReaches ? stateThenEnd : stateElseEnd;
+                setCurrentBlock(thenReaches ? thenEndBlockIdx : elseEndBlockIdx);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = {}};
+                emitInst(ilFn, jmpInst);
+                restore(liveState);
+                setCurrentBlock(bJoin);
+                return true;
+            }
+
+            // Both arms reach: join parameters for every variable whose value
+            // differs between the arms; param type unifies the arm types
+            // (boxing to dynamic on disagreement).
+            std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+            std::vector<std::string> joinVars;
+            for (const auto& name : activeNames) {
+                if (stateThenEnd.at(name).valueId != stateElseEnd.at(name).valueId) {
+                    joinVars.push_back(name);
+                }
+            }
+
+            std::unordered_map<std::string, il::ValueId> joinParamMap;
+            std::unordered_map<std::string, il::Type> joinParamType;
+            for (const auto& name : joinVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type tThen = stateThenEnd.at(name).type;
+                il::Type tElse = stateElseEnd.at(name).type;
+                il::Type pType = (tThen == tElse) ? tThen : il::Type::Dynamic;
+                ilFn.blocks[bJoin].params.push_back({pId, pType});
+                joinParamMap[name] = pId;
+                joinParamType[name] = pType;
+            }
+
+            auto emitJoinEdge = [&](size_t endBlockIdx,
+                                    const std::unordered_map<std::string, VarState>& state) {
+                setCurrentBlock(endBlockIdx);
+                std::vector<il::ValueId> args;
+                for (const auto& name : joinVars) {
+                    Value v{state.at(name).valueId, state.at(name).type};
+                    args.push_back(coerceToType(v, joinParamType[name], ilFn).id);
+                }
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
+                emitInst(ilFn, jmpInst);
+            };
+            emitJoinEdge(thenEndBlockIdx, stateThenEnd);
+            emitJoinEdge(elseEndBlockIdx, stateElseEnd);
+
+            setCurrentBlock(bJoin);
+            restore(stateThenEnd);
+            for (const auto& name : joinVars) {
+                varBindings_[activeVarMap_[name]].valueId = joinParamMap[name];
+                varBindings_[activeVarMap_[name]].type = joinParamType[name];
+            }
+            return true;
+        }
+
+        if (const auto* whileStmt = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
+            auto assignedSet = getAssignedVariables(*whileStmt);
+            std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+            std::vector<std::string> loopVars;
+            for (const auto& name : activeNames) {
+                if (assignedSet.contains(name)) {
+                    loopVars.push_back(name);
+                }
+            }
+
+            il::BlockId bHeader = createBlock(ilFn);
+            il::BlockId bBody = createBlock(ilFn);
+            il::BlockId bExit = createBlock(ilFn);
+
+            // Jump to header from current block
+            il::Instruction jmpEntry;
+            jmpEntry.op = il::Op::Jump;
+            jmpEntry.type = il::Type::Void;
+            jmpEntry.result = il::kNoValue;
+            std::vector<il::ValueId> entryArgs;
+            for (const auto& name : loopVars) {
+                entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
+            }
+            jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+            emitInst(ilFn, jmpEntry);
+
+            // Header params
+            il::Block& headerBlock = ilFn.blocks[bHeader];
+            std::unordered_map<std::string, il::ValueId> headerParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                headerBlock.params.push_back({pId, vType});
+                headerParamMap[name] = pId;
+            }
+
+            setCurrentBlock(bHeader);
+            for (const auto& name : loopVars) {
+                varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
+            }
+
+            Value condVal = lowerCondition(*whileStmt->condition, ilFn);
+
+            // Exit params
+            il::Block& exitBlock = ilFn.blocks[bExit];
+            std::unordered_map<std::string, il::ValueId> exitParamMap;
+            std::vector<il::ValueId> headerExitArgs;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                exitBlock.params.push_back({pId, vType});
+                exitParamMap[name] = pId;
+                headerExitArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
+            }
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condVal.id};
+            brInst.target = il::BlockTarget{.block = bBody, .args = {}};
+            brInst.elseTarget = il::BlockTarget{.block = bExit, .args = std::move(headerExitArgs)};
+            emitInst(ilFn, brInst);
+
+            // Body
+            setCurrentBlock(bBody);
+            loopStack_.push_back(LoopContext{bHeader, bHeader, bExit, loopVars});
+            enterScope();
+            std::vector<const ast::Stmt*> bodyStmts;
+            for (const auto& s : whileStmt->body) bodyStmts.push_back(s.get());
+            if (!lowerStmtList(bodyStmts, ilFn)) return false;
+            exitScope();
+            loopStack_.pop_back();
+
+            if (!currentBlockIsTerminated(ilFn)) {
+                il::Instruction backJmp;
+                backJmp.op = il::Op::Jump;
+                backJmp.type = il::Type::Void;
+                backJmp.result = il::kNoValue;
+                backJmp.target = il::BlockTarget{
+                    .block = bHeader,
+                    .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
+                emitInst(ilFn, backJmp);
+            }
+
+            setCurrentBlock(bExit);
+            for (size_t i = 0; i < loopVars.size(); ++i) {
+                auto& b = varBindings_[activeVarMap_[loopVars[i]]];
+                b.valueId = exitParamMap[loopVars[i]];
+                b.type = ilFn.blocks[bExit].params[i].type;
+            }
+            return true;
+        }
+
+        if (const auto* doWhileStmt = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
+            auto assignedSet = getAssignedVariables(*doWhileStmt);
+            std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+            std::vector<std::string> loopVars;
+            for (const auto& name : activeNames) {
+                if (assignedSet.contains(name)) {
+                    loopVars.push_back(name);
+                }
+            }
+
+            il::BlockId bHeader = createBlock(ilFn);
+            il::BlockId bCond = createBlock(ilFn);
+            il::BlockId bExit = createBlock(ilFn);
+
+            // Entry jump
+            il::Instruction jmpEntry;
+            jmpEntry.op = il::Op::Jump;
+            jmpEntry.type = il::Type::Void;
+            jmpEntry.result = il::kNoValue;
+            std::vector<il::ValueId> entryArgs;
+            for (const auto& name : loopVars) {
+                entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
+            }
+            jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+            emitInst(ilFn, jmpEntry);
+
+            // Header params
+            il::Block& headerBlock = ilFn.blocks[bHeader];
+            std::unordered_map<std::string, il::ValueId> headerParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                headerBlock.params.push_back({pId, vType});
+                headerParamMap[name] = pId;
+            }
+
+            setCurrentBlock(bHeader);
+            for (const auto& name : loopVars) {
+                varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
+            }
+
+            // Exit params
+            il::Block& exitBlock = ilFn.blocks[bExit];
+            std::unordered_map<std::string, il::ValueId> exitParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                exitBlock.params.push_back({pId, vType});
+                exitParamMap[name] = pId;
+            }
+
+            // The condition block joins the body fall-through and continue
+            // edges, so it takes the loop variables as parameters.
+            std::unordered_map<std::string, il::ValueId> condParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                ilFn.blocks[bCond].params.push_back({pId, vType});
+                condParamMap[name] = pId;
+            }
+
+            loopStack_.push_back(LoopContext{bHeader, bCond, bExit, loopVars});
+            enterScope();
+            std::vector<const ast::Stmt*> bodyStmts;
+            for (const auto& s : doWhileStmt->body) bodyStmts.push_back(s.get());
+            if (!lowerStmtList(bodyStmts, ilFn)) return false;
+            exitScope();
+            loopStack_.pop_back();
+
+            if (!currentBlockIsTerminated(ilFn)) {
+                il::Instruction toCond;
+                toCond.op = il::Op::Jump;
+                toCond.type = il::Type::Void;
+                toCond.result = il::kNoValue;
+                toCond.target = il::BlockTarget{
+                    .block = bCond, .args = collectEdgeArgs(loopVars, bCond, ilFn)};
+                emitInst(ilFn, toCond);
+            }
+
+            setCurrentBlock(bCond);
+            for (size_t i = 0; i < loopVars.size(); ++i) {
+                auto& b = varBindings_[activeVarMap_[loopVars[i]]];
+                b.valueId = condParamMap[loopVars[i]];
+                b.type = ilFn.blocks[bCond].params[i].type;
+            }
+            Value condVal = lowerCondition(*doWhileStmt->condition, ilFn);
+
+            std::vector<il::ValueId> condBackArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
+            std::vector<il::ValueId> condExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condVal.id};
+            brInst.target = il::BlockTarget{.block = bHeader, .args = std::move(condBackArgs)};
+            brInst.elseTarget = il::BlockTarget{.block = bExit, .args = std::move(condExitArgs)};
+            emitInst(ilFn, brInst);
+
+            setCurrentBlock(bExit);
+            for (size_t i = 0; i < loopVars.size(); ++i) {
+                auto& b = varBindings_[activeVarMap_[loopVars[i]]];
+                b.valueId = exitParamMap[loopVars[i]];
+                b.type = ilFn.blocks[bExit].params[i].type;
+            }
+            return true;
+        }
+
+        if (const auto* forStmt = dynamic_cast<const ast::ForStmt*>(&stmt)) {
+            enterScope();
+            if (forStmt->init) {
+                if (!lowerStmt(*forStmt->init, ilFn)) return false;
+            }
+
+            auto assignedSet = getAssignedVariables(*forStmt);
+            std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+            std::vector<std::string> loopVars;
+            for (const auto& name : activeNames) {
+                if (assignedSet.contains(name)) {
+                    loopVars.push_back(name);
+                }
+            }
+
+            il::BlockId bHeader = createBlock(ilFn);
+            il::BlockId bBody = createBlock(ilFn);
+            il::BlockId bUpdate = createBlock(ilFn);
+            il::BlockId bExit = createBlock(ilFn);
+
+            // Entry jump
+            il::Instruction jmpEntry;
+            jmpEntry.op = il::Op::Jump;
+            jmpEntry.type = il::Type::Void;
+            jmpEntry.result = il::kNoValue;
+            std::vector<il::ValueId> entryArgs;
+            for (const auto& name : loopVars) {
+                entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
+            }
+            jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+            emitInst(ilFn, jmpEntry);
+
+            // Header params
+            il::Block& headerBlock = ilFn.blocks[bHeader];
+            std::unordered_map<std::string, il::ValueId> headerParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                headerBlock.params.push_back({pId, vType});
+                headerParamMap[name] = pId;
+            }
+
+            setCurrentBlock(bHeader);
+            for (const auto& name : loopVars) {
+                varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
+            }
+
+            // Exit params
+            il::Block& exitBlock = ilFn.blocks[bExit];
+            std::unordered_map<std::string, il::ValueId> exitParamMap;
+            std::vector<il::ValueId> headerExitArgs;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                exitBlock.params.push_back({pId, vType});
+                exitParamMap[name] = pId;
+                headerExitArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
+            }
+
+            if (forStmt->condition) {
+                Value condVal = lowerCondition(*forStmt->condition, ilFn);
+                il::Instruction brInst;
+                brInst.op = il::Op::Branch;
+                brInst.type = il::Type::Void;
+                brInst.result = il::kNoValue;
+                brInst.operands = {condVal.id};
+                brInst.target = il::BlockTarget{.block = bBody, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bExit, .args = std::move(headerExitArgs)};
+                emitInst(ilFn, brInst);
+            } else {
+                il::Instruction jmpBody;
+                jmpBody.op = il::Op::Jump;
+                jmpBody.type = il::Type::Void;
+                jmpBody.result = il::kNoValue;
+                jmpBody.target = il::BlockTarget{.block = bBody, .args = {}};
+                emitInst(ilFn, jmpBody);
+            }
+
+            // The update block joins the body fall-through and continue
+            // edges, so it takes the loop variables as parameters.
+            std::unordered_map<std::string, il::ValueId> updateParamMap;
+            for (const auto& name : loopVars) {
+                il::ValueId pId = ilFn.valueCount++;
+                il::Type vType = varBindings_[activeVarMap_[name]].type;
+                ilFn.blocks[bUpdate].params.push_back({pId, vType});
+                updateParamMap[name] = pId;
+            }
+
+            // Body
+            setCurrentBlock(bBody);
+            loopStack_.push_back(LoopContext{bHeader, bUpdate, bExit, loopVars});
+            enterScope();
+            std::vector<const ast::Stmt*> bodyStmts;
+            for (const auto& s : forStmt->body) bodyStmts.push_back(s.get());
+            if (!lowerStmtList(bodyStmts, ilFn)) return false;
+            exitScope();
+            loopStack_.pop_back();
+
+            if (!currentBlockIsTerminated(ilFn)) {
+                il::Instruction toUpdate;
+                toUpdate.op = il::Op::Jump;
+                toUpdate.type = il::Type::Void;
+                toUpdate.result = il::kNoValue;
+                toUpdate.target = il::BlockTarget{
+                    .block = bUpdate, .args = collectEdgeArgs(loopVars, bUpdate, ilFn)};
+                emitInst(ilFn, toUpdate);
+            }
+
+            // Update
+            setCurrentBlock(bUpdate);
+            for (size_t i = 0; i < loopVars.size(); ++i) {
+                auto& b = varBindings_[activeVarMap_[loopVars[i]]];
+                b.valueId = updateParamMap[loopVars[i]];
+                b.type = ilFn.blocks[bUpdate].params[i].type;
+            }
+            if (forStmt->update) {
+                if (!lowerExpr(*forStmt->update, ilFn)) return false;
+            }
+            il::Instruction backJmp;
+            backJmp.op = il::Op::Jump;
+            backJmp.type = il::Type::Void;
+            backJmp.result = il::kNoValue;
+            backJmp.target = il::BlockTarget{
+                .block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
+            emitInst(ilFn, backJmp);
+
+            setCurrentBlock(bExit);
+            for (size_t i = 0; i < loopVars.size(); ++i) {
+                auto& b = varBindings_[activeVarMap_[loopVars[i]]];
+                b.valueId = exitParamMap[loopVars[i]];
+                b.type = ilFn.blocks[bExit].params[i].type;
+            }
+            exitScope();
+            return true;
+        }
+
+        if (const auto* breakStmt = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
+            if (!breakStmt->label.empty()) {
+                diags_.error(breakStmt->span, "unsupported construct: labeled break/continue");
+                return false;
+            }
+            if (loopStack_.empty()) {
+                diags_.error(breakStmt->span, "break statement outside of loop");
+                return false;
+            }
+            const auto& loopCtx = loopStack_.back();
+            il::Instruction jmpInst;
+            jmpInst.op = il::Op::Jump;
+            jmpInst.type = il::Type::Void;
+            jmpInst.result = il::kNoValue;
+            jmpInst.target = il::BlockTarget{
+                .block = loopCtx.exitBlock,
+                .args = collectEdgeArgs(loopCtx.loopVars, loopCtx.exitBlock, ilFn)};
+            emitInst(ilFn, jmpInst);
+
+            // Create dead block for any unreachable trailing instructions in the same scope
+            il::BlockId deadBlock = createBlock(ilFn);
+            setCurrentBlock(deadBlock);
+            return true;
+        }
+
+        if (const auto* continueStmt = dynamic_cast<const ast::ContinueStmt*>(&stmt)) {
+            if (!continueStmt->label.empty()) {
+                diags_.error(continueStmt->span, "unsupported construct: labeled break/continue");
+                return false;
+            }
+            if (loopStack_.empty()) {
+                diags_.error(continueStmt->span, "continue statement outside of loop");
+                return false;
+            }
+            const auto& loopCtx = loopStack_.back();
+            il::Instruction jmpInst;
+            jmpInst.op = il::Op::Jump;
+            jmpInst.type = il::Type::Void;
+            jmpInst.result = il::kNoValue;
+            jmpInst.target = il::BlockTarget{
+                .block = loopCtx.updateBlock,
+                .args = collectEdgeArgs(loopCtx.loopVars, loopCtx.updateBlock, ilFn)};
+            emitInst(ilFn, jmpInst);
+
+            il::BlockId deadBlock = createBlock(ilFn);
+            setCurrentBlock(deadBlock);
+            return true;
+        }
+
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
+            diags_.error(sw->span, "unsupported construct: switch statement");
+            return false;
+        }
+
+        if (const auto* fi = dynamic_cast<const ast::ForInStmt*>(&stmt)) {
+            diags_.error(fi->span, "unsupported construct: for-in loop");
+            return false;
+        }
+
+        if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&stmt)) {
+            diags_.error(fo->span, "unsupported construct: for-of loop");
+            return false;
+        }
+
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
+            diags_.error(tr->span, "unsupported construct: try/catch/throw");
+            return false;
+        }
+
+        if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
+            diags_.error(th->span, "unsupported construct: try/catch/throw");
             return false;
         }
 
@@ -252,8 +1068,7 @@ private:
         return false;
     }
 
-    std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn,
-                                   std::unordered_map<std::string, Value>& env) {
+    std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn) {
         if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(&expr)) {
             il::ValueId res = ilFn.valueCount++;
             il::Instruction inst;
@@ -263,6 +1078,37 @@ private:
             inst.immF64 = numLit->value;
             emitInst(ilFn, inst);
             return Value{res, il::Type::F64};
+        }
+
+        if (const auto* boolLit = dynamic_cast<const ast::BoolLit*>(&expr)) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ConstBool;
+            inst.type = il::Type::Bool;
+            inst.result = res;
+            inst.immI32 = boolLit->value ? 1 : 0;
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Bool};
+        }
+
+        if (dynamic_cast<const ast::NullLit*>(&expr)) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ConstNull;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        }
+
+        if (dynamic_cast<const ast::UndefinedLit*>(&expr)) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ConstUndefined;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
         }
 
         if (const auto* strLit = dynamic_cast<const ast::StringLit*>(&expr)) {
@@ -287,7 +1133,7 @@ private:
             emitInst(ilFn, inst);
 
             for (const auto& prop : objLit->props) {
-                auto valOpt = lowerExpr(*prop.value, ilFn, env);
+                auto valOpt = lowerExpr(*prop.value, ilFn);
                 if (!valOpt) return std::nullopt;
                 auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
 
@@ -316,7 +1162,7 @@ private:
             emitInst(ilFn, inst);
 
             for (size_t i = 0; i < arrLit->elements.size(); ++i) {
-                auto elemOpt = lowerExpr(*arrLit->elements[i], ilFn, env);
+                auto elemOpt = lowerExpr(*arrLit->elements[i], ilFn);
                 if (!elemOpt) return std::nullopt;
                 auto elemBoxed = boxValueIfNeeded(*elemOpt, ilFn);
 
@@ -359,28 +1205,23 @@ private:
             }
             newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
 
-            std::unordered_map<std::string, Value> fnEnv = env;
-            for (uint32_t i = 0; i < fnExpr->params.size(); ++i) {
-                fnEnv[fnExpr->params[i].name] = {i, newFn.params[i].type};
-            }
-            std::vector<const ast::Stmt*> stmts;
-            for (const auto& s : fnExpr->body) stmts.push_back(s.get());
-            if (!lowerStmtList(stmts, newFn, &fnEnv)) {
+            size_t outerBlockIdx = currentBlockIdx_;
+            auto outerVarBindings = varBindings_;
+            auto outerActiveVarMap = activeVarMap_;
+            auto outerScopeDepth = currentScopeDepth_;
+            auto outerVarDeclCounter = varDeclCounter_;
+            auto outerLoopStack = loopStack_;
+
+            if (!lowerFunctionBody(fnName, fnExpr->params, fnExpr->returnType, fnExpr->body, newFn)) {
                 return std::nullopt;
             }
-            bool hasRet = false;
-            if (!newFn.blocks.empty()) {
-                for (const auto& inst : newFn.blocks[0].instructions) {
-                    if (inst.op == il::Op::Ret) { hasRet = true; break; }
-                }
-            }
-            if (!hasRet) {
-                il::Instruction retInst;
-                retInst.op = il::Op::Ret;
-                retInst.type = il::Type::Void;
-                retInst.result = il::kNoValue;
-                emitInst(newFn, retInst);
-            }
+
+            varBindings_ = outerVarBindings;
+            activeVarMap_ = outerActiveVarMap;
+            currentScopeDepth_ = outerScopeDepth;
+            varDeclCounter_ = outerVarDeclCounter;
+            loopStack_ = outerLoopStack;
+            currentBlockIdx_ = outerBlockIdx;
 
             uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
             functionIndices_[fnName] = createdFnIdx;
@@ -398,16 +1239,213 @@ private:
         }
 
         if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
-            auto it = env.find(ident->name);
-            if (it == env.end()) {
+            auto it = activeVarMap_.find(ident->name);
+            if (it == activeVarMap_.end()) {
+                // Global value properties (shadowable by local declarations,
+                // hence checked only after the variable lookup misses).
+                if (ident->name == "NaN" || ident->name == "Infinity") {
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction inst;
+                    inst.op = il::Op::ConstF64;
+                    inst.type = il::Type::F64;
+                    inst.result = res;
+                    inst.immF64 = ident->name == "NaN"
+                                      ? std::numeric_limits<double>::quiet_NaN()
+                                      : std::numeric_limits<double>::infinity();
+                    emitInst(ilFn, inst);
+                    return Value{res, il::Type::F64};
+                }
+                if (ident->name == "undefined") {
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction inst;
+                    inst.op = il::Op::ConstUndefined;
+                    inst.type = il::Type::Dynamic;
+                    inst.result = res;
+                    emitInst(ilFn, inst);
+                    return Value{res, il::Type::Dynamic};
+                }
                 diags_.error(ident->span, "undefined variable: " + ident->name);
                 return std::nullopt;
             }
-            return it->second;
+            const auto& b = varBindings_[it->second];
+            if (!b.isInitialized) {
+                if (b.isConst) {
+                    diags_.error(ident->span, "use of 'const' binding before initialization");
+                } else {
+                    diags_.error(ident->span, "use of 'let' binding before initialization");
+                }
+                return std::nullopt;
+            }
+            return Value{b.valueId, b.type};
+        }
+
+        if (const auto* un = dynamic_cast<const ast::Unary*>(&expr)) {
+            if (un->op == ast::UnaryOp::Not) {
+                Value condVal = lowerCondition(*un->operand, ilFn);
+                il::ValueId falseVal = ilFn.valueCount++;
+                il::Instruction falseInst;
+                falseInst.op = il::Op::ConstBool;
+                falseInst.type = il::Type::Bool;
+                falseInst.result = falseVal;
+                falseInst.immI32 = 0;
+                emitInst(ilFn, falseInst);
+
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction cmpInst;
+                cmpInst.op = il::Op::CmpEq;
+                cmpInst.type = il::Type::Bool;
+                cmpInst.result = res;
+                cmpInst.operands = {condVal.id, falseVal};
+                emitInst(ilFn, cmpInst);
+                return Value{res, il::Type::Bool};
+            }
+            if (un->op == ast::UnaryOp::Negate) {
+                auto valOpt = lowerExpr(*un->operand, ilFn);
+                if (!valOpt) return std::nullopt;
+                Value val = unboxValueIfNeeded(*valOpt, il::Type::F64, ilFn);
+                il::ValueId zeroRes = ilFn.valueCount++;
+                il::Instruction zeroInst;
+                zeroInst.op = il::Op::ConstF64;
+                zeroInst.type = il::Type::F64;
+                zeroInst.result = zeroRes;
+                zeroInst.immF64 = 0.0;
+                emitInst(ilFn, zeroInst);
+
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction subInst;
+                subInst.op = il::Op::Sub;
+                subInst.type = il::Type::F64;
+                subInst.result = res;
+                subInst.operands = {zeroRes, val.id};
+                emitInst(ilFn, subInst);
+                return Value{res, il::Type::F64};
+            }
+            if (un->op == ast::UnaryOp::Posate) {
+                auto valOpt = lowerExpr(*un->operand, ilFn);
+                if (!valOpt) return std::nullopt;
+                return unboxValueIfNeeded(*valOpt, il::Type::F64, ilFn);
+            }
+            if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec ||
+                un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
+                const auto* ident = dynamic_cast<const ast::Ident*>(un->operand.get());
+                if (!ident) {
+                    diags_.error(un->span, "invalid update operand");
+                    return std::nullopt;
+                }
+                auto it = activeVarMap_.find(ident->name);
+                if (it == activeVarMap_.end()) {
+                    diags_.error(ident->span, "undefined variable: " + ident->name);
+                    return std::nullopt;
+                }
+                VarBinding& b = varBindings_[it->second];
+                Value oldVal{b.valueId, b.type};
+                Value numOld = unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
+
+                il::ValueId oneRes = ilFn.valueCount++;
+                il::Instruction oneInst;
+                oneInst.op = il::Op::ConstF64;
+                oneInst.type = il::Type::F64;
+                oneInst.result = oneRes;
+                oneInst.immF64 = 1.0;
+                emitInst(ilFn, oneInst);
+
+                il::ValueId newValId = ilFn.valueCount++;
+                il::Instruction calcInst;
+                calcInst.op = (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PostInc) ? il::Op::Add : il::Op::Sub;
+                calcInst.type = il::Type::F64;
+                calcInst.result = newValId;
+                calcInst.operands = {numOld.id, oneRes};
+                emitInst(ilFn, calcInst);
+
+                b.valueId = newValId;
+                b.type = il::Type::F64;
+
+                if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec) {
+                    return Value{newValId, il::Type::F64};
+                } else {
+                    return numOld;
+                }
+            }
+        }
+
+        if (const auto* tern = dynamic_cast<const ast::Ternary*>(&expr)) {
+            if (!getAssignedVariables(*tern->thenExpr).empty() ||
+                !getAssignedVariables(*tern->elseExpr).empty()) {
+                diags_.error(tern->span,
+                             "unsupported construct: assignment inside a ternary arm "
+                             "(the assignment is conditional)");
+                return std::nullopt;
+            }
+            Value condVal = lowerCondition(*tern->condition, ilFn);
+            if (condVal.id == il::kNoValue) return std::nullopt;
+
+            il::BlockId bThen = createBlock(ilFn);
+            il::BlockId bElse = createBlock(ilFn);
+            il::BlockId bJoin = createBlock(ilFn);
+
+            size_t entryBlockIdx = currentBlockIdx_;
+
+            setCurrentBlock(bThen);
+            auto thenValOpt = lowerExpr(*tern->thenExpr, ilFn);
+            if (!thenValOpt) return std::nullopt;
+            bool thenReaches = !currentBlockIsTerminated(ilFn);
+            size_t thenEndBlockIdx = currentBlockIdx_;
+
+            setCurrentBlock(bElse);
+            auto elseValOpt = lowerExpr(*tern->elseExpr, ilFn);
+            if (!elseValOpt) return std::nullopt;
+            bool elseReaches = !currentBlockIsTerminated(ilFn);
+            size_t elseEndBlockIdx = currentBlockIdx_;
+
+            il::Type joinType = il::Type::Dynamic;
+            if (thenValOpt->type == elseValOpt->type) {
+                joinType = thenValOpt->type;
+            }
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condVal.id};
+            brInst.target = il::BlockTarget{.block = bThen, .args = {}};
+            brInst.elseTarget = il::BlockTarget{.block = bElse, .args = {}};
+            ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+            il::ValueId resParamId = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+
+            if (thenReaches) {
+                setCurrentBlock(thenEndBlockIdx);
+                Value v = *thenValOpt;
+                if (joinType == il::Type::Dynamic) v = boxValueIfNeeded(v, ilFn);
+                else if (v.type != joinType) v = unboxValueIfNeeded(v, joinType, ilFn);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = {v.id}};
+                emitInst(ilFn, jmpInst);
+            }
+
+            if (elseReaches) {
+                setCurrentBlock(elseEndBlockIdx);
+                Value v = *elseValOpt;
+                if (joinType == il::Type::Dynamic) v = boxValueIfNeeded(v, ilFn);
+                else if (v.type != joinType) v = unboxValueIfNeeded(v, joinType, ilFn);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = {v.id}};
+                emitInst(ilFn, jmpInst);
+            }
+
+            setCurrentBlock(bJoin);
+            return Value{resParamId, joinType};
         }
 
         if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&expr)) {
-            auto objVal = lowerExpr(*mem->object, ilFn, env);
+            auto objVal = lowerExpr(*mem->object, ilFn);
             if (!objVal) return std::nullopt;
             auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
 
@@ -427,7 +1465,7 @@ private:
         }
 
         if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(&expr)) {
-            auto objVal = lowerExpr(*idxAccess->object, ilFn, env);
+            auto objVal = lowerExpr(*idxAccess->object, ilFn);
             if (!objVal) return std::nullopt;
             auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
 
@@ -437,7 +1475,7 @@ private:
             } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
                 keyIdx = getKeyConstantIndex(strLit->value);
             } else {
-                auto indexVal = lowerExpr(*idxAccess->index, ilFn, env);
+                auto indexVal = lowerExpr(*idxAccess->index, ilFn);
                 if (!indexVal) return std::nullopt;
                 keyIdx = 0;
             }
@@ -456,12 +1494,14 @@ private:
         }
 
         if (const auto* bin = dynamic_cast<const ast::Binary*>(&expr)) {
-            if (bin->op == ast::BinaryOp::Assign) {
+            if (bin->op == ast::BinaryOp::Assign || bin->op == ast::BinaryOp::PlusAssign ||
+                bin->op == ast::BinaryOp::MinusAssign || bin->op == ast::BinaryOp::StarAssign ||
+                bin->op == ast::BinaryOp::SlashAssign || bin->op == ast::BinaryOp::PercentAssign) {
                 if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get())) {
-                    auto objVal = lowerExpr(*mem->object, ilFn, env);
+                    auto objVal = lowerExpr(*mem->object, ilFn);
                     if (!objVal) return std::nullopt;
                     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
-                    auto rhsVal = lowerExpr(*bin->rhs, ilFn, env);
+                    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
                     if (!rhsVal) return std::nullopt;
                     auto rhsBoxed = boxValueIfNeeded(*rhsVal, ilFn);
 
@@ -479,10 +1519,10 @@ private:
                     return rhsBoxed;
                 }
                 if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get())) {
-                    auto objVal = lowerExpr(*idxAccess->object, ilFn, env);
+                    auto objVal = lowerExpr(*idxAccess->object, ilFn);
                     if (!objVal) return std::nullopt;
                     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
-                    auto rhsVal = lowerExpr(*bin->rhs, ilFn, env);
+                    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
                     if (!rhsVal) return std::nullopt;
                     auto rhsBoxed = boxValueIfNeeded(*rhsVal, ilFn);
 
@@ -492,7 +1532,7 @@ private:
                     } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
                         keyIdx = getKeyConstantIndex(strLit->value);
                     } else {
-                        auto indexVal = lowerExpr(*idxAccess->index, ilFn, env);
+                        auto indexVal = lowerExpr(*idxAccess->index, ilFn);
                         if (!indexVal) return std::nullopt;
                         keyIdx = 0;
                     }
@@ -510,18 +1550,185 @@ private:
                     return rhsBoxed;
                 }
                 if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
-                    auto rhsVal = lowerExpr(*bin->rhs, ilFn, env);
+                    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
                     if (!rhsVal) return std::nullopt;
-                    env[ident->name] = *rhsVal;
-                    return rhsVal;
+
+                    auto it = activeVarMap_.find(ident->name);
+                    if (it == activeVarMap_.end()) {
+                        diags_.error(ident->span, "undefined variable: " + ident->name);
+                        return std::nullopt;
+                    }
+                    VarBinding& b = varBindings_[it->second];
+
+                    if (bin->op == ast::BinaryOp::Assign) {
+                        b.valueId = rhsVal->id;
+                        b.type = rhsVal->type;
+                        b.isInitialized = true;
+                        return rhsVal;
+                    } else {
+                        Value lhsVal{b.valueId, b.type};
+                        il::Op op;
+                        switch (bin->op) {
+                            case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
+                            case ast::BinaryOp::MinusAssign: op = il::Op::Sub; break;
+                            case ast::BinaryOp::StarAssign: op = il::Op::Mul; break;
+                            case ast::BinaryOp::SlashAssign: op = il::Op::Div; break;
+                            case ast::BinaryOp::PercentAssign: op = il::Op::Mod; break;
+                            default: op = il::Op::Add; break;
+                        }
+                        Value lhsNum = unboxValueIfNeeded(lhsVal, il::Type::F64, ilFn);
+                        Value rhsNum = unboxValueIfNeeded(*rhsVal, il::Type::F64, ilFn);
+
+                        il::ValueId res = ilFn.valueCount++;
+                        il::Instruction inst;
+                        inst.op = op;
+                        inst.type = il::Type::F64;
+                        inst.result = res;
+                        inst.operands = {lhsNum.id, rhsNum.id};
+                        emitInst(ilFn, inst);
+
+                        b.valueId = res;
+                        b.type = il::Type::F64;
+                        b.isInitialized = true;
+                        return Value{res, il::Type::F64};
+                    }
                 }
                 diags_.error(bin->span, "invalid assignment target");
                 return std::nullopt;
             }
 
-            auto lhsOpt = lowerExpr(*bin->lhs, ilFn, env);
+            if (bin->op == ast::BinaryOp::LogicalAnd || bin->op == ast::BinaryOp::LogicalOr) {
+                if (!getAssignedVariables(*bin->rhs).empty()) {
+                    diags_.error(bin->span,
+                                 "unsupported construct: assignment inside a short-circuit "
+                                 "operand (the assignment is conditional)");
+                    return std::nullopt;
+                }
+                auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
+                if (!lhsOpt) return std::nullopt;
+                Value lhsVal = *lhsOpt;
+
+                Value lhsBool = lowerConditionFromVal(lhsVal, ilFn);
+
+                il::BlockId bRhs = createBlock(ilFn);
+                il::BlockId bJoin = createBlock(ilFn);
+                size_t entryBlockIdx = currentBlockIdx_;
+
+                setCurrentBlock(bRhs);
+                auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
+                if (!rhsOpt) return std::nullopt;
+                Value rhsVal = *rhsOpt;
+                bool rhsReaches = !currentBlockIsTerminated(ilFn);
+                size_t rhsEndBlockIdx = currentBlockIdx_;
+
+                il::Type joinType = (lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64) ? il::Type::F64 : il::Type::Dynamic;
+
+                il::Instruction brInst;
+                brInst.op = il::Op::Branch;
+                brInst.type = il::Type::Void;
+                brInst.result = il::kNoValue;
+                brInst.operands = {lhsBool.id};
+
+                // The lhs conversion feeds the entry block's branch edge, so
+                // it must be emitted there, not in the rhs block.
+                setCurrentBlock(entryBlockIdx);
+                Value lhsBoxed = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(lhsVal, ilFn) : unboxValueIfNeeded(lhsVal, joinType, ilFn);
+
+                if (bin->op == ast::BinaryOp::LogicalAnd) {
+                    brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                    brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = {lhsBoxed.id}};
+                } else {
+                    brInst.target = il::BlockTarget{.block = bJoin, .args = {lhsBoxed.id}};
+                    brInst.elseTarget = il::BlockTarget{.block = bRhs, .args = {}};
+                }
+                ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+                il::ValueId resParamId = ilFn.valueCount++;
+                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+
+                if (rhsReaches) {
+                    setCurrentBlock(rhsEndBlockIdx);
+                    Value rhsConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(rhsVal, ilFn) : unboxValueIfNeeded(rhsVal, joinType, ilFn);
+                    il::Instruction jmpInst;
+                    jmpInst.op = il::Op::Jump;
+                    jmpInst.type = il::Type::Void;
+                    jmpInst.result = il::kNoValue;
+                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = {rhsConv.id}};
+                    emitInst(ilFn, jmpInst);
+                }
+
+                setCurrentBlock(bJoin);
+                return Value{resParamId, joinType};
+            }
+
+            if (bin->op == ast::BinaryOp::NullishCoalescing) {
+                auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
+                if (!lhsOpt) return std::nullopt;
+                Value lhsVal = *lhsOpt;
+
+                if (lhsVal.type != il::Type::Dynamic) {
+                    // A typed value is statically never nullish; the rhs is
+                    // dead (and its side effects correctly never happen).
+                    return lhsVal;
+                }
+                if (!getAssignedVariables(*bin->rhs).empty()) {
+                    diags_.error(bin->span,
+                                 "unsupported construct: assignment inside a short-circuit "
+                                 "operand (the assignment is conditional)");
+                    return std::nullopt;
+                }
+
+                il::ValueId isNullishRes = ilFn.valueCount++;
+                il::Instruction nullishInst;
+                nullishInst.op = il::Op::IsNullish;
+                nullishInst.type = il::Type::Bool;
+                nullishInst.result = isNullishRes;
+                nullishInst.operands = {lhsVal.id};
+                emitInst(ilFn, nullishInst);
+
+                il::BlockId bRhs = createBlock(ilFn);
+                il::BlockId bJoin = createBlock(ilFn);
+                size_t entryBlockIdx = currentBlockIdx_;
+
+                setCurrentBlock(bRhs);
+                auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
+                if (!rhsOpt) return std::nullopt;
+                Value rhsVal = *rhsOpt;
+                bool rhsReaches = !currentBlockIsTerminated(ilFn);
+                size_t rhsEndBlockIdx = currentBlockIdx_;
+
+                il::Type joinType = il::Type::Dynamic;
+
+                il::Instruction brInst;
+                brInst.op = il::Op::Branch;
+                brInst.type = il::Type::Void;
+                brInst.result = il::kNoValue;
+                brInst.operands = {isNullishRes};
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = {lhsVal.id}};
+                ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+                il::ValueId resParamId = ilFn.valueCount++;
+                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+
+                if (rhsReaches) {
+                    setCurrentBlock(rhsEndBlockIdx);
+                    Value rhsConv = boxValueIfNeeded(rhsVal, ilFn);
+                    il::Instruction jmpInst;
+                    jmpInst.op = il::Op::Jump;
+                    jmpInst.type = il::Type::Void;
+                    jmpInst.result = il::kNoValue;
+                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = {rhsConv.id}};
+                    emitInst(ilFn, jmpInst);
+                }
+
+                setCurrentBlock(bJoin);
+                return Value{resParamId, joinType};
+            }
+
+            auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
             if (!lhsOpt) return std::nullopt;
-            auto rhsOpt = lowerExpr(*bin->rhs, ilFn, env);
+            auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
             if (!rhsOpt) return std::nullopt;
 
             Value lhs = *lhsOpt;
@@ -560,6 +1767,10 @@ private:
                     op = il::Op::Div;
                     resType = il::Type::F64;
                     break;
+                case ast::BinaryOp::Mod:
+                    op = il::Op::Mod;
+                    resType = il::Type::F64;
+                    break;
                 case ast::BinaryOp::Less:
                     op = il::Op::CmpLt;
                     resType = il::Type::Bool;
@@ -568,17 +1779,152 @@ private:
                     op = il::Op::CmpGt;
                     resType = il::Type::Bool;
                     break;
+                case ast::BinaryOp::LessEqual: {
+                    // a <= b is !(a > b) -> cmp.gt, then cmp.eq false
+                    Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
+                    Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+                    il::ValueId gtRes = ilFn.valueCount++;
+                    il::Instruction gtInst;
+                    gtInst.op = il::Op::CmpGt;
+                    gtInst.type = il::Type::Bool;
+                    gtInst.result = gtRes;
+                    gtInst.operands = {l.id, r.id};
+                    emitInst(ilFn, gtInst);
+
+                    il::ValueId falseVal = ilFn.valueCount++;
+                    il::Instruction falseInst;
+                    falseInst.op = il::Op::ConstBool;
+                    falseInst.type = il::Type::Bool;
+                    falseInst.result = falseVal;
+                    falseInst.immI32 = 0;
+                    emitInst(ilFn, falseInst);
+
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction cmpInst;
+                    cmpInst.op = il::Op::CmpEq;
+                    cmpInst.type = il::Type::Bool;
+                    cmpInst.result = res;
+                    cmpInst.operands = {gtRes, falseVal};
+                    emitInst(ilFn, cmpInst);
+                    return Value{res, il::Type::Bool};
+                }
+                case ast::BinaryOp::GreaterEqual: {
+                    // a >= b is !(a < b)
+                    Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
+                    Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+                    il::ValueId ltRes = ilFn.valueCount++;
+                    il::Instruction ltInst;
+                    ltInst.op = il::Op::CmpLt;
+                    ltInst.type = il::Type::Bool;
+                    ltInst.result = ltRes;
+                    ltInst.operands = {l.id, r.id};
+                    emitInst(ilFn, ltInst);
+
+                    il::ValueId falseVal = ilFn.valueCount++;
+                    il::Instruction falseInst;
+                    falseInst.op = il::Op::ConstBool;
+                    falseInst.type = il::Type::Bool;
+                    falseInst.result = falseVal;
+                    falseInst.immI32 = 0;
+                    emitInst(ilFn, falseInst);
+
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction cmpInst;
+                    cmpInst.op = il::Op::CmpEq;
+                    cmpInst.type = il::Type::Bool;
+                    cmpInst.result = res;
+                    cmpInst.operands = {ltRes, falseVal};
+                    emitInst(ilFn, cmpInst);
+                    return Value{res, il::Type::Bool};
+                }
                 case ast::BinaryOp::Eq:
                 case ast::BinaryOp::StrictEq:
-                    op = il::Op::CmpEq;
-                    resType = il::Type::Bool;
-                    break;
+                case ast::BinaryOp::Ne:
+                case ast::BinaryOp::StrictNe: {
+                    bool negate = (bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe);
+                    bool loose = (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::Ne);
+
+                    Value eqRes{il::kNoValue, il::Type::Bool};
+                    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic ||
+                        lhs.type == il::Type::Str || rhs.type == il::Type::Str) {
+                        if (loose) {
+                            diags_.error(bin->span,
+                                         "unsupported construct: loose equality (==, !=) on "
+                                         "possibly non-numeric operands; use === / !==");
+                            return std::nullopt;
+                        }
+                        Value lb = boxValueIfNeeded(lhs, ilFn);
+                        Value rb = boxValueIfNeeded(rhs, ilFn);
+                        il::ValueId res = ilFn.valueCount++;
+                        il::Instruction inst;
+                        inst.op = il::Op::StrictEq;
+                        inst.type = il::Type::Bool;
+                        inst.result = res;
+                        inst.operands = {lb.id, rb.id};
+                        emitInst(ilFn, inst);
+                        eqRes = Value{res, il::Type::Bool};
+                    } else if (lhs.type != rhs.type) {
+                        if (loose) {
+                            diags_.error(bin->span,
+                                         "unsupported construct: loose equality (==, !=) on "
+                                         "mixed primitive types; use === / !==");
+                            return std::nullopt;
+                        }
+                        if (lhs.type == il::Type::I32 || rhs.type == il::Type::I32) {
+                            diags_.error(bin->span,
+                                         "unsupported construct: mixed i32/f64 strict equality");
+                            return std::nullopt;
+                        }
+                        // Strict equality across distinct primitive types is
+                        // statically false.
+                        il::ValueId res = ilFn.valueCount++;
+                        il::Instruction inst;
+                        inst.op = il::Op::ConstBool;
+                        inst.type = il::Type::Bool;
+                        inst.result = res;
+                        inst.immI32 = 0;
+                        emitInst(ilFn, inst);
+                        eqRes = Value{res, il::Type::Bool};
+                    } else {
+                        il::ValueId res = ilFn.valueCount++;
+                        il::Instruction inst;
+                        inst.op = negate ? il::Op::CmpNe : il::Op::CmpEq;
+                        inst.type = il::Type::Bool;
+                        inst.result = res;
+                        inst.operands = {lhs.id, rhs.id};
+                        emitInst(ilFn, inst);
+                        eqRes = Value{res, il::Type::Bool};
+                        negate = false;
+                    }
+
+                    if (negate) {
+                        il::ValueId falseVal = ilFn.valueCount++;
+                        il::Instruction falseInst;
+                        falseInst.op = il::Op::ConstBool;
+                        falseInst.type = il::Type::Bool;
+                        falseInst.result = falseVal;
+                        falseInst.immI32 = 0;
+                        emitInst(ilFn, falseInst);
+
+                        il::ValueId notRes = ilFn.valueCount++;
+                        il::Instruction notInst;
+                        notInst.op = il::Op::CmpEq;
+                        notInst.type = il::Type::Bool;
+                        notInst.result = notRes;
+                        notInst.operands = {eqRes.id, falseVal};
+                        emitInst(ilFn, notInst);
+                        eqRes = Value{notRes, il::Type::Bool};
+                    }
+                    return eqRes;
+                }
                 default:
                     diags_.error(bin->span, "unsupported binary operator: " + std::string(ast::binaryOpName(bin->op)));
                     return std::nullopt;
             }
 
-            if (resType == il::Type::F64) {
+            // Arithmetic and relational comparison are numeric: dynamic
+            // operands go through runtime-checked ToNumber first.
+            if (resType == il::Type::F64 || op == il::Op::CmpLt || op == il::Op::CmpGt) {
                 lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
                 rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
             }
@@ -608,7 +1954,7 @@ private:
                     diags_.error(call->span, "console.log expects 1 argument");
                     return std::nullopt;
                 }
-                auto argVal = lowerExpr(*call->args[0], ilFn, env);
+                auto argVal = lowerExpr(*call->args[0], ilFn);
                 if (!argVal) return std::nullopt;
 
                 auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
@@ -622,8 +1968,8 @@ private:
             }
 
             if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-                auto envIt = env.find(calleeIdent->name);
-                if (envIt == env.end()) {
+                auto envIt = activeVarMap_.find(calleeIdent->name);
+                if (envIt == activeVarMap_.end()) {
                     auto it = functionIndices_.find(calleeIdent->name);
                     if (it != functionIndices_.end()) {
                         uint32_t calleeIdx = it->second;
@@ -636,7 +1982,7 @@ private:
 
                         std::vector<il::ValueId> argVals;
                         for (size_t i = 0; i < call->args.size(); ++i) {
-                            auto argVal = lowerExpr(*call->args[i], ilFn, env);
+                            auto argVal = lowerExpr(*call->args[i], ilFn);
                             if (!argVal) return std::nullopt;
                             if (calleeFn.params[i].type == il::Type::Dynamic) {
                                 argVal = boxValueIfNeeded(*argVal, ilFn);
@@ -669,7 +2015,7 @@ private:
             Value calleeVal;
             Value thisArgVal;
             if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-                auto objVal = lowerExpr(*mem->object, ilFn, env);
+                auto objVal = lowerExpr(*mem->object, ilFn);
                 if (!objVal) return std::nullopt;
                 thisArgVal = boxValueIfNeeded(*objVal, ilFn);
 
@@ -687,7 +2033,7 @@ private:
                 emitInst(ilFn, inst);
                 calleeVal = Value{getRes, il::Type::Dynamic};
             } else {
-                auto cVal = lowerExpr(*call->callee, ilFn, env);
+                auto cVal = lowerExpr(*call->callee, ilFn);
                 if (!cVal) return std::nullopt;
                 calleeVal = boxValueIfNeeded(*cVal, ilFn);
 
@@ -706,7 +2052,7 @@ private:
             dynOperands.push_back(thisArgVal.id);
 
             for (const auto& argPtr : call->args) {
-                auto argVal = lowerExpr(*argPtr, ilFn, env);
+                auto argVal = lowerExpr(*argPtr, ilFn);
                 if (!argVal) return std::nullopt;
                 auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
                 dynOperands.push_back(argBoxed.id);

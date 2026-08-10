@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "abi/bronze_abi.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -145,4 +146,51 @@ TEST_CASE("pointer encoding and decoding for 48-bit address range") {
         CHECK(symVal.payload() == addr);
         CHECK(symVal.asSymbol<const void>() == ptr);
     }
+}
+
+TEST_CASE("bronze_truthy tests") {
+    CHECK_FALSE(bronze_truthy(Value::fromUndefined().rawBits()));
+    CHECK_FALSE(bronze_truthy(Value::fromNull().rawBits()));
+    CHECK_FALSE(bronze_truthy(Value::fromBool(false).rawBits()));
+    CHECK(bronze_truthy(Value::fromBool(true).rawBits()));
+    CHECK_FALSE(bronze_truthy(Value::fromDouble(0.0).rawBits()));
+    CHECK_FALSE(bronze_truthy(Value::fromDouble(-0.0).rawBits()));
+    CHECK_FALSE(bronze_truthy(Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits()));
+    CHECK(bronze_truthy(Value::fromDouble(1.0).rawBits()));
+    CHECK(bronze_truthy(Value::fromDouble(-5.5).rawBits()));
+    uint64_t emptyObj = bronze_create_object();
+    CHECK(bronze_truthy(emptyObj));
+    uint64_t emptyStr = bronze_box_str("");
+    CHECK_FALSE(bronze_truthy(emptyStr));
+    uint64_t zeroStr = bronze_box_str("0");
+    CHECK(bronze_truthy(zeroStr));
+}
+
+
+TEST_CASE("bronze_strict_eq follows JS === semantics") {
+    // numbers: value equality, NaN never equal, +0 === -0
+    CHECK(bronze_strict_eq(Value::fromDouble(5.0).rawBits(), Value::fromDouble(5.0).rawBits()));
+    CHECK_FALSE(bronze_strict_eq(Value::fromDouble(5.0).rawBits(), Value::fromDouble(6.0).rawBits()));
+    const uint64_t nanBits = Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
+    CHECK_FALSE(bronze_strict_eq(nanBits, nanBits));
+    CHECK(bronze_strict_eq(Value::fromDouble(0.0).rawBits(), Value::fromDouble(-0.0).rawBits()));
+
+    // strings: content equality, not identity
+    uint64_t a1 = bronze_box_str("abc");
+    uint64_t a2 = bronze_box_str("abc");
+    uint64_t b = bronze_box_str("abd");
+    CHECK(bronze_strict_eq(a1, a2));
+    CHECK_FALSE(bronze_strict_eq(a1, b));
+
+    // mixed tags are never strictly equal
+    CHECK_FALSE(bronze_strict_eq(Value::fromDouble(0.0).rawBits(), Value::fromBool(false).rawBits()));
+    CHECK_FALSE(bronze_strict_eq(Value::fromNull().rawBits(), Value::fromUndefined().rawBits()));
+    CHECK_FALSE(bronze_strict_eq(bronze_box_str("5"), Value::fromDouble(5.0).rawBits()));
+
+    // identity cases
+    CHECK(bronze_strict_eq(Value::fromNull().rawBits(), Value::fromNull().rawBits()));
+    CHECK(bronze_strict_eq(Value::fromUndefined().rawBits(), Value::fromUndefined().rawBits()));
+    uint64_t obj = bronze_create_object();
+    CHECK(bronze_strict_eq(obj, obj));
+    CHECK_FALSE(bronze_strict_eq(obj, bronze_create_object()));
 }

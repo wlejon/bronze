@@ -49,6 +49,16 @@ std::unique_ptr<Module> Parser::parseModule(std::string name) {
     return mod;
 }
 
+std::vector<StmtPtr> Parser::parseBlockOrSingleStmt() {
+    if (check(TokenKind::LBrace)) {
+        return parseBlock();
+    }
+    auto stmt = parseStatement();
+    std::vector<StmtPtr> res;
+    if (stmt) res.push_back(std::move(stmt));
+    return res;
+}
+
 StmtPtr Parser::parseStatement() {
     if (match(TokenKind::KwExport)) {
         if (check(TokenKind::KwFunction)) return parseFunctionDecl(/*isExported=*/true);
@@ -56,9 +66,25 @@ StmtPtr Parser::parseStatement() {
         return nullptr;
     }
     if (check(TokenKind::KwFunction)) return parseFunctionDecl(/*isExported=*/false);
-    if (check(TokenKind::KwConst) || check(TokenKind::KwLet)) return parseVarDecl();
+    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) return parseVarDecl();
     if (check(TokenKind::KwReturn)) return parseReturn();
     if (check(TokenKind::KwIf)) return parseIf();
+    if (check(TokenKind::KwWhile)) return parseWhile();
+    if (check(TokenKind::KwDo)) return parseDoWhile();
+    if (check(TokenKind::KwFor)) return parseFor();
+    if (check(TokenKind::KwBreak)) return parseBreak();
+    if (check(TokenKind::KwContinue)) return parseContinue();
+    if (check(TokenKind::KwSwitch)) return parseSwitch();
+    if (check(TokenKind::KwTry)) return parseTry();
+    if (check(TokenKind::KwThrow)) return parseThrow();
+    if (check(TokenKind::LBrace)) {
+        auto blockSpan = peek().span;
+        auto stmts = parseBlock();
+        auto blk = std::make_unique<BlockStmt>();
+        blk->span = blockSpan;
+        blk->stmts = std::move(stmts);
+        return blk;
+    }
 
     auto expr = parseExpr();
     if (!expr) return nullptr;
@@ -99,8 +125,6 @@ StmtPtr Parser::parseFunctionDecl(bool isExported) {
 }
 
 std::string Parser::parseTypeAnnotation() {
-    // Types are captured as raw identifier text for now; the type system is
-    // its own module and will replace this with a real type expression tree.
     const Token* t = expect(TokenKind::Identifier, "type name");
     return t ? std::string(t->text) : std::string();
 }
@@ -118,10 +142,11 @@ std::vector<StmtPtr> Parser::parseBlock() {
 }
 
 StmtPtr Parser::parseVarDecl() {
-    const Token& kw = advance();  // const | let
+    const Token& kw = advance();  // const | let | var
     auto decl = std::make_unique<VarDecl>();
     decl->span.begin = kw.span.begin;
     decl->isConst = kw.kind == TokenKind::KwConst;
+    decl->isVar = kw.kind == TokenKind::KwVar;
 
     const Token* name = expect(TokenKind::Identifier, "variable name");
     if (!name) return nullptr;
@@ -160,8 +185,155 @@ StmtPtr Parser::parseIf() {
     stmt->condition = parseExpr();
     if (!stmt->condition) return nullptr;
     if (!expect(TokenKind::RParen, "')' after condition")) return nullptr;
-    stmt->thenBody = parseBlock();
-    if (match(TokenKind::KwElse)) stmt->elseBody = parseBlock();
+    stmt->thenBody = parseBlockOrSingleStmt();
+    if (match(TokenKind::KwElse)) stmt->elseBody = parseBlockOrSingleStmt();
+    return stmt;
+}
+
+StmtPtr Parser::parseWhile() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<WhileStmt>();
+    stmt->span = kw.span;
+    if (!expect(TokenKind::LParen, "'(' after 'while'")) return nullptr;
+    stmt->condition = parseExpr();
+    if (!stmt->condition) return nullptr;
+    if (!expect(TokenKind::RParen, "')' after condition")) return nullptr;
+    stmt->body = parseBlockOrSingleStmt();
+    return stmt;
+}
+
+StmtPtr Parser::parseDoWhile() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<DoWhileStmt>();
+    stmt->span = kw.span;
+    stmt->body = parseBlockOrSingleStmt();
+    if (!expect(TokenKind::KwWhile, "'while' after 'do' body")) return nullptr;
+    if (!expect(TokenKind::LParen, "'(' after 'while'")) return nullptr;
+    stmt->condition = parseExpr();
+    if (!stmt->condition) return nullptr;
+    if (!expect(TokenKind::RParen, "')' after condition")) return nullptr;
+    match(TokenKind::Semicolon);
+    return stmt;
+}
+
+StmtPtr Parser::parseFor() {
+    const Token& kw = advance();
+    if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
+
+    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
+        size_t lookahead = 2;
+        if (peek(lookahead).kind == TokenKind::Colon) lookahead += 2;
+        if (peek(lookahead).kind == TokenKind::KwIn) {
+            advance(); advance(); advance();
+            parseExpr(); expect(TokenKind::RParen, "')'"); parseBlockOrSingleStmt();
+            return std::make_unique<ForInStmt>();
+        }
+        if (peek(lookahead).kind == TokenKind::KwOf) {
+            advance(); advance(); advance();
+            parseExpr(); expect(TokenKind::RParen, "')'"); parseBlockOrSingleStmt();
+            return std::make_unique<ForOfStmt>();
+        }
+    }
+
+    auto stmt = std::make_unique<ForStmt>();
+    stmt->span = kw.span;
+
+    if (!check(TokenKind::Semicolon)) {
+        if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
+            stmt->init = parseVarDecl();
+        } else {
+            auto e = parseExpr();
+            if (e) {
+                expect(TokenKind::Semicolon, "';' after for init");
+                auto es = std::make_unique<ExprStmt>();
+                es->span = e->span;
+                es->expr = std::move(e);
+                stmt->init = std::move(es);
+            }
+        }
+    } else {
+        advance();
+    }
+
+    if (!check(TokenKind::Semicolon)) {
+        stmt->condition = parseExpr();
+    }
+    expect(TokenKind::Semicolon, "';' after for condition");
+
+    if (!check(TokenKind::RParen)) {
+        stmt->update = parseExpr();
+    }
+    expect(TokenKind::RParen, "')' after for header");
+
+    stmt->body = parseBlockOrSingleStmt();
+    return stmt;
+}
+
+StmtPtr Parser::parseBreak() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<BreakStmt>();
+    stmt->span = kw.span;
+    if (check(TokenKind::Identifier)) {
+        stmt->label = std::string(advance().text);
+    }
+    expect(TokenKind::Semicolon, "';' after break");
+    return stmt;
+}
+
+StmtPtr Parser::parseContinue() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<ContinueStmt>();
+    stmt->span = kw.span;
+    if (check(TokenKind::Identifier)) {
+        stmt->label = std::string(advance().text);
+    }
+    expect(TokenKind::Semicolon, "';' after continue");
+    return stmt;
+}
+
+StmtPtr Parser::parseSwitch() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<SwitchStmt>();
+    stmt->span = kw.span;
+    if (match(TokenKind::LParen)) {
+        parseExpr();
+        match(TokenKind::RParen);
+    }
+    if (match(TokenKind::LBrace)) {
+        int depth = 1;
+        while (!check(TokenKind::EndOfFile) && depth > 0) {
+            if (check(TokenKind::LBrace)) depth++;
+            else if (check(TokenKind::RBrace)) {
+                depth--;
+                if (depth == 0) { advance(); break; }
+            }
+            advance();
+        }
+    }
+    return stmt;
+}
+
+StmtPtr Parser::parseTry() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<TryStmt>();
+    stmt->span = kw.span;
+    if (check(TokenKind::LBrace)) parseBlock();
+    if (match(TokenKind::KwCatch)) {
+        if (match(TokenKind::LParen)) {
+            match(TokenKind::Identifier);
+            match(TokenKind::RParen);
+        }
+        if (check(TokenKind::LBrace)) parseBlock();
+    }
+    return stmt;
+}
+
+StmtPtr Parser::parseThrow() {
+    const Token& kw = advance();
+    auto stmt = std::make_unique<ThrowStmt>();
+    stmt->span = kw.span;
+    parseExpr();
+    match(TokenKind::Semicolon);
     return stmt;
 }
 
@@ -178,16 +350,27 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
         OpInfo info;
     } kOps[] = {
         {TokenKind::Assign, {BinaryOp::Assign, 0}},
-        {TokenKind::EqualEqualEqual, {BinaryOp::StrictEq, 1}},
-        {TokenKind::BangEqualEqual, {BinaryOp::StrictNe, 1}},
-        {TokenKind::EqualEqual, {BinaryOp::Eq, 1}},
-        {TokenKind::BangEqual, {BinaryOp::Ne, 1}},
-        {TokenKind::Less, {BinaryOp::Less, 2}},
-        {TokenKind::Greater, {BinaryOp::Greater, 2}},
-        {TokenKind::Plus, {BinaryOp::Add, 3}},
-        {TokenKind::Minus, {BinaryOp::Sub, 3}},
-        {TokenKind::Star, {BinaryOp::Mul, 4}},
-        {TokenKind::Slash, {BinaryOp::Div, 4}},
+        {TokenKind::PlusAssign, {BinaryOp::PlusAssign, 0}},
+        {TokenKind::MinusAssign, {BinaryOp::MinusAssign, 0}},
+        {TokenKind::StarAssign, {BinaryOp::StarAssign, 0}},
+        {TokenKind::SlashAssign, {BinaryOp::SlashAssign, 0}},
+        {TokenKind::PercentAssign, {BinaryOp::PercentAssign, 0}},
+        {TokenKind::QuestionQuestion, {BinaryOp::NullishCoalescing, 1}},
+        {TokenKind::PipePipe, {BinaryOp::LogicalOr, 2}},
+        {TokenKind::AmpAmp, {BinaryOp::LogicalAnd, 3}},
+        {TokenKind::EqualEqualEqual, {BinaryOp::StrictEq, 4}},
+        {TokenKind::BangEqualEqual, {BinaryOp::StrictNe, 4}},
+        {TokenKind::EqualEqual, {BinaryOp::Eq, 4}},
+        {TokenKind::BangEqual, {BinaryOp::Ne, 4}},
+        {TokenKind::Less, {BinaryOp::Less, 5}},
+        {TokenKind::Greater, {BinaryOp::Greater, 5}},
+        {TokenKind::LessEqual, {BinaryOp::LessEqual, 5}},
+        {TokenKind::GreaterEqual, {BinaryOp::GreaterEqual, 5}},
+        {TokenKind::Plus, {BinaryOp::Add, 6}},
+        {TokenKind::Minus, {BinaryOp::Sub, 6}},
+        {TokenKind::Star, {BinaryOp::Mul, 7}},
+        {TokenKind::Slash, {BinaryOp::Div, 7}},
+        {TokenKind::Percent, {BinaryOp::Mod, 7}},
     };
     for (const auto& entry : kOps)
         if (entry.kind == kind) return &entry.info;
@@ -195,10 +378,26 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
 }
 }  // namespace
 
-ExprPtr Parser::parseExpr() { return parseBinary(0); }
+ExprPtr Parser::parseExpr() {
+    auto expr = parseBinary(0);
+    if (!expr) return nullptr;
+    if (match(TokenKind::Question)) {
+        auto ternary = std::make_unique<Ternary>();
+        ternary->span.begin = expr->span.begin;
+        ternary->condition = std::move(expr);
+        ternary->thenExpr = parseExpr();
+        if (!ternary->thenExpr) return nullptr;
+        if (!expect(TokenKind::Colon, "':' in ternary expression")) return nullptr;
+        ternary->elseExpr = parseExpr();
+        if (!ternary->elseExpr) return nullptr;
+        ternary->span.end = ternary->elseExpr->span.end;
+        return ternary;
+    }
+    return expr;
+}
 
 ExprPtr Parser::parseBinary(int minPrecedence) {
-    auto lhs = parseUnaryPostfix();
+    auto lhs = parseUnaryPrefix();
     if (!lhs) return nullptr;
     for (;;) {
         const OpInfo* info = binaryOpInfo(peek().kind);
@@ -213,6 +412,56 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
         bin->rhs = std::move(rhs);
         lhs = std::move(bin);
     }
+}
+
+ExprPtr Parser::parseUnaryPrefix() {
+    const Token& t = peek();
+    if (match(TokenKind::Bang)) {
+        auto sub = parseUnaryPrefix();
+        if (!sub) return nullptr;
+        auto u = std::make_unique<Unary>();
+        u->span = {t.span.begin, sub->span.end};
+        u->op = UnaryOp::Not;
+        u->operand = std::move(sub);
+        return u;
+    }
+    if (match(TokenKind::Minus)) {
+        auto sub = parseUnaryPrefix();
+        if (!sub) return nullptr;
+        auto u = std::make_unique<Unary>();
+        u->span = {t.span.begin, sub->span.end};
+        u->op = UnaryOp::Negate;
+        u->operand = std::move(sub);
+        return u;
+    }
+    if (match(TokenKind::Plus)) {
+        auto sub = parseUnaryPrefix();
+        if (!sub) return nullptr;
+        auto u = std::make_unique<Unary>();
+        u->span = {t.span.begin, sub->span.end};
+        u->op = UnaryOp::Posate;
+        u->operand = std::move(sub);
+        return u;
+    }
+    if (match(TokenKind::PlusPlus)) {
+        auto sub = parseUnaryPrefix();
+        if (!sub) return nullptr;
+        auto u = std::make_unique<Unary>();
+        u->span = {t.span.begin, sub->span.end};
+        u->op = UnaryOp::PreInc;
+        u->operand = std::move(sub);
+        return u;
+    }
+    if (match(TokenKind::MinusMinus)) {
+        auto sub = parseUnaryPrefix();
+        if (!sub) return nullptr;
+        auto u = std::make_unique<Unary>();
+        u->span = {t.span.begin, sub->span.end};
+        u->op = UnaryOp::PreDec;
+        u->operand = std::move(sub);
+        return u;
+    }
+    return parseUnaryPostfix();
 }
 
 ExprPtr Parser::parseUnaryPostfix() {
@@ -258,6 +507,18 @@ ExprPtr Parser::parseUnaryPostfix() {
             if (!expect(TokenKind::RParen, "')' after arguments")) return nullptr;
             call->span.end = peek().span.begin;
             expr = std::move(call);
+        } else if (match(TokenKind::PlusPlus)) {
+            auto u = std::make_unique<Unary>();
+            u->span = {expr->span.begin, peek().span.begin};
+            u->op = UnaryOp::PostInc;
+            u->operand = std::move(expr);
+            expr = std::move(u);
+        } else if (match(TokenKind::MinusMinus)) {
+            auto u = std::make_unique<Unary>();
+            u->span = {expr->span.begin, peek().span.begin};
+            u->op = UnaryOp::PostDec;
+            u->operand = std::move(expr);
+            expr = std::move(u);
         } else {
             break;
         }
@@ -282,8 +543,33 @@ ExprPtr Parser::parsePrimary() {
             advance();
             auto lit = std::make_unique<StringLit>();
             lit->span = t.span;
-            // Strip quotes; escapes stay raw until the string decoder lands.
             lit->value = std::string(t.text.substr(1, t.text.size() - 2));
+            return lit;
+        }
+        case TokenKind::KwTrue: {
+            advance();
+            auto lit = std::make_unique<BoolLit>();
+            lit->span = t.span;
+            lit->value = true;
+            return lit;
+        }
+        case TokenKind::KwFalse: {
+            advance();
+            auto lit = std::make_unique<BoolLit>();
+            lit->span = t.span;
+            lit->value = false;
+            return lit;
+        }
+        case TokenKind::KwNull: {
+            advance();
+            auto lit = std::make_unique<NullLit>();
+            lit->span = t.span;
+            return lit;
+        }
+        case TokenKind::KwUndefined: {
+            advance();
+            auto lit = std::make_unique<UndefinedLit>();
+            lit->span = t.span;
             return lit;
         }
         case TokenKind::Identifier: {

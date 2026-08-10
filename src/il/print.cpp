@@ -20,13 +20,20 @@ const char* opName(Op op) {
     switch (op) {
         case Op::ConstF64: return "const.f64";
         case Op::ConstI32: return "const.i32";
+        case Op::ConstBool: return "const.bool";
+        case Op::ConstUndefined: return "const.undefined";
+        case Op::ConstNull: return "const.null";
         case Op::Add: return "add";
         case Op::Sub: return "sub";
         case Op::Mul: return "mul";
         case Op::Div: return "div";
+        case Op::Mod: return "mod";
         case Op::CmpLt: return "cmp.lt";
         case Op::CmpGt: return "cmp.gt";
         case Op::CmpEq: return "cmp.eq";
+        case Op::CmpNe: return "cmp.ne";
+        case Op::StrictEq: return "strict.eq";
+        case Op::IsNullish: return "is.nullish";
         case Op::Ret: return "ret";
         case Op::Jump: return "jump";
         case Op::Branch: return "br";
@@ -112,8 +119,14 @@ std::string print(const Module& module) {
                         }
                         break;
                     case Op::Box:
-                        out += "box." + std::string(typeName(inst.boxType)) + " %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        // A str box with no operand takes its payload from the
+                        // module key-constant table, not a ValueId.
+                        out += "box." + std::string(typeName(inst.boxType));
+                        if (inst.operands.empty()) {
+                            out += " k" + std::to_string(inst.keyIndex);
+                        } else {
+                            out += " %" + std::to_string(inst.operands[0]);
+                        }
                         break;
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +
@@ -162,6 +175,7 @@ std::string print(const Module& module) {
                         switch (inst.op) {
                             case Op::ConstF64: out += " " + formatF64(inst.immF64); break;
                             case Op::ConstI32: out += " " + std::to_string(inst.immI32); break;
+                            case Op::ConstBool: out += " " + std::string(inst.immI32 ? "true" : "false"); break;
                             case Op::Call:
                                 out += " @" + module.functions[inst.calleeIndex].name;
                                 break;

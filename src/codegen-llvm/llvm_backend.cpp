@@ -267,6 +267,21 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     values[inst.result] = builder.getInt32(inst.immI32);
                     break;
                 }
+                case il::Op::ConstBool: {
+                    if (inst.result == il::kNoValue) break;
+                    values[inst.result] = builder.getInt1(inst.immI32 != 0);
+                    break;
+                }
+                case il::Op::ConstUndefined: {
+                    if (inst.result == il::kNoValue) break;
+                    values[inst.result] = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+                    break;
+                }
+                case il::Op::ConstNull: {
+                    if (inst.result == il::kNoValue) break;
+                    values[inst.result] = builder.getInt64(BRONZE_ABI_NULL_BITS);
+                    break;
+                }
                 case il::Op::Box: {
                     if (inst.result == il::kNoValue) break;
                     if (inst.boxType == il::Type::Str) {
@@ -484,58 +499,93 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
-                case il::Op::CmpLt: {
+                case il::Op::CmpLt:
+                case il::Op::CmpGt:
+                case il::Op::CmpEq:
+                case il::Op::CmpNe: {
+                    // Lowering guarantees same-typed operands here (dynamic
+                    // comparisons go through unbox or strict.eq). Anything
+                    // else is a lowering bug — never coerce raw bits.
                     if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
-                        diags.error(Span{}, "Invalid operands for CmpLt");
+                        diags.error(Span{}, std::string("Invalid operands for ") + il::opName(inst.op));
                         return false;
                     }
                     llvm::Value* lhs = values[inst.operands[0]];
                     llvm::Value* rhs = values[inst.operands[1]];
                     if (!lhs || !rhs) {
-                        diags.error(Span{}, "Undefined value in CmpLt instruction");
+                        diags.error(Span{}, std::string("Undefined value in ") + il::opName(inst.op) + " instruction");
                         return false;
                     }
-                    if (lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
-                        values[inst.result] = builder.CreateFCmpOLT(lhs, rhs);
+                    if (lhs->getType() != rhs->getType()) {
+                        diags.error(Span{}, std::string("Mismatched operand types in ") + il::opName(inst.op) +
+                                                " (lowering bug)");
+                        return false;
+                    }
+                    if (lhs->getType()->isDoubleTy()) {
+                        switch (inst.op) {
+                            case il::Op::CmpLt: values[inst.result] = builder.CreateFCmpOLT(lhs, rhs); break;
+                            case il::Op::CmpGt: values[inst.result] = builder.CreateFCmpOGT(lhs, rhs); break;
+                            case il::Op::CmpEq: values[inst.result] = builder.CreateFCmpOEQ(lhs, rhs); break;
+                            default: values[inst.result] = builder.CreateFCmpONE(lhs, rhs); break;
+                        }
+                    } else if (lhs->getType()->isIntegerTy(1) &&
+                               (inst.op == il::Op::CmpEq || inst.op == il::Op::CmpNe)) {
+                        values[inst.result] = inst.op == il::Op::CmpEq ? builder.CreateICmpEQ(lhs, rhs)
+                                                                       : builder.CreateICmpNE(lhs, rhs);
+                    } else if (lhs->getType()->isIntegerTy(32)) {
+                        switch (inst.op) {
+                            case il::Op::CmpLt: values[inst.result] = builder.CreateICmpSLT(lhs, rhs); break;
+                            case il::Op::CmpGt: values[inst.result] = builder.CreateICmpSGT(lhs, rhs); break;
+                            case il::Op::CmpEq: values[inst.result] = builder.CreateICmpEQ(lhs, rhs); break;
+                            default: values[inst.result] = builder.CreateICmpNE(lhs, rhs); break;
+                        }
                     } else {
-                        values[inst.result] = builder.CreateICmpSLT(lhs, rhs);
+                        diags.error(Span{}, std::string("Unsupported operand type in ") + il::opName(inst.op));
+                        return false;
                     }
                     break;
                 }
-                case il::Op::CmpGt: {
+                case il::Op::StrictEq: {
                     if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
-                        diags.error(Span{}, "Invalid operands for CmpGt");
+                        diags.error(Span{}, "Invalid operands for StrictEq");
                         return false;
                     }
                     llvm::Value* lhs = values[inst.operands[0]];
                     llvm::Value* rhs = values[inst.operands[1]];
                     if (!lhs || !rhs) {
-                        diags.error(Span{}, "Undefined value in CmpGt instruction");
+                        diags.error(Span{}, "Undefined value in StrictEq instruction");
                         return false;
                     }
-                    if (lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
-                        values[inst.result] = builder.CreateFCmpOGT(lhs, rhs);
+                    values[inst.result] = builder.CreateCall(abi.bronze_strict_eq, {lhs, rhs});
+                    break;
+                }
+                case il::Op::Mod: {
+                    if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for Mod");
+                        return false;
+                    }
+                    llvm::Value* lhs = values[inst.operands[0]];
+                    llvm::Value* rhs = values[inst.operands[1]];
+                    if (!lhs || !rhs) {
+                        diags.error(Span{}, "Undefined value in Mod instruction");
+                        return false;
+                    }
+                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
+                        if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
+                        if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());
+                        values[inst.result] = builder.CreateFRem(lhs, rhs);
                     } else {
-                        values[inst.result] = builder.CreateICmpSGT(lhs, rhs);
+                        values[inst.result] = builder.CreateSRem(lhs, rhs);
                     }
                     break;
                 }
-                case il::Op::CmpEq: {
-                    if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
-                        diags.error(Span{}, "Invalid operands for CmpEq");
+                case il::Op::IsNullish: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for IsNullish");
                         return false;
                     }
-                    llvm::Value* lhs = values[inst.operands[0]];
-                    llvm::Value* rhs = values[inst.operands[1]];
-                    if (!lhs || !rhs) {
-                        diags.error(Span{}, "Undefined value in CmpEq instruction");
-                        return false;
-                    }
-                    if (lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
-                        values[inst.result] = builder.CreateFCmpOEQ(lhs, rhs);
-                    } else {
-                        values[inst.result] = builder.CreateICmpEQ(lhs, rhs);
-                    }
+                    llvm::Value* srcVal = values[inst.operands[0]];
+                    values[inst.result] = builder.CreateCall(abi.bronze_is_nullish, {srcVal});
                     break;
                 }
                 case il::Op::Call: {

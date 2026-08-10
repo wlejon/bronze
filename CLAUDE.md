@@ -28,8 +28,11 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - **Deterministic output only**: no locale functions, no hash-map
   iteration order in output paths, floats via `std::to_chars`.
 - **Ratchets only grow**: never weaken or remove a pinned test/case to
-  make something pass. Oracle cases (docs/0003) compare stdout to node
-  byte-for-byte — never normalize bytes to force a match.
+  make something pass. Oracle cases (docs/0003) compare stdout to a
+  committed `.expected` file byte-for-byte — never edit an expectation
+  to match bronze's output, and never normalize bytes to force a match.
+- **node is not a dependency.** Tests, builds, and benchmarks must never
+  invoke node; expectations are pinned files (docs/0003).
 - **Module isolation**: each `src/<module>` is a static lib + own doctest
   binary + ctest label; dependencies flow through `bronze::<module>`
   targets only; the CLI is the composition root.
@@ -49,6 +52,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0000 broc post-mortem (why bronze exists; the lessons as rules)
 - 0001 foundation (decisions, phases)
 - 0002 LLVM end-to-end plan (current work)
-- 0003 node-as-oracle differential harness
+- 0003 differential harness — pinned .expected files (node-free since 2026-08-10)
 - 0004 dynamic value model (NaN-boxing / shapes / GC / strings / arrays — accepted 2026-08-10)
 - 0005 control flow (blocks / block-argument SSA / truthiness — designed 2026-08-10)

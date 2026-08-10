@@ -28,6 +28,12 @@ extern "C" {
  * (function objects' code pointers). Primitives only, by construction. */
 typedef uint64_t (*bronze_fn_code)(uint64_t this_bits, uint32_t argc, const uint64_t* argv_bits);
 
+/* Bit patterns of the NaN-boxed `undefined` and `null` values, so generated
+ * code can materialize them as plain i64 constants. Pinned against the
+ * runtime's Value constructors by static_asserts in rt_helpers.cpp. */
+#define BRONZE_ABI_UNDEFINED_BITS 0xFFF6000000000000ull
+#define BRONZE_ABI_NULL_BITS      0xFFF5000000000000ull
+
 /*
  * X(name, RET, PARAMS)
  *   RET    — one BRONZE_ABI_* type token (BRONZE_ABI_VOID for none)
@@ -35,6 +41,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t this_bits, uint32_t argc, const uint
  *            (BRONZE_ABI_NOARGS) for an empty parameter list
  */
 #define BRONZE_ABI_FUNCTIONS(X) \
+    X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
+    X(bronze_is_nullish,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
+    X(bronze_strict_eq,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_box_f64,             BRONZE_ABI_U64,  (BRONZE_ABI_F64)) \
     X(bronze_box_i32,             BRONZE_ABI_U64,  (BRONZE_ABI_I32)) \
     X(bronze_box_bool,            BRONZE_ABI_U64,  (BRONZE_ABI_BOOL)) \

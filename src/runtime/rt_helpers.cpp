@@ -5,11 +5,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "runtime/array.h"
+#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/number_format.h"
 #include "runtime/gc.h"
@@ -23,6 +25,11 @@ static Heap g_heap(64 * 1024 * 1024);
 static NonMovingArena g_arena;
 static std::vector<std::string> g_keyStrings;
 static std::vector<InlineCache> g_inlineCaches;
+
+static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
+              "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
+static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
+              "BRONZE_ABI_NULL_BITS in bronze_abi.h has drifted from the value model");
 
 static uint64_t bronze_builtin_string_char_code_at(uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
     Value thisArg(thisBits);
@@ -52,9 +59,12 @@ static Value valueToString(Value v) {
     } else if (v.isBool()) {
         StringHeader* sh = StringHeader::createFromUTF8(g_heap, v.asBool() ? "true" : "false");
         return Value::fromString(sh);
+    } else if (v.isNull()) {
+        return Value::fromString(StringHeader::createFromUTF8(g_heap, "null"));
+    } else if (v.isUndefined()) {
+        return Value::fromString(StringHeader::createFromUTF8(g_heap, "undefined"));
     }
-    StringHeader* sh = StringHeader::createFromUTF8(g_heap, "");
-    return Value::fromString(sh);
+    fatal("ToString on an object is unsupported");
 }
 
 extern "C" {
@@ -83,10 +93,14 @@ uint64_t bronze_box_str_key(uint32_t keyIndex) {
 }
 
 double bronze_unbox_f64(uint64_t bits) {
+    // ToNumber for the primitives it is defined on; anything needing string
+    // parsing or ToPrimitive is a named hard error, never a silent 0.
     Value v(bits);
     if (v.isNumber()) return v.asNumber();
     if (v.isBool()) return v.asBool() ? 1.0 : 0.0;
-    return 0.0;
+    if (v.isNull()) return 0.0;
+    if (v.isUndefined()) return std::numeric_limits<double>::quiet_NaN();
+    fatal("ToNumber on a string or object is unsupported");
 }
 
 int32_t bronze_unbox_i32(uint64_t bits) {
@@ -97,11 +111,45 @@ int32_t bronze_unbox_i32(uint64_t bits) {
     return 0;
 }
 
-bool bronze_unbox_bool(uint64_t bits) {
+bool bronze_truthy(uint64_t bits) {
     Value v(bits);
+    if (v.isUndefined() || v.isNull() || v.isHole()) return false;
     if (v.isBool()) return v.asBool();
-    if (v.isNumber()) return v.asNumber() != 0.0;
-    return false;
+    if (v.isNumber()) {
+        double d = v.asNumber();
+        return (d != 0.0) && !std::isnan(d);
+    }
+    if (v.isInt32()) {
+        return static_cast<int32_t>(v.payload()) != 0;
+    }
+    if (v.isString()) {
+        StringHeader* str = v.asString<StringHeader>();
+        return str && (str->getLength() > 0);
+    }
+    return true;
+}
+
+bool bronze_is_nullish(uint64_t bits) {
+    Value v(bits);
+    return v.isNull() || v.isUndefined() || v.isHole();
+}
+
+bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
+    Value a(aBits);
+    Value b(bBits);
+    if (a.isNumber() && b.isNumber()) {
+        return a.asNumber() == b.asNumber();  // NaN !== NaN, +0 === -0
+    }
+    if (a.isString() && b.isString()) {
+        return a.asString<StringHeader>()->equals(*b.asString<StringHeader>());
+    }
+    // Same tag + same payload: bools, null, undefined, object identity.
+    // Different tags can never be strictly equal.
+    return aBits == bBits;
+}
+
+bool bronze_unbox_bool(uint64_t bits) {
+    return bronze_truthy(bits);
 }
 
 uint64_t bronze_create_object() {

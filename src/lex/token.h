@@ -13,15 +13,33 @@ enum class TokenKind {
     NumberLiteral,
     StringLiteral,
 
-    // Keywords (kept alphabetical; keywordFromText must match).
+    // Keywords (kept alphabetical).
+    KwBreak,
+    KwCase,
+    KwCatch,
     KwConst,
+    KwContinue,
+    KwDefault,
+    KwDo,
     KwElse,
     KwExport,
+    KwFalse,
+    KwFor,
     KwFunction,
     KwIf,
     KwImport,
+    KwIn,
     KwLet,
+    KwNull,
+    KwOf,
     KwReturn,
+    KwSwitch,
+    KwThrow,
+    KwTrue,
+    KwTry,
+    KwUndefined,
+    KwVar,
+    KwWhile,
 
     // Punctuation / operators.
     LParen,
@@ -40,12 +58,27 @@ enum class TokenKind {
     Minus,
     Star,
     Slash,
+    Percent,
     Less,
     Greater,
+    LessEqual,
+    GreaterEqual,
     EqualEqual,   // ==
     EqualEqualEqual,  // ===
     BangEqual,    // !=
     BangEqualEqual,   // !==
+    AmpAmp,       // &&
+    PipePipe,     // ||
+    Question,     // ?
+    QuestionQuestion, // ??
+    Bang,         // !
+    PlusPlus,     // ++
+    MinusMinus,   // --
+    PlusAssign,   // +=
+    MinusAssign,  // -=
+    StarAssign,   // *=
+    SlashAssign,  // /=
+    PercentAssign,// %=
 };
 
 const char* tokenKindName(TokenKind kind);

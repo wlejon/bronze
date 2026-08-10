@@ -53,4 +53,15 @@ a perf smoke against node from the first day.
 - 2026-08-10 (dynamic substrate landed): fib.js | bronze: 9.52ms | node: 34.64ms | 3.64x (byte match)
 - 2026-08-10 (dynamic substrate landed): numeric_loop.js | bronze: 9.41ms | node: 33.70ms | 3.58x (byte match)
 - 2026-08-10: property_access.js | bronze: 894.36ms | node: 34.03ms | **0.04x — 26x slower** (byte match). First dynamic-path bench: every property access and dynamic call crosses into C++ runtime helpers with no inline-cache fast path in generated code. This is the baseline gap that inference (phase 3) and IL-level IC fast paths must close — recorded on day one so no broc-style surprise is possible.
+- 2026-08-10 (control flow landed; benchmarks rewritten as real loops): all
+  earlier entries are superseded — the old benches were hand-unrolled
+  straight-line code that LLVM could constant-fold, so those numbers mostly
+  measured process startup. New honest baseline (bronze-only; node is no
+  longer invoked by any tooling, see docs/0003):
+  - fib.js — recursive fib(30) — avg 112.0ms / min 105.7ms (output 832040, correct)
+  - numeric_loop.js — 10M-iteration float loop — avg 86.9ms / min 81.8ms
+  - property_access.js — 1M-iteration `o.a + o.b` loop — avg 890.1ms / min
+    876.0ms. The dynamic-dispatch gap is now cleanly visible in one number:
+    ~0.9µs per iteration of two prop.get helper calls + boxing. This is the
+    number inference (0006) and generated-code IC fast paths must attack.
 

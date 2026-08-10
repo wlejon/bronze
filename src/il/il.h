@@ -28,13 +28,20 @@ const char* typeName(Type t);
 enum class Op : uint8_t {
     ConstF64,   // a = const.f64 <imm>
     ConstI32,   // a = const.i32 <imm>
+    ConstBool,  // a = const.bool <imm>
+    ConstUndefined, // a: dynamic = const.undefined
+    ConstNull,      // a: dynamic = const.null
     Add,        // a = add b, c        (numeric, operands same type)
     Sub,
     Mul,
     Div,
+    Mod,
     CmpLt,      // a: bool = cmp.lt b, c
     CmpGt,
     CmpEq,
+    CmpNe,
+    StrictEq,   // a: bool = strict.eq b, c   (JS ===, both operands dynamic)
+    IsNullish,  // a: bool = is.nullish b
     Ret,        // ret [a]
     Jump,       // jump bN(args...)
     Branch,     // br %cond, bThen(args...), bElse(args...)

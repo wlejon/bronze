@@ -40,11 +40,21 @@ private:
     ast::StmtPtr parseVarDecl();
     ast::StmtPtr parseReturn();
     ast::StmtPtr parseIf();
+    ast::StmtPtr parseWhile();
+    ast::StmtPtr parseDoWhile();
+    ast::StmtPtr parseFor();
+    ast::StmtPtr parseBreak();
+    ast::StmtPtr parseContinue();
+    ast::StmtPtr parseSwitch();
+    ast::StmtPtr parseTry();
+    ast::StmtPtr parseThrow();
     std::vector<ast::StmtPtr> parseBlock();
+    std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
     std::string parseTypeAnnotation();
 
     ast::ExprPtr parseExpr();
     ast::ExprPtr parseBinary(int minPrecedence);
+    ast::ExprPtr parseUnaryPrefix();
     ast::ExprPtr parseUnaryPostfix();
     ast::ExprPtr parsePrimary();
     ast::ExprPtr parseObjectLit();

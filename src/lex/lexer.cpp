@@ -8,14 +8,32 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::Identifier: return "ident";
         case TokenKind::NumberLiteral: return "number";
         case TokenKind::StringLiteral: return "string";
+        case TokenKind::KwBreak: return "break";
+        case TokenKind::KwCase: return "case";
+        case TokenKind::KwCatch: return "catch";
         case TokenKind::KwConst: return "const";
+        case TokenKind::KwContinue: return "continue";
+        case TokenKind::KwDefault: return "default";
+        case TokenKind::KwDo: return "do";
         case TokenKind::KwElse: return "else";
         case TokenKind::KwExport: return "export";
+        case TokenKind::KwFalse: return "false";
+        case TokenKind::KwFor: return "for";
         case TokenKind::KwFunction: return "function";
         case TokenKind::KwIf: return "if";
         case TokenKind::KwImport: return "import";
+        case TokenKind::KwIn: return "in";
         case TokenKind::KwLet: return "let";
+        case TokenKind::KwNull: return "null";
+        case TokenKind::KwOf: return "of";
         case TokenKind::KwReturn: return "return";
+        case TokenKind::KwSwitch: return "switch";
+        case TokenKind::KwThrow: return "throw";
+        case TokenKind::KwTrue: return "true";
+        case TokenKind::KwTry: return "try";
+        case TokenKind::KwUndefined: return "undefined";
+        case TokenKind::KwVar: return "var";
+        case TokenKind::KwWhile: return "while";
         case TokenKind::LParen: return "(";
         case TokenKind::RParen: return ")";
         case TokenKind::LBrace: return "{";
@@ -32,12 +50,27 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::Minus: return "-";
         case TokenKind::Star: return "*";
         case TokenKind::Slash: return "/";
+        case TokenKind::Percent: return "%";
         case TokenKind::Less: return "<";
         case TokenKind::Greater: return ">";
+        case TokenKind::LessEqual: return "<=";
+        case TokenKind::GreaterEqual: return ">=";
         case TokenKind::EqualEqual: return "==";
         case TokenKind::EqualEqualEqual: return "===";
         case TokenKind::BangEqual: return "!=";
         case TokenKind::BangEqualEqual: return "!==";
+        case TokenKind::AmpAmp: return "&&";
+        case TokenKind::PipePipe: return "||";
+        case TokenKind::Question: return "?";
+        case TokenKind::QuestionQuestion: return "??";
+        case TokenKind::Bang: return "!";
+        case TokenKind::PlusPlus: return "++";
+        case TokenKind::MinusMinus: return "--";
+        case TokenKind::PlusAssign: return "+=";
+        case TokenKind::MinusAssign: return "-=";
+        case TokenKind::StarAssign: return "*=";
+        case TokenKind::SlashAssign: return "/=";
+        case TokenKind::PercentAssign: return "%=";
     }
     return "unknown";
 }
@@ -93,10 +126,19 @@ Token Lexer::lexIdentifierOrKeyword() {
         TokenKind kind;
     };
     static constexpr Keyword kKeywords[] = {
-        {"const", TokenKind::KwConst},   {"else", TokenKind::KwElse},
-        {"export", TokenKind::KwExport}, {"function", TokenKind::KwFunction},
-        {"if", TokenKind::KwIf},         {"import", TokenKind::KwImport},
-        {"let", TokenKind::KwLet},       {"return", TokenKind::KwReturn},
+        {"break", TokenKind::KwBreak},       {"case", TokenKind::KwCase},
+        {"catch", TokenKind::KwCatch},       {"const", TokenKind::KwConst},
+        {"continue", TokenKind::KwContinue}, {"default", TokenKind::KwDefault},
+        {"do", TokenKind::KwDo},             {"else", TokenKind::KwElse},
+        {"export", TokenKind::KwExport},     {"false", TokenKind::KwFalse},
+        {"for", TokenKind::KwFor},           {"function", TokenKind::KwFunction},
+        {"if", TokenKind::KwIf},             {"import", TokenKind::KwImport},
+        {"in", TokenKind::KwIn},             {"let", TokenKind::KwLet},
+        {"null", TokenKind::KwNull},         {"of", TokenKind::KwOf},
+        {"return", TokenKind::KwReturn},     {"switch", TokenKind::KwSwitch},
+        {"throw", TokenKind::KwThrow},       {"true", TokenKind::KwTrue},
+        {"try", TokenKind::KwTry},           {"undefined", TokenKind::KwUndefined},
+        {"var", TokenKind::KwVar},           {"while", TokenKind::KwWhile},
     };
     for (const auto& kw : kKeywords) {
         if (text == kw.text) return make(kw.kind, begin);
@@ -144,12 +186,38 @@ Token Lexer::lexPunctuation() {
         case ';': ++pos_; return make(TokenKind::Semicolon, begin);
         case ':': ++pos_; return make(TokenKind::Colon, begin);
         case '.': ++pos_; return make(TokenKind::Dot, begin);
-        case '+': ++pos_; return make(TokenKind::Plus, begin);
-        case '-': ++pos_; return make(TokenKind::Minus, begin);
-        case '*': ++pos_; return make(TokenKind::Star, begin);
-        case '/': ++pos_; return make(TokenKind::Slash, begin);
-        case '<': ++pos_; return make(TokenKind::Less, begin);
-        case '>': ++pos_; return make(TokenKind::Greater, begin);
+        case '?':
+            if (peek(1) == '?') { pos_ += 2; return make(TokenKind::QuestionQuestion, begin); }
+            ++pos_; return make(TokenKind::Question, begin);
+        case '&':
+            if (peek(1) == '&') { pos_ += 2; return make(TokenKind::AmpAmp, begin); }
+            break;
+        case '|':
+            if (peek(1) == '|') { pos_ += 2; return make(TokenKind::PipePipe, begin); }
+            break;
+        case '+':
+            if (peek(1) == '+') { pos_ += 2; return make(TokenKind::PlusPlus, begin); }
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PlusAssign, begin); }
+            ++pos_; return make(TokenKind::Plus, begin);
+        case '-':
+            if (peek(1) == '-') { pos_ += 2; return make(TokenKind::MinusMinus, begin); }
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::MinusAssign, begin); }
+            ++pos_; return make(TokenKind::Minus, begin);
+        case '*':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::StarAssign, begin); }
+            ++pos_; return make(TokenKind::Star, begin);
+        case '/':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::SlashAssign, begin); }
+            ++pos_; return make(TokenKind::Slash, begin);
+        case '%':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PercentAssign, begin); }
+            ++pos_; return make(TokenKind::Percent, begin);
+        case '<':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::LessEqual, begin); }
+            ++pos_; return make(TokenKind::Less, begin);
+        case '>':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::GreaterEqual, begin); }
+            ++pos_; return make(TokenKind::Greater, begin);
         case '=':
             if (peek(1) == '>') { pos_ += 2; return make(TokenKind::Arrow, begin); }
             if (peek(1) == '=' && peek(2) == '=') { pos_ += 3; return make(TokenKind::EqualEqualEqual, begin); }
@@ -159,7 +227,8 @@ Token Lexer::lexPunctuation() {
         case '!':
             if (peek(1) == '=' && peek(2) == '=') { pos_ += 3; return make(TokenKind::BangEqualEqual, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::BangEqual, begin); }
-            break;
+            ++pos_;
+            return make(TokenKind::Bang, begin);
         default: break;
     }
     ++pos_;

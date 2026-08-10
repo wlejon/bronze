@@ -146,7 +146,7 @@ TEST_CASE("lowering dynamic types, property access, array indexing, and dynamic 
     CHECK(printed.find("call.dynamic %1") != std::string::npos);
 }
 
-TEST_CASE("unsupported AST node IfStmt generates diagnostic error") {
+TEST_CASE("IfStmt lowers to branch and join blocks") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -155,23 +155,36 @@ TEST_CASE("unsupported AST node IfStmt generates diagnostic error") {
         "}\n",
         diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("unsupported AST node: IfStmt") != std::string::npos);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("br %") != std::string::npos);
 }
 
-TEST_CASE("unsupported binary operator generates diagnostic error") {
+TEST_CASE("comparison != lowers to cmp.ne") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
         "const ne = 1 != 2;\n",
         diags, buf);
 
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("cmp.ne") != std::string::npos);
+}
+
+TEST_CASE("deferred construct switch generates diagnostic error") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "switch (1) { case 1: break; }\n",
+        diags, buf);
+
     CHECK_FALSE(optMod.has_value());
     REQUIRE(diags.hasErrors());
     const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("unsupported binary operator: !=") != std::string::npos);
+    CHECK(rendered.find("unsupported construct: switch statement") != std::string::npos);
 }
 
 TEST_CASE("undefined variable reference generates diagnostic error") {
