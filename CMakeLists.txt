@@ -49,6 +49,7 @@ if(BRONZE_WITH_LLVM)
     add_subdirectory(src/codegen-llvm)
 endif()
 add_subdirectory(src/rt)
+add_subdirectory(src/runtime)
 add_subdirectory(src/cli)
 
 if(BRONZE_WITH_LLVM)
