@@ -23,3 +23,11 @@ bronze_add_module(runtime
         ../../tests/runtime/array_test.cpp
         ../../tests/runtime/fn_test.cpp
 )
+
+# The same test binary, run again with per-allocation collection forced on.
+# This surfaces unrooted-pointer-across-allocation bugs that a lazily
+# collecting run can never catch.
+add_test(NAME runtime-gc-stress COMMAND bronze_runtime_tests)
+set_tests_properties(runtime-gc-stress PROPERTIES
+    LABELS runtime
+    ENVIRONMENT "BRONZE_GC_STRESS=1")

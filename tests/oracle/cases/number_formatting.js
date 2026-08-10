@@ -1,7 +1,8 @@
 // JS number printing: full decimal inside [1e-6, 1e21), scientific
 // outside, NaN/Infinity spelled out, and console.log's -0 (which ToString
-// does not produce). Expressions avoid constructs not yet lowerable
-// (unary minus, exponent literals, global NaN/Infinity bindings).
+// does not produce). The expression spellings (0 - 1, 0 / 0, ...) predate
+// unary minus and the NaN/Infinity globals; they stay as-is because the
+// case is pinned and both spellings must keep working.
 console.log(42);
 console.log(3000000);
 console.log(0.5);

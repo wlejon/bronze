@@ -244,6 +244,77 @@ private:
         return names;
     }
 
+    // --- Conditional-expression joins -----------------------------------
+    // &&, ||, ?? and ternary evaluate an operand on only some paths, so a
+    // variable assigned inside such an operand needs a join parameter,
+    // exactly like an if-statement arm. States are value snapshots because
+    // assignments rebind varBindings_ entries in place.
+    struct VarState {
+        il::ValueId valueId;
+        il::Type type;
+    };
+    using VarStateMap = std::unordered_map<std::string, VarState>;
+
+    VarStateMap snapshotVarStates() const {
+        VarStateMap snap;
+        for (const auto& [name, idx] : activeVarMap_) {
+            snap[name] = VarState{varBindings_[idx].valueId, varBindings_[idx].type};
+        }
+        return snap;
+    }
+
+    void restoreVarStates(const VarStateMap& snap) {
+        for (const auto& [name, idx] : activeVarMap_) {
+            varBindings_[idx].valueId = snap.at(name).valueId;
+            varBindings_[idx].type = snap.at(name).type;
+        }
+    }
+
+    struct ExprJoin {
+        std::vector<std::string> vars;
+        std::unordered_map<std::string, il::ValueId> paramId;
+        std::unordered_map<std::string, il::Type> paramType;
+    };
+
+    // Join parameters for every variable whose value differs between the
+    // two incoming states, appended after any params already on the join
+    // block (the expression's result param comes first by convention).
+    ExprJoin makeExprJoin(const VarStateMap& a, const VarStateMap& b,
+                          il::BlockId joinBlock, il::Function& ilFn) {
+        ExprJoin join;
+        for (const auto& name : getActiveVarsInDeclOrder()) {
+            if (a.at(name).valueId != b.at(name).valueId) join.vars.push_back(name);
+        }
+        for (const auto& name : join.vars) {
+            il::ValueId pId = ilFn.valueCount++;
+            il::Type tA = a.at(name).type;
+            il::Type tB = b.at(name).type;
+            il::Type pType = (tA == tB) ? tA : il::Type::Dynamic;
+            ilFn.blocks[joinBlock].params.push_back({pId, pType});
+            join.paramId[name] = pId;
+            join.paramType[name] = pType;
+        }
+        return join;
+    }
+
+    // Coerce (in the current block) one incoming state's values to the join
+    // param types and append them to that edge's argument list.
+    void appendExprJoinArgs(std::vector<il::ValueId>& args, const ExprJoin& join,
+                            const VarStateMap& state, il::Function& ilFn) {
+        for (const auto& name : join.vars) {
+            Value v{state.at(name).valueId, state.at(name).type};
+            args.push_back(coerceToType(v, join.paramType.at(name), ilFn).id);
+        }
+    }
+
+    void bindExprJoinParams(const ExprJoin& join) {
+        for (const auto& name : join.vars) {
+            auto& b = varBindings_[activeVarMap_[name]];
+            b.valueId = join.paramId.at(name);
+            b.type = join.paramType.at(name);
+        }
+    }
+
     bool declareVariable(const std::string& name, il::Type type, bool isConst, bool isLet, bool isVar,
                          bool isInitialized, il::ValueId valId, Span span) {
         auto it = activeVarMap_.find(name);
@@ -458,18 +529,34 @@ private:
                     declType = *annType;
                 }
                 initId = initVal->id;
-            } else {
+            }
+
+            bool isInitialized = varDecl->init != nullptr;
+            if (!varDecl->init) {
                 if (!varDecl->typeAnnotation.empty()) {
                     auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
                     if (!annType) return false;
                     declType = *annType;
+                }
+                if (!varDecl->isConst && declType == il::Type::Dynamic) {
+                    // JS: `let x;` / `var x;` binds undefined right here —
+                    // the TDZ ends at the declaration, not at the first
+                    // assignment. (Annotated typed slots keep the stricter
+                    // read-before-assign error: undefined has no typed form.)
+                    il::ValueId undefId = ilFn.valueCount++;
+                    il::Instruction inst;
+                    inst.op = il::Op::ConstUndefined;
+                    inst.type = il::Type::Dynamic;
+                    inst.result = undefId;
+                    emitInst(ilFn, inst);
+                    initId = undefId;
+                    isInitialized = true;
                 }
             }
 
             bool isConst = varDecl->isConst;
             bool isVar = varDecl->isVar;
             bool isLet = !isConst && !isVar;
-            bool isInitialized = varDecl->init != nullptr;
 
             return declareVariable(varDecl->name, declType, isConst, isLet, isVar, isInitialized, initId, varDecl->span);
         }
@@ -523,12 +610,10 @@ private:
             // Assignments rebind varBindings_ entries in place, so each arm
             // must start from a value snapshot of the pre-if state, and the
             // join must compare snapshots, not the (shared) live slots.
-            struct VarState {
-                il::ValueId valueId;
-                il::Type type;
-            };
+            // (Snapshots here range over envBefore, not the live map, because
+            // arm bodies enter and exit scopes.)
             auto snapshot = [&]() {
-                std::unordered_map<std::string, VarState> snap;
+                VarStateMap snap;
                 for (const auto& [name, idx] : envBefore) {
                     snap[name] = VarState{varBindings_[idx].valueId, varBindings_[idx].type};
                 }
@@ -1369,13 +1454,6 @@ private:
         }
 
         if (const auto* tern = dynamic_cast<const ast::Ternary*>(&expr)) {
-            if (!getAssignedVariables(*tern->thenExpr).empty() ||
-                !getAssignedVariables(*tern->elseExpr).empty()) {
-                diags_.error(tern->span,
-                             "unsupported construct: assignment inside a ternary arm "
-                             "(the assignment is conditional)");
-                return std::nullopt;
-            }
             Value condVal = lowerCondition(*tern->condition, ilFn);
             if (condVal.id == il::kNoValue) return std::nullopt;
 
@@ -1384,16 +1462,20 @@ private:
             il::BlockId bJoin = createBlock(ilFn);
 
             size_t entryBlockIdx = currentBlockIdx_;
+            auto statePre = snapshotVarStates();
 
             setCurrentBlock(bThen);
             auto thenValOpt = lowerExpr(*tern->thenExpr, ilFn);
             if (!thenValOpt) return std::nullopt;
+            auto stateThen = snapshotVarStates();
             bool thenReaches = !currentBlockIsTerminated(ilFn);
             size_t thenEndBlockIdx = currentBlockIdx_;
 
+            restoreVarStates(statePre);
             setCurrentBlock(bElse);
             auto elseValOpt = lowerExpr(*tern->elseExpr, ilFn);
             if (!elseValOpt) return std::nullopt;
+            auto stateElse = snapshotVarStates();
             bool elseReaches = !currentBlockIsTerminated(ilFn);
             size_t elseEndBlockIdx = currentBlockIdx_;
 
@@ -1413,34 +1495,27 @@ private:
 
             il::ValueId resParamId = ilFn.valueCount++;
             ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+            ExprJoin join = makeExprJoin(stateThen, stateElse, bJoin, ilFn);
 
-            if (thenReaches) {
-                setCurrentBlock(thenEndBlockIdx);
-                Value v = *thenValOpt;
+            auto emitArmEdge = [&](size_t endBlockIdx, Value v, const VarStateMap& state) {
+                setCurrentBlock(endBlockIdx);
                 if (joinType == il::Type::Dynamic) v = boxValueIfNeeded(v, ilFn);
                 else if (v.type != joinType) v = unboxValueIfNeeded(v, joinType, ilFn);
+                std::vector<il::ValueId> args{v.id};
+                appendExprJoinArgs(args, join, state, ilFn);
                 il::Instruction jmpInst;
                 jmpInst.op = il::Op::Jump;
                 jmpInst.type = il::Type::Void;
                 jmpInst.result = il::kNoValue;
-                jmpInst.target = il::BlockTarget{.block = bJoin, .args = {v.id}};
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
                 emitInst(ilFn, jmpInst);
-            }
-
-            if (elseReaches) {
-                setCurrentBlock(elseEndBlockIdx);
-                Value v = *elseValOpt;
-                if (joinType == il::Type::Dynamic) v = boxValueIfNeeded(v, ilFn);
-                else if (v.type != joinType) v = unboxValueIfNeeded(v, joinType, ilFn);
-                il::Instruction jmpInst;
-                jmpInst.op = il::Op::Jump;
-                jmpInst.type = il::Type::Void;
-                jmpInst.result = il::kNoValue;
-                jmpInst.target = il::BlockTarget{.block = bJoin, .args = {v.id}};
-                emitInst(ilFn, jmpInst);
-            }
+            };
+            if (thenReaches) emitArmEdge(thenEndBlockIdx, *thenValOpt, stateThen);
+            if (elseReaches) emitArmEdge(elseEndBlockIdx, *elseValOpt, stateElse);
 
             setCurrentBlock(bJoin);
+            restoreVarStates(thenReaches || !elseReaches ? stateThen : stateElse);
+            bindExprJoinParams(join);
             return Value{resParamId, joinType};
         }
 
@@ -1598,12 +1673,6 @@ private:
             }
 
             if (bin->op == ast::BinaryOp::LogicalAnd || bin->op == ast::BinaryOp::LogicalOr) {
-                if (!getAssignedVariables(*bin->rhs).empty()) {
-                    diags_.error(bin->span,
-                                 "unsupported construct: assignment inside a short-circuit "
-                                 "operand (the assignment is conditional)");
-                    return std::nullopt;
-                }
                 auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
                 if (!lhsOpt) return std::nullopt;
                 Value lhsVal = *lhsOpt;
@@ -1613,15 +1682,21 @@ private:
                 il::BlockId bRhs = createBlock(ilFn);
                 il::BlockId bJoin = createBlock(ilFn);
                 size_t entryBlockIdx = currentBlockIdx_;
+                auto stateLhs = snapshotVarStates();
 
                 setCurrentBlock(bRhs);
                 auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
                 if (!rhsOpt) return std::nullopt;
                 Value rhsVal = *rhsOpt;
+                auto stateRhs = snapshotVarStates();
                 bool rhsReaches = !currentBlockIsTerminated(ilFn);
                 size_t rhsEndBlockIdx = currentBlockIdx_;
 
                 il::Type joinType = (lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64) ? il::Type::F64 : il::Type::Dynamic;
+
+                il::ValueId resParamId = ilFn.valueCount++;
+                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+                ExprJoin join = makeExprJoin(stateLhs, stateRhs, bJoin, ilFn);
 
                 il::Instruction brInst;
                 brInst.op = il::Op::Branch;
@@ -1629,35 +1704,39 @@ private:
                 brInst.result = il::kNoValue;
                 brInst.operands = {lhsBool.id};
 
-                // The lhs conversion feeds the entry block's branch edge, so
-                // it must be emitted there, not in the rhs block.
+                // The skip edge's conversions (lhs result and join-var
+                // coercions) feed the entry block's branch, so they must be
+                // emitted there, not in the rhs block.
                 setCurrentBlock(entryBlockIdx);
                 Value lhsBoxed = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(lhsVal, ilFn) : unboxValueIfNeeded(lhsVal, joinType, ilFn);
+                std::vector<il::ValueId> skipArgs{lhsBoxed.id};
+                appendExprJoinArgs(skipArgs, join, stateLhs, ilFn);
 
                 if (bin->op == ast::BinaryOp::LogicalAnd) {
                     brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
-                    brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = {lhsBoxed.id}};
+                    brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
                 } else {
-                    brInst.target = il::BlockTarget{.block = bJoin, .args = {lhsBoxed.id}};
+                    brInst.target = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
                     brInst.elseTarget = il::BlockTarget{.block = bRhs, .args = {}};
                 }
                 ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
 
-                il::ValueId resParamId = ilFn.valueCount++;
-                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
-
                 if (rhsReaches) {
                     setCurrentBlock(rhsEndBlockIdx);
                     Value rhsConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(rhsVal, ilFn) : unboxValueIfNeeded(rhsVal, joinType, ilFn);
+                    std::vector<il::ValueId> args{rhsConv.id};
+                    appendExprJoinArgs(args, join, stateRhs, ilFn);
                     il::Instruction jmpInst;
                     jmpInst.op = il::Op::Jump;
                     jmpInst.type = il::Type::Void;
                     jmpInst.result = il::kNoValue;
-                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = {rhsConv.id}};
+                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
                     emitInst(ilFn, jmpInst);
                 }
 
                 setCurrentBlock(bJoin);
+                restoreVarStates(stateLhs);
+                bindExprJoinParams(join);
                 return Value{resParamId, joinType};
             }
 
@@ -1671,13 +1750,6 @@ private:
                     // dead (and its side effects correctly never happen).
                     return lhsVal;
                 }
-                if (!getAssignedVariables(*bin->rhs).empty()) {
-                    diags_.error(bin->span,
-                                 "unsupported construct: assignment inside a short-circuit "
-                                 "operand (the assignment is conditional)");
-                    return std::nullopt;
-                }
-
                 il::ValueId isNullishRes = ilFn.valueCount++;
                 il::Instruction nullishInst;
                 nullishInst.op = il::Op::IsNullish;
@@ -1689,15 +1761,26 @@ private:
                 il::BlockId bRhs = createBlock(ilFn);
                 il::BlockId bJoin = createBlock(ilFn);
                 size_t entryBlockIdx = currentBlockIdx_;
+                auto stateLhs = snapshotVarStates();
 
                 setCurrentBlock(bRhs);
                 auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
                 if (!rhsOpt) return std::nullopt;
                 Value rhsVal = *rhsOpt;
+                auto stateRhs = snapshotVarStates();
                 bool rhsReaches = !currentBlockIsTerminated(ilFn);
                 size_t rhsEndBlockIdx = currentBlockIdx_;
 
                 il::Type joinType = il::Type::Dynamic;
+
+                il::ValueId resParamId = ilFn.valueCount++;
+                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+                ExprJoin join = makeExprJoin(stateLhs, stateRhs, bJoin, ilFn);
+
+                // Skip-edge coercions must dominate the entry branch.
+                setCurrentBlock(entryBlockIdx);
+                std::vector<il::ValueId> skipArgs{lhsVal.id};
+                appendExprJoinArgs(skipArgs, join, stateLhs, ilFn);
 
                 il::Instruction brInst;
                 brInst.op = il::Op::Branch;
@@ -1705,24 +1788,25 @@ private:
                 brInst.result = il::kNoValue;
                 brInst.operands = {isNullishRes};
                 brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
-                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = {lhsVal.id}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
                 ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
-
-                il::ValueId resParamId = ilFn.valueCount++;
-                ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
 
                 if (rhsReaches) {
                     setCurrentBlock(rhsEndBlockIdx);
                     Value rhsConv = boxValueIfNeeded(rhsVal, ilFn);
+                    std::vector<il::ValueId> args{rhsConv.id};
+                    appendExprJoinArgs(args, join, stateRhs, ilFn);
                     il::Instruction jmpInst;
                     jmpInst.op = il::Op::Jump;
                     jmpInst.type = il::Type::Void;
                     jmpInst.result = il::kNoValue;
-                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = {rhsConv.id}};
+                    jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
                     emitInst(ilFn, jmpInst);
                 }
 
                 setCurrentBlock(bJoin);
+                restoreVarStates(stateLhs);
+                bindExprJoinParams(join);
                 return Value{resParamId, joinType};
             }
 

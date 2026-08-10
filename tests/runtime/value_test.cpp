@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "abi/bronze_abi.h"
+#include "runtime/gc.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -175,12 +176,15 @@ TEST_CASE("bronze_strict_eq follows JS === semantics") {
     CHECK_FALSE(bronze_strict_eq(nanBits, nanBits));
     CHECK(bronze_strict_eq(Value::fromDouble(0.0).rawBits(), Value::fromDouble(-0.0).rawBits()));
 
-    // strings: content equality, not identity
-    uint64_t a1 = bronze_box_str("abc");
-    uint64_t a2 = bronze_box_str("abc");
-    uint64_t b = bronze_box_str("abd");
-    CHECK(bronze_strict_eq(a1, a2));
-    CHECK_FALSE(bronze_strict_eq(a1, b));
+    // strings: content equality, not identity. Every value held across a
+    // subsequent allocation must be rooted — under BRONZE_GC_STRESS each
+    // allocation collects, and an unrooted pointer's address gets recycled.
+    ShadowStackFrame frame;
+    Rooted<Value> a1(Value::fromRawBits(bronze_box_str("abc")));
+    Rooted<Value> a2(Value::fromRawBits(bronze_box_str("abc")));
+    Rooted<Value> b(Value::fromRawBits(bronze_box_str("abd")));
+    CHECK(bronze_strict_eq(a1.get().rawBits(), a2.get().rawBits()));
+    CHECK_FALSE(bronze_strict_eq(a1.get().rawBits(), b.get().rawBits()));
 
     // mixed tags are never strictly equal
     CHECK_FALSE(bronze_strict_eq(Value::fromDouble(0.0).rawBits(), Value::fromBool(false).rawBits()));
@@ -190,7 +194,7 @@ TEST_CASE("bronze_strict_eq follows JS === semantics") {
     // identity cases
     CHECK(bronze_strict_eq(Value::fromNull().rawBits(), Value::fromNull().rawBits()));
     CHECK(bronze_strict_eq(Value::fromUndefined().rawBits(), Value::fromUndefined().rawBits()));
-    uint64_t obj = bronze_create_object();
-    CHECK(bronze_strict_eq(obj, obj));
-    CHECK_FALSE(bronze_strict_eq(obj, bronze_create_object()));
+    Rooted<Value> obj(Value::fromRawBits(bronze_create_object()));
+    CHECK(bronze_strict_eq(obj.get().rawBits(), obj.get().rawBits()));
+    CHECK_FALSE(bronze_strict_eq(obj.get().rawBits(), bronze_create_object()));
 }

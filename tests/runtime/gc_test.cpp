@@ -36,6 +36,10 @@ TEST_CASE("heap virtual allocation and low memory address reservation") {
 
 TEST_CASE("bump allocator auto commits pages and triggers collection hook") {
     Heap heap(1024 * 1024, 64 * 1024);
+    // This case measures bump-pointer commit growth; per-allocation stress
+    // collection would reclaim the (deliberately unrooted) garbage before
+    // the bump pointer ever crosses a page boundary.
+    heap.set_gc_stress(false);
     bool collection_triggered = false;
     heap.set_collection_hook([&](Heap& h) {
         (void)h;
@@ -187,6 +191,9 @@ TEST_CASE("non moving arena allocation and pointer stability") {
 
 TEST_CASE("semispace copying collection reclaims unrooted memory and relocates rooted objects") {
     Heap heap(1024 * 1024, 64 * 1024);
+    // The unrooted string must still be on the heap when collect() runs;
+    // stress mode would reclaim it during the later setup allocations.
+    heap.set_gc_stress(false);
     ShadowStackFrame frame;
 
     StringHeader* unrooted_str = StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
