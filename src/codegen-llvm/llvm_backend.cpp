@@ -253,7 +253,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     break;
                 }
                 case il::Op::Ret: {
-                    if (inst.operands.empty() || inst.type == il::Type::Void) {
+                    if (inst.operands.empty()) {
                         builder.CreateRetVoid();
                     } else {
                         llvm::Value* retVal = values[inst.operands[0]];
@@ -268,6 +268,18 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                 default:
                     diags.error(Span{}, "Unsupported IL instruction opcode");
                     return false;
+            }
+        }
+
+        if (!bb->getTerminator()) {
+            if (llvmFunc->getReturnType()->isVoidTy()) {
+                builder.CreateRetVoid();
+            } else if (llvmFunc->getReturnType()->isDoubleTy()) {
+                builder.CreateRet(llvm::ConstantFP::get(builder.getDoubleTy(), 0.0));
+            } else if (llvmFunc->getReturnType()->isIntegerTy()) {
+                builder.CreateRet(builder.getIntN(llvmFunc->getReturnType()->getIntegerBitWidth(), 0));
+            } else {
+                builder.CreateRetVoid();
             }
         }
     }

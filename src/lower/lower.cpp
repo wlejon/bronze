@@ -143,7 +143,7 @@ private:
 
                 il::Instruction inst;
                 inst.op = il::Op::Ret;
-                inst.type = il::Type::Void;
+                inst.type = val->type;
                 inst.result = il::kNoValue;
                 inst.operands = {val->id};
                 ilFn.body.push_back(inst);
