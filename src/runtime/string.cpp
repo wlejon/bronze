@@ -1,7 +1,8 @@
 #include "runtime/string.h"
 
+#include <cstdlib>
 #include <cstring>
-#include <stdexcept>
+#include <iostream>
 
 namespace bronze {
 
@@ -219,7 +220,8 @@ uint32_t StringHeader::hash() const noexcept {
 
 Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     if (!a.get().isString() || !b.get().isString()) {
-        throw std::runtime_error("Invalid string concat arguments");
+        std::cerr << "Hard runtime error: Invalid string concat arguments" << std::endl;
+        std::abort();
     }
 
     const StringHeader* sA = a.get().asString<StringHeader>();

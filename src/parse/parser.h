@@ -47,6 +47,9 @@ private:
     ast::ExprPtr parseBinary(int minPrecedence);
     ast::ExprPtr parseUnaryPostfix();
     ast::ExprPtr parsePrimary();
+    ast::ExprPtr parseObjectLit();
+    ast::ExprPtr parseArrayLit();
+    ast::ExprPtr parseFunctionExpr();
 };
 
 }  // namespace bronze

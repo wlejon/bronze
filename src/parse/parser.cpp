@@ -300,10 +300,93 @@ ExprPtr Parser::parsePrimary() {
             if (!expect(TokenKind::RParen, "')'")) return nullptr;
             return inner;
         }
+        case TokenKind::LBrace:
+            return parseObjectLit();
+        case TokenKind::LBracket:
+            return parseArrayLit();
+        case TokenKind::KwFunction:
+            return parseFunctionExpr();
         default:
             error("expected expression");
             return nullptr;
     }
+}
+
+ExprPtr Parser::parseObjectLit() {
+    const Token& openToken = advance();  // '{'
+    auto obj = std::make_unique<ObjectLit>();
+    obj->span.begin = openToken.span.begin;
+
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+        std::string keyStr;
+        if (check(TokenKind::Identifier)) {
+            keyStr = std::string(advance().text);
+        } else if (check(TokenKind::StringLiteral)) {
+            auto sTok = advance();
+            keyStr = std::string(sTok.text.substr(1, sTok.text.size() - 2));
+        } else {
+            error("expected identifier or string literal for property key");
+            return nullptr;
+        }
+
+        if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+
+        auto valExpr = parseExpr();
+        if (!valExpr) return nullptr;
+
+        obj->props.push_back(ObjectProp{std::move(keyStr), std::move(valExpr)});
+
+        if (!match(TokenKind::Comma)) break;
+    }
+
+    if (!expect(TokenKind::RBrace, "'}' after object literal")) return nullptr;
+    obj->span.end = peek().span.begin;
+    return obj;
+}
+
+ExprPtr Parser::parseArrayLit() {
+    const Token& openToken = advance();  // '['
+    auto arr = std::make_unique<ArrayLit>();
+    arr->span.begin = openToken.span.begin;
+
+    while (!check(TokenKind::RBracket) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+        auto elemExpr = parseExpr();
+        if (!elemExpr) return nullptr;
+        arr->elements.push_back(std::move(elemExpr));
+        if (!match(TokenKind::Comma)) break;
+    }
+
+    if (!expect(TokenKind::RBracket, "']' after array literal")) return nullptr;
+    arr->span.end = peek().span.begin;
+    return arr;
+}
+
+ExprPtr Parser::parseFunctionExpr() {
+    const Token& kw = advance();  // 'function'
+    auto fn = std::make_unique<FunctionExpr>();
+    fn->span.begin = kw.span.begin;
+
+    if (check(TokenKind::Identifier)) {
+        fn->name = std::string(advance().text);
+    }
+
+    if (!expect(TokenKind::LParen, "'(' after function")) return nullptr;
+    while (!check(TokenKind::RParen)) {
+        const Token* param = expect(TokenKind::Identifier, "parameter name");
+        if (!param) return nullptr;
+        Param p;
+        p.name = std::string(param->text);
+        if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
+        fn->params.push_back(std::move(p));
+        if (!match(TokenKind::Comma)) break;
+    }
+    if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
+    if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+
+    fn->body = parseBlock();
+    if (diags_.hasErrors()) return nullptr;
+    fn->span.end = peek().span.begin;
+    return fn;
 }
 
 }  // namespace bronze

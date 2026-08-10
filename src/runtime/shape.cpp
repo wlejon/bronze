@@ -1,6 +1,7 @@
 #include "runtime/shape.h"
 
-#include <stdexcept>
+#include <cstdlib>
+#include <iostream>
 
 namespace bronze {
 
@@ -11,7 +12,8 @@ Shape* Shape::createRoot(NonMovingArena& arena, Shape* prototype) {
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot) {
     (void)heap;
     if (!name.get().isString()) {
-        throw std::runtime_error("Property name must be a string");
+        std::cerr << "Hard runtime error: Property name must be a string" << std::endl;
+        std::abort();
     }
 
     StringHeader* prop_str = name.get().asString<StringHeader>();

@@ -1,6 +1,7 @@
 #include "runtime/object.h"
 
-#include <stdexcept>
+#include <cstdlib>
+#include <iostream>
 
 namespace bronze {
 
@@ -22,14 +23,16 @@ ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* sha
 
 Value ObjectHeader::getSlot(uint32_t index) const {
     if (index >= kInlineSlots) {
-        throw std::runtime_error("Out-of-line object slots and dictionary mode are unsupported");
+        std::cerr << "Hard runtime error: Out-of-line object slots and dictionary mode are unsupported" << std::endl;
+        std::abort();
     }
     return slotsData()[index];
 }
 
 void ObjectHeader::setSlot(uint32_t index, Value val) {
     if (index >= kInlineSlots) {
-        throw std::runtime_error("Out-of-line object slots and dictionary mode are unsupported");
+        std::cerr << "Hard runtime error: Out-of-line object slots and dictionary mode are unsupported" << std::endl;
+        std::abort();
     }
     slotsData()[index] = val;
 }
@@ -37,7 +40,8 @@ void ObjectHeader::setSlot(uint32_t index, Value val) {
 Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
     (void)heap;
     if (!key.get().isString()) {
-        throw std::runtime_error("Property key must be a string");
+        std::cerr << "Hard runtime error: Property key must be a string" << std::endl;
+        std::abort();
     }
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
@@ -59,7 +63,8 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
 
 void ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key, Rooted<Value>& val, InlineCache* ic) {
     if (!key.get().isString()) {
-        throw std::runtime_error("Property key must be a string");
+        std::cerr << "Hard runtime error: Property key must be a string" << std::endl;
+        std::abort();
     }
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
@@ -82,7 +87,8 @@ void ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key
     uint32_t new_slot = 0;
     Shape* next_shape = shape->addProperty(arena, heap, key, new_slot);
     if (new_slot >= kInlineSlots) {
-        throw std::runtime_error("Dictionary transition / out-of-line slots are unsupported");
+        std::cerr << "Hard runtime error: Dictionary transition / out-of-line slots are unsupported" << std::endl;
+        std::abort();
     }
 
     shape = next_shape;

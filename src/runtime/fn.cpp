@@ -1,14 +1,12 @@
 #include "runtime/fn.h"
 
-#include <stdexcept>
+#include <cstdlib>
+#include <iostream>
 #include <vector>
 
 namespace bronze {
 
 FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, void* env_record, uint32_t arity) {
-    // FunctionHeader payload holds environment record pointer if any, but since env_record field is inside struct:
-    // Header sizeof(FunctionHeader) is HeapObjectHeader + code + env_record + arity = 8 + 8 + 8 + 4 = 28 -> rounded up to 32.
-    // Heap::allocate takes bytes after HeapObjectHeader.
     size_t payload_bytes = sizeof(FunctionHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* fn = reinterpret_cast<FunctionHeader*>(raw_hdr);
@@ -20,7 +18,8 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, void
 
 Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
     if (!code) {
-        throw std::runtime_error("Attempted to call uninitialized function code pointer");
+        std::cerr << "Hard runtime error: Attempted to call uninitialized function code pointer" << std::endl;
+        std::abort();
     }
 
     if (arity == 0 || argc >= arity) {

@@ -1,8 +1,14 @@
 #include "runtime/rt_helpers.h"
 
+#include <charconv>
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "runtime/array.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
@@ -11,8 +17,24 @@
 
 namespace bronze::runtime {
 
+static Heap g_heap(64 * 1024 * 1024);
+static NonMovingArena g_arena;
 static std::vector<std::string> g_keyStrings;
 static std::vector<InlineCache> g_inlineCaches;
+
+static Value bronze_builtin_string_char_code_at(Value thisArg, uint32_t argc, Value* argv) {
+    if (!thisArg.isString()) return Value::fromDouble(0.0);
+    StringHeader* str = thisArg.asString<StringHeader>();
+    uint32_t idx = 0;
+    if (argc > 0 && argv[0].isNumber()) {
+        idx = static_cast<uint32_t>(argv[0].asNumber());
+    } else if (argc > 0 && argv[0].isInt32()) {
+        idx = static_cast<uint32_t>(argv[0].payload());
+    }
+    return Value::fromDouble(str->charCodeAt(idx));
+}
+
+static FunctionHeader* g_charCodeAtFn = nullptr;
 
 extern "C" {
 
@@ -30,9 +52,13 @@ uint64_t bronze_box_bool(bool v) {
 
 uint64_t bronze_box_str(const char* s) {
     if (!s) return Value::fromUndefined().rawBits();
-    static Heap heap(1024 * 1024);
-    StringHeader* sh = StringHeader::createFromUTF8(heap, std::string_view(s));
+    StringHeader* sh = StringHeader::createFromUTF8(g_heap, std::string_view(s));
     return Value::fromString(sh).rawBits();
+}
+
+uint64_t bronze_box_str_key(uint32_t keyIndex) {
+    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
+    return bronze_box_str(keyStr.c_str());
 }
 
 double bronze_unbox_f64(uint64_t bits) {
@@ -57,21 +83,73 @@ bool bronze_unbox_bool(uint64_t bits) {
     return false;
 }
 
+uint64_t bronze_create_object() {
+    ObjectHeader* obj = ObjectHeader::create(g_heap, g_arena, nullptr);
+    obj->header.flags = 0;
+    return Value::fromObject(obj).rawBits();
+}
+
+uint64_t bronze_create_array(uint32_t length) {
+    uint32_t cap = (length < 4) ? 4 : length;
+    ArrayHeader* arr = ArrayHeader::create(g_heap, cap);
+    arr->header.flags = 1;
+    arr->length = length;
+    return Value::fromObject(arr).rawBits();
+}
+
+uint64_t bronze_create_function(void* code, uint32_t arity) {
+    auto fnCode = reinterpret_cast<NativeFunctionCode>(code);
+    FunctionHeader* fn = FunctionHeader::create(g_heap, fnCode, nullptr, arity);
+    fn->header.flags = 2;
+    return Value::fromObject(fn).rawBits();
+}
+
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) {
     Value objVal(objBits);
+    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
+
+    if (objVal.isString()) {
+        StringHeader* str = objVal.asString<StringHeader>();
+        if (keyStr == "length") {
+            return Value::fromDouble(str->getLength()).rawBits();
+        }
+        if (keyStr == "charCodeAt") {
+            if (!g_charCodeAtFn) {
+                g_charCodeAtFn = FunctionHeader::create(g_heap, bronze_builtin_string_char_code_at, nullptr, 1);
+                g_charCodeAtFn->header.flags = 2;
+            }
+            return Value::fromObject(g_charCodeAtFn).rawBits();
+        }
+        return Value::fromUndefined().rawBits();
+    }
+
     if (!objVal.isObject()) {
         return Value::fromUndefined().rawBits();
     }
-    static Heap heap(1024 * 1024);
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == 1) {
+        // Array
+        ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
+        if (keyStr == "length") {
+            return Value::fromDouble(arr->length).rawBits();
+        }
+        int idx = -1;
+        auto [ptr, ec] = std::from_chars(keyStr.data(), keyStr.data() + keyStr.size(), idx);
+        if (ec == std::errc{} && idx >= 0) {
+            return arr->getElem(static_cast<uint32_t>(idx)).rawBits();
+        }
+        return Value::fromUndefined().rawBits();
+    }
+
     if (icIndex >= g_inlineCaches.size()) {
         g_inlineCaches.resize(icIndex + 1);
     }
     InlineCache* ic = &g_inlineCaches[icIndex];
-    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
-    StringHeader* propName = StringHeader::createFromUTF8(heap, std::string_view(keyStr));
+    StringHeader* propName = StringHeader::createFromUTF8(g_heap, std::string_view(keyStr));
     Rooted<Value> key(Value::fromString(propName));
     ObjectHeader* obj = objVal.asObject<ObjectHeader>();
-    Value result = obj->getProp(heap, key, ic);
+    Value result = obj->getProp(g_heap, key, ic);
     return result.rawBits();
 }
 
@@ -79,33 +157,123 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     Value objVal(objBits);
     Value valVal(valBits);
     if (!objVal.isObject()) return;
-    static Heap heap(1024 * 1024);
-    static NonMovingArena arena;
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
+
+    if (hdr->flags == 1) {
+        // Array
+        ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
+        int idx = -1;
+        auto [ptr, ec] = std::from_chars(keyStr.data(), keyStr.data() + keyStr.size(), idx);
+        if (ec == std::errc{} && idx >= 0) {
+            Rooted<Value> val(valVal);
+            arr->setElem(g_heap, static_cast<uint32_t>(idx), val);
+        }
+        return;
+    }
+
     if (icIndex >= g_inlineCaches.size()) {
         g_inlineCaches.resize(icIndex + 1);
     }
     InlineCache* ic = &g_inlineCaches[icIndex];
-    std::string keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : "";
-    StringHeader* propName = StringHeader::createFromUTF8(heap, std::string_view(keyStr));
+    StringHeader* propName = StringHeader::createFromUTF8(g_heap, std::string_view(keyStr));
     Rooted<Value> key(Value::fromString(propName));
     Rooted<Value> val(valVal);
     ObjectHeader* obj = objVal.asObject<ObjectHeader>();
-    obj->setProp(heap, arena, key, val, ic);
+    obj->setProp(g_heap, g_arena, key, val, ic);
 }
 
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
     Value calleeVal(calleeBits);
     Value thisVal(thisBits);
     if (!calleeVal.isObject()) {
-        return Value::fromUndefined().rawBits();
+        std::cerr << "Hard runtime error: Attempted to call non-object dynamic value" << std::endl;
+        std::abort();
     }
-    FunctionHeader* fn = calleeVal.asObject<FunctionHeader>();
+    HeapObjectHeader* hdr = calleeVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != 2) {
+        std::cerr << "Hard runtime error: Attempted to call non-function object" << std::endl;
+        std::abort();
+    }
+    FunctionHeader* fn = reinterpret_cast<FunctionHeader*>(hdr);
     std::vector<Value> args(argc);
     for (uint32_t i = 0; i < argc; ++i) {
         args[i] = Value(argvBits[i]);
     }
     Value res = fn->call(thisVal, argc, args.data());
     return res.rawBits();
+}
+
+uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
+    Value aVal(aBits);
+    Value bVal(bBits);
+    Rooted<Value> aRoot(aVal);
+    Rooted<Value> bRoot(bVal);
+    Value res = StringHeader::concat(g_heap, aRoot, bRoot);
+    return res.rawBits();
+}
+
+void bronze_print_value(uint64_t valBits) {
+    Value v(valBits);
+    if (v.isNumber()) {
+        char buf[64];
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v.asNumber());
+        if (ec == std::errc{}) {
+            *ptr++ = '\n';
+            std::fwrite(buf, 1, static_cast<size_t>(ptr - buf), stdout);
+        }
+    } else if (v.isString()) {
+        StringHeader* str = v.asString<StringHeader>();
+        if (str->isLatin1()) {
+            std::fwrite(str->latin1Data(), 1, str->getLength(), stdout);
+        } else {
+            const uint16_t* u16 = str->utf16Data();
+            uint32_t len = str->getLength();
+            for (uint32_t i = 0; i < len; ++i) {
+                uint32_t cp = u16[i];
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len) {
+                    uint32_t low = u16[i + 1];
+                    if (low >= 0xDC00 && low <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                        i++;
+                    }
+                }
+                if (cp <= 0x7F) {
+                    std::fputc(static_cast<char>(cp), stdout);
+                } else if (cp <= 0x7FF) {
+                    std::fputc(static_cast<char>(0xC0 | (cp >> 6)), stdout);
+                    std::fputc(static_cast<char>(0x80 | (cp & 0x3F)), stdout);
+                } else if (cp <= 0xFFFF) {
+                    std::fputc(static_cast<char>(0xE0 | (cp >> 12)), stdout);
+                    std::fputc(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)), stdout);
+                    std::fputc(static_cast<char>(0x80 | (cp & 0x3F)), stdout);
+                } else {
+                    std::fputc(static_cast<char>(0xF0 | (cp >> 18)), stdout);
+                    std::fputc(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)), stdout);
+                    std::fputc(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)), stdout);
+                    std::fputc(static_cast<char>(0x80 | (cp & 0x3F)), stdout);
+                }
+            }
+        }
+        std::fputc('\n', stdout);
+    } else if (v.isBool()) {
+        const char* s = v.asBool() ? "true\n" : "false\n";
+        std::fputs(s, stdout);
+    } else if (v.isUndefined()) {
+        std::fputs("undefined\n", stdout);
+    } else {
+        std::fputs("[object]\n", stdout);
+    }
+    std::fflush(stdout);
+}
+
+void bronze_print_string(const char* s) {
+    if (s) {
+        std::fputs(s, stdout);
+    }
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
 }
 
 void bronze_register_key_string(uint32_t index, const char* str) {

@@ -127,12 +127,18 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
 
     if (rtLib) {
         std::string libStr = rtLib->string();
-        commands.push_back("lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\"");
-        commands.push_back("lld-link /nologo /subsystem:console /wholearchive:\"" + libStr + "\" /out:\"" + outputPath + "\" \"" + objPath + "\"");
-        commands.push_back("link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\"");
-        commands.push_back("link.exe /nologo /subsystem:console /wholearchive:\"" + libStr + "\" /out:\"" + outputPath + "\" \"" + objPath + "\"");
-        commands.push_back("clang-cl /nologo \"" + objPath + "\" \"" + libStr + "\" /link /include:main /Fe:\"" + outputPath + "\"");
-        commands.push_back("cl.exe /nologo \"" + objPath + "\" \"" + libStr + "\" /link /include:main /Fe:\"" + outputPath + "\"");
+        std::filesystem::path runtimeLibPath = rtLib->parent_path() / "bronze_runtime.lib";
+        if (!std::filesystem::exists(runtimeLibPath)) {
+            runtimeLibPath = rtLib->parent_path() / "../runtime/bronze_runtime.lib";
+        }
+        std::string runtimeLibStr = std::filesystem::exists(runtimeLibPath) ? ("\"" + runtimeLibPath.string() + "\"") : "";
+
+        commands.push_back("lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
+        commands.push_back("lld-link /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + (runtimeLibStr.empty() ? "" : "/wholearchive:" + runtimeLibStr) + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
+        commands.push_back("link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
+        commands.push_back("link.exe /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + (runtimeLibStr.empty() ? "" : "/wholearchive:" + runtimeLibStr) + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
+        commands.push_back("clang-cl /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
+        commands.push_back("cl.exe /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
     }
 
     if (rtCpp) {

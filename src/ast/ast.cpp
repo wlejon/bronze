@@ -9,6 +9,9 @@ void Binary::accept(Visitor& v) const { v.visit(*this); }
 void MemberAccess::accept(Visitor& v) const { v.visit(*this); }
 void IndexAccess::accept(Visitor& v) const { v.visit(*this); }
 void Call::accept(Visitor& v) const { v.visit(*this); }
+void ObjectLit::accept(Visitor& v) const { v.visit(*this); }
+void ArrayLit::accept(Visitor& v) const { v.visit(*this); }
+void FunctionExpr::accept(Visitor& v) const { v.visit(*this); }
 void VarDecl::accept(Visitor& v) const { v.visit(*this); }
 void ReturnStmt::accept(Visitor& v) const { v.visit(*this); }
 void ExprStmt::accept(Visitor& v) const { v.visit(*this); }

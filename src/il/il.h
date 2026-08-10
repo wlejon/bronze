@@ -42,6 +42,10 @@ enum class Op : uint8_t {
     PropGet,    // a = prop.get b, <key_const_index>, <ic_site_index>
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
+    CreateObject, // a = create.object
+    CreateArray,  // a = create.array <length>
+    CreateFunction,// a = create.func <funcIndex>
+    Print,      // print a
 };
 const char* opName(Op op);
 
@@ -54,8 +58,8 @@ struct Instruction {
     ValueId result = kNoValue;
     std::vector<ValueId> operands;
     double immF64 = 0;               // ConstF64
-    int32_t immI32 = 0;              // ConstI32
-    uint32_t calleeIndex = 0;        // Call: index into Module::functions
+    int32_t immI32 = 0;              // ConstI32 / CreateArray length / CreateFunction arity
+    uint32_t calleeIndex = 0;        // Call/CreateFunction: index into Module::functions
     Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
@@ -78,6 +82,7 @@ struct Function {
 
 struct Module {
     std::string name;
+    std::vector<std::string> keyConstants;
     std::vector<Function> functions;
 };
 

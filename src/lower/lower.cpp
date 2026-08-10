@@ -77,6 +77,10 @@ public:
         }
 
         if (diags_.hasErrors()) return std::nullopt;
+        ilModule_.keyConstants.resize(keyConstants_.size());
+        for (const auto& entry : keyConstants_) {
+            ilModule_.keyConstants[entry.second] = entry.first;
+        }
         return ilModule_;
     }
 
@@ -246,6 +250,107 @@ private:
             return Value{res, il::Type::Dynamic};
         }
 
+        if (const auto* objLit = dynamic_cast<const ast::ObjectLit*>(&expr)) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::CreateObject;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            ilFn.body.push_back(inst);
+
+            for (const auto& prop : objLit->props) {
+                auto valOpt = lowerExpr(*prop.value, ilFn, env);
+                if (!valOpt) return std::nullopt;
+                auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
+
+                uint32_t keyIdx = getKeyConstantIndex(prop.key);
+                uint32_t icIdx = icSiteCounter_++;
+
+                il::Instruction setInst;
+                setInst.op = il::Op::PropSet;
+                setInst.type = il::Type::Void;
+                setInst.result = il::kNoValue;
+                setInst.operands = {res, valBoxed.id};
+                setInst.keyIndex = keyIdx;
+                setInst.icIndex = icIdx;
+                ilFn.body.push_back(setInst);
+            }
+            return Value{res, il::Type::Dynamic};
+        }
+
+        if (const auto* arrLit = dynamic_cast<const ast::ArrayLit*>(&expr)) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::CreateArray;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.immI32 = static_cast<int32_t>(arrLit->elements.size());
+            ilFn.body.push_back(inst);
+
+            for (size_t i = 0; i < arrLit->elements.size(); ++i) {
+                auto elemOpt = lowerExpr(*arrLit->elements[i], ilFn, env);
+                if (!elemOpt) return std::nullopt;
+                auto elemBoxed = boxValueIfNeeded(*elemOpt, ilFn);
+
+                uint32_t keyIdx = getKeyConstantIndex(std::to_string(i));
+                uint32_t icIdx = icSiteCounter_++;
+
+                il::Instruction setInst;
+                setInst.op = il::Op::PropSet;
+                setInst.type = il::Type::Void;
+                setInst.result = il::kNoValue;
+                setInst.operands = {res, elemBoxed.id};
+                setInst.keyIndex = keyIdx;
+                setInst.icIndex = icIdx;
+                ilFn.body.push_back(setInst);
+            }
+            return Value{res, il::Type::Dynamic};
+        }
+
+        if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&expr)) {
+            std::string fnName = fnExpr->name;
+            if (fnName.empty()) {
+                fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
+            }
+            il::Function newFn;
+            newFn.name = fnName;
+            newFn.returnType = il::Type::Dynamic;
+            for (const auto& param : fnExpr->params) {
+                auto pType = mapTypeAnnotation(param.typeAnnotation, fnExpr->span, diags_);
+                if (!pType) return std::nullopt;
+                newFn.params.push_back({param.name, *pType});
+            }
+            if (!fnExpr->returnType.empty()) {
+                auto rType = mapTypeAnnotation(fnExpr->returnType, fnExpr->span, diags_);
+                if (!rType) return std::nullopt;
+                newFn.returnType = *rType;
+            }
+            newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
+            uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
+            functionIndices_[fnName] = createdFnIdx;
+            ilModule_.functions.push_back(std::move(newFn));
+
+            std::unordered_map<std::string, Value> fnEnv;
+            for (uint32_t i = 0; i < fnExpr->params.size(); ++i) {
+                fnEnv[fnExpr->params[i].name] = {i, ilModule_.functions[createdFnIdx].params[i].type};
+            }
+            std::vector<const ast::Stmt*> stmts;
+            for (const auto& s : fnExpr->body) stmts.push_back(s.get());
+            if (!lowerStmtList(stmts, ilModule_.functions[createdFnIdx], &fnEnv)) {
+                return std::nullopt;
+            }
+
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::CreateFunction;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.calleeIndex = createdFnIdx;
+            inst.immI32 = static_cast<int32_t>(fnExpr->params.size());
+            ilFn.body.push_back(inst);
+            return Value{res, il::Type::Dynamic};
+        }
+
         if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
             auto it = env.find(ident->name);
             if (it == env.end()) {
@@ -381,6 +486,19 @@ private:
 
             switch (bin->op) {
                 case ast::BinaryOp::Add:
+                    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic ||
+                        lhs.type == il::Type::Str || rhs.type == il::Type::Str) {
+                        auto lhsBoxed = boxValueIfNeeded(lhs, ilFn);
+                        auto rhsBoxed = boxValueIfNeeded(rhs, ilFn);
+                        il::ValueId res = ilFn.valueCount++;
+                        il::Instruction inst;
+                        inst.op = il::Op::Add;
+                        inst.type = il::Type::Dynamic;
+                        inst.result = res;
+                        inst.operands = {lhsBoxed.id, rhsBoxed.id};
+                        ilFn.body.push_back(inst);
+                        return Value{res, il::Type::Dynamic};
+                    }
                     op = il::Op::Add;
                     resType = il::Type::F64;
                     break;
@@ -430,27 +548,34 @@ private:
         }
 
         if (const auto* call = dynamic_cast<const ast::Call*>(&expr)) {
+            bool isConsoleLog = false;
             if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-                if (calleeIdent->name == "console.log") {
-                    if (call->args.size() != 1) {
-                        diags_.error(call->span, "console.log expects 1 argument");
-                        return std::nullopt;
-                    }
-                    auto argVal = lowerExpr(*call->args[0], ilFn, env);
-                    if (!argVal) return std::nullopt;
-
-                    if (ilFn.returnType == il::Type::Void) {
-                        ilFn.returnType = argVal->type;
-                    }
-                    il::Instruction inst;
-                    inst.op = il::Op::Ret;
-                    inst.type = argVal->type;
-                    inst.result = il::kNoValue;
-                    inst.operands = {argVal->id};
-                    ilFn.body.push_back(inst);
-                    return argVal;
+                if (calleeIdent->name == "console.log") isConsoleLog = true;
+            } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+                if (const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
+                    if (baseIdent->name == "console" && mem->property == "log") isConsoleLog = true;
                 }
+            }
 
+            if (isConsoleLog) {
+                if (call->args.size() != 1) {
+                    diags_.error(call->span, "console.log expects 1 argument");
+                    return std::nullopt;
+                }
+                auto argVal = lowerExpr(*call->args[0], ilFn, env);
+                if (!argVal) return std::nullopt;
+
+                auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
+                il::Instruction inst;
+                inst.op = il::Op::Print;
+                inst.type = il::Type::Void;
+                inst.result = il::kNoValue;
+                inst.operands = {argBoxed.id};
+                ilFn.body.push_back(inst);
+                return Value{il::kNoValue, il::Type::Void};
+            }
+
+            if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
                 auto it = functionIndices_.find(calleeIdent->name);
                 if (it != functionIndices_.end()) {
                     uint32_t calleeIdx = it->second;

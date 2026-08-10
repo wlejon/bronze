@@ -68,6 +68,34 @@ struct Call final : Expr {
 struct Stmt : Node {};
 using StmtPtr = std::unique_ptr<Stmt>;
 
+struct ObjectProp {
+    std::string key;
+    ExprPtr value;
+};
+
+struct ObjectLit final : Expr {
+    std::vector<ObjectProp> props;
+    void accept(Visitor& v) const override;
+};
+
+struct ArrayLit final : Expr {
+    std::vector<ExprPtr> elements;
+    void accept(Visitor& v) const override;
+};
+
+struct Param {
+    std::string name;
+    std::string typeAnnotation;
+};
+
+struct FunctionExpr final : Expr {
+    std::string name;
+    std::vector<Param> params;
+    std::string returnType;
+    std::vector<StmtPtr> body;
+    void accept(Visitor& v) const override;
+};
+
 struct VarDecl final : Stmt {
     bool isConst = false;
     std::string name;
@@ -91,11 +119,6 @@ struct IfStmt final : Stmt {
     std::vector<StmtPtr> thenBody;
     std::vector<StmtPtr> elseBody;
     void accept(Visitor& v) const override;
-};
-
-struct Param {
-    std::string name;
-    std::string typeAnnotation;
 };
 
 struct FunctionDecl final : Stmt {
@@ -125,6 +148,9 @@ public:
     virtual void visit(const MemberAccess&) = 0;
     virtual void visit(const IndexAccess&) = 0;
     virtual void visit(const Call&) = 0;
+    virtual void visit(const ObjectLit&) = 0;
+    virtual void visit(const ArrayLit&) = 0;
+    virtual void visit(const FunctionExpr&) = 0;
     virtual void visit(const VarDecl&) = 0;
     virtual void visit(const ReturnStmt&) = 0;
     virtual void visit(const ExprStmt&) = 0;

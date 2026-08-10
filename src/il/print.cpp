@@ -34,6 +34,10 @@ const char* opName(Op op) {
         case Op::PropGet: return "prop.get";
         case Op::PropSet: return "prop.set";
         case Op::DynamicCall: return "call.dynamic";
+        case Op::CreateObject: return "create.object";
+        case Op::CreateArray: return "create.array";
+        case Op::CreateFunction: return "create.func";
+        case Op::Print: return "print";
     }
     return "?";
 }
@@ -96,6 +100,19 @@ std::string print(const Module& module) {
                     }
                     break;
                 }
+                case Op::CreateObject:
+                    out += "create.object";
+                    break;
+                case Op::CreateArray:
+                    out += "create.array " + std::to_string(inst.immI32);
+                    break;
+                case Op::CreateFunction:
+                    out += "create.func @" + (inst.calleeIndex < module.functions.size() ? module.functions[inst.calleeIndex].name : "?") +
+                           ", " + std::to_string(inst.immI32);
+                    break;
+                case Op::Print:
+                    out += "print %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                    break;
                 default:
                     out += opName(inst.op);
                     switch (inst.op) {

@@ -1,6 +1,7 @@
 #include "runtime/array.h"
 
-#include <stdexcept>
+#include <cstdlib>
+#include <iostream>
 
 namespace bronze {
 
@@ -28,7 +29,8 @@ Value ArrayHeader::getElem(uint32_t index) const {
 void ArrayHeader::setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
     (void)heap;
     if (index >= capacity) {
-        throw std::runtime_error("Out-of-bounds / sparse array write is unsupported");
+        std::cerr << "Hard runtime error: Out-of-bounds / sparse array write is unsupported" << std::endl;
+        std::abort();
     }
     elementsData()[index] = val.get();
     if (index >= length) {

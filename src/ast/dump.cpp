@@ -45,6 +45,39 @@ public:
         });
         emit(")");
     }
+    void visit(const ObjectLit& n) override {
+        emit("(object");
+        indented([&] {
+            for (const auto& p : n.props) {
+                emit("(prop " + p.key);
+                indented([&] { p.value->accept(*this); });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
+    void visit(const ArrayLit& n) override {
+        emit("(array");
+        indented([&] {
+            for (const auto& e : n.elements) e->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const FunctionExpr& n) override {
+        std::string head = "(function-expr " + (n.name.empty() ? "<anon>" : n.name) + " (";
+        for (size_t i = 0; i < n.params.size(); ++i) {
+            if (i > 0) head += ' ';
+            head += n.params[i].name;
+            if (!n.params[i].typeAnnotation.empty()) head += ": " + n.params[i].typeAnnotation;
+        }
+        head += ')';
+        if (!n.returnType.empty()) head += ": " + n.returnType;
+        emit(head);
+        indented([this, &n] {
+            for (const auto& s : n.body) s->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const VarDecl& n) override {
         std::string head = std::string("(") + (n.isConst ? "const " : "let ") + n.name;
         if (!n.typeAnnotation.empty()) head += ": " + n.typeAnnotation;
