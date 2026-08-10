@@ -260,6 +260,26 @@ private:
                 return std::nullopt;
             }
 
+            if (calleeIdent->name == "console.log") {
+                if (call->args.size() != 1) {
+                    diags_.error(call->span, "console.log expects 1 argument");
+                    return std::nullopt;
+                }
+                auto argVal = lowerExpr(*call->args[0], ilFn, env);
+                if (!argVal) return std::nullopt;
+
+                if (ilFn.returnType == il::Type::Void) {
+                    ilFn.returnType = argVal->type;
+                }
+                il::Instruction inst;
+                inst.op = il::Op::Ret;
+                inst.type = argVal->type;
+                inst.result = il::kNoValue;
+                inst.operands = {argVal->id};
+                ilFn.body.push_back(inst);
+                return argVal;
+            }
+
             auto it = functionIndices_.find(calleeIdent->name);
             if (it == functionIndices_.end()) {
                 diags_.error(call->span, "undefined function: " + calleeIdent->name);

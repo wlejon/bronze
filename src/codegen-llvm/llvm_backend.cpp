@@ -114,7 +114,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Add instruction");
                         return false;
                     }
-                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy()) {
+                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
+                        if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
+                        if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());
                         values[inst.result] = builder.CreateFAdd(lhs, rhs);
                     } else {
                         values[inst.result] = builder.CreateAdd(lhs, rhs);
@@ -132,7 +134,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Sub instruction");
                         return false;
                     }
-                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy()) {
+                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
+                        if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
+                        if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());
                         values[inst.result] = builder.CreateFSub(lhs, rhs);
                     } else {
                         values[inst.result] = builder.CreateSub(lhs, rhs);
@@ -150,7 +154,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Mul instruction");
                         return false;
                     }
-                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy()) {
+                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
+                        if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
+                        if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());
                         values[inst.result] = builder.CreateFMul(lhs, rhs);
                     } else {
                         values[inst.result] = builder.CreateMul(lhs, rhs);
@@ -168,7 +174,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined value in Div instruction");
                         return false;
                     }
-                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy()) {
+                    if (inst.type == il::Type::F64 || lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy()) {
+                        if (lhs->getType()->isIntegerTy(1)) lhs = builder.CreateUIToFP(lhs, builder.getDoubleTy());
+                        if (rhs->getType()->isIntegerTy(1)) rhs = builder.CreateUIToFP(rhs, builder.getDoubleTy());
                         values[inst.result] = builder.CreateFDiv(lhs, rhs);
                     } else {
                         values[inst.result] = builder.CreateSDiv(lhs, rhs);
@@ -260,6 +268,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         if (!retVal) {
                             diags.error(Span{}, "Undefined return value in Ret instruction");
                             return false;
+                        }
+                        if (llvmFunc->getReturnType()->isDoubleTy() && retVal->getType()->isIntegerTy(1)) {
+                            retVal = builder.CreateUIToFP(retVal, builder.getDoubleTy());
                         }
                         builder.CreateRet(retVal);
                     }

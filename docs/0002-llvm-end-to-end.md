@@ -48,4 +48,6 @@ a perf smoke against node from the first day.
 
 ## Log
 
-(append: date, benchmark, bronze time, node time, notes)
+- 2026-08-10: fib.js | bronze: 7.36ms | node: 31.03ms | 4.22x speedup (stdout byte match verified)
+- 2026-08-10: numeric_loop.js | bronze: 7.44ms | node: 30.00ms | 4.03x speedup (stdout byte match verified)
+

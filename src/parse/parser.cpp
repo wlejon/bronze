@@ -217,20 +217,37 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
 ExprPtr Parser::parseUnaryPostfix() {
     auto expr = parsePrimary();
     if (!expr) return nullptr;
-    while (check(TokenKind::LParen)) {
-        advance();
-        auto call = std::make_unique<Call>();
-        call->span.begin = expr->span.begin;
-        call->callee = std::move(expr);
-        while (!check(TokenKind::RParen)) {
-            auto arg = parseExpr();
-            if (!arg) return nullptr;
-            call->args.push_back(std::move(arg));
-            if (!match(TokenKind::Comma)) break;
+    for (;;) {
+        if (match(TokenKind::Dot)) {
+            const Token* member = expect(TokenKind::Identifier, "property name");
+            if (!member) return nullptr;
+            const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
+            if (baseIdent) {
+                auto ident = std::make_unique<ast::Ident>();
+                ident->span = {expr->span.begin, member->span.end};
+                ident->name = baseIdent->name + "." + std::string(member->text);
+                expr = std::move(ident);
+            } else {
+                error("unsupported member access");
+                return nullptr;
+            }
+        } else if (check(TokenKind::LParen)) {
+            advance();
+            auto call = std::make_unique<Call>();
+            call->span.begin = expr->span.begin;
+            call->callee = std::move(expr);
+            while (!check(TokenKind::RParen)) {
+                auto arg = parseExpr();
+                if (!arg) return nullptr;
+                call->args.push_back(std::move(arg));
+                if (!match(TokenKind::Comma)) break;
+            }
+            if (!expect(TokenKind::RParen, "')' after arguments")) return nullptr;
+            call->span.end = peek().span.begin;
+            expr = std::move(call);
+        } else {
+            break;
         }
-        if (!expect(TokenKind::RParen, "')' after arguments")) return nullptr;
-        call->span.end = peek().span.begin;
-        expr = std::move(call);
     }
     return expr;
 }

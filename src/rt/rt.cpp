@@ -2,9 +2,17 @@
 #include <cstdio>
 #include <system_error>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 extern "C" double bronze_main();
 
 int main() {
+#ifdef _WIN32
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
     double result = bronze_main();
     char buf[64];
     auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), result);

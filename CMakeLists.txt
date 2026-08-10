@@ -50,3 +50,7 @@ if(BRONZE_WITH_LLVM)
 endif()
 add_subdirectory(src/rt)
 add_subdirectory(src/cli)
+
+if(BRONZE_WITH_LLVM)
+    add_subdirectory(tests/oracle)
+endif()
