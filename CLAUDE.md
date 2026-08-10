@@ -42,4 +42,4 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0001 foundation (decisions, phases)
 - 0002 LLVM end-to-end plan (current work)
 - 0003 node-as-oracle differential harness
-- 0004 dynamic value model (NaN-boxing / shapes / GC — needs sign-off)
+- 0004 dynamic value model (NaN-boxing / shapes / GC / strings / arrays — accepted 2026-08-10)

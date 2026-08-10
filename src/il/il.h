@@ -20,7 +20,7 @@ enum class Type : uint8_t {
     Bool,
     I32,
     F64,
-    Str,      // native string (ownership model decided in docs/0001)
+    Str,      // native string (representation decided in docs/0004)
     Dynamic,  // boundary-only boxed value; using it is an explicit opt-in
 };
 const char* typeName(Type t);
