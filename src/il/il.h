@@ -36,6 +36,8 @@ enum class Op : uint8_t {
     CmpGt,
     CmpEq,
     Ret,        // ret [a]
+    Jump,       // jump bN(args...)
+    Branch,     // br %cond, bThen(args...), bElse(args...)
     Call,       // a = call <funcRef>(args...)
     Box,        // a = box.<type> b
     Unbox,      // a = unbox.<type> b
@@ -48,9 +50,23 @@ enum class Op : uint8_t {
     Print,      // print a
 };
 const char* opName(Op op);
+bool isTerminator(Op op);
 
 using ValueId = uint32_t;
 inline constexpr ValueId kNoValue = UINT32_MAX;
+
+using BlockId = uint32_t;
+inline constexpr BlockId kNoBlock = UINT32_MAX;
+
+struct BlockParam {
+    ValueId id = kNoValue;
+    Type type = Type::Void;
+};
+
+struct BlockTarget {
+    BlockId block = kNoBlock;
+    std::vector<ValueId> args;
+};
 
 struct Instruction {
     Op op;
@@ -63,6 +79,15 @@ struct Instruction {
     Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
+
+    BlockTarget target;              // Jump target / Branch then-target
+    BlockTarget elseTarget;          // Branch else-target
+};
+
+struct Block {
+    BlockId id = 0;
+    std::vector<BlockParam> params;
+    std::vector<Instruction> instructions;
 };
 
 struct Param {
@@ -75,8 +100,7 @@ struct Function {
     std::vector<Param> params;
     Type returnType = Type::Void;
     bool isExported = false;
-    // Single block for now; the block structure arrives with control flow.
-    std::vector<Instruction> body;
+    std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
 

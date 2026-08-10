@@ -74,8 +74,16 @@ public:
             mainFn.name = "main";
             mainFn.returnType = il::Type::Void;
             mainFn.valueCount = 0;
+            mainFn.blocks.push_back(il::Block{.id = 0});
             if (!lowerStmtList(topLevelStmts, mainFn)) {
                 return std::nullopt;
+            }
+            auto& insts = mainFn.blocks.back().instructions;
+            if (insts.empty() || !il::isTerminator(insts.back().op)) {
+                il::Instruction retInst;
+                retInst.op = il::Op::Ret;
+                retInst.type = il::Type::Void;
+                insts.push_back(retInst);
             }
             ilModule_.functions.push_back(std::move(mainFn));
         }
@@ -109,6 +117,13 @@ private:
         return idx;
     }
 
+    void emitInst(il::Function& ilFn, const il::Instruction& inst) {
+        if (ilFn.blocks.empty()) {
+            ilFn.blocks.push_back(il::Block{.id = 0});
+        }
+        ilFn.blocks.back().instructions.push_back(inst);
+    }
+
     Value boxValueIfNeeded(Value val, il::Function& ilFn) {
         if (val.type == il::Type::Dynamic) return val;
         il::ValueId res = ilFn.valueCount++;
@@ -118,7 +133,7 @@ private:
         inst.boxType = val.type;
         inst.result = res;
         inst.operands = {val.id};
-        ilFn.body.push_back(inst);
+        emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }
 
@@ -131,13 +146,14 @@ private:
             inst.type = targetType;
             inst.result = res;
             inst.operands = {val.id};
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, targetType};
         }
         return val;
     }
 
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
+        ilFn.blocks.push_back(il::Block{.id = 0});
         std::unordered_map<std::string, Value> env;
         for (uint32_t i = 0; i < fnDecl.params.size(); ++i) {
             env[fnDecl.params[i].name] = {i, ilFn.params[i].type};
@@ -146,7 +162,15 @@ private:
         for (const auto& s : fnDecl.body) {
             stmts.push_back(s.get());
         }
-        return lowerStmtList(stmts, ilFn, &env);
+        if (!lowerStmtList(stmts, ilFn, &env)) return false;
+        auto& insts = ilFn.blocks.back().instructions;
+        if (insts.empty() || !il::isTerminator(insts.back().op)) {
+            il::Instruction retInst;
+            retInst.op = il::Op::Ret;
+            retInst.type = ilFn.returnType;
+            insts.push_back(retInst);
+        }
+        return true;
     }
 
     bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn,
@@ -202,13 +226,13 @@ private:
                 inst.type = val->type;
                 inst.result = il::kNoValue;
                 inst.operands = {val->id};
-                ilFn.body.push_back(inst);
+                emitInst(ilFn, inst);
             } else {
                 il::Instruction inst;
                 inst.op = il::Op::Ret;
                 inst.type = il::Type::Void;
                 inst.result = il::kNoValue;
-                ilFn.body.push_back(inst);
+                emitInst(ilFn, inst);
             }
             return true;
         }
@@ -237,7 +261,7 @@ private:
             inst.type = il::Type::F64;
             inst.result = res;
             inst.immF64 = numLit->value;
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, il::Type::F64};
         }
 
@@ -250,7 +274,7 @@ private:
             inst.boxType = il::Type::Str;
             inst.result = res;
             inst.keyIndex = keyIdx;
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
 
@@ -260,7 +284,7 @@ private:
             inst.op = il::Op::CreateObject;
             inst.type = il::Type::Dynamic;
             inst.result = res;
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
 
             for (const auto& prop : objLit->props) {
                 auto valOpt = lowerExpr(*prop.value, ilFn, env);
@@ -277,7 +301,7 @@ private:
                 setInst.operands = {res, valBoxed.id};
                 setInst.keyIndex = keyIdx;
                 setInst.icIndex = icIdx;
-                ilFn.body.push_back(setInst);
+                emitInst(ilFn, setInst);
             }
             return Value{res, il::Type::Dynamic};
         }
@@ -289,7 +313,7 @@ private:
             inst.type = il::Type::Dynamic;
             inst.result = res;
             inst.immI32 = static_cast<int32_t>(arrLit->elements.size());
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
 
             for (size_t i = 0; i < arrLit->elements.size(); ++i) {
                 auto elemOpt = lowerExpr(*arrLit->elements[i], ilFn, env);
@@ -306,7 +330,7 @@ private:
                 setInst.operands = {res, elemBoxed.id};
                 setInst.keyIndex = keyIdx;
                 setInst.icIndex = icIdx;
-                ilFn.body.push_back(setInst);
+                emitInst(ilFn, setInst);
             }
             return Value{res, il::Type::Dynamic};
         }
@@ -345,15 +369,17 @@ private:
                 return std::nullopt;
             }
             bool hasRet = false;
-            for (const auto& inst : newFn.body) {
-                if (inst.op == il::Op::Ret) { hasRet = true; break; }
+            if (!newFn.blocks.empty()) {
+                for (const auto& inst : newFn.blocks[0].instructions) {
+                    if (inst.op == il::Op::Ret) { hasRet = true; break; }
+                }
             }
             if (!hasRet) {
                 il::Instruction retInst;
                 retInst.op = il::Op::Ret;
                 retInst.type = il::Type::Void;
                 retInst.result = il::kNoValue;
-                newFn.body.push_back(retInst);
+                emitInst(newFn, retInst);
             }
 
             uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
@@ -367,7 +393,7 @@ private:
             inst.result = res;
             inst.calleeIndex = createdFnIdx;
             inst.immI32 = static_cast<int32_t>(fnExpr->params.size());
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
 
@@ -396,7 +422,7 @@ private:
             inst.operands = {objBoxed.id};
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
 
@@ -425,7 +451,7 @@ private:
             inst.operands = {objBoxed.id};
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
 
@@ -449,7 +475,7 @@ private:
                     inst.operands = {objBoxed.id, rhsBoxed.id};
                     inst.keyIndex = keyIdx;
                     inst.icIndex = icIdx;
-                    ilFn.body.push_back(inst);
+                    emitInst(ilFn, inst);
                     return rhsBoxed;
                 }
                 if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get())) {
@@ -473,14 +499,14 @@ private:
 
                     uint32_t icIdx = icSiteCounter_++;
 
-                    il::Instruction inst;
-                    inst.op = il::Op::PropSet;
-                    inst.type = il::Type::Void;
-                    inst.result = il::kNoValue;
-                    inst.operands = {objBoxed.id, rhsBoxed.id};
-                    inst.keyIndex = keyIdx;
-                    inst.icIndex = icIdx;
-                    ilFn.body.push_back(inst);
+                    il::Instruction setInst;
+                    setInst.op = il::Op::PropSet;
+                    setInst.type = il::Type::Void;
+                    setInst.result = il::kNoValue;
+                    setInst.operands = {objBoxed.id, rhsBoxed.id};
+                    setInst.keyIndex = keyIdx;
+                    setInst.icIndex = icIdx;
+                    emitInst(ilFn, setInst);
                     return rhsBoxed;
                 }
                 if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
@@ -516,7 +542,7 @@ private:
                         inst.type = il::Type::Dynamic;
                         inst.result = res;
                         inst.operands = {lhsBoxed.id, rhsBoxed.id};
-                        ilFn.body.push_back(inst);
+                        emitInst(ilFn, inst);
                         return Value{res, il::Type::Dynamic};
                     }
                     op = il::Op::Add;
@@ -563,7 +589,7 @@ private:
             inst.type = resType;
             inst.result = res;
             inst.operands = {lhs.id, rhs.id};
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{res, resType};
         }
 
@@ -591,7 +617,7 @@ private:
                 inst.type = il::Type::Void;
                 inst.result = il::kNoValue;
                 inst.operands = {argBoxed.id};
-                ilFn.body.push_back(inst);
+                emitInst(ilFn, inst);
                 return Value{il::kNoValue, il::Type::Void};
             }
 
@@ -634,7 +660,7 @@ private:
                             inst.result = il::kNoValue;
                         }
 
-                        ilFn.body.push_back(inst);
+                        emitInst(ilFn, inst);
                         return Value{res, calleeFn.returnType};
                     }
                 }
@@ -658,7 +684,7 @@ private:
                 inst.operands = {thisArgVal.id};
                 inst.keyIndex = keyIdx;
                 inst.icIndex = icIdx;
-                ilFn.body.push_back(inst);
+                emitInst(ilFn, inst);
                 calleeVal = Value{getRes, il::Type::Dynamic};
             } else {
                 auto cVal = lowerExpr(*call->callee, ilFn, env);
@@ -671,7 +697,7 @@ private:
                 zeroInst.type = il::Type::F64;
                 zeroInst.result = zeroRes;
                 zeroInst.immF64 = 0.0;
-                ilFn.body.push_back(zeroInst);
+                emitInst(ilFn, zeroInst);
                 thisArgVal = boxValueIfNeeded(Value{zeroRes, il::Type::F64}, ilFn);
             }
 
@@ -692,7 +718,7 @@ private:
             inst.type = il::Type::Dynamic;
             inst.result = callRes;
             inst.operands = std::move(dynOperands);
-            ilFn.body.push_back(inst);
+            emitInst(ilFn, inst);
             return Value{callRes, il::Type::Dynamic};
         }
 

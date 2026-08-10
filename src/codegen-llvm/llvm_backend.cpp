@@ -25,6 +25,7 @@
 
 #include "abi/bronze_abi.h"
 #include "il/print.h"
+#include "il/verifier.h"
 
 namespace bronze {
 
@@ -58,6 +59,7 @@ static llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
 
 bool LLVMBackend::emitObject(const il::Module& module, const std::string& outputPath,
                              DiagnosticSink& diags) {
+    if (!il::verify(module, diags)) return false;
     llvm::LLVMContext ctx;
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
@@ -186,14 +188,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         const auto& func = module.functions[i];
         llvm::Function* llvmFunc = llvmFunctions[i];
 
-        llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", llvmFunc);
-        llvm::IRBuilder<> builder(bb);
-
-        if (func.name == "main") {
-            for (size_t k = 0; k < module.keyConstants.size(); ++k) {
-                llvm::Value* globalStr = builder.CreateGlobalStringPtr(module.keyConstants[k]);
-                builder.CreateCall(abi.bronze_register_key_string, {builder.getInt32(static_cast<uint32_t>(k)), globalStr});
-            }
+        std::vector<llvm::BasicBlock*> llvmBlocks;
+        llvmBlocks.reserve(func.blocks.size());
+        for (size_t bIdx = 0; bIdx < func.blocks.size(); ++bIdx) {
+            std::string bName = "b" + std::to_string(func.blocks[bIdx].id);
+            llvmBlocks.push_back(llvm::BasicBlock::Create(ctx, bName, llvmFunc));
         }
 
         std::vector<llvm::Value*> values(func.valueCount, nullptr);
@@ -205,8 +204,59 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             argIdx++;
         }
 
-        for (const auto& inst : func.body) {
-            switch (inst.op) {
+        std::vector<std::vector<llvm::PHINode*>> blockPhis(func.blocks.size());
+        for (size_t bIdx = 0; bIdx < func.blocks.size(); ++bIdx) {
+            const auto& block = func.blocks[bIdx];
+            if (block.params.empty()) continue;
+            llvm::IRBuilder<> phiBuilder(llvmBlocks[bIdx]);
+            blockPhis[bIdx].reserve(block.params.size());
+            for (const auto& param : block.params) {
+                llvm::Type* pTy = mapILType(param.type, ctx);
+                llvm::PHINode* phi = phiBuilder.CreatePHI(pTy, 0, "p" + std::to_string(param.id));
+                values[param.id] = phi;
+                blockPhis[bIdx].push_back(phi);
+            }
+        }
+
+        if (func.name == "main" && !llvmBlocks.empty()) {
+            llvm::IRBuilder<> entryBuilder(llvmBlocks[0]);
+            for (size_t k = 0; k < module.keyConstants.size(); ++k) {
+                llvm::Value* globalStr = entryBuilder.CreateGlobalStringPtr(module.keyConstants[k]);
+                entryBuilder.CreateCall(abi.bronze_register_key_string, {entryBuilder.getInt32(static_cast<uint32_t>(k)), globalStr});
+            }
+        }
+
+        for (size_t bIdx = 0; bIdx < func.blocks.size(); ++bIdx) {
+            const auto& block = func.blocks[bIdx];
+            llvm::BasicBlock* bb = llvmBlocks[bIdx];
+            llvm::IRBuilder<> builder(bb);
+
+            for (const auto& inst : block.instructions) {
+                switch (inst.op) {
+                    case il::Op::Jump: {
+                        llvm::BasicBlock* tgtBb = llvmBlocks[inst.target.block];
+                        for (size_t k = 0; k < inst.target.args.size(); ++k) {
+                            llvm::Value* argVal = values[inst.target.args[k]];
+                            blockPhis[inst.target.block][k]->addIncoming(argVal, bb);
+                        }
+                        builder.CreateBr(tgtBb);
+                        break;
+                    }
+                    case il::Op::Branch: {
+                        llvm::Value* condVal = values[inst.operands[0]];
+                        llvm::BasicBlock* thenBb = llvmBlocks[inst.target.block];
+                        for (size_t k = 0; k < inst.target.args.size(); ++k) {
+                            llvm::Value* argVal = values[inst.target.args[k]];
+                            blockPhis[inst.target.block][k]->addIncoming(argVal, bb);
+                        }
+                        llvm::BasicBlock* elseBb = llvmBlocks[inst.elseTarget.block];
+                        for (size_t k = 0; k < inst.elseTarget.args.size(); ++k) {
+                            llvm::Value* argVal = values[inst.elseTarget.args[k]];
+                            blockPhis[inst.elseTarget.block][k]->addIncoming(argVal, bb);
+                        }
+                        builder.CreateCondBr(condVal, thenBb, elseBb);
+                        break;
+                    }
                 case il::Op::ConstF64: {
                     if (inst.result == il::kNoValue) break;
                     values[inst.result] = llvm::ConstantFP::get(builder.getDoubleTy(), inst.immF64);
@@ -531,17 +581,6 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     diags.error(Span{}, "Unsupported IL instruction opcode");
                     return false;
             }
-        }
-
-        if (!bb->getTerminator()) {
-            if (llvmFunc->getReturnType()->isVoidTy()) {
-                builder.CreateRetVoid();
-            } else if (llvmFunc->getReturnType()->isDoubleTy()) {
-                builder.CreateRet(llvm::ConstantFP::get(builder.getDoubleTy(), 0.0));
-            } else if (llvmFunc->getReturnType()->isIntegerTy()) {
-                builder.CreateRet(builder.getIntN(llvmFunc->getReturnType()->getIntegerBitWidth(), 0));
-            } else {
-                builder.CreateRetVoid();
             }
         }
     }

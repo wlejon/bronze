@@ -1,0 +1,181 @@
+#include "il/verifier.h"
+
+#include <unordered_map>
+#include <unordered_set>
+
+namespace bronze::il {
+
+bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
+    if (fn.blocks.empty()) {
+        diags.error(Span{}, "Function " + fn.name + " has no blocks");
+        return false;
+    }
+
+    if (fn.blocks[0].id != 0) {
+        diags.error(Span{}, "Function " + fn.name + " entry block id is not 0");
+        return false;
+    }
+
+    if (!fn.blocks[0].params.empty()) {
+        diags.error(Span{}, "Function " + fn.name + " entry block b0 must not have block parameters");
+        return false;
+    }
+
+    // Map of ValueId -> defined Type
+    std::unordered_map<ValueId, Type> definedTypes;
+    // Map of ValueId -> {block_index, instruction_index_in_block (or -1 if param)}
+    struct DefLocation {
+        size_t blockIdx;
+        int instIdx;
+    };
+    std::unordered_map<ValueId, DefLocation> defLocations;
+
+    auto recordDef = [&](ValueId id, Type type, size_t blockIdx, int instIdx) -> bool {
+        if (definedTypes.contains(id)) {
+            diags.error(Span{}, "Function " + fn.name + ": duplicate definition of %" + std::to_string(id));
+            return false;
+        }
+        definedTypes[id] = type;
+        defLocations[id] = DefLocation{blockIdx, instIdx};
+        return true;
+    };
+
+    // 1. Record function parameters (%0 .. %N-1)
+    for (size_t i = 0; i < fn.params.size(); ++i) {
+        if (!recordDef(static_cast<ValueId>(i), fn.params[i].type, 0, -1)) {
+            return false;
+        }
+    }
+
+    // 2. Record block parameters & instruction results
+    for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
+        const auto& block = fn.blocks[bIdx];
+        if (block.id != static_cast<BlockId>(bIdx)) {
+            diags.error(Span{}, "Function " + fn.name + ": block id mismatch at index " +
+                                  std::to_string(bIdx) + " (expected b" + std::to_string(bIdx) +
+                                  ", got b" + std::to_string(block.id) + ")");
+            return false;
+        }
+
+        for (const auto& param : block.params) {
+            if (!recordDef(param.id, param.type, bIdx, -1)) {
+                return false;
+            }
+        }
+
+        for (size_t iIdx = 0; iIdx < block.instructions.size(); ++iIdx) {
+            const auto& inst = block.instructions[iIdx];
+            if (inst.result != kNoValue) {
+                if (!recordDef(inst.result, inst.type, bIdx, static_cast<int>(iIdx))) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Helper to check use of a value
+    auto checkUse = [&](ValueId id, size_t useBlockIdx, size_t useInstIdx) -> bool {
+        auto it = definedTypes.find(id);
+        if (it == definedTypes.end()) {
+            diags.error(Span{}, "Function " + fn.name + ": use of undefined value %" + std::to_string(id));
+            return false;
+        }
+        const auto& loc = defLocations[id];
+        if (loc.blockIdx == useBlockIdx && loc.instIdx >= static_cast<int>(useInstIdx)) {
+            diags.error(Span{}, "Function " + fn.name + ": within-block use-after-def of %" + std::to_string(id));
+            return false;
+        }
+        return true;
+    };
+
+    // Helper to check target block arguments
+    auto checkTarget = [&](const BlockTarget& target, size_t useBlockIdx, size_t useInstIdx) -> bool {
+        if (target.block >= fn.blocks.size()) {
+            diags.error(Span{}, "Function " + fn.name + ": branch target b" +
+                                  std::to_string(target.block) + " out of range");
+            return false;
+        }
+        const auto& tgtBlock = fn.blocks[target.block];
+        if (target.args.size() != tgtBlock.params.size()) {
+            diags.error(Span{}, "Function " + fn.name + ": target b" + std::to_string(target.block) +
+                                  " expects " + std::to_string(tgtBlock.params.size()) +
+                                  " arguments, got " + std::to_string(target.args.size()));
+            return false;
+        }
+        for (size_t i = 0; i < target.args.size(); ++i) {
+            ValueId argId = target.args[i];
+            if (!checkUse(argId, useBlockIdx, useInstIdx)) return false;
+            if (definedTypes[argId] != tgtBlock.params[i].type) {
+                diags.error(Span{}, "Function " + fn.name + ": type mismatch for argument " +
+                                      std::to_string(i) + " passed to b" + std::to_string(target.block));
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // 3. Verify instructions and terminators
+    for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
+        const auto& block = fn.blocks[bIdx];
+        if (block.instructions.empty()) {
+            diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) + " has no instructions");
+            return false;
+        }
+
+        for (size_t iIdx = 0; iIdx < block.instructions.size(); ++iIdx) {
+            const auto& inst = block.instructions[iIdx];
+            bool isLast = (iIdx == block.instructions.size() - 1);
+            bool term = isTerminator(inst.op);
+
+            if (term && !isLast) {
+                diags.error(Span{}, "Function " + fn.name + ": terminator inside block b" +
+                                      std::to_string(bIdx) + " before last instruction");
+                return false;
+            }
+            if (!term && isLast) {
+                diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
+                                      " does not end with a terminator");
+                return false;
+            }
+
+            for (ValueId opId : inst.operands) {
+                if (!checkUse(opId, bIdx, iIdx)) return false;
+            }
+
+            if (inst.op == Op::Jump) {
+                if (!checkTarget(inst.target, bIdx, iIdx)) return false;
+            } else if (inst.op == Op::Branch) {
+                if (inst.operands.empty()) {
+                    diags.error(Span{}, "Function " + fn.name + ": br missing condition operand");
+                    return false;
+                }
+                ValueId condId = inst.operands[0];
+                if (definedTypes[condId] != Type::Bool) {
+                    diags.error(Span{}, "Function " + fn.name + ": br condition %" +
+                                          std::to_string(condId) + " is not bool");
+                    return false;
+                }
+                if (inst.target.block == inst.elseTarget.block) {
+                    diags.error(Span{}, "Function " + fn.name + ": br has identical then and else target b" +
+                                          std::to_string(inst.target.block));
+                    return false;
+                }
+                if (!checkTarget(inst.target, bIdx, iIdx)) return false;
+                if (!checkTarget(inst.elseTarget, bIdx, iIdx)) return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool verify(const Module& module, DiagnosticSink& diags) {
+    for (const auto& fn : module.functions) {
+        if (!verifyFunction(fn, diags)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace bronze::il
