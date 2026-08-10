@@ -1,6 +1,9 @@
 bronze_add_module(runtime
     SOURCES
         value.cpp
+        heap.cpp
+        gc.cpp
     TEST_SOURCES
         ../../tests/runtime/value_test.cpp
+        ../../tests/runtime/gc_test.cpp
 )
