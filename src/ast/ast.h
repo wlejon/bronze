@@ -35,13 +35,25 @@ struct Ident final : Expr {
     void accept(Visitor& v) const override;
 };
 
-enum class BinaryOp { Add, Sub, Mul, Div, Less, Greater, Eq, StrictEq, Ne, StrictNe };
+enum class BinaryOp { Add, Sub, Mul, Div, Less, Greater, Eq, StrictEq, Ne, StrictNe, Assign };
 const char* binaryOpName(BinaryOp op);
 
 struct Binary final : Expr {
     BinaryOp op;
     ExprPtr lhs;
     ExprPtr rhs;
+    void accept(Visitor& v) const override;
+};
+
+struct MemberAccess final : Expr {
+    ExprPtr object;
+    std::string property;
+    void accept(Visitor& v) const override;
+};
+
+struct IndexAccess final : Expr {
+    ExprPtr object;
+    ExprPtr index;
     void accept(Visitor& v) const override;
 };
 
@@ -110,6 +122,8 @@ public:
     virtual void visit(const StringLit&) = 0;
     virtual void visit(const Ident&) = 0;
     virtual void visit(const Binary&) = 0;
+    virtual void visit(const MemberAccess&) = 0;
+    virtual void visit(const IndexAccess&) = 0;
     virtual void visit(const Call&) = 0;
     virtual void visit(const VarDecl&) = 0;
     virtual void visit(const ReturnStmt&) = 0;

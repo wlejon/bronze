@@ -37,6 +37,10 @@ static llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
             return llvm::Type::getInt32Ty(ctx);
         case il::Type::F64:
             return llvm::Type::getDoubleTy(ctx);
+        case il::Type::Str:
+            return llvm::PointerType::getUnqual(ctx);
+        case il::Type::Dynamic:
+            return llvm::Type::getInt64Ty(ctx);
         default:
             return nullptr;
     }
@@ -46,6 +50,41 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                             DiagnosticSink& diags) {
     llvm::LLVMContext ctx;
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
+
+    auto getOrDeclareFunc = [&](const std::string& name, llvm::FunctionType* fty) -> llvm::Function* {
+        llvm::Function* fn = llvmModule->getFunction(name);
+        if (!fn) {
+            fn = llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, llvmModule.get());
+        }
+        return fn;
+    };
+
+    llvm::Function* fnBoxF64 = getOrDeclareFunc("bronze_box_f64",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getDoubleTy(ctx)}, false));
+    llvm::Function* fnBoxI32 = getOrDeclareFunc("bronze_box_i32",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt32Ty(ctx)}, false));
+    llvm::Function* fnBoxBool = getOrDeclareFunc("bronze_box_bool",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::Type::getInt1Ty(ctx)}, false));
+    llvm::Function* fnBoxStr = getOrDeclareFunc("bronze_box_str",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx), {llvm::PointerType::getUnqual(ctx)}, false));
+
+    llvm::Function* fnUnboxF64 = getOrDeclareFunc("bronze_unbox_f64",
+        llvm::FunctionType::get(llvm::Type::getDoubleTy(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
+    llvm::Function* fnUnboxI32 = getOrDeclareFunc("bronze_unbox_i32",
+        llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
+    llvm::Function* fnUnboxBool = getOrDeclareFunc("bronze_unbox_bool",
+        llvm::FunctionType::get(llvm::Type::getInt1Ty(ctx), {llvm::Type::getInt64Ty(ctx)}, false));
+
+    llvm::Function* fnPropGet = getOrDeclareFunc("bronze_prop_get",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx),
+            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false));
+    llvm::Function* fnPropSet = getOrDeclareFunc("bronze_prop_set",
+        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false));
+
+    llvm::Function* fnDynCall = getOrDeclareFunc("bronze_dynamic_call",
+        llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx),
+            {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::PointerType::getUnqual(ctx)}, false));
 
     std::vector<llvm::Function*> llvmFunctions;
     llvmFunctions.reserve(module.functions.size());
@@ -101,6 +140,104 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                 case il::Op::ConstI32: {
                     if (inst.result == il::kNoValue) break;
                     values[inst.result] = builder.getInt32(inst.immI32);
+                    break;
+                }
+                case il::Op::Box: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for Box");
+                        return false;
+                    }
+                    llvm::Value* srcVal = values[inst.operands[0]];
+                    if (!srcVal) {
+                        diags.error(Span{}, "Undefined value in Box instruction");
+                        return false;
+                    }
+                    llvm::Function* targetBoxFn = fnBoxF64;
+                    if (inst.boxType == il::Type::I32) targetBoxFn = fnBoxI32;
+                    else if (inst.boxType == il::Type::Bool) targetBoxFn = fnBoxBool;
+                    else if (inst.boxType == il::Type::Str) targetBoxFn = fnBoxStr;
+                    values[inst.result] = builder.CreateCall(targetBoxFn, {srcVal});
+                    break;
+                }
+                case il::Op::Unbox: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for Unbox");
+                        return false;
+                    }
+                    llvm::Value* srcVal = values[inst.operands[0]];
+                    if (!srcVal) {
+                        diags.error(Span{}, "Undefined value in Unbox instruction");
+                        return false;
+                    }
+                    llvm::Function* targetUnboxFn = fnUnboxF64;
+                    if (inst.type == il::Type::I32) targetUnboxFn = fnUnboxI32;
+                    else if (inst.type == il::Type::Bool) targetUnboxFn = fnUnboxBool;
+                    values[inst.result] = builder.CreateCall(targetUnboxFn, {srcVal});
+                    break;
+                }
+                case il::Op::PropGet: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for PropGet");
+                        return false;
+                    }
+                    llvm::Value* objVal = values[inst.operands[0]];
+                    if (!objVal) {
+                        diags.error(Span{}, "Undefined object in PropGet instruction");
+                        return false;
+                    }
+                    llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
+                    llvm::Value* icIdx = builder.getInt32(inst.icIndex);
+                    values[inst.result] = builder.CreateCall(fnPropGet, {objVal, kIdx, icIdx});
+                    break;
+                }
+                case il::Op::PropSet: {
+                    if (inst.operands.size() < 2) {
+                        diags.error(Span{}, "Invalid operands for PropSet");
+                        return false;
+                    }
+                    llvm::Value* objVal = values[inst.operands[0]];
+                    llvm::Value* valVal = values[inst.operands[1]];
+                    if (!objVal || !valVal) {
+                        diags.error(Span{}, "Undefined operand in PropSet instruction");
+                        return false;
+                    }
+                    llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
+                    llvm::Value* icIdx = builder.getInt32(inst.icIndex);
+                    builder.CreateCall(fnPropSet, {objVal, kIdx, valVal, icIdx});
+                    break;
+                }
+                case il::Op::DynamicCall: {
+                    if (inst.operands.size() < 2) {
+                        diags.error(Span{}, "Invalid operands for DynamicCall");
+                        return false;
+                    }
+                    llvm::Value* calleeVal = values[inst.operands[0]];
+                    llvm::Value* thisVal = values[inst.operands[1]];
+                    if (!calleeVal || !thisVal) {
+                        diags.error(Span{}, "Undefined callee or this in DynamicCall instruction");
+                        return false;
+                    }
+                    uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
+                    llvm::Value* argvPtr = nullptr;
+                    if (argc > 0) {
+                        llvm::Value* arrLen = builder.getInt32(argc);
+                        argvPtr = builder.CreateAlloca(builder.getInt64Ty(), arrLen, "argv");
+                        for (uint32_t a = 0; a < argc; ++a) {
+                            llvm::Value* argV = values[inst.operands[2 + a]];
+                            if (!argV) {
+                                diags.error(Span{}, "Undefined argument in DynamicCall instruction");
+                                return false;
+                            }
+                            llvm::Value* slotPtr = builder.CreateGEP(builder.getInt64Ty(), argvPtr, builder.getInt32(a));
+                            builder.CreateStore(argV, slotPtr);
+                        }
+                    } else {
+                        argvPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+                    }
+                    llvm::Value* callRes = builder.CreateCall(fnDynCall, {calleeVal, thisVal, builder.getInt32(argc), argvPtr});
+                    if (inst.result != il::kNoValue) {
+                        values[inst.result] = callRes;
+                    }
                     break;
                 }
                 case il::Op::Add: {

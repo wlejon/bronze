@@ -20,6 +20,8 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::RParen: return ")";
         case TokenKind::LBrace: return "{";
         case TokenKind::RBrace: return "}";
+        case TokenKind::LBracket: return "[";
+        case TokenKind::RBracket: return "]";
         case TokenKind::Comma: return ",";
         case TokenKind::Semicolon: return ";";
         case TokenKind::Colon: return ":";
@@ -136,6 +138,8 @@ Token Lexer::lexPunctuation() {
         case ')': ++pos_; return make(TokenKind::RParen, begin);
         case '{': ++pos_; return make(TokenKind::LBrace, begin);
         case '}': ++pos_; return make(TokenKind::RBrace, begin);
+        case '[': ++pos_; return make(TokenKind::LBracket, begin);
+        case ']': ++pos_; return make(TokenKind::RBracket, begin);
         case ',': ++pos_; return make(TokenKind::Comma, begin);
         case ';': ++pos_; return make(TokenKind::Semicolon, begin);
         case ':': ++pos_; return make(TokenKind::Colon, begin);

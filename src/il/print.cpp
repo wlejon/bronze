@@ -29,6 +29,11 @@ const char* opName(Op op) {
         case Op::CmpEq: return "cmp.eq";
         case Op::Ret: return "ret";
         case Op::Call: return "call";
+        case Op::Box: return "box";
+        case Op::Unbox: return "unbox";
+        case Op::PropGet: return "prop.get";
+        case Op::PropSet: return "prop.set";
+        case Op::DynamicCall: return "call.dynamic";
     }
     return "?";
 }
@@ -57,27 +62,64 @@ std::string print(const Module& module) {
             if (inst.result != kNoValue) {
                 out += "%" + std::to_string(inst.result) + ": " + typeName(inst.type) + " = ";
             }
-            out += opName(inst.op);
             switch (inst.op) {
-                case Op::ConstF64: out += " " + formatF64(inst.immF64); break;
-                case Op::ConstI32: out += " " + std::to_string(inst.immI32); break;
-                case Op::Call:
-                    out += " @" + module.functions[inst.calleeIndex].name;
+                case Op::Box:
+                    out += "box." + std::string(typeName(inst.boxType)) + " %" +
+                           std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                     break;
-                default: break;
-            }
-            if (inst.op == Op::Call) {
-                out += "(";
-                for (size_t i = 0; i < inst.operands.size(); ++i) {
-                    if (i > 0) out += ", ";
-                    out += "%" + std::to_string(inst.operands[i]);
+                case Op::Unbox:
+                    out += "unbox." + std::string(typeName(inst.type)) + " %" +
+                           std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                    break;
+                case Op::PropGet:
+                    out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                           ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
+                    break;
+                case Op::PropSet:
+                    out += "prop.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                           ", " + std::to_string(inst.keyIndex) + ", %" +
+                           std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                           ", " + std::to_string(inst.icIndex);
+                    break;
+                case Op::DynamicCall: {
+                    out += "call.dynamic";
+                    if (!inst.operands.empty()) {
+                        out += " %" + std::to_string(inst.operands[0]);
+                        if (inst.operands.size() > 1) {
+                            out += ", %" + std::to_string(inst.operands[1]);
+                        }
+                    }
+                    size_t argc = inst.operands.size() >= 2 ? inst.operands.size() - 2 : 0;
+                    out += ", " + std::to_string(argc);
+                    for (size_t i = 2; i < inst.operands.size(); ++i) {
+                        out += ", %" + std::to_string(inst.operands[i]);
+                    }
+                    break;
                 }
-                out += ")";
-            } else {
-                for (size_t i = 0; i < inst.operands.size(); ++i) {
-                    out += i == 0 ? " " : ", ";
-                    out += "%" + std::to_string(inst.operands[i]);
-                }
+                default:
+                    out += opName(inst.op);
+                    switch (inst.op) {
+                        case Op::ConstF64: out += " " + formatF64(inst.immF64); break;
+                        case Op::ConstI32: out += " " + std::to_string(inst.immI32); break;
+                        case Op::Call:
+                            out += " @" + module.functions[inst.calleeIndex].name;
+                            break;
+                        default: break;
+                    }
+                    if (inst.op == Op::Call) {
+                        out += "(";
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            if (i > 0) out += ", ";
+                            out += "%" + std::to_string(inst.operands[i]);
+                        }
+                        out += ")";
+                    } else {
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            out += i == 0 ? " " : ", ";
+                            out += "%" + std::to_string(inst.operands[i]);
+                        }
+                    }
+                    break;
             }
             out += "\n";
         }

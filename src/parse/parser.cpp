@@ -177,6 +177,7 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
         TokenKind kind;
         OpInfo info;
     } kOps[] = {
+        {TokenKind::Assign, {BinaryOp::Assign, 0}},
         {TokenKind::EqualEqualEqual, {BinaryOp::StrictEq, 1}},
         {TokenKind::BangEqualEqual, {BinaryOp::StrictNe, 1}},
         {TokenKind::EqualEqual, {BinaryOp::Eq, 1}},
@@ -194,7 +195,7 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
 }
 }  // namespace
 
-ExprPtr Parser::parseExpr() { return parseBinary(1); }
+ExprPtr Parser::parseExpr() { return parseBinary(0); }
 
 ExprPtr Parser::parseBinary(int minPrecedence) {
     auto lhs = parseUnaryPostfix();
@@ -222,15 +223,27 @@ ExprPtr Parser::parseUnaryPostfix() {
             const Token* member = expect(TokenKind::Identifier, "property name");
             if (!member) return nullptr;
             const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
-            if (baseIdent) {
+            if (baseIdent && baseIdent->name == "console" && member->text == "log") {
                 auto ident = std::make_unique<ast::Ident>();
                 ident->span = {expr->span.begin, member->span.end};
-                ident->name = baseIdent->name + "." + std::string(member->text);
+                ident->name = "console.log";
                 expr = std::move(ident);
             } else {
-                error("unsupported member access");
-                return nullptr;
+                auto mem = std::make_unique<MemberAccess>();
+                mem->span = {expr->span.begin, member->span.end};
+                mem->object = std::move(expr);
+                mem->property = std::string(member->text);
+                expr = std::move(mem);
             }
+        } else if (match(TokenKind::LBracket)) {
+            auto indexExpr = parseExpr();
+            if (!indexExpr) return nullptr;
+            if (!expect(TokenKind::RBracket, "']' after index expression")) return nullptr;
+            auto idx = std::make_unique<IndexAccess>();
+            idx->span = {expr->span.begin, peek().span.begin};
+            idx->object = std::move(expr);
+            idx->index = std::move(indexExpr);
+            expr = std::move(idx);
         } else if (check(TokenKind::LParen)) {
             advance();
             auto call = std::make_unique<Call>();

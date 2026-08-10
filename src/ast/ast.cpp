@@ -6,6 +6,8 @@ void NumberLit::accept(Visitor& v) const { v.visit(*this); }
 void StringLit::accept(Visitor& v) const { v.visit(*this); }
 void Ident::accept(Visitor& v) const { v.visit(*this); }
 void Binary::accept(Visitor& v) const { v.visit(*this); }
+void MemberAccess::accept(Visitor& v) const { v.visit(*this); }
+void IndexAccess::accept(Visitor& v) const { v.visit(*this); }
 void Call::accept(Visitor& v) const { v.visit(*this); }
 void VarDecl::accept(Visitor& v) const { v.visit(*this); }
 void ReturnStmt::accept(Visitor& v) const { v.visit(*this); }
@@ -26,6 +28,7 @@ const char* binaryOpName(BinaryOp op) {
         case BinaryOp::StrictEq: return "===";
         case BinaryOp::Ne: return "!=";
         case BinaryOp::StrictNe: return "!==";
+        case BinaryOp::Assign: return "=";
     }
     return "?";
 }

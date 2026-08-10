@@ -8,6 +8,7 @@ bronze_add_module(runtime
         object.cpp
         array.cpp
         fn.cpp
+        rt_helpers.cpp
     TEST_SOURCES
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp

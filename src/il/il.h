@@ -37,6 +37,11 @@ enum class Op : uint8_t {
     CmpEq,
     Ret,        // ret [a]
     Call,       // a = call <funcRef>(args...)
+    Box,        // a = box.<type> b
+    Unbox,      // a = unbox.<type> b
+    PropGet,    // a = prop.get b, <key_const_index>, <ic_site_index>
+    PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
+    DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
 };
 const char* opName(Op op);
 
@@ -51,6 +56,9 @@ struct Instruction {
     double immF64 = 0;               // ConstF64
     int32_t immI32 = 0;              // ConstI32
     uint32_t calleeIndex = 0;        // Call: index into Module::functions
+    Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
+    uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
+    uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
 };
 
 struct Param {

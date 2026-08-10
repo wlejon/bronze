@@ -24,6 +24,19 @@ public:
         });
         emit(")");
     }
+    void visit(const MemberAccess& n) override {
+        emit("(member ." + n.property);
+        indented([&] { n.object->accept(*this); });
+        emit(")");
+    }
+    void visit(const IndexAccess& n) override {
+        emit("(index");
+        indented([&] {
+            n.object->accept(*this);
+            n.index->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const Call& n) override {
         emit("(call");
         indented([&] {

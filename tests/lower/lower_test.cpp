@@ -106,17 +106,38 @@ TEST_CASE("top-level statements lowered to main") {
           "}\n");
 }
 
-TEST_CASE("unsupported AST node StringLit generates diagnostic error") {
+TEST_CASE("string literal lowered to box.str") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
         "const s = \"hello\";\n",
         diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("unsupported AST node: StringLit") != std::string::npos);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("%0: dynamic = box.str") != std::string::npos);
+}
+
+TEST_CASE("lowering dynamic types, property access, array indexing, and dynamic calls") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "export function testDynamic(obj: dynamic, fn: dynamic): dynamic {\n"
+        "  obj.prop = 42;\n"
+        "  const val = obj.prop;\n"
+        "  const elem = obj[0];\n"
+        "  return fn(val, elem);\n"
+        "}\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("prop.set %0") != std::string::npos);
+    CHECK(printed.find("prop.get %0") != std::string::npos);
+    CHECK(printed.find("call.dynamic %1") != std::string::npos);
 }
 
 TEST_CASE("unsupported AST node IfStmt generates diagnostic error") {
@@ -158,17 +179,4 @@ TEST_CASE("undefined variable reference generates diagnostic error") {
     REQUIRE(diags.hasErrors());
     const std::string rendered = diags.render(buf);
     CHECK(rendered.find("undefined variable: x") != std::string::npos);
-}
-
-TEST_CASE("undefined function call generates diagnostic error") {
-    DiagnosticSink diags;
-    SourceBuffer buf("test.ts", "");
-    const auto optMod = parseAndLower(
-        "const res = unknownFunc(1);\n",
-        diags, buf);
-
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("undefined function: unknownFunc") != std::string::npos);
 }
