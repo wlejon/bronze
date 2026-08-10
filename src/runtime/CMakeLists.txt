@@ -9,6 +9,7 @@ bronze_add_module(runtime
         shape.cpp
         object.cpp
         array.cpp
+        typed_array.cpp
         fn.cpp
         rt_helpers.cpp
     DEPS
@@ -21,6 +22,7 @@ bronze_add_module(runtime
         ../../tests/runtime/shape_test.cpp
         ../../tests/runtime/object_test.cpp
         ../../tests/runtime/array_test.cpp
+        ../../tests/runtime/typed_array_test.cpp
         ../../tests/runtime/fn_test.cpp
 )
 

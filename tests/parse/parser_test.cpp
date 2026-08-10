@@ -75,6 +75,42 @@ TEST_CASE("precedence: mul binds tighter than add, comparison loosest") {
           ")\n");
 }
 
+TEST_CASE("new expression with arguments") {
+    const auto out = parseAndDump("const p = new Point(1, 2);");
+    CHECK(out ==
+          "(module t\n"
+          "  (const p\n"
+          "    (new Point\n"
+          "      (number 1)\n"
+          "      (number 2)\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("new expression with zero arguments") {
+    const auto out = parseAndDump("const p = new Foo();");
+    CHECK(out ==
+          "(module t\n"
+          "  (const p\n"
+          "    (new Foo\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("new without an argument list is a hard error") {
+    const auto out = parseAndDump("const p = new Foo;");
+    CHECK(out.substr(0, 7) == "ERRORS:");
+    CHECK(out.find("new requires an argument list") != std::string::npos);
+}
+
+TEST_CASE("new with a non-identifier callee is a hard error") {
+    const auto out = parseAndDump("const p = new (getCtor())();");
+    CHECK(out.substr(0, 7) == "ERRORS:");
+    CHECK(out.find("unsupported construct: new with a non-identifier callee") != std::string::npos);
+}
+
 TEST_CASE("const without initializer is a hard error") {
     const auto out = parseAndDump("const x;");
     CHECK(out.substr(0, 7) == "ERRORS:");

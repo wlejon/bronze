@@ -17,6 +17,7 @@
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -229,6 +230,33 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
         }
         return Value::fromUndefined().rawBits();
     }
+    if (hdr->flags == 3) {
+        // Float32Array view
+        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+        if (keyStr == "length") {
+            return Value::fromDouble(view->length).rawBits();
+        }
+        if (keyStr == "buffer") {
+            return view->buffer.rawBits();
+        }
+        int idx = -1;
+        auto [ptr, ec] = std::from_chars(keyStr.data(), keyStr.data() + keyStr.size(), idx);
+        if (ec == std::errc{} && idx >= 0) {
+            if (static_cast<uint32_t>(idx) >= view->length) {
+                return Value::fromUndefined().rawBits();
+            }
+            return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
+        }
+        return Value::fromUndefined().rawBits();
+    }
+    if (hdr->flags == 4) {
+        // ArrayBuffer
+        auto* buf = reinterpret_cast<ArrayBufferHeader*>(hdr);
+        if (keyStr == "byteLength") {
+            return Value::fromDouble(buf->byteLength).rawBits();
+        }
+        return Value::fromUndefined().rawBits();
+    }
 
     if (icIndex >= g_inlineCaches.size()) {
         g_inlineCaches.resize(icIndex + 1);
@@ -274,6 +302,23 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             arr->setElem(g_heap, static_cast<uint32_t>(idx), val);
         }
         return;
+    }
+    if (hdr->flags == 3) {
+        // Float32Array view: numeric keys store an element (out-of-bounds
+        // writes are discarded, per spec); anything else is unsupported.
+        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+        int idx = -1;
+        auto [ptr, ec] = std::from_chars(keyStr.data(), keyStr.data() + keyStr.size(), idx);
+        if (ec != std::errc{} || idx < 0) {
+            fatal("named property writes on a Float32Array are unsupported");
+        }
+        if (static_cast<uint32_t>(idx) < view->length) {
+            view->data()[idx] = static_cast<float>(bronze_unbox_f64(valBits));
+        }
+        return;
+    }
+    if (hdr->flags == 4) {
+        fatal("property writes on an ArrayBuffer are unsupported");
     }
 
     if (icIndex >= g_inlineCaches.size()) {
@@ -412,6 +457,98 @@ void bronze_print_string(const char* s) {
     }
     std::fputc('\n', stdout);
     std::fflush(stdout);
+}
+
+// A computed index must be a non-negative integral number; anything else
+// on the supported receivers reads as undefined / discards the write.
+static bool valueToElementIndex(Value idxVal, uint32_t& out) {
+    if (!idxVal.isNumber()) {
+        fatal("computed index must be a number (string/object keys in [] are unsupported)");
+    }
+    double d = idxVal.asNumber();
+    if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) {
+        return false;
+    }
+    out = static_cast<uint32_t>(d);
+    return true;
+}
+
+uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("computed index access on a non-object value is unsupported");
+    }
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    uint32_t idx = 0;
+    if (hdr->flags == 1) {
+        if (!valueToElementIndex(Value(idxBits), idx)) {
+            return Value::fromUndefined().rawBits();
+        }
+        return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
+    }
+    if (hdr->flags == 3) {
+        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+        if (!valueToElementIndex(Value(idxBits), idx) || idx >= view->length) {
+            return Value::fromUndefined().rawBits();
+        }
+        return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
+    }
+    fatal("computed index access is only supported on arrays and Float32Array");
+}
+
+void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("computed index write on a non-object value is unsupported");
+    }
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    uint32_t idx = 0;
+    if (hdr->flags == 1) {
+        if (!valueToElementIndex(Value(idxBits), idx)) {
+            fatal("non-integer array index write is unsupported");
+        }
+        Rooted<Value> val{Value(valBits)};
+        reinterpret_cast<ArrayHeader*>(hdr)->setElem(g_heap, idx, val);
+        return;
+    }
+    if (hdr->flags == 3) {
+        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+        if (valueToElementIndex(Value(idxBits), idx) && idx < view->length) {
+            view->data()[idx] = static_cast<float>(bronze_unbox_f64(valBits));
+        }
+        return;  // out-of-bounds typed-array writes are discarded, per spec
+    }
+    fatal("computed index writes are only supported on arrays and Float32Array");
+}
+
+uint64_t bronze_create_arraybuffer(uint64_t lenBits) {
+    Value lenVal(lenBits);
+    if (!lenVal.isNumber()) {
+        fatal("new ArrayBuffer requires a numeric byte length");
+    }
+    double d = lenVal.asNumber();
+    if (!(d >= 0.0) || d != std::floor(d) || d > 268435456.0) {
+        fatal("invalid ArrayBuffer byte length");
+    }
+    return Value::fromObject(ArrayBufferHeader::create(g_heap, static_cast<uint32_t>(d)))
+        .rawBits();
+}
+
+uint64_t bronze_create_float32array(uint64_t argBits) {
+    Value arg(argBits);
+    if (arg.isNumber()) {
+        double d = arg.asNumber();
+        if (!(d >= 0.0) || d != std::floor(d) || d > 67108864.0) {
+            fatal("invalid Float32Array length");
+        }
+        return Value::fromObject(Float32ArrayHeader::create(g_heap, static_cast<uint32_t>(d)))
+            .rawBits();
+    }
+    if (arg.isObject() && arg.asObject<HeapObjectHeader>()->flags == 4) {
+        Rooted<Value> bufRoot(arg);
+        return Value::fromObject(Float32ArrayHeader::createOverBuffer(g_heap, bufRoot)).rawBits();
+    }
+    fatal("new Float32Array requires a length or an ArrayBuffer");
 }
 
 void bronze_register_key_string(uint32_t index, const char* str) {

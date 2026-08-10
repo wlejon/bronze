@@ -50,10 +50,14 @@ enum class Op : uint8_t {
     Unbox,      // a = unbox.<type> b
     PropGet,    // a = prop.get b, <key_const_index>, <ic_site_index>
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
+    ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
+    ElemSet,    // elem.set obj, idx, val       (all dynamic)
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     CreateObject, // a = create.object
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>
+    CreateArrayBuffer,  // a = create.arraybuffer len      (len dynamic)
+    CreateFloat32Array, // a = create.f32array arg         (length or buffer, dynamic)
     Print,      // print a
 };
 const char* opName(Op op);

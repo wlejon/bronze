@@ -16,6 +16,9 @@ enum class Tag : uint16_t {
     Undefined = 0xFFF6,
     Hole      = 0xFFF7,
     Symbol    = 0xFFF8,
+    // Heap-header-only tag (never appears in a Value): payload is raw bytes
+    // the GC must not scan as Values (ArrayBuffer data).
+    RawBytes  = 0xFFF9,
     Forwarded = 0xFFFE,
 };
 

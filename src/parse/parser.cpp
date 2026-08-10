@@ -416,6 +416,9 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
 
 ExprPtr Parser::parseUnaryPrefix() {
     const Token& t = peek();
+    if (check(TokenKind::KwNew)) {
+        return parseNew();
+    }
     if (match(TokenKind::Bang)) {
         auto sub = parseUnaryPrefix();
         if (!sub) return nullptr;
@@ -498,13 +501,7 @@ ExprPtr Parser::parseUnaryPostfix() {
             auto call = std::make_unique<Call>();
             call->span.begin = expr->span.begin;
             call->callee = std::move(expr);
-            while (!check(TokenKind::RParen)) {
-                auto arg = parseExpr();
-                if (!arg) return nullptr;
-                call->args.push_back(std::move(arg));
-                if (!match(TokenKind::Comma)) break;
-            }
-            if (!expect(TokenKind::RParen, "')' after arguments")) return nullptr;
+            if (!parseArgumentList(call->args)) return nullptr;
             call->span.end = peek().span.begin;
             expr = std::move(call);
         } else if (match(TokenKind::PlusPlus)) {
@@ -524,6 +521,38 @@ ExprPtr Parser::parseUnaryPostfix() {
         }
     }
     return expr;
+}
+
+bool Parser::parseArgumentList(std::vector<ExprPtr>& args) {
+    while (!check(TokenKind::RParen)) {
+        auto arg = parseExpr();
+        if (!arg) return false;
+        args.push_back(std::move(arg));
+        if (!match(TokenKind::Comma)) break;
+    }
+    return expect(TokenKind::RParen, "')' after arguments") != nullptr;
+}
+
+// new <Identifier>(args) only for now. Anything fancier after 'new' (member
+// expressions, parenthesized callees, nested 'new') is a diagnosed hard error.
+ExprPtr Parser::parseNew() {
+    const Token& kw = advance();  // 'new'
+    if (!check(TokenKind::Identifier)) {
+        error("unsupported construct: new with a non-identifier callee");
+        return nullptr;
+    }
+    const Token& name = advance();
+    auto ne = std::make_unique<NewExpr>();
+    ne->span.begin = kw.span.begin;
+    ne->callee = std::string(name.text);
+    if (!check(TokenKind::LParen)) {
+        error("new requires an argument list");
+        return nullptr;
+    }
+    advance();  // '('
+    if (!parseArgumentList(ne->args)) return nullptr;
+    ne->span.end = peek().span.begin;
+    return ne;
 }
 
 ExprPtr Parser::parsePrimary() {

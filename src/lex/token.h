@@ -30,6 +30,7 @@ enum class TokenKind {
     KwImport,
     KwIn,
     KwLet,
+    KwNew,
     KwNull,
     KwOf,
     KwReturn,

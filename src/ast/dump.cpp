@@ -45,6 +45,13 @@ public:
         });
         emit(")");
     }
+    void visit(const NewExpr& n) override {
+        emit("(new " + n.callee);
+        indented([&] {
+            for (const auto& a : n.args) a->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const ObjectLit& n) override {
         emit("(object");
         indented([&] {

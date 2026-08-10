@@ -207,6 +207,44 @@ private:
         return val;
     }
 
+    // Combine the pre-read target value with the rhs of a compound
+    // assignment. += routes through the dynamic add (JS + may
+    // concatenate); the other operators are numeric.
+    Value emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp, il::Function& ilFn) {
+        if (binOp == ast::BinaryOp::PlusAssign) {
+            Value l = boxValueIfNeeded(cur, ilFn);
+            Value r = boxValueIfNeeded(rhs, ilFn);
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::Add;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = {l.id, r.id};
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        }
+        il::Op op = il::Op::Sub;
+        switch (binOp) {
+            case ast::BinaryOp::MinusAssign: op = il::Op::Sub; break;
+            case ast::BinaryOp::StarAssign: op = il::Op::Mul; break;
+            case ast::BinaryOp::SlashAssign: op = il::Op::Div; break;
+            case ast::BinaryOp::PercentAssign: op = il::Op::Mod; break;
+            default:
+                diags_.error(Span{}, "unsupported compound assignment operator");
+                return cur;
+        }
+        Value l = unboxValueIfNeeded(cur, il::Type::F64, ilFn);
+        Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = op;
+        inst.type = il::Type::F64;
+        inst.result = res;
+        inst.operands = {l.id, r.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::F64};
+    }
+
     // Conform a value flowing along a branch edge to the target block
     // parameter's type. Box into dynamic params; unbox out of dynamic
     // values (runtime-checked); anything else is a type conflict.
@@ -1519,6 +1557,30 @@ private:
             return Value{resParamId, joinType};
         }
 
+        if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(&expr)) {
+            if (newExpr->callee == "Float32Array" || newExpr->callee == "ArrayBuffer") {
+                if (newExpr->args.size() != 1) {
+                    diags_.error(newExpr->span, "unsupported construct: new " + newExpr->callee +
+                                                    " expects exactly one argument");
+                    return std::nullopt;
+                }
+                auto argVal = lowerExpr(*newExpr->args[0], ilFn);
+                if (!argVal) return std::nullopt;
+                auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction inst;
+                inst.op = (newExpr->callee == "Float32Array") ? il::Op::CreateFloat32Array
+                                                              : il::Op::CreateArrayBuffer;
+                inst.type = il::Type::Dynamic;
+                inst.result = res;
+                inst.operands = {argBoxed.id};
+                emitInst(ilFn, inst);
+                return Value{res, il::Type::Dynamic};
+            }
+            diags_.error(newExpr->span, "unsupported constructor: new " + newExpr->callee);
+            return std::nullopt;
+        }
+
         if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&expr)) {
             auto objVal = lowerExpr(*mem->object, ilFn);
             if (!objVal) return std::nullopt;
@@ -1545,14 +1607,28 @@ private:
             auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
 
             uint32_t keyIdx = 0;
+            bool literalKey = true;
             if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(idxAccess->index.get())) {
                 keyIdx = getKeyConstantIndex(std::to_string(static_cast<int64_t>(numLit->value)));
             } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
                 keyIdx = getKeyConstantIndex(strLit->value);
             } else {
+                literalKey = false;
+            }
+
+            if (!literalKey) {
+                // Computed index: a real elem.get on the index value.
                 auto indexVal = lowerExpr(*idxAccess->index, ilFn);
                 if (!indexVal) return std::nullopt;
-                keyIdx = 0;
+                auto idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction inst;
+                inst.op = il::Op::ElemGet;
+                inst.type = il::Type::Dynamic;
+                inst.result = res;
+                inst.operands = {objBoxed.id, idxBoxed.id};
+                emitInst(ilFn, inst);
+                return Value{res, il::Type::Dynamic};
             }
 
             uint32_t icIdx = icSiteCounter_++;
@@ -1576,53 +1652,103 @@ private:
                     auto objVal = lowerExpr(*mem->object, ilFn);
                     if (!objVal) return std::nullopt;
                     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
+                    uint32_t keyIdx = getKeyConstantIndex(mem->property);
+
+                    // Compound assignment reads the current value before the
+                    // rhs is evaluated (JS evaluation order).
+                    std::optional<Value> curVal;
+                    if (bin->op != ast::BinaryOp::Assign) {
+                        il::ValueId cur = ilFn.valueCount++;
+                        il::Instruction getInst;
+                        getInst.op = il::Op::PropGet;
+                        getInst.type = il::Type::Dynamic;
+                        getInst.result = cur;
+                        getInst.operands = {objBoxed.id};
+                        getInst.keyIndex = keyIdx;
+                        getInst.icIndex = icSiteCounter_++;
+                        emitInst(ilFn, getInst);
+                        curVal = Value{cur, il::Type::Dynamic};
+                    }
+
                     auto rhsVal = lowerExpr(*bin->rhs, ilFn);
                     if (!rhsVal) return std::nullopt;
-                    auto rhsBoxed = boxValueIfNeeded(*rhsVal, ilFn);
-
-                    uint32_t keyIdx = getKeyConstantIndex(mem->property);
-                    uint32_t icIdx = icSiteCounter_++;
+                    Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
+                                          : *rhsVal;
+                    Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
                     il::Instruction inst;
                     inst.op = il::Op::PropSet;
                     inst.type = il::Type::Void;
                     inst.result = il::kNoValue;
-                    inst.operands = {objBoxed.id, rhsBoxed.id};
+                    inst.operands = {objBoxed.id, storedBoxed.id};
                     inst.keyIndex = keyIdx;
-                    inst.icIndex = icIdx;
+                    inst.icIndex = icSiteCounter_++;
                     emitInst(ilFn, inst);
-                    return rhsBoxed;
+                    return storedBoxed;
                 }
                 if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get())) {
                     auto objVal = lowerExpr(*idxAccess->object, ilFn);
                     if (!objVal) return std::nullopt;
                     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
-                    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
-                    if (!rhsVal) return std::nullopt;
-                    auto rhsBoxed = boxValueIfNeeded(*rhsVal, ilFn);
 
                     uint32_t keyIdx = 0;
+                    bool literalKey = true;
                     if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(idxAccess->index.get())) {
                         keyIdx = getKeyConstantIndex(std::to_string(static_cast<int64_t>(numLit->value)));
                     } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
                         keyIdx = getKeyConstantIndex(strLit->value);
                     } else {
-                        auto indexVal = lowerExpr(*idxAccess->index, ilFn);
-                        if (!indexVal) return std::nullopt;
-                        keyIdx = 0;
+                        literalKey = false;
                     }
 
-                    uint32_t icIdx = icSiteCounter_++;
+                    std::optional<Value> idxBoxed;
+                    if (!literalKey) {
+                        auto indexVal = lowerExpr(*idxAccess->index, ilFn);
+                        if (!indexVal) return std::nullopt;
+                        idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
+                    }
+
+                    // Compound assignment reads the current element before
+                    // the rhs is evaluated (JS evaluation order).
+                    std::optional<Value> curVal;
+                    if (bin->op != ast::BinaryOp::Assign) {
+                        il::ValueId cur = ilFn.valueCount++;
+                        il::Instruction getInst;
+                        if (literalKey) {
+                            getInst.op = il::Op::PropGet;
+                            getInst.operands = {objBoxed.id};
+                            getInst.keyIndex = keyIdx;
+                            getInst.icIndex = icSiteCounter_++;
+                        } else {
+                            getInst.op = il::Op::ElemGet;
+                            getInst.operands = {objBoxed.id, idxBoxed->id};
+                        }
+                        getInst.type = il::Type::Dynamic;
+                        getInst.result = cur;
+                        emitInst(ilFn, getInst);
+                        curVal = Value{cur, il::Type::Dynamic};
+                    }
+
+                    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+                    if (!rhsVal) return std::nullopt;
+                    Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
+                                          : *rhsVal;
+                    Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
                     il::Instruction setInst;
-                    setInst.op = il::Op::PropSet;
+                    if (literalKey) {
+                        setInst.op = il::Op::PropSet;
+                        setInst.operands = {objBoxed.id, storedBoxed.id};
+                        setInst.keyIndex = keyIdx;
+                        setInst.icIndex = icSiteCounter_++;
+                    } else {
+                        setInst.op = il::Op::ElemSet;
+                        setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
+                    }
                     setInst.type = il::Type::Void;
                     setInst.result = il::kNoValue;
-                    setInst.operands = {objBoxed.id, rhsBoxed.id};
-                    setInst.keyIndex = keyIdx;
-                    setInst.icIndex = icIdx;
                     emitInst(ilFn, setInst);
-                    return rhsBoxed;
+                    return storedBoxed;
                 }
                 if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
                     auto rhsVal = lowerExpr(*bin->rhs, ilFn);

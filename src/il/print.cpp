@@ -42,10 +42,14 @@ const char* opName(Op op) {
         case Op::Unbox: return "unbox";
         case Op::PropGet: return "prop.get";
         case Op::PropSet: return "prop.set";
+        case Op::ElemGet: return "elem.get";
+        case Op::ElemSet: return "elem.set";
         case Op::DynamicCall: return "call.dynamic";
         case Op::CreateObject: return "create.object";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
+        case Op::CreateArrayBuffer: return "create.arraybuffer";
+        case Op::CreateFloat32Array: return "create.f32array";
         case Op::Print: return "print";
     }
     return "?";
@@ -157,6 +161,23 @@ std::string print(const Module& module) {
                         }
                         break;
                     }
+                    case Op::ElemGet:
+                        out += "elem.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::ElemSet:
+                        out += "elem.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
+                        break;
+                    case Op::CreateArrayBuffer:
+                        out += "create.arraybuffer %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::CreateFloat32Array:
+                        out += "create.f32array %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
                     case Op::CreateObject:
                         out += "create.object";
                         break;

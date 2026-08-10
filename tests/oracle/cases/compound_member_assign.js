@@ -1,0 +1,12 @@
+const o = { n: 10, s: "a" };
+o.n += 5;
+console.log(o.n);
+o.n -= 3;
+console.log(o.n);
+o.n *= 4;
+console.log(o.n);
+o.s += "bc";
+console.log(o.s);
+const a = [1, 2];
+a[0] += 0.5;
+console.log(a[0]);

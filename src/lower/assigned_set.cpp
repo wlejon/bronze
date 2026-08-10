@@ -53,6 +53,10 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
 
+    void visit(const ast::NewExpr& n) override {
+        for (const auto& arg : n.args) arg->accept(*this);
+    }
+
     void visit(const ast::ObjectLit& o) override {
         for (const auto& prop : o.props) prop.value->accept(*this);
     }

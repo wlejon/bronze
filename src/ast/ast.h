@@ -96,6 +96,12 @@ struct Call final : Expr {
     void accept(Visitor& v) const override;
 };
 
+struct NewExpr final : Expr {
+    std::string callee;  // constructor name; only identifier callees are supported
+    std::vector<ExprPtr> args;
+    void accept(Visitor& v) const override;
+};
+
 // ---- Statements / declarations ---------------------------------------------
 
 struct Stmt : Node {};
@@ -243,6 +249,10 @@ public:
     virtual void visit(const MemberAccess&) = 0;
     virtual void visit(const IndexAccess&) = 0;
     virtual void visit(const Call&) = 0;
+    // Not pure: the default walks the args (the only children), so traversal
+    // visitors get the correct Call-style behavior without an override.
+    // Visitors that render or transform the node must override it.
+    virtual void visit(const NewExpr&) = 0;
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;
     virtual void visit(const FunctionExpr&) = 0;

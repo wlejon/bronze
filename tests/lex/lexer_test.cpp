@@ -54,6 +54,18 @@ TEST_CASE("comments and strings") {
     CHECK(tokens[1].text == "\"two\"");
 }
 
+TEST_CASE("new keyword vs identifiers") {
+    auto lexed = lexAll("new Foo(newish);");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() == 7);  // new, Foo, (, newish, ), ;, eof
+    CHECK(tokens[0].kind == TokenKind::KwNew);
+    CHECK(tokens[0].text == "new");
+    CHECK(tokens[1].kind == TokenKind::Identifier);
+    CHECK(tokens[1].text == "Foo");
+    CHECK(tokens[3].kind == TokenKind::Identifier);
+    CHECK(tokens[3].text == "newish");
+}
+
 TEST_CASE("numbers with fraction") {
     auto lexed = lexAll("1.5 2");
     auto& tokens = lexed.tokens;

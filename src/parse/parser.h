@@ -56,7 +56,11 @@ private:
     ast::ExprPtr parseBinary(int minPrecedence);
     ast::ExprPtr parseUnaryPrefix();
     ast::ExprPtr parseUnaryPostfix();
+    ast::ExprPtr parseNew();
     ast::ExprPtr parsePrimary();
+    // Parses "expr, expr, ..." up to and including the closing ')' (the
+    // caller has already consumed the opening '('). False on error.
+    bool parseArgumentList(std::vector<ast::ExprPtr>& args);
     ast::ExprPtr parseObjectLit();
     ast::ExprPtr parseArrayLit();
     ast::ExprPtr parseFunctionExpr();

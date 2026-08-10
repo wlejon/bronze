@@ -5,7 +5,8 @@
 namespace bronze {
 
 ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
-    size_t payload_bytes = initial_capacity * sizeof(Value);
+    size_t payload_bytes =
+        (sizeof(ArrayHeader) - sizeof(HeapObjectHeader)) + initial_capacity * sizeof(Value);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* arr = reinterpret_cast<ArrayHeader*>(raw_hdr);
     arr->length = 0;

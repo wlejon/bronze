@@ -381,6 +381,61 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     builder.CreateCall(abi.bronze_prop_set, {objVal, kIdx, valVal, icIdx});
                     break;
                 }
+                case il::Op::ElemGet: {
+                    if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for ElemGet");
+                        return false;
+                    }
+                    llvm::Value* objVal = values[inst.operands[0]];
+                    llvm::Value* idxVal = values[inst.operands[1]];
+                    if (!objVal || !idxVal) {
+                        diags.error(Span{}, "Undefined operand in ElemGet instruction");
+                        return false;
+                    }
+                    values[inst.result] = builder.CreateCall(abi.bronze_elem_get, {objVal, idxVal});
+                    break;
+                }
+                case il::Op::ElemSet: {
+                    if (inst.operands.size() < 3) {
+                        diags.error(Span{}, "Invalid operands for ElemSet");
+                        return false;
+                    }
+                    llvm::Value* objVal = values[inst.operands[0]];
+                    llvm::Value* idxVal = values[inst.operands[1]];
+                    llvm::Value* valVal = values[inst.operands[2]];
+                    if (!objVal || !idxVal || !valVal) {
+                        diags.error(Span{}, "Undefined operand in ElemSet instruction");
+                        return false;
+                    }
+                    builder.CreateCall(abi.bronze_elem_set, {objVal, idxVal, valVal});
+                    break;
+                }
+                case il::Op::CreateArrayBuffer: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for CreateArrayBuffer");
+                        return false;
+                    }
+                    llvm::Value* lenVal = values[inst.operands[0]];
+                    if (!lenVal) {
+                        diags.error(Span{}, "Undefined operand in CreateArrayBuffer instruction");
+                        return false;
+                    }
+                    values[inst.result] = builder.CreateCall(abi.bronze_create_arraybuffer, {lenVal});
+                    break;
+                }
+                case il::Op::CreateFloat32Array: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for CreateFloat32Array");
+                        return false;
+                    }
+                    llvm::Value* argVal = values[inst.operands[0]];
+                    if (!argVal) {
+                        diags.error(Span{}, "Undefined operand in CreateFloat32Array instruction");
+                        return false;
+                    }
+                    values[inst.result] = builder.CreateCall(abi.bronze_create_float32array, {argVal});
+                    break;
+                }
                 case il::Op::DynamicCall: {
                     if (inst.operands.size() < 2) {
                         diags.error(Span{}, "Invalid operands for DynamicCall");

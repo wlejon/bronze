@@ -24,6 +24,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwImport: return "import";
         case TokenKind::KwIn: return "in";
         case TokenKind::KwLet: return "let";
+        case TokenKind::KwNew: return "new";
         case TokenKind::KwNull: return "null";
         case TokenKind::KwOf: return "of";
         case TokenKind::KwReturn: return "return";
@@ -134,11 +135,12 @@ Token Lexer::lexIdentifierOrKeyword() {
         {"for", TokenKind::KwFor},           {"function", TokenKind::KwFunction},
         {"if", TokenKind::KwIf},             {"import", TokenKind::KwImport},
         {"in", TokenKind::KwIn},             {"let", TokenKind::KwLet},
-        {"null", TokenKind::KwNull},         {"of", TokenKind::KwOf},
-        {"return", TokenKind::KwReturn},     {"switch", TokenKind::KwSwitch},
-        {"throw", TokenKind::KwThrow},       {"true", TokenKind::KwTrue},
-        {"try", TokenKind::KwTry},           {"undefined", TokenKind::KwUndefined},
-        {"var", TokenKind::KwVar},           {"while", TokenKind::KwWhile},
+        {"new", TokenKind::KwNew},           {"null", TokenKind::KwNull},
+        {"of", TokenKind::KwOf},             {"return", TokenKind::KwReturn},
+        {"switch", TokenKind::KwSwitch},     {"throw", TokenKind::KwThrow},
+        {"true", TokenKind::KwTrue},         {"try", TokenKind::KwTry},
+        {"undefined", TokenKind::KwUndefined}, {"var", TokenKind::KwVar},
+        {"while", TokenKind::KwWhile},
     };
     for (const auto& kw : kKeywords) {
         if (text == kw.text) return make(kw.kind, begin);
