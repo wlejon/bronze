@@ -1,8 +1,7 @@
-// Arrow functions. The token exists (TokenKind::Arrow) but nothing parses
-// it, so `x => x` is a parse error naming '=>' today. The last two cases
-// are the reason arrows are not just shorter syntax: `this` is lexical, so
-// an arrow inside a constructor sees the instance, and one at the top level
-// does not shadow anything.
+// Arrow functions. The last two cases are the reason arrows are not just
+// shorter syntax: `this` is lexical, so an arrow inside a constructor sees
+// the instance, and one at the top level does not shadow anything
+// (docs/0012 decision 3).
 const double = (x) => x * 2;
 console.log(double(4));
 const add = (a, b) => { return a + b; };

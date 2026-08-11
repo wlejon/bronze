@@ -56,11 +56,14 @@ private:
     // it means).
     std::string decodeStringLiteral(std::string_view raw, Span span);
     ast::ExprPtr parseTemplateLiteral();
+    bool looksLikeArrow() const;
+    ast::ExprPtr parseArrowFunction();
 
     ast::ExprPtr parseExpr();
     ast::ExprPtr parseBinary(int minPrecedence);
     ast::ExprPtr parseUnaryPrefix();
     ast::ExprPtr parseUnaryPostfix();
+    ast::ExprPtr parsePostfixOps(ast::ExprPtr expr);
     ast::ExprPtr parseNew();
     ast::ExprPtr parsePrimary();
     // Parses "expr, expr, ..." up to and including the closing ')' (the

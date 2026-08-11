@@ -492,3 +492,44 @@ TEST_CASE("a local binding shadows a provided global") {
     const std::string printed = il::print(*optMod);
     CHECK(printed.find("global.get") == std::string::npos);
 }
+
+TEST_CASE("for-of lowers to an index walk with a separate advance step") {
+    // There is no iterator protocol (docs/0012 decision 2): the loop reads
+    // a length, indexes, and advances. `advance` is its own op rather than
+    // `i + 1` because a string steps by code point, not by code unit.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "const a = [1];\n"
+        "let s = 0;\n"
+        "for (const x of a) { s = s + x; }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("iter.length") != std::string::npos);
+    CHECK(printed.find("iter.at") != std::string::npos);
+    CHECK(printed.find("iter.advance") != std::string::npos);
+}
+
+TEST_CASE("an arrow reaches `this` through the environment, not a parameter") {
+    // Lexical `this` (docs/0012 decision 3) is capture, not an extra
+    // argument: the enclosing function writes its own `this` into slot 0 of
+    // its environment record, and the arrow reads it back from there. So
+    // the arrow gets no `__this` parameter at all and cannot be rebound by
+    // the call site.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function C() { this.v = 1; this.get = () => this.v; }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("env.set %2, 0, 0, %0") != std::string::npos);
+    const size_t arrow = printed.find("func __anon_fn_1(%0: dynamic)");
+    REQUIRE(arrow != std::string::npos);
+    CHECK(printed.find("env.get %0, 0, 0", arrow) != std::string::npos);
+}

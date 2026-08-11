@@ -96,8 +96,7 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
     }
 
     if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&stmt)) {
-        diags_.error(fo->span, "unsupported construct: for-of loop");
-        return false;
+        return lowerForOfStmt(fo, ilFn);
     }
 
     if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {

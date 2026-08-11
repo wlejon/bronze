@@ -66,6 +66,11 @@ private:
         il::BlockId updateBlock = il::kNoBlock;
         il::BlockId exitBlock = il::kNoBlock;
         std::vector<std::string> loopVars;
+        // A loop whose update block takes a parameter that is not a source
+        // binding — for-of's index (docs/0012 decision 2). `continue` jumps
+        // to that block, so it has to hand the value over like any other
+        // edge argument. kNoValue for every other loop form.
+        il::ValueId updateExtraArg = il::kNoValue;
     };
 
     std::vector<VarBinding> varBindings_;
@@ -91,6 +96,9 @@ private:
     // The `__this` parameter of the function being lowered, or kNoValue
     // where there is no receiver to speak of (docs/0008 decision 3).
     il::ValueId currentThisValue_ = il::kNoValue;
+    // Lowering an arrow body, where `this` resolves through the environment
+    // rather than to a parameter (docs/0012 decision 3).
+    bool currentFunctionIsArrow_ = false;
     std::unordered_set<std::string> capturedNames_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
@@ -169,16 +177,19 @@ private:
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
     void enterScope();
-    void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn);
+    void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
+                    const std::string& extraDeclaration = std::string());
     void exitScope();
     // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
     // nested `FunctionDecl` � docs/0007 decision 4 makes them one path). It
     // is how inference is asked about a function with no module index.
+    // `isArrow` decides one thing only: where `this` inside the body comes
+    // from (docs/0012 decision 3).
     std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
                                       const std::vector<ast::Param>& params,
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
-                                      il::Function& ilFn);
+                                      il::Function& ilFn, bool isArrow = false);
 
     // --- lower_stmt.cpp: statements --------------------------------------
     bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
@@ -207,6 +218,7 @@ private:
     bool lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn);
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);
     bool lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn);
+    bool lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn);
     bool lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn);
     bool lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Function& ilFn);
 

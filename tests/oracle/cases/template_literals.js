@@ -1,7 +1,6 @@
-// Template literals. The lexer has no backtick at all today, so this is
-// `unrecognized character '`'`. Substitutions are ToString of the value,
-// a newline inside the literal is a real newline, and the escapes are the
-// same ones a quoted literal resolves.
+// Template literals. Substitutions are ToString of the value, a newline
+// inside the literal is a real newline, and the escapes are the same ones a
+// quoted literal resolves.
 const name = "World";
 const n = 3;
 console.log(`Hello, ${name}!`);

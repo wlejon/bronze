@@ -94,10 +94,14 @@ the same route and the comparison proves nothing about it. A bench case
 1. **`Math`** — decisions 1–3, `math_builtin` promoted. *(done)*
 2. **`Array.prototype`** — the members `array_methods` names, plus the
    callback-taking ones (`map`, `filter`, `reduce`, `forEach`), which reach
-   user code back through `bronze_dynamic_call`.
+   user code back through `bronze_dynamic_call`. *(done)*
 3. **`String.prototype`** — the members `string_methods` names. Strings are
    immutable (docs/0004), so every one of them allocates a fresh string and
-   none can work in place.
+   none can work in place. *(done)*
+
+The syntax half of phase 4 — template literals, for-of, arrows and classes —
+is docs/0012, not this doc: this one is about what a program can call, that
+one about what it can write.
 
 ## Named diagnostics
 

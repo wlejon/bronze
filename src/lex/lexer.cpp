@@ -37,6 +37,9 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwTrue: return "true";
         case TokenKind::KwTry: return "try";
         case TokenKind::KwDelete: return "delete";
+        case TokenKind::KwClass: return "class";
+        case TokenKind::KwExtends: return "extends";
+        case TokenKind::KwSuper: return "super";
         case TokenKind::KwThis: return "this";
         case TokenKind::KwUndefined: return "undefined";
         case TokenKind::KwVar: return "var";
@@ -137,6 +140,8 @@ Token Lexer::lexIdentifierOrKeyword() {
         {"catch", TokenKind::KwCatch},       {"const", TokenKind::KwConst},
         {"continue", TokenKind::KwContinue}, {"default", TokenKind::KwDefault},
         {"delete", TokenKind::KwDelete},
+        {"class", TokenKind::KwClass},     {"extends", TokenKind::KwExtends},
+        {"super", TokenKind::KwSuper},
         {"do", TokenKind::KwDo},             {"else", TokenKind::KwElse},
         {"export", TokenKind::KwExport},     {"false", TokenKind::KwFalse},
         {"for", TokenKind::KwFor},           {"function", TokenKind::KwFunction},

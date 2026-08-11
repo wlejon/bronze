@@ -153,6 +153,13 @@ struct FunctionExpr final : Expr {
     std::vector<Param> params;
     std::string returnType;
     std::vector<StmtPtr> body;
+    // An arrow function. The same node because it is the same thing —
+    // a closure value — with one semantic difference that matters:
+    // `this` inside it is the ENCLOSING function's receiver, captured
+    // like any other free variable, rather than one the caller supplies
+    // (docs/0012 decision 3). An expression body is stored as a single
+    // synthesized `return`.
+    bool isArrow = false;
     void accept(Visitor& v) const override;
 };
 
@@ -221,7 +228,17 @@ struct ForInStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+// `for (const x of iterable) body`. The binding is per-iteration by
+// definition — there is no "the loop variable" to share, so a closure made
+// in the body captures that iteration's value (contrast ForStmt, whose
+// header binding docs/0007 decision 2 diagnoses).
 struct ForOfStmt final : Stmt {
+    std::string name;
+    bool isConst = false;
+    bool isLet = false;
+    bool isVar = false;
+    ExprPtr iterable;
+    std::vector<StmtPtr> body;
     void accept(Visitor& v) const override;
 };
 

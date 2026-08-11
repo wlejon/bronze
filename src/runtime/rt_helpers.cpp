@@ -803,6 +803,97 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     return result.rawBits();
 }
 
+// ---- for-of, as an index walk (docs/0012 decision 2) ----------------------
+//
+// bronze has no Symbol and no iterator protocol, so for-of is not "call
+// [Symbol.iterator]": it walks indices. That covers every iterable bronze
+// can build — arrays, strings and typed arrays — and anything else is a
+// hard error naming itself rather than an empty loop, which is what a
+// missing-protocol fallback would silently produce.
+//
+// A string iterates by CODE POINT, not by code unit, which is why the step
+// is a helper rather than an `add 1` in the IL: a surrogate pair is one
+// iteration yielding a two-unit string.
+static bool iterableLength(Value v, uint32_t& outLength) {
+    if (v.isString()) {
+        outLength = v.asString<StringHeader>()->getLength();
+        return true;
+    }
+    if (v.isObject()) {
+        HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
+        if (hdr->flags == 1) {
+            outLength = reinterpret_cast<ArrayHeader*>(hdr)->length;
+            return true;
+        }
+        if (hdr->flags == 3) {
+            outLength = reinterpret_cast<Float32ArrayHeader*>(hdr)->length;
+            return true;
+        }
+    }
+    return false;
+}
+
+double bronze_iter_length(uint64_t vBits) {
+    uint32_t length = 0;
+    if (!iterableLength(Value(vBits), length)) {
+        fatal("for-of over a value that is not an array, string or typed array");
+    }
+    return static_cast<double>(length);
+}
+
+uint64_t bronze_iter_at(uint64_t vBits, double index) {
+    Value v(vBits);
+    const auto i = static_cast<uint32_t>(index);
+    if (v.isString()) {
+        StringHeader* str = v.asString<StringHeader>();
+        const uint32_t len = str->getLength();
+        if (i >= len) return Value::fromUndefined().rawBits();
+        uint16_t unit = str->charCodeAt(i);
+        // A high surrogate followed by a low one is ONE character.
+        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < len) {
+            uint16_t low = str->charCodeAt(i + 1);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                const uint16_t pair[2] = {unit, low};
+                return Value::fromString(StringHeader::createUTF16(g_heap, pair, 2)).rawBits();
+            }
+        }
+        if (unit < 0x100) {
+            const char byte = static_cast<char>(unit);
+            return Value::fromString(StringHeader::createLatin1(g_heap, &byte, 1)).rawBits();
+        }
+        return Value::fromString(StringHeader::createUTF16(g_heap, &unit, 1)).rawBits();
+    }
+    if (v.isObject()) {
+        HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
+        if (hdr->flags == 1) {
+            return reinterpret_cast<ArrayHeader*>(hdr)->getElem(i).rawBits();
+        }
+        if (hdr->flags == 3) {
+            auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+            if (i >= view->length) return Value::fromUndefined().rawBits();
+            return Value::fromDouble(static_cast<double>(view->data()[i])).rawBits();
+        }
+    }
+    fatal("for-of over a value that is not an array, string or typed array");
+}
+
+double bronze_iter_advance(uint64_t vBits, double index) {
+    Value v(vBits);
+    const auto i = static_cast<uint32_t>(index);
+    if (v.isString()) {
+        StringHeader* str = v.asString<StringHeader>();
+        const uint32_t len = str->getLength();
+        if (i + 1 < len) {
+            uint16_t unit = str->charCodeAt(i);
+            uint16_t low = str->charCodeAt(i + 1);
+            if (unit >= 0xD800 && unit <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
+                return index + 2;
+            }
+        }
+    }
+    return index + 1;
+}
+
 // The free identifiers lowering is allowed to resolve (docs/0011 decision
 // 1). An unknown name never reaches here: lowering diagnoses it at compile
 // time, which is why this is an internal tripwire rather than a JS

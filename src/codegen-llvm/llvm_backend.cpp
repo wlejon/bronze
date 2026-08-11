@@ -434,6 +434,31 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
+                case il::Op::IterLength:
+                case il::Op::IterAt:
+                case il::Op::IterAdvance: {
+                    const bool unary = inst.op == il::Op::IterLength;
+                    if (inst.operands.size() < (unary ? 1u : 2u) || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for an iteration instruction");
+                        return false;
+                    }
+                    llvm::Value* target = values[inst.operands[0]];
+                    llvm::Value* index = unary ? nullptr : values[inst.operands[1]];
+                    if (!target || (!unary && !index)) {
+                        diags.error(Span{}, "Undefined value in an iteration instruction");
+                        return false;
+                    }
+                    if (unary) {
+                        values[inst.result] = builder.CreateCall(abi.bronze_iter_length, {target});
+                    } else if (inst.op == il::Op::IterAt) {
+                        values[inst.result] =
+                            builder.CreateCall(abi.bronze_iter_at, {target, index});
+                    } else {
+                        values[inst.result] =
+                            builder.CreateCall(abi.bronze_iter_advance, {target, index});
+                    }
+                    break;
+                }
                 case il::Op::CreateArray: {
                     if (inst.result != il::kNoValue) {
                         llvm::Value* lenVal = builder.getInt32(inst.immI32);

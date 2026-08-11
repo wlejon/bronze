@@ -58,6 +58,12 @@ enum class Op : uint8_t {
     CreateObject, // a = create.object
     ObjectKeys, // a = object.keys b                  (docs/0009)
     GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
+    // for-of, as an index walk (docs/0012 decision 2). Three ops rather
+    // than one because a string iterates by CODE POINT: the step is not
+    // always one, so the advance cannot be an `add 1` in the IL.
+    IterLength,  // a: f64 = iter.length b
+    IterAt,      // a = iter.at b, %index
+    IterAdvance, // a: f64 = iter.advance b, %index
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env
     FunctionRef,   // a = func.ref <funcIndex>          (docs/0008)

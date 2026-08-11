@@ -66,6 +66,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_prop_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_iter_length,         BRONZE_ABI_F64,  (BRONZE_ABI_U64)) \
+    X(bronze_iter_at,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
+    X(bronze_iter_advance,        BRONZE_ABI_F64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_create_arraybuffer,  BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_create_float32array, BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \

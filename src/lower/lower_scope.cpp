@@ -151,9 +151,18 @@ void Lowerer::enterScope() {
 // of its own declarations are captured. For a loop body this runs once
 // per iteration at runtime, which is exactly the per-iteration binding
 // the language specifies.
-void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn) {
+void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
+                         const std::string& extraDeclaration) {
     currentScopeDepth_++;
     std::vector<std::string> slots;
+    // for-of's loop variable is declared by the loop HEAD but belongs to
+    // the body's scope, so it is not in the statement list and has to be
+    // named here. Without it a closure over the loop variable would find no
+    // slot and read SSA that the next iteration overwrites (docs/0011
+    // decision 5).
+    if (!extraDeclaration.empty() && capturedNames_.contains(extraDeclaration)) {
+        slots.push_back(extraDeclaration);
+    }
     for (const auto& name : ast::getScopeDeclarations(stmts)) {
         if (capturedNames_.contains(name)) slots.push_back(name);
     }
@@ -199,7 +208,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::vector<ast::Param>& params,
                                                     const std::string& returnTypeAnn,
                                                     const std::vector<ast::StmtPtr>& body,
-                                                    Span span, il::Function& ilFn) {
+                                                    Span span, il::Function& ilFn, bool isArrow) {
     std::string fnName = declaredName;
     if (fnName.empty()) {
         fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
@@ -212,7 +221,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // anything (docs/0007). An unused one costs a parameter.
     newFn.needsEnv = true;
     newFn.params.push_back({"__env", il::Type::Dynamic});
-    if (ast::usesThis(body)) {
+    // An arrow deliberately does NOT take a receiver parameter, however it
+    // is called: its `this` is the enclosing function's, read from the
+    // environment (docs/0012 decision 3). Giving it one would be a second,
+    // contradictory answer to the same question.
+    if (!isArrow && ast::usesThis(body)) {
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }
@@ -259,6 +272,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerCaptured = capturedNames_;
     auto outerEnvValue = currentEnvValue_;
     auto outerThisValue = currentThisValue_;
+    auto outerIsArrow = currentFunctionIsArrow_;
+    currentFunctionIsArrow_ = isArrow;
     auto outerEnvBase = functionEnvBase_;
     auto outerEnvScope = functionEnvScope_;
     size_t outerEnvDepth = envScopes_.size();
@@ -277,6 +292,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     capturedNames_ = outerCaptured;
     currentEnvValue_ = outerEnvValue;
     currentThisValue_ = outerThisValue;
+    currentFunctionIsArrow_ = outerIsArrow;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
     if (envScopes_.size() != outerEnvDepth) {

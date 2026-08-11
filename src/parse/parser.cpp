@@ -202,6 +202,14 @@ StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwBreak)) return parseBreak();
     if (check(TokenKind::KwContinue)) return parseContinue();
     if (check(TokenKind::KwSwitch)) return parseSwitch();
+    if (check(TokenKind::KwClass)) {
+        // Named rather than parsed: docs/0012 decision 5 has the desugaring
+        // and `cases/blocked/class_basics` holds it to it. Before the
+        // keyword existed this read as `expected ';' after expression
+        // statement, got 'C'` — a diagnostic that named nothing.
+        error("unsupported construct: class declaration");
+        return nullptr;
+    }
     if (check(TokenKind::KwTry)) return parseTry();
     if (check(TokenKind::KwThrow)) return parseThrow();
     if (check(TokenKind::LBrace)) {
@@ -356,9 +364,25 @@ StmtPtr Parser::parseFor() {
             return std::make_unique<ForInStmt>();
         }
         if (peek(lookahead).kind == TokenKind::KwOf) {
-            advance(); advance(); advance();
-            parseExpr(); expect(TokenKind::RParen, "')'"); parseBlockOrSingleStmt();
-            return std::make_unique<ForOfStmt>();
+            auto stmt = std::make_unique<ForOfStmt>();
+            stmt->span = kw.span;
+            stmt->isConst = check(TokenKind::KwConst);
+            stmt->isLet = check(TokenKind::KwLet);
+            stmt->isVar = check(TokenKind::KwVar);
+            advance();  // const / let / var
+            const Token* name = expect(TokenKind::Identifier, "loop variable name");
+            if (!name) return nullptr;
+            stmt->name = std::string(name->text);
+            if (check(TokenKind::Colon)) {
+                advance();
+                parseTypeAnnotation();  // read and discarded: a hint types nothing
+            }
+            advance();  // `of`
+            stmt->iterable = parseExpr();
+            if (!stmt->iterable) return nullptr;
+            if (!expect(TokenKind::RParen, "')' after the iterable")) return nullptr;
+            stmt->body = parseBlockOrSingleStmt();
+            return stmt;
         }
     }
 
@@ -505,6 +529,74 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
 }
 }  // namespace
 
+// `x => ...` and `(a, b) => ...`. Deciding between an arrow's parameter
+// list and a parenthesized expression needs unbounded lookahead in general,
+// so this scans forward for the `)` that matches the `(` and asks what
+// follows it. Cheaper than parse-and-backtrack, and it cannot half-consume
+// the input on a wrong guess.
+bool Parser::looksLikeArrow() const {
+    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Arrow) return true;
+    if (!check(TokenKind::LParen)) return false;
+    size_t depth = 0;
+    for (size_t i = 0;; ++i) {
+        const TokenKind kind = peek(i).kind;
+        if (kind == TokenKind::EndOfFile) return false;
+        if (kind == TokenKind::LParen) ++depth;
+        else if (kind == TokenKind::RParen) {
+            if (--depth == 0) {
+                // A return-type annotation sits between the `)` and the
+                // `=>`; the annotation itself is one token today.
+                if (peek(i + 1).kind == TokenKind::Arrow) return true;
+                return peek(i + 1).kind == TokenKind::Colon &&
+                       peek(i + 3).kind == TokenKind::Arrow;
+            }
+        }
+    }
+}
+
+ExprPtr Parser::parseArrowFunction() {
+    auto fn = std::make_unique<FunctionExpr>();
+    fn->isArrow = true;
+    fn->span.begin = peek().span.begin;
+
+    if (check(TokenKind::Identifier)) {
+        Param p;
+        p.name = std::string(advance().text);
+        fn->params.push_back(std::move(p));
+    } else {
+        if (!expect(TokenKind::LParen, "'(' before arrow parameters")) return nullptr;
+        while (!check(TokenKind::RParen)) {
+            const Token* param = expect(TokenKind::Identifier, "parameter name");
+            if (!param) return nullptr;
+            Param p;
+            p.name = std::string(param->text);
+            if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
+            fn->params.push_back(std::move(p));
+            if (!match(TokenKind::Comma)) break;
+        }
+        if (!expect(TokenKind::RParen, "')' after arrow parameters")) return nullptr;
+        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+    }
+    if (!expect(TokenKind::Arrow, "'=>' after arrow parameters")) return nullptr;
+
+    if (check(TokenKind::LBrace)) {
+        fn->body = parseBlock();
+    } else {
+        // An expression body IS a return, and is stored as one so that
+        // every consumer below — capture analysis, inference, lowering —
+        // sees one shape of function body and not two.
+        auto value = parseExpr();
+        if (!value) return nullptr;
+        auto ret = std::make_unique<ReturnStmt>();
+        ret->span = value->span;
+        ret->value = std::move(value);
+        fn->body.push_back(std::move(ret));
+    }
+    if (diags_.hasErrors()) return nullptr;
+    fn->span.end = peek().span.begin;
+    return fn;
+}
+
 ExprPtr Parser::parseExpr() {
     auto expr = parseBinary(0);
     if (!expr) return nullptr;
@@ -542,6 +634,11 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
 }
 
 ExprPtr Parser::parseUnaryPrefix() {
+    // Checked at the OPERAND entry point rather than in parseExpr, because
+    // an arrow can appear anywhere an operand can — including as the right
+    // side of an assignment, which is a binary operator here and so never
+    // passes back through parseExpr (`this.get = () => this.count`).
+    if (looksLikeArrow()) return parseArrowFunction();
     const Token& t = peek();
     if (check(TokenKind::KwNew)) {
         return parseNew();
@@ -552,6 +649,14 @@ ExprPtr Parser::parseUnaryPrefix() {
         // exists purely so the construct can be named: before it, this
         // read as a stray-identifier syntax error naming nothing.
         error("unsupported construct: delete (objects have no dictionary mode yet)");
+        return nullptr;
+    }
+    if (check(TokenKind::KwClass)) {
+        error("unsupported construct: class expression");
+        return nullptr;
+    }
+    if (check(TokenKind::KwSuper)) {
+        error("unsupported construct: super (classes are not built yet)");
         return nullptr;
     }
     if (match(TokenKind::Bang)) {
@@ -605,6 +710,15 @@ ExprPtr Parser::parseUnaryPrefix() {
 ExprPtr Parser::parseUnaryPostfix() {
     auto expr = parsePrimary();
     if (!expr) return nullptr;
+    return parsePostfixOps(std::move(expr));
+}
+
+// The `.p` / `[i]` / `(args)` / `++` / `--` suffix loop, split out from
+// parseUnaryPostfix so a `new` expression can be a receiver too: `new
+// Point(1, 2).scale(3)` is one member call on a fresh object, and before
+// this split parseNew returned straight to the caller, so the `.` after
+// the constructor's argument list read as a syntax error.
+ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
     for (;;) {
         if (match(TokenKind::Dot)) {
             const Token* member = expect(TokenKind::Identifier, "property name");
@@ -639,6 +753,14 @@ ExprPtr Parser::parseUnaryPostfix() {
             if (!parseArgumentList(call->args)) return nullptr;
             call->span.end = peek().span.begin;
             expr = std::move(call);
+        } else if (check(TokenKind::TemplateWhole) || check(TokenKind::TemplateHead)) {
+            // `tag`...`` — a template in suffix position is a TAGGED
+            // template, which is not the cooked-pieces path of docs/0012
+            // decision 1: the tag receives the raw strings and the
+            // substitutions as arguments. Named here so it does not read as
+            // a missing semicolon.
+            error("unsupported construct: tagged template literal");
+            return nullptr;
         } else if (match(TokenKind::PlusPlus)) {
             auto u = std::make_unique<Unary>();
             u->span = {expr->span.begin, peek().span.begin};
@@ -687,7 +809,7 @@ ExprPtr Parser::parseNew() {
     advance();  // '('
     if (!parseArgumentList(ne->args)) return nullptr;
     ne->span.end = peek().span.begin;
-    return ne;
+    return parsePostfixOps(std::move(ne));
 }
 
 // `head ${ expr } middle ${ expr } tail`, with the lexer having already

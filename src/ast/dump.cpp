@@ -71,7 +71,11 @@ public:
         emit(")");
     }
     void visit(const FunctionExpr& n) override {
-        std::string head = "(function-expr " + (n.name.empty() ? "<anon>" : n.name) + " (";
+        // An arrow prints under its own head: it is not a shorter spelling
+        // of a function expression, it has no `this` of its own, and two
+        // constructs that lower differently must not dump identically.
+        std::string head = std::string(n.isArrow ? "(arrow-expr " : "(function-expr ") +
+                           (n.name.empty() ? "<anon>" : n.name) + " (";
         for (size_t i = 0; i < n.params.size(); ++i) {
             if (i > 0) head += ' ';
             head += n.params[i].name;
@@ -186,7 +190,14 @@ public:
     void visit(const ContinueStmt& n) override { emit("(continue" + (n.label.empty() ? "" : " " + n.label) + ")"); }
     void visit(const SwitchStmt&) override { emit("(switch)"); }
     void visit(const ForInStmt&) override { emit("(for-in)"); }
-    void visit(const ForOfStmt&) override { emit("(for-of)"); }
+    void visit(const ForOfStmt& n) override {
+        emit("(for-of " + n.name);
+        indented([&] {
+            if (n.iterable) n.iterable->accept(*this);
+            for (const auto& s : n.body) s->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const TryStmt&) override { emit("(try)"); }
     void visit(const ThrowStmt&) override { emit("(throw)"); }
     void visit(const FunctionDecl& n) override {

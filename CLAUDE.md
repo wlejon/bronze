@@ -61,4 +61,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0009 enumeration order (spec'd own-key order via the shape chain; dictionary boundary)
 - 0010 inference (phase 3: lattice, shape classes, call-graph signatures,
   annotations as untrusted hints, inline property caches — `src/types`)
-- 0011 builtins (phase 4: provided globals, prototype methods; current work)
+- 0011 builtins (provided globals by name, `Math`, `Array.prototype`,
+  `String.prototype`; an unbuilt member stays a named error)
+- 0012 syntax growth (string-escape decoding, template literals, for-of
+  as an index walk, arrows and lexical `this`; classes designed, unbuilt)

@@ -31,7 +31,10 @@ public:
     // There is nothing under them to walk; every analysis has to treat them
     // as opaque, which is exactly what an empty visit means here.
     void visit(const ast::ForInStmt&) override {}
-    void visit(const ast::ForOfStmt&) override {}
+    void visit(const ast::ForOfStmt& n) override {
+        if (n.iterable) n.iterable->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const ast::TryStmt&) override {}
     void visit(const ast::ThrowStmt&) override {}
 

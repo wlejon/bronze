@@ -491,6 +491,169 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     return true;
 }
 
+// for-of, lowered as an index walk over the iterable (docs/0012 decision 2).
+// The same four-block shape as `for`, with two differences:
+//
+//   - the index is not a source binding, so it is threaded as an EXTRA
+//     block parameter appended after the loop variables — appended in every
+//     block and on every edge, so the positional match holds. `continue`
+//     jumps to the update block too, which is why the loop context carries
+//     the value to pass;
+//   - the loop variable is per-iteration BY DEFINITION. It is declared
+//     inside the body's scope, which is entered once per iteration, so a
+//     closure over it captures that iteration's value. `for (let i = ...)`
+//     needs the same thing and does not get it (docs/0007 decision 2
+//     diagnoses it); here it is free, because there is no binding outside
+//     the body to share.
+bool Lowerer::lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn) {
+    enterScope();
+
+    auto iterOpt = lowerExpr(*forOf->iterable, ilFn);
+    if (!iterOpt) return false;
+    const Value iterVal = boxValueIfNeeded(*iterOpt, ilFn);
+
+    il::ValueId zero = ilFn.valueCount++;
+    il::Instruction zeroInst;
+    zeroInst.op = il::Op::ConstF64;
+    zeroInst.type = il::Type::F64;
+    zeroInst.result = zero;
+    zeroInst.immF64 = 0.0;
+    emitInst(ilFn, zeroInst);
+
+    const auto loopParams = collectLoopParams(*forOf, getAssignedVariables(*forOf));
+    std::vector<std::string> loopVars;
+    for (const auto& param : loopParams) loopVars.push_back(param.name);
+
+    il::BlockId bHeader = createBlock(ilFn);
+    il::BlockId bBody = createBlock(ilFn);
+    il::BlockId bUpdate = createBlock(ilFn);
+    il::BlockId bExit = createBlock(ilFn);
+
+    // The index parameter is added to each block right after that block's
+    // loop-variable parameters, and the matching argument is appended to
+    // every edge into it.
+    auto addIndexParam = [&](il::BlockId block) {
+        il::ValueId id = ilFn.valueCount++;
+        ilFn.blocks[block].params.push_back({id, il::Type::F64});
+        return id;
+    };
+    auto edgeArgsWithIndex = [&](il::BlockId target, il::ValueId index) {
+        auto args = collectEdgeArgs(loopVars, target, ilFn);
+        args.push_back(index);
+        return args;
+    };
+
+    auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
+    il::ValueId headerIndex = addIndexParam(bHeader);
+
+    il::Instruction jmpEntry;
+    jmpEntry.op = il::Op::Jump;
+    jmpEntry.type = il::Type::Void;
+    jmpEntry.result = il::kNoValue;
+    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = edgeArgsWithIndex(bHeader, zero)};
+    emitInst(ilFn, jmpEntry);
+
+    setCurrentBlock(bHeader);
+    bindLoopBlockParams(loopParams, headerParamMap);
+
+    // The length is read every iteration rather than once: an array
+    // iterator compares against the CURRENT length, so a body that pushes
+    // sees what it pushed and a body that pops stops early.
+    il::ValueId lenVal = ilFn.valueCount++;
+    il::Instruction lenInst;
+    lenInst.op = il::Op::IterLength;
+    lenInst.type = il::Type::F64;
+    lenInst.result = lenVal;
+    lenInst.operands = {iterVal.id};
+    emitInst(ilFn, lenInst);
+
+    il::ValueId condVal = ilFn.valueCount++;
+    il::Instruction cmpInst;
+    cmpInst.op = il::Op::CmpLt;
+    cmpInst.type = il::Type::Bool;
+    cmpInst.result = condVal;
+    cmpInst.operands = {headerIndex, lenVal};
+    emitInst(ilFn, cmpInst);
+
+    // The exit block carries the loop variables only: `break` reaches it
+    // from the body and has no index to hand over.
+    auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
+    std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
+
+    il::Instruction brInst;
+    brInst.op = il::Op::Branch;
+    brInst.type = il::Type::Void;
+    brInst.result = il::kNoValue;
+    brInst.operands = {condVal};
+    brInst.target = il::BlockTarget{.block = bBody, .args = {}};
+    brInst.elseTarget = il::BlockTarget{.block = bExit, .args = std::move(headerExitArgs)};
+    emitInst(ilFn, brInst);
+
+    auto updateParamMap = addLoopBlockParams(loopParams, bUpdate, ilFn);
+    il::ValueId updateIndex = addIndexParam(bUpdate);
+
+    setCurrentBlock(bBody);
+    il::ValueId elemVal = ilFn.valueCount++;
+    il::Instruction atInst;
+    atInst.op = il::Op::IterAt;
+    atInst.type = il::Type::Dynamic;
+    atInst.result = elemVal;
+    atInst.operands = {iterVal.id, headerIndex};
+    emitInst(ilFn, atInst);
+
+    LoopContext ctx{bHeader, bUpdate, bExit, loopVars};
+    ctx.updateExtraArg = headerIndex;
+    loopStack_.push_back(ctx);
+    // The loop variable belongs to the body's scope, so it gets an
+    // environment slot there when a closure captures it — one per
+    // iteration, which is the whole of the language's rule for it.
+    enterScope(forOf->body, ilFn, forOf->name);
+    if (!declareVariable(forOf->name, il::Type::Dynamic, forOf->isConst, forOf->isLet,
+                         forOf->isVar, /*isInitialized=*/true, elemVal, forOf->span)) {
+        return false;
+    }
+    writeBinding(varBindings_[activeVarMap_[forOf->name]], Value{elemVal, il::Type::Dynamic},
+                 ilFn);
+
+    std::vector<const ast::Stmt*> bodyStmts;
+    for (const auto& s : forOf->body) bodyStmts.push_back(s.get());
+    if (!lowerStmtList(bodyStmts, ilFn)) return false;
+    exitScope();
+    loopStack_.pop_back();
+
+    if (!currentBlockIsTerminated(ilFn)) {
+        il::Instruction toUpdate;
+        toUpdate.op = il::Op::Jump;
+        toUpdate.type = il::Type::Void;
+        toUpdate.result = il::kNoValue;
+        toUpdate.target =
+            il::BlockTarget{.block = bUpdate, .args = edgeArgsWithIndex(bUpdate, headerIndex)};
+        emitInst(ilFn, toUpdate);
+    }
+
+    setCurrentBlock(bUpdate);
+    bindLoopBlockParams(loopParams, updateParamMap);
+    il::ValueId nextIndex = ilFn.valueCount++;
+    il::Instruction advInst;
+    advInst.op = il::Op::IterAdvance;
+    advInst.type = il::Type::F64;
+    advInst.result = nextIndex;
+    advInst.operands = {iterVal.id, updateIndex};
+    emitInst(ilFn, advInst);
+
+    il::Instruction backJmp;
+    backJmp.op = il::Op::Jump;
+    backJmp.type = il::Type::Void;
+    backJmp.result = il::kNoValue;
+    backJmp.target = il::BlockTarget{.block = bHeader, .args = edgeArgsWithIndex(bHeader, nextIndex)};
+    emitInst(ilFn, backJmp);
+
+    setCurrentBlock(bExit);
+    bindLoopBlockParams(loopParams, exitParamMap);
+    exitScope();
+    return true;
+}
+
 bool Lowerer::lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn) {
     if (!breakStmt->label.empty()) {
         diags_.error(breakStmt->span, "unsupported construct: labeled break/continue");
@@ -526,13 +689,14 @@ bool Lowerer::lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Funct
         return false;
     }
     const auto& loopCtx = loopStack_.back();
+    auto continueArgs = collectEdgeArgs(loopCtx.loopVars, loopCtx.updateBlock, ilFn);
+    if (loopCtx.updateExtraArg != il::kNoValue) continueArgs.push_back(loopCtx.updateExtraArg);
     il::Instruction jmpInst;
     jmpInst.op = il::Op::Jump;
     jmpInst.type = il::Type::Void;
     jmpInst.result = il::kNoValue;
-    jmpInst.target = il::BlockTarget{
-        .block = loopCtx.updateBlock,
-        .args = collectEdgeArgs(loopCtx.loopVars, loopCtx.updateBlock, ilFn)};
+    jmpInst.target =
+        il::BlockTarget{.block = loopCtx.updateBlock, .args = std::move(continueArgs)};
     emitInst(ilFn, jmpInst);
 
     il::BlockId deadBlock = createBlock(ilFn);

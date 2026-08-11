@@ -55,6 +55,18 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (dynamic_cast<const ast::ThisExpr*>(&expr)) {
+        // An arrow has no receiver of its own: `this` is the enclosing
+        // function's, which reached it through the environment chain under
+        // the name no source binding can spell (docs/0012 decision 3).
+        if (currentFunctionIsArrow_) {
+            uint32_t depth = 0;
+            uint32_t index = 0;
+            if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("this", depth, index)) {
+                return emitEnvGet(depth, index, ilFn);
+            }
+            diags_.error(expr.span, "`this` outside a function is unsupported");
+            return std::nullopt;
+        }
         if (currentThisValue_ == il::kNoValue) {
             // usesThis() decided the parameter, so reaching here means
             // `this` at module top level, where its value is a module
@@ -133,7 +145,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
 
     if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&expr)) {
         return lowerClosure(*fnExpr, fnExpr->name, fnExpr->params, fnExpr->returnType,
-                            fnExpr->body, fnExpr->span, ilFn);
+                            fnExpr->body, fnExpr->span, ilFn, fnExpr->isArrow);
     }
 
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {

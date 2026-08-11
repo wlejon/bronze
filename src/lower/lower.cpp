@@ -171,6 +171,9 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     for (const auto& p : params) addSlot(p.name);
     for (const auto& declName : ast::getScopeDeclarations(body)) addSlot(declName);
     for (const auto& varName : ast::getHoistedVarDeclarations(body)) addSlot(varName);
+    // The receiver, when an arrow in this body reads it (docs/0011 decision
+    // 6). It is not a declaration, so nothing above finds it.
+    addSlot("this");
     if (slots.empty()) return;
 
     EnvScopeInfo info;
@@ -202,6 +205,25 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     stmts.reserve(body.size());
     for (const auto& s : body) stmts.push_back(s.get());
     enterFunctionEnv(params, stmts, ilFn);
+
+    // An arrow in this body reads the receiver out of the environment, so
+    // the receiver has to be IN it: copy `__this` across on entry, once,
+    // exactly as a captured parameter is copied below. Undefined where
+    // there is no receiver, which is what `this` means at module level.
+    if (functionEnvScope_ != SIZE_MAX && envScopes_[functionEnvScope_].slotOf.contains("this")) {
+        Value thisVal{currentThisValue_, il::Type::Dynamic};
+        if (currentThisValue_ == il::kNoValue) {
+            il::ValueId undef = ilFn.valueCount++;
+            il::Instruction undefInst;
+            undefInst.op = il::Op::ConstUndefined;
+            undefInst.type = il::Type::Dynamic;
+            undefInst.result = undef;
+            emitInst(ilFn, undefInst);
+            thisVal = Value{undef, il::Type::Dynamic};
+        }
+        emitEnvSet(envDepthOf(functionEnvScope_), envScopes_[functionEnvScope_].slotOf.at("this"),
+                   thisVal, ilFn);
+    }
 
     for (uint32_t i = 0; i < params.size(); ++i) {
         declareVariable(params[i].name, ilFn.params[i + paramBase].type, /*isConst=*/false,

@@ -50,6 +50,9 @@ const char* opName(Op op) {
         case Op::CreateObject: return "create.object";
         case Op::ObjectKeys: return "object.keys";
         case Op::GlobalGet: return "global.get";
+        case Op::IterLength: return "iter.length";
+        case Op::IterAt: return "iter.at";
+        case Op::IterAdvance: return "iter.advance";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
         case Op::EnvCreate: return "env.create";
@@ -209,6 +212,16 @@ std::string print(const Module& module) {
                         break;
                     case Op::CreateObject:
                         out += "create.object";
+                        break;
+                    case Op::IterLength:
+                        out += "iter.length %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::IterAt:
+                    case Op::IterAdvance:
+                        out += std::string(opName(inst.op)) + " %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
                         break;
                     // The NAME, not the key index: which global is being
                     // resolved is the whole content of the instruction, and

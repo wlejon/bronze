@@ -1,6 +1,6 @@
-// Array.prototype. Reading any of these names is a named hard error today
-// ("unsupported: Array.prototype.push is not implemented") rather than the
-// `undefined` it used to read. Results are joined into strings on purpose:
+// Array.prototype. A member this file does not use is still a named hard
+// error rather than `undefined` (docs/0011 decision 3). Results are joined
+// into strings on purpose:
 // console.log of a container has no pinned format yet (docs/0009), and
 // inventing one here would pin it in an .expected as a side effect.
 const a = [3, 1, 2];

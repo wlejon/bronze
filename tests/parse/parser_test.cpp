@@ -121,3 +121,97 @@ TEST_CASE("trailing garbage is a hard error, never dropped") {
     const auto out = parseAndDump("let x = 1; )");
     CHECK(out.substr(0, 7) == "ERRORS:");
 }
+
+TEST_CASE("new expression is a receiver for member access and calls") {
+    const auto out = parseAndDump("const s = new Point(1).scale(2).x;");
+    CHECK(out ==
+          "(module t\n"
+          "  (const s\n"
+          "    (member .x\n"
+          "      (call\n"
+          "        (member .scale\n"
+          "          (new Point\n"
+          "            (number 1)\n"
+          "          )\n"
+          "        )\n"
+          "        (number 2)\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("arrow with a parenthesized parameter list and an expression body") {
+    const auto out = parseAndDump("const f = (x) => x + 1;");
+    CHECK(out ==
+          "(module t\n"
+          "  (const f\n"
+          "    (arrow-expr <anon> (x)\n"
+          "      (return\n"
+          "        (binary +\n"
+          "          (ident x)\n"
+          "          (number 1)\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("arrow with a single bare parameter and a block body") {
+    const auto out = parseAndDump("const f = x => { return x; };");
+    CHECK(out ==
+          "(module t\n"
+          "  (const f\n"
+          "    (arrow-expr <anon> (x)\n"
+          "      (return\n"
+          "        (ident x)\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("arrow on the right of an assignment, not just of a declaration") {
+    // The arrow check lives at the operand entry point rather than in
+    // parseExpr for exactly this: assignment is a binary operator here, so
+    // its right side never passes back through parseExpr.
+    const auto out = parseAndDump("this.get = () => 1;");
+    CHECK(out.find("(arrow-expr <anon> ()") != std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+}
+
+TEST_CASE("for-of binds a name, an iterable and a body") {
+    const auto out = parseAndDump("for (const x of a) { g(x); }");
+    CHECK(out ==
+          "(module t\n"
+          "  (for-of x\n"
+          "    (ident a)\n"
+          "    (expr\n"
+          "      (call\n"
+          "        (ident g)\n"
+          "        (ident x)\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("template literal alternates quasis and substitutions") {
+    const auto out = parseAndDump("const t = `a${b}c`;");
+    CHECK(out ==
+          "(module t\n"
+          "  (const t\n"
+          "    (template\n"
+          "      (quasi \"a\")\n"
+          "      (ident b)\n"
+          "      (quasi \"c\")\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("string escapes are decoded at parse time, not left raw") {
+    const auto out = parseAndDump("const s = \"a\tb\u0041\";");
+    CHECK(out.find("a\tbA") != std::string::npos);
+}

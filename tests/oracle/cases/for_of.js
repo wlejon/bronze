@@ -1,6 +1,8 @@
-// for-of over an array and over a string. `unsupported construct: for-of
-// loop` today — it parses, and lowering names it. break and continue have
-// to reach the right blocks, and the loop variable is per-iteration.
+// for-of over an array and over a string. break and continue have to reach
+// the right blocks, and the loop variable is per-iteration — the closures
+// captured in the last case each see their own `x`, not a shared one.
+// Strings iterate by code point, which is why the walk has its own advance
+// step rather than an index increment (docs/0012 decision 2).
 const a = [10, 20, 30];
 let sum = 0;
 for (const x of a) { sum = sum + x; }

@@ -77,3 +77,16 @@ is a named hard error today). All three deliberately route their results
 through `join` or print scalars, because `console.log` of a container has no
 pinned format yet (docs/0009) and a blocked case must not smuggle that
 decision in through an `.expected` file.
+
+**2026-08-11 (later)**: all three of those promoted, along with
+`template_literals`, `arrow_functions` and `for_of` — the syntax cases
+seeded next to them (docs/0012). Promotion is not a file move: each case's
+header comment described the error it produced while blocked, and that
+sentence is rewritten to describe what the case now pins, so a promoted case
+never reads as documentation of a bug that is gone. Three edge cases were
+added alongside them rather than folded in (`array_methods_edges`,
+`string_methods_edges`, `string_escapes`), because a case that grows to
+cover everything stops naming what it is for.
+
+`cases/blocked/` keeps `class_basics`, which is the next thing three.js
+needs and which docs/0012 decision 5 plans out.

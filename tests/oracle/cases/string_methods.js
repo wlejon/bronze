@@ -1,7 +1,7 @@
-// String.prototype beyond `length` and `charCodeAt`, which are the only two
-// bronze implements. The rest are named hard errors today. Strings are
-// immutable (docs/0004), so every one of these returns a fresh string and
-// none of them can be done in place.
+// String.prototype beyond `length` and `charCodeAt`. Strings are immutable
+// (docs/0004), so every one of these returns a fresh string and none of
+// them can be done in place; a member that is not implemented stays a named
+// hard error (docs/0011 decision 3).
 const s = "Hello, World";
 console.log(s.length);
 console.log(s.toUpperCase());

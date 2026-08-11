@@ -88,7 +88,10 @@ public:
     void visit(const ContinueStmt&) override {}
     void visit(const SwitchStmt&) override {}
     void visit(const ForInStmt&) override {}
-    void visit(const ForOfStmt&) override {}
+    void visit(const ForOfStmt& n) override {
+        if (n.iterable) n.iterable->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const TryStmt&) override {}
     void visit(const ThrowStmt&) override {}
     void visit(const FunctionDecl& f) override {
@@ -154,7 +157,14 @@ public:
     void visit(const ArrayLit& a) override {
         for (const auto& elem : a.elements) elem->accept(*this);
     }
-    void visit(const FunctionExpr& f) override { addFunctionBody(f.body); }
+    void visit(const FunctionExpr& f) override {
+        addFunctionBody(f.body);
+        // An arrow's `this` is the enclosing function's receiver, so it is
+        // captured like a free variable — under the one name no source
+        // binding can collide with, because `this` is a keyword
+        // (docs/0012 decision 3).
+        if (f.isArrow && usesThis(f.body)) captured.insert("this");
+    }
     void visit(const FunctionDecl& f) override { addFunctionBody(f.body); }
 
     void visit(const BlockStmt& b) override {
@@ -190,7 +200,10 @@ public:
     void visit(const ContinueStmt&) override {}
     void visit(const SwitchStmt&) override {}
     void visit(const ForInStmt&) override {}
-    void visit(const ForOfStmt&) override {}
+    void visit(const ForOfStmt& n) override {
+        if (n.iterable) n.iterable->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const TryStmt&) override {}
     void visit(const ThrowStmt&) override {}
     void visit(const Module& m) override {
@@ -201,11 +214,19 @@ public:
 // Finds `this` in a function body, stopping at any nested function: each
 // binds its own receiver. Reuses CaptureVisitor's traversal shape, which
 // already stops at function boundaries — it just records something else.
+// Does this body need a receiver? An ordinary nested function has its own
+// `this` and is not descended into; an ARROW does not, so its `this` is
+// this body's and has to be found (docs/0012 decision 3).
 class ThisVisitor final : public CaptureVisitor {
 public:
     bool found = false;
     void visit(const ThisExpr&) override { found = true; }
-    void visit(const FunctionExpr&) override {}
+    void visit(const FunctionExpr& f) override {
+        if (!f.isArrow) return;
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
     void visit(const FunctionDecl&) override {}
 };
 

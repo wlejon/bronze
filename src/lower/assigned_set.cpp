@@ -117,7 +117,10 @@ public:
     void visit(const ast::ContinueStmt&) override {}
     void visit(const ast::SwitchStmt&) override {}
     void visit(const ast::ForInStmt&) override {}
-    void visit(const ast::ForOfStmt&) override {}
+    void visit(const ast::ForOfStmt& f) override {
+        if (f.iterable) f.iterable->accept(*this);
+        for (const auto& s : f.body) s->accept(*this);
+    }
     void visit(const ast::TryStmt&) override {}
     void visit(const ast::ThrowStmt&) override {}
     void visit(const ast::FunctionDecl&) override {}
