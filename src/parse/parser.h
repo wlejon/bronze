@@ -27,6 +27,12 @@ private:
     std::vector<Token> tokens_;
     DiagnosticSink& diags_;
     size_t pos_ = 0;
+    // Which class a `super` in the body being parsed belongs to, and
+    // whether there is one at all. A class body is the only place `super`
+    // is legal, and the parent it names is known here and nowhere later
+    // (docs/0012 decision 5).
+    std::string currentClassSuper_;
+    bool inClassMethod_ = false;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -48,6 +54,9 @@ private:
     ast::StmtPtr parseSwitch();
     ast::StmtPtr parseTry();
     ast::StmtPtr parseThrow();
+    ast::StmtPtr parseClass();
+    ast::ExprPtr parseSuper();
+    bool parseParams(std::vector<ast::Param>& out);
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
     std::string parseTypeAnnotation();

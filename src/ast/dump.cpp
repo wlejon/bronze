@@ -89,6 +89,27 @@ public:
         });
         emit(")");
     }
+    void visit(const SuperCall& n) override {
+        emit("(super-call " + n.baseName);
+        indented([&] {
+            for (const auto& a : n.args) a->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const SuperMember& n) override {
+        emit("(super-member " + n.baseName + "." + n.property + ")");
+    }
+    void visit(const ClassDecl& n) override {
+        emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));
+        indented([&] {
+            for (const auto& m : n.methods) {
+                emit(std::string(m.isStatic ? "(static-method " : "(method ") + m.name);
+                indented([&] { m.fn->accept(*this); });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
     void visit(const BoolLit& n) override { emit(std::string("(bool ") + (n.value ? "true" : "false") + ")"); }
     void visit(const NullLit&) override { emit("(null)"); }
     void visit(const UndefinedLit&) override { emit("(undefined)"); }

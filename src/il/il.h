@@ -58,6 +58,10 @@ enum class Op : uint8_t {
     CreateObject, // a = create.object
     ObjectKeys, // a = object.keys b                  (docs/0009)
     GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
+    // `class D extends B`: links D.prototype's proto to B.prototype and
+    // D's static properties to B's. One op because both links have to
+    // be made together, before any method is stored (docs/0012 dec. 5).
+    ClassExtend, // class.extend derived, base
     // for-of, as an index walk (docs/0012 decision 2). Three ops rather
     // than one because a string iterates by CODE POINT: the step is not
     // always one, so the advance cannot be an `add 1` in the IL.

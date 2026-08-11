@@ -394,6 +394,60 @@ static void ensureFunctionPrototype(Rooted<Value>& fnVal) {
     fn->instance_shape = newRootShape(fn->prototype);
 }
 
+// A function's own-property object, created on first demand for the same
+// reason its `.prototype` is: a function that is never given a static member
+// should not pay for the object (docs/0012 decision 6). Allocates, so it
+// takes a root and the caller must re-derive its own pointer afterwards.
+static void ensureFunctionProperties(Rooted<Value>& fnVal) {
+    FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
+    if (fn->properties.isObject()) return;
+    ObjectHeader* props = ObjectHeader::create(g_heap, g_arena, plainObjectShape());
+    props->header.flags = 0;
+    fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
+    fn->properties = Value::fromObject(props);
+}
+
+// `class D extends B` - the two prototype links a class sets up, and the
+// only runtime concept classes add (docs/0012 decision 5). Instances:
+// D.prototype's proto is B.prototype, so an inherited method is found by
+// the ordinary chain walk. Statics: D's own-property object's proto is B's,
+// so `D.staticOfB()` resolves the same way.
+//
+// D.prototype is REPLACED here rather than mutated, because the prototype
+// lives on the shape (docs/0004) - which is also why this must run before
+// any method is stored on it.
+void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
+    Value derivedVal(derivedBits);
+    Value baseVal(baseBits);
+    if (!derivedVal.isObject() || derivedVal.asObject<HeapObjectHeader>()->flags != 2) {
+        fatal("internal: class extends with a non-function derived class");
+    }
+    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != 2) {
+        fatal("a class can only extend another class or a constructor function");
+    }
+
+    Rooted<Value> derived{derivedVal};
+    Rooted<Value> base{baseVal};
+    ensureFunctionPrototype(base);
+    ensureFunctionProperties(base);
+
+    Value baseProto = base.get().asObject<FunctionHeader>()->prototype;
+    Rooted<Value> baseProtoRoot{baseProto};
+    ObjectHeader* proto = ObjectHeader::create(g_heap, g_arena, newRootShape(baseProtoRoot.get()));
+    proto->header.flags = 0;
+    Rooted<Value> protoRoot{Value::fromObject(proto)};
+
+    Value baseProps = base.get().asObject<FunctionHeader>()->properties;
+    Rooted<Value> basePropsRoot{baseProps};
+    ObjectHeader* props = ObjectHeader::create(g_heap, g_arena, newRootShape(basePropsRoot.get()));
+    props->header.flags = 0;
+
+    FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
+    fn->prototype = protoRoot.get();
+    fn->properties = Value::fromObject(props);
+    fn->instance_shape = newRootShape(protoRoot.get());
+}
+
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
     Value fnVal(fnBits);
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != 2) {
@@ -781,6 +835,16 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             ensureFunctionPrototype(fnRoot);
             return fnRoot.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
+        // A static member lives in the function's own-property object, and
+        // is found through ITS prototype chain, which `extends` linked to
+        // the base class's (docs/0012 decision 6).
+        Value props = objVal.asObject<FunctionHeader>()->properties;
+        if (props.isObject()) {
+            Rooted<Value> propsRoot{props};
+            Rooted<Value> key(Value::fromString(g_keyHeaders[keyIndex]));
+            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(g_heap, key);
+            if (!found.isUndefined()) return found.rawBits();
+        }
         checkUnimplementedMember("Function.prototype", kFunctionMembers,
                                  std::size(kFunctionMembers), keyStr);
         return Value::fromUndefined().rawBits();
@@ -998,8 +1062,16 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // the only property it can be given. Anything else is named rather
         // than dropped (docs/0008 decision 5).
         if (keyStr != "prototype") {
-            fatal("property writes on a function object other than `prototype` are "
-                  "unsupported until functions carry shapes");
+            // Any other name is an own property of the function - a static
+            // member (docs/0012 decision 6). It used to be a hard error,
+            // which is what `class C { static m() {} }` would have hit.
+            Rooted<Value> fnRoot{objVal};
+            Rooted<Value> val{valVal};
+            ensureFunctionProperties(fnRoot);
+            Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+            Rooted<Value> key(Value::fromString(g_keyHeaders[keyIndex]));
+            propsRoot.get().asObject<ObjectHeader>()->setProp(g_heap, g_arena, key, val);
+            return;
         }
         if (!valVal.isObject()) {
             fatal("assigning a non-object to a function's `prototype` is unsupported");

@@ -51,6 +51,10 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
         return lowerVarDecl(varDecl, ilFn);
     }
 
+    if (const auto* classDecl = dynamic_cast<const ast::ClassDecl*>(&stmt)) {
+        return lowerClassDecl(classDecl, ilFn);
+    }
+
     if (const auto* retStmt = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
         return lowerReturnStmt(retStmt, ilFn);
     }

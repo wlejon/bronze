@@ -27,6 +27,12 @@ struct FunctionHeader {
     // prototype is never decorated should not pay for the object, and
     // closures are created in loops (docs/0008 decision 4).
     Value prototype;
+    // This function's OWN properties - what `C.staticMethod = ...` and a
+    // class's `static` members are stored in - or undefined until one is
+    // written. An ordinary object, so it costs nothing until used and
+    // inherits through the shape's prototype, which is what makes a static
+    // member of a base class visible on a derived one (docs/0012 decision 6).
+    Value properties;
     // Root shape for objects `new`ed from this function; its prototype is
     // the object above. Non-moving, created with it, and reset if
     // `.prototype` is reassigned.

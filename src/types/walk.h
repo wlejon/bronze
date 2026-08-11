@@ -69,6 +69,13 @@ public:
     void visit(const ast::ArrayLit& n) override {
         for (const auto& e : n.elements) e->accept(*this);
     }
+    void visit(const ast::SuperCall& n) override {
+        for (const auto& a : n.args) a->accept(*this);
+    }
+    void visit(const ast::SuperMember&) override {}
+    void visit(const ast::ClassDecl& n) override {
+        for (const auto& m : n.methods) m.fn->accept(*this);
+    }
     void visit(const ast::FunctionExpr& n) override { walkList(n.body); }
     void visit(const ast::FunctionDecl& n) override { walkList(n.body); }
 

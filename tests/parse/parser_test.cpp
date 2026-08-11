@@ -215,3 +215,123 @@ TEST_CASE("string escapes are decoded at parse time, not left raw") {
     const auto out = parseAndDump("const s = \"a\tb\u0041\";");
     CHECK(out.find("a\tbA") != std::string::npos);
 }
+
+TEST_CASE("a class body parses into methods, statics and a super call") {
+    const auto out = parseAndDump(
+        "class P extends Q {\n"
+        "  constructor(x) { this.x = x; }\n"
+        "  get() { return super.get(); }\n"
+        "  static make() { return 1; }\n"
+        "}\n");
+    CHECK(out ==
+          "(module t\n"
+          "  (class P extends Q\n"
+          "    (method constructor\n"
+          "      (function-expr P.constructor (x)\n"
+          "        (expr\n"
+          "          (binary =\n"
+          "            (member .x\n"
+          "              (this)\n"
+          "            )\n"
+          "            (ident x)\n"
+          "          )\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "    (method get\n"
+          "      (function-expr P.get ()\n"
+          "        (return\n"
+          "          (call\n"
+          "            (super-member Q.get)\n"
+          "          )\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "    (static-method make\n"
+          "      (function-expr P.make ()\n"
+          "        (return\n"
+          "          (number 1)\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("a base class with no constructor gets the empty one it has") {
+    // Lowering wants exactly one constructor, always; the language says a
+    // class that writes none has an empty one.
+    const auto out = parseAndDump("class E {}");
+    CHECK(out ==
+          "(module t\n"
+          "  (class E\n"
+          "    (method constructor\n"
+          "      (function-expr E.constructor ()\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("a derived class with no constructor is named, not forwarded") {
+    // Forwarding needs rest and spread, and passing on fewer arguments than
+    // the caller gave would be a wrong answer given quietly.
+    const auto out = parseAndDump("class D extends B {}");
+    CHECK(out.substr(0, 7) == "ERRORS:");
+    CHECK(out.find("a derived class with no constructor") != std::string::npos);
+}
+
+TEST_CASE("class members bronze has not built are named, not mis-parsed") {
+    const auto field = parseAndDump("class C { x = 1; }");
+    CHECK(field.find("unsupported construct: class field") != std::string::npos);
+
+    const auto getter = parseAndDump("class C { get x() { return 1; } }");
+    CHECK(getter.find("unsupported construct: class getter or setter") != std::string::npos);
+
+    const auto computed = parseAndDump("class C { [k]() { return 1; } }");
+    CHECK(computed.find("unsupported construct: computed method name") != std::string::npos);
+
+    const auto gen = parseAndDump("class C { *each() { return 1; } }");
+    CHECK(gen.find("unsupported construct: generator method") != std::string::npos);
+}
+
+TEST_CASE("super is legal only in a class method, and only with a parent") {
+    const auto outside = parseAndDump("function f() { return super.m(); }");
+    CHECK(outside.find("unsupported construct: super outside a class method") != std::string::npos);
+
+    const auto noParent = parseAndDump("class C { m() { return super.m(); } }");
+    CHECK(noParent.find("super in a class with no 'extends'") != std::string::npos);
+}
+
+TEST_CASE("`static` is still an ordinary name outside a class member position") {
+    // It is not a reserved word in JavaScript, so taking it as a keyword
+    // would have broken `obj.static` and `{ static: 1 }`.
+    const auto out = parseAndDump("const o = { static: 1 }; const v = o.static;");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(member .static") != std::string::npos);
+}
+
+TEST_CASE("ES2015 parameter and spread syntax is named, not reported as punctuation") {
+    struct Case {
+        const char* src;
+        const char* expected;
+    };
+    const Case cases[] = {
+        {"function f(a, b = 2) {}", "unsupported construct: default parameter value"},
+        {"const g = (a = 1) => a;", "unsupported construct: default parameter value"},
+        {"function f(...r) {}", "unsupported construct: rest parameter"},
+        {"class C { m(...r) {} }", "unsupported construct: rest parameter"},
+        {"function h([a]) {}", "unsupported construct: destructuring parameter"},
+        {"function h({a}) {}", "unsupported construct: destructuring parameter"},
+        {"const [a, b] = [1, 2];", "unsupported construct: destructuring declaration"},
+        {"const { x } = { x: 1 };", "unsupported construct: destructuring declaration"},
+        {"f(...[1]);", "unsupported construct: spread"},
+        {"const c = [...[1]];", "unsupported construct: spread"},
+        {"const o = { ...x };", "unsupported construct: spread"},
+    };
+    for (const auto& c : cases) {
+        const auto out = parseAndDump(c.src);
+        CHECK(out.substr(0, 7) == "ERRORS:");
+        CHECK(out.find(c.expected) != std::string::npos);
+    }
+}

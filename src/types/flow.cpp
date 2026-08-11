@@ -60,6 +60,7 @@ const char* statementLabel(const ast::Stmt& s) {
     if (dynamic_cast<const ast::TryStmt*>(&s)) return "try";
     if (dynamic_cast<const ast::ThrowStmt*>(&s)) return "throw";
     if (dynamic_cast<const ast::FunctionDecl*>(&s)) return "function";
+    if (dynamic_cast<const ast::ClassDecl*>(&s)) return "class";
     return nullptr;
 }
 
@@ -390,6 +391,16 @@ private:
             widenAll();
             return;
         }
+        if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(&s)) {
+            // A class is a constructor function value, and each of its
+            // methods is a closure (docs/0012 decision 5) — the same two
+            // facts the branch below states about a nested declaration.
+            declare(cd->name, Type::function());
+            for (const auto& m : cd->methods) {
+                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span);
+            }
+            return;
+        }
         if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&s)) {
             // A nested declaration is a closure value (docs/0007 decision 4),
             // so it carries no module function index and no direct call.
@@ -539,6 +550,13 @@ private:
             // no shape class to prove about it.
             return Type::object();
         }
+        if (const auto* sc = dynamic_cast<const ast::SuperCall*>(&e)) {
+            // The parent constructor runs on the current receiver and its
+            // result is discarded, so nothing is proven about the value.
+            for (const auto& a : sc->args) expr(*a);
+            return Type::dynamic();
+        }
+        if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
         if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
             analyzeNested(*f, f->name, f->params, f->body, f->span);
             return Type::function();

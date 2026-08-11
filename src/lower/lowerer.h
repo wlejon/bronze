@@ -195,6 +195,17 @@ private:
     bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
     bool lowerStmt(const ast::Stmt& stmt, il::Function& ilFn);
     bool lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn);
+
+    // --- lower_class.cpp: classes, desugared (docs/0012 decision 5) -------
+    bool lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn);
+    Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
+    std::optional<Value> lowerSuperMember(const ast::SuperMember* sm, il::Function& ilFn);
+    std::optional<Value> lowerSuperCall(const ast::SuperCall* sc, il::Function& ilFn);
+    // The receiver of the function being lowered, wherever it comes from:
+    // a parameter for an ordinary function, the environment for an arrow
+    // (docs/0012 decision 3). `this`, `super(...)` and `super.m()` all need
+    // the same answer, so they ask in the same place.
+    std::optional<Value> lowerThisValue(Span span, il::Function& ilFn);
     bool lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn);
 
     // --- lower_control.cpp: control flow, block-argument SSA (docs/0005) -

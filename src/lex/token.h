@@ -68,6 +68,7 @@ enum class TokenKind {
     RBracket,
     Comma,
     Semicolon,
+    Ellipsis,  // ...
     Colon,
     Dot,
     Arrow,        // =>

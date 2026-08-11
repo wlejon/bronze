@@ -43,7 +43,22 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const NewExpr& n) override {
+        // The CONSTRUCTOR is a mention of a name too. Without it, a closure
+        // that does `new Point(...)` did not capture `Point`, which only
+        // showed up once classes made the constructor an ordinary binding
+        // rather than a module-level function declaration.
+        names.insert(n.callee);
         for (const auto& arg : n.args) arg->accept(*this);
+    }
+    void visit(const SuperCall& c) override {
+        names.insert(c.baseName);
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+    void visit(const SuperMember& m) override { names.insert(m.baseName); }
+    void visit(const ClassDecl& c) override {
+        names.insert(c.name);
+        if (!c.superName.empty()) names.insert(c.superName);
+        for (const auto& m : c.methods) m.fn->accept(*this);
     }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) prop.value->accept(*this);
@@ -151,6 +166,16 @@ public:
     void visit(const NewExpr& n) override {
         for (const auto& arg : n.args) arg->accept(*this);
     }
+    void visit(const SuperCall& c) override {
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+    void visit(const SuperMember&) override {}
+    // Every method of a class is a closure over this scope, so what its body
+    // mentions is a candidate capture - including the parent class name that
+    // a `super` inside it resolves against (docs/0012 decision 5).
+    void visit(const ClassDecl& c) override {
+        for (const auto& m : c.methods) addFunctionBody(m.fn->body);
+    }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) prop.value->accept(*this);
     }
@@ -221,6 +246,15 @@ class ThisVisitor final : public CaptureVisitor {
 public:
     bool found = false;
     void visit(const ThisExpr&) override { found = true; }
+    // `super(...)` and `super.m()` both RUN on the current receiver, so a
+    // method whose body never writes `this` still needs one (docs/0012
+    // decision 5). Missing this made `super.describe()` in an override
+    // report `this` outside a function.
+    void visit(const SuperCall& c) override {
+        found = true;
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+    void visit(const SuperMember&) override { found = true; }
     void visit(const FunctionExpr& f) override {
         if (!f.isArrow) return;
         for (const auto& s : f.body) {
@@ -228,6 +262,7 @@ public:
         }
     }
     void visit(const FunctionDecl&) override {}
+    void visit(const ClassDecl&) override {}
 };
 
 // Finds a `return <expr>;` in a function body, stopping at any nested
@@ -241,6 +276,7 @@ public:
     }
     void visit(const FunctionExpr&) override {}
     void visit(const FunctionDecl&) override {}
+    void visit(const ClassDecl&) override {}
 };
 
 void collectHoistedVars(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
@@ -299,6 +335,8 @@ std::vector<std::string> getScopeDeclarations(const std::vector<StmtPtr>& stmts)
             if (!v->isVar) names.push_back(v->name);
         } else if (const auto* f = dynamic_cast<const FunctionDecl*>(s.get())) {
             names.push_back(f->name);
+        } else if (const auto* c = dynamic_cast<const ClassDecl*>(s.get())) {
+            names.push_back(c->name);
         }
     }
     return names;
@@ -329,6 +367,8 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
             if (!v->isVar) names.push_back(v->name);
         } else if (const auto* f = dynamic_cast<const FunctionDecl*>(s)) {
             names.push_back(f->name);
+        } else if (const auto* c = dynamic_cast<const ClassDecl*>(s)) {
+            names.push_back(c->name);
         }
     }
     return names;

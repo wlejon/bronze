@@ -434,6 +434,20 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
+                case il::Op::ClassExtend: {
+                    if (inst.operands.size() < 2) {
+                        diags.error(Span{}, "Invalid operands for ClassExtend");
+                        return false;
+                    }
+                    llvm::Value* derived = values[inst.operands[0]];
+                    llvm::Value* base = values[inst.operands[1]];
+                    if (!derived || !base) {
+                        diags.error(Span{}, "Undefined operand in ClassExtend instruction");
+                        return false;
+                    }
+                    builder.CreateCall(abi.bronze_class_extends, {derived, base});
+                    break;
+                }
                 case il::Op::IterLength:
                 case il::Op::IterAt:
                 case il::Op::IterAdvance: {

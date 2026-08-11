@@ -55,26 +55,15 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (dynamic_cast<const ast::ThisExpr*>(&expr)) {
-        // An arrow has no receiver of its own: `this` is the enclosing
-        // function's, which reached it through the environment chain under
-        // the name no source binding can spell (docs/0012 decision 3).
-        if (currentFunctionIsArrow_) {
-            uint32_t depth = 0;
-            uint32_t index = 0;
-            if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("this", depth, index)) {
-                return emitEnvGet(depth, index, ilFn);
-            }
-            diags_.error(expr.span, "`this` outside a function is unsupported");
-            return std::nullopt;
-        }
-        if (currentThisValue_ == il::kNoValue) {
-            // usesThis() decided the parameter, so reaching here means
-            // `this` at module top level, where its value is a module
-            // system question bronze has not answered yet (docs/0008).
-            diags_.error(expr.span, "`this` outside a function is unsupported");
-            return std::nullopt;
-        }
-        return Value{currentThisValue_, il::Type::Dynamic};
+        return lowerThisValue(expr.span, ilFn);
+    }
+
+    if (const auto* superCall = dynamic_cast<const ast::SuperCall*>(&expr)) {
+        return lowerSuperCall(superCall, ilFn);
+    }
+
+    if (const auto* superMem = dynamic_cast<const ast::SuperMember*>(&expr)) {
+        return lowerSuperMember(superMem, ilFn);
     }
 
     if (const auto* strLit = dynamic_cast<const ast::StringLit*>(&expr)) {
@@ -746,8 +735,42 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         }
         return stored;
     }
+    // An array or object LITERAL on the left is not a bad target, it is a
+    // destructuring assignment — the one form of destructuring the parser
+    // cannot name, because both sides parse as ordinary expressions and only
+    // the assignment reveals which one it was.
+    if (dynamic_cast<const ast::ArrayLit*>(bin->lhs.get()) ||
+        dynamic_cast<const ast::ObjectLit*>(bin->lhs.get())) {
+        diags_.error(bin->span, "unsupported construct: destructuring assignment");
+        return std::nullopt;
+    }
     diags_.error(bin->span, "invalid assignment target");
     return std::nullopt;
+}
+
+// Where `this` comes from in the function being lowered. An ordinary
+// function receives it as the synthetic leading parameter; an arrow has no
+// receiver of its own and reads the enclosing function's out of the
+// environment chain, under the name no source binding can spell
+// (docs/0012 decision 3).
+std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span span, il::Function& ilFn) {
+    if (currentFunctionIsArrow_) {
+        uint32_t depth = 0;
+        uint32_t index = 0;
+        if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("this", depth, index)) {
+            return emitEnvGet(depth, index, ilFn);
+        }
+        diags_.error(span, "`this` outside a function is unsupported");
+        return std::nullopt;
+    }
+    if (currentThisValue_ == il::kNoValue) {
+        // usesThis() decided the parameter, so reaching here means `this` at
+        // module top level, where its value is a module system question
+        // bronze has not answered yet (docs/0008).
+        diags_.error(span, "`this` outside a function is unsupported");
+        return std::nullopt;
+    }
+    return Value{currentThisValue_, il::Type::Dynamic};
 }
 
 }  // namespace bronze::lower

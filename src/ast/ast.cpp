@@ -17,6 +17,8 @@ void MemberAccess::accept(Visitor& v) const { v.visit(*this); }
 void IndexAccess::accept(Visitor& v) const { v.visit(*this); }
 void Call::accept(Visitor& v) const { v.visit(*this); }
 void NewExpr::accept(Visitor& v) const { v.visit(*this); }
+void SuperCall::accept(Visitor& v) const { v.visit(*this); }
+void SuperMember::accept(Visitor& v) const { v.visit(*this); }
 void ObjectLit::accept(Visitor& v) const { v.visit(*this); }
 void ArrayLit::accept(Visitor& v) const { v.visit(*this); }
 void FunctionExpr::accept(Visitor& v) const { v.visit(*this); }
@@ -35,6 +37,7 @@ void ForInStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForOfStmt::accept(Visitor& v) const { v.visit(*this); }
 void TryStmt::accept(Visitor& v) const { v.visit(*this); }
 void ThrowStmt::accept(Visitor& v) const { v.visit(*this); }
+void ClassDecl::accept(Visitor& v) const { v.visit(*this); }
 void FunctionDecl::accept(Visitor& v) const { v.visit(*this); }
 void Module::accept(Visitor& v) const { v.visit(*this); }
 

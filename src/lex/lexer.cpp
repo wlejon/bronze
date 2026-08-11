@@ -37,6 +37,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwTrue: return "true";
         case TokenKind::KwTry: return "try";
         case TokenKind::KwDelete: return "delete";
+        case TokenKind::Ellipsis: return "...";
         case TokenKind::KwClass: return "class";
         case TokenKind::KwExtends: return "extends";
         case TokenKind::KwSuper: return "super";
@@ -200,7 +201,12 @@ Token Lexer::lexPunctuation() {
         case ',': ++pos_; return make(TokenKind::Comma, begin);
         case ';': ++pos_; return make(TokenKind::Semicolon, begin);
         case ':': ++pos_; return make(TokenKind::Colon, begin);
-        case '.': ++pos_; return make(TokenKind::Dot, begin);
+        case '.':
+            // `...` is one token: rest and spread are the only things it
+            // spells, and the parser can only name them if it sees them as
+            // one (three Dots read as a property access of nothing).
+            if (peek(1) == '.' && peek(2) == '.') { pos_ += 3; return make(TokenKind::Ellipsis, begin); }
+            ++pos_; return make(TokenKind::Dot, begin);
         case '?':
             if (peek(1) == '?') { pos_ += 2; return make(TokenKind::QuestionQuestion, begin); }
             ++pos_; return make(TokenKind::Question, begin);

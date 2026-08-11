@@ -533,3 +533,79 @@ TEST_CASE("an arrow reaches `this` through the environment, not a parameter") {
     REQUIRE(arrow != std::string::npos);
     CHECK(printed.find("env.get %0, 0, 0", arrow) != std::string::npos);
 }
+
+TEST_CASE("a class lowers to a constructor, a prototype and property writes") {
+    // No new runtime concept: the class IS the constructor function, its
+    // methods are stored on `.prototype`, and a static is stored on the
+    // function itself (docs/0012 decisions 5 and 6).
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "class Q { constructor() { this.v = 1; } get() { return this.v; } }\n"
+        "class P extends Q {\n"
+        "  constructor() { super(); }\n"
+        "  get() { return super.get(); }\n"
+        "  static make() { return 1; }\n"
+        "}\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func Q(%0: dynamic, %1: dynamic)") != std::string::npos);
+    CHECK(printed.find("func Q.get(%0: dynamic, %1: dynamic)") != std::string::npos);
+    CHECK(printed.find("func P.make(%0: dynamic)") != std::string::npos);
+    // `extends` runs before any method is stored: the prototype object it
+    // installs is the one they have to land on.
+    const size_t extend = printed.find("class.extend");
+    const size_t protoRead = printed.find("prop.get %5, 1", extend);
+    REQUIRE(extend != std::string::npos);
+    CHECK(protoRead != std::string::npos);
+}
+
+TEST_CASE("super.m() calls the parent's method with the current receiver") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "class Q { constructor() { this.v = 1; } get() { return this.v; } }\n"
+        "class P extends Q { constructor() { super(); } get() { return super.get(); } }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    const size_t body = printed.find("func P.get(");
+    REQUIRE(body != std::string::npos);
+    // Two reads (the parent, then its prototype, then the method) and a
+    // dynamic call whose receiver is %1 — the CURRENT `this`, not the
+    // parent prototype the function came from. Reading `this.get` instead
+    // would find the override and recurse forever.
+    CHECK(printed.find("call.dynamic %4, %1", body) != std::string::npos);
+}
+
+TEST_CASE("a method with no `this` in it still gets a receiver when it uses super") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "class Q { constructor() { this.v = 1; } tag() { return \"q\"; } }\n"
+        "class P extends Q { constructor() { super(); } tag() { return super.tag(); } }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func P.tag(%0: dynamic, %1: dynamic)") != std::string::npos);
+}
+
+TEST_CASE("a destructuring assignment is named, not called a bad target") {
+    // The one destructuring form the parser cannot name: both sides parse as
+    // ordinary expressions, and only the assignment says which one it was.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("let a = 1;\nlet b = 2;\n[a, b] = [b, a];\n", diags, buf);
+
+    CHECK_FALSE(optMod.has_value());
+    REQUIRE(diags.hasErrors());
+    CHECK(diags.render(buf).find("unsupported construct: destructuring assignment") !=
+          std::string::npos);
+}

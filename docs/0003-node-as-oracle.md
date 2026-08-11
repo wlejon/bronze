@@ -90,3 +90,12 @@ cover everything stops naming what it is for.
 
 `cases/blocked/` keeps `class_basics`, which is the next thing three.js
 needs and which docs/0012 decision 5 plans out.
+
+**2026-08-11 (later still)**: `class_basics` promoted too, with
+`class_edges` added beside it for what it does not reach (an inherited
+method, a static through a subclass, one function object shared by every
+instance, a class closing over a function scope). `cases/blocked/` is
+re-seeded with the next three, chosen by what three.js writes on nearly
+every page: `default_and_rest_params`, `destructuring` and `spread`. Between
+them they are also what a derived class with no constructor needs before it
+can stop being a named error (docs/0012 decision 5).

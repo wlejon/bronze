@@ -310,7 +310,17 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
 
     Value calleeVal;
     Value thisArgVal;
-    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+    // `super.m(...)` is the one call whose callee and receiver come from
+    // different objects: the function is found on the PARENT prototype, and
+    // it runs on the current receiver (docs/0012 decision 5).
+    if (const auto* superMem = dynamic_cast<const ast::SuperMember*>(call->callee.get())) {
+        auto fnVal = lowerSuperMember(superMem, ilFn);
+        if (!fnVal) return std::nullopt;
+        auto thisVal = lowerThisValue(call->span, ilFn);
+        if (!thisVal) return std::nullopt;
+        calleeVal = boxValueIfNeeded(*fnVal, ilFn);
+        thisArgVal = boxValueIfNeeded(*thisVal, ilFn);
+    } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
         auto objVal = lowerExpr(*mem->object, ilFn);
         if (!objVal) return std::nullopt;
         thisArgVal = boxValueIfNeeded(*objVal, ilFn);

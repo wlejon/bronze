@@ -73,6 +73,17 @@ public:
         // Nested function scope assignments do not affect outer local variable SSA join
     }
 
+    void visit(const ast::SuperCall& c) override {
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+    void visit(const ast::SuperMember&) override {}
+
+    void visit(const ast::ClassDecl&) override {
+        // A class body is nothing but methods, and a method's assignments
+        // are its own scope's, exactly like a nested function's above. The
+        // binding the class introduces is handled where declarations are.
+    }
+
     void visit(const ast::BlockStmt& b) override {
         for (const auto& s : b.stmts) s->accept(*this);
     }

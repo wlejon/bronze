@@ -202,14 +202,7 @@ StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwBreak)) return parseBreak();
     if (check(TokenKind::KwContinue)) return parseContinue();
     if (check(TokenKind::KwSwitch)) return parseSwitch();
-    if (check(TokenKind::KwClass)) {
-        // Named rather than parsed: docs/0012 decision 5 has the desugaring
-        // and `cases/blocked/class_basics` holds it to it. Before the
-        // keyword existed this read as `expected ';' after expression
-        // statement, got 'C'` — a diagnostic that named nothing.
-        error("unsupported construct: class declaration");
-        return nullptr;
-    }
+    if (check(TokenKind::KwClass)) return parseClass();
     if (check(TokenKind::KwTry)) return parseTry();
     if (check(TokenKind::KwThrow)) return parseThrow();
     if (check(TokenKind::LBrace)) {
@@ -241,15 +234,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported) {
     fn->name = std::string(name->text);
 
     if (!expect(TokenKind::LParen, "'(' after function name")) return nullptr;
-    while (!check(TokenKind::RParen)) {
-        const Token* param = expect(TokenKind::Identifier, "parameter name");
-        if (!param) return nullptr;
-        Param p;
-        p.name = std::string(param->text);
-        if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
-        fn->params.push_back(std::move(p));
-        if (!match(TokenKind::Comma)) break;
-    }
+    if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
@@ -283,6 +268,10 @@ StmtPtr Parser::parseVarDecl() {
     decl->isConst = kw.kind == TokenKind::KwConst;
     decl->isVar = kw.kind == TokenKind::KwVar;
 
+    if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+        error("unsupported construct: destructuring declaration");
+        return nullptr;
+    }
     const Token* name = expect(TokenKind::Identifier, "variable name");
     if (!name) return nullptr;
     decl->name = std::string(name->text);
@@ -565,15 +554,7 @@ ExprPtr Parser::parseArrowFunction() {
         fn->params.push_back(std::move(p));
     } else {
         if (!expect(TokenKind::LParen, "'(' before arrow parameters")) return nullptr;
-        while (!check(TokenKind::RParen)) {
-            const Token* param = expect(TokenKind::Identifier, "parameter name");
-            if (!param) return nullptr;
-            Param p;
-            p.name = std::string(param->text);
-            if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
-            fn->params.push_back(std::move(p));
-            if (!match(TokenKind::Comma)) break;
-        }
+        if (!parseParams(fn->params)) return nullptr;
         if (!expect(TokenKind::RParen, "')' after arrow parameters")) return nullptr;
         if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
     }
@@ -655,9 +636,17 @@ ExprPtr Parser::parseUnaryPrefix() {
         error("unsupported construct: class expression");
         return nullptr;
     }
-    if (check(TokenKind::KwSuper)) {
-        error("unsupported construct: super (classes are not built yet)");
+    if (check(TokenKind::Ellipsis)) {
+        // A spread in a call, an array literal or an object literal. Named
+        // here because every one of those positions parses an expression,
+        // so this is the one place they all pass through.
+        error("unsupported construct: spread");
         return nullptr;
+    }
+    if (check(TokenKind::KwSuper)) {
+        auto sup = parseSuper();
+        if (!sup) return nullptr;
+        return parsePostfixOps(std::move(sup));
     }
     if (match(TokenKind::Bang)) {
         auto sub = parseUnaryPrefix();
@@ -948,6 +937,11 @@ ExprPtr Parser::parseObjectLit() {
         } else if (check(TokenKind::StringLiteral)) {
             auto sTok = advance();
             keyStr = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+        } else if (check(TokenKind::Ellipsis)) {
+            // `{ ...src }` - a spread in key position, which the property
+            // key error named as a missing identifier.
+            error("unsupported construct: spread");
+            return nullptr;
         } else {
             error("expected identifier or string literal for property key");
             return nullptr;
@@ -985,6 +979,197 @@ ExprPtr Parser::parseArrayLit() {
     return arr;
 }
 
+// One parameter list, for every function form there is - declaration,
+// expression, arrow and class method. It used to be four copies of the same
+// loop, which is four places for the diagnostics below to drift apart.
+//
+// Rest, defaults and destructuring are all ES2015 parameter syntax bronze
+// has not built; each is named here rather than reported as a missing `)`.
+bool Parser::parseParams(std::vector<ast::Param>& out) {
+    while (!check(TokenKind::RParen)) {
+        if (check(TokenKind::Ellipsis)) {
+            error("unsupported construct: rest parameter");
+            return false;
+        }
+        if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+            error("unsupported construct: destructuring parameter");
+            return false;
+        }
+        const Token* param = expect(TokenKind::Identifier, "parameter name");
+        if (!param) return false;
+        Param p;
+        p.name = std::string(param->text);
+        if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
+        if (check(TokenKind::Assign)) {
+            error("unsupported construct: default parameter value");
+            return false;
+        }
+        out.push_back(std::move(p));
+        if (!match(TokenKind::Comma)) break;
+    }
+    return true;
+}
+
+// `class Name [extends Base] { members }`. A class introduces no runtime
+// concept - it is the constructor function plus its prototype, and lowering
+// desugars it into exactly that (docs/0012 decision 5). What the parser
+// owes is the shape: which member is the constructor, which are static, and
+// which class each `super` in a body belongs to.
+//
+// Everything ES2015+ puts in a class body that bronze has not built -
+// fields, getters and setters, computed keys, generators - is diagnosed by
+// name here rather than mis-parsed as a method.
+ast::StmtPtr Parser::parseClass() {
+    const Token& kw = advance();  // 'class'
+    const Token* nameTok = expect(TokenKind::Identifier, "class name");
+    if (!nameTok) return nullptr;
+
+    auto cls = std::make_unique<ClassDecl>();
+    cls->span.begin = kw.span.begin;
+    cls->name = std::string(nameTok->text);
+
+    if (match(TokenKind::KwExtends)) {
+        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
+        if (!base) return nullptr;
+        cls->superName = std::string(base->text);
+    }
+    if (!expect(TokenKind::LBrace, "'{' to open a class body")) return nullptr;
+
+    // Every `super` inside a method belongs to THIS class, and the parser is
+    // the only place that knows which class that is.
+    const std::string savedSuper = currentClassSuper_;
+    const bool savedInMethod = inClassMethod_;
+    currentClassSuper_ = cls->superName;
+    inClassMethod_ = true;
+
+    bool ok = true;
+    while (!check(TokenKind::RBrace)) {
+        if (check(TokenKind::EndOfFile)) {
+            error("unterminated class body");
+            ok = false;
+            break;
+        }
+        if (match(TokenKind::Semicolon)) continue;  // a stray `;` between members is legal
+
+        ClassMethod member;
+        // `static` is not a reserved word: it names a member when something
+        // follows it, and is an ordinary method name in `static() {}`.
+        if (check(TokenKind::Identifier) && peek().text == "static" &&
+            peek(1).kind != TokenKind::LParen) {
+            advance();
+            member.isStatic = true;
+        }
+        if (check(TokenKind::Star)) {
+            error("unsupported construct: generator method in a class body");
+            ok = false;
+            break;
+        }
+        if (check(TokenKind::LBracket)) {
+            error("unsupported construct: computed method name in a class body");
+            ok = false;
+            break;
+        }
+        if (check(TokenKind::Identifier) && (peek().text == "get" || peek().text == "set") &&
+            peek(1).kind == TokenKind::Identifier) {
+            error("unsupported construct: class getter or setter");
+            ok = false;
+            break;
+        }
+        const Token* memberName = expect(TokenKind::Identifier, "class member name");
+        if (!memberName) {
+            ok = false;
+            break;
+        }
+        member.name = std::string(memberName->text);
+        if (!check(TokenKind::LParen)) {
+            // `x = 1;` or `x;` - a field, which runs in the constructor and
+            // is not built yet. Named rather than read as a broken method.
+            error("unsupported construct: class field (only methods are supported)");
+            ok = false;
+            break;
+        }
+        member.isConstructor = !member.isStatic && member.name == "constructor";
+
+        auto fn = std::make_unique<FunctionExpr>();
+        fn->span.begin = memberName->span.begin;
+        fn->name = cls->name + "." + member.name;
+        advance();  // '('
+        if (!parseParams(fn->params)) return nullptr;
+        if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
+        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+        fn->body = parseBlock();
+        if (diags_.hasErrors()) return nullptr;
+        fn->span.end = peek().span.begin;
+        member.fn = std::move(fn);
+        cls->methods.push_back(std::move(member));
+    }
+
+    currentClassSuper_ = savedSuper;
+    inClassMethod_ = savedInMethod;
+    if (!ok) return nullptr;
+    if (!expect(TokenKind::RBrace, "'}' to close a class body")) return nullptr;
+
+    // Lowering wants exactly one constructor, always. A base class that
+    // writes none gets an empty one, which is what the language says it
+    // has. A DERIVED class that writes none is `constructor(...args) {
+    // super(...args); }` — rest and spread, neither of which bronze has, and
+    // forwarding fewer arguments than were passed would be a wrong answer
+    // given quietly. So it is named instead.
+    bool hasCtor = false;
+    for (const auto& m : cls->methods) hasCtor = hasCtor || m.isConstructor;
+    if (!hasCtor) {
+        if (!cls->superName.empty()) {
+            error("unsupported construct: a derived class with no constructor (write one "
+                  "that calls super)");
+            return nullptr;
+        }
+        ClassMethod ctor;
+        ctor.name = "constructor";
+        ctor.isConstructor = true;
+        ctor.fn = std::make_unique<FunctionExpr>();
+        ctor.fn->name = cls->name + ".constructor";
+        ctor.fn->span = cls->span;
+        cls->methods.insert(cls->methods.begin(), std::move(ctor));
+    }
+    cls->span.end = peek().span.begin;
+    return cls;
+}
+
+// `super(...)` and `super.m` - only inside a class method, and only in a
+// class that has a parent, which is where the name they resolve against
+// comes from.
+ExprPtr Parser::parseSuper() {
+    const Token& kw = advance();  // 'super'
+    if (!inClassMethod_) {
+        error("unsupported construct: super outside a class method");
+        return nullptr;
+    }
+    if (currentClassSuper_.empty()) {
+        error("super in a class with no 'extends'");
+        return nullptr;
+    }
+    if (check(TokenKind::LParen)) {
+        advance();
+        auto call = std::make_unique<SuperCall>();
+        call->span.begin = kw.span.begin;
+        call->baseName = currentClassSuper_;
+        if (!parseArgumentList(call->args)) return nullptr;
+        call->span.end = peek().span.begin;
+        return call;
+    }
+    if (match(TokenKind::Dot)) {
+        const Token* member = expect(TokenKind::Identifier, "property name after 'super.'");
+        if (!member) return nullptr;
+        auto mem = std::make_unique<SuperMember>();
+        mem->span = {kw.span.begin, member->span.end};
+        mem->baseName = currentClassSuper_;
+        mem->property = std::string(member->text);
+        return mem;
+    }
+    error("super must be called or have a property read from it");
+    return nullptr;
+}
+
 ExprPtr Parser::parseFunctionExpr() {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionExpr>();
@@ -995,15 +1180,7 @@ ExprPtr Parser::parseFunctionExpr() {
     }
 
     if (!expect(TokenKind::LParen, "'(' after function")) return nullptr;
-    while (!check(TokenKind::RParen)) {
-        const Token* param = expect(TokenKind::Identifier, "parameter name");
-        if (!param) return nullptr;
-        Param p;
-        p.name = std::string(param->text);
-        if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
-        fn->params.push_back(std::move(p));
-        if (!match(TokenKind::Comma)) break;
-    }
+    if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 

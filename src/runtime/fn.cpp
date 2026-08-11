@@ -13,6 +13,7 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->code = code;
     fn->env_record = env_record;
     fn->prototype = Value::fromUndefined();
+    fn->properties = Value::fromUndefined();
     fn->instance_shape = nullptr;
     fn->arity = arity;
     return fn;

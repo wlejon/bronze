@@ -1,7 +1,7 @@
 # 0012 — Syntax growth: template literals, for-of, arrows, classes
 
-Status: template literals, for-of and arrow functions landed 2026-08-11;
-classes designed here and not yet built. This is the second half of phase 4
+Status: template literals, for-of, arrow functions and classes all landed
+2026-08-11. This is the second half of phase 4
 of docs/0001. docs/0011 covers the other half (the globals and the prototype
 methods); the split is deliberate — that doc is about what a program can
 *call*, this one is about what it can *write*.
@@ -112,46 +112,98 @@ writes that shape constantly.
 
 ## Decision 5 — classes are sugar over what docs/0008 already built
 
-**Not built yet. This is the plan the `class_basics` blocked case holds the
-compiler to.**
+docs/0008 already had constructor functions, `prototype` objects, the proto
+chain, `new`, and `this`. A class therefore introduces no new runtime
+concept: it is desugared in lowering, and everything below is something a
+program could have written by hand.
 
-docs/0008 already has constructor functions, `prototype` objects, the proto
-chain, `new`, and `this`. A `class` declaration therefore introduces no new
-runtime concept — it is desugared in lowering:
+- `class C { constructor(a) { ... } }` becomes the constructor function `C`,
+  and the declaration binds that function to the name. A class that writes
+  no constructor gets an empty one, synthesized in the PARSER, so lowering
+  always sees exactly one.
+- each method becomes a closure stored on `C.prototype`, which is read once
+  per class and written to with the ordinary property path — so a method is
+  one function object shared by every instance, and an inline cache treats
+  `p.sum()` like any other property read.
+- a `static` member is stored on the constructor function itself
+  (decision 6).
+- `extends B` is one instruction, `class.extend`, because both links have to
+  be made together and BEFORE any method is stored: it replaces
+  `C.prototype` with a fresh object whose proto is `B.prototype` (the
+  prototype lives on the shape, docs/0004, so it is replaced rather than
+  mutated), and links C's static properties to B's.
+- `super(...)` is a dynamic call of the parent constructor with the CURRENT
+  receiver — not a `new`. There is one object; the parent is only being
+  given its chance to initialize it.
+- `super.m()` reads `m` from the parent's prototype and calls it with the
+  current receiver. Both halves matter: `this.m()` inside an override would
+  find the override again and recurse forever, and calling the parent's
+  function without the current receiver would initialize nothing.
 
-- `class C { constructor(a) { ... } }` becomes the constructor function `C`.
-  A class with no constructor gets an empty one (or, under `extends`, one
-  that forwards its arguments to `super`).
-- each method becomes a function stored on `C.prototype`, non-enumerable in
-  the language and — until docs/0009 grows property attributes — stored the
-  same way an ordinary assignment stores it, which the enumeration-order
-  case must be extended to cover before classes promote.
-- `static` members are stored on `C` itself.
-- `extends B` links `C.prototype`'s proto to `B.prototype` and `C`'s proto
-  to `B`, so static members inherit too.
-- `super(...)` is a call of the parent constructor with the current `this`;
-  `super.m()` is a lookup starting at the parent prototype but called with
-  the current `this`. Both need the *home object* of the enclosing method,
-  which is the one genuinely new piece of state — it is a compile-time
-  constant per method, not a runtime lookup.
-- a field initializer (`x = 1` in the class body) runs at the top of the
-  constructor, in source order, after `super()`.
+The parent's name is resolved by the PARSER, from the class the method is
+written in, and stored on the `super` node. That is what makes `super` a
+compile-time constant rather than a runtime home-object lookup — and also
+what makes the parent visible to capture analysis, which would otherwise see
+a method body that mentions no such variable.
 
-What is deliberately out: private `#names`, getters and setters (they need
-property attributes first), computed method keys, and decorators. Each stays
-a named error.
+A method that never writes `this` still needs a receiver if it uses `super`,
+because both super forms run on the current one. Missing that made
+`super.describe()` report `this` outside a function.
+
+What is deliberately out, each a named error: class fields (`x = 1` in the
+body), getters and setters (they need property attributes first), computed
+method keys, generator methods, private `#names`, class expressions, and a
+DERIVED class with no constructor — that one desugars to
+`constructor(...args) { super(...args); }`, and bronze has neither rest nor
+spread, so forwarding fewer arguments than were passed would be a wrong
+answer given quietly.
+
+## Decision 6 — a function object carries its own properties
+
+`class C { static m() {} }` stores `m` on the constructor function, and
+before this a property write on a function object other than `prototype` was
+a hard error ("unsupported until functions carry shapes"). Rather than give
+every function a shape and slots, a function gets one more field: an
+ordinary object holding its own properties, created on first demand exactly
+as its `.prototype` is. A function that never receives a static member pays
+nothing.
+
+Static INHERITANCE then falls out with no extra mechanism: `class.extend`
+gives the derived function's property object a prototype link to the base
+function's, and the ordinary chain walk finds `B.make()` through `D`.
+
+The read path is `prototype` first, then the property object, then the
+unimplemented-member table — so `Function.prototype.call`, `bind` and
+`length` stay named errors rather than becoming `undefined` now that a
+function can answer property reads.
 
 ## Named diagnostics
 
 - `for-of over a value that is not an array, string or typed array` —
   decision 2, at runtime, for an iterable bronze cannot walk.
-- `unsupported construct: class declaration` / `class expression` /
-  `super (classes are not built yet)` — decision 5, until it lands. `class`,
-  `extends` and `super` are lexed as keywords for exactly this: before them
-  a class body reported a missing semicolon and named nothing. `static` is
-  deliberately NOT a keyword — it is not reserved in JavaScript, and taking
-  it would break `obj.static`.
+- `unsupported construct: class field` / `class getter or setter` /
+  `computed method name in a class body` / `generator method in a class
+  body` / `class expression` / `a derived class with no constructor (write
+  one that calls super)` — decision 5's exclusions, each named at the member
+  that spells it. `class`, `extends` and `super` are lexed as keywords for
+  exactly this: before them a class body reported a missing semicolon and
+  named nothing. `static` is deliberately NOT a keyword — it is not reserved
+  in JavaScript, and taking it would break `obj.static`.
+- `unsupported construct: super outside a class method` and `super in a
+  class with no 'extends'` — the two places the parser can see that a
+  `super` has nothing to resolve against.
+- `a class can only extend another class or a constructor function` —
+  decision 5, at runtime, for `class C extends 5`.
 - `unsupported construct: tagged template literal` — the tag form is not
   decision 1's cooked-pieces path and is not built.
+- `unsupported construct: default parameter value` / `rest parameter` /
+  `destructuring parameter` / `destructuring declaration` /
+  `destructuring assignment` / `spread` — the ES2015 syntax the re-seeded
+  blocked cases describe. `...` is lexed as ONE token so the parser can name
+  it at all: as three dots it read as a property access of nothing. The
+  parameter forms are named in one shared `parseParams`, which replaced four
+  copies of the same loop — four places for these to drift apart. A
+  destructuring ASSIGNMENT is the one form the parser cannot see, because
+  both sides are ordinary expressions until the `=`, so lowering names it.
 - `unsupported construct: for-in loop`, `switch statement`,
   `try/catch/throw`, `delete` — unchanged, and still the phase-4 backlog.

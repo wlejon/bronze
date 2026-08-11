@@ -50,6 +50,7 @@ const char* opName(Op op) {
         case Op::CreateObject: return "create.object";
         case Op::ObjectKeys: return "object.keys";
         case Op::GlobalGet: return "global.get";
+        case Op::ClassExtend: return "class.extend";
         case Op::IterLength: return "iter.length";
         case Op::IterAt: return "iter.at";
         case Op::IterAdvance: return "iter.advance";
@@ -217,6 +218,7 @@ std::string print(const Module& module) {
                         out += "iter.length %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
+                    case Op::ClassExtend:
                     case Op::IterAt:
                     case Op::IterAdvance:
                         out += std::string(opName(inst.op)) + " %" +

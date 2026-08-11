@@ -118,6 +118,25 @@ struct NewExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `super(...)` — the parent constructor run on the current receiver, and
+// `super.m` — a lookup that starts at the parent prototype but is called
+// with the current receiver. Both carry the parent class's NAME, resolved
+// by the parser from the enclosing class: the home object is a compile-time
+// constant per method, not a runtime lookup (docs/0012 decision 5). Carrying
+// the name is also what makes the parent visible to capture analysis, which
+// otherwise sees a method body that mentions no such variable.
+struct SuperCall final : Expr {
+    std::string baseName;
+    std::vector<ExprPtr> args;
+    void accept(Visitor& v) const override;
+};
+
+struct SuperMember final : Expr {
+    std::string baseName;
+    std::string property;
+    void accept(Visitor& v) const override;
+};
+
 // ---- Statements / declarations ---------------------------------------------
 
 struct Stmt : Node {};
@@ -250,6 +269,27 @@ struct ThrowStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+// One method of a class body. The function itself is an ordinary
+// `FunctionExpr`, so everything that already reasons about a closure —
+// capture analysis, `this`, inference's nested-function pass — reaches a
+// method without a second code path.
+struct ClassMethod {
+    std::string name;
+    bool isStatic = false;
+    bool isConstructor = false;
+    std::unique_ptr<FunctionExpr> fn;
+};
+
+// A class is the constructor function plus its prototype (docs/0008); this
+// node holds what lowering needs to build that, and introduces no runtime
+// concept of its own (docs/0012 decision 5).
+struct ClassDecl final : Stmt {
+    std::string name;
+    std::string superName;  // empty when the class has no `extends`
+    std::vector<ClassMethod> methods;
+    void accept(Visitor& v) const override;
+};
+
 struct FunctionDecl final : Stmt {
     bool isExported = false;
     std::string name;
@@ -288,6 +328,8 @@ public:
     // visitors get the correct Call-style behavior without an override.
     // Visitors that render or transform the node must override it.
     virtual void visit(const NewExpr&) = 0;
+    virtual void visit(const SuperCall&) = 0;
+    virtual void visit(const SuperMember&) = 0;
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;
     virtual void visit(const FunctionExpr&) = 0;
@@ -306,6 +348,7 @@ public:
     virtual void visit(const ForOfStmt&) = 0;
     virtual void visit(const TryStmt&) = 0;
     virtual void visit(const ThrowStmt&) = 0;
+    virtual void visit(const ClassDecl&) = 0;
     virtual void visit(const FunctionDecl&) = 0;
     virtual void visit(const Module&) = 0;
 };

@@ -1,5 +1,5 @@
-// Classes. `class` is not even a keyword today, so this is a parse error.
-// A class is the constructor function plus its prototype (docs/0008), so
+// Classes. A class is the constructor function plus its prototype
+// (docs/0008), desugared in lowering (docs/0012 decision 5), so
 // what has to work is: methods shared by every instance, `new`, a static
 // member on the constructor itself, extends wiring the prototype chain,
 // super(...) running the parent constructor on the same instance, and

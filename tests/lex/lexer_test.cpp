@@ -102,3 +102,25 @@ TEST_CASE("a template literal lexes as a sequence, not one token") {
 
     lexAll("`unterminated", /*expectErrors=*/true);
 }
+
+TEST_CASE("`...` lexes as one token, not three dots") {
+    // Rest and spread are the only things it spells, and the parser can
+    // only name them if it sees them as one token.
+    DiagnosticSink diags;
+    SourceBuffer buf("t.js", "f(...a);");
+    const auto tokens = Lexer(buf, diags).lex();
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(tokens.size() > 3);
+    CHECK(tokens[2].kind == TokenKind::Ellipsis);
+    CHECK(tokens[2].text == "...");
+    CHECK(tokens[3].kind == TokenKind::Identifier);
+}
+
+TEST_CASE("a single dot is still a dot") {
+    DiagnosticSink diags;
+    SourceBuffer buf("t.js", "a.b;");
+    const auto tokens = Lexer(buf, diags).lex();
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(tokens.size() > 2);
+    CHECK(tokens[1].kind == TokenKind::Dot);
+}
