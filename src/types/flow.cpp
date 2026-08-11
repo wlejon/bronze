@@ -272,6 +272,15 @@ private:
         facts_.statements[slot].changes = std::move(changes);
     }
 
+    // The join a merge point produced, keyed by the statement that owns it.
+    // Recorded only on the final walk, like every other side-table entry, so
+    // a probe pass's half-converged environment can never be what lowering
+    // reads (`InferenceResult::typeOfBindingAt` is the contract).
+    void recordMerge(const ast::Stmt& mergePoint, const Env& env) {
+        if (!record_) return;
+        mod_.result->mergeBindings[&mergePoint] = env;
+    }
+
     void fail(Span span, const std::string& what) {
         if (mod_.failed) return;
         mod_.failed = true;
@@ -339,7 +348,7 @@ private:
             LoopParts parts;
             parts.condition = w->condition.get();
             parts.body = &w->body;
-            analyzeLoop(parts, depth, s.span);
+            analyzeLoop(parts, depth, s);
             return;
         }
         if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(&s)) {
@@ -347,7 +356,7 @@ private:
             parts.condition = d->condition.get();
             parts.body = &d->body;
             parts.conditionFirst = false;
-            analyzeLoop(parts, depth, s.span);
+            analyzeLoop(parts, depth, s);
             return;
         }
         if (const auto* f = dynamic_cast<const ast::ForStmt*>(&s)) {
@@ -364,7 +373,7 @@ private:
             parts.condition = f->condition.get();
             parts.body = &f->body;
             parts.update = f->update.get();
-            analyzeLoop(parts, depth, s.span);
+            analyzeLoop(parts, depth, s);
             restoreDeclarations(saved);
             return;
         }
@@ -407,13 +416,15 @@ private:
             scopedStmtList(i.elseBody, depth + 2);
         }
         scope_.env = joinEnv(thenEnv, scope_.env);
+        recordMerge(i, scope_.env);
     }
 
     // One structured loop. The header environment is the join of the loop's
     // entry, the end of the body, and every `continue`; iterate until it
     // stops moving. Probe iterations never record, so the dump gets the body
     // exactly once, from a final run over the converged header.
-    void analyzeLoop(const LoopParts& parts, uint32_t depth, Span span) {
+    void analyzeLoop(const LoopParts& parts, uint32_t depth, const ast::Stmt& stmt) {
+        const Span span = stmt.span;
         Env header = scope_.env;
         bool converged = false;
         for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
@@ -438,6 +449,14 @@ private:
         // leave from anywhere inside, so those merge in separately.
         Env exit = header;
         for (const Env& e : loopBreaks_) exit = joinEnv(exit, e);
+        // One recorded answer for every merge this loop builds. `exit`
+        // subsumes the converged header (it is that header joined with the
+        // `break` environments), and the header in turn subsumes the entry
+        // edge, the end of the body and every `continue` — so this is an
+        // upper bound of every edge into the header, the update/condition
+        // block and the exit block alike. Lowering needs exactly that: it
+        // types the header's parameters before it has lowered the back edge.
+        recordMerge(stmt, exit);
         scope_.env = std::move(exit);
     }
 

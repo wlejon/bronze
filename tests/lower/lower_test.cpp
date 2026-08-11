@@ -199,3 +199,68 @@ TEST_CASE("undefined variable reference generates diagnostic error") {
     const std::string rendered = diags.render(buf);
     CHECK(rendered.find("undefined variable: x") != std::string::npos);
 }
+
+TEST_CASE("loop-carried bindings are dynamic when nothing proves otherwise") {
+    // These tests lower with no inference result, which is exactly the
+    // `--no-infer` path (docs/0010 decision 8). A loop header's block
+    // parameters have to be an upper bound of every edge into the header,
+    // and the back edge is not lowered yet — so with nothing proven the
+    // only sound parameter type is `dynamic`. Taking the type of whatever
+    // value was live at loop *entry* instead is a claim that the loop
+    // cannot change the binding's type, and this loop does: it compiled
+    // into an unbox of a string as a double.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "let x = 1;\n"
+        "let c = true;\n"
+        "while (c) { x = \"s\"; c = false; }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("b1(%2: dynamic, %3: dynamic):") != std::string::npos);
+    // The entry edge boxes into the header rather than the back edge
+    // unboxing into it.
+    CHECK(printed.find("box.f64 %0") != std::string::npos);
+    CHECK(printed.find("unbox.f64") == std::string::npos);
+}
+
+TEST_CASE("a module function's return type is settled before any body is lowered") {
+    // Mutual recursion: whichever body is lowered first calls a function
+    // whose body has not been lowered. If the callee's return type were
+    // still being discovered from its first `return`, the call site would
+    // read `void` — "returns nothing" — and emit a `ret` of a value that
+    // does not exist. With no inference the sound answer is the uniform
+    // dynamic convention.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function isEven(n) { if (n === 0) { return true; } return isOdd(n - 1); }\n"
+        "function isOdd(n) { if (n === 0) { return false; } return isEven(n - 1); }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func isEven(%0: dynamic) -> dynamic") != std::string::npos);
+    CHECK(printed.find("func isOdd(%0: dynamic) -> dynamic") != std::string::npos);
+    CHECK(printed.find("4294967295") == std::string::npos);
+}
+
+TEST_CASE("a function returning two types returns dynamic, not its first return's type") {
+    // First-return-wins made the rest of the returns unbox into it, so
+    // `return "s"` read a string pointer as a double.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function f(c) { if (c) { return 1; } return \"s\"; }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func f(%0: dynamic) -> dynamic") != std::string::npos);
+    CHECK(printed.find("unbox.f64") == std::string::npos);
+}

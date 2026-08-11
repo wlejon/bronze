@@ -55,4 +55,16 @@ std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*
 bool usesThis(const std::vector<StmtPtr>& stmts);
 bool usesThis(const std::vector<const Stmt*>& stmts);
 
+// Does this function body contain a `return <expr>;`? Like `usesThis`, it
+// does NOT descend into nested functions: an inner `return` returns from
+// that function.
+//
+// Lowering needs this BEFORE it lowers any body, because a function's IL
+// return type is part of its calling convention and its callers are lowered
+// first — a mutually recursive pair has each caller reading the other's
+// return type while that other body is still unlowered. "Has a value
+// return" is the one thing about the answer that a single syntactic look
+// can settle, and `dynamic` is the sound type for the rest.
+bool returnsAValue(const std::vector<StmtPtr>& stmts);
+
 }  // namespace bronze::ast

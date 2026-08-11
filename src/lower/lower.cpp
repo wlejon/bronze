@@ -62,6 +62,26 @@ std::optional<il::Module> Lowerer::lower() {
             // declarations, which is exactly how inference numbers them.
             const uint32_t moduleFnIndex = static_cast<uint32_t>(ilModule_.functions.size());
             if (!applyProvenSignature(*fnDecl, moduleFnIndex, fn)) return std::nullopt;
+            // Every module function's return type is settled here, before
+            // ANY body is lowered, because it is part of the calling
+            // convention: `lowerCall` reads it off this entry, and for
+            // mutual recursion it reads it while the callee's body is still
+            // unlowered. Left to `lowerReturnStmt` to discover from the
+            // first `return` it happens to reach, that read finds `Void` —
+            // "returns nothing" — and the caller emits `ret` of a value
+            // that does not exist, which the IL verifier rejects.
+            //
+            // Inference may already have pinned something better (an f64
+            // return for a direct-callable function). What is left is a
+            // function whose callers are unknown, and the sound convention
+            // for those is the uniform dynamic one: `dynamic` if the body
+            // can return a value at all, `void` if it demonstrably cannot.
+            // That also retires first-return-wins, which was a live
+            // miscompile of its own — `return 1; ... return "s"` unboxed a
+            // string pointer as a double.
+            if (fn.returnType == il::Type::Void && ast::returnsAValue(fnDecl->body)) {
+                fn.returnType = il::Type::Dynamic;
+            }
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));

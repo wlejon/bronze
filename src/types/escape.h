@@ -17,8 +17,8 @@ namespace bronze::types {
 // keeps the uniform dynamic convention. The test is deliberately blunt; the
 // point is that it is obviously sound, not that it is tight.
 //
-// Two positions are counted as escapes that a purely syntactic reading might
-// not expect, both for soundness:
+// Three positions are counted as escapes that a purely syntactic reading
+// might not expect, all for soundness:
 //
 //   - `new F()`: a constructor call binds `this` and yields an object, so
 //     the specialized direct-call convention does not describe it.
@@ -26,6 +26,11 @@ namespace bronze::types {
 //     parameter, a `let`, a nested function declaration). Such a binding
 //     shadows the module function, so a call through that name is not a call
 //     to the module function at all.
+//   - `export function f`. The escape set is about *callers*, and an export
+//     is a caller this compilation cannot see, so no join over the call
+//     sites it can see is a proof. This is a property of the declaration
+//     rather than of a reference to it, which is why it is tested here and
+//     not in the walker.
 std::set<std::string> escapingNames(const ast::Module& module);
 
 }  // namespace bronze::types

@@ -121,6 +121,7 @@ private:
     static il::Type ilTypeOf(types::Type t);
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
+    il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
@@ -172,9 +173,22 @@ private:
     bool lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn);
 
     // --- lower_control.cpp: control flow, block-argument SSA (docs/0005) -
+    // One loop variable and the type every block parameter standing for it
+    // takes — header, exit, and the update/condition join alike, because
+    // the analysis proves one type covering all of them.
+    struct LoopParam {
+        std::string name;
+        il::Type type = il::Type::Dynamic;
+    };
     std::vector<il::ValueId> collectEdgeArgs(const std::vector<std::string>& vars,
                                              il::BlockId target, il::Function& ilFn);
     std::vector<std::string> getActiveVarsInDeclOrder() const;
+    std::vector<LoopParam> collectLoopParams(const ast::Stmt& loopStmt,
+                                             const std::unordered_set<std::string>& assigned);
+    std::unordered_map<std::string, il::ValueId> addLoopBlockParams(
+        const std::vector<LoopParam>& loopParams, il::BlockId block, il::Function& ilFn);
+    void bindLoopBlockParams(const std::vector<LoopParam>& loopParams,
+                             const std::unordered_map<std::string, il::ValueId>& paramOf);
     bool lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn);
     bool lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn);
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);

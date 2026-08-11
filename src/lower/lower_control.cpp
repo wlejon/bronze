@@ -24,6 +24,65 @@ std::vector<il::ValueId> Lowerer::collectEdgeArgs(const std::vector<std::string>
     return args;
 }
 
+// The parameters a loop's header, exit, and update/condition blocks all
+// take: one per variable assigned anywhere in the loop, in declaration
+// order (docs/0005 decision 2), typed by what inference proved holds at the
+// loop's merges.
+//
+// The type comes from the analysis and never from the value live at loop
+// entry. The entry value's type describes one edge; a block parameter has
+// to describe all of them, and the back edge — which has not been lowered
+// yet, and which is exactly where a binding's type changes — is one of
+// them. Reading the entry value here is what compiled
+// `let x = 1; while (c) { x = "s"; }` into an unbox of a string as a
+// double. With no inference every parameter is dynamic, which is the sound
+// answer for "the back edge could carry anything".
+std::vector<Lowerer::LoopParam> Lowerer::collectLoopParams(
+    const ast::Stmt& loopStmt, const std::unordered_set<std::string>& assigned) {
+    std::vector<LoopParam> params;
+    for (const auto& name : getActiveVarsInDeclOrder()) {
+        if (!assigned.contains(name)) continue;
+        // Becoming a loop parameter means being read on the entry edge, and
+        // an annotated `let x: number;` has no value to read there —
+        // undefined has no typed form (see lowerVarDecl). Diagnosed here by
+        // name, like every other read before initialization (docs/0005),
+        // rather than left to emit an edge argument that does not exist.
+        const VarBinding& b = varBindings_[activeVarMap_[name]];
+        if (!b.isInitialized) {
+            diags_.error(loopStmt.span, std::string("use of '") + (b.isConst ? "const" : "let") +
+                                            "' binding '" + name +
+                                            "' before initialization (it is carried into the "
+                                            "loop on the entry edge)");
+            continue;
+        }
+        params.push_back(LoopParam{name, mergeParamType(loopStmt, name)});
+    }
+    return params;
+}
+
+// Add one block parameter per loop variable, fresh value ids from the
+// function-wide counter, and report the ids in the same order.
+std::unordered_map<std::string, il::ValueId> Lowerer::addLoopBlockParams(
+    const std::vector<LoopParam>& loopParams, il::BlockId block, il::Function& ilFn) {
+    std::unordered_map<std::string, il::ValueId> paramOf;
+    for (const auto& param : loopParams) {
+        il::ValueId pId = ilFn.valueCount++;
+        ilFn.blocks[block].params.push_back({pId, param.type});
+        paramOf[param.name] = pId;
+    }
+    return paramOf;
+}
+
+// Point each loop variable at the parameter the block just entered defines.
+void Lowerer::bindLoopBlockParams(const std::vector<LoopParam>& loopParams,
+                                  const std::unordered_map<std::string, il::ValueId>& paramOf) {
+    for (const auto& param : loopParams) {
+        auto& b = varBindings_[activeVarMap_[param.name]];
+        b.valueId = paramOf.at(param.name);
+        b.type = param.type;
+    }
+}
+
 // Env-backed variables are memory, not SSA, so they never become join
 // or loop-header parameters. This is the single funnel every join uses.
 std::vector<std::string> Lowerer::getActiveVarsInDeclOrder() const {
@@ -150,7 +209,13 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
         il::ValueId pId = ilFn.valueCount++;
         il::Type tThen = stateThenEnd.at(name).type;
         il::Type tElse = stateElseEnd.at(name).type;
-        il::Type pType = (tThen == tElse) ? tThen : il::Type::Dynamic;
+        // Both edges into this join are already lowered, so when they agree
+        // their common type is itself the proof that the parameter can have
+        // it — no inference needed, which is what keeps `--no-infer` from
+        // boxing an if/else that never changes a binding's type. When they
+        // disagree only a proof can license anything but `Dynamic`, and the
+        // proof is the analysis's type at this merge.
+        il::Type pType = (tThen == tElse) ? tThen : mergeParamType(*ifStmt, name);
         ilFn.blocks[bJoin].params.push_back({pId, pType});
         joinParamMap[name] = pId;
         joinParamType[name] = pType;
@@ -184,59 +249,34 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
 }
 
 bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn) {
-    auto assignedSet = getAssignedVariables(*whileStmt);
-    std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+    const auto loopParams = collectLoopParams(*whileStmt, getAssignedVariables(*whileStmt));
     std::vector<std::string> loopVars;
-    for (const auto& name : activeNames) {
-        if (assignedSet.contains(name)) {
-            loopVars.push_back(name);
-        }
-    }
+    for (const auto& param : loopParams) loopVars.push_back(param.name);
 
     il::BlockId bHeader = createBlock(ilFn);
     il::BlockId bBody = createBlock(ilFn);
     il::BlockId bExit = createBlock(ilFn);
 
-    // Jump to header from current block
+    // Header params, then the entry edge into them: the entry values are
+    // coerced to the parameter types like every other edge's.
+    auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
+
     il::Instruction jmpEntry;
     jmpEntry.op = il::Op::Jump;
     jmpEntry.type = il::Type::Void;
     jmpEntry.result = il::kNoValue;
-    std::vector<il::ValueId> entryArgs;
-    for (const auto& name : loopVars) {
-        entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
-    }
-    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+    jmpEntry.target =
+        il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
     emitInst(ilFn, jmpEntry);
 
-    // Header params
-    il::Block& headerBlock = ilFn.blocks[bHeader];
-    std::unordered_map<std::string, il::ValueId> headerParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        headerBlock.params.push_back({pId, vType});
-        headerParamMap[name] = pId;
-    }
-
     setCurrentBlock(bHeader);
-    for (const auto& name : loopVars) {
-        varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
-    }
+    bindLoopBlockParams(loopParams, headerParamMap);
 
     Value condVal = lowerCondition(*whileStmt->condition, ilFn);
 
-    // Exit params
-    il::Block& exitBlock = ilFn.blocks[bExit];
-    std::unordered_map<std::string, il::ValueId> exitParamMap;
-    std::vector<il::ValueId> headerExitArgs;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        exitBlock.params.push_back({pId, vType});
-        exitParamMap[name] = pId;
-        headerExitArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
-    }
+    // Exit params, and the header's own exit edge into them.
+    auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
+    std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
 
     il::Instruction brInst;
     brInst.op = il::Op::Branch;
@@ -269,74 +309,37 @@ bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn
     }
 
     setCurrentBlock(bExit);
-    for (size_t i = 0; i < loopVars.size(); ++i) {
-        auto& b = varBindings_[activeVarMap_[loopVars[i]]];
-        b.valueId = exitParamMap[loopVars[i]];
-        b.type = ilFn.blocks[bExit].params[i].type;
-    }
+    bindLoopBlockParams(loopParams, exitParamMap);
     return true;
 }
 
 bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn) {
-    auto assignedSet = getAssignedVariables(*doWhileStmt);
-    std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+    const auto loopParams = collectLoopParams(*doWhileStmt, getAssignedVariables(*doWhileStmt));
     std::vector<std::string> loopVars;
-    for (const auto& name : activeNames) {
-        if (assignedSet.contains(name)) {
-            loopVars.push_back(name);
-        }
-    }
+    for (const auto& param : loopParams) loopVars.push_back(param.name);
 
     il::BlockId bHeader = createBlock(ilFn);
     il::BlockId bCond = createBlock(ilFn);
     il::BlockId bExit = createBlock(ilFn);
 
-    // Entry jump
+    // Header params, then the entry edge into them.
+    auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
+
     il::Instruction jmpEntry;
     jmpEntry.op = il::Op::Jump;
     jmpEntry.type = il::Type::Void;
     jmpEntry.result = il::kNoValue;
-    std::vector<il::ValueId> entryArgs;
-    for (const auto& name : loopVars) {
-        entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
-    }
-    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+    jmpEntry.target =
+        il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
     emitInst(ilFn, jmpEntry);
 
-    // Header params
-    il::Block& headerBlock = ilFn.blocks[bHeader];
-    std::unordered_map<std::string, il::ValueId> headerParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        headerBlock.params.push_back({pId, vType});
-        headerParamMap[name] = pId;
-    }
-
     setCurrentBlock(bHeader);
-    for (const auto& name : loopVars) {
-        varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
-    }
+    bindLoopBlockParams(loopParams, headerParamMap);
 
-    // Exit params
-    il::Block& exitBlock = ilFn.blocks[bExit];
-    std::unordered_map<std::string, il::ValueId> exitParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        exitBlock.params.push_back({pId, vType});
-        exitParamMap[name] = pId;
-    }
-
+    auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
     // The condition block joins the body fall-through and continue
     // edges, so it takes the loop variables as parameters.
-    std::unordered_map<std::string, il::ValueId> condParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        ilFn.blocks[bCond].params.push_back({pId, vType});
-        condParamMap[name] = pId;
-    }
+    auto condParamMap = addLoopBlockParams(loopParams, bCond, ilFn);
 
     loopStack_.push_back(LoopContext{bHeader, bCond, bExit, loopVars});
     enterScope(doWhileStmt->body, ilFn);
@@ -357,11 +360,7 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
     }
 
     setCurrentBlock(bCond);
-    for (size_t i = 0; i < loopVars.size(); ++i) {
-        auto& b = varBindings_[activeVarMap_[loopVars[i]]];
-        b.valueId = condParamMap[loopVars[i]];
-        b.type = ilFn.blocks[bCond].params[i].type;
-    }
+    bindLoopBlockParams(loopParams, condParamMap);
     Value condVal = lowerCondition(*doWhileStmt->condition, ilFn);
 
     std::vector<il::ValueId> condBackArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
@@ -377,11 +376,7 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
     emitInst(ilFn, brInst);
 
     setCurrentBlock(bExit);
-    for (size_t i = 0; i < loopVars.size(); ++i) {
-        auto& b = varBindings_[activeVarMap_[loopVars[i]]];
-        b.valueId = exitParamMap[loopVars[i]];
-        b.type = ilFn.blocks[bExit].params[i].type;
-    }
+    bindLoopBlockParams(loopParams, exitParamMap);
     return true;
 }
 
@@ -407,58 +402,31 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
         if (!lowerStmt(*forStmt->init, ilFn)) return false;
     }
 
-    auto assignedSet = getAssignedVariables(*forStmt);
-    std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
+    const auto loopParams = collectLoopParams(*forStmt, getAssignedVariables(*forStmt));
     std::vector<std::string> loopVars;
-    for (const auto& name : activeNames) {
-        if (assignedSet.contains(name)) {
-            loopVars.push_back(name);
-        }
-    }
+    for (const auto& param : loopParams) loopVars.push_back(param.name);
 
     il::BlockId bHeader = createBlock(ilFn);
     il::BlockId bBody = createBlock(ilFn);
     il::BlockId bUpdate = createBlock(ilFn);
     il::BlockId bExit = createBlock(ilFn);
 
-    // Entry jump
+    // Header params, then the entry edge into them.
+    auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
+
     il::Instruction jmpEntry;
     jmpEntry.op = il::Op::Jump;
     jmpEntry.type = il::Type::Void;
     jmpEntry.result = il::kNoValue;
-    std::vector<il::ValueId> entryArgs;
-    for (const auto& name : loopVars) {
-        entryArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
-    }
-    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
+    jmpEntry.target =
+        il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
     emitInst(ilFn, jmpEntry);
 
-    // Header params
-    il::Block& headerBlock = ilFn.blocks[bHeader];
-    std::unordered_map<std::string, il::ValueId> headerParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        headerBlock.params.push_back({pId, vType});
-        headerParamMap[name] = pId;
-    }
-
     setCurrentBlock(bHeader);
-    for (const auto& name : loopVars) {
-        varBindings_[activeVarMap_[name]].valueId = headerParamMap[name];
-    }
+    bindLoopBlockParams(loopParams, headerParamMap);
 
-    // Exit params
-    il::Block& exitBlock = ilFn.blocks[bExit];
-    std::unordered_map<std::string, il::ValueId> exitParamMap;
-    std::vector<il::ValueId> headerExitArgs;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        exitBlock.params.push_back({pId, vType});
-        exitParamMap[name] = pId;
-        headerExitArgs.push_back(varBindings_[activeVarMap_[name]].valueId);
-    }
+    auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
+    std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
 
     if (forStmt->condition) {
         Value condVal = lowerCondition(*forStmt->condition, ilFn);
@@ -481,13 +449,7 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 
     // The update block joins the body fall-through and continue
     // edges, so it takes the loop variables as parameters.
-    std::unordered_map<std::string, il::ValueId> updateParamMap;
-    for (const auto& name : loopVars) {
-        il::ValueId pId = ilFn.valueCount++;
-        il::Type vType = varBindings_[activeVarMap_[name]].type;
-        ilFn.blocks[bUpdate].params.push_back({pId, vType});
-        updateParamMap[name] = pId;
-    }
+    auto updateParamMap = addLoopBlockParams(loopParams, bUpdate, ilFn);
 
     // Body
     setCurrentBlock(bBody);
@@ -511,11 +473,7 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 
     // Update
     setCurrentBlock(bUpdate);
-    for (size_t i = 0; i < loopVars.size(); ++i) {
-        auto& b = varBindings_[activeVarMap_[loopVars[i]]];
-        b.valueId = updateParamMap[loopVars[i]];
-        b.type = ilFn.blocks[bUpdate].params[i].type;
-    }
+    bindLoopBlockParams(loopParams, updateParamMap);
     if (forStmt->update) {
         if (!lowerExpr(*forStmt->update, ilFn)) return false;
     }
@@ -528,11 +486,7 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     emitInst(ilFn, backJmp);
 
     setCurrentBlock(bExit);
-    for (size_t i = 0; i < loopVars.size(); ++i) {
-        auto& b = varBindings_[activeVarMap_[loopVars[i]]];
-        b.valueId = exitParamMap[loopVars[i]];
-        b.type = ilFn.blocks[bExit].params[i].type;
-    }
+    bindLoopBlockParams(loopParams, exitParamMap);
     exitScope();
     return true;
 }

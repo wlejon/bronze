@@ -6,7 +6,10 @@
 // never hang the suite.
 //
 // Ratchet rules: expectations are never edited to match bronze; a
-// cases/blocked/ entry that builds and matches must be promoted to cases/.
+// cases/blocked/ entry that builds and matches must be promoted to cases/;
+// and every case is compiled and run BOTH with inference and with
+// `--no-infer`, both of which must produce the pinned bytes (docs/0010
+// decision 8).
 
 #include <algorithm>
 #include <cstdio>
@@ -173,25 +176,37 @@ TEST_CASE("Oracle differential test suite") {
             REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
                             ("Missing pinned expectation " + expectedPath.string()).c_str());
 
-            std::filesystem::path exePath =
-                std::filesystem::temp_directory_path() / (casePath.stem().string() + "_oracle.exe");
-            std::error_code ec;
-            std::filesystem::remove(exePath, ec);
+            // Every case runs twice: with inference and with it switched
+            // off. Both must produce the same pinned bytes, which is what
+            // makes `--no-infer` a ratchet rather than a comfort blanket
+            // (docs/0010 decision 8) — a case only inference gets right
+            // means the no-inference path is unsound, and a case only
+            // `--no-infer` gets right means inference is.
+            for (const bool infer : {true, false}) {
+                const std::string mode = infer ? " (inference on)" : " (--no-infer)";
+                std::filesystem::path exePath =
+                    std::filesystem::temp_directory_path() /
+                    (casePath.stem().string() + (infer ? "_oracle.exe" : "_oracle_noinfer.exe"));
+                std::error_code ec;
+                std::filesystem::remove(exePath, ec);
 
-            std::string errOut;
-            int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut);
-            REQUIRE_MESSAGE(status == 0,
-                            ("Bronze build failed for " + casePath.string() + ": " + errOut).c_str());
-            REQUIRE(std::filesystem::exists(exePath));
+                std::string errOut;
+                int status =
+                    bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
+                REQUIRE_MESSAGE(status == 0, ("Bronze build failed for " + casePath.string() +
+                                              mode + ": " + errOut).c_str());
+                REQUIRE(std::filesystem::exists(exePath));
 
-            RunResult run = runWithTimeout(exePath.string());
-            CHECK_MESSAGE(!run.timedOut,
-                          ("Compiled case did not finish within the timeout: " + casePath.string()).c_str());
-            if (run.ran) {
-                CHECK(expected == run.output);
+                RunResult run = runWithTimeout(exePath.string());
+                CHECK_MESSAGE(!run.timedOut, ("Compiled case did not finish within the timeout: " +
+                                              casePath.string() + mode).c_str());
+                if (run.ran) {
+                    CHECK_MESSAGE(expected == run.output,
+                                  ("Output differs from the pinned expectation for " +
+                                   casePath.filename().string() + mode).c_str());
+                }
+                std::filesystem::remove(exePath, ec);
             }
-
-            std::filesystem::remove(exePath, ec);
         }
     }
 }

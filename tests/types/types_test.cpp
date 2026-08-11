@@ -479,3 +479,88 @@ TEST_CASE("a shadowing binding stops a name being direct-callable") {
     CHECK_FALSE(r.isDirectCallable("helper"));
     CHECK(r.isDirectCallable("wrapper"));
 }
+
+TEST_CASE("an exported function is not direct-callable, however plain its call sites") {
+    // Decision 5 specializes on a join over *every* caller. An export has a
+    // caller outside this compilation, so the join is incomplete and the
+    // specialization would be a guess. `internal` shows the same body and
+    // the same call site do get specialized when nothing exports them.
+    const auto inferred = infer(
+        "export function shared(x) { return x * 2; }\n"
+        "function internal(x) { return x * 2; }\n"
+        "shared(4);\n"
+        "internal(4);\n");
+
+    CHECK(inferred.dump() ==
+          "module test\n"
+          "\n"
+          "func shared(x: dynamic) -> dynamic\n"
+          "  #0 return\n"
+          "\n"
+          "func internal(x: number) -> number direct-callable\n"
+          "  #0 return\n"
+          "\n"
+          "func main() -> undefined\n"
+          "  #0 expr\n"
+          "  #1 expr\n");
+
+    const auto& r = *inferred.result;
+    CHECK_FALSE(r.isDirectCallable("shared"));
+    CHECK(r.isDirectCallable("internal"));
+}
+
+// ---- the type of a binding at a merge point ---------------------------------
+
+TEST_CASE("a binding's type at a loop is the join over every edge of the loop") {
+    // The query lowering needs to type a loop header's block parameters
+    // before it has lowered the back edge (docs/0005 decision 2). `v` is a
+    // number on the entry edge and a string on the back edge; answering
+    // "number" here is the miscompile that unboxes a string as a double.
+    const auto inferred = infer(
+        "let v = 1;\n"
+        "let i = 0;\n"
+        "let untouched = 7;\n"
+        "while (i < 3) {\n"
+        "  v = \"s\";\n"
+        "  i = i + 1;\n"
+        "}\n");
+
+    const ast::Stmt* loop = nullptr;
+    for (const auto& s : inferred.module->body) {
+        if (dynamic_cast<const ast::WhileStmt*>(s.get()) != nullptr) loop = s.get();
+    }
+    REQUIRE(loop != nullptr);
+
+    const auto& r = *inferred.result;
+    CHECK(r.typeOfBindingAt(loop, "v") == types::Type::dynamic());
+    CHECK(r.typeOfBindingAt(loop, "i") == types::Type::number());
+    CHECK(r.typeOfBindingAt(loop, "untouched") == types::Type::number());
+    // Unproven is Dynamic, never a crash and never a claim: an unknown
+    // name, and a merge point the analysis never recorded.
+    CHECK(r.typeOfBindingAt(loop, "nosuchname") == types::Type::dynamic());
+    CHECK(r.typeOfBindingAt(nullptr, "v") == types::Type::dynamic());
+}
+
+TEST_CASE("a binding's type at an if is the join of the two arms") {
+    const auto inferred = infer(
+        "let v = 1;\n"
+        "let n = 0;\n"
+        "if (v > 0) {\n"
+        "  v = \"s\";\n"
+        "  n = 2;\n"
+        "} else {\n"
+        "  n = 3;\n"
+        "}\n");
+
+    const ast::Stmt* branch = nullptr;
+    for (const auto& s : inferred.module->body) {
+        if (dynamic_cast<const ast::IfStmt*>(s.get()) != nullptr) branch = s.get();
+    }
+    REQUIRE(branch != nullptr);
+
+    const auto& r = *inferred.result;
+    // One arm leaves a string, the other a number.
+    CHECK(r.typeOfBindingAt(branch, "v") == types::Type::dynamic());
+    // Both arms leave a number, from different assignments.
+    CHECK(r.typeOfBindingAt(branch, "n") == types::Type::number());
+}

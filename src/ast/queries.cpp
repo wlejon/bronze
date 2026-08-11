@@ -203,6 +203,19 @@ public:
     void visit(const FunctionDecl&) override {}
 };
 
+// Finds a `return <expr>;` in a function body, stopping at any nested
+// function: an inner `return` returns from that function, not this one.
+// Same traversal shape as ThisVisitor, recording something else again.
+class ValueReturnVisitor final : public CaptureVisitor {
+public:
+    bool found = false;
+    void visit(const ReturnStmt& r) override {
+        if (r.value) found = true;
+    }
+    void visit(const FunctionExpr&) override {}
+    void visit(const FunctionDecl&) override {}
+};
+
 void collectHoistedVars(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
 
 void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
@@ -292,6 +305,14 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
         }
     }
     return names;
+}
+
+bool returnsAValue(const std::vector<StmtPtr>& stmts) {
+    ValueReturnVisitor v;
+    for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.found;
 }
 
 bool usesThis(const std::vector<StmtPtr>& stmts) {

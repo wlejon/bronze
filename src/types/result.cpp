@@ -27,6 +27,14 @@ ShapeClassId InferenceResult::shapeClassAt(const ast::Expr* site) const {
     return it == siteShapes.end() ? kNoShapeClass : it->second;
 }
 
+Type InferenceResult::typeOfBindingAt(const ast::Stmt* mergePoint,
+                                      const std::string& name) const {
+    const auto point = mergeBindings.find(mergePoint);
+    if (point == mergeBindings.end()) return Type::dynamic();
+    const auto binding = point->second.find(name);
+    return binding == point->second.end() ? Type::dynamic() : binding->second;
+}
+
 const Signature& InferenceResult::signatureOf(uint32_t functionIndex) const {
     if (functionIndex >= moduleSignatures.size()) return dynamicSignature();
     return moduleSignatures[functionIndex];

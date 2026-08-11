@@ -74,6 +74,12 @@ struct InferenceResult {
     std::unordered_map<const ast::Expr*, Type> exprTypes;
     std::unordered_map<const ast::Expr*, ShapeClassId> siteShapes;
 
+    // Per merge point: the binding types the join at that point produced.
+    // See `typeOfBindingAt` for what a merge point is and what the entry
+    // covers. The inner map is ordered only so the analysis can compare
+    // whole environments cheaply; nothing here reaches an output path.
+    std::unordered_map<const ast::Stmt*, std::map<std::string, Type>> mergeBindings;
+
     std::map<std::string, uint32_t> moduleFunctionIndex;  // name -> index
     std::vector<uint32_t> moduleFunctionSlot;             // index -> `functions` slot
     std::vector<Signature> moduleSignatures;              // index -> signature
@@ -89,6 +95,32 @@ struct InferenceResult {
     // The shape class of an object-creating site (an `ObjectLit` or a
     // `NewExpr`); `kNoShapeClass` when the site's identity is not proven.
     ShapeClassId shapeClassAt(const ast::Expr* site) const;
+
+    // The type a binding is proven to hold at a control-flow MERGE POINT.
+    //
+    // A merge point is not an expression, so `typeAt` cannot express it, and
+    // it is exactly what SSA joins need: a block parameter's type has to be
+    // an upper bound of every edge that reaches it, including edges that
+    // lowering has not built yet (docs/0005 decision 2 — the loop back edge
+    // is lowered after the header). `mergePoint` is therefore the *statement
+    // that owns the merge*, which is a node lowering holds in its hand when
+    // it creates the block:
+    //
+    //   - an `IfStmt`   — the join after the two arms;
+    //   - a `WhileStmt` / `DoWhileStmt` / `ForStmt` — one answer covering
+    //     every merge the loop builds: the header, the condition/update
+    //     block that the body fall-through and `continue` edges meet in, and
+    //     the exit block. They get one answer because the analysis's loop
+    //     fixpoint gives one: the converged header already subsumes the
+    //     entry, the end of the body and every `continue`, and the recorded
+    //     type joins the `break` environments on top, so it is an upper
+    //     bound of every value that can flow along any of those edges.
+    //
+    // A name the analysis did not prove anything about at that point — a
+    // binding it never saw, a block-scoped name that did not survive the
+    // join, an env-backed cell (which is memory, not SSA, and never a block
+    // parameter) — answers `Dynamic`, the designed sound fallback.
+    Type typeOfBindingAt(const ast::Stmt* mergePoint, const std::string& name) const;
 
     // By module function index — the position among the top-level
     // `FunctionDecl`s, which is the numbering lowering already assigns.

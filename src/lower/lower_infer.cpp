@@ -46,20 +46,45 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
     return inferredType(expr).is(types::TypeKind::Number);
 }
 
+// The IL type of a block parameter at a control-flow merge (docs/0005
+// decision 2): an if/else join, a loop header, a loop exit.
+//
+// A parameter's type has to be an upper bound of EVERY edge into its block,
+// and lowering does not have those edges in hand — a loop header is typed
+// before its back edge is lowered. Only the flow analysis knows what the
+// back edge can carry (`typeOfBindingAt`), so this is the one source, and
+// with no inference the answer is `Dynamic` for everything. That is the
+// point: the pre-inference behaviour of taking the type from whatever value
+// happened to be live at loop *entry* is not a conservative fallback, it is
+// a claim that the loop cannot change the binding's type, and a loop that
+// does was miscompiled into unboxing a string as a double.
+//
+// `Bool` is admitted here, unlike `ilTypeOf`, which is about a calling
+// convention. A boxed value coerced to a `bool` parameter goes through
+// `unbox.bool`, which is JS ToBoolean — lossy for anything that is not
+// already a boolean, and *exact* for one. So the coercion is faithful
+// precisely when the analysis proved `Bool`, which is the only case that
+// reaches it.
+il::Type Lowerer::mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const {
+    if (inference_ == nullptr) return il::Type::Dynamic;
+    switch (inference_->typeOfBindingAt(&mergePoint, name).kind()) {
+        case types::TypeKind::Number: return il::Type::F64;
+        case types::TypeKind::Bool: return il::Type::Bool;
+        default: return il::Type::Dynamic;
+    }
+}
+
 // The signature of a module-level function whose calling convention
 // inference actually proved, or null when it proved nothing about it.
 //
-// Two things have to hold before a signature is a proof:
+// One thing has to hold: the function is direct-callable (docs/0010
+// decision 5), i.e. its name is never read as a value, so every caller is a
+// call site this compilation saw and joined into the signature.
 //
-//   - the function is direct-callable (docs/0010 decision 5): its name is
-//     never read as a value, so every caller is a call site this
-//     compilation saw and joined into the signature;
-//   - the function is not exported. Decision 5's argument is "no unknown
-//     callers", and an exported symbol has exactly that — a caller outside
-//     this compilation, which contributed nothing to the join. `src/types`
-//     does not test for export today (its escape walk only sees the AST's
-//     interior), so lowering refuses the specialization rather than trust
-//     a join over an incomplete set of call sites.
+// `export` is deliberately NOT re-tested here. An exported function has a
+// caller outside this compilation and must never be specialized, but that
+// is a fact about the escape set, so `types::escapingNames` is where it is
+// decided; a second copy of the rule in lowering is a copy that can drift.
 const types::Signature* Lowerer::provenSignature(uint32_t moduleFnIndex) const {
     if (inference_ == nullptr) return nullptr;
     if (!inference_->isDirectCallable(moduleFnIndex)) return nullptr;
@@ -75,8 +100,12 @@ const types::Signature* Lowerer::provenSignature(uint32_t moduleFnIndex) const {
 // half-inferred return type the first `return` statement happened to leave.
 bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                                    il::Function& fn) {
+    // No `fnDecl.isExported` test here: an exported function is not
+    // direct-callable in the first place, because `types::escapingNames`
+    // puts its name in the escape set. Do not re-add the guard — it would
+    // be a second copy of a rule that belongs to the analysis.
     const types::Signature* sig = provenSignature(moduleFnIndex);
-    if (sig == nullptr || fnDecl.isExported) return true;
+    if (sig == nullptr) return true;
 
     // Inference indexes module functions by their position among the
     // top-level declarations, which is the numbering assigned here. If the
