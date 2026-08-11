@@ -1,6 +1,6 @@
 # 0006 — Rooting generated code
 
-Status: designed 2026-08-10, implementing. Completes decision 3 of
+Status: implemented. Completes decision 3 of
 docs/0004, which accepted a shadow stack but only ever built the C++ half
 of it. This doc settles the generated-code half: the frame ABI, the slot
 discipline, and what is deliberately left slow.
@@ -17,8 +17,8 @@ runtime's own tests run under `--gc-stress`.
 Generated code got nothing. Its `Dynamic` values live in LLVM SSA
 registers that no root walk can see, so a collection that fires while any
 of them is live moves the objects out from under them and leaves the
-registers pointing into free from-space. `src/runtime/rt_helpers.cpp`
-says so in a comment and reserves 512MB of heap to postpone the day:
+registers pointing into free from-space. The runtime said so in a comment and
+reserved 512MB of heap to postpone the day:
 
 > Reservation is virtual (commit is on demand), so reserve generously:
 > generated code cannot yet survive a moving collection (its SSA values

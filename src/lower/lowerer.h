@@ -153,6 +153,10 @@ private:
     // --- lower_util.cpp: key constants, blocks, coercions, truthiness ----
     bool isProvidedGlobal(const std::string& name) const;
     uint32_t getKeyConstantIndex(const std::string& key);
+    // The key constant a bracket index folds to, when the index is a literal
+    // that names a property at compile time. `nullopt` means the site needs a
+    // real elem.get / elem.set on the evaluated index.
+    std::optional<uint32_t> literalIndexKey(const ast::Expr& index);
     il::BlockId createBlock(il::Function& ilFn);
     void setCurrentBlock(size_t blockIdx);
     void emitInst(il::Function& ilFn, const il::Instruction& inst);

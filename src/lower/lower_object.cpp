@@ -2,6 +2,8 @@
 // call forms — the expressions that go through the runtime's shapes,
 // prototypes and inline caches (docs/0008).
 
+#include <cmath>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -139,22 +141,33 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     return Value{res, il::Type::Dynamic};
 }
 
+// `o["k"]` and `o[2]` are property reads whose key is known here, so they fold
+// onto the same PropGet — and the same inline cache — that `o.k` uses.
+//
+// A NUMERIC literal folds only when it is a canonical array index. A property
+// key is ToString(Number), and `std::to_string` of an integer is that string
+// only for a non-negative integer in the array-index range: `a[1.5]` names the
+// property "1.5", so folding it to "1" would read element 1 (`index_keys`).
+// Everything else takes the elem path, where the index stays a value and the
+// runtime applies the language's own rule to it.
+std::optional<uint32_t> Lowerer::literalIndexKey(const ast::Expr& index) {
+    if (const auto* strLit = dynamic_cast<const ast::StringLit*>(&index)) {
+        return getKeyConstantIndex(strLit->value);
+    }
+    const auto* numLit = dynamic_cast<const ast::NumberLit*>(&index);
+    if (numLit == nullptr) return std::nullopt;
+    const double v = numLit->value;
+    if (!(v >= 0.0) || v != std::floor(v) || v > 4294967294.0) return std::nullopt;
+    return getKeyConstantIndex(std::to_string(static_cast<uint64_t>(v)));
+}
+
 std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* idxAccess,
                                                         il::Function& ilFn) {
     auto objVal = lowerExpr(*idxAccess->object, ilFn);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
 
-    uint32_t keyIdx = 0;
-    bool literalKey = true;
-    if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(idxAccess->index.get())) {
-        keyIdx = getKeyConstantIndex(std::to_string(static_cast<int64_t>(numLit->value)));
-    } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
-        keyIdx = getKeyConstantIndex(strLit->value);
-    } else {
-        literalKey = false;
-    }
-
+    const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess->index);
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
         auto indexVal = lowerExpr(*idxAccess->index, ilFn);
@@ -177,7 +190,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = {objBoxed.id};
-    inst.keyIndex = keyIdx;
+    inst.keyIndex = *literalKey;
     inst.icIndex = icIdx;
     inst.icMonomorphic = monomorphicPropSite(*idxAccess->object);
     emitInst(ilFn, inst);

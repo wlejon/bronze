@@ -1,4 +1,6 @@
-// Blocked: requires compiler string literal and surrogate pair support
+// A character outside the BMP is TWO UTF-16 code units, and every
+// unit-indexed operation says so: `length` counts units, and charCodeAt
+// yields the high and low surrogate separately (docs/0004).
 
 const emoji = "🌍";
 const greeting = "Hello " + emoji;

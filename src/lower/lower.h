@@ -17,11 +17,11 @@ namespace bronze::lower {
 // suspected of causing.
 //
 // It reproduces the pre-inference *convention*, not the pre-inference
-// bugs: where lowering used to specialize on something it had not proven,
-// the unproven answer is now the dynamic path in both modes. Two such
-// sites: `s += "b"` on a local (docs/0010 decision 3), and every TS
-// annotation — which types nothing without a proof, so with no inference
-// result it types nothing at all (decision 6). The warnings that normally
+// bugs: an unproven answer is the dynamic path in BOTH modes, so the seam
+// compares two correct programs. Two such sites: `s += "b"` on a local
+// (docs/0010 decision 3), and every TS annotation — which types nothing
+// without a proof, so with no inference result it types nothing at all
+// (decision 6). The warnings that normally
 // name a discarded annotation are silent here: with nothing provable they
 // would fire on every annotation in the file and report only which switch
 // is on. Unreadable annotation text is still the hard error it is in the

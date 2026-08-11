@@ -1,6 +1,6 @@
 # 0013 — console.log of a container
 
-Status: decided and landed 2026-08-11.
+Status: implemented.
 
 Every oracle case since docs/0003 has routed its results through `join`,
 `length` or a scalar, with the same sentence in each header: *console.log of
@@ -79,7 +79,7 @@ These are deliberate, and each is here so it is not mistaken for a bug:
 
 ## Where it lives
 
-`src/runtime/inspect.cpp`, not rt_helpers.cpp: it is a recursive walk with
+`src/runtime/inspect.cpp`, not `rt_print.cpp`: it is a recursive walk with
 its own rules and no business in the print helper. Nothing in it allocates a
 JS value, which is what makes the raw pointers it walks safe — the collector
 cannot run while the string is being built (docs/0006).

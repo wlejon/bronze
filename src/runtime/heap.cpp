@@ -222,14 +222,13 @@ void Heap::forward_value(Value& val) {
         return;
     }
 
-    // Every heap reference in a Value points at the object's HEADER — not
-    // its payload. This used to guess (try ptr-8, fall back to ptr, accept
-    // whichever carried a plausible tag), which is ambiguous by
-    // construction: an object's last payload word can hold a Value, and a
-    // Value's low 16 bits can be anything at all, including a valid-looking
-    // tag. Out-of-line blocks (object overflow slots, array elements) now
-    // store header pointers like everything else, so there is nothing left
-    // to guess.
+    // Every heap reference in a Value points at the object's HEADER, never
+    // its payload — including the ones in out-of-line blocks (object
+    // overflow slots, array elements). That invariant is what lets this
+    // dereference rather than guess: probing ptr-8 and falling back to ptr,
+    // accepting whichever carried a plausible tag, is ambiguous by
+    // construction, since an object's last payload word can hold a Value and
+    // a Value's low 16 bits can be anything, including a valid-looking tag.
     auto* header = reinterpret_cast<HeapObjectHeader*>(raw_ptr);
     if (!is_valid_object_tag(header->tag)) {
         return;

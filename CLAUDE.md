@@ -36,6 +36,12 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - **Module isolation**: each `src/<module>` is a static lib + own doctest
   binary + ctest label; dependencies flow through `bronze::<module>`
   targets only; the CLI is the composition root.
+- **No source file over 1000 lines.** Split along a seam that names
+  something — a grammar production, an instruction family, a receiver kind —
+  never at an arbitrary line count.
+- **Comments say why, about the code in front of them.** Not what the code
+  used to be, not when it changed; git carries that. Same for the docs: they
+  record decisions and their rationale, never a changelog.
 - Recursive descent for parsers, visitor for AST traversal (house
   preference).
 - **The generated-code ABI lives in `src/abi/bronze_abi.h`, and only

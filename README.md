@@ -56,7 +56,7 @@ is the designed sound fallback and never a diagnostic. `bronze types <file>`
 prints what was proven.
 
 A TS annotation is an **untrusted hint** (docs/0001 decision 4, docs/0010
-decision 6). It seeds nothing and constrains nothing: if inference proves the
+decision 6). Inference never reads one: if inference proves the
 same type, the native path is taken *because of the proof*; if it proves
 something else or proves nothing, the annotation is discarded, the value
 stays `dynamic`, and you get a warning naming both. `function f(x: number)`
@@ -90,14 +90,14 @@ means inference is.
 | `src/support` | Source buffers, spans, diagnostics |
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
-| `src/parse` | Recursive-descent parser |
+| `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |
 | `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing (docs/0010) |
 | `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
-| `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_backend` |
+| `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_func`/`llvm_ops`/`llvm_arith` (one IL function's body), `llvm_backend` (module in, object file out) |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written |
-| `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments (docs/0004) |
+| `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments (docs/0004). The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_prop`, `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built) |
 | `src/rt` | The static library compiled output links against |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |

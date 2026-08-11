@@ -1,9 +1,8 @@
 # 0005 — Control flow: blocks, branches, and SSA joins in the IL
 
-Status: designed 2026-08-10, ready for implementation. Pulls the
-control-flow item of 0001 phase 4 forward: it gates real benchmarks,
-real libraries, and inference (a future doc) alike. The canonical text
-form below is a ratchet surface — settle it here, then never bend it.
+Status: implemented. Pulls the control-flow item of 0001 phase 4 forward: it
+gates real benchmarks, real libraries, and inference (docs/0010) alike. The
+canonical text form below is a ratchet surface — settled here, never bent.
 
 ## Decision 1 — join representation: block arguments, not phi instructions
 

@@ -1,6 +1,6 @@
 # 0001 — Foundation: goals, decisions, and phase plan
 
-Date: 2026-08-10. Status: active.
+Status: active.
 
 ## Why bronze exists (and why broc was retired)
 
@@ -26,9 +26,9 @@ bronze inverts the defaults:
 - **Faster than node is a stated goal**, not a hoped-for side effect.
 - **C++ implementation.** The TS implementation forced an interpreter/eval
   face, node heap ceilings, and a runaway-prone iteration loop.
-- **LLVM backend** (constraint lifted 2026-08-10): world-class codegen for
-  free rather than years of hand-rolled optimizer work. Own mid-level IL so
-  the frontend never welds to LLVM.
+- **LLVM backend**: world-class codegen for free rather than years of
+  hand-rolled optimizer work. Own mid-level IL so the frontend never welds to
+  LLVM.
 
 ## Decisions
 
@@ -68,14 +68,16 @@ bronze inverts the defaults:
    Perf smoke vs node from day one.
 3. **Types (done, docs/0010)**: inference-first — shape and type analysis
    over untyped JS producing IL types/layouts, with `dynamic` as the
-   proven-safe fallback; TS annotations consumed as untrusted hints. The
-   hint-trust/verify policy got its own numbered doc, and decision 4 above
-   is true rather than aspirational as of 2026-08-11: an annotation is
-   compared against what inference proved and discarded with a warning when
-   no proof backs it. `src/types` is the module; `--no-infer` is the
-   bisection seam and the oracle suite runs every case both ways.
-4. **Language growth**: strings (ownership model decision), structs/
-   interfaces → layouts, control flow (loops), modules/imports.
+   proven-safe fallback. An annotation is compared against what inference
+   proved and discarded with a warning when no proof backs it, which is what
+   makes decision 4 above true rather than aspirational. `src/types` is the
+   module; `--no-infer` is the bisection seam and the oracle suite runs every
+   case both ways.
+4. **Language growth**: builtins and prototype methods (docs/0011), the
+   ES2015 syntax three.js is written in (docs/0012), container printing
+   (docs/0013). Still open: parameter and binding patterns (defaults, rest,
+   destructuring, spread), `for-in`, `switch`, `try`/`catch`/`throw`,
+   `delete`, and modules/imports — `import` lexes but does not parse.
 5. **Dynamic boundary**: the `dynamic` type's runtime and the QuickJS
    interop seam for hot-loaded UI code — as a boundary module, never as the
    default representation.

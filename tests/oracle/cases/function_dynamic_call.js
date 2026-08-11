@@ -1,4 +1,6 @@
-// Blocked: requires dynamic runtime function pointer invocation (fn.call / FunctionHeader)
+// A function held as a VALUE, called through the uniform dynamic convention
+// rather than as a direct call: bound to a name, stored on an object, and
+// passed as an argument (docs/0007).
 
 const fn = function(a, b) {
     return a + b;

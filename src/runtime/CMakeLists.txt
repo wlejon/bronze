@@ -16,7 +16,13 @@ bronze_add_module(runtime
         builtin_array.cpp
         builtin_string.cpp
         inspect.cpp
-        rt_helpers.cpp
+        rt_state.cpp
+        rt_convert.cpp
+        rt_members.cpp
+        rt_object.cpp
+        rt_prop.cpp
+        rt_iter.cpp
+        rt_print.cpp
     DEPS
         abi
     TEST_SOURCES

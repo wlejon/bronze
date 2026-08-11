@@ -1,6 +1,6 @@
 # 0009 — Enumeration order and the dictionary boundary
 
-Status: designed and implemented 2026-08-10. Implements the last two
+Status: implemented. Implements the last two
 unbuilt bullets of docs/0004 decision 2: spec'd enumeration order, and the
 dictionary-mode transition point.
 
@@ -111,24 +111,21 @@ Not here, and named as such:
   properties added or deleted mid-loop.
 - **Dictionary mode itself.** The boundary is marked and diagnosed; the
   hash-backed representation behind it is unbuilt.
-- **`console.log` of an array** still prints `[object]`, which is why the
-  case walks the result instead of printing it. Pinning a container format
-  is its own decision (node prints `[ 'a', 'b' ]`), and inventing one here
-  would have quietly pinned it in an `.expected` file as a side effect.
+- **`console.log` of a container**, which is why this doc's case walks the
+  result instead of printing it: pinning a container format is its own
+  decision, and inventing one here would have pinned it in an `.expected`
+  file as a side effect. Decided since, in docs/0013.
 
-  **Amended 2026-08-11.** `[object]` was the *fallthrough* branch of
-  `bronze_print_value`, not a branch guarded on "is a container" — so it
-  also swallowed `null`, which carries its own tag (`0xFFF5`) and therefore
-  never satisfied the `undefined` check above it. `console.log(null)`
-  printed `[object]` where node prints `null`. The suite could not catch it:
-  `null` appeared in it only as an operand (`null ?? 5`), never as a printed
-  value. Every tag is now handled explicitly — `null` prints, the reserved
-  Int32 tag prints as the number it is, and the internal Hole and the
-  unimplemented Symbol are hard errors rather than text, so a sentinel that
-  escapes to `console.log` is loud instead of disguised as a container. The
-  container deferral above is unchanged and is now the *only* thing
-  `[object]` means. Pinned by the `print_primitives` oracle case, which
-  reaches `null` through a binding, a branch join, a property slot, an array
-  element and a function return; deleting the branch fails it on line 1.
+  What this doc does settle is that `bronze_print_value` handles every tag
+  EXPLICITLY rather than falling through. A fallthrough branch for "an
+  object" also swallows `null`, which carries its own tag (`0xFFF5`) and so
+  never satisfies the `undefined` check above it — `console.log(null)`
+  printed `[object]` where node prints `null`, and the suite could not catch
+  it because `null` appeared only as an operand (`null ?? 5`), never as a
+  printed value. The internal Hole and the unimplemented Symbol are hard
+  errors rather than text, so a sentinel that escapes to `console.log` is
+  loud instead of disguised as a container. Pinned by `print_primitives`,
+  which reaches `null` through a binding, a branch join, a property slot, an
+  array element and a function return.
 - **Symbol keys**, which have their own place in spec order — bronze has no
   symbols.

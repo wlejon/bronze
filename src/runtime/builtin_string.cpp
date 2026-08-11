@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -161,6 +162,27 @@ uint64_t stringAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     }
     Units one{self[static_cast<size_t>(idx)]};
     return stringFromUnits(one).rawBits();
+}
+
+// Out of range is NaN, not 0: 0 is a real code unit (NUL), so answering it
+// for a missing position is indistinguishable from finding one.
+//
+// Reads the header directly rather than through `thisUnits`, because this is
+// the one member that needs a single unit and not the whole string — copying
+// the string to read one character of it is a cost `for (i…) s.charCodeAt(i)`
+// would pay per iteration.
+uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value self(thisBits);
+    if (!self.isString()) {
+        fatal("String.prototype.charCodeAt called on a value that is not a string");
+    }
+    StringHeader* str = self.asString<StringHeader>();
+    double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    if (idx < 0 || idx >= static_cast<double>(str->getLength())) {
+        return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
+    }
+    return Value::fromDouble(str->charCodeAt(static_cast<uint32_t>(idx))).rawBits();
 }
 
 uint64_t stringIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -452,6 +474,7 @@ struct StringMethod {
 const StringMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
+    {"charCodeAt", stringCharCodeAt, 1},
     {"concat", stringConcat, 0},
     {"endsWith", stringEndsWith, 1},
     {"includes", stringIncludes, 1},

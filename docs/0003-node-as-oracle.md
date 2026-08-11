@@ -1,7 +1,6 @@
 # 0003 — Differential testing: pinned JS-semantics expectations
 
-Status: live since 0002 step 6; grows forever after. Amended 2026-08-10:
-the harness no longer invokes node at test time.
+Status: live; grows forever after.
 
 bronze's correctness spine, carried from broc where it caught dozens of
 real bugs: every behavior question is settled by comparing bronze's
@@ -13,7 +12,7 @@ The spec bytes live in the repo as pinned `.expected` files.
 The original design shelled out to `node case.js` on every test run.
 That made the suite depend on a node install, made runs slower and
 non-hermetic, and — decisively — when a miscompiled loop hung, the
-`_popen` harness hung the whole suite with it (2026-08-10). Expectations
+`_popen` harness hung the whole suite with it. Expectations
 are now derived once (by hand from ECMA-262, or from a one-off node run
 during case authoring), reviewed, and committed. node remains a useful
 *authoring* tool for producing an expectation candidate; it is not a
@@ -67,35 +66,22 @@ case list is the feature's spec. The end state is the broc gate reborn:
 real libraries (three.js modules) compiled by bronze producing pinned,
 reviewed output.
 
-**2026-08-11**: `cases/blocked/` had been emptied by the promotions of
-phases 2 and 3, which left the promote-on-pass ratchet with nothing to
-watch and — worse, given the rule above — left no case list describing what
-comes next. It is seeded again with the first three of phase 4:
-`math_builtin` (bronze has no `Math` at all, so three.js cannot begin),
-`array_methods` and `string_methods` (every real member of those prototypes
-is a named hard error today). All three deliberately route their results
-through `join` or print scalars, because `console.log` of a container has no
-pinned format yet (docs/0009) and a blocked case must not smuggle that
-decision in through an `.expected` file.
+`cases/blocked/` is therefore never allowed to run empty. An empty blocked
+list leaves the promote-on-pass ratchet with nothing to watch, and — worse,
+given the rules above — leaves no case list describing what comes next, so
+it is re-seeded as soon as it drains. It currently holds
+`default_and_rest_params`, `destructuring` and `spread`, chosen by what
+three.js writes on nearly every page; between them they are also what a
+derived class with no constructor needs before it can stop being a named
+error (docs/0012 decision 5).
 
-**2026-08-11 (later)**: all three of those promoted, along with
-`template_literals`, `arrow_functions` and `for_of` — the syntax cases
-seeded next to them (docs/0012). Promotion is not a file move: each case's
-header comment described the error it produced while blocked, and that
-sentence is rewritten to describe what the case now pins, so a promoted case
-never reads as documentation of a bug that is gone. Three edge cases were
-added alongside them rather than folded in (`array_methods_edges`,
-`string_methods_edges`, `string_escapes`), because a case that grows to
-cover everything stops naming what it is for.
+Two conventions the promotions so far have settled:
 
-`cases/blocked/` keeps `class_basics`, which is the next thing three.js
-needs and which docs/0012 decision 5 plans out.
-
-**2026-08-11 (later still)**: `class_basics` promoted too, with
-`class_edges` added beside it for what it does not reach (an inherited
-method, a static through a subclass, one function object shared by every
-instance, a class closing over a function scope). `cases/blocked/` is
-re-seeded with the next three, chosen by what three.js writes on nearly
-every page: `default_and_rest_params`, `destructuring` and `spread`. Between
-them they are also what a derived class with no constructor needs before it
-can stop being a named error (docs/0012 decision 5).
+- **Promotion is not a file move.** A blocked case's header comment
+  describes the error it produces; on promotion that sentence is rewritten
+  to describe what the case now pins, so a promoted case never reads as
+  documentation of a bug that is gone.
+- **Edge cases get their own file.** `array_methods_edges`,
+  `string_methods_edges`, `string_escapes` and `class_edges` sit beside the
+  cases they extend rather than being folded into them, because a case that
+  grows to cover everything stops naming what it is for.

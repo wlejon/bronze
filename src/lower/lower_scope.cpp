@@ -246,12 +246,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
             return std::nullopt;
         }
     }
-    // The RETURN is different in kind, and this is the closure proof surface
-    // docs/0010 recorded as missing: what a body returns is a fact about the
-    // body alone, and inference already joins every `return` in it. So a
-    // return annotation on a closure can agree with a proof after all, and a
-    // visibly correct one no longer reports as unprovable. It still buys
-    // nothing — the IL return type above stays dynamic, because that is the
+    // The RETURN is different in kind: what a body returns is a fact about
+    // the body alone, and inference joins every `return` in it — so a return
+    // annotation on a closure CAN agree with a proof, where a parameter
+    // annotation cannot (that needs escape analysis). It buys nothing at the
+    // IL level: the return type above stays dynamic, because that is the
     // calling convention and no annotation may widen it.
     //
     // Reported on `fnName`, which for an anonymous function expression is

@@ -1,0 +1,98 @@
+#pragma once
+
+// One IL function's body, emitted into one LLVM function.
+//
+// The state below is shared by every instruction of that body — the GC root
+// frame (docs/0006), the block phis of the block-argument SSA (docs/0005),
+// and the SSA-value table — so it is held together rather than threaded
+// through a dozen parameters.
+
+#include <cstdint>
+#include <vector>
+
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LLVMContext.h>
+
+#include "codegen-llvm/llvm_abi.h"
+#include "il/il.h"
+#include "support/diagnostics.h"
+
+namespace bronze::codegen_llvm {
+
+// The LLVM type an IL type lowers to. Null for a type with no mapping, which
+// the caller reports against the construct that produced it.
+llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx);
+
+class FunctionEmitter {
+public:
+    struct Context {
+        llvm::LLVMContext& ctx;
+        const il::Module& module;
+        const AbiFns& abi;
+        const AbiGlobals& globals;
+        llvm::GlobalVariable* icTable;
+        // Indexed by IL function index: the typed entry point, and the
+        // uniform-convention wrapper that adapts to it (docs/0007).
+        const std::vector<llvm::Function*>& entries;
+        const std::vector<llvm::Function*>& wrappers;
+        DiagnosticSink& diags;
+    };
+
+    FunctionEmitter(const Context& shared, const il::Function& func, llvm::Function* llvmFunc);
+
+    // Emits every block of the function. False on a diagnosed error.
+    bool emit();
+
+private:
+    void planRootFrame();
+    void emitPrologue();
+    void createBlockPhis();
+    void emitKeyRegistration();
+    bool emitBlock(size_t blockIndex);
+    bool emitInstruction(const il::Instruction& inst);
+
+    // Instruction families. Each returns false only after diagnosing.
+    bool emitTerminator(const il::Instruction& inst);
+    bool emitRuntimeOp(const il::Instruction& inst);
+    bool emitArithmetic(const il::Instruction& inst);
+
+    // Reloads a Dynamic value from its root slot at the point of use: if
+    // anything collected since the def, the slot was forwarded and the SSA
+    // register was not.
+    void reload(il::ValueId id);
+    llvm::Value* slotAddr(uint32_t slot);
+    // Fills the frame's argv region and returns a pointer to it, or a null
+    // pointer constant when the call takes no arguments. `first` is the index
+    // of the first argument operand.
+    llvm::Value* emitArgv(const il::Instruction& inst, size_t first, uint32_t argc, bool& ok);
+
+    // An operand as an LLVM value, diagnosed as `what` when it has no def.
+    llvm::Value* operand(const il::Instruction& inst, size_t index, const char* what);
+    bool require(bool condition, const char* message);
+
+    static constexpr uint32_t kNoSlot = UINT32_MAX;
+
+    const Context& shared_;
+    const il::Function& func_;
+    llvm::Function* llvmFunc_;
+    llvm::IRBuilder<> builder_;
+
+    llvm::Type* i64Ty_;
+    llvm::Type* ptrTy_;
+
+    std::vector<llvm::BasicBlock*> blocks_;
+    std::vector<std::vector<llvm::PHINode*>> blockPhis_;
+    std::vector<llvm::Value*> values_;
+
+    std::vector<uint32_t> slotOf_;
+    uint32_t argvBase_ = 0;
+    uint32_t frameSlots_ = 0;
+    llvm::StructType* frameTy_ = nullptr;
+    llvm::Value* framePtr_ = nullptr;
+    llvm::Value* slotsBase_ = nullptr;
+};
+
+}  // namespace bronze::codegen_llvm

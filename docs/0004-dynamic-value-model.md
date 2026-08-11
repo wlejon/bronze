@@ -1,8 +1,6 @@
 # 0004 — The `dynamic` value model
 
-Status: amended and accepted 2026-08-10 (supersedes the same-day draft;
-review added encoding invariants, reversed the string decision, and added
-the arrays / prototypes / functions / enumeration sections).
+Status: implemented.
 
 Wild JS must compile (0001 decision 4), so a dynamic representation is
 unavoidable — the design goal is that it is (a) fast enough that
@@ -141,15 +139,15 @@ Accepted design, the same one production engines converged on:
   specialization (packed-double etc.) is deferred until a benchmark asks.
   Out-of-range / sparse writes beyond a threshold: named hard error until
   dictionary elements land (no silent slow-mode).
-  **Amended 2026-08-11**: "an object (shape for named props)" describes the
-  design, not what shipped — an array header carries no shape, so a *named*
-  write (`a.foo = 1`) fell off the end of the element path and was silently
-  discarded, and the subsequent read of `a.foo` answered `undefined`. That
-  is the silent slow-mode this bullet forbids one line later, so it is now
+
+  "an object (shape for named props)" describes the design, not what
+  shipped: an array header carries no shape, so a *named* write is
   `named property writes on an array are unsupported (arrays carry no shape
-  for named properties yet)`, matching what the Float32Array branch beside
-  it already did. Giving arrays a shape is the fix; diagnosing is the
-  boundary marker until then.
+  for named properties yet)`, matching the Float32Array branch beside it.
+  Giving arrays a shape is the fix; diagnosing is the boundary marker until
+  then. Discarding the write instead — which is where the element path leads
+  if it is allowed to fall off the end — is exactly the silent slow-mode this
+  bullet forbids one line above.
 - **Typed arrays are first-class, early** — `Float32Array` is the beating
   heart of three.js. `ArrayBuffer` = GC object owning a byte buffer;
   views = `{buffer ref, byteOffset, length, element type}`. Element

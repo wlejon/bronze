@@ -138,12 +138,11 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
             declType = il::Type::F64;
         }
 
-        // The binding's type came from the initialiser and the proof above,
-        // and the annotation does not get to overrule either (docs/0010
-        // decision 6). It used to: `let s: number = "abc"` emitted an
-        // `unbox.f64` of a boxed string, a coercion the source never wrote.
-        // The claim is now compared against what inference proved reaches
-        // this initialiser, and disagreement is a warning, not a cast.
+        // The binding's type comes from the initialiser and the proof above;
+        // the annotation does not get to overrule either (docs/0010 decision
+        // 6). Believing it makes `let s: number = "abc"` an `unbox.f64` of a
+        // boxed string. The claim is compared against what inference proved
+        // reaches this initialiser, and disagreement is a warning, not a cast.
         if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
                              inferredType(*varDecl->init))) {
             return false;
@@ -167,10 +166,9 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         }
         if (!varDecl->isConst && declType == il::Type::Dynamic) {
             // JS: `let x;` / `var x;` binds undefined right here — the TDZ
-            // ends at the declaration, not at the first assignment. An
-            // annotation no longer opts out of this by giving the slot a
-            // typed form `undefined` cannot fit into; `declType` is
-            // `Dynamic` for every uninitialised declaration now.
+            // ends at the declaration, not at the first assignment. Which is
+            // why `declType` is `Dynamic` for every uninitialised
+            // declaration: a typed slot has no room for `undefined`.
             il::ValueId undefId = ilFn.valueCount++;
             il::Instruction inst;
             inst.op = il::Op::ConstUndefined;

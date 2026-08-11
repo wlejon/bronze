@@ -1,10 +1,9 @@
 # 0012 — Syntax growth: template literals, for-of, arrows, classes
 
-Status: template literals, for-of, arrow functions and classes all landed
-2026-08-11. This is the second half of phase 4
-of docs/0001. docs/0011 covers the other half (the globals and the prototype
-methods); the split is deliberate — that doc is about what a program can
-*call*, this one is about what it can *write*.
+Status: implemented. This is the second half of phase 4 of docs/0001;
+docs/0011 covers the other half (the globals and the prototype methods). The
+split is deliberate — that doc is about what a program can *call*, this one
+is about what it can *write*.
 
 The bar is three.js. Its source is ES2015+ throughout: every class is a
 `class`, every callback is an arrow, and `for (const v of list)` is how it

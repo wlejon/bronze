@@ -187,9 +187,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 return Value{res, il::Type::Dynamic};
             }
             // A global bronze provides. The set is closed and checked
-            // HERE, at compile time, so an unknown free identifier stays
-            // the compile error it has always been rather than becoming a
-            // runtime miss (docs/0011 decision 1).
+            // HERE, at compile time, so an unknown free identifier is a
+            // compile error rather than a runtime miss a program could
+            // feature-test its way around (docs/0011 decision 1).
             if (isProvidedGlobal(ident->name)) {
                 il::ValueId res = ilFn.valueCount++;
                 il::Instruction inst;
@@ -611,15 +611,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
 
-        uint32_t keyIdx = 0;
-        bool literalKey = true;
-        if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(idxAccess->index.get())) {
-            keyIdx = getKeyConstantIndex(std::to_string(static_cast<int64_t>(numLit->value)));
-        } else if (const auto* strLit = dynamic_cast<const ast::StringLit*>(idxAccess->index.get())) {
-            keyIdx = getKeyConstantIndex(strLit->value);
-        } else {
-            literalKey = false;
-        }
+        const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess->index);
 
         std::optional<Value> idxBoxed;
         if (!literalKey) {
@@ -637,7 +629,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             if (literalKey) {
                 getInst.op = il::Op::PropGet;
                 getInst.operands = {objBoxed.id};
-                getInst.keyIndex = keyIdx;
+                getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
                 getInst.icMonomorphic = monomorphicPropSite(*idxAccess->object);
             } else {
@@ -661,7 +653,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (literalKey) {
             setInst.op = il::Op::PropSet;
             setInst.operands = {objBoxed.id, storedBoxed.id};
-            setInst.keyIndex = keyIdx;
+            setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
         } else {
             setInst.op = il::Op::ElemSet;

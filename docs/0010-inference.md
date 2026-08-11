@@ -1,30 +1,29 @@
 # 0010 — Inference: proving types and layouts
 
-Status: designed 2026-08-10, implemented 2026-08-11 — all five steps of the
-order of work below. This is phase 3 of docs/0001, and the reason bronze
+Status: implemented. This is phase 3 of docs/0001, and the reason bronze
 exists. Everything shipped through docs/0009 built the `dynamic` fallback
-well; this doc is where it stops being the substrate. What actually landed,
-and the corrections reality made to the design, are at the end.
+well; this doc is where it stops being the substrate. The decisions come
+first; what the implementation changed about them is at the end.
 
 ## The hole this closes
 
 0001 decision 4 commits to "shape/type INFERENCE produces struct layouts
-and typed IL ops; TS annotations are untrusted hints". `architecture.md`
-draws a `types` box between AST and IL. Neither exists. What `src/lower`
-does today is *syntactic typing*: an annotation is mapped straight to an
-IL type and believed, an unannotated parameter is `Dynamic`, and a binary
-`+` unboxes both sides to f64 and reboxes the result. There is no
-analysis, so:
+and typed IL ops; TS annotations are untrusted hints", and
+`architecture.md` draws a `types` box between AST and IL. Before this doc
+neither existed. What `src/lower` did was *syntactic typing*: an annotation
+was mapped straight to an IL type and believed, an unannotated parameter was
+`Dynamic`, and a binary `+` unboxed both sides to f64 and reboxed the
+result. There was no analysis, so:
 
-- every user function's parameters are `Dynamic`, so every call boxes;
-- every property access is a call into `bronze_prop_get`, whose IC hit
+- every user function's parameters were `Dynamic`, so every call boxed;
+- every property access was a call into `bronze_prop_get`, whose IC hit
   path is cheap but whose *call* is not;
-- an annotation is **trusted**, which 0001 explicitly forbids —
-  `function f(x: number)` reached with a string unboxes a string pointer
-  as a double today. That is the one live unsoundness in the compiler.
+- an annotation was **trusted**, which 0001 explicitly forbids —
+  `function f(x: number)` reached with a string unboxed a string pointer as
+  a double. That was the one live unsoundness in the compiler.
 
-The 0002 log has pointed at this doc four times: `property_access` at
-~0.15µs/iteration is two helper calls and two boxes that inference is
+The 0002 log pointed at this doc four times: `property_access` at
+~0.15µs/iteration was two helper calls and two boxes that inference is
 supposed to delete.
 
 ## Decision 1 — inference runs on the AST, before lowering
@@ -138,8 +137,8 @@ the iteration converges.
 
 This is the hint-trust/verify policy 0001 promised.
 
-An annotation **seeds** the lattice at the declaration and constrains
-nothing. Inference proceeds independently. Then:
+Inference never reads an annotation at all. It proceeds independently, and
+the annotation is compared against the result at the declaration:
 
 - inference proves the same type → the annotation was free information,
   and the typed path is taken because the *proof* allows it;
@@ -147,8 +146,11 @@ nothing. Inference proceeds independently. Then:
   annotation is discarded**, the value stays `Dynamic`, and a warning
   names the annotation and what was actually seen.
 
-The annotation therefore never widens what bronze believes; it can only
-agree with a proof or be thrown away. This closes the live unsoundness:
+A seed that can only agree with a proof or be discarded is observationally
+identical to no seed, and a seed that joined into the lattice would *widen*
+what bronze believes, which this decision forbids — so there is no seed. The
+annotation never widens what bronze believes; it can only agree with a proof
+or be thrown away. This closes the live unsoundness:
 `function f(x: number)` called with a string is now a warning plus a
 correct dynamic path, not an unboxed string pointer.
 
@@ -196,29 +198,6 @@ behaviour exactly. It is the bisection seam for any miscompile that
 inference is suspected of causing, and the oracle suite must pass with it
 both on and off — which makes it a ratchet, not a comfort blanket.
 
-## Order of work
-
-Each step builds, passes its own module's tests, and is committed before
-the next starts.
-
-1. **`src/types`** — lattice, flow analysis, shape classes, call graph,
-   the dump, `bronze types`, unit tests. Consumed by nothing yet.
-2. **Decompose `src/lower/lower.cpp`** (2,780 lines, over the 2k limit)
-   into files under 1k. Pure refactor: IL output byte-identical.
-3. **Numeric + direct calls** — lowering consumes decisions 3 and 5.
-4. **Property access** — decisions 4 and 7, including the ABI change.
-5. **Hints, `--no-infer`, oracle cases, bench log** — decisions 6 and 8.
-
-## Named hard errors
-
-Inference itself has none: every failure to prove is a sound fallback to
-`Dynamic`. The diagnostics it adds are:
-
-- `warning: annotation '<t>' on '<name>' is not provable; ignoring
-  (inferred: <t2>)` — decision 6.
-- `warning: annotation '<t>' on '<name>' contradicts inferred <t2>` —
-  decision 6, the contradiction case.
-
 ## Not here, and named as such
 
 - **Escape analysis**, and therefore guard-free property access and
@@ -234,6 +213,16 @@ Inference itself has none: every failure to prove is a sound fallback to
   this doc's lattice can carry, but the lowering is its own work.
 - **Deoptimization.** There is none and there must be none: every
   specialization here is guarded or proven, never speculative.
+- **`--strict-hints`**, promoting the annotation warnings of decision 6 to
+  errors. The policy has to be lived with before it is enforced.
+- **A proof surface for a closure's PARAMETERS.** The return half is closed
+  (`closureReturnAt`, below). The parameters are not, and closing them is
+  not a keying problem: it needs signatures inferred for a function reached
+  through a *value*, which means knowing every value the function flows into
+  — escape analysis, the step after this phase. A closure keeps the uniform
+  dynamic convention either way, so nothing here is unsound; it is why an
+  annotation on a closure parameter still reports as unprovable, including
+  one a reader can see is right.
 
 ## What shipped, and what is deliberately not here
 
@@ -288,12 +277,6 @@ cases named below.
   yet. `InferenceResult::typeOfBindingAt(mergePoint, name)` was added,
   keyed on the statement that owns the merge — a node lowering holds in its
   hand when it creates the block.
-- **Decision 6's "seeds the lattice" is implemented as no seed at all.**
-  Inference never reads an annotation. A seed that can only agree with a
-  proof or be discarded is observationally identical to no seed, and a seed
-  that joined into the lattice would *widen* what bronze believes, which
-  the same decision forbids. The annotation is compared against the proof
-  at the declaration and then thrown away.
 - **The warnings had nowhere to go.** These are the first warnings bronze
   emits, and the CLI rendered diagnostics only when there were errors — so
   a warning on a successful compile was collected and dropped. The driver
@@ -386,27 +369,3 @@ The three `internal:` errors are tripwires for a rule that stopped being
 monotone. The lattice is three tall, so every fixpoint here settles in a
 couple of rounds; exceeding the bound is an impossibility, and it is
 diagnosed rather than looped on.
-
-### Still not here
-
-The list under "Not here, and named as such" above is unchanged by what
-shipped, and none of it was quietly attempted: **escape analysis** (and so
-guard-free property access and stack-allocated environments), **union
-types** (and so polymorphic-site specialization), **int32 specialization**,
-**cross-module inference**, **typed-array element access lowering to raw
-loads**, and **deoptimization**. Two further absences the implementation
-made concrete:
-
-- **`--strict-hints`** — promoting the annotation warnings to errors. Named
-  as future work in decision 6 and deliberately not built: the policy has
-  to be lived with before it is enforced.
-- **No proof surface for a closure's PARAMETERS.** The return half of this
-  is closed: the analysis already joined every `return` in a closure body
-  and threw the answer away, and `closureReturnAt` now keys it on the
-  closure's AST node. The parameters are not, and closing them is not a
-  keying problem — it needs signatures inferred for a function reached
-  through a *value*, which means knowing every value the function flows
-  into: escape analysis, the step after this phase. A closure keeps the
-  uniform dynamic convention either way, so nothing here is unsound; it is
-  why an annotation on a closure parameter still reports as unprovable,
-  including one a reader can see is right.

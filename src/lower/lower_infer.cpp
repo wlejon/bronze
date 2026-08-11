@@ -20,21 +20,14 @@ namespace bronze::lower {
 namespace {
 
 // The lattice element an annotation names — the ONLY meaning an annotation
-// has (docs/0010 decision 6). It is a claim to be checked against a proof,
-// never an IL type, which is why this replaced the old `mapTypeAnnotation`:
-// that function answered "what IL type does this annotation buy", and the
-// answer is now "none, on its own".
+// has (docs/0010 decision 6). A claim to be checked against a proof, never an
+// IL type on its own.
 //
-// The spellings are TypeScript's, because that is what the hint policy is
-// about: an annotation is an untrusted TS hint, so `x: string` has to be
-// readable and `x: str` was only ever readable because `str` is what bronze
-// happens to call the type in its own IL. Both are accepted — the IL names
-// stay because they were accepted before and a ratchet only grows — but a
-// user writing TS never has to learn them.
-//
-// Text bronze does not recognise stays a named hard error; see
-// `checkAnnotation` for why that is not the hint policy contradicting
-// itself.
+// Both TypeScript's spellings and bronze's own IL names are accepted: a
+// policy whose premise is "annotations are untrusted TS hints" cannot reject
+// `x: string` while accepting `x: str`. Text bronze does not recognise is a
+// named hard error; see `checkAnnotation` for why that is not the hint policy
+// contradicting itself.
 std::optional<types::Type> annotationClaim(const std::string& ann) {
     // TS spelling first in each line, bronze's IL name after it.
     if (ann == "number" || ann == "f64" || ann == "i32") return types::Type::number();
@@ -63,18 +56,14 @@ constexpr const char* kReadableAnnotations =
 //
 // Only `Number` buys anything today: it is the one lattice element with
 // unboxed IL ops behind it (docs/0010 decision 3). Everything else stays
-// `Dynamic`, which is not a failure — it is the designed sound fallback.
+// `Dynamic`, the designed sound fallback.
 //
-// `Never` deliberately lands here too, and it is NOT an error. A `Never` in
-// a signature is real data: it means a direct-callable function that no call
-// site ever reaches, so no value ever arrives at that position (see the
-// contract comment on `types::InferenceResult::signatureOf`). There is no IL
-// type for "no value", and dead code still has to be lowered — it is emitted
-// into the object file, it may be exported, and the IL verifier walks it —
-// so it gets the uniform dynamic convention. That is the sound answer for a
-// position whose callers are unknown or nonexistent; mapping `Never` onto
-// f64 would be a specialization with nothing behind it, and diagnosing it
-// would turn "you wrote a function nobody calls" into a compile failure.
+// `Never` lands here deliberately and is NOT an error. It means a
+// direct-callable function no call site reaches, so no value ever arrives at
+// that position — but dead code still has to be lowered, exported and
+// verified, and there is no IL type for "no value". Mapping it onto f64 would
+// be a specialization with nothing behind it; diagnosing it would turn "you
+// wrote a function nobody calls" into a compile failure.
 il::Type Lowerer::ilTypeOf(types::Type t) {
     return t.is(types::TypeKind::Number) ? il::Type::F64 : il::Type::Dynamic;
 }
@@ -199,10 +188,9 @@ types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
 // docs/0010 decision 6, and with it docs/0001 decision 4: a TS annotation is
 // an untrusted optimization hint.
 //
-// This function is the whole policy, and note what it does NOT do — it does
-// not return a type. An annotation seeds nothing here and constrains nothing;
-// the caller has already chosen its IL type from what inference proved, and
-// this only decides whether to say something about the annotation:
+// Note what it does NOT do: it does not return a type. The caller has already
+// chosen its IL type from what inference proved; this only decides whether to
+// say something about the annotation.
 //
 //   - the proof agrees      -> silence. The typed path the caller took is
 //                              taken because of the PROOF; the annotation was
@@ -211,27 +199,21 @@ types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
 //   - something else proven -> "contradicts inferred".
 //
 // Both of the latter leave the value on the uniform dynamic convention. That
-// is what closes the live unsoundness docs/0010 named: `f(x: number)` reached
-// with a string used to map straight onto an f64 parameter and unbox the
-// string, which is a coercion the source never wrote — JS `"a" + 1` is `"a1"`.
+// is what closes the live unsoundness docs/0010 named: believing the
+// annotation maps `f(x: number)` reached with a string onto an f64 parameter
+// and unboxes the string — a coercion the source never wrote, where JS says
+// `"a" + 1` is `"a1"`.
 //
 // Warnings, never errors: wild JS with wrong annotations must still compile
 // (docs/0001 decision 4). A `--strict-hints` that promotes them is named as
 // future work in docs/0010 and deliberately not here.
 //
-// With `--no-infer` there is no proof for ANY annotation to agree with, so
-// every one of them would be discarded and every one would warn. Those
-// warnings are suppressed, because they say nothing about the source — only
-// about the mode, which the user chose one command line ago. The suppression
-// is exactly the `inference_ == nullptr` test that *defines* the mode, so it
-// cannot hide a warning in the normal mode: with an inference result in hand
-// every discarded annotation still warns, and that is what the lower tests
-// pin in both directions.
-//
-// What is NOT suppressed is the hard error below. Unreadable annotation text
-// is a fact about the source, and `--no-infer` is a bisection seam for a
-// suspected miscompile (docs/0010 decision 8) — it must not quietly accept
-// source that the normal mode rejects.
+// With `--no-infer` nothing is provable, so every annotation would warn and
+// say only which switch is on. Those warnings are suppressed by exactly the
+// `inference_ == nullptr` test that *defines* the mode, so the suppression
+// cannot reach the normal one. The hard error below is NOT suppressed:
+// unreadable text is a fact about the source, and a bisection seam
+// (docs/0010 decision 8) must not accept a file the normal mode rejects.
 bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::string& name,
                               types::Type proven) {
     if (ann.empty()) return true;

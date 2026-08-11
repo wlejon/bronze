@@ -63,9 +63,10 @@ int fail(const std::string& message) {
 
 // Diagnostics from a compilation that SUCCEEDED — warnings, since an error
 // would have taken an early return. They go to stderr because stdout is the
-// artefact (the IL dump, the type dump) and a caller pipes it; a diagnostic
-// nobody prints is not a diagnostic, which is what these were before
-// docs/0010 decision 6 gave lowering something to warn about.
+// artefact (the IL dump, the type dump) and a caller pipes it. Rendering them
+// only on failure, as the error path does, drops every annotation warning
+// docs/0010 decision 6 emits — and a diagnostic nobody prints is not a
+// diagnostic.
 void reportWarnings(const DiagnosticSink& diags, const SourceBuffer& buffer) {
     if (diags.all().empty()) return;
     std::fputs(diags.render(buffer).c_str(), stderr);

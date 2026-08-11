@@ -1,6 +1,6 @@
 # 0008 — Prototypes, `this`, and `new`
 
-Status: designed and implemented 2026-08-10. Implements the prototype bullet of docs/0004
+Status: implemented. Implements the prototype bullet of docs/0004
 decision 2, which was accepted but unbuilt: `Shape::prototype` existed as a
 field that nothing ever read, and there was no *surface* that could create
 a prototype — `new Foo()` on a user function was
@@ -129,28 +129,25 @@ attaches properties to functions. That is still the destination, but
 of work. Here a function gets exactly two new fields — the lazily created
 `.prototype` object and the root shape for its instances — and:
 
-- reading a property a function does not have returns `undefined`, which is
-  what JS says;
+- reading a property JS does not define returns `undefined`, which is what
+  JS says;
+- reading a property JS DOES define and bronze has not built is a hard error
+  naming it — `unsupported: Function.prototype.name is not implemented`;
 - **writing** any property other than `prototype` is a hard error naming
   itself, rather than being dropped on the floor.
 
-**Amended 2026-08-11.** The first clause originally read "reading any *other*
-property of a function returns `undefined` … `name` and `length` are not
-implemented and are listed as such". That conflated two different things. A
-property JS does not define reads `undefined` and is correct; `name`,
-`length`, `call`, `apply` and `bind` are properties JS *does* define and
-bronze has not built, and reading `undefined` for one of those is a claim
-about the language that is false. Listing them in a doc is weaker than the
-house rule, which is that an unimplemented construct is diagnosed by name —
-so they are now `unsupported: Function.prototype.name is not implemented`.
-The same correction applies to `Array.prototype`, `String.prototype`,
-`%TypedArray%.prototype` and `ArrayBuffer.prototype`, whose real members
-were all reading `undefined`; `[1].push` used to produce a call error naming
-the bit pattern `fff6000000000000` rather than `push`. Plain objects are
-deliberately left out of this: `getProp` cannot distinguish "absent" from
-"present and holding `undefined`", so diagnosing `Object.prototype` members
-there could hard-error on valid code, and a false error is worse than the
-documented absence.
+The first two are one distinction, and it is the whole of decision 3 in
+docs/0011. `undefined` for `name`, `length`, `call`, `apply` or `bind` is a
+claim about the language that is false, and the program then feature-tests it
+away or calls it and dies naming bits — `[1].push` produced a call error
+naming the bit pattern `fff6000000000000` rather than `push`. The same tables
+cover `Array.prototype`, `String.prototype`, `%TypedArray%.prototype` and
+`ArrayBuffer.prototype`.
+
+Plain objects are deliberately left out: `getProp` cannot distinguish
+"absent" from "present and holding `undefined`", so diagnosing
+`Object.prototype` members there could hard-error on valid code, and a false
+error is worse than a documented absence.
 
 Assigning `Foo.prototype = {...}` is supported and resets the instance
 root shape, so instances made after the assignment get the new prototype
@@ -193,10 +190,9 @@ Named hard errors, not silent fallbacks:
 - ``assigning a non-object to a function's `prototype` is unsupported``
 - `prototype chain too deep (a cycle?)`, so a cycle aborts rather than
   hangs
-- `unsupported: Function.prototype.<name> is not implemented` (added
-  2026-08-11 by the amendment to decision 5), and the same message for
-  `Array.prototype`, `String.prototype`, `Float32Array.prototype` and
-  `ArrayBuffer.prototype`
+- `unsupported: Function.prototype.<name> is not implemented` (decision 5),
+  and the same message for `Array.prototype`, `String.prototype`,
+  `Float32Array.prototype` and `ArrayBuffer.prototype`
 
 Not here, and named as such:
 

@@ -1,6 +1,6 @@
 # 0007 — Closures and environment records
 
-Status: designed and implemented 2026-08-10. Implements the "Functions and
+Status: implemented. Implements the "Functions and
 closures" section of docs/0004, which accepted GC-allocated environment
 records but left them unbuilt: `FunctionHeader::env_record` existed as an
 unused `void*`, and a nested function referencing an enclosing variable was

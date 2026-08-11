@@ -1,8 +1,9 @@
 # 0002 — LLVM backend: first end-to-end executable
 
-Status: next up (blocked only on the vcpkg `llvm` feature build finishing).
+Status: implemented; the Log below stays open and grows with the backend.
+
 Goal: `bronze build main.js -o main.exe` produces a running native exe, with
-a perf smoke against node from the first day.
+a perf smoke from the first day.
 
 ## Steps
 
@@ -48,16 +49,18 @@ a perf smoke against node from the first day.
 
 ## Log
 
-- 2026-08-10: fib.js | bronze: 7.36ms | node: 31.03ms | 4.22x speedup (stdout byte match verified)
-- 2026-08-10: numeric_loop.js | bronze: 7.44ms | node: 30.00ms | 4.03x speedup (stdout byte match verified)
-- 2026-08-10 (dynamic substrate landed): fib.js | bronze: 9.52ms | node: 34.64ms | 3.64x (byte match)
-- 2026-08-10 (dynamic substrate landed): numeric_loop.js | bronze: 9.41ms | node: 33.70ms | 3.58x (byte match)
-- 2026-08-10: property_access.js | bronze: 894.36ms | node: 34.03ms | **0.04x — 26x slower** (byte match). First dynamic-path bench: every property access and dynamic call crosses into C++ runtime helpers with no inline-cache fast path in generated code. This is the baseline gap that inference (phase 3) and IL-level IC fast paths must close — recorded on day one so no broc-style surprise is possible.
-- 2026-08-10 (control flow landed; benchmarks rewritten as real loops): all
-  earlier entries are superseded — the old benches were hand-unrolled
-  straight-line code that LLVM could constant-fold, so those numbers mostly
-  measured process startup. New honest baseline (bronze-only; node is no
-  longer invoked by any tooling, see docs/0003):
+One entry per change that can move a number. Entries are cumulative: each is
+measured against the one above it, so the trend line is readable end to end
+and a regression cannot hide in an average.
+
+The first five entries are deleted rather than kept: those benchmarks were
+hand-unrolled straight-line code that LLVM constant-folded, so the numbers
+mostly measured process startup, and a misleading baseline is worse than
+none. The log starts from the rewrite that made them real loops.
+
+- (control flow landed; benchmarks rewritten as real loops) the honest
+  baseline, bronze-only — node is no longer invoked by any tooling, see
+  docs/0003:
   - fib.js — recursive fib(30) — avg 112.0ms / min 105.7ms (output 832040, correct)
   - numeric_loop.js — 10M-iteration float loop — avg 86.9ms / min 81.8ms
   - property_access.js — 1M-iteration `o.a + o.b` loop — avg 890.1ms / min

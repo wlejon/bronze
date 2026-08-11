@@ -1,15 +1,14 @@
 # 0011 — Builtins: the globals and the prototype methods
 
-Status: designed and landing 2026-08-11. This is the first half of phase 4
-of docs/0001 ("language growth"), and it is the reason three.js cannot begin
-today: `Math.sqrt(9)` is `undefined variable: Math`, and every real member
-of `Array.prototype` and `String.prototype` is a hard error naming itself.
+Status: implemented, except decision 4. This is the first half of phase 4 of
+docs/0001 ("language growth"), and it was the reason three.js could not
+begin: `Math.sqrt(9)` was `undefined variable: Math`, and every real member
+of `Array.prototype` and `String.prototype` was a hard error naming itself.
 
-docs/0003 already wrote the spec for this work. When phases 2 and 3 emptied
-`cases/blocked/`, it was re-seeded on 2026-08-11 with exactly three cases —
+docs/0003 wrote the spec for this work as three oracle cases —
 `math_builtin`, `array_methods`, `string_methods` — each with a committed
-`.expected` derived from ECMA-262. Those three files are what this doc has
-to make pass, and the promote-on-pass ratchet is what says when it did.
+`.expected` derived from ECMA-262. Those three files are what this doc had
+to make pass, and the promote-on-pass ratchet is what said when it did.
 
 ## Decision 1 — a provided global is resolved by NAME, at compile time
 
@@ -53,10 +52,10 @@ arity 2, `Math.min()` would reach the builtin as two undefineds and answer
 
 ## Decision 3 — a member bronze has not built stays LOUD
 
-rt_helpers.cpp already carries a table per prototype of names that ECMA-262
-says exist and bronze has not implemented; reading one is a hard error
-naming it, never `undefined`. A namespace object is an ordinary object, so
-its misses need the same treatment, and `Math` gets its own table
+`src/runtime/rt_members.cpp` carries a table per prototype of names that
+ECMA-262 says exist and bronze has not implemented; reading one is a hard
+error naming it, never `undefined`. A namespace object is an ordinary object,
+so its misses need the same treatment, and `Math` gets its own table
 (`Math.random`, `Math.fround`, `Math.imul`, the hyperbolics, …). The check
 runs only on the miss, so the hit path is untouched.
 
@@ -89,19 +88,17 @@ every edge case, which is exactly what the oracle's with-inference and
 the same route and the comparison proves nothing about it. A bench case
 (`bench/math_loop.js`) and a docs/0002 log entry land with it, not before.
 
-## Order of work
+## What landed
 
-1. **`Math`** — decisions 1–3, `math_builtin` promoted. *(done)*
+1. **`Math`** — decisions 1–3, `math_builtin` promoted.
 2. **`Array.prototype`** — the members `array_methods` names, plus the
    callback-taking ones (`map`, `filter`, `reduce`, `forEach`), which reach
-   user code back through `bronze_dynamic_call`. *(done)*
+   user code back through `bronze_dynamic_call`.
 3. **`String.prototype`** — the members `string_methods` names. Strings are
    immutable (docs/0004), so every one of them allocates a fresh string and
-   none can work in place. *(done)*
+   none can work in place.
 
-The syntax half of phase 4 — template literals, for-of, arrows and classes —
-is docs/0012, not this doc: this one is about what a program can call, that
-one about what it can write.
+Decision 4's numeric fast path is the one part still open.
 
 ## Named diagnostics
 

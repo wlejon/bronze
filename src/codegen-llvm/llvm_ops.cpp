@@ -1,0 +1,303 @@
+// The IL operations that become a runtime helper call, an inlined property
+// access, or a constant. Arithmetic is llvm_arith.cpp; control flow is the
+// terminator half of llvm_func.cpp.
+
+#include <string>
+
+#include <llvm/IR/Constants.h>
+
+#include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_func.h"
+#include "codegen-llvm/llvm_prop.h"
+
+namespace bronze::codegen_llvm {
+
+bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
+    const AbiFns& abi = shared_.abi;
+
+    // The shapes most of these share: N operands in, one helper call, result
+    // into the value table.
+    auto needs = [&](size_t operandCount, bool needsResult, const char* what) {
+        return require(inst.operands.size() >= operandCount &&
+                           (!needsResult || inst.result != il::kNoValue),
+                       what);
+    };
+    auto callWith = [&](llvm::Function* fn, std::initializer_list<llvm::Value*> args) {
+        llvm::Value* res = builder_.CreateCall(fn, std::vector<llvm::Value*>(args));
+        if (inst.result != il::kNoValue) values_[inst.result] = res;
+    };
+
+    switch (inst.op) {
+        case il::Op::ConstF64:
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = llvm::ConstantFP::get(builder_.getDoubleTy(), inst.immF64);
+            }
+            return true;
+        case il::Op::ConstI32:
+            if (inst.result != il::kNoValue) values_[inst.result] = builder_.getInt32(inst.immI32);
+            return true;
+        case il::Op::ConstBool:
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = builder_.getInt1(inst.immI32 != 0);
+            }
+            return true;
+        case il::Op::ConstUndefined:
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+            }
+            return true;
+        case il::Op::ConstNull:
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = builder_.getInt64(BRONZE_ABI_NULL_BITS);
+            }
+            return true;
+
+        case il::Op::Box: {
+            if (inst.result == il::kNoValue) return true;
+            // A Str box names a registered key rather than boxing an operand:
+            // the string itself is a compile-time constant.
+            if (inst.boxType == il::Type::Str) {
+                values_[inst.result] =
+                    builder_.CreateCall(abi.bronze_box_str_key, {builder_.getInt32(inst.keyIndex)});
+                return true;
+            }
+            if (!needs(1, true, "Invalid operands for Box")) return false;
+            llvm::Value* src = operand(inst, 0, "Undefined value in Box instruction");
+            if (!src) return false;
+            llvm::Function* boxFn = abi.bronze_box_f64;
+            if (inst.boxType == il::Type::I32) boxFn = abi.bronze_box_i32;
+            else if (inst.boxType == il::Type::Bool) boxFn = abi.bronze_box_bool;
+            values_[inst.result] = builder_.CreateCall(boxFn, {src});
+            return true;
+        }
+        case il::Op::Unbox: {
+            if (!needs(1, true, "Invalid operands for Unbox")) return false;
+            llvm::Value* src = operand(inst, 0, "Undefined value in Unbox instruction");
+            if (!src) return false;
+            llvm::Function* unboxFn = abi.bronze_unbox_f64;
+            if (inst.type == il::Type::I32) unboxFn = abi.bronze_unbox_i32;
+            else if (inst.type == il::Type::Bool) unboxFn = abi.bronze_unbox_bool;
+            values_[inst.result] = builder_.CreateCall(unboxFn, {src});
+            return true;
+        }
+
+        case il::Op::CreateObject:
+            if (inst.result != il::kNoValue) callWith(abi.bronze_create_object, {});
+            return true;
+        case il::Op::CreateArray:
+            if (inst.result != il::kNoValue) {
+                callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});
+            }
+            return true;
+        case il::Op::CreateArrayBuffer: {
+            if (!needs(1, true, "Invalid operands for CreateArrayBuffer")) return false;
+            llvm::Value* len =
+                operand(inst, 0, "Undefined operand in CreateArrayBuffer instruction");
+            if (!len) return false;
+            callWith(abi.bronze_create_arraybuffer, {len});
+            return true;
+        }
+        case il::Op::CreateFloat32Array: {
+            if (!needs(1, true, "Invalid operands for CreateFloat32Array")) return false;
+            llvm::Value* arg =
+                operand(inst, 0, "Undefined operand in CreateFloat32Array instruction");
+            if (!arg) return false;
+            callWith(abi.bronze_create_float32array, {arg});
+            return true;
+        }
+        case il::Op::ObjectKeys: {
+            if (!needs(1, false, "Invalid operands for ObjectKeys")) return false;
+            llvm::Value* target = operand(inst, 0, "Undefined operand in ObjectKeys instruction");
+            if (!target) return false;
+            callWith(abi.bronze_object_keys, {target});
+            return true;
+        }
+        case il::Op::GlobalGet:
+            if (inst.result != il::kNoValue) {
+                callWith(abi.bronze_global_get, {builder_.getInt32(inst.keyIndex)});
+            }
+            return true;
+        case il::Op::ClassExtend: {
+            if (!needs(2, false, "Invalid operands for ClassExtend")) return false;
+            llvm::Value* derived = operand(inst, 0, "Undefined operand in ClassExtend instruction");
+            llvm::Value* base = operand(inst, 1, "Undefined operand in ClassExtend instruction");
+            if (!derived || !base) return false;
+            builder_.CreateCall(abi.bronze_class_extends, {derived, base});
+            return true;
+        }
+
+        case il::Op::IterLength:
+        case il::Op::IterAt:
+        case il::Op::IterAdvance: {
+            const bool unary = inst.op == il::Op::IterLength;
+            if (!needs(unary ? 1 : 2, true, "Invalid operands for an iteration instruction")) {
+                return false;
+            }
+            const char* what = "Undefined value in an iteration instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* index = unary ? nullptr : operand(inst, 1, what);
+            if (!target || (!unary && !index)) return false;
+            if (unary) {
+                callWith(abi.bronze_iter_length, {target});
+            } else if (inst.op == il::Op::IterAt) {
+                callWith(abi.bronze_iter_at, {target, index});
+            } else {
+                callWith(abi.bronze_iter_advance, {target, index});
+            }
+            return true;
+        }
+
+        case il::Op::CreateFunction: {
+            if (inst.result == il::kNoValue) return true;
+            llvm::Value* env = inst.operands.empty()
+                                   ? builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS)
+                                   : operand(inst, 0, "Undefined environment in CreateFunction");
+            if (!env) return false;
+            callWith(abi.bronze_create_function,
+                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32), env});
+            return true;
+        }
+        case il::Op::FunctionRef: {
+            if (inst.result == il::kNoValue) return true;
+            if (!require(inst.calleeIndex < shared_.wrappers.size(),
+                         "FunctionRef to an out-of-range function index")) {
+                return false;
+            }
+            const auto& target = shared_.module.functions[inst.calleeIndex];
+            uint32_t arity =
+                static_cast<uint32_t>(target.params.size() - target.firstSourceParam());
+            callWith(abi.bronze_function_singleton,
+                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity)});
+            return true;
+        }
+
+        case il::Op::EnvCreate: {
+            if (inst.result == il::kNoValue) return true;
+            llvm::Value* parent = inst.operands.empty()
+                                      ? builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS)
+                                      : operand(inst, 0, "Undefined parent in EnvCreate");
+            if (!parent) return false;
+            callWith(abi.bronze_env_create, {parent, builder_.getInt32(inst.immI32)});
+            return true;
+        }
+        case il::Op::EnvGet: {
+            if (!needs(1, true, "Invalid operands for EnvGet")) return false;
+            llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGet");
+            if (!env) return false;
+            callWith(abi.bronze_env_get, {env, builder_.getInt32(inst.envDepth),
+                                          builder_.getInt32(inst.envIndex)});
+            return true;
+        }
+        case il::Op::EnvSet: {
+            if (!needs(2, false, "Invalid operands for EnvSet")) return false;
+            llvm::Value* env = operand(inst, 0, "Undefined operand in EnvSet");
+            llvm::Value* val = operand(inst, 1, "Undefined operand in EnvSet");
+            if (!env || !val) return false;
+            builder_.CreateCall(abi.bronze_env_set,
+                                {env, builder_.getInt32(inst.envDepth),
+                                 builder_.getInt32(inst.envIndex), val});
+            return true;
+        }
+
+        case il::Op::Print:
+            if (!inst.operands.empty() && values_[inst.operands[0]]) {
+                builder_.CreateCall(abi.bronze_print_value, {values_[inst.operands[0]]});
+            }
+            return true;
+
+        case il::Op::PropGet: {
+            if (!needs(1, true, "Invalid operands for PropGet")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined object in PropGet instruction");
+            if (!obj) return false;
+            // A site inference proved monomorphic gets the guard inlined here;
+            // an unproven one keeps the plain call, so the inline form never
+            // grows into a polymorphic guard chain in the object file
+            // (docs/0010 decisions 4, 7). This may SPLIT the current block.
+            values_[inst.result] = emitPropGet(builder_, abi, shared_.icTable, obj, inst.keyIndex,
+                                               inst.icIndex, inst.icMonomorphic);
+            return true;
+        }
+        case il::Op::PropSet: {
+            if (!needs(2, false, "Invalid operands for PropSet")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in PropSet instruction");
+            llvm::Value* val = operand(inst, 1, "Undefined operand in PropSet instruction");
+            if (!obj || !val) return false;
+            emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex);
+            return true;
+        }
+        case il::Op::ElemGet: {
+            if (!needs(2, true, "Invalid operands for ElemGet")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGet instruction");
+            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGet instruction");
+            if (!obj || !idx) return false;
+            callWith(abi.bronze_elem_get, {obj, idx});
+            return true;
+        }
+        case il::Op::ElemSet: {
+            if (!needs(3, false, "Invalid operands for ElemSet")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemSet instruction");
+            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSet instruction");
+            llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSet instruction");
+            if (!obj || !idx || !val) return false;
+            builder_.CreateCall(abi.bronze_elem_set, {obj, idx, val});
+            return true;
+        }
+
+        case il::Op::DynamicCall: {
+            if (!needs(2, false, "Invalid operands for DynamicCall")) return false;
+            llvm::Value* callee =
+                operand(inst, 0, "Undefined callee or this in DynamicCall instruction");
+            llvm::Value* thisVal =
+                operand(inst, 1, "Undefined callee or this in DynamicCall instruction");
+            if (!callee || !thisVal) return false;
+            uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
+            bool ok = false;
+            llvm::Value* argv = emitArgv(inst, 2, argc, ok);
+            if (!ok) return false;
+            callWith(abi.bronze_dynamic_call,
+                     {callee, thisVal, builder_.getInt32(argc), argv});
+            return true;
+        }
+        case il::Op::Construct: {
+            if (!needs(1, false, "Invalid operands for Construct")) return false;
+            llvm::Value* ctor = operand(inst, 0, "Undefined constructor in Construct instruction");
+            if (!ctor) return false;
+            uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
+            bool ok = false;
+            llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+            if (!ok) return false;
+            callWith(abi.bronze_construct, {ctor, builder_.getInt32(argc), argv});
+            return true;
+        }
+        case il::Op::Call: {
+            if (!require(inst.calleeIndex < shared_.entries.size(),
+                         "Invalid callee index in Call instruction")) {
+                return false;
+            }
+            llvm::Function* callee = shared_.entries[inst.calleeIndex];
+            std::vector<llvm::Value*> args;
+            args.reserve(inst.operands.size());
+            for (size_t i = 0; i < inst.operands.size(); ++i) {
+                llvm::Value* arg = operand(inst, i, "Undefined argument in Call instruction");
+                if (!arg) return false;
+                args.push_back(arg);
+            }
+            llvm::Value* res = builder_.CreateCall(callee, args);
+            if (inst.result != il::kNoValue && !callee->getReturnType()->isVoidTy()) {
+                values_[inst.result] = res;
+            }
+            return true;
+        }
+
+        case il::Op::IsNullish: {
+            if (!needs(1, true, "Invalid operands for IsNullish")) return false;
+            callWith(abi.bronze_is_nullish, {values_[inst.operands[0]]});
+            return true;
+        }
+
+        default:
+            return require(false, "Unsupported IL instruction opcode");
+    }
+}
+
+}  // namespace bronze::codegen_llvm
