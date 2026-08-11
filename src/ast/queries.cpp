@@ -141,8 +141,24 @@ public:
     }
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
-    void visit(const SwitchStmt&) override {}
-    void visit(const ForInStmt&) override {}
+    void visit(const SwitchStmt& n) override {
+        if (n.discriminant) n.discriminant->accept(*this);
+        for (const auto& c : n.cases) {
+            if (c.test) c.test->accept(*this);
+            for (const auto& s : c.body) s->accept(*this);
+        }
+    }
+    void visit(const LabeledStmt& n) override {
+        if (n.body) n.body->accept(*this);
+    }
+    void visit(const ForInStmt& n) override {
+        if (n.pattern) {
+            for (const auto& bound : patternBoundNames(*n.pattern)) names.insert(bound);
+            visitPatternExprs(n.pattern.get(), *this);
+        }
+        if (n.object) n.object->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const ForOfStmt& n) override {
         if (n.pattern) {
             for (const auto& bound : patternBoundNames(*n.pattern)) names.insert(bound);
@@ -283,8 +299,21 @@ public:
     }
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
-    void visit(const SwitchStmt&) override {}
-    void visit(const ForInStmt&) override {}
+    void visit(const SwitchStmt& n) override {
+        if (n.discriminant) n.discriminant->accept(*this);
+        for (const auto& c : n.cases) {
+            if (c.test) c.test->accept(*this);
+            for (const auto& s : c.body) s->accept(*this);
+        }
+    }
+    void visit(const LabeledStmt& n) override {
+        if (n.body) n.body->accept(*this);
+    }
+    void visit(const ForInStmt& n) override {
+        visitPatternExprs(n.pattern.get(), *this);
+        if (n.object) n.object->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const ForOfStmt& n) override {
         visitPatternExprs(n.pattern.get(), *this);
         if (n.iterable) n.iterable->accept(*this);
@@ -378,6 +407,27 @@ void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
     if (const auto* f = dynamic_cast<const ForStmt*>(&stmt)) {
         collectHoistedVars(f->init, out);
         collectHoistedVars(f->body, out);
+        return;
+    }
+    if (const auto* fo = dynamic_cast<const ForOfStmt*>(&stmt)) {
+        collectHoistedVars(fo->body, out);
+        return;
+    }
+    // A `var` in a switch case is the function's, exactly like a `var` in an
+    // if-branch: the case clause is not a scope of its own, and only the
+    // switch BODY is a block (ECMA-262 14.12.2). A switch missing from this
+    // walk left `var m` inside a case with no function-level binding, so the
+    // name read `undefined variable` after the switch.
+    if (const auto* sw = dynamic_cast<const SwitchStmt*>(&stmt)) {
+        for (const auto& c : sw->cases) collectHoistedVars(c.body, out);
+        return;
+    }
+    if (const auto* fi = dynamic_cast<const ForInStmt*>(&stmt)) {
+        collectHoistedVars(fi->body, out);
+        return;
+    }
+    if (const auto* lb = dynamic_cast<const LabeledStmt*>(&stmt)) {
+        if (lb->body) collectHoistedVarsIn(*lb->body, out);
         return;
     }
     // A nested function's `var`s belong to that function, not this one.

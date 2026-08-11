@@ -132,6 +132,14 @@ ExprPtr Parser::parseAssign() {
     if (!lhs) return nullptr;
     BinaryOp op{};
     if (!assignmentOp(peek().kind, op)) return lhs;
+    // `a?.b = 1` is an early error (ECMA-262 13.3.9 / 13.15.1): the left side
+    // of an assignment is a target, and a chain that may decide not to
+    // evaluate is not one. `(a?.b).c = 1` is legal and reaches here with a
+    // parenthesized base, which `containsOptionalLink` stops at.
+    if (ast::containsOptionalLink(*lhs)) {
+        error("an optional chain is not a valid assignment target");
+        return nullptr;
+    }
     // `[a, b] = pair` and `({ x } = o)`. Nothing before the `=` distinguishes
     // the pattern from the literal that covers it, which is why ECMA-262
     // 13.15.5 refines it exactly here — at the token that reveals which one
@@ -339,7 +347,53 @@ ExprPtr Parser::parseUnaryPostfix() {
 // the constructor's argument list read as a syntax error.
 ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
     for (;;) {
-        if (match(TokenKind::Dot)) {
+        if (check(TokenKind::QuestionDot)) {
+            // `?.` is one punctuator in front of THREE productions — `?.name`,
+            // `?.[i]` and `?.(args)` — so which link follows is decided here
+            // and not by a second `.`/`[`/`(` branch below. The node it builds
+            // is the ordinary one with `optional` set: what differs is when the
+            // link runs, not what it computes (docs/0018 decision 4).
+            advance();
+            if (check(TokenKind::LBracket)) {
+                advance();
+                auto indexExpr = parseExpr();
+                if (!indexExpr) return nullptr;
+                if (!expect(TokenKind::RBracket, "']' after index expression")) return nullptr;
+                auto idx = std::make_unique<IndexAccess>();
+                idx->span = {expr->span.begin, peek().span.begin};
+                idx->object = std::move(expr);
+                idx->index = std::move(indexExpr);
+                idx->optional = true;
+                expr = std::move(idx);
+                continue;
+            }
+            if (check(TokenKind::LParen)) {
+                advance();
+                auto call = std::make_unique<Call>();
+                call->span.begin = expr->span.begin;
+                call->callee = std::move(expr);
+                call->optional = true;
+                if (!parseArgumentList(call->args)) return nullptr;
+                call->span.end = peek().span.begin;
+                expr = std::move(call);
+                continue;
+            }
+            if (check(TokenKind::TemplateWhole) || check(TokenKind::TemplateHead)) {
+                // ECMA-262 13.3.9 has no OptionalChain production for a
+                // template, precisely so that `a?.b`...`` cannot silently mean
+                // "tag it, unless a is nullish".
+                error("a tagged template may not be part of an optional chain");
+                return nullptr;
+            }
+            const Token* member = expect(TokenKind::Identifier, "property name after '?.'");
+            if (!member) return nullptr;
+            auto mem = std::make_unique<MemberAccess>();
+            mem->span = {expr->span.begin, member->span.end};
+            mem->object = std::move(expr);
+            mem->property = std::string(member->text);
+            mem->optional = true;
+            expr = std::move(mem);
+        } else if (match(TokenKind::Dot)) {
             const Token* member = expect(TokenKind::Identifier, "property name");
             if (!member) return nullptr;
             const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
@@ -379,6 +433,13 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // substitutions as arguments. Named here so it does not read as
             // a missing semicolon.
             error("unsupported construct: tagged template literal");
+            return nullptr;
+        } else if ((check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) &&
+                   !atLineBreak() && ast::containsOptionalLink(*expr)) {
+            // An UpdateExpression's operand must be a valid assignment target,
+            // and ECMA-262 13.3.9 makes an OptionalChain none: `a?.b++` would
+            // have to write a property the chain may have decided not to read.
+            error("an optional chain is not a valid target for '++' or '--'");
             return nullptr;
         } else if (check(TokenKind::PlusPlus) && atLineBreak()) {
             // Postfix `++`/`--` are restricted productions: a line terminator

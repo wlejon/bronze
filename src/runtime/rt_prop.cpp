@@ -50,11 +50,24 @@ static bool keyAsIndex(const std::string& key, uint32_t& out) {
     return rtIsIntegerLikeKey(key, out);
 }
 
-// A computed index must be a non-negative integral number; anything else on
-// the supported receivers reads as undefined / discards the write.
+// A computed index that names an element. ToPropertyKey makes `a[0]` and
+// `a["0"]` the same property, so a STRING index that is a canonical array
+// index has to reach the elements too — which is not an edge case: `for-in`
+// yields keys as strings, so `arr[k]` inside one is the ordinary way to write
+// this. Before the string branch existed, `for (const i in arr) arr[i]` died
+// with "computed index must be a number" on the loop's own idiom.
+//
+// A non-canonical string ("01", "1x") is a NAMED property, which arrays and
+// typed arrays do not carry; the caller answers `undefined` for it, exactly as
+// for an out-of-range index.
 static bool valueToElementIndex(Value idxVal, uint32_t& out) {
+    if (idxVal.isString()) {
+        const StringHeader* s = idxVal.asString<StringHeader>();
+        if (!s->isLatin1()) return false;
+        return rtIsIntegerLikeKey(std::string_view(s->latin1Data(), s->getLength()), out);
+    }
     if (!idxVal.isNumber()) {
-        fatal("computed index must be a number (string/object keys in [] are unsupported)");
+        fatal("computed index must be a number or a string (object keys in [] are unsupported)");
     }
     double d = idxVal.asNumber();
     if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) return false;
@@ -137,6 +150,17 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         return Value::fromUndefined().rawBits();
     }
 
+    // Reading a property of null or undefined is a TypeError in ECMA-262
+    // 7.3.2 (GetV -> ToObject), and answering `undefined` for it is the
+    // silent-wrong-answer shape CLAUDE.md forbids: `a.b.c` where `a.b` is
+    // missing would report nothing and carry an undefined onward. bronze has
+    // no `throw`, so it is a hard error here — which is also what makes
+    // `(a?.b).c` differ observably from `a?.b.c` (docs/0018 decision 4).
+    if (objVal.isNull() || objVal.isUndefined()) {
+        fatal((std::string("reading property '") + keyStr + "' of " +
+               (objVal.isNull() ? "null" : "undefined"))
+                  .c_str());
+    }
     if (!objVal.isObject()) return Value::fromUndefined().rawBits();
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -211,6 +235,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     Value objVal(objBits);
     Value valVal(valBits);
     InlineCache* ic = asCache(icEntry);
+    // Writing a property of null or undefined is the same TypeError as
+    // reading one (ECMA-262 7.3.4), and discarding the write is worse than
+    // reading `undefined`: the program believes it stored something.
+    if (objVal.isNull() || objVal.isUndefined()) {
+        fatal((std::string("writing property '") + rtKeyString(keyIndex) + "' of " +
+               (objVal.isNull() ? "null" : "undefined"))
+                  .c_str());
+    }
     if (!objVal.isObject()) return;
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -288,6 +320,42 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     Rooted<Value> key(Value::fromString(keyHeader));
     Rooted<Value> val(valVal);
     objVal.asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, ic);
+}
+
+// A class method, installed on a prototype (or, for a `static`, on the
+// constructor's own-property object). Not `bronze_prop_set`: ECMA-262 15.7.14
+// defines a method with `enumerable: false`, and an ordinary assignment
+// creates an enumerable property. Its own helper rather than a flag on the
+// setter because it has no inline cache — a class body runs once, so the site
+// is cold by construction, and giving it a cache entry would spend a slot in
+// the module's IC table on a write that never repeats.
+void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("internal: a class method defined on a value that is not an object");
+    }
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("class method definition with an unregistered key index");
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    Rooted<Value> val{Value(valBits)};
+    if (hdr->flags == 2) {  // a `static` member: an own property of the function
+        Rooted<Value> fnRoot{objVal};
+        rtEnsureFunctionProperties(fnRoot);
+        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+        Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
+        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                          /*ic=*/nullptr,
+                                                          /*enumerable=*/false);
+        return;
+    }
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: a class method defined on a receiver that is not a plain object");
+    }
+    Rooted<Value> objRoot{objVal};
+    Rooted<Value> key(Value::fromString(keyHeader));
+    objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                    /*ic=*/nullptr, /*enumerable=*/false);
 }
 
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {

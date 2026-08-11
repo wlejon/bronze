@@ -101,13 +101,15 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
     }
 
     if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
-        diags_.error(sw->span, "unsupported construct: switch statement");
-        return false;
+        return lowerSwitchStmt(sw, ilFn);
+    }
+
+    if (const auto* labeled = dynamic_cast<const ast::LabeledStmt*>(&stmt)) {
+        return lowerLabeledStmt(labeled, ilFn);
     }
 
     if (const auto* fi = dynamic_cast<const ast::ForInStmt*>(&stmt)) {
-        diags_.error(fi->span, "unsupported construct: for-in loop");
-        return false;
+        return lowerForInStmt(fi, ilFn);
     }
 
     if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&stmt)) {

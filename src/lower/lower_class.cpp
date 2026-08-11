@@ -91,14 +91,18 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         // An instance method belongs to the prototype, shared by every
         // instance; a `static` one belongs to the constructor itself, which
         // is an own property of the function object (docs/0012 decision 6).
+        //
+        // `method.def` rather than `prop.set`, because ECMA-262 15.7.14
+        // defines a method with `enumerable: false` and an assignment cannot
+        // say that. It is what keeps a method out of `Object.keys`, out of an
+        // object spread, and out of `for-in` — where it would otherwise show
+        // up on every instance of the class (docs/0018 decision 2).
         il::Instruction setInst;
-        setInst.op = il::Op::PropSet;
+        setInst.op = il::Op::MethodDef;
         setInst.type = il::Type::Void;
         setInst.result = il::kNoValue;
         setInst.operands = {m.isStatic ? ctorVal->id : protoVal.id, fnVal->id};
         setInst.keyIndex = getKeyConstantIndex(m.name);
-        setInst.icIndex = icSiteCounter_++;
-        setInst.icMonomorphic = false;
         emitInst(ilFn, setInst);
     }
     return true;

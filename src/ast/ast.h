@@ -177,23 +177,38 @@ struct Ternary final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `?.` on the three link forms. The flag says this LINK is optional; whether
+// a link is part of a longer chain that its short circuit must skip is a
+// question about the tree, answered by `optionalChainRoot` below, because
+// ECMA-262 13.3.9 short-circuits the whole OptionalChain and not one link
+// (docs/0018 decision 4).
 struct MemberAccess final : Expr {
     ExprPtr object;
     std::string property;
+    bool optional = false;
     void accept(Visitor& v) const override;
 };
 
 struct IndexAccess final : Expr {
     ExprPtr object;
     ExprPtr index;
+    bool optional = false;
     void accept(Visitor& v) const override;
 };
 
 struct Call final : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    bool optional = false;
     void accept(Visitor& v) const override;
 };
+
+// The base of `expr`'s optional chain, or null when `expr` contains no `?.`
+// that this node's evaluation would short-circuit. A parenthesized
+// subexpression ENDS a chain (it is a PrimaryExpression, not an
+// OptionalChain), so the walk stops there — which is the whole difference
+// between `a?.b.c` and `(a?.b).c`.
+bool containsOptionalLink(const Expr& expr);
 
 struct NewExpr final : Expr {
     std::string callee;  // constructor name; only identifier callees are supported
@@ -363,12 +378,45 @@ struct ContinueStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+// One `case e:` or `default:` clause. `test` is null for the default clause,
+// which may sit anywhere in the list: where it is written decides what falls
+// through into it and out of it, and only whether any `case` matched decides
+// whether it is selected (ECMA-262 14.12.4).
+struct SwitchCase {
+    ExprPtr test;  // null: the `default` clause
+    std::vector<StmtPtr> body;
+    Span span;
+};
+
 struct SwitchStmt final : Stmt {
     ExprPtr discriminant;
+    std::vector<SwitchCase> cases;
     void accept(Visitor& v) const override;
 };
 
+// `for (const k in object) body`. The same head shape as ForOfStmt, and for
+// the same reason: the binding is per-iteration, so a closure made in the
+// body captures that iteration's key. What differs is entirely in what is
+// walked — the enumerable string keys of the object AND of its prototypes,
+// snapshotted before the first iteration (docs/0018 decision 1).
 struct ForInStmt final : Stmt {
+    std::string name;  // empty when the head destructures
+    PatternPtr pattern;
+    bool isConst = false;
+    bool isLet = false;
+    bool isVar = false;
+    ExprPtr object;
+    std::vector<StmtPtr> body;
+    void accept(Visitor& v) const override;
+};
+
+// `label: statement`. A label is not a binding: it names a jump target for
+// the `break`/`continue` inside the statement it fronts and nothing else, so
+// it has no scope beyond that statement and two sibling statements may carry
+// the same one (ECMA-262 14.13).
+struct LabeledStmt final : Stmt {
+    std::string label;
+    StmtPtr body;
     void accept(Visitor& v) const override;
 };
 
@@ -475,6 +523,7 @@ public:
     virtual void visit(const ContinueStmt&) = 0;
     virtual void visit(const SwitchStmt&) = 0;
     virtual void visit(const ForInStmt&) = 0;
+    virtual void visit(const LabeledStmt&) = 0;
     virtual void visit(const ForOfStmt&) = 0;
     virtual void visit(const TryStmt&) = 0;
     virtual void visit(const ThrowStmt&) = 0;

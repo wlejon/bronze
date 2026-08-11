@@ -129,6 +129,12 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         blk->stmts = std::move(stmts);
         return one(out, std::move(blk));
     }
+    // `name:` at the head of a statement is a label and can be nothing else —
+    // no expression statement begins with an identifier followed by a colon,
+    // which is why one token of lookahead settles it (ECMA-262 14.13).
+    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+        return one(out, parseLabeled());
+    }
 
     auto expr = parseExpr();
     if (!expr) return false;
@@ -274,6 +280,29 @@ StmtPtr Parser::parseDoWhile() {
     return stmt;
 }
 
+// The binding target shared by `for-in` and `for-of`: one declaration
+// keyword, then a name or a pattern, then the type annotation bronze reads
+// and discards (a hint types nothing).
+bool Parser::parseForBindingHead(ForBindingHead& head) {
+    head.isConst = check(TokenKind::KwConst);
+    head.isLet = check(TokenKind::KwLet);
+    head.isVar = check(TokenKind::KwVar);
+    advance();  // const / let / var
+    if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+        head.pattern = parsePattern();
+        if (!head.pattern) return false;
+    } else {
+        const Token* name = expect(TokenKind::Identifier, "loop variable name");
+        if (!name) return false;
+        head.name = std::string(name->text);
+    }
+    if (check(TokenKind::Colon)) {
+        advance();
+        parseTypeAnnotation();
+    }
+    return true;
+}
+
 StmtPtr Parser::parseFor() {
     const Token& kw = advance();
     if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
@@ -285,29 +314,32 @@ StmtPtr Parser::parseFor() {
         // has to skip a whole group rather than a fixed token count.
         const size_t lookahead = skipBindingTarget(1);
         if (peek(lookahead).kind == TokenKind::KwIn) {
-            advance(); advance(); advance();
-            parseExpr(); expect(TokenKind::RParen, "')'"); parseBlockOrSingleStmt();
-            return std::make_unique<ForInStmt>();
+            ForBindingHead head;
+            if (!parseForBindingHead(head)) return nullptr;
+            auto stmt = std::make_unique<ForInStmt>();
+            stmt->span = kw.span;
+            stmt->isConst = head.isConst;
+            stmt->isLet = head.isLet;
+            stmt->isVar = head.isVar;
+            stmt->name = std::move(head.name);
+            stmt->pattern = std::move(head.pattern);
+            if (!expect(TokenKind::KwIn, "'in' in a for-in header")) return nullptr;
+            stmt->object = parseExpr();
+            if (!stmt->object) return nullptr;
+            if (!expect(TokenKind::RParen, "')' after the enumerated object")) return nullptr;
+            stmt->body = parseBlockOrSingleStmt();
+            return stmt;
         }
         if (peek(lookahead).kind == TokenKind::KwOf) {
+            ForBindingHead head;
+            if (!parseForBindingHead(head)) return nullptr;
             auto stmt = std::make_unique<ForOfStmt>();
             stmt->span = kw.span;
-            stmt->isConst = check(TokenKind::KwConst);
-            stmt->isLet = check(TokenKind::KwLet);
-            stmt->isVar = check(TokenKind::KwVar);
-            advance();  // const / let / var
-            if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
-                stmt->pattern = parsePattern();
-                if (!stmt->pattern) return nullptr;
-            } else {
-                const Token* name = expect(TokenKind::Identifier, "loop variable name");
-                if (!name) return nullptr;
-                stmt->name = std::string(name->text);
-            }
-            if (check(TokenKind::Colon)) {
-                advance();
-                parseTypeAnnotation();  // read and discarded: a hint types nothing
-            }
+            stmt->isConst = head.isConst;
+            stmt->isLet = head.isLet;
+            stmt->isVar = head.isVar;
+            stmt->name = std::move(head.name);
+            stmt->pattern = std::move(head.pattern);
             if (!expect(TokenKind::KwOf, "'of' in a for-of header")) return nullptr;
             stmt->iterable = parseExpr();
             if (!stmt->iterable) return nullptr;
@@ -315,6 +347,15 @@ StmtPtr Parser::parseFor() {
             stmt->body = parseBlockOrSingleStmt();
             return stmt;
         }
+    } else if (check(TokenKind::Identifier) &&
+               (peek(1).kind == TokenKind::KwIn || peek(1).kind == TokenKind::KwOf)) {
+        // `for (k in o)` writes a binding that already exists. Legal
+        // JavaScript, and deliberately not built — without this it read as a
+        // three-part header whose init expression was `k in o`, and the
+        // diagnostic named the missing semicolon rather than the construct.
+        error("unsupported construct: a for-in / for-of head that assigns an existing "
+              "binding (write `for (const x in o)`)");
+        return nullptr;
     }
 
     auto stmt = std::make_unique<ForStmt>();
@@ -380,21 +421,78 @@ StmtPtr Parser::parseSwitch() {
     const Token& kw = advance();
     auto stmt = std::make_unique<SwitchStmt>();
     stmt->span = kw.span;
-    if (match(TokenKind::LParen)) {
-        parseExpr();
-        match(TokenKind::RParen);
-    }
-    if (match(TokenKind::LBrace)) {
-        int depth = 1;
-        while (!check(TokenKind::EndOfFile) && depth > 0) {
-            if (check(TokenKind::LBrace)) depth++;
-            else if (check(TokenKind::RBrace)) {
-                depth--;
-                if (depth == 0) { advance(); break; }
+    if (!expect(TokenKind::LParen, "'(' after 'switch'")) return nullptr;
+    stmt->discriminant = parseExpr();
+    if (!stmt->discriminant) return nullptr;
+    if (!expect(TokenKind::RParen, "')' after the switch discriminant")) return nullptr;
+    if (!expect(TokenKind::LBrace, "'{' to open the switch body")) return nullptr;
+
+    bool sawDefault = false;
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+        SwitchCase clause;
+        clause.span = peek().span;
+        if (match(TokenKind::KwCase)) {
+            // A CaseClause's Expression is an *Expression*, comma operator
+            // and all: the colon ends it, so nothing here has to stop at a
+            // comma the way an argument list does.
+            clause.test = parseExpr();
+            if (!clause.test) return nullptr;
+        } else if (match(TokenKind::KwDefault)) {
+            // ECMA-262 14.12.1 splits a CaseBlock at the DefaultClause, so
+            // there is room in the grammar for exactly one however the clauses
+            // are ordered.
+            if (sawDefault) {
+                error("a switch may have only one 'default' clause");
+                return nullptr;
             }
-            advance();
+            sawDefault = true;
+        } else {
+            error("expected 'case' or 'default' in a switch body");
+            return nullptr;
         }
+        if (!expect(TokenKind::Colon, "':' after a switch case label")) return nullptr;
+        // A clause holds a StatementList and not a Block: it has no braces of
+        // its own, so it ends where the next clause begins. That is what makes
+        // fallthrough the default rather than a feature — there is nothing
+        // between one clause's last statement and the next clause's first.
+        while (!check(TokenKind::KwCase) && !check(TokenKind::KwDefault) &&
+               !check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) &&
+               !diags_.hasErrors()) {
+            if (!parseStatement(clause.body)) return nullptr;
+        }
+        clause.span.end = peek().span.begin;
+        stmt->cases.push_back(std::move(clause));
     }
+    if (!expect(TokenKind::RBrace, "'}' to close the switch body")) return nullptr;
+    stmt->span.end = peek().span.begin;
+    return stmt;
+}
+
+StmtPtr Parser::parseLabeled() {
+    const Token& name = advance();
+    advance();  // ':'
+    auto stmt = std::make_unique<LabeledStmt>();
+    stmt->span = name.span;
+    stmt->label = std::string(name.text);
+
+    // ECMA-262 14.13.1 makes a labelled lexical declaration an early error,
+    // and for a reason worth restating: the label would name a jump target
+    // into the middle of a binding's initialization.
+    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwClass) ||
+        check(TokenKind::KwFunction)) {
+        error("a label may not front a declaration");
+        return nullptr;
+    }
+    std::vector<StmtPtr> body;
+    if (!parseStatement(body)) return nullptr;
+    if (body.size() != 1) {
+        // The empty statement contributes no node, and a BindingList
+        // contributes several; a LabelledItem is exactly one Statement.
+        error("a label must front exactly one statement");
+        return nullptr;
+    }
+    stmt->body = std::move(body[0]);
+    stmt->span.end = stmt->body->span.end;
     return stmt;
 }
 

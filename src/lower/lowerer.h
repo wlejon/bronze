@@ -68,15 +68,34 @@ private:
         size_t shadowedBinding = SIZE_MAX;
     };
 
-    struct LoopContext {
+    // Where a `break` or a `continue` goes. ONE stack for all three kinds,
+    // because the two statements search the same entries by different rules:
+    // an unlabelled `break` stops at the innermost *breakable* statement (a
+    // loop OR a switch), an unlabelled `continue` at the innermost
+    // *iteration* statement, and a labelled one at the entry carrying its
+    // label whatever kind that entry is. Two stacks would have to agree about
+    // nesting order, and the whole content of `break outer` is that order.
+    enum class JumpKind { Loop, Switch, LabeledBlock };
+
+    struct JumpTarget {
+        JumpKind kind = JumpKind::Loop;
+        // The label this statement was written under, or empty. A label is
+        // not a binding: it is only ever compared, never resolved.
+        std::string label;
         il::BlockId headerBlock = il::kNoBlock;
+        // kNoBlock for anything but a loop — which is exactly why
+        // `continue lbl` naming a switch or a block is an early error rather
+        // than a jump to nowhere.
         il::BlockId updateBlock = il::kNoBlock;
         il::BlockId exitBlock = il::kNoBlock;
-        std::vector<std::string> loopVars;
+        // The variables the target's blocks take as parameters, in the order
+        // those parameters were added. A jump from anywhere inside has to
+        // hand over the same list.
+        std::vector<std::string> vars;
         // A loop whose update block takes a parameter that is not a source
         // binding — for-of's index (docs/0012 decision 2). `continue` jumps
         // to that block, so it has to hand the value over like any other
-        // edge argument. kNoValue for every other loop form.
+        // edge argument. kNoValue for every other form.
         il::ValueId updateExtraArg = il::kNoValue;
     };
 
@@ -84,7 +103,16 @@ private:
     std::unordered_map<std::string, size_t> activeVarMap_;
     size_t currentScopeDepth_ = 0;
     uint32_t varDeclCounter_ = 0;
-    std::vector<LoopContext> loopStack_;
+    std::vector<JumpTarget> jumpStack_;
+    // The labels currently in scope, innermost last. Separate from
+    // `jumpStack_` because the duplicate-label early error has to fire BEFORE
+    // the labelled statement is lowered, and a loop pushes its jump target
+    // only once lowering reaches it.
+    std::vector<std::string> labelStack_;
+    // The label a `label:` just read, waiting for the loop or switch it
+    // fronts to claim it. Cleared by whichever statement lowering reaches
+    // next, so a label can never leak onto a second statement.
+    std::string pendingLabel_;
     size_t currentBlockIdx_ = 0;
 
     // --- environments (docs/0007) ---------------------------------------
@@ -307,9 +335,36 @@ private:
     bool lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn);
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);
     bool lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn);
-    bool lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn);
     bool lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn);
     bool lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Function& ilFn);
+    // The label the statement now being lowered was written under, taken so
+    // that no later statement can see it.
+    std::string takePendingLabel();
+
+    // --- lower_label.cpp: labelled statements and the jump-target stack ----
+    bool lowerLabeledStmt(const ast::LabeledStmt* labeled, il::Function& ilFn);
+    // A label on something that is not a loop or a switch — `lbl: { ... }` —
+    // where the only jump the label admits is a `break` to the end.
+    bool lowerLabeledBlock(const ast::LabeledStmt* labeled, il::Function& ilFn);
+    // The entry a `break`/`continue` names, or null with the diagnostic
+    // already reported. `forContinue` picks the iteration-statement rule.
+    const JumpTarget* findJumpTarget(const std::string& label, bool forContinue, Span span);
+    void emitJumpToTarget(const JumpTarget& target, il::BlockId block,
+                          const std::vector<il::ValueId>& extraArgs, il::Function& ilFn);
+
+    // --- lower_iter_loop.cpp: the two loops that walk a container ----------
+    // for-of over the iterable, and for-in over the KEY SNAPSHOT the runtime
+    // builds (docs/0018 decision 1). One index walk, because once the keys are
+    // an array the two loops differ in nothing but what they walk.
+    bool lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn);
+    bool lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn);
+    bool lowerIndexWalkLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
+                            const ast::BindingPattern* headPattern, bool isConst, bool isLet,
+                            bool isVar, const std::vector<ast::StmtPtr>& body,
+                            il::Function& ilFn);
+
+    // --- lower_switch.cpp: selection and fallthrough (docs/0018) -----------
+    bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);
 
     // --- lower_expr_cond.cpp: conditional-expression joins (docs/0005) ---
     VarStateMap snapshotVarStates() const;
@@ -322,6 +377,31 @@ private:
     std::optional<Value> lowerTernary(const ast::Ternary* tern, il::Function& ilFn);
     std::optional<Value> lowerLogical(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerNullish(const ast::Binary* bin, il::Function& ilFn);
+
+    // --- lower_expr_chain.cpp: optional chains (docs/0018 decision 4) ------
+    // One short-circuit edge out of a chain: where it leaves from, and what
+    // every binding held there. The chain's join takes a parameter for the
+    // result and one per binding the edges disagree about, so the edges have
+    // to be COLLECTED before the join's parameters can be sized — which is
+    // why the jumps are emitted at the end rather than as each link is
+    // lowered.
+    struct ChainExit {
+        size_t blockIdx = 0;
+        il::ValueId result = il::kNoValue;  // kNoValue: this edge yields undefined
+        VarStateMap state;
+    };
+    std::optional<Value> lowerOptionalChain(const ast::Expr& expr, il::Function& ilFn);
+    // Lowers the base of a link, keeping it on the current chain's spine.
+    std::optional<Value> lowerChainBase(const ast::Expr& base, il::Function& ilFn, bool onSpine);
+    // `base === null || base === undefined ? <the whole chain's undefined> :
+    // carry on`. Records the short-circuit edge and leaves the current block
+    // at the continuation.
+    void emitChainShortCircuit(Value base, il::Function& ilFn);
+    // The short-circuit edges of the chain being lowered, empty otherwise.
+    std::vector<ChainExit> chainExits_;
+    // Set only while lowering the BASE of a chain link, and consumed by the
+    // next `lowerExpr`.
+    bool spinePos_ = false;
 
     // --- lower_expr.cpp: dispatcher, literals, identifiers, unary, assign --
     std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn);
@@ -345,9 +425,15 @@ private:
     std::optional<Value> lowerObjectLit(const ast::ObjectLit* objLit, il::Function& ilFn);
     std::optional<Value> lowerArrayLit(const ast::ArrayLit* arrLit, il::Function& ilFn);
     std::optional<Value> lowerNewExpr(const ast::NewExpr* newExpr, il::Function& ilFn);
-    std::optional<Value> lowerMemberAccess(const ast::MemberAccess* mem, il::Function& ilFn);
-    std::optional<Value> lowerIndexAccess(const ast::IndexAccess* idxAccess, il::Function& ilFn);
-    std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn);
+    // `onSpine` says this node is a link of an optional chain already being
+    // lowered, which decides one thing only: whether its BASE continues the
+    // same chain (docs/0018 decision 4).
+    std::optional<Value> lowerMemberAccess(const ast::MemberAccess* mem, il::Function& ilFn,
+                                           bool onSpine = false);
+    std::optional<Value> lowerIndexAccess(const ast::IndexAccess* idxAccess, il::Function& ilFn,
+                                          bool onSpine = false);
+    std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,
+                                   bool onSpine = false);
 };
 
 }  // namespace bronze::lower

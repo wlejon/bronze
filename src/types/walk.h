@@ -27,17 +27,25 @@ public:
     void visit(const ast::BreakStmt&) override {}
     void visit(const ast::ContinueStmt&) override {}
 
-    // The four statement kinds the parser accepts but models as empty nodes.
+    // The two statement kinds the parser accepts but models as empty nodes.
     // There is nothing under them to walk; every analysis has to treat them
     // as opaque, which is exactly what an empty visit means here.
-    void visit(const ast::ForInStmt&) override {}
+    void visit(const ast::TryStmt&) override {}
+    void visit(const ast::ThrowStmt&) override {}
+
+    void visit(const ast::ForInStmt& n) override {
+        walkPattern(n.pattern.get());
+        if (n.object) n.object->accept(*this);
+        for (const auto& s : n.body) s->accept(*this);
+    }
     void visit(const ast::ForOfStmt& n) override {
         walkPattern(n.pattern.get());
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
-    void visit(const ast::TryStmt&) override {}
-    void visit(const ast::ThrowStmt&) override {}
+    void visit(const ast::LabeledStmt& n) override {
+        if (n.body) n.body->accept(*this);
+    }
 
     void visit(const ast::Unary& n) override { n.operand->accept(*this); }
     void visit(const ast::Binary& n) override {
@@ -121,6 +129,14 @@ public:
     }
     void visit(const ast::SwitchStmt& n) override {
         if (n.discriminant) n.discriminant->accept(*this);
+        for (const auto& c : n.cases) {
+            // A `case` expression is an arbitrary expression that runs when
+            // the switch does, so it is code this scope contains — leaving it
+            // out hid its call sites from the widening pass, which is not a
+            // missed optimization but an unsound proof (docs/0017 decision 9).
+            if (c.test) c.test->accept(*this);
+            for (const auto& s : c.body) s->accept(*this);
+        }
     }
     void visit(const ast::Module& n) override { walkList(n.body); }
 

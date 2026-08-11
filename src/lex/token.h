@@ -94,6 +94,7 @@ enum class TokenKind {
     PipePipe,     // ||
     Question,     // ?
     QuestionQuestion, // ??
+    QuestionDot,  // ?.
     Bang,         // !
     PlusPlus,     // ++
     MinusMinus,   // --

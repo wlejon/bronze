@@ -12,7 +12,8 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     return root;
 }
 
-Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot) {
+Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
+                          uint32_t& out_slot, bool is_enumerable) {
     (void)heap;
     if (!name.get().isString()) {
         fatal("property name must be a string");
@@ -21,7 +22,8 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     StringHeader* prop_str = name.get().asString<StringHeader>();
 
     for (const auto& trans : transitions) {
-        if (trans.property_name && trans.property_name->equals(*prop_str)) {
+        if (trans.enumerable == is_enumerable && trans.property_name &&
+            trans.property_name->equals(*prop_str)) {
             out_slot = trans.next_shape->slot_index;
             return trans.next_shape;
         }
@@ -42,15 +44,17 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     // Shapes are immortal and non-moving, so they must never point into
     // the movable heap: property names are copied into the arena.
     StringHeader* interned = StringHeader::internToArena(arena, prop_str);
-    Shape* next_shape = arena.create<Shape>(this, interned, next_slot, root);
-    transitions.push_back(ShapeTransition{interned, next_shape});
+    Shape* next_shape = arena.create<Shape>(this, interned, next_slot, root, is_enumerable);
+    transitions.push_back(ShapeTransition{interned, next_shape, is_enumerable});
     return next_shape;
 }
 
-std::vector<StringHeader*> Shape::ownKeysInInsertionOrder() const {
+std::vector<StringHeader*> Shape::ownKeysInInsertionOrder(bool enumerableOnly) const {
     std::vector<StringHeader*> keys;
     for (const Shape* curr = this; curr != nullptr; curr = curr->parent) {
-        if (curr->property_name) keys.push_back(curr->property_name);
+        if (!curr->property_name) continue;
+        if (enumerableOnly && !curr->enumerable) continue;
+        keys.push_back(curr->property_name);
     }
     // Collected newest-first walking toward the root; insertion order is
     // the reverse.

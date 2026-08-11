@@ -142,8 +142,26 @@ public:
 
     void visit(const ast::BreakStmt&) override {}
     void visit(const ast::ContinueStmt&) override {}
-    void visit(const ast::SwitchStmt&) override {}
-    void visit(const ast::ForInStmt&) override {}
+    // A switch writes from three places — the discriminant, the case
+    // expressions and the case bodies — and every one of them runs where the
+    // switch is written. A variable left out here would be missing from the
+    // block parameters of every case body block and silently frozen at its
+    // pre-switch value on the fall-through edges.
+    void visit(const ast::SwitchStmt& s) override {
+        if (s.discriminant) s.discriminant->accept(*this);
+        for (const auto& c : s.cases) {
+            if (c.test) c.test->accept(*this);
+            for (const auto& stmt : c.body) stmt->accept(*this);
+        }
+    }
+    void visit(const ast::LabeledStmt& l) override {
+        if (l.body) l.body->accept(*this);
+    }
+    void visit(const ast::ForInStmt& f) override {
+        if (f.pattern) visitPatternExprs(*f.pattern);
+        if (f.object) f.object->accept(*this);
+        for (const auto& s : f.body) s->accept(*this);
+    }
     void visit(const ast::ForOfStmt& f) override {
         if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.iterable) f.iterable->accept(*this);

@@ -91,6 +91,17 @@ enum class Op : uint8_t {
     Construct,  // a = new callee, args...              (docs/0008)
     CreateObject, // a = create.object
     ObjectKeys, // a = object.keys b                  (docs/0009)
+    // The keys a `for-in` will visit, as one array built before the first
+    // iteration: own AND inherited enumerable string keys, each once
+    // (docs/0018 decision 1). Snapshotting is what lets the loop itself be
+    // for-of's index walk over the result, and it is a legal answer to the
+    // spec's open question about mutation during enumeration.
+    ForInKeys,  // a = forin.keys b
+    // A class method: a property write with `enumerable: false`, which an
+    // ordinary `prop.set` cannot express and which is what keeps a method out
+    // of `Object.keys` and `for-in` (docs/0018 decision 2). No IC index — a
+    // class body runs once.
+    MethodDef,  // method.def obj, <key_const_index>, v
     GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to

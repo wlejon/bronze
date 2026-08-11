@@ -75,15 +75,19 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     fn->properties = Value::fromObject(props);
 }
 
-// Spec order for a plain object's own string keys, in one place because three
-// callers need the same answer and a second copy of the integer-first split
-// would be a second chance to get `"10"` before `"2"` wrong (docs/0009).
+// Spec order for a plain object's own ENUMERABLE string keys, in one place
+// because four callers need the same answer and a second copy of the
+// integer-first split would be a second chance to get `"10"` before `"2"`
+// wrong (docs/0009). Enumerable-only because every caller — `Object.keys`,
+// object spread, object rest and `for-in` — is defined over own enumerable
+// keys, and a class method is not one (docs/0018 decision 2).
 std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj) {
     // Shape keys are arena-interned and immortal, so collecting them up front
     // is safe across whatever the caller allocates while walking them.
     Shape* shape = obj->shape;
     std::vector<StringHeader*> inserted =
-        shape ? shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
+        shape ? shape->ownKeysInInsertionOrder(/*enumerableOnly=*/true)
+              : std::vector<StringHeader*>{};
 
     std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
     std::vector<StringHeader*> strKeys;

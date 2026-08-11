@@ -1,8 +1,5 @@
-// BLOCKED: `switch` is `unsupported construct: switch statement` in lowering
-// today. It parses into a node with cases, and nothing consumes it.
-//
-// What makes it more than sugar for a chain of `if`s, and what this case is
-// here to pin when it lands:
+// `switch`: selection by strict equality, then fallthrough (docs/0018
+// decision 4). What makes it more than sugar for a chain of `if`s:
 //
 // 1. The match is STRICT equality on the discriminant (ECMA-262 14.12.10
 //    uses IsStrictlyEqual), so `1` and `"1"` select different cases and
@@ -14,8 +11,8 @@
 //    physically follows it. `mid(5)` runs the default and then case 1's
 //    body, printing "D1".
 //
-// The block-argument SSA that docs/0005 already has is the shape this needs:
-// a switch is one block per case body with fallthrough edges between them.
+// The block-argument SSA of docs/0005 is the shape this needs: one block per
+// case body, with a fallthrough edge from each to the next.
 function f(v) {
   switch (v) {
     case 1:

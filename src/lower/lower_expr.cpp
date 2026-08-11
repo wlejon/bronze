@@ -13,6 +13,17 @@
 namespace bronze::lower {
 
 std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Function& ilFn) {
+    // Is this expression the BASE of a link in a chain already being lowered?
+    // The flag is consumed here and re-set only for the base position of the
+    // three link forms, so a `?.` written anywhere else — inside an argument,
+    // inside an index — starts a chain of its own rather than short-circuiting
+    // the enclosing one (docs/0018 decision 4).
+    const bool onSpine = spinePos_;
+    spinePos_ = false;
+    if (!onSpine && ast::containsOptionalLink(expr)) {
+        return lowerOptionalChain(expr, ilFn);
+    }
+
     if (const auto* numLit = dynamic_cast<const ast::NumberLit*>(&expr)) {
         il::ValueId res = ilFn.valueCount++;
         il::Instruction inst;
@@ -394,11 +405,11 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&expr)) {
-        return lowerMemberAccess(mem, ilFn);
+        return lowerMemberAccess(mem, ilFn, onSpine);
     }
 
     if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(&expr)) {
-        return lowerIndexAccess(idxAccess, ilFn);
+        return lowerIndexAccess(idxAccess, ilFn, onSpine);
     }
 
     if (const auto* bin = dynamic_cast<const ast::Binary*>(&expr)) {
@@ -406,7 +417,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* call = dynamic_cast<const ast::Call*>(&expr)) {
-        return lowerCall(call, ilFn);
+        return lowerCall(call, ilFn, onSpine);
     }
 
     diags_.error(expr.span, "unsupported AST expression");

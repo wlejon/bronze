@@ -77,6 +77,20 @@ private:
     ast::StmtPtr parseBreak();
     ast::StmtPtr parseContinue();
     ast::StmtPtr parseSwitch();
+    // `label: statement`. Separate from the statement it fronts because the
+    // label binds nothing and produces no value — it names a jump target, and
+    // only for the statement it wraps (ECMA-262 14.13).
+    ast::StmtPtr parseLabeled();
+    // The binding target of a `for-in` / `for-of` head, which the two forms
+    // spell identically: one declaration keyword and one name or pattern.
+    struct ForBindingHead {
+        bool isConst = false;
+        bool isLet = false;
+        bool isVar = false;
+        std::string name;
+        ast::PatternPtr pattern;
+    };
+    bool parseForBindingHead(ForBindingHead& head);
     ast::StmtPtr parseTry();
     ast::StmtPtr parseThrow();
     ast::StmtPtr parseClass();

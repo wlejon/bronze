@@ -78,6 +78,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::PipePipe: return "||";
         case TokenKind::Question: return "?";
         case TokenKind::QuestionQuestion: return "??";
+        case TokenKind::QuestionDot: return "?.";
         case TokenKind::Bang: return "!";
         case TokenKind::PlusPlus: return "++";
         case TokenKind::MinusMinus: return "--";
@@ -285,6 +286,15 @@ Token Lexer::lexPunctuation() {
             ++pos_; return make(TokenKind::Dot, begin);
         case '?':
             if (peek(1) == '?') { pos_ += 2; return make(TokenKind::QuestionQuestion, begin); }
+            // ECMA-262 12.8 spells the optional-chaining punctuator
+            // `?.` [lookahead ∉ DecimalDigit], and the lookahead is the whole
+            // point: `x ? .5 : .25` is a ternary over two fractions, and a
+            // greedy `?.` would read its first arm as an optional member
+            // access of nothing.
+            if (peek(1) == '.' && !(peek(2) >= '0' && peek(2) <= '9')) {
+                pos_ += 2;
+                return make(TokenKind::QuestionDot, begin);
+            }
             ++pos_; return make(TokenKind::Question, begin);
         case '&':
             if (peek(1) == '&') { pos_ += 2; return make(TokenKind::AmpAmp, begin); }

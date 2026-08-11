@@ -335,6 +335,18 @@ ExprPtr Parser::parseObjectLit() {
         } else if (check(TokenKind::Identifier)) {
             const Token& nameTok = advance();
             prop.key = std::string(nameTok.text);
+            if ((prop.key == "get" || prop.key == "set") &&
+                (check(TokenKind::Identifier) || check(TokenKind::StringLiteral) ||
+                 check(TokenKind::NumberLiteral) || check(TokenKind::LBracket))) {
+                // `get`/`set` are only contextual: `{ get: 1 }`, `{ get }` and
+                // `{ get() {} }` all name an ordinary property, and only a
+                // FOLLOWING property name makes this an accessor. Naming it
+                // here keeps the report about the missing feature rather than
+                // about the ':' that an accessor was never going to have.
+                error("unsupported construct: object literal getter or setter (accessor "
+                      "properties are not implemented)");
+                return nullptr;
+            }
             if (check(TokenKind::LParen)) {
                 // `{ m() {} }` — MethodDefinition shorthand. It is a function
                 // whose home object is this literal, which is a `super`

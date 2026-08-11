@@ -36,13 +36,16 @@ public:
         });
         emit(")");
     }
+    // An optional link prints under its own head. `a.b` and `a?.b` differ in
+    // what they evaluate, not only in what they produce, so two constructs
+    // that lower differently must not dump identically.
     void visit(const MemberAccess& n) override {
-        emit("(member ." + n.property);
+        emit("(member " + std::string(n.optional ? "?." : ".") + n.property);
         indented([&] { n.object->accept(*this); });
         emit(")");
     }
     void visit(const IndexAccess& n) override {
-        emit("(index");
+        emit(n.optional ? "(index?." : "(index");
         indented([&] {
             n.object->accept(*this);
             n.index->accept(*this);
@@ -50,7 +53,7 @@ public:
         emit(")");
     }
     void visit(const Call& n) override {
-        emit("(call");
+        emit(n.optional ? "(call?." : "(call");
         indented([&] {
             n.callee->accept(*this);
             for (const auto& a : n.args) a->accept(*this);
@@ -248,8 +251,41 @@ public:
     }
     void visit(const BreakStmt& n) override { emit("(break" + (n.label.empty() ? "" : " " + n.label) + ")"); }
     void visit(const ContinueStmt& n) override { emit("(continue" + (n.label.empty() ? "" : " " + n.label) + ")"); }
-    void visit(const SwitchStmt&) override { emit("(switch)"); }
-    void visit(const ForInStmt&) override { emit("(for-in)"); }
+    void visit(const SwitchStmt& n) override {
+        emit("(switch");
+        indented([&] {
+            if (n.discriminant) n.discriminant->accept(*this);
+            for (const auto& c : n.cases) {
+                // `default` prints under a different head from `case`: where
+                // the default sits decides what falls into and out of it, so
+                // a dump that spelled them alike would hide the one thing
+                // about a case list that is not obvious from source order.
+                emit(c.test ? "(case" : "(default");
+                indented([&] {
+                    if (c.test) c.test->accept(*this);
+                    for (const auto& s : c.body) s->accept(*this);
+                });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
+    void visit(const ForInStmt& n) override {
+        emit("(for-in " + (n.pattern ? std::string("<pattern>") : n.name));
+        indented([&] {
+            if (n.pattern) dumpPattern(n.pattern.get());
+            if (n.object) n.object->accept(*this);
+            for (const auto& s : n.body) s->accept(*this);
+        });
+        emit(")");
+    }
+    void visit(const LabeledStmt& n) override {
+        emit("(label " + n.label);
+        indented([&] {
+            if (n.body) n.body->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const ForOfStmt& n) override {
         emit("(for-of " + (n.pattern ? std::string("<pattern>") : n.name));
         indented([&] {

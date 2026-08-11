@@ -368,17 +368,21 @@ TEST_CASE("comparison != lowers to cmp.ne") {
     CHECK(printed.find("cmp.ne") != std::string::npos);
 }
 
-TEST_CASE("deferred construct switch generates diagnostic error") {
+TEST_CASE("switch lowers to a strict-equality test chain") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
         "switch (1) { case 1: break; }\n",
         diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("unsupported construct: switch statement") != std::string::npos);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // ECMA-262 14.12.10 matches with IsStrictlyEqual, never with the loose
+    // rules, so a `cmp.eq` here would be a wrong answer and not a style
+    // choice (docs/0018 decision 4).
+    CHECK(printed.find("strict.eq") != std::string::npos);
+    CHECK(printed.find("br %") != std::string::npos);
 }
 
 TEST_CASE("undefined variable reference generates diagnostic error") {

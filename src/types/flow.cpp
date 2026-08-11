@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "ast/queries.h"
+#include "types/operator_types.h"
 #include "types/walk.h"
 
 namespace bronze::types {
@@ -57,6 +58,7 @@ const char* statementLabel(const ast::Stmt& s) {
     if (dynamic_cast<const ast::SwitchStmt*>(&s)) return "switch";
     if (dynamic_cast<const ast::ForInStmt*>(&s)) return "for-in";
     if (dynamic_cast<const ast::ForOfStmt*>(&s)) return "for-of";
+    if (dynamic_cast<const ast::LabeledStmt*>(&s)) return "label";
     if (dynamic_cast<const ast::TryStmt*>(&s)) return "try";
     if (dynamic_cast<const ast::ThrowStmt*>(&s)) return "throw";
     if (dynamic_cast<const ast::FunctionDecl*>(&s)) return "function";
@@ -72,56 +74,8 @@ bool bodyFallsThrough(const std::vector<const ast::Stmt*>& body) {
     return dynamic_cast<const ast::ReturnStmt*>(body.back()) == nullptr;
 }
 
-// ⊥ in, ⊥ out: an operand no value has reached yet cannot produce one. This
-// is what lets a recursive function read its own not-yet-known return type
-// without the estimate jumping straight to `Dynamic` (decision 5).
-Type withBottom(Type operand, Type result) {
-    return operand.is(TypeKind::Never) ? Type::never() : result;
-}
-Type withBottom(Type a, Type b, Type result) {
-    return (a.is(TypeKind::Never) || b.is(TypeKind::Never)) ? Type::never() : result;
-}
-
-// `-`, `*`, `/` and `%` are ToNumber on both operands, so the result is a
-// number whatever came in (NaN is a number). `+` is concatenation as soon as
-// either side is a string, because ToPrimitive on a string operand wins
-// however the other side prints.
-bool isNumericPrimitive(Type t) {
-    switch (t.kind()) {
-        case TypeKind::Number:
-        case TypeKind::Bool:
-        case TypeKind::Null:
-        case TypeKind::Undefined: return true;
-        default: return false;
-    }
-}
-
-Type arithResult(ast::BinaryOp op, Type l, Type r) {
-    if (l.is(TypeKind::Never) || r.is(TypeKind::Never)) return Type::never();
-    if (op != ast::BinaryOp::Add) return Type::number();
-    if (l.is(TypeKind::String) || r.is(TypeKind::String)) return Type::string();
-    if (isNumericPrimitive(l) && isNumericPrimitive(r)) return Type::number();
-    return Type::dynamic();
-}
-
-// The bitwise, shift and exponentiation operators are ToInt32/ToNumber on
-// both operands, so the result is a number whatever came in — including a
-// string operand, which `+` is the only operator to treat differently. This
-// has to agree with lowering exactly, or the `--no-infer` run and the
-// inferred one disagree about a block parameter's type (docs/0010 dec. 8).
-bool isAlwaysNumericOp(ast::BinaryOp op) {
-    switch (op) {
-        case ast::BinaryOp::BitAnd:
-        case ast::BinaryOp::BitOr:
-        case ast::BinaryOp::BitXor:
-        case ast::BinaryOp::Shl:
-        case ast::BinaryOp::Shr:
-        case ast::BinaryOp::UShr:
-        case ast::BinaryOp::Exp: return true;
-        default: return false;
-    }
-}
-
+// The operator result rules live in operator_types.h, which is where
+// lowering's copy of the same question can be read against them.
 
 struct LoopParts {
     const ast::Expr* condition = nullptr;  // null for `for (;;)`
@@ -433,8 +387,21 @@ private:
             return;
         }
         if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
-            if (sw->discriminant) expr(*sw->discriminant);
-            widenAll();
+            switchStmt(*sw, depth);
+            return;
+        }
+        if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(&s)) {
+            // A label changes where a jump inside the statement goes, and
+            // nothing about the types the statement produces.
+            if (lb->body) stmt(*lb->body, 0, depth + 1);
+            return;
+        }
+        if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&s)) {
+            keyedLoop(s, fo->iterable.get(), fo->name, fo->pattern.get(), fo->body, depth);
+            return;
+        }
+        if (const auto* fi = dynamic_cast<const ast::ForInStmt*>(&s)) {
+            keyedLoop(s, fi->object.get(), fi->name, fi->pattern.get(), fi->body, depth);
             return;
         }
         if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(&s)) {
@@ -454,9 +421,59 @@ private:
             analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span);
             return;
         }
-        // ForIn / ForOf / Try / Throw are parsed as childless nodes; nothing
-        // under them is visible, so nothing can be believed across them.
+        // Try / Throw are parsed as childless nodes; nothing under them is
+        // visible, so nothing can be believed across them.
         widenAll();
+    }
+
+    // for-of and for-in: one loop each, whose head binds names this pass
+    // proves nothing about — the element comes out of an indexed read and the
+    // key out of an enumeration, and neither has a type here.
+    //
+    // Walking the BODY is not an optimization. A call written only inside one
+    // of these loops was invisible to the widening pass, so a callee could be
+    // proven `number` while a string reached it from the loop — an unsound
+    // proof of exactly the shape docs/0017 decision 9 names.
+    void keyedLoop(const ast::Stmt& s, const ast::Expr* source, const std::string& name,
+                   const ast::BindingPattern* pattern, const std::vector<ast::StmtPtr>& body,
+                   uint32_t depth) {
+        if (source) expr(*source);
+        std::vector<std::string> headNames =
+            pattern ? ast::patternBoundNames(*pattern) : std::vector<std::string>{name};
+        const ScopeSave saved = saveDeclarations(headNames);
+        if (pattern) {
+            declarePattern(*pattern);
+        } else if (!name.empty()) {
+            declare(name, Type::dynamic());
+        }
+        LoopParts parts;
+        parts.body = &body;
+        analyzeLoop(parts, depth, s);
+        restoreDeclarations(saved);
+    }
+
+    // A switch is many paths through one statement list, and this pass models
+    // no path splitting below a statement. So every case is walked for its
+    // effects — the case expressions are ordinary code, and so are the bodies
+    // — and the environment that survives is the entry one, widened. Sound
+    // because widening only ever loses precision, and it is what makes the
+    // call sites inside a case visible to the signature fixpoint.
+    void switchStmt(const ast::SwitchStmt& sw, uint32_t depth) {
+        if (sw.discriminant) expr(*sw.discriminant);
+        // A switch IS a breakable statement (ECMA-262 14.12), so an
+        // unlabelled `break` inside one targets it and not an enclosing loop.
+        breakStack_.emplace_back();
+        const Env entry = scope_.env;
+        for (const auto& c : sw.cases) {
+            if (c.test) expr(*c.test);
+            if (c.body.empty()) continue;
+            pushMarker(c.test ? "case" : "default", depth + 1);
+            scopedStmtList(c.body, depth + 2);
+        }
+        breakStack_.pop_back();
+        scope_.env = entry;
+        widenAll();
+        recordMerge(sw, scope_.env);
     }
 
     void ifStmt(const ast::IfStmt& i, uint32_t depth) {
@@ -631,30 +648,16 @@ private:
 
     Type unary(const ast::Unary& u) {
         const Type operand = expr(*u.operand);
-        switch (u.op) {
-            case ast::UnaryOp::Not: return withBottom(operand, Type::boolean());
-            case ast::UnaryOp::Negate:
-            case ast::UnaryOp::Posate:
-            // `~` is ToInt32 then a complement, so a number however it came.
-            case ast::UnaryOp::BitNot: return withBottom(operand, Type::number());
-            // The one operator whose result type is the same for every
-            // operand there is: one of six strings.
-            case ast::UnaryOp::TypeOf: return withBottom(operand, Type::string());
-            // `void x` yields undefined, always; x is evaluated for effect
-            // and `expr` above already recorded it.
-            case ast::UnaryOp::Void: return withBottom(operand, Type::undefined());
-            case ast::UnaryOp::PreInc:
-            case ast::UnaryOp::PreDec:
-            case ast::UnaryOp::PostInc:
-            case ast::UnaryOp::PostDec:
-                // ToNumber, so the binding holds a number afterwards whatever
-                // it held before. The one place a use site sharpens a name.
-                if (const auto* id = dynamic_cast<const ast::Ident*>(u.operand.get())) {
-                    assign(id->name, Type::number());
-                }
-                return Type::number();
+        const Type result = unaryResult(u.op, operand);
+        // The update forms are the one place a USE site sharpens a name: the
+        // binding holds a number afterwards whatever it held before.
+        if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PreDec ||
+            u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(u.operand.get())) {
+                assign(id->name, Type::number());
+            }
         }
-        return Type::dynamic();
+        return result;
     }
 
     Type binary(const ast::Binary& b) {
@@ -672,9 +675,7 @@ private:
             const Type rhs = expr(*b.rhs);
             const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get());
             const Type current = id != nullptr ? lookup(id->name) : expr(*b.lhs);
-            const Type result = isAlwaysNumericOp(plain)
-                                    ? withBottom(current, rhs, Type::number())
-                                    : arithResult(plain, current, rhs);
+            const Type result = compoundResult(plain, current, rhs);
             if (id != nullptr) assign(id->name, result);
             return result;
         }
@@ -693,32 +694,7 @@ private:
 
         const Type l = expr(*b.lhs);
         const Type r = expr(*b.rhs);
-        if (isAlwaysNumericOp(b.op)) return withBottom(l, r, Type::number());
-        switch (b.op) {
-            case ast::BinaryOp::Add:
-            case ast::BinaryOp::Sub:
-            case ast::BinaryOp::Mul:
-            case ast::BinaryOp::Div:
-            case ast::BinaryOp::Mod: return arithResult(b.op, l, r);
-            case ast::BinaryOp::Less:
-            case ast::BinaryOp::Greater:
-            case ast::BinaryOp::LessEqual:
-            case ast::BinaryOp::GreaterEqual:
-            case ast::BinaryOp::Eq:
-            case ast::BinaryOp::StrictEq:
-            case ast::BinaryOp::Ne:
-            case ast::BinaryOp::StrictNe:
-            // `in` and `instanceof` are predicates: whatever their operands
-            // are, the answer is a boolean.
-            case ast::BinaryOp::In:
-            case ast::BinaryOp::InstanceOf: return withBottom(l, r, Type::boolean());
-            // The comma operator's value IS its right operand, and its left
-            // operand's only contribution is the effects `expr` already
-            // recorded above.
-            case ast::BinaryOp::Comma: return r;
-            default: break;
-        }
-        return Type::dynamic();
+        return binaryResult(b.op, l, r);
     }
 
     Type call(const ast::Call& c) {

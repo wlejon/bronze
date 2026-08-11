@@ -112,6 +112,23 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_object_keys, {target});
             return true;
         }
+        case il::Op::ForInKeys: {
+            if (!needs(1, false, "Invalid operands for ForInKeys")) return false;
+            llvm::Value* target = operand(inst, 0, "Undefined operand in ForInKeys instruction");
+            if (!target) return false;
+            callWith(abi.bronze_for_in_keys, {target});
+            return true;
+        }
+        case il::Op::MethodDef: {
+            if (!needs(2, false, "Invalid operands for MethodDef")) return false;
+            const char* what = "Undefined operand in MethodDef instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* value = operand(inst, 1, what);
+            if (!target || !value) return false;
+            callWith(abi.bronze_method_def,
+                     {target, builder_.getInt32(inst.keyIndex), value});
+            return true;
+        }
         case il::Op::GlobalGet:
             if (inst.result != il::kNoValue) {
                 callWith(abi.bronze_global_get, {builder_.getInt32(inst.keyIndex)});

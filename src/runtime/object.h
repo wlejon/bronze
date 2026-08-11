@@ -49,7 +49,15 @@ struct ObjectHeader {
     Value getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic = nullptr);
     // May allocate (overflow growth), which can move this object; use the
     // returned pointer afterwards, not `this`.
-    ObjectHeader* setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key, Rooted<Value>& val, InlineCache* ic = nullptr);
+    //
+    // `enumerable` decides the ATTRIBUTE a newly created property gets, and
+    // is therefore part of the shape transition it takes. It is false for
+    // exactly one caller — a class method definition (docs/0018 decision 2) —
+    // and an ordinary assignment never reaches it, because assignment always
+    // creates an enumerable property.
+    ObjectHeader* setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
+                          Rooted<Value>& val, InlineCache* ic = nullptr,
+                          bool enumerable = true);
 
     Value getSlot(uint32_t index) const;
     void setSlot(uint32_t index, Value val);

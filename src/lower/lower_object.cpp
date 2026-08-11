@@ -168,10 +168,11 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess* mem,
-                                                         il::Function& ilFn) {
-    auto objVal = lowerExpr(*mem->object, ilFn);
+                                                         il::Function& ilFn, bool onSpine) {
+    auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
+    if (mem->optional) emitChainShortCircuit(objBoxed, ilFn);
 
     uint32_t keyIdx = getKeyConstantIndex(mem->property);
     uint32_t icIdx = icSiteCounter_++;
@@ -210,10 +211,13 @@ std::optional<uint32_t> Lowerer::literalIndexKey(const ast::Expr& index) {
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* idxAccess,
-                                                        il::Function& ilFn) {
-    auto objVal = lowerExpr(*idxAccess->object, ilFn);
+                                                        il::Function& ilFn, bool onSpine) {
+    auto objVal = lowerChainBase(*idxAccess->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
+    // Before the INDEX is evaluated: a skipped chain does not run the
+    // expression inside its brackets either (docs/0018 decision 4).
+    if (idxAccess->optional) emitChainShortCircuit(objBoxed, ilFn);
 
     const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess->index);
     if (!literalKey) {
@@ -245,7 +249,8 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     return Value{res, il::Type::Dynamic};
 }
 
-std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn) {
+std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
+                                                bool onSpine) {
     bool isConsoleLog = false;
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
         if (calleeIdent->name == "console.log") isConsoleLog = true;
@@ -321,8 +326,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // array the runtime unpacks (docs/0017 decision 3).
     const bool spreadArgs = listHasSpread(call->args);
 
+    // An OPTIONAL call never takes the direct path: the point of `f?.()` is
+    // that the callee may be nullish, and a direct call names a module
+    // function that cannot be.
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get());
-        calleeIdent && !spreadArgs) {
+        calleeIdent && !spreadArgs && !call->optional) {
         // A local binding shadows a module-level function, and so
         // does an enclosing scope's environment slot: a nested
         // function declaration registers in functionIndices_ under
@@ -449,9 +457,14 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         calleeVal = boxValueIfNeeded(*fnVal, ilFn);
         thisArgVal = boxValueIfNeeded(*thisVal, ilFn);
     } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-        auto objVal = lowerExpr(*mem->object, ilFn);
+        // The callee is itself a chain link, so its base continues the spine
+        // and its own `?.` short-circuits the whole chain — and the RECEIVER
+        // is still `mem->object`, which is what keeps `o.m?.()` calling `m`
+        // on `o` rather than on undefined.
+        auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
         if (!objVal) return std::nullopt;
         thisArgVal = boxValueIfNeeded(*objVal, ilFn);
+        if (mem->optional) emitChainShortCircuit(thisArgVal, ilFn);
 
         uint32_t keyIdx = getKeyConstantIndex(mem->property);
         uint32_t icIdx = icSiteCounter_++;
@@ -468,7 +481,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         emitInst(ilFn, inst);
         calleeVal = Value{getRes, il::Type::Dynamic};
     } else {
-        auto cVal = lowerExpr(*call->callee, ilFn);
+        auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
         if (!cVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*cVal, ilFn);
 
@@ -481,6 +494,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         emitInst(ilFn, zeroInst);
         thisArgVal = boxValueIfNeeded(Value{zeroRes, il::Type::F64}, ilFn);
     }
+
+    // `f?.()` — the CALLEE is what may be nullish here, and the check comes
+    // after the receiver has been read but before a single argument is
+    // evaluated, because the arguments are part of the chain too.
+    if (call->optional) emitChainShortCircuit(calleeVal, ilFn);
 
     std::vector<il::ValueId> dynOperands;
     dynOperands.push_back(calleeVal.id);

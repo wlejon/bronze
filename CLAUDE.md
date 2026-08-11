@@ -84,3 +84,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0017 binding patterns (parameter defaults, rest, spread, destructuring in
   declarations / parameters / assignments / for-of heads, and the derived
   class's implicit forwarding constructor)
+- 0018 selection, jumps and chains (`for-in` as a key snapshot, enumerability
+  on the shape, `switch` as a test chain plus a body chain, one jump stack for
+  `break`/`continue`/labels, and the optional chain as an n-way join)

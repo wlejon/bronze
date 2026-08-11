@@ -131,7 +131,7 @@ std::optional<il::Module> Lowerer::lower() {
         activeVarMap_.clear();
         currentScopeDepth_ = 0;
         varDeclCounter_ = 0;
-        loopStack_.clear();
+        jumpStack_.clear();
         scopeHasEnv_.clear();
         currentEnvValue_ = il::kNoValue;
         currentThisValue_ = il::kNoValue;
@@ -324,7 +324,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     activeVarMap_.clear();
     currentScopeDepth_ = 0;
     varDeclCounter_ = 0;
-    loopStack_.clear();
+    jumpStack_.clear();
     scopeHasEnv_.clear();
 
     // Synthetic parameters lead: [__env?][__this?] then source params.

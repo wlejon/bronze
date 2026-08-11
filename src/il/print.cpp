@@ -63,6 +63,8 @@ const char* opName(Op op) {
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
         case Op::ObjectKeys: return "object.keys";
+        case Op::ForInKeys: return "forin.keys";
+        case Op::MethodDef: return "method.def";
         case Op::GlobalGet: return "global.get";
         case Op::ClassExtend: return "class.extend";
         case Op::IterLength: return "iter.length";
@@ -184,6 +186,15 @@ std::string print(const Module& module) {
                         // it changes the code that gets emitted.
                         if (inst.icMonomorphic) out += ", mono";
                         break;
+                    // The key index, and no cache slot: a class body runs
+                    // once, so a method definition has no repeat to cache
+                    // against and is handed no IC site.
+                    case Op::MethodDef:
+                        out += "method.def %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
                     case Op::PropSet:
                         out += "prop.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", %" +
@@ -242,8 +253,9 @@ std::string print(const Module& module) {
                     case Op::CreateObject:
                         out += "create.object";
                         break;
+                    case Op::ForInKeys:
                     case Op::IterLength:
-                        out += "iter.length %" +
+                        out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
                     case Op::ClassExtend:

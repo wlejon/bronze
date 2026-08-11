@@ -755,3 +755,67 @@ TEST_CASE("a digit the radix does not have is a named error") {
     CHECK(bare.substr(0, 7) == "ERRORS:");
     CHECK(bare.find("has no digits after its prefix") != std::string::npos);
 }
+
+TEST_CASE("a switch parses its clauses, and only one may be `default`") {
+    const auto out = parseAndDump("switch (x) { case 1: a(); default: b(); case 2: c(); }\n");
+    CHECK(out.find("(switch") != std::string::npos);
+    CHECK(out.find("(case") != std::string::npos);
+    // `default` in the MIDDLE is legal and keeps its position: ECMA-262
+    // 14.12.4 walks the case list for a match and only then falls back to the
+    // default clause, wherever it was written (docs/0018 decision 5).
+    CHECK(out.find("(default") != std::string::npos);
+
+    const auto two = parseAndDump("switch (x) { default: a(); default: b(); }\n");
+    CHECK(two.substr(0, 7) == "ERRORS:");
+    CHECK(two.find("a switch may have only one 'default' clause") != std::string::npos);
+
+    const auto stray = parseAndDump("switch (x) { a(); }\n");
+    CHECK(stray.substr(0, 7) == "ERRORS:");
+    CHECK(stray.find("expected 'case' or 'default' in a switch body") != std::string::npos);
+}
+
+TEST_CASE("a label fronts exactly one statement, and not a declaration") {
+    const auto out = parseAndDump("outer: while (x) { break outer; }\n");
+    CHECK(out.find("(label outer") != std::string::npos);
+
+    // ECMA-262 14.13: the LabelledItem is a Statement or a
+    // FunctionDeclaration, so `let` is not one — and a label on a `let` reads
+    // as if it scoped the binding, which it does not.
+    const auto decl = parseAndDump("lbl: let x = 1;\n");
+    CHECK(decl.substr(0, 7) == "ERRORS:");
+    CHECK(decl.find("a label may not front a declaration") != std::string::npos);
+}
+
+TEST_CASE("an optional chain is not an assignment or update target") {
+    // ECMA-262 13.3.9: an OptionalExpression is never a valid AssignmentTarget,
+    // because there is no reference to write through when the chain
+    // short-circuits. Both spellings are early errors rather than a write that
+    // sometimes does nothing (docs/0018 decision 8).
+    const auto assign = parseAndDump("a?.b = 1;\n");
+    CHECK(assign.substr(0, 7) == "ERRORS:");
+    CHECK(assign.find("an optional chain is not a valid assignment target") != std::string::npos);
+
+    const auto inc = parseAndDump("a?.b++;\n");
+    CHECK(inc.substr(0, 7) == "ERRORS:");
+    CHECK(inc.find("an optional chain is not a valid target for '++' or '--'") !=
+          std::string::npos);
+}
+
+TEST_CASE("`?.` before a digit is the conditional operator, not a chain") {
+    // ECMA-262 12.8 gives `?.` a lookahead restriction: `a?.5:b` must lex as
+    // `? .5 : b`, or the ternary with a fractional consequent stops parsing.
+    const auto out = parseAndDump("const r = a ? .5 : 1;\nconst s = a?.5:1;\n");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(number 0.5)") != std::string::npos);
+}
+
+TEST_CASE("an object literal accessor is named, not reported as a missing ':'") {
+    const auto out = parseAndDump("const o = { get x() { return 1; } };\n");
+    CHECK(out.substr(0, 7) == "ERRORS:");
+    CHECK(out.find("unsupported construct: object literal getter or setter") != std::string::npos);
+
+    // `get` is contextual: these three are ordinary properties and must keep
+    // parsing.
+    const auto plain = parseAndDump("const a = { get: 1 };\nconst get = 2;\nconst b = { get };\n");
+    CHECK(plain.substr(0, 7) != "ERRORS:");
+}

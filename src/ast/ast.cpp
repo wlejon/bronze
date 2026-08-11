@@ -37,6 +37,7 @@ void ContinueStmt::accept(Visitor& v) const { v.visit(*this); }
 void SwitchStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForInStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForOfStmt::accept(Visitor& v) const { v.visit(*this); }
+void LabeledStmt::accept(Visitor& v) const { v.visit(*this); }
 void TryStmt::accept(Visitor& v) const { v.visit(*this); }
 void ThrowStmt::accept(Visitor& v) const { v.visit(*this); }
 void ClassDecl::accept(Visitor& v) const { v.visit(*this); }
@@ -148,6 +149,31 @@ std::vector<std::string> patternBoundNames(const BindingPattern& pattern) {
     std::vector<std::string> names;
     collectPatternNames(pattern, names);
     return names;
+}
+
+// Walks DOWN the base of a member/index/call spine looking for a `?.`, and
+// stops at anything else — including a parenthesized subexpression, which is
+// the one thing that ends a chain without ending the spine. `(a?.b).c` is
+// therefore not an optional chain: its base is a PrimaryExpression that
+// happens to be one, and `.c` on a nullish value is an ordinary property read
+// (ECMA-262 13.3.9).
+bool containsOptionalLink(const Expr& expr) {
+    const Expr* cur = &expr;
+    for (;;) {
+        if (const auto* mem = dynamic_cast<const MemberAccess*>(cur)) {
+            if (mem->optional) return true;
+            cur = mem->object.get();
+        } else if (const auto* idx = dynamic_cast<const IndexAccess*>(cur)) {
+            if (idx->optional) return true;
+            cur = idx->index ? idx->object.get() : nullptr;
+        } else if (const auto* call = dynamic_cast<const Call*>(cur)) {
+            if (call->optional) return true;
+            cur = call->callee.get();
+        } else {
+            return false;
+        }
+        if (!cur || cur->parenthesized) return false;
+    }
 }
 
 }  // namespace bronze::ast

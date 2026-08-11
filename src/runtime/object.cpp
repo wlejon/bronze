@@ -135,7 +135,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
 }
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
-                                    Rooted<Value>& val, InlineCache* ic) {
+                                    Rooted<Value>& val, InlineCache* ic, bool enumerable) {
     if (!key.get().isString()) {
         fatal("property key must be a string");
     }
@@ -165,7 +165,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // a root from here on.
     Rooted<Value> self(Value::fromObject(this));
     uint32_t new_slot = 0;
-    Shape* next_shape = shape->addProperty(arena, heap, key, new_slot);
+    Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
 
     ObjectHeader* live = self.get().asObject<ObjectHeader>();
     if (new_slot >= kInlineSlots) {

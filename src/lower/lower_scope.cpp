@@ -301,7 +301,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerActiveVarMap = activeVarMap_;
     auto outerScopeDepth = currentScopeDepth_;
     auto outerVarDeclCounter = varDeclCounter_;
-    auto outerLoopStack = loopStack_;
+    auto outerJumpStack = jumpStack_;
+    // Labels do not cross a function boundary: `break outer` inside a nested
+    // function names nothing, and the outer label must not be visible to it.
+    auto outerLabelStack = labelStack_;
+    labelStack_.clear();
     auto outerScopeHasEnv = scopeHasEnv_;
     auto outerCaptured = capturedNames_;
     auto outerEnvValue = currentEnvValue_;
@@ -312,15 +316,23 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerEnvScope = functionEnvScope_;
     size_t outerEnvDepth = envScopes_.size();
 
-    if (!lowerFunctionBody(params, body, newFn)) {
-        return std::nullopt;
-    }
+    // The body is lowered into a DIFFERENT function, so every piece of state
+    // saved above now describes the nested one — and that has to be undone on
+    // the failure path as well. Returning early from here once left the
+    // enclosing lowering holding the callee's binding map, its (cleared) jump
+    // stack and its (cleared) label stack, so a caller that unwound past a
+    // labelled statement popped an empty vector, and one that went on to
+    // report a second diagnostic resolved names against the wrong scope. The
+    // caller stops at the first error either way, so this restores and then
+    // reports rather than reporting and leaving the wreckage.
+    const bool bodyOk = lowerFunctionBody(params, body, newFn);
 
     varBindings_ = outerVarBindings;
     activeVarMap_ = outerActiveVarMap;
     currentScopeDepth_ = outerScopeDepth;
     varDeclCounter_ = outerVarDeclCounter;
-    loopStack_ = outerLoopStack;
+    jumpStack_ = outerJumpStack;
+    labelStack_ = outerLabelStack;
     currentBlockIdx_ = outerBlockIdx;
     scopeHasEnv_ = outerScopeHasEnv;
     capturedNames_ = outerCaptured;
@@ -329,6 +341,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentFunctionIsArrow_ = outerIsArrow;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
+    if (!bodyOk) {
+        if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);
+        return std::nullopt;
+    }
     if (envScopes_.size() != outerEnvDepth) {
         diags_.error(span, "internal: environment stack unbalanced after lowering " + fnName);
         return std::nullopt;
