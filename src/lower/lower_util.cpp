@@ -105,6 +105,17 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
         emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }
+    // `&=`, `|=`, `^=`, `<<=`, `>>=` and `>>>=` need no proof at all: they
+    // are ToInt32 on both operands whatever came in, so — unlike `+=` above
+    // — there is no reading of them under which a string operand
+    // concatenates. Same for `**=`, which is ToNumber on both.
+    const ast::BinaryOp plain = ast::compoundAssignBase(binOp);
+    if (const auto bitOp = bitwiseOpFor(plain)) {
+        return emitBitwise(*bitOp, cur, rhs, ilFn);
+    }
+    if (plain == ast::BinaryOp::Exp) {
+        return emitPow(cur, rhs, ilFn);
+    }
     il::Op op = il::Op::Sub;
     switch (binOp) {
         case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
@@ -146,22 +157,17 @@ Lowerer::Value Lowerer::lowerCondition(const ast::Expr& expr, il::Function& ilFn
 Lowerer::Value Lowerer::lowerConditionFromVal(Value val, il::Function& ilFn) {
     if (val.type == il::Type::Bool) return val;
     if (val.type == il::Type::F64) {
-        il::ValueId zeroRes = ilFn.valueCount++;
-        il::Instruction zeroInst;
-        zeroInst.op = il::Op::ConstF64;
-        zeroInst.type = il::Type::F64;
-        zeroInst.result = zeroRes;
-        zeroInst.immF64 = 0.0;
-        emitInst(ilFn, zeroInst);
-
-        il::ValueId cmpRes = ilFn.valueCount++;
-        il::Instruction cmpInst;
-        cmpInst.op = il::Op::CmpNe;
-        cmpInst.type = il::Type::Bool;
-        cmpInst.result = cmpRes;
-        cmpInst.operands = {val.id, zeroRes};
-        emitInst(ilFn, cmpInst);
-        return Value{cmpRes, il::Type::Bool};
+        // Its own op rather than `cmp.ne %val, 0`: ToBoolean of a number is
+        // false for NaN, while `!==` must answer true for `NaN !== NaN`. The
+        // two questions have the same shape and opposite answers at NaN.
+        il::ValueId truthyRes = ilFn.valueCount++;
+        il::Instruction truthyInst;
+        truthyInst.op = il::Op::NumTruthy;
+        truthyInst.type = il::Type::Bool;
+        truthyInst.result = truthyRes;
+        truthyInst.operands = {val.id};
+        emitInst(ilFn, truthyInst);
+        return Value{truthyRes, il::Type::Bool};
     }
     if (val.type == il::Type::I32) {
         il::ValueId zeroRes = ilFn.valueCount++;

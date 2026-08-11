@@ -249,10 +249,23 @@ private:
     std::optional<Value> lowerLogical(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerNullish(const ast::Binary* bin, il::Function& ilFn);
 
-    // --- lower_expr.cpp: expressions --------------------------------------
+    // --- lower_expr.cpp: dispatcher, literals, identifiers, unary, assign --
     std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn);
-    std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerAssignment(const ast::Binary* bin, il::Function& ilFn);
+
+    // --- lower_expr_binary.cpp: the binary operator families (docs/0015) ---
+    std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
+    std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
+                                       il::Function& ilFn);
+    // ECMA-262 ToInt32, and the bitwise/shift operators built on it. The int32
+    // is an intermediate: every one of these produces an F64, because that is
+    // the type the language gives their result and the only numeric element
+    // inference has (see the definitions for why leaking I32 is unsound).
+    Value emitToInt32(Value val, il::Function& ilFn);
+    Value emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn);
+    Value emitPow(Value lhs, Value rhs, il::Function& ilFn);
+    Value emitLogicalNot(Value boolVal, il::Function& ilFn);
+    static std::optional<il::Op> bitwiseOpFor(ast::BinaryOp op);
 
     // --- lower_object.cpp: objects, property access, new, calls (docs/0008)
     std::optional<Value> lowerObjectLit(const ast::ObjectLit* objLit, il::Function& ilFn);

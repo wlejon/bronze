@@ -191,7 +191,9 @@ ExprPtr Parser::parseObjectLit() {
 
         if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
 
-        auto valExpr = parseExpr();
+        // AssignmentExpression: the commas between properties are the
+        // literal's own punctuation, never the comma operator.
+        auto valExpr = parseAssign();
         if (!valExpr) return nullptr;
 
         obj->props.push_back(ObjectProp{std::move(keyStr), std::move(valExpr)});
@@ -210,7 +212,9 @@ ExprPtr Parser::parseArrayLit() {
     arr->span.begin = openToken.span.begin;
 
     while (!check(TokenKind::RBracket) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        auto elemExpr = parseExpr();
+        // AssignmentExpression, for the same reason the argument list is:
+        // a comma operator here would make `[1, 2, 3]` one element long.
+        auto elemExpr = parseAssign();
         if (!elemExpr) return nullptr;
         arr->elements.push_back(std::move(elemExpr));
         if (!match(TokenKind::Comma)) break;

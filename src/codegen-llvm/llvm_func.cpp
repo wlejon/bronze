@@ -222,7 +222,17 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::CmpGt:
         case il::Op::CmpEq:
         case il::Op::CmpNe:
+        case il::Op::NumTruthy:
         case il::Op::StrictEq:
+        case il::Op::LooseEq:
+        case il::Op::Pow:
+        case il::Op::ToInt32:
+        case il::Op::BitAnd:
+        case il::Op::BitOr:
+        case il::Op::BitXor:
+        case il::Op::Shl:
+        case il::Op::Shr:
+        case il::Op::UShr:
             return emitArithmetic(inst);
 
         default:

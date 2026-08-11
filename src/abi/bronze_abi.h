@@ -47,6 +47,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_is_nullish,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_strict_eq,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_loose_eq,            BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_typeof,              BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_instanceof,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_has_property,        BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_to_int32,            BRONZE_ABI_I32,  (BRONZE_ABI_U64)) \
+    X(bronze_to_int32_f64,        BRONZE_ABI_I32,  (BRONZE_ABI_F64)) \
+    X(bronze_pow,                 BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
     X(bronze_box_f64,             BRONZE_ABI_U64,  (BRONZE_ABI_F64)) \
     X(bronze_box_i32,             BRONZE_ABI_U64,  (BRONZE_ABI_I32)) \
     X(bronze_box_bool,            BRONZE_ABI_U64,  (BRONZE_ABI_BOOL)) \

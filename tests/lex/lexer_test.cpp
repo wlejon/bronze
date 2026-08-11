@@ -161,3 +161,46 @@ TEST_CASE("end of input reports the line terminator before it") {
     auto withoutNewline = lexAll("return");
     CHECK_FALSE(withoutNewline.tokens.back().newlineBefore);
 }
+
+TEST_CASE("the bitwise punctuation is longest-match, single form included") {
+    // `&` and `|` used to exist only as the first half of `&&` and `||`, so
+    // `a & b` reported an unrecognized character (docs/0015).
+    auto lexed = lexAll("a & b && c | d || e ^ f ~g");
+    auto& t = lexed.tokens;
+    CHECK(t[1].kind == TokenKind::Amp);
+    CHECK(t[3].kind == TokenKind::AmpAmp);
+    CHECK(t[5].kind == TokenKind::Pipe);
+    CHECK(t[7].kind == TokenKind::PipePipe);
+    CHECK(t[9].kind == TokenKind::Caret);
+    CHECK(t[11].kind == TokenKind::Tilde);
+}
+
+TEST_CASE("`>` fans out four ways and `>>>=` is the longest") {
+    auto lexed = lexAll("a > b >= c >> d >>> e >>= f >>>= g << h <<= i");
+    auto& t = lexed.tokens;
+    CHECK(t[1].kind == TokenKind::Greater);
+    CHECK(t[3].kind == TokenKind::GreaterEqual);
+    CHECK(t[5].kind == TokenKind::GreaterGreater);
+    CHECK(t[7].kind == TokenKind::GreaterGreaterGreater);
+    CHECK(t[9].kind == TokenKind::GreaterGreaterAssign);
+    CHECK(t[11].kind == TokenKind::GreaterGreaterGreaterAssign);
+    CHECK(t[13].kind == TokenKind::LessLess);
+    CHECK(t[15].kind == TokenKind::LessLessAssign);
+}
+
+TEST_CASE("`**` and `**=` do not lex as two stars") {
+    auto lexed = lexAll("a ** b **= c * d");
+    auto& t = lexed.tokens;
+    CHECK(t[1].kind == TokenKind::StarStar);
+    CHECK(t[3].kind == TokenKind::StarStarAssign);
+    CHECK(t[5].kind == TokenKind::Star);
+}
+
+TEST_CASE("the operator keywords are keywords, not identifiers") {
+    auto lexed = lexAll("typeof x; a instanceof B; \"k\" in o; void 0;");
+    auto& t = lexed.tokens;
+    CHECK(t[0].kind == TokenKind::KwTypeof);
+    CHECK(t[4].kind == TokenKind::KwInstanceof);
+    CHECK(t[8].kind == TokenKind::KwIn);
+    CHECK(t[11].kind == TokenKind::KwVoid);
+}

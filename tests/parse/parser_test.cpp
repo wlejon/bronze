@@ -409,3 +409,98 @@ TEST_CASE("`import` is diagnosed by name rather than as a missing expression") {
     CHECK(out.substr(0, 7) == "ERRORS:");
     CHECK(out.find("unsupported construct: import declaration") != std::string::npos);
 }
+
+TEST_CASE("the precedence ladder groups the new operators the way ECMA-262 does") {
+    // One expression per rung, each written so a wrong grouping produces a
+    // visibly different tree (docs/0015 decision 6).
+    const auto shiftBindsTighterThanRelational = parseAndDump("const a = 1 << 2 < 8;");
+    CHECK(shiftBindsTighterThanRelational.find(
+              "(binary <\n"
+              "      (binary <<") != std::string::npos);
+
+    // `&` above equality, `^` above `&`, `|` above `^`: `a | b ^ c & d` is
+    // `a | (b ^ (c & d))`.
+    const auto bitwise = parseAndDump("const a = 1 | 2 ^ 3 & 4;");
+    CHECK(bitwise.find(
+              "(binary |\n"
+              "      (number 1)\n"
+              "      (binary ^\n"
+              "        (number 2)\n"
+              "        (binary &\n") != std::string::npos);
+
+    // Equality binds tighter than `&`, which is the classic surprise:
+    // `1 & 2 == 2` is `1 & (2 == 2)`.
+    const auto equality = parseAndDump("const a = 1 & 2 == 2;");
+    CHECK(equality.find(
+              "(binary &\n"
+              "      (number 1)\n"
+              "      (binary ==") != std::string::npos);
+
+    // `in` and `instanceof` are relational, so additive is below them.
+    const auto relational = parseAndDump("const a = 1 + 1 in o;");
+    CHECK(relational.find(
+              "(binary in\n"
+              "      (binary +") != std::string::npos);
+}
+
+TEST_CASE("`**` is right-associative and refuses an unparenthesized unary left operand") {
+    // `2 ** 3 ** 2` is 512, not 64.
+    const auto right = parseAndDump("const a = 2 ** 3 ** 2;");
+    CHECK(right.find(
+              "(binary **\n"
+              "      (number 2)\n"
+              "      (binary **") != std::string::npos);
+
+    // ECMA-262 declines to pick a reading for `-2 ** 2`, and so does bronze.
+    const auto ambiguous = parseAndDump("const a = -2 ** 2;");
+    CHECK(ambiguous.substr(0, 7) == "ERRORS:");
+    CHECK(ambiguous.find("'**' cannot have an unparenthesized unary operand") !=
+          std::string::npos);
+
+    // Parenthesizing either way is accepted; the flag is about the source
+    // form, not the node kind.
+    CHECK(parseAndDump("const a = (-2) ** 2;").substr(0, 7) != "ERRORS:");
+    CHECK(parseAndDump("const a = -(2 ** 2);").substr(0, 7) != "ERRORS:");
+}
+
+TEST_CASE("`??` cannot be mixed with `&&` or `||` without parentheses") {
+    CHECK(parseAndDump("const a = b ?? c || d;").find(
+              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+    CHECK(parseAndDump("const a = b || c ?? d;").find(
+              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+    CHECK(parseAndDump("const a = b && c ?? d;").find(
+              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+    CHECK(parseAndDump("const a = (b ?? c) || d;").substr(0, 7) != "ERRORS:");
+}
+
+TEST_CASE("assignment is right-associative and sits above the conditional") {
+    // Both of these parsed the other way round before docs/0015 decision 8:
+    // `x = cond ? a : b` assigned the CONDITION.
+    const auto ternary = parseAndDump("x = c ? 1 : 2;");
+    CHECK(ternary.find(
+              "(binary =\n"
+              "      (ident x)\n"
+              "      (ternary") != std::string::npos);
+
+    const auto chained = parseAndDump("a = b = 3;");
+    CHECK(chained.find(
+              "(binary =\n"
+              "      (ident a)\n"
+              "      (binary =\n") != std::string::npos);
+}
+
+TEST_CASE("a comma in an argument list is a separator, not the comma operator") {
+    // The hazard in adding the lowest rung: wiring comma in at the wrong
+    // level turns `f(a, b)` into a one-argument call.
+    const auto call = parseAndDump("f(a, b);");
+    CHECK(call.find("(ident a)") != std::string::npos);
+    CHECK(call.find("(ident b)") != std::string::npos);
+    CHECK(call.find("(binary ,") == std::string::npos);
+
+    const auto array = parseAndDump("const xs = [a, b];");
+    CHECK(array.find("(binary ,") == std::string::npos);
+
+    // Parenthesized, it IS the operator.
+    const auto real = parseAndDump("f((a, b));");
+    CHECK(real.find("(binary ,") != std::string::npos);
+}

@@ -104,17 +104,24 @@ Type arithResult(ast::BinaryOp op, Type l, Type r) {
     return Type::dynamic();
 }
 
-// The plain operator behind a compound assignment.
-bool compoundOp(ast::BinaryOp op, ast::BinaryOp& out) {
+// The bitwise, shift and exponentiation operators are ToInt32/ToNumber on
+// both operands, so the result is a number whatever came in — including a
+// string operand, which `+` is the only operator to treat differently. This
+// has to agree with lowering exactly, or the `--no-infer` run and the
+// inferred one disagree about a block parameter's type (docs/0010 dec. 8).
+bool isAlwaysNumericOp(ast::BinaryOp op) {
     switch (op) {
-        case ast::BinaryOp::PlusAssign: out = ast::BinaryOp::Add; return true;
-        case ast::BinaryOp::MinusAssign: out = ast::BinaryOp::Sub; return true;
-        case ast::BinaryOp::StarAssign: out = ast::BinaryOp::Mul; return true;
-        case ast::BinaryOp::SlashAssign: out = ast::BinaryOp::Div; return true;
-        case ast::BinaryOp::PercentAssign: out = ast::BinaryOp::Mod; return true;
+        case ast::BinaryOp::BitAnd:
+        case ast::BinaryOp::BitOr:
+        case ast::BinaryOp::BitXor:
+        case ast::BinaryOp::Shl:
+        case ast::BinaryOp::Shr:
+        case ast::BinaryOp::UShr:
+        case ast::BinaryOp::Exp: return true;
         default: return false;
     }
 }
+
 
 struct LoopParts {
     const ast::Expr* condition = nullptr;  // null for `for (;;)`
@@ -570,7 +577,15 @@ private:
         switch (u.op) {
             case ast::UnaryOp::Not: return withBottom(operand, Type::boolean());
             case ast::UnaryOp::Negate:
-            case ast::UnaryOp::Posate: return withBottom(operand, Type::number());
+            case ast::UnaryOp::Posate:
+            // `~` is ToInt32 then a complement, so a number however it came.
+            case ast::UnaryOp::BitNot: return withBottom(operand, Type::number());
+            // The one operator whose result type is the same for every
+            // operand there is: one of six strings.
+            case ast::UnaryOp::TypeOf: return withBottom(operand, Type::string());
+            // `void x` yields undefined, always; x is evaluated for effect
+            // and `expr` above already recorded it.
+            case ast::UnaryOp::Void: return withBottom(operand, Type::undefined());
             case ast::UnaryOp::PreInc:
             case ast::UnaryOp::PreDec:
             case ast::UnaryOp::PostInc:
@@ -595,12 +610,14 @@ private:
             }
             return rhs;
         }
-        ast::BinaryOp plain{};
-        if (compoundOp(b.op, plain)) {
+        if (ast::isCompoundAssignOp(b.op)) {
+            const ast::BinaryOp plain = ast::compoundAssignBase(b.op);
             const Type rhs = expr(*b.rhs);
             const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get());
             const Type current = id != nullptr ? lookup(id->name) : expr(*b.lhs);
-            const Type result = arithResult(plain, current, rhs);
+            const Type result = isAlwaysNumericOp(plain)
+                                    ? withBottom(current, rhs, Type::number())
+                                    : arithResult(plain, current, rhs);
             if (id != nullptr) assign(id->name, result);
             return result;
         }
@@ -619,6 +636,7 @@ private:
 
         const Type l = expr(*b.lhs);
         const Type r = expr(*b.rhs);
+        if (isAlwaysNumericOp(b.op)) return withBottom(l, r, Type::number());
         switch (b.op) {
             case ast::BinaryOp::Add:
             case ast::BinaryOp::Sub:
@@ -632,7 +650,15 @@ private:
             case ast::BinaryOp::Eq:
             case ast::BinaryOp::StrictEq:
             case ast::BinaryOp::Ne:
-            case ast::BinaryOp::StrictNe: return withBottom(l, r, Type::boolean());
+            case ast::BinaryOp::StrictNe:
+            // `in` and `instanceof` are predicates: whatever their operands
+            // are, the answer is a boolean.
+            case ast::BinaryOp::In:
+            case ast::BinaryOp::InstanceOf: return withBottom(l, r, Type::boolean());
+            // The comma operator's value IS its right operand, and its left
+            // operand's only contribution is the effects `expr` already
+            // recorded above.
+            case ast::BinaryOp::Comma: return r;
             default: break;
         }
         return Type::dynamic();

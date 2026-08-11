@@ -60,6 +60,12 @@ Value rtMakeString(std::string_view utf8);
 Value rtValueToString(Value v);
 double rtToNumber(Value v);
 
+// ECMA-262 Number::exponentiate, which `**` and `Math.pow` are both defined
+// as. One implementation, because the two must not drift: C's pow disagrees
+// with it on a NaN exponent and on a base of magnitude 1 with an infinite
+// one (rt_operator.cpp).
+double rtExponentiate(double base, double exponent);
+
 // The characters of a string as bytes, with any code unit past U+007F
 // replaced by 0xFF — enough for the numeric and structural parsing the
 // builtins do, and never enough to be mistaken for a general conversion.

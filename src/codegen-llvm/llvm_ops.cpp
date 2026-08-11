@@ -295,6 +295,28 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
+        case il::Op::TypeOf: {
+            if (!needs(1, true, "Invalid operands for TypeOf")) return false;
+            llvm::Value* v = operand(inst, 0, "Undefined operand in TypeOf instruction");
+            if (!v) return false;
+            callWith(abi.bronze_typeof, {v});
+            return true;
+        }
+        case il::Op::InstanceOf:
+        case il::Op::In: {
+            const bool isIn = inst.op == il::Op::In;
+            if (!needs(2, true, isIn ? "Invalid operands for In"
+                                     : "Invalid operands for InstanceOf")) {
+                return false;
+            }
+            const char* what = "Undefined operand in a relational-predicate instruction";
+            llvm::Value* left = operand(inst, 0, what);
+            llvm::Value* right = operand(inst, 1, what);
+            if (!left || !right) return false;
+            callWith(isIn ? abi.bronze_has_property : abi.bronze_instanceof, {left, right});
+            return true;
+        }
+
         default:
             return require(false, "Unsupported IL instruction opcode");
     }

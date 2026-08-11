@@ -20,6 +20,7 @@ bronze_add_module(runtime
         rt_convert.cpp
         rt_members.cpp
         rt_object.cpp
+        rt_operator.cpp
         rt_prop.cpp
         rt_iter.cpp
         rt_print.cpp

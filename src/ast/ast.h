@@ -17,7 +17,16 @@ struct Node {
 
 // ---- Expressions -----------------------------------------------------------
 
-struct Expr : Node {};
+struct Expr : Node {
+    // Whether the source wrapped this expression in parentheses. Two rules
+    // in ECMA-262 are stated over the *unparenthesized* form and cannot be
+    // checked without it: `a ?? b || c` is a SyntaxError while
+    // `a ?? (b || c)` is not, and `-2 ** 2` is a SyntaxError while
+    // `(-2) ** 2` is not. Nothing else reads it, and it is deliberately not
+    // dumped: parentheses change what the tree IS, and the tree is what the
+    // dump shows.
+    bool parenthesized = false;
+};
 using ExprPtr = std::unique_ptr<Expr>;
 
 struct NumberLit final : Expr {
@@ -64,7 +73,12 @@ struct ThisExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
-enum class UnaryOp { Not, Negate, Posate, PreInc, PreDec, PostInc, PostDec };
+enum class UnaryOp {
+    Not, Negate, Posate, PreInc, PreDec, PostInc, PostDec,
+    // `~` is ToInt32 then a one's complement; `typeof` yields one of six
+    // strings; `void` evaluates its operand and yields undefined (docs/0015).
+    BitNot, TypeOf, Void
+};
 const char* unaryOpName(UnaryOp op);
 
 struct Unary final : Expr {
@@ -76,9 +90,26 @@ struct Unary final : Expr {
 enum class BinaryOp {
     Add, Sub, Mul, Div, Mod, Less, Greater, LessEqual, GreaterEqual,
     Eq, StrictEq, Ne, StrictNe, Assign, PlusAssign, MinusAssign,
-    StarAssign, SlashAssign, PercentAssign, LogicalAnd, LogicalOr, NullishCoalescing
+    StarAssign, SlashAssign, PercentAssign, LogicalAnd, LogicalOr, NullishCoalescing,
+    // docs/0015. The bitwise and shift operators are int32 operations on
+    // ToInt32'd operands; `Exp` is the one right-associative binary operator;
+    // `In` and `InstanceOf` are relational; `Comma` evaluates its left
+    // operand for effect and yields its right.
+    BitAnd, BitOr, BitXor, Shl, Shr, UShr, Exp, In, InstanceOf, Comma,
+    AmpAssign, PipeAssign, CaretAssign, ShlAssign, ShrAssign, UShrAssign, ExpAssign
 };
 const char* binaryOpName(BinaryOp op);
+
+// Does this operator WRITE its left operand? Three passes ask — the
+// assigned-variable scan that sizes SSA joins, inference's flow analysis,
+// and lowering — and they must agree, so there is one table and not three
+// lists. A compound operator missing from a copy of the list is not a build
+// error, it is a variable that silently stops taking part in a loop join.
+bool isAssignOp(BinaryOp op);
+bool isCompoundAssignOp(BinaryOp op);
+// The plain operator a compound assignment applies (`+=` -> `+`). Returns
+// `op` itself for anything that is not one.
+BinaryOp compoundAssignBase(BinaryOp op);
 
 struct Binary final : Expr {
     BinaryOp op;

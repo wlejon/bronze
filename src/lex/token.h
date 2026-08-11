@@ -41,6 +41,7 @@ enum class TokenKind {
     KwIf,
     KwImport,
     KwIn,
+    KwInstanceof,
     KwLet,
     KwNew,
     KwNull,
@@ -50,6 +51,8 @@ enum class TokenKind {
     KwThrow,
     KwTrue,
     KwTry,
+    KwTypeof,
+    KwVoid,
     KwDelete,
     KwClass,
     KwExtends,
@@ -98,6 +101,24 @@ enum class TokenKind {
     StarAssign,   // *=
     SlashAssign,  // /=
     PercentAssign,// %=
+    // Bitwise and shifts. `&` and `|` were previously lexed only as the
+    // second character of `&&` and `||`, so `a & b` reported an unrecognized
+    // character and named nothing (docs/0015).
+    Amp,          // &
+    Pipe,         // |
+    Caret,        // ^
+    Tilde,        // ~
+    LessLess,     // <<
+    GreaterGreater,        // >>
+    GreaterGreaterGreater, // >>>
+    AmpAssign,             // &=
+    PipeAssign,            // |=
+    CaretAssign,           // ^=
+    LessLessAssign,        // <<=
+    GreaterGreaterAssign,  // >>=
+    GreaterGreaterGreaterAssign,  // >>>=
+    StarStar,       // **
+    StarStarAssign, // **=
 };
 
 const char* tokenKindName(TokenKind kind);

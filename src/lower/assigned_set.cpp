@@ -29,9 +29,7 @@ public:
     }
 
     void visit(const ast::Binary& b) override {
-        if (b.op == ast::BinaryOp::Assign || b.op == ast::BinaryOp::PlusAssign ||
-            b.op == ast::BinaryOp::MinusAssign || b.op == ast::BinaryOp::StarAssign ||
-            b.op == ast::BinaryOp::SlashAssign || b.op == ast::BinaryOp::PercentAssign) {
+        if (ast::isAssignOp(b.op)) {
             if (const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get())) {
                 assigned.insert(id->name);
             }

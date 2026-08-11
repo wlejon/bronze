@@ -75,3 +75,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   divergences from node that are deliberate)
 - 0014 automatic semicolon insertion (the restricted productions, and the
   unreachable-code and void-call bugs it uncovered)
+- 0015 operators (bitwise and shifts as int32 inside / number outside,
+  `**`, `typeof`, `instanceof`, `in`, comma, loose equality, and the
+  precedence ladder that fixed assignment)

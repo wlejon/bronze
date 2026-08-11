@@ -76,7 +76,7 @@ ExprPtr Parser::parseArrowFunction() {
         // An expression body IS a return, and is stored as one so that
         // every consumer below — capture analysis, inference, lowering —
         // sees one shape of function body and not two.
-        auto value = parseExpr();
+        auto value = parseAssign();
         if (!value) return nullptr;
         auto ret = std::make_unique<ReturnStmt>();
         ret->span = value->span;

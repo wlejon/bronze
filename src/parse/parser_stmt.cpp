@@ -156,7 +156,9 @@ StmtPtr Parser::parseVarDecl(bool isStatement) {
 
     if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
     if (match(TokenKind::Assign)) {
-        decl->init = parseExpr();
+        // AssignmentExpression: `let a = 1, b = 2` is two declarators, so a
+        // comma here ends the initializer rather than continuing it.
+        decl->init = parseAssign();
         if (!decl->init) return nullptr;
     } else if (decl->isConst) {
         error("'const' declaration requires an initializer");

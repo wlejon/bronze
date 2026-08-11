@@ -1,7 +1,8 @@
 // Expression lowering: the dispatcher, literals, identifier resolution,
-// unary operators, the binary operators and assignment. The forms with
-// their own seams delegate to lower_expr_cond.cpp (short-circuit joins)
-// and lower_object.cpp (objects, property access, new, calls).
+// the unary operators, and assignment. The forms with their own seams
+// delegate to lower_expr_binary.cpp (the binary operator families),
+// lower_expr_cond.cpp (short-circuit joins) and lower_object.cpp (objects,
+// property access, new, calls).
 
 #include <limits>
 #include <string>
@@ -257,6 +258,48 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             if (!valOpt) return std::nullopt;
             return unboxValueIfNeeded(*valOpt, il::Type::F64, ilFn);
         }
+        if (un->op == ast::UnaryOp::BitNot) {
+            auto valOpt = lowerExpr(*un->operand, ilFn);
+            if (!valOpt) return std::nullopt;
+            // `~x` is -ToInt32(x) - 1, which is the one's complement, which
+            // is `x ^ -1`. Spelled as the xor rather than as its own op:
+            // the language defines it over the same ToInt32'd int32 the
+            // binary operators use, so it is that family and not a new one.
+            il::ValueId allOnes = ilFn.valueCount++;
+            il::Instruction onesInst;
+            onesInst.op = il::Op::ConstI32;
+            onesInst.type = il::Type::I32;
+            onesInst.result = allOnes;
+            onesInst.immI32 = -1;
+            emitInst(ilFn, onesInst);
+            return emitBitwise(il::Op::BitXor, *valOpt, Value{allOnes, il::Type::I32}, ilFn);
+        }
+        if (un->op == ast::UnaryOp::TypeOf) {
+            auto valOpt = lowerExpr(*un->operand, ilFn);
+            if (!valOpt) return std::nullopt;
+            Value boxed = boxValueIfNeeded(*valOpt, ilFn);
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::TypeOf;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = {boxed.id};
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        }
+        if (un->op == ast::UnaryOp::Void) {
+            // The operand is evaluated and its value dropped, which in SSA
+            // is simply not using it. What `void` contributes is the
+            // undefined, and it contributes nothing else.
+            if (!lowerExpr(*un->operand, ilFn)) return std::nullopt;
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ConstUndefined;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        }
         if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec ||
             un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
             const auto* ident = dynamic_cast<const ast::Ident*>(un->operand.get());
@@ -334,234 +377,6 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
 
     diags_.error(expr.span, "unsupported AST expression");
     return std::nullopt;
-}
-
-std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::Function& ilFn) {
-    if (bin->op == ast::BinaryOp::Assign || bin->op == ast::BinaryOp::PlusAssign ||
-        bin->op == ast::BinaryOp::MinusAssign || bin->op == ast::BinaryOp::StarAssign ||
-        bin->op == ast::BinaryOp::SlashAssign || bin->op == ast::BinaryOp::PercentAssign) {
-        return lowerAssignment(bin, ilFn);
-    }
-
-    if (bin->op == ast::BinaryOp::LogicalAnd || bin->op == ast::BinaryOp::LogicalOr) {
-        return lowerLogical(bin, ilFn);
-    }
-
-    if (bin->op == ast::BinaryOp::NullishCoalescing) {
-        return lowerNullish(bin, ilFn);
-    }
-
-    auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
-    if (!lhsOpt) return std::nullopt;
-    auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
-    if (!rhsOpt) return std::nullopt;
-
-    Value lhs = *lhsOpt;
-    Value rhs = *rhsOpt;
-
-    il::Op op;
-    il::Type resType;
-
-    switch (bin->op) {
-        case ast::BinaryOp::Add:
-            if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic ||
-                lhs.type == il::Type::Str || rhs.type == il::Type::Str) {
-                auto lhsBoxed = boxValueIfNeeded(lhs, ilFn);
-                auto rhsBoxed = boxValueIfNeeded(rhs, ilFn);
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = il::Op::Add;
-                inst.type = il::Type::Dynamic;
-                inst.result = res;
-                inst.operands = {lhsBoxed.id, rhsBoxed.id};
-                emitInst(ilFn, inst);
-                return Value{res, il::Type::Dynamic};
-            }
-            op = il::Op::Add;
-            resType = il::Type::F64;
-            break;
-        case ast::BinaryOp::Sub:
-            op = il::Op::Sub;
-            resType = il::Type::F64;
-            break;
-        case ast::BinaryOp::Mul:
-            op = il::Op::Mul;
-            resType = il::Type::F64;
-            break;
-        case ast::BinaryOp::Div:
-            op = il::Op::Div;
-            resType = il::Type::F64;
-            break;
-        case ast::BinaryOp::Mod:
-            op = il::Op::Mod;
-            resType = il::Type::F64;
-            break;
-        case ast::BinaryOp::Less:
-            op = il::Op::CmpLt;
-            resType = il::Type::Bool;
-            break;
-        case ast::BinaryOp::Greater:
-            op = il::Op::CmpGt;
-            resType = il::Type::Bool;
-            break;
-        case ast::BinaryOp::LessEqual: {
-            // a <= b is !(a > b) -> cmp.gt, then cmp.eq false
-            Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-            il::ValueId gtRes = ilFn.valueCount++;
-            il::Instruction gtInst;
-            gtInst.op = il::Op::CmpGt;
-            gtInst.type = il::Type::Bool;
-            gtInst.result = gtRes;
-            gtInst.operands = {l.id, r.id};
-            emitInst(ilFn, gtInst);
-
-            il::ValueId falseVal = ilFn.valueCount++;
-            il::Instruction falseInst;
-            falseInst.op = il::Op::ConstBool;
-            falseInst.type = il::Type::Bool;
-            falseInst.result = falseVal;
-            falseInst.immI32 = 0;
-            emitInst(ilFn, falseInst);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction cmpInst;
-            cmpInst.op = il::Op::CmpEq;
-            cmpInst.type = il::Type::Bool;
-            cmpInst.result = res;
-            cmpInst.operands = {gtRes, falseVal};
-            emitInst(ilFn, cmpInst);
-            return Value{res, il::Type::Bool};
-        }
-        case ast::BinaryOp::GreaterEqual: {
-            // a >= b is !(a < b)
-            Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-            il::ValueId ltRes = ilFn.valueCount++;
-            il::Instruction ltInst;
-            ltInst.op = il::Op::CmpLt;
-            ltInst.type = il::Type::Bool;
-            ltInst.result = ltRes;
-            ltInst.operands = {l.id, r.id};
-            emitInst(ilFn, ltInst);
-
-            il::ValueId falseVal = ilFn.valueCount++;
-            il::Instruction falseInst;
-            falseInst.op = il::Op::ConstBool;
-            falseInst.type = il::Type::Bool;
-            falseInst.result = falseVal;
-            falseInst.immI32 = 0;
-            emitInst(ilFn, falseInst);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction cmpInst;
-            cmpInst.op = il::Op::CmpEq;
-            cmpInst.type = il::Type::Bool;
-            cmpInst.result = res;
-            cmpInst.operands = {ltRes, falseVal};
-            emitInst(ilFn, cmpInst);
-            return Value{res, il::Type::Bool};
-        }
-        case ast::BinaryOp::Eq:
-        case ast::BinaryOp::StrictEq:
-        case ast::BinaryOp::Ne:
-        case ast::BinaryOp::StrictNe: {
-            bool negate = (bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe);
-            bool loose = (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::Ne);
-
-            Value eqRes{il::kNoValue, il::Type::Bool};
-            if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic ||
-                lhs.type == il::Type::Str || rhs.type == il::Type::Str) {
-                if (loose) {
-                    diags_.error(bin->span,
-                                 "unsupported construct: loose equality (==, !=) on "
-                                 "possibly non-numeric operands; use === / !==");
-                    return std::nullopt;
-                }
-                Value lb = boxValueIfNeeded(lhs, ilFn);
-                Value rb = boxValueIfNeeded(rhs, ilFn);
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = il::Op::StrictEq;
-                inst.type = il::Type::Bool;
-                inst.result = res;
-                inst.operands = {lb.id, rb.id};
-                emitInst(ilFn, inst);
-                eqRes = Value{res, il::Type::Bool};
-            } else if (lhs.type != rhs.type) {
-                if (loose) {
-                    diags_.error(bin->span,
-                                 "unsupported construct: loose equality (==, !=) on "
-                                 "mixed primitive types; use === / !==");
-                    return std::nullopt;
-                }
-                if (lhs.type == il::Type::I32 || rhs.type == il::Type::I32) {
-                    diags_.error(bin->span,
-                                 "unsupported construct: mixed i32/f64 strict equality");
-                    return std::nullopt;
-                }
-                // Strict equality across distinct primitive types is
-                // statically false.
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = il::Op::ConstBool;
-                inst.type = il::Type::Bool;
-                inst.result = res;
-                inst.immI32 = 0;
-                emitInst(ilFn, inst);
-                eqRes = Value{res, il::Type::Bool};
-            } else {
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = negate ? il::Op::CmpNe : il::Op::CmpEq;
-                inst.type = il::Type::Bool;
-                inst.result = res;
-                inst.operands = {lhs.id, rhs.id};
-                emitInst(ilFn, inst);
-                eqRes = Value{res, il::Type::Bool};
-                negate = false;
-            }
-
-            if (negate) {
-                il::ValueId falseVal = ilFn.valueCount++;
-                il::Instruction falseInst;
-                falseInst.op = il::Op::ConstBool;
-                falseInst.type = il::Type::Bool;
-                falseInst.result = falseVal;
-                falseInst.immI32 = 0;
-                emitInst(ilFn, falseInst);
-
-                il::ValueId notRes = ilFn.valueCount++;
-                il::Instruction notInst;
-                notInst.op = il::Op::CmpEq;
-                notInst.type = il::Type::Bool;
-                notInst.result = notRes;
-                notInst.operands = {eqRes.id, falseVal};
-                emitInst(ilFn, notInst);
-                eqRes = Value{notRes, il::Type::Bool};
-            }
-            return eqRes;
-        }
-        default:
-            diags_.error(bin->span, "unsupported binary operator: " + std::string(ast::binaryOpName(bin->op)));
-            return std::nullopt;
-    }
-
-    // Arithmetic and relational comparison are numeric: dynamic
-    // operands go through runtime-checked ToNumber first.
-    if (resType == il::Type::F64 || op == il::Op::CmpLt || op == il::Op::CmpGt) {
-        lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-        rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-    }
-
-    il::ValueId res = ilFn.valueCount++;
-    il::Instruction inst;
-    inst.op = op;
-    inst.type = resType;
-    inst.result = res;
-    inst.operands = {lhs.id, rhs.id};
-    emitInst(ilFn, inst);
-    return Value{res, resType};
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,

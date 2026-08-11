@@ -55,6 +55,9 @@ const char* unaryOpName(UnaryOp op) {
         case UnaryOp::PreDec: return "--pre";
         case UnaryOp::PostInc: return "++post";
         case UnaryOp::PostDec: return "--post";
+        case UnaryOp::BitNot: return "~";
+        case UnaryOp::TypeOf: return "typeof";
+        case UnaryOp::Void: return "void";
     }
     return "?";
 }
@@ -83,8 +86,47 @@ const char* binaryOpName(BinaryOp op) {
         case BinaryOp::LogicalAnd: return "&&";
         case BinaryOp::LogicalOr: return "||";
         case BinaryOp::NullishCoalescing: return "??";
+        case BinaryOp::BitAnd: return "&";
+        case BinaryOp::BitOr: return "|";
+        case BinaryOp::BitXor: return "^";
+        case BinaryOp::Shl: return "<<";
+        case BinaryOp::Shr: return ">>";
+        case BinaryOp::UShr: return ">>>";
+        case BinaryOp::Exp: return "**";
+        case BinaryOp::In: return "in";
+        case BinaryOp::InstanceOf: return "instanceof";
+        case BinaryOp::Comma: return ",";
+        case BinaryOp::AmpAssign: return "&=";
+        case BinaryOp::PipeAssign: return "|=";
+        case BinaryOp::CaretAssign: return "^=";
+        case BinaryOp::ShlAssign: return "<<=";
+        case BinaryOp::ShrAssign: return ">>=";
+        case BinaryOp::UShrAssign: return ">>>=";
+        case BinaryOp::ExpAssign: return "**=";
     }
     return "?";
 }
+
+BinaryOp compoundAssignBase(BinaryOp op) {
+    switch (op) {
+        case BinaryOp::PlusAssign: return BinaryOp::Add;
+        case BinaryOp::MinusAssign: return BinaryOp::Sub;
+        case BinaryOp::StarAssign: return BinaryOp::Mul;
+        case BinaryOp::SlashAssign: return BinaryOp::Div;
+        case BinaryOp::PercentAssign: return BinaryOp::Mod;
+        case BinaryOp::AmpAssign: return BinaryOp::BitAnd;
+        case BinaryOp::PipeAssign: return BinaryOp::BitOr;
+        case BinaryOp::CaretAssign: return BinaryOp::BitXor;
+        case BinaryOp::ShlAssign: return BinaryOp::Shl;
+        case BinaryOp::ShrAssign: return BinaryOp::Shr;
+        case BinaryOp::UShrAssign: return BinaryOp::UShr;
+        case BinaryOp::ExpAssign: return BinaryOp::Exp;
+        default: return op;
+    }
+}
+
+bool isCompoundAssignOp(BinaryOp op) { return compoundAssignBase(op) != op; }
+
+bool isAssignOp(BinaryOp op) { return op == BinaryOp::Assign || isCompoundAssignOp(op); }
 
 }  // namespace bronze::ast

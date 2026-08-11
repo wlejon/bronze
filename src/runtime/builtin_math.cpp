@@ -125,17 +125,12 @@ double unaryAcos(double x) { return std::acos(x); }
 double unaryAtan(double x) { return std::atan(x); }
 
 uint64_t mathPow(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    double base = argAt(argc, argv, 0);
-    double exp = argAt(argc, argv, 1);
-    // ECMA-262: an exponent of NaN is NaN even for base 1, and a base of
-    // +/-1 with an infinite exponent is NaN — both of which std::pow gets
-    // right in C++11 and later only for the second. Spelled out so the
-    // inline path in generated code has something to match.
-    if (std::isnan(exp)) return Value::fromDouble(exp).rawBits();
-    if (std::abs(base) == 1.0 && std::isinf(exp)) {
-        return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
-    }
-    return Value::fromDouble(std::pow(base, exp)).rawBits();
+    // `Math.pow(a, b)` and `a ** b` are the SAME operation in ECMA-262
+    // (Number::exponentiate), so they are the same function here. Two
+    // spellings of the NaN rules are two places for them to drift.
+    return Value::fromDouble(
+               rtExponentiate(argAt(argc, argv, 0), argAt(argc, argv, 1)))
+        .rawBits();
 }
 
 uint64_t mathAtan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

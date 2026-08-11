@@ -564,3 +564,37 @@ TEST_CASE("a binding's type at an if is the join of the two arms") {
     // Both arms leave a number, from different assignments.
     CHECK(r.typeOfBindingAt(branch, "n") == types::Type::number());
 }
+
+TEST_CASE("the operator results docs/0015 fixes are fixed regardless of operand type") {
+    // Inference must agree with lowering about these, or the with-inference
+    // and `--no-infer` runs of the oracle suite would disagree: bitwise and
+    // shift results are always numbers however dynamic the operands are.
+    const auto inferred = infer(
+        "let s = \"x\";\n"
+        "let a = s & 1;\n"
+        "let b = s >>> 1;\n"
+        "let c = ~s;\n"
+        "let d = s ** 2;\n"
+        "let e = typeof s;\n"
+        "let f = void s;\n"
+        "let g = s instanceof Object;\n"
+        "let h = s in s;\n"
+        "let i = (s, 1);\n"
+        "let j = 1;\n"
+        "j &= s;\n");
+
+    const auto dump = inferred.dump();
+    CHECK(dump.find("a: number") != std::string::npos);
+    CHECK(dump.find("b: number") != std::string::npos);
+    CHECK(dump.find("c: number") != std::string::npos);
+    CHECK(dump.find("d: number") != std::string::npos);
+    CHECK(dump.find("e: string") != std::string::npos);
+    CHECK(dump.find("f: undefined") != std::string::npos);
+    CHECK(dump.find("g: bool") != std::string::npos);
+    CHECK(dump.find("h: bool") != std::string::npos);
+    // Comma evaluates the left for effect and takes the RIGHT operand's type.
+    CHECK(dump.find("i: number") != std::string::npos);
+    // A compound bitwise assignment is the operator, so the binding stays a
+    // number even though the right operand is a string.
+    CHECK(dump.find("j: number") != std::string::npos);
+}

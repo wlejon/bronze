@@ -609,3 +609,72 @@ TEST_CASE("a destructuring assignment is named, not called a bad target") {
     CHECK(diags.render(buf).find("unsupported construct: destructuring assignment") !=
           std::string::npos);
 }
+
+TEST_CASE("a bitwise operator is int32 inside and f64 outside") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower("const a = 5 & 3;\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // Each operand converts once, and the RESULT is the JS number the int32
+    // denotes — an i32 escaping the operator would be a type inference has
+    // no element for (docs/0015 decision 1).
+    CHECK(printed.find(": i32 = to.int32") != std::string::npos);
+    CHECK(printed.find(": f64 = and") != std::string::npos);
+}
+
+TEST_CASE("`~x` is a xor against -1, not an op of its own") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower("const a = ~5;\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("const.i32 -1") != std::string::npos);
+    CHECK(printed.find(": f64 = xor") != std::string::npos);
+}
+
+TEST_CASE("numeric truthiness is num.truthy, not cmp.ne against zero") {
+    // The two differ at exactly one value: `if (NaN)` is false while
+    // `NaN !== NaN` is true, so one op cannot answer both (docs/0015
+    // decision 9).
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "function f(n: number): number { if (n) { return 1; } return 0; }\n"
+        "f(1);\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("num.truthy") != std::string::npos);
+}
+
+TEST_CASE("loose equality on unproven operands lowers to the runtime algorithm") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("const a = 1 == \"1\";\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("loose.eq") != std::string::npos);
+}
+
+TEST_CASE("loose equality on two proven numbers is the same compare as strict") {
+    // Not an optimization on top of IsLooselyEqual — it is that algorithm's
+    // first step, and it is what makes `==` free in typed code.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower("const a = 1 == 2;\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("cmp.eq") != std::string::npos);
+    CHECK(printed.find("loose.eq") == std::string::npos);
+}

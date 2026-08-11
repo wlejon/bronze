@@ -33,6 +33,13 @@ private:
     // (docs/0012 decision 5).
     std::string currentClassSuper_;
     bool inClassMethod_ = false;
+    // Whether the operand `parseUnaryPrefix` just produced is an
+    // unparenthesized unary expression, which is the one thing `**` may not
+    // have on its left (ECMA-262 13.6: the left operand is an
+    // UpdateExpression, so `++a ** 2` is fine and `-a ** 2` is not). Set at
+    // every return of that function, read only by the `**` rung of
+    // `parseBinary`.
+    bool lastOperandIsUnary_ = false;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -79,7 +86,16 @@ private:
     bool looksLikeArrow() const;
     ast::ExprPtr parseArrowFunction();
 
+    // The expression grammar, loosest production first. `parseExpr` is
+    // ECMA-262's *Expression* and admits the comma operator; `parseAssign`
+    // is *AssignmentExpression* and does not. Every position the spec spells
+    // AssignmentExpression — an argument, an array element, a property
+    // value, a declarator initializer, a ternary arm, the right side of an
+    // assignment — calls the latter, which is what keeps `f(a, b)` a
+    // two-argument call (docs/0015 decision 7).
     ast::ExprPtr parseExpr();
+    ast::ExprPtr parseAssign();
+    ast::ExprPtr parseConditional();
     ast::ExprPtr parseBinary(int minPrecedence);
     ast::ExprPtr parseUnaryPrefix();
     ast::ExprPtr parseUnaryPostfix();

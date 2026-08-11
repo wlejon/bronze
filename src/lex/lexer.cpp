@@ -27,6 +27,9 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwIf: return "if";
         case TokenKind::KwImport: return "import";
         case TokenKind::KwIn: return "in";
+        case TokenKind::KwInstanceof: return "instanceof";
+        case TokenKind::KwTypeof: return "typeof";
+        case TokenKind::KwVoid: return "void";
         case TokenKind::KwLet: return "let";
         case TokenKind::KwNew: return "new";
         case TokenKind::KwNull: return "null";
@@ -82,6 +85,21 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::StarAssign: return "*=";
         case TokenKind::SlashAssign: return "/=";
         case TokenKind::PercentAssign: return "%=";
+        case TokenKind::Amp: return "&";
+        case TokenKind::Pipe: return "|";
+        case TokenKind::Caret: return "^";
+        case TokenKind::Tilde: return "~";
+        case TokenKind::LessLess: return "<<";
+        case TokenKind::GreaterGreater: return ">>";
+        case TokenKind::GreaterGreaterGreater: return ">>>";
+        case TokenKind::AmpAssign: return "&=";
+        case TokenKind::PipeAssign: return "|=";
+        case TokenKind::CaretAssign: return "^=";
+        case TokenKind::LessLessAssign: return "<<=";
+        case TokenKind::GreaterGreaterAssign: return ">>=";
+        case TokenKind::GreaterGreaterGreaterAssign: return ">>>=";
+        case TokenKind::StarStar: return "**";
+        case TokenKind::StarStarAssign: return "**=";
     }
     return "unknown";
 }
@@ -157,7 +175,9 @@ Token Lexer::lexIdentifierOrKeyword() {
         {"export", TokenKind::KwExport},     {"false", TokenKind::KwFalse},
         {"for", TokenKind::KwFor},           {"function", TokenKind::KwFunction},
         {"if", TokenKind::KwIf},             {"import", TokenKind::KwImport},
-        {"in", TokenKind::KwIn},             {"let", TokenKind::KwLet},
+        {"in", TokenKind::KwIn},             {"instanceof", TokenKind::KwInstanceof},
+        {"typeof", TokenKind::KwTypeof},     {"void", TokenKind::KwVoid},
+        {"let", TokenKind::KwLet},
         {"new", TokenKind::KwNew},           {"null", TokenKind::KwNull},
         {"of", TokenKind::KwOf},             {"return", TokenKind::KwReturn},
         {"switch", TokenKind::KwSwitch},     {"throw", TokenKind::KwThrow},
@@ -222,10 +242,17 @@ Token Lexer::lexPunctuation() {
             ++pos_; return make(TokenKind::Question, begin);
         case '&':
             if (peek(1) == '&') { pos_ += 2; return make(TokenKind::AmpAmp, begin); }
-            break;
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::AmpAssign, begin); }
+            ++pos_; return make(TokenKind::Amp, begin);
         case '|':
             if (peek(1) == '|') { pos_ += 2; return make(TokenKind::PipePipe, begin); }
-            break;
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PipeAssign, begin); }
+            ++pos_; return make(TokenKind::Pipe, begin);
+        case '^':
+            if (peek(1) == '=') { pos_ += 2; return make(TokenKind::CaretAssign, begin); }
+            ++pos_; return make(TokenKind::Caret, begin);
+        case '~':
+            ++pos_; return make(TokenKind::Tilde, begin);
         case '+':
             if (peek(1) == '+') { pos_ += 2; return make(TokenKind::PlusPlus, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PlusAssign, begin); }
@@ -235,6 +262,11 @@ Token Lexer::lexPunctuation() {
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::MinusAssign, begin); }
             ++pos_; return make(TokenKind::Minus, begin);
         case '*':
+            // The longest match wins, always: `**=` before `**` before `*=`.
+            // Reading `**` as two `*` would make `2 ** 3` a multiplication by
+            // nothing rather than an exponentiation.
+            if (peek(1) == '*' && peek(2) == '=') { pos_ += 3; return make(TokenKind::StarStarAssign, begin); }
+            if (peek(1) == '*') { pos_ += 2; return make(TokenKind::StarStar, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::StarAssign, begin); }
             ++pos_; return make(TokenKind::Star, begin);
         case '/':
@@ -244,9 +276,20 @@ Token Lexer::lexPunctuation() {
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PercentAssign, begin); }
             ++pos_; return make(TokenKind::Percent, begin);
         case '<':
+            if (peek(1) == '<' && peek(2) == '=') { pos_ += 3; return make(TokenKind::LessLessAssign, begin); }
+            if (peek(1) == '<') { pos_ += 2; return make(TokenKind::LessLess, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::LessEqual, begin); }
             ++pos_; return make(TokenKind::Less, begin);
         case '>':
+            // Four spellings start with `>>`, so they are tried longest first.
+            // bronze has no generics in its annotation grammar (one identifier,
+            // parser_stmt.cpp), so nothing else wants `>>` split in two.
+            if (peek(1) == '>' && peek(2) == '>' && peek(3) == '=') {
+                pos_ += 4; return make(TokenKind::GreaterGreaterGreaterAssign, begin);
+            }
+            if (peek(1) == '>' && peek(2) == '>') { pos_ += 3; return make(TokenKind::GreaterGreaterGreater, begin); }
+            if (peek(1) == '>' && peek(2) == '=') { pos_ += 3; return make(TokenKind::GreaterGreaterAssign, begin); }
+            if (peek(1) == '>') { pos_ += 2; return make(TokenKind::GreaterGreater, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::GreaterEqual, begin); }
             ++pos_; return make(TokenKind::Greater, begin);
         case '=':

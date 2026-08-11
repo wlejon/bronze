@@ -40,11 +40,42 @@ enum class Op : uint8_t {
     Mul,
     Div,
     Mod,
+    // JS `**`, which is NOT C's pow: ECMA-262 Number::exponentiate makes an
+    // exponent of NaN yield NaN even for base 1, and a base of magnitude 1
+    // with an infinite exponent yield NaN. Its own op so the one algorithm
+    // serves `**` and `Math.pow` alike.
+    Pow,        // a: f64 = pow b, c
+    // The bitwise family (docs/0015). Operands are i32 — lowering puts a
+    // `to.int32` in front of every one of them — and the RESULT is the JS
+    // number that int32 denotes, so these read `%n: f64 = and %i32, %i32`.
+    // Keeping the result an i32 would leak a type inference has no element
+    // for into block joins and calling conventions; the int32 is an
+    // intermediate of the operator and never escapes it.
+    ToInt32,    // a: i32 = to.int32 b        (b: f64, bool or dynamic)
+    BitAnd,     // a: f64 = and b, c
+    BitOr,
+    BitXor,
+    Shl,        // a: f64 = shl b, c          (count masked to 5 bits)
+    Shr,        // arithmetic: the sign bit is replicated
+    UShr,       // logical, and the ONE bitwise op whose result is ToUint32
     CmpLt,      // a: bool = cmp.lt b, c
     CmpGt,
     CmpEq,
+    // The exact negation of CmpEq, NaN included: `NaN != NaN` is true, so on
+    // doubles this is the UNORDERED compare. Numeric truthiness is a
+    // different question with the same shape and has its own op below —
+    // conflating them printed `NaN !== NaN` as false.
     CmpNe,
+    // ToBoolean of a number: neither zero nor NaN, which is the ORDERED
+    // "not equal to 0". Named rather than spelled `cmp.ne x, 0` because the
+    // two differ exactly at NaN and every use of one is a wrong answer for
+    // the other.
+    NumTruthy,  // a: bool = num.truthy b     (b: f64)
     StrictEq,   // a: bool = strict.eq b, c   (JS ===, both operands dynamic)
+    LooseEq,    // a: bool = loose.eq b, c    (JS ==, both operands dynamic)
+    TypeOf,     // a: dynamic = typeof b      (one of six strings)
+    InstanceOf, // a: bool = instanceof b, c
+    In,         // a: bool = in b, c          (b: key, c: object)
     IsNullish,  // a: bool = is.nullish b
     Ret,        // ret [a]
     Jump,       // jump bN(args...)

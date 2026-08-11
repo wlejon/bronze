@@ -10,6 +10,26 @@ namespace bronze {
 using namespace ast;
 
 namespace {
+
+// The binding ladder of ECMA-262 13, loosest rung first. Assignment is NOT
+// on it: it is right-associative and its left side is a target rather than
+// an operand, so it has its own production (`parseAssign`). Neither is the
+// comma operator, which is looser than assignment and lives in `parseExpr`.
+enum Precedence : int {
+    kPrecNullish = 1,   // ??
+    kPrecLogicalOr,     // ||
+    kPrecLogicalAnd,    // &&
+    kPrecBitOr,         // |
+    kPrecBitXor,        // ^
+    kPrecBitAnd,        // &
+    kPrecEquality,      // == != === !==
+    kPrecRelational,    // < > <= >= in instanceof
+    kPrecShift,         // << >> >>>
+    kPrecAdditive,      // + -
+    kPrecMultiplicative,// * / %
+    kPrecExponent,      // **
+};
+
 struct OpInfo {
     BinaryOp op;
     int precedence;
@@ -19,79 +39,193 @@ const OpInfo* binaryOpInfo(TokenKind kind) {
         TokenKind kind;
         OpInfo info;
     } kOps[] = {
-        {TokenKind::Assign, {BinaryOp::Assign, 0}},
-        {TokenKind::PlusAssign, {BinaryOp::PlusAssign, 0}},
-        {TokenKind::MinusAssign, {BinaryOp::MinusAssign, 0}},
-        {TokenKind::StarAssign, {BinaryOp::StarAssign, 0}},
-        {TokenKind::SlashAssign, {BinaryOp::SlashAssign, 0}},
-        {TokenKind::PercentAssign, {BinaryOp::PercentAssign, 0}},
-        {TokenKind::QuestionQuestion, {BinaryOp::NullishCoalescing, 1}},
-        {TokenKind::PipePipe, {BinaryOp::LogicalOr, 2}},
-        {TokenKind::AmpAmp, {BinaryOp::LogicalAnd, 3}},
-        {TokenKind::EqualEqualEqual, {BinaryOp::StrictEq, 4}},
-        {TokenKind::BangEqualEqual, {BinaryOp::StrictNe, 4}},
-        {TokenKind::EqualEqual, {BinaryOp::Eq, 4}},
-        {TokenKind::BangEqual, {BinaryOp::Ne, 4}},
-        {TokenKind::Less, {BinaryOp::Less, 5}},
-        {TokenKind::Greater, {BinaryOp::Greater, 5}},
-        {TokenKind::LessEqual, {BinaryOp::LessEqual, 5}},
-        {TokenKind::GreaterEqual, {BinaryOp::GreaterEqual, 5}},
-        {TokenKind::Plus, {BinaryOp::Add, 6}},
-        {TokenKind::Minus, {BinaryOp::Sub, 6}},
-        {TokenKind::Star, {BinaryOp::Mul, 7}},
-        {TokenKind::Slash, {BinaryOp::Div, 7}},
-        {TokenKind::Percent, {BinaryOp::Mod, 7}},
+        {TokenKind::QuestionQuestion, {BinaryOp::NullishCoalescing, kPrecNullish}},
+        {TokenKind::PipePipe, {BinaryOp::LogicalOr, kPrecLogicalOr}},
+        {TokenKind::AmpAmp, {BinaryOp::LogicalAnd, kPrecLogicalAnd}},
+        {TokenKind::Pipe, {BinaryOp::BitOr, kPrecBitOr}},
+        {TokenKind::Caret, {BinaryOp::BitXor, kPrecBitXor}},
+        {TokenKind::Amp, {BinaryOp::BitAnd, kPrecBitAnd}},
+        {TokenKind::EqualEqualEqual, {BinaryOp::StrictEq, kPrecEquality}},
+        {TokenKind::BangEqualEqual, {BinaryOp::StrictNe, kPrecEquality}},
+        {TokenKind::EqualEqual, {BinaryOp::Eq, kPrecEquality}},
+        {TokenKind::BangEqual, {BinaryOp::Ne, kPrecEquality}},
+        {TokenKind::Less, {BinaryOp::Less, kPrecRelational}},
+        {TokenKind::Greater, {BinaryOp::Greater, kPrecRelational}},
+        {TokenKind::LessEqual, {BinaryOp::LessEqual, kPrecRelational}},
+        {TokenKind::GreaterEqual, {BinaryOp::GreaterEqual, kPrecRelational}},
+        {TokenKind::KwIn, {BinaryOp::In, kPrecRelational}},
+        {TokenKind::KwInstanceof, {BinaryOp::InstanceOf, kPrecRelational}},
+        {TokenKind::LessLess, {BinaryOp::Shl, kPrecShift}},
+        {TokenKind::GreaterGreater, {BinaryOp::Shr, kPrecShift}},
+        {TokenKind::GreaterGreaterGreater, {BinaryOp::UShr, kPrecShift}},
+        {TokenKind::Plus, {BinaryOp::Add, kPrecAdditive}},
+        {TokenKind::Minus, {BinaryOp::Sub, kPrecAdditive}},
+        {TokenKind::Star, {BinaryOp::Mul, kPrecMultiplicative}},
+        {TokenKind::Slash, {BinaryOp::Div, kPrecMultiplicative}},
+        {TokenKind::Percent, {BinaryOp::Mod, kPrecMultiplicative}},
+        {TokenKind::StarStar, {BinaryOp::Exp, kPrecExponent}},
     };
     for (const auto& entry : kOps)
         if (entry.kind == kind) return &entry.info;
     return nullptr;
 }
+
+// The assignment operators, which are their own production: right
+// associative, and with a TARGET rather than an operand on the left.
+bool assignmentOp(TokenKind kind, BinaryOp& out) {
+    switch (kind) {
+        case TokenKind::Assign: out = BinaryOp::Assign; return true;
+        case TokenKind::PlusAssign: out = BinaryOp::PlusAssign; return true;
+        case TokenKind::MinusAssign: out = BinaryOp::MinusAssign; return true;
+        case TokenKind::StarAssign: out = BinaryOp::StarAssign; return true;
+        case TokenKind::SlashAssign: out = BinaryOp::SlashAssign; return true;
+        case TokenKind::PercentAssign: out = BinaryOp::PercentAssign; return true;
+        case TokenKind::AmpAssign: out = BinaryOp::AmpAssign; return true;
+        case TokenKind::PipeAssign: out = BinaryOp::PipeAssign; return true;
+        case TokenKind::CaretAssign: out = BinaryOp::CaretAssign; return true;
+        case TokenKind::LessLessAssign: out = BinaryOp::ShlAssign; return true;
+        case TokenKind::GreaterGreaterAssign: out = BinaryOp::ShrAssign; return true;
+        case TokenKind::GreaterGreaterGreaterAssign: out = BinaryOp::UShrAssign; return true;
+        case TokenKind::StarStarAssign: out = BinaryOp::ExpAssign; return true;
+        default: return false;
+    }
+}
+
+// `??` and the two logical operators may not be mixed without parentheses:
+// ECMA-262 states CoalesceExpression over BitwiseORExpression operands, so
+// neither `a ?? b || c` nor `a || b ?? c` is a program. The check is over
+// the *unparenthesized* form, which is the only reason `Expr` records that.
+bool mixesWith(const Expr* e, BinaryOp a, BinaryOp b) {
+    if (e == nullptr || e->parenthesized) return false;
+    const auto* bin = dynamic_cast<const Binary*>(e);
+    return bin != nullptr && (bin->op == a || bin->op == b);
+}
+
 }  // namespace
+
+// *Expression*: one or more AssignmentExpressions separated by the comma
+// operator, which evaluates its left operand for effect and yields its
+// right. Left-associative, and looser than everything else there is.
 ExprPtr Parser::parseExpr() {
-    auto expr = parseBinary(0);
+    auto expr = parseAssign();
     if (!expr) return nullptr;
-    if (match(TokenKind::Question)) {
-        auto ternary = std::make_unique<Ternary>();
-        ternary->span.begin = expr->span.begin;
-        ternary->condition = std::move(expr);
-        ternary->thenExpr = parseExpr();
-        if (!ternary->thenExpr) return nullptr;
-        if (!expect(TokenKind::Colon, "':' in ternary expression")) return nullptr;
-        ternary->elseExpr = parseExpr();
-        if (!ternary->elseExpr) return nullptr;
-        ternary->span.end = ternary->elseExpr->span.end;
-        return ternary;
+    while (check(TokenKind::Comma)) {
+        advance();
+        auto rhs = parseAssign();
+        if (!rhs) return nullptr;
+        auto bin = std::make_unique<Binary>();
+        bin->span = {expr->span.begin, rhs->span.end};
+        bin->op = BinaryOp::Comma;
+        bin->lhs = std::move(expr);
+        bin->rhs = std::move(rhs);
+        expr = std::move(bin);
     }
     return expr;
+}
+
+// *AssignmentExpression*. The target is parsed as an ordinary conditional
+// expression and validated in lowering, which is where the member and index
+// forms are already distinguished; the right side recurses through here, so
+// `a = b = c` is `a = (b = c)` and `x = cond ? p : q` assigns the CONDITIONAL
+// rather than testing the assignment.
+ExprPtr Parser::parseAssign() {
+    if (looksLikeArrow()) return parseArrowFunction();
+    auto lhs = parseConditional();
+    if (!lhs) return nullptr;
+    BinaryOp op{};
+    if (!assignmentOp(peek().kind, op)) return lhs;
+    advance();
+    auto rhs = parseAssign();
+    if (!rhs) return nullptr;
+    auto bin = std::make_unique<Binary>();
+    bin->span = {lhs->span.begin, rhs->span.end};
+    bin->op = op;
+    bin->lhs = std::move(lhs);
+    bin->rhs = std::move(rhs);
+    return bin;
+}
+
+// *ConditionalExpression*. Both arms are AssignmentExpressions, so a comma
+// inside one belongs to the enclosing list and not to the conditional.
+ExprPtr Parser::parseConditional() {
+    auto expr = parseBinary(kPrecNullish);
+    if (!expr) return nullptr;
+    if (!match(TokenKind::Question)) return expr;
+    auto ternary = std::make_unique<Ternary>();
+    ternary->span.begin = expr->span.begin;
+    ternary->condition = std::move(expr);
+    ternary->thenExpr = parseAssign();
+    if (!ternary->thenExpr) return nullptr;
+    if (!expect(TokenKind::Colon, "':' in ternary expression")) return nullptr;
+    ternary->elseExpr = parseAssign();
+    if (!ternary->elseExpr) return nullptr;
+    ternary->span.end = ternary->elseExpr->span.end;
+    return ternary;
 }
 
 ExprPtr Parser::parseBinary(int minPrecedence) {
     auto lhs = parseUnaryPrefix();
     if (!lhs) return nullptr;
+    bool lhsIsUnary = lastOperandIsUnary_;
     for (;;) {
         const OpInfo* info = binaryOpInfo(peek().kind);
         if (!info || info->precedence < minPrecedence) return lhs;
+        if (info->op == BinaryOp::Exp && lhsIsUnary) {
+            // Diagnosed rather than resolved: ECMA-262 refuses to pick a
+            // reading for `-2 ** 2`, because both `(-2) ** 2` and `-(2 ** 2)`
+            // are things a programmer plausibly meant and they differ.
+            error("'**' cannot have an unparenthesized unary operand on its left "
+                  "(write (-x) ** y or -(x ** y))");
+            return nullptr;
+        }
+        if (info->op == BinaryOp::NullishCoalescing &&
+            mixesWith(lhs.get(), BinaryOp::LogicalAnd, BinaryOp::LogicalOr)) {
+            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            return nullptr;
+        }
+        if ((info->op == BinaryOp::LogicalAnd || info->op == BinaryOp::LogicalOr) &&
+            mixesWith(lhs.get(), BinaryOp::NullishCoalescing,
+                      BinaryOp::NullishCoalescing)) {
+            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            return nullptr;
+        }
         advance();
-        auto rhs = parseBinary(info->precedence + 1);
+        // `**` is the one right-associative binary operator, so its right
+        // operand is parsed at its OWN precedence rather than one above it:
+        // `2 ** 3 ** 2` is `2 ** (3 ** 2)`.
+        const int rhsMin =
+            info->op == BinaryOp::Exp ? info->precedence : info->precedence + 1;
+        auto rhs = parseBinary(rhsMin);
         if (!rhs) return nullptr;
+        if (info->op == BinaryOp::NullishCoalescing &&
+            mixesWith(rhs.get(), BinaryOp::LogicalAnd, BinaryOp::LogicalOr)) {
+            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            return nullptr;
+        }
         auto bin = std::make_unique<Binary>();
         bin->span = {lhs->span.begin, rhs->span.end};
         bin->op = info->op;
         bin->lhs = std::move(lhs);
         bin->rhs = std::move(rhs);
         lhs = std::move(bin);
+        lhsIsUnary = false;
     }
 }
 
+// *UnaryExpression*, plus the update forms below it. Every path sets
+// `lastOperandIsUnary_` on its way out — never on the way in, because
+// anything parsed BELOW this call (a parenthesized `-2`, an argument list
+// holding one) would leave the flag set from an operand that is not this
+// one. It is read by `parseBinary` immediately after this returns, to decide
+// whether a `**` has a legal left side: an UpdateExpression (`++a`, `a--`,
+// a call, a literal, a parenthesized anything) may be one and a
+// UnaryExpression may not.
 ExprPtr Parser::parseUnaryPrefix() {
-    // Checked at the OPERAND entry point rather than in parseExpr, because
-    // an arrow can appear anywhere an operand can — including as the right
-    // side of an assignment, which is a binary operator here and so never
-    // passes back through parseExpr (`this.get = () => this.count`).
-    if (looksLikeArrow()) return parseArrowFunction();
     const Token& t = peek();
     if (check(TokenKind::KwNew)) {
-        return parseNew();
+        auto ne = parseNew();
+        lastOperandIsUnary_ = false;
+        return ne;
     }
     if (check(TokenKind::KwDelete)) {
         // `delete` is what transitions an object to dictionary mode, which
@@ -115,33 +249,32 @@ ExprPtr Parser::parseUnaryPrefix() {
     if (check(TokenKind::KwSuper)) {
         auto sup = parseSuper();
         if (!sup) return nullptr;
-        return parsePostfixOps(std::move(sup));
+        auto suffixed = parsePostfixOps(std::move(sup));
+        lastOperandIsUnary_ = false;
+        return suffixed;
     }
-    if (match(TokenKind::Bang)) {
+    // The six prefix operators that produce a *UnaryExpression*. One loop
+    // over a table rather than six copies of the same five lines, which is
+    // also what makes "this operand is a unary expression" one assignment
+    // instead of six.
+    static constexpr struct {
+        TokenKind kind;
+        UnaryOp op;
+    } kPrefixOps[] = {
+        {TokenKind::Bang, UnaryOp::Not},     {TokenKind::Minus, UnaryOp::Negate},
+        {TokenKind::Plus, UnaryOp::Posate},  {TokenKind::Tilde, UnaryOp::BitNot},
+        {TokenKind::KwTypeof, UnaryOp::TypeOf}, {TokenKind::KwVoid, UnaryOp::Void},
+    };
+    for (const auto& entry : kPrefixOps) {
+        if (!check(entry.kind)) continue;
+        advance();
         auto sub = parseUnaryPrefix();
         if (!sub) return nullptr;
         auto u = std::make_unique<Unary>();
         u->span = {t.span.begin, sub->span.end};
-        u->op = UnaryOp::Not;
+        u->op = entry.op;
         u->operand = std::move(sub);
-        return u;
-    }
-    if (match(TokenKind::Minus)) {
-        auto sub = parseUnaryPrefix();
-        if (!sub) return nullptr;
-        auto u = std::make_unique<Unary>();
-        u->span = {t.span.begin, sub->span.end};
-        u->op = UnaryOp::Negate;
-        u->operand = std::move(sub);
-        return u;
-    }
-    if (match(TokenKind::Plus)) {
-        auto sub = parseUnaryPrefix();
-        if (!sub) return nullptr;
-        auto u = std::make_unique<Unary>();
-        u->span = {t.span.begin, sub->span.end};
-        u->op = UnaryOp::Posate;
-        u->operand = std::move(sub);
+        lastOperandIsUnary_ = true;
         return u;
     }
     if (match(TokenKind::PlusPlus)) {
@@ -151,6 +284,7 @@ ExprPtr Parser::parseUnaryPrefix() {
         u->span = {t.span.begin, sub->span.end};
         u->op = UnaryOp::PreInc;
         u->operand = std::move(sub);
+        lastOperandIsUnary_ = false;
         return u;
     }
     if (match(TokenKind::MinusMinus)) {
@@ -160,9 +294,12 @@ ExprPtr Parser::parseUnaryPrefix() {
         u->span = {t.span.begin, sub->span.end};
         u->op = UnaryOp::PreDec;
         u->operand = std::move(sub);
+        lastOperandIsUnary_ = false;
         return u;
     }
-    return parseUnaryPostfix();
+    auto operandExpr = parseUnaryPostfix();
+    lastOperandIsUnary_ = false;
+    return operandExpr;
 }
 
 ExprPtr Parser::parseUnaryPostfix() {
@@ -249,7 +386,10 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
 
 bool Parser::parseArgumentList(std::vector<ExprPtr>& args) {
     while (!check(TokenKind::RParen)) {
-        auto arg = parseExpr();
+        // An *AssignmentExpression*, not an Expression: the commas here
+        // separate arguments, and a comma OPERATOR would silently turn
+        // `f(a, b)` into a one-argument call (docs/0015 decision 7).
+        auto arg = parseAssign();
         if (!arg) return false;
         args.push_back(std::move(arg));
         if (!match(TokenKind::Comma)) break;
@@ -353,6 +493,11 @@ ExprPtr Parser::parsePrimary() {
             auto inner = parseExpr();
             if (!inner) return nullptr;
             if (!expect(TokenKind::RParen, "')'")) return nullptr;
+            // The parentheses are not a node — they change nothing about
+            // what the expression computes — but two of the spec's rules are
+            // stated over the unparenthesized form, so the fact is recorded
+            // on the expression they wrapped (see ast::Expr).
+            inner->parenthesized = true;
             return inner;
         }
         case TokenKind::LBrace:
