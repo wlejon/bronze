@@ -78,6 +78,16 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const ast::SuperMember&) override {}
+    void visit(const ast::SpreadElement& s) override { s.argument->accept(*this); }
+    // Every name a destructuring assignment's pattern binds is written by it,
+    // which is exactly what sizes the SSA joins around it. A pattern that
+    // contributed nothing here would leave those variables out of a loop's
+    // block parameters and silently freeze them at their pre-loop values.
+    void visit(const ast::DestructuringAssign& d) override {
+        for (const auto& name : ast::patternBoundNames(*d.pattern)) assigned.insert(name);
+        visitPatternExprs(*d.pattern);
+        d.value->accept(*this);
+    }
 
     void visit(const ast::ClassDecl&) override {
         // A class body is nothing but methods, and a method's assignments
@@ -90,7 +100,12 @@ public:
     }
 
     void visit(const ast::VarDecl& v) override {
-        assigned.insert(v.name);
+        if (v.pattern) {
+            for (const auto& name : ast::patternBoundNames(*v.pattern)) assigned.insert(name);
+            visitPatternExprs(*v.pattern);
+        } else {
+            assigned.insert(v.name);
+        }
         if (v.init) v.init->accept(*this);
     }
 
@@ -130,6 +145,7 @@ public:
     void visit(const ast::SwitchStmt&) override {}
     void visit(const ast::ForInStmt&) override {}
     void visit(const ast::ForOfStmt& f) override {
+        if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.iterable) f.iterable->accept(*this);
         for (const auto& s : f.body) s->accept(*this);
     }
@@ -137,6 +153,17 @@ public:
     void visit(const ast::ThrowStmt&) override {}
     void visit(const ast::FunctionDecl&) override {}
     void visit(const ast::Module&) override {}
+
+private:
+    // A pattern's own expressions — computed keys and defaults — can assign
+    // too, and they run in this scope.
+    void visitPatternExprs(const ast::BindingPattern& pattern) {
+        for (const auto& elem : pattern.elements) {
+            if (elem.keyExpr) elem.keyExpr->accept(*this);
+            if (elem.defaultValue) elem.defaultValue->accept(*this);
+            if (elem.pattern) visitPatternExprs(*elem.pattern);
+        }
+    }
 };
 
 }  // namespace

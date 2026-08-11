@@ -102,6 +102,31 @@ enum class Op : uint8_t {
     IterLength,  // a: f64 = iter.length b
     IterAt,      // a = iter.at b, %index
     IterAdvance, // a: f64 = iter.advance b, %index
+    // Everything from %index on, as a fresh array — a rest element's value
+    // (docs/0017 decision 2). The same walk IterAt/IterAdvance do, run to the
+    // end in the runtime, because its length is not known here.
+    IterRest,    // a = iter.rest b, %index
+    // The source of a destructuring, checked once before any element is read
+    // (docs/0017 decision 4). `immI32` names which pattern asked, so the
+    // diagnostic can say `array destructuring` rather than `for-of`, and the
+    // check is what lets every element read below it assume a walkable value.
+    PatternCheck,  // a = pattern.check b, <kind>
+    // The three container-building ops a spread needs: one element, then all
+    // of an iterable's, then all of an object's own enumerable properties
+    // (docs/0017 decision 3). Appending rather than indexing is the point —
+    // a literal with a spread in it has no length until it is built.
+    ArrayAppend,  // array.append arr, v
+    ArraySpread,  // array.spread arr, iterable
+    ObjectSpread, // object.spread obj, source
+    // `{ a, ...others }`: a fresh object of `source`'s own enumerable
+    // properties minus the ones the pattern already named, which arrive as
+    // an array of keys because a computed key is not known until it runs.
+    ObjectRest,   // a = object.rest source, excludedKeys
+    // A call whose argument list contains a spread, so its length is a
+    // runtime fact: the arguments are built into an array and the callee is
+    // entered through the uniform convention over it.
+    DynamicCallSpread,  // a = call.dynamic.spread callee, thisArg, args
+    ConstructSpread,    // a = new.spread callee, args
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env
     FunctionRef,   // a = func.ref <funcIndex>          (docs/0008)
@@ -191,10 +216,25 @@ struct Function {
     bool isExported = false;
     bool needsEnv = false;
     bool needsThis = false;
+    // `...rest`: the LAST source parameter, and the one no caller supplies a
+    // value for. It arrives as an array built from whatever arguments were
+    // left over — by the call wrapper on the uniform path, by the call site
+    // on a direct one (docs/0017 decision 2).
+    bool hasRestParam = false;
+    // How many source arguments a call must supply: the parameters before the
+    // first one with a default. Fewer is a diagnosed arity error; anything
+    // between this and the fixed parameter count is filled with `undefined`
+    // at the call site, and the callee's prologue decides what that means.
+    uint32_t requiredArgs = 0;
 
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {
         return static_cast<size_t>(needsEnv) + static_cast<size_t>(needsThis);
+    }
+    // How many arguments a CALLER passes: every source parameter but the
+    // rest one, which is not a value the convention carries.
+    size_t callerParamCount() const {
+        return params.size() - firstSourceParam() - static_cast<size_t>(hasRestParam);
     }
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)

@@ -32,6 +32,7 @@ public:
     // as opaque, which is exactly what an empty visit means here.
     void visit(const ast::ForInStmt&) override {}
     void visit(const ast::ForOfStmt& n) override {
+        walkPattern(n.pattern.get());
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
@@ -73,14 +74,26 @@ public:
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::SuperMember&) override {}
+    void visit(const ast::SpreadElement& n) override { n.argument->accept(*this); }
+    void visit(const ast::DestructuringAssign& n) override {
+        walkPattern(n.pattern.get());
+        n.value->accept(*this);
+    }
     void visit(const ast::ClassDecl& n) override {
         for (const auto& m : n.methods) m.fn->accept(*this);
     }
-    void visit(const ast::FunctionExpr& n) override { walkList(n.body); }
-    void visit(const ast::FunctionDecl& n) override { walkList(n.body); }
+    void visit(const ast::FunctionExpr& n) override {
+        walkParams(n.params);
+        walkList(n.body);
+    }
+    void visit(const ast::FunctionDecl& n) override {
+        walkParams(n.params);
+        walkList(n.body);
+    }
 
     void visit(const ast::BlockStmt& n) override { walkList(n.stmts); }
     void visit(const ast::VarDecl& n) override {
+        walkPattern(n.pattern.get());
         if (n.init) n.init->accept(*this);
     }
     void visit(const ast::ReturnStmt& n) override {
@@ -110,6 +123,24 @@ public:
         if (n.discriminant) n.discriminant->accept(*this);
     }
     void visit(const ast::Module& n) override { walkList(n.body); }
+
+    // A pattern's key expressions and defaults are ordinary expressions that
+    // evaluate where the pattern does; the names it binds are a separate
+    // question, and `ast::patternBoundNames` is the one answer to it.
+    void walkPattern(const ast::BindingPattern* pattern) {
+        if (!pattern) return;
+        for (const auto& elem : pattern->elements) {
+            if (elem.keyExpr) elem.keyExpr->accept(*this);
+            if (elem.defaultValue) elem.defaultValue->accept(*this);
+            walkPattern(elem.pattern.get());
+        }
+    }
+    void walkParams(const std::vector<ast::Param>& params) {
+        for (const auto& p : params) {
+            if (p.defaultValue) p.defaultValue->accept(*this);
+            walkPattern(p.pattern.get());
+        }
+    }
 
     void walkList(const std::vector<ast::StmtPtr>& stmts) {
         for (const auto& s : stmts) {

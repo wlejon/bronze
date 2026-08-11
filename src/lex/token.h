@@ -36,6 +36,7 @@ enum class TokenKind {
     KwElse,
     KwExport,
     KwFalse,
+    KwFinally,
     KwFor,
     KwFunction,
     KwIf,

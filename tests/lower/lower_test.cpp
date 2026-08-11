@@ -597,17 +597,81 @@ TEST_CASE("a method with no `this` in it still gets a receiver when it uses supe
     CHECK(printed.find("func P.tag(%0: dynamic, %1: dynamic)") != std::string::npos);
 }
 
-TEST_CASE("a destructuring assignment is named, not called a bad target") {
-    // The one destructuring form the parser cannot name: both sides parse as
-    // ordinary expressions, and only the assignment says which one it was.
+TEST_CASE("a destructuring assignment reads the whole right side before writing") {
+    // `[a, b] = [b, a]` is a swap only if this holds. The array is built
+    // first, and every `iter.at` reads THAT array — so no target write can be
+    // seen by a later read (docs/0017 decision 4).
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower("let a = 1;\nlet b = 2;\n[a, b] = [b, a];\n", diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    CHECK(diags.render(buf).find("unsupported construct: destructuring assignment") !=
-          std::string::npos);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // The source is checked once, up front, so a later element read cannot
+    // blame for-of for a destructuring failure.
+    CHECK(printed.find("pattern.check %2, array") != std::string::npos);
+    // The cursor is CHAINED through iter.advance rather than counted: a
+    // string steps by code point, and a surrogate pair moves it by two.
+    CHECK(printed.find("iter.at %5, %6") != std::string::npos);
+    CHECK(printed.find("iter.advance %5, %6") != std::string::npos);
+    CHECK(printed.find("iter.at %5, %8") != std::string::npos);
+}
+
+TEST_CASE("a default parameter is a branch, and only undefined takes it") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod =
+        parseAndLower("function f(a, b = a * 2) { return b; }\nf(1);\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // A strict comparison against undefined, not a truthiness test: `null`,
+    // `0` and `""` are arguments that were passed (docs/0017 decision 1).
+    CHECK(printed.find("const.undefined") != std::string::npos);
+    CHECK(printed.find("strict.eq") != std::string::npos);
+    // A BRANCH, not a select — the default's own code runs only when it
+    // fires, so its side effects fire with it.
+    CHECK(printed.find("br ") != std::string::npos);
+    // The default sees the parameters to its left: `a * 2` reads `a`.
+    CHECK(printed.find("mul") != std::string::npos);
+}
+
+TEST_CASE("a rest parameter is not an argument the caller passes") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod =
+        parseAndLower("function count(first, ...rest) { return rest; }\ncount(1, 2, 3);\n",
+                      diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // Two IL parameters, because the rest one is still a value the body
+    // reads — but the call site builds it rather than passing three
+    // arguments, which is what keeps the arity fixed (docs/0017 decision 2).
+    CHECK(printed.find("func count(%0: dynamic, %1: dynamic)") != std::string::npos);
+    // The leftovers are appended into an array that starts EMPTY: `create.array
+    // n` makes n undefined elements, so a non-zero length here would leave the
+    // rest array with two undefineds in front of what the call passed.
+    CHECK(printed.find("create.array 0") != std::string::npos);
+    CHECK(printed.find("array.append") != std::string::npos);
+}
+
+TEST_CASE("a spread call passes one array, and a spread literal appends") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod =
+        parseAndLower("function g(x, y) { return x; }\nconst a = [1, 2];\n"
+                      "const b = [0, ...a, 3];\nconst f = g;\nf(...a);\n",
+                      diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("array.spread") != std::string::npos);
+    CHECK(printed.find("call.dynamic.spread") != std::string::npos);
 }
 
 TEST_CASE("a bitwise operator is int32 inside and f64 outside") {

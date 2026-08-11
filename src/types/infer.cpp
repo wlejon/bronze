@@ -125,6 +125,17 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // nested declarations become closures, and those have no module
         // function index to be direct-called through in the first place.
         fn.directCallable = escaping.count(decl->name) == 0;
+        // A parameter with a default, a rest parameter, or a pattern breaks
+        // the one-argument-per-parameter correspondence that a typed
+        // signature IS: the value bound is not the value passed. Signatures
+        // are per source parameter, so there is nothing to widen against
+        // (docs/0017 decision 9).
+        for (const auto& param : decl->params) {
+            if (param.defaultValue || param.isRest || param.pattern) {
+                fn.directCallable = false;
+                break;
+            }
+        }
         fn.signature.params.assign(decl->params.size(),
                                    fn.directCallable ? Type::never() : Type::dynamic());
         fn.signature.returnType = fn.directCallable ? Type::never() : Type::dynamic();

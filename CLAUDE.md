@@ -81,3 +81,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0016 names, declarations and literals (the module scope as a singleton
   record, the binding leak between `lower()`'s functions, binding lists,
   numeric literal forms, computed keys, multi-argument `console.log`)
+- 0017 binding patterns (parameter defaults, rest, spread, destructuring in
+  declarations / parameters / assignments / for-of heads, and the derived
+  class's implicit forwarding constructor)

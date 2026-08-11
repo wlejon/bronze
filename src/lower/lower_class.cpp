@@ -144,18 +144,28 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     auto baseVal = lowerExpr(baseIdent, ilFn);
     if (!baseVal) return std::nullopt;
 
+    // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards, so
+    // this path is not an edge case: it is the default one (docs/0017
+    // decision 7).
+    const bool spreadArgs = listHasSpread(sc->args);
     std::vector<il::ValueId> operands;
     operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);
     operands.push_back(boxValueIfNeeded(*thisVal, ilFn).id);
-    for (const auto& argPtr : sc->args) {
-        auto argVal = lowerExpr(*argPtr, ilFn);
-        if (!argVal) return std::nullopt;
-        operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+    if (spreadArgs) {
+        auto argsArr = lowerListToArray(sc->args, ilFn);
+        if (!argsArr) return std::nullopt;
+        operands.push_back(argsArr->id);
+    } else {
+        for (const auto& argPtr : sc->args) {
+            auto argVal = lowerExpr(*argPtr, ilFn);
+            if (!argVal) return std::nullopt;
+            operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+        }
     }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::DynamicCall;
+    inst.op = spreadArgs ? il::Op::DynamicCallSpread : il::Op::DynamicCall;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);

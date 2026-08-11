@@ -229,8 +229,16 @@ bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
 }
 
 uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
-    Rooted<Value> aRoot(valueToString(Value(aBits)));
-    Rooted<Value> bRoot(valueToString(Value(bBits)));
+    // BOTH operands are rooted before EITHER conversion runs. `valueToString`
+    // of a number allocates, and an allocation moves every other live object
+    // — including the second operand, whose raw bits are just a pointer until
+    // something roots them. Converting a then b left b's pointer stale across
+    // a's allocation, so `a.length + ":"` concatenated an empty string under
+    // BRONZE_GC_STRESS.
+    Rooted<Value> aRoot{Value(aBits)};
+    Rooted<Value> bRoot{Value(bBits)};
+    aRoot.set(valueToString(aRoot.get()));
+    bRoot.set(valueToString(bRoot.get()));
     return StringHeader::concat(rtHeap(), aRoot, bRoot).rawBits();
 }
 

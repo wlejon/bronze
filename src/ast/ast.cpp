@@ -3,6 +3,7 @@
 namespace bronze::ast {
 
 void NumberLit::accept(Visitor& v) const { v.visit(*this); }
+void SpreadElement::accept(Visitor& v) const { v.visit(*this); }
 void StringLit::accept(Visitor& v) const { v.visit(*this); }
 void BoolLit::accept(Visitor& v) const { v.visit(*this); }
 void NullLit::accept(Visitor& v) const { v.visit(*this); }
@@ -19,6 +20,7 @@ void Call::accept(Visitor& v) const { v.visit(*this); }
 void NewExpr::accept(Visitor& v) const { v.visit(*this); }
 void SuperCall::accept(Visitor& v) const { v.visit(*this); }
 void SuperMember::accept(Visitor& v) const { v.visit(*this); }
+void DestructuringAssign::accept(Visitor& v) const { v.visit(*this); }
 void ObjectLit::accept(Visitor& v) const { v.visit(*this); }
 void ArrayLit::accept(Visitor& v) const { v.visit(*this); }
 void FunctionExpr::accept(Visitor& v) const { v.visit(*this); }
@@ -128,5 +130,24 @@ BinaryOp compoundAssignBase(BinaryOp op) {
 bool isCompoundAssignOp(BinaryOp op) { return compoundAssignBase(op) != op; }
 
 bool isAssignOp(BinaryOp op) { return op == BinaryOp::Assign || isCompoundAssignOp(op); }
+
+// Recursive because a pattern nests: `const [{ a }, [b]] = pairs` declares
+// `a` and `b`, and a scope that allocated an environment slot for only the
+// outermost level would leave an inner name with nowhere to live.
+static void collectPatternNames(const BindingPattern& pattern, std::vector<std::string>& out) {
+    for (const auto& elem : pattern.elements) {
+        if (elem.pattern) {
+            collectPatternNames(*elem.pattern, out);
+        } else if (!elem.name.empty()) {
+            out.push_back(elem.name);
+        }
+    }
+}
+
+std::vector<std::string> patternBoundNames(const BindingPattern& pattern) {
+    std::vector<std::string> names;
+    collectPatternNames(pattern, names);
+    return names;
+}
 
 }  // namespace bronze::ast

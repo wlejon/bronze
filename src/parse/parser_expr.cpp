@@ -132,6 +132,30 @@ ExprPtr Parser::parseAssign() {
     if (!lhs) return nullptr;
     BinaryOp op{};
     if (!assignmentOp(peek().kind, op)) return lhs;
+    // `[a, b] = pair` and `({ x } = o)`. Nothing before the `=` distinguishes
+    // the pattern from the literal that covers it, which is why ECMA-262
+    // 13.15.5 refines it exactly here — at the token that reveals which one
+    // the source meant. A COMPOUND operator has no such reading: `[a] += x`
+    // would have to read the pattern as a value first.
+    const bool literalTarget =
+        dynamic_cast<ArrayLit*>(lhs.get()) != nullptr || dynamic_cast<ObjectLit*>(lhs.get()) != nullptr;
+    if (literalTarget) {
+        if (op != BinaryOp::Assign) {
+            error("a destructuring pattern may only be the target of '='");
+            return nullptr;
+        }
+        const uint32_t begin = lhs->span.begin;
+        advance();
+        auto pattern = patternFromLiteral(std::move(lhs));
+        if (!pattern) return nullptr;
+        auto rhs = parseAssign();
+        if (!rhs) return nullptr;
+        auto node = std::make_unique<DestructuringAssign>();
+        node->span = {begin, rhs->span.end};
+        node->pattern = std::move(pattern);
+        node->value = std::move(rhs);
+        return node;
+    }
     advance();
     auto rhs = parseAssign();
     if (!rhs) return nullptr;
@@ -238,10 +262,12 @@ ExprPtr Parser::parseUnaryPrefix() {
         return nullptr;
     }
     if (check(TokenKind::Ellipsis)) {
-        // A spread in a call, an array literal or an object literal. Named
-        // here because every one of those positions parses an expression,
-        // so this is the one place they all pass through.
-        error("unsupported construct: spread");
+        // The three list positions that admit a spread parse it themselves,
+        // because what it means there is "contribute several elements" and
+        // only the list can do that. Reaching the operand parser means the
+        // `...` is somewhere no list can absorb it.
+        error("'...' is only allowed in an argument list, an array literal, an object "
+              "literal, or a binding pattern");
         return nullptr;
     }
     if (check(TokenKind::KwSuper)) {
@@ -387,9 +413,22 @@ bool Parser::parseArgumentList(std::vector<ExprPtr>& args) {
         // An *AssignmentExpression*, not an Expression: the commas here
         // separate arguments, and a comma OPERATOR would silently turn
         // `f(a, b)` into a one-argument call (docs/0015 decision 7).
-        auto arg = parseAssign();
-        if (!arg) return false;
-        args.push_back(std::move(arg));
+        //
+        // A `...` argument contributes as many arguments as its source has,
+        // which is a fact about the LIST and not about the expression, so the
+        // list is what parses it.
+        if (check(TokenKind::Ellipsis)) {
+            const Token& dots = advance();
+            auto spread = std::make_unique<SpreadElement>();
+            spread->argument = parseAssign();
+            if (!spread->argument) return false;
+            spread->span = {dots.span.begin, spread->argument->span.end};
+            args.push_back(std::move(spread));
+        } else {
+            auto arg = parseAssign();
+            if (!arg) return false;
+            args.push_back(std::move(arg));
+        }
         if (!match(TokenKind::Comma)) break;
     }
     return expect(TokenKind::RParen, "')' after arguments") != nullptr;

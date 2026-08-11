@@ -48,6 +48,12 @@ std::unordered_set<std::string> getCapturedNames(const std::vector<const Stmt*>&
 // under-approximation would be an unresolved name.
 std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& stmts);
 
+// The same question asked of a PARAMETER LIST. A default value and a
+// pattern's computed key are code that runs in the function and appears
+// nowhere in its body, so a caller that scans only the body misses them
+// (docs/0017 decision 9).
+std::unordered_set<std::string> getParamReferencedNames(const std::vector<Param>& params);
+
 // Names declared directly by `stmts` — let/const and function declarations
 // in this statement list only, NOT inside nested blocks or functions — in
 // source order. This is the scope's own contribution to an environment.

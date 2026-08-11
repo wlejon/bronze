@@ -147,6 +147,68 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
+        case il::Op::IterRest: {
+            if (!needs(2, true, "Invalid operands for IterRest")) return false;
+            const char* what = "Undefined value in an iteration instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* index = operand(inst, 1, what);
+            if (!target || !index) return false;
+            callWith(abi.bronze_iter_rest, {target, index});
+            return true;
+        }
+        case il::Op::PatternCheck: {
+            if (!needs(1, true, "Invalid operands for PatternCheck")) return false;
+            llvm::Value* src = operand(inst, 0, "Undefined source in PatternCheck instruction");
+            if (!src) return false;
+            callWith(abi.bronze_pattern_check,
+                     {src, builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
+            return true;
+        }
+        case il::Op::ArrayAppend:
+        case il::Op::ArraySpread:
+        case il::Op::ObjectSpread: {
+            if (!needs(2, false, "Invalid operands for a container-building instruction")) {
+                return false;
+            }
+            const char* what = "Undefined operand in a container-building instruction";
+            llvm::Value* container = operand(inst, 0, what);
+            llvm::Value* value = operand(inst, 1, what);
+            if (!container || !value) return false;
+            llvm::Function* fn = inst.op == il::Op::ArrayAppend  ? abi.bronze_array_append
+                                 : inst.op == il::Op::ArraySpread ? abi.bronze_array_spread
+                                                                  : abi.bronze_object_spread;
+            builder_.CreateCall(fn, {container, value});
+            return true;
+        }
+        case il::Op::ObjectRest: {
+            if (!needs(2, true, "Invalid operands for ObjectRest")) return false;
+            const char* what = "Undefined operand in ObjectRest instruction";
+            llvm::Value* src = operand(inst, 0, what);
+            llvm::Value* excluded = operand(inst, 1, what);
+            if (!src || !excluded) return false;
+            callWith(abi.bronze_object_rest, {src, excluded});
+            return true;
+        }
+        case il::Op::DynamicCallSpread: {
+            if (!needs(3, true, "Invalid operands for DynamicCallSpread")) return false;
+            const char* what = "Undefined operand in DynamicCallSpread instruction";
+            llvm::Value* callee = operand(inst, 0, what);
+            llvm::Value* thisVal = operand(inst, 1, what);
+            llvm::Value* args = operand(inst, 2, what);
+            if (!callee || !thisVal || !args) return false;
+            callWith(abi.bronze_dynamic_call_spread, {callee, thisVal, args});
+            return true;
+        }
+        case il::Op::ConstructSpread: {
+            if (!needs(2, true, "Invalid operands for ConstructSpread")) return false;
+            const char* what = "Undefined operand in ConstructSpread instruction";
+            llvm::Value* callee = operand(inst, 0, what);
+            llvm::Value* args = operand(inst, 1, what);
+            if (!callee || !args) return false;
+            callWith(abi.bronze_construct_spread, {callee, args});
+            return true;
+        }
+
         case il::Op::CreateFunction: {
             if (inst.result == il::kNoValue) return true;
             llvm::Value* env = inst.operands.empty()
@@ -164,8 +226,11 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 return false;
             }
             const auto& target = shared_.module.functions[inst.calleeIndex];
-            uint32_t arity =
-                static_cast<uint32_t>(target.params.size() - target.firstSourceParam());
+            // The arity a call is ADAPTED to: the parameters a caller
+            // supplies. A rest parameter is not one of them — padding argv up
+            // to it would put an `undefined` in the rest array (docs/0017
+            // decision 2).
+            uint32_t arity = static_cast<uint32_t>(target.callerParamCount());
             callWith(abi.bronze_function_singleton,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity)});
             return true;

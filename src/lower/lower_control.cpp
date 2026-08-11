@@ -608,13 +608,29 @@ bool Lowerer::lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn) {
     // The loop variable belongs to the body's scope, so it gets an
     // environment slot there when a closure captures it — one per
     // iteration, which is the whole of the language's rule for it.
-    enterScope(forOf->body, ilFn, forOf->name);
-    if (!declareVariable(forOf->name, il::Type::Dynamic, forOf->isConst, forOf->isLet,
-                         forOf->isVar, /*isInitialized=*/true, elemVal, forOf->span)) {
-        return false;
+    // A destructuring head binds every name its pattern spells, and all of
+    // them belong to this scope for the same per-iteration reason (docs/0017
+    // decision 6).
+    const std::vector<std::string> headNames =
+        forOf->pattern ? ast::patternBoundNames(*forOf->pattern)
+                       : std::vector<std::string>{forOf->name};
+    enterScope(forOf->body, ilFn, headNames);
+    if (forOf->pattern) {
+        PatternTarget target{.declare = true,
+                             .isConst = forOf->isConst,
+                             .isLet = forOf->isLet,
+                             .isVar = forOf->isVar};
+        if (!lowerPattern(*forOf->pattern, Value{elemVal, il::Type::Dynamic}, target, ilFn)) {
+            return false;
+        }
+    } else {
+        if (!declareVariable(forOf->name, il::Type::Dynamic, forOf->isConst, forOf->isLet,
+                             forOf->isVar, /*isInitialized=*/true, elemVal, forOf->span)) {
+            return false;
+        }
+        writeBinding(varBindings_[activeVarMap_[forOf->name]], Value{elemVal, il::Type::Dynamic},
+                     ilFn);
     }
-    writeBinding(varBindings_[activeVarMap_[forOf->name]], Value{elemVal, il::Type::Dynamic},
-                 ilFn);
 
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : forOf->body) bodyStmts.push_back(s.get());

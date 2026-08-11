@@ -1,0 +1,410 @@
+// Binding patterns, parameter defaults and spread (docs/0017).
+//
+// One seam, because the three are one mechanism seen from three sides: a
+// default is a branch on `undefined`, a rest element is "everything left" of
+// a walk, and a spread is that same walk feeding a container. Splitting them
+// would put the `undefined`-and-only-`undefined` rule in three places.
+
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "lower/lowerer.h"
+
+namespace bronze::lower {
+
+namespace {
+// The immediate `pattern.check` carries, matching the runtime's kinds.
+constexpr int32_t kPatternKindArray = 0;
+constexpr int32_t kPatternKindObject = 1;
+}  // namespace
+
+// `current === undefined ? <default> : current`, as a real branch.
+//
+// Two rules are load-bearing and both are visible in this shape. The test is
+// STRICT equality with `undefined`, so `f(1, null)` binds `null` and does not
+// fire the default — the single most commonly botched rule here. And the
+// default is lowered inside its own block, so its side effects happen on
+// exactly the calls that omitted the argument and on no others; a select over
+// two already-evaluated operands would run them every time.
+std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
+                                                              const ast::Expr& defaultExpr,
+                                                              il::Function& ilFn) {
+    Value cur = boxValueIfNeeded(current, ilFn);
+
+    il::ValueId undefId = emitConstUndefined(ilFn);
+    il::ValueId isUndef = ilFn.valueCount++;
+    il::Instruction eqInst;
+    eqInst.op = il::Op::StrictEq;
+    eqInst.type = il::Type::Bool;
+    eqInst.result = isUndef;
+    eqInst.operands = {cur.id, undefId};
+    emitInst(ilFn, eqInst);
+
+    il::BlockId bDefault = createBlock(ilFn);
+    il::BlockId bJoin = createBlock(ilFn);
+    const size_t entryBlockIdx = currentBlockIdx_;
+    auto statePre = snapshotVarStates();
+
+    setCurrentBlock(bDefault);
+    auto defOpt = lowerExpr(defaultExpr, ilFn);
+    if (!defOpt) return std::nullopt;
+    auto stateDefault = snapshotVarStates();
+    const bool defaultReaches = !currentBlockIsTerminated(ilFn);
+    const size_t defaultEndBlockIdx = currentBlockIdx_;
+
+    // The result is always dynamic: the two arms are an argument the caller
+    // passed and whatever the default computed, and nothing proves they share
+    // an unboxed type.
+    il::ValueId resParamId = ilFn.valueCount++;
+    ilFn.blocks[bJoin].params.push_back({resParamId, il::Type::Dynamic});
+    ExprJoin join = makeExprJoin(statePre, stateDefault, bJoin, ilFn);
+
+    // The skip edge's coercions feed the entry block's branch, so they have
+    // to be emitted there rather than in the default's block.
+    setCurrentBlock(entryBlockIdx);
+    std::vector<il::ValueId> skipArgs{cur.id};
+    appendExprJoinArgs(skipArgs, join, statePre, ilFn);
+
+    il::Instruction brInst;
+    brInst.op = il::Op::Branch;
+    brInst.type = il::Type::Void;
+    brInst.result = il::kNoValue;
+    brInst.operands = {isUndef};
+    brInst.target = il::BlockTarget{.block = bDefault, .args = {}};
+    brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+    ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+    if (defaultReaches) {
+        setCurrentBlock(defaultEndBlockIdx);
+        Value defBoxed = boxValueIfNeeded(*defOpt, ilFn);
+        std::vector<il::ValueId> args{defBoxed.id};
+        appendExprJoinArgs(args, join, stateDefault, ilFn);
+        il::Instruction jmpInst;
+        jmpInst.op = il::Op::Jump;
+        jmpInst.type = il::Type::Void;
+        jmpInst.result = il::kNoValue;
+        jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
+        emitInst(ilFn, jmpInst);
+    }
+
+    setCurrentBlock(bJoin);
+    restoreVarStates(statePre);
+    bindExprJoinParams(join);
+    return Value{resParamId, il::Type::Dynamic};
+}
+
+// The source, checked once before any element is read. It is what lets every
+// read below assume a walkable value, and what lets the diagnostic name the
+// construct that asked rather than for-of (docs/0017 decision 4).
+Lowerer::Value Lowerer::emitPatternCheck(Value source, bool isObject, il::Function& ilFn) {
+    Value boxed = boxValueIfNeeded(source, ilFn);
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::PatternCheck;
+    inst.type = il::Type::Dynamic;
+    inst.result = res;
+    inst.operands = {boxed.id};
+    inst.immI32 = isObject ? kPatternKindObject : kPatternKindArray;
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::Dynamic};
+}
+
+bool Lowerer::bindPatternName(const std::string& name, Value value, const PatternTarget& target,
+                              Span span, il::Function& ilFn) {
+    Value boxed = boxValueIfNeeded(value, ilFn);
+    if (target.declare) {
+        if (!declareVariable(name, boxed.type, target.isConst, target.isLet, target.isVar,
+                             /*isInitialized=*/true, boxed.id, span)) {
+            return false;
+        }
+        VarBinding& bound = varBindings_[activeVarMap_[name]];
+        if (bound.inEnv) {
+            emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot, boxed, ilFn);
+        }
+        return true;
+    }
+    // An assignment target resolves exactly as `x = v` does: a binding of
+    // this function, or a slot in an enclosing scope's environment record.
+    // Two resolutions of the same name by different means is how the update
+    // path and the assignment path once disagreed (docs/0016 decision 3).
+    auto it = activeVarMap_.find(name);
+    if (it != activeVarMap_.end()) {
+        writeBinding(varBindings_[it->second], boxed, ilFn);
+        return true;
+    }
+    uint32_t depth = 0;
+    uint32_t index = 0;
+    if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar(name, depth, index)) {
+        emitEnvSet(depth, index, boxed, ilFn);
+        return true;
+    }
+    diags_.error(span, "undefined variable: " + name);
+    return false;
+}
+
+bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
+                           const PatternTarget& target, il::Function& ilFn) {
+    Value checked = emitPatternCheck(source, pattern.isObject, ilFn);
+    return pattern.isObject ? lowerObjectPattern(pattern, checked, target, ilFn)
+                            : lowerArrayPattern(pattern, checked, target, ilFn);
+}
+
+// `[a, b = 1, [c], ...rest]`. An ordered walk, not an iterator protocol:
+// bronze has no `Symbol.iterator` (docs/0012 decision 2), so this is the same
+// three ops for-of uses over the same three kinds of value. The cursor is
+// chained through `iter.advance` rather than incremented, because a string
+// steps by CODE POINT and a surrogate pair moves it by two.
+bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
+                                const PatternTarget& target, il::Function& ilFn) {
+    il::ValueId cursor = ilFn.valueCount++;
+    il::Instruction zeroInst;
+    zeroInst.op = il::Op::ConstF64;
+    zeroInst.type = il::Type::F64;
+    zeroInst.result = cursor;
+    zeroInst.immF64 = 0.0;
+    emitInst(ilFn, zeroInst);
+
+    for (size_t i = 0; i < pattern.elements.size(); ++i) {
+        const auto& elem = pattern.elements[i];
+
+        il::ValueId readId = ilFn.valueCount++;
+        il::Instruction readInst;
+        // A rest element is everything from here on, as one fresh array;
+        // every other element is the one value at the cursor, which is
+        // `undefined` past the end and so lets a default fire there.
+        readInst.op = elem.isRest ? il::Op::IterRest : il::Op::IterAt;
+        readInst.type = il::Type::Dynamic;
+        readInst.result = readId;
+        readInst.operands = {source.id, cursor};
+        emitInst(ilFn, readInst);
+
+        Value value{readId, il::Type::Dynamic};
+        if (elem.defaultValue) {
+            auto withDefault = emitDefaultIfUndefined(value, *elem.defaultValue, ilFn);
+            if (!withDefault) return false;
+            value = *withDefault;
+        }
+        if (elem.pattern) {
+            if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
+        } else if (!elem.name.empty()) {
+            if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) return false;
+        }
+        if (elem.isRest) break;
+
+        if (i + 1 < pattern.elements.size()) {
+            il::ValueId nextCursor = ilFn.valueCount++;
+            il::Instruction advInst;
+            advInst.op = il::Op::IterAdvance;
+            advInst.type = il::Type::F64;
+            advInst.result = nextCursor;
+            advInst.operands = {source.id, cursor};
+            emitInst(ilFn, advInst);
+            cursor = nextCursor;
+        }
+    }
+    return true;
+}
+
+// `{ x, y: renamed, z = 5, [k]: c, ...others }`. Read by key, so each element
+// is an ordinary property read — the same PropGet a `.x` would emit, computed
+// keys taking the element path exactly as they do in an object literal
+// (docs/0016 decision 9).
+bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value source,
+                                 const PatternTarget& target, il::Function& ilFn) {
+    bool hasRest = false;
+    for (const auto& elem : pattern.elements) hasRest = hasRest || elem.isRest;
+
+    // The keys a `...rest` must NOT copy. An array rather than a compile-time
+    // list because a computed key is not known until the pattern runs, and
+    // the two kinds of key have to end up in one place.
+    Value excluded{il::kNoValue, il::Type::Dynamic};
+    if (hasRest) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::CreateArray;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.immI32 = 0;
+        emitInst(ilFn, inst);
+        excluded = Value{res, il::Type::Dynamic};
+    }
+
+    for (const auto& elem : pattern.elements) {
+        if (elem.isRest) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ObjectRest;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = {source.id, excluded.id};
+            emitInst(ilFn, inst);
+            if (!bindPatternName(elem.name, Value{res, il::Type::Dynamic}, target, elem.span,
+                                 ilFn)) {
+                return false;
+            }
+            break;
+        }
+
+        il::ValueId readId = ilFn.valueCount++;
+        il::Instruction readInst;
+        if (elem.keyExpr) {
+            auto keyOpt = lowerExpr(*elem.keyExpr, ilFn);
+            if (!keyOpt) return false;
+            Value keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+            readInst.op = il::Op::ElemGet;
+            readInst.operands = {source.id, keyBoxed.id};
+            if (hasRest) emitContainerOp(il::Op::ArrayAppend, excluded, keyBoxed, ilFn);
+        } else {
+            readInst.op = il::Op::PropGet;
+            readInst.operands = {source.id};
+            readInst.keyIndex = getKeyConstantIndex(elem.key);
+            readInst.icIndex = icSiteCounter_++;
+            readInst.icMonomorphic = false;
+            if (hasRest) {
+                il::ValueId keyStr = ilFn.valueCount++;
+                il::Instruction keyInst;
+                keyInst.op = il::Op::Box;
+                keyInst.type = il::Type::Dynamic;
+                keyInst.boxType = il::Type::Str;
+                keyInst.result = keyStr;
+                keyInst.keyIndex = getKeyConstantIndex(elem.key);
+                emitInst(ilFn, keyInst);
+                emitContainerOp(il::Op::ArrayAppend, excluded,
+                                Value{keyStr, il::Type::Dynamic}, ilFn);
+            }
+        }
+        readInst.type = il::Type::Dynamic;
+        readInst.result = readId;
+        emitInst(ilFn, readInst);
+
+        Value value{readId, il::Type::Dynamic};
+        if (elem.defaultValue) {
+            auto withDefault = emitDefaultIfUndefined(value, *elem.defaultValue, ilFn);
+            if (!withDefault) return false;
+            value = *withDefault;
+        }
+        if (elem.pattern) {
+            if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
+        } else if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// `[a, b] = [b, a]`. The whole right side is evaluated BEFORE any target is
+// written, which is what makes the swap a swap; the pattern walk below reads
+// only the value it was handed.
+std::optional<Lowerer::Value> Lowerer::lowerDestructuringAssign(
+    const ast::DestructuringAssign* node, il::Function& ilFn) {
+    auto valueOpt = lowerExpr(*node->value, ilFn);
+    if (!valueOpt) return std::nullopt;
+    Value boxed = boxValueIfNeeded(*valueOpt, ilFn);
+
+    PatternTarget target;
+    target.declare = false;
+    if (!lowerPattern(*node->pattern, boxed, target, ilFn)) return std::nullopt;
+    // An assignment expression evaluates to the value assigned, which for a
+    // destructuring assignment is the whole right-hand side.
+    return boxed;
+}
+
+void Lowerer::emitContainerOp(il::Op op, Value container, Value value, il::Function& ilFn) {
+    il::Instruction inst;
+    inst.op = op;
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    inst.operands = {container.id, boxValueIfNeeded(value, ilFn).id};
+    emitInst(ilFn, inst);
+}
+
+void Lowerer::applyParamShape(const std::vector<ast::Param>& params, il::Function& fn) {
+    fn.hasRestParam = !params.empty() && params.back().isRest;
+    // Everything from the first optional parameter on may be omitted, and a
+    // parameter after a defaulted one is optional too: the caller has no way
+    // to skip the default and supply the later one.
+    uint32_t required = 0;
+    for (const auto& param : params) {
+        if (param.defaultValue || param.isRest) break;
+        required++;
+    }
+    fn.requiredArgs = required;
+}
+
+bool Lowerer::listHasSpread(const std::vector<ast::ExprPtr>& list) {
+    for (const auto& e : list) {
+        if (dynamic_cast<const ast::SpreadElement*>(e.get()) != nullptr) return true;
+    }
+    return false;
+}
+
+// The elements of a list, spreads expanded, as one array. This is what a call
+// with a spread argument passes and what an array literal with one builds:
+// the length is not known where the code is generated, so the container is
+// grown rather than indexed.
+std::optional<Lowerer::Value> Lowerer::lowerListToArray(const std::vector<ast::ExprPtr>& list,
+                                                        il::Function& ilFn) {
+    il::ValueId arr = ilFn.valueCount++;
+    il::Instruction createInst;
+    createInst.op = il::Op::CreateArray;
+    createInst.type = il::Type::Dynamic;
+    createInst.result = arr;
+    createInst.immI32 = 0;
+    emitInst(ilFn, createInst);
+    Value container{arr, il::Type::Dynamic};
+
+    for (const auto& elemPtr : list) {
+        const auto* spread = dynamic_cast<const ast::SpreadElement*>(elemPtr.get());
+        const ast::Expr& source = spread ? *spread->argument : *elemPtr;
+        auto valOpt = lowerExpr(source, ilFn);
+        if (!valOpt) return std::nullopt;
+        emitContainerOp(spread ? il::Op::ArraySpread : il::Op::ArrayAppend, container, *valOpt,
+                        ilFn);
+    }
+    return container;
+}
+
+// One parameter list, bound left to right into the function's own scope.
+//
+// The order is the semantics: `function later(a, b = a * 2)` needs `a` bound
+// before `b`'s default runs, so a default is a piece of code evaluated in the
+// parameter scope at CALL time and not a constant stored at definition.
+bool Lowerer::lowerParamBindings(const std::vector<ast::Param>& params, uint32_t paramBase,
+                                 il::Function& ilFn) {
+    for (uint32_t i = 0; i < params.size(); ++i) {
+        const auto& param = params[i];
+        const il::ValueId argId = i + paramBase;
+        Value value{argId, ilFn.params[argId].type};
+
+        // A rest parameter never takes a default and never omits: it arrives
+        // as an array the calling convention built (docs/0017 decision 2).
+        if (param.defaultValue) {
+            auto withDefault = emitDefaultIfUndefined(value, *param.defaultValue, ilFn);
+            if (!withDefault) return false;
+            value = *withDefault;
+        }
+
+        if (param.pattern) {
+            PatternTarget target;
+            target.declare = true;
+            target.isLet = false;  // a parameter binding is neither let nor var
+            if (!lowerPattern(*param.pattern, value, target, ilFn)) return false;
+            continue;
+        }
+
+        if (!declareVariable(param.name, value.type, /*isConst=*/false, /*isLet=*/false,
+                             /*isVar=*/false, /*isInitialized=*/true, value.id, param.span)) {
+            return false;
+        }
+        // A captured parameter arrives in a register; copy it into its
+        // environment slot so closures see the same binding.
+        VarBinding& bound = varBindings_[activeVarMap_[param.name]];
+        if (bound.inEnv) {
+            emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot, value, ilFn);
+        }
+    }
+    return true;
+}
+
+}  // namespace bronze::lower

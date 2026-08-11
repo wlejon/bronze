@@ -147,6 +147,17 @@ public:
 
     void runBody(const std::vector<const ast::Stmt*>& body) { stmtList(body, 0); }
 
+    // A parameter's default is CODE, evaluated in this function's scope on
+    // the calls that omit the argument. Skipping it would hide every call
+    // site inside it from the pass that widens callee signatures — the exact
+    // shape of an unsound proof (docs/0017 decision 9).
+    void runParamDefaults(const std::vector<ast::Param>& params) {
+        for (const auto& param : params) {
+            if (param.defaultValue) expr(*param.defaultValue);
+            if (param.pattern) patternDefaults(*param.pattern);
+        }
+    }
+
     Type inferredReturn(const std::vector<const ast::Stmt*>& body) const {
         Type t = returnAccum_;
         if (bodyFallsThrough(body)) t = join(t, Type::undefined());
@@ -178,6 +189,26 @@ private:
             scope_.cells[name] = join(scope_.cells[name], t);
         } else {
             scope_.env[name] = t;
+        }
+    }
+
+    // Every expression a pattern contains: the defaults, and the computed
+    // keys. Both can call, so both are call sites this pass has to see.
+    void patternDefaults(const ast::BindingPattern& pattern) {
+        for (const auto& elem : pattern.elements) {
+            if (elem.keyExpr) expr(*elem.keyExpr);
+            if (elem.defaultValue) expr(*elem.defaultValue);
+            if (elem.pattern) patternDefaults(*elem.pattern);
+        }
+    }
+
+    // The names a pattern binds, all dynamic: they come out of an indexed or
+    // keyed read, and this pass proves nothing about element or property
+    // types (docs/0017 decision 9).
+    void declarePattern(const ast::BindingPattern& pattern) {
+        patternDefaults(pattern);
+        for (const auto& name : ast::patternBoundNames(pattern)) {
+            declare(name, Type::dynamic());
         }
     }
 
@@ -333,6 +364,14 @@ private:
             // would let it widen what bronze believes, and decision 6 makes
             // an annotation something that can only agree with a proof or be
             // discarded. Landing that (with its warnings) is step 5.
+            // A destructuring declaration binds names whose values come out
+            // of a read this pass does not model, so each is dynamic; the
+            // initialiser is still walked, for its effects on call sites.
+            if (v->pattern) {
+                expr(*v->init);
+                declarePattern(*v->pattern);
+                return;
+            }
             declare(v->name, v->init ? expr(*v->init) : Type::undefined());
             return;
         }
@@ -564,6 +603,24 @@ private:
             return Type::dynamic();
         }
         if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
+        // A spread contributes its argument's effects and nothing about the
+        // container's element types — there is no element type here to prove.
+        if (const auto* sp = dynamic_cast<const ast::SpreadElement*>(&e)) {
+            expr(*sp->argument);
+            return Type::dynamic();
+        }
+        // Every name a destructuring assignment writes becomes dynamic: the
+        // pieces come out of an indexed or keyed read, and this pass tracks
+        // no element or property types to say anything narrower (docs/0017
+        // decision 9). Assigning rather than ignoring is the point — a name
+        // proven numeric before must not stay numeric across it.
+        if (const auto* da = dynamic_cast<const ast::DestructuringAssign*>(&e)) {
+            const Type value = expr(*da->value);
+            for (const auto& name : ast::patternBoundNames(*da->pattern)) {
+                assign(name, Type::dynamic());
+            }
+            return value;
+        }
         if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
             analyzeNested(*f, f->name, f->params, f->body, f->span);
             return Type::function();
@@ -769,13 +826,25 @@ private:
 
 void seedParams(Scope& scope, const std::vector<ast::Param>& params,
                 const std::vector<Type>& paramTypes) {
+    auto seedOne = [&](const std::string& name, Type t) {
+        if (scope.captured.count(name) != 0) {
+            scope.cells[name] = join(scope.cells[name], t);
+        } else {
+            scope.env[name] = t;
+        }
+    };
     for (size_t i = 0; i < params.size(); ++i) {
         const Type t = i < paramTypes.size() ? paramTypes[i] : Type::dynamic();
-        if (scope.captured.count(params[i].name) != 0) {
-            scope.cells[params[i].name] = join(scope.cells[params[i].name], t);
-        } else {
-            scope.env[params[i].name] = t;
+        // A pattern parameter has no name of its own, and nothing is known
+        // about the names it does bind: they come out of a dynamic read of a
+        // value whose shape this pass does not track (docs/0017 decision 5).
+        if (params[i].pattern) {
+            for (const auto& bound : ast::patternBoundNames(*params[i].pattern)) {
+                seedOne(bound, Type::dynamic());
+            }
+            continue;
         }
+        seedOne(params[i].name, t);
     }
 }
 
@@ -823,6 +892,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
         scope.env.clear();
         seedParams(scope, params, paramTypes);
         FlowAnalyzer probe(mod, scope, facts, qualifiedName, /*record=*/false);
+        probe.runParamDefaults(params);
         probe.runBody(body);
         if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
         if (scope.cells == beforeCells) {
@@ -848,6 +918,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     scope.env.clear();
     seedParams(scope, params, paramTypes);
     FlowAnalyzer recorder(mod, scope, facts, qualifiedName, record);
+    recorder.runParamDefaults(params);
     recorder.runBody(body);
     if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
 

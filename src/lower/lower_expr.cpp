@@ -129,6 +129,20 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return lowerObjectLit(objLit, ilFn);
     }
 
+    if (const auto* destr = dynamic_cast<const ast::DestructuringAssign*>(&expr)) {
+        return lowerDestructuringAssign(destr, ilFn);
+    }
+
+    // A spread reaching the dispatcher is a spread somewhere no container is
+    // being built: every legal position handles it before lowering the
+    // element, so this is the "'...' here means nothing" case.
+    if (const auto* spread = dynamic_cast<const ast::SpreadElement*>(&expr)) {
+        diags_.error(spread->span,
+                     "unsupported construct: '...' outside an argument list, an array "
+                     "literal or an object literal");
+        return std::nullopt;
+    }
+
     if (const auto* arrLit = dynamic_cast<const ast::ArrayLit*>(&expr)) {
         return lowerArrayLit(arrLit, ilFn);
     }
@@ -558,15 +572,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         }
         return stored;
     }
-    // An array or object LITERAL on the left is not a bad target, it is a
-    // destructuring assignment — the one form of destructuring the parser
-    // cannot name, because both sides parse as ordinary expressions and only
-    // the assignment reveals which one it was.
-    if (dynamic_cast<const ast::ArrayLit*>(bin->lhs.get()) ||
-        dynamic_cast<const ast::ObjectLit*>(bin->lhs.get())) {
-        diags_.error(bin->span, "unsupported construct: destructuring assignment");
-        return std::nullopt;
-    }
+    // An array or object literal on the left never arrives here: the parser
+    // refines it into a `DestructuringAssign` the moment it sees the `=`
+    // (docs/0017 decision 5), which is a node of its own and not an
+    // assignment with a strange target.
     diags_.error(bin->span, "invalid assignment target");
     return std::nullopt;
 }

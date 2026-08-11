@@ -71,7 +71,16 @@ public:
                 // A computed key is a runtime ToPropertyKey of an evaluated
                 // expression and a written one is a compile-time constant, so
                 // the two must not dump the same (docs/0012 decision 3).
-                emit(p.computed() ? std::string("(prop-computed") : "(prop " + p.key);
+                // A CoverInitializedName is only ever a pattern; it dumps
+                // under its own head so it is not mistaken for the object
+                // literal `{ x: x = 1 }`, which is a legal program that
+                // means something else entirely.
+                const bool spread =
+                    dynamic_cast<const SpreadElement*>(p.value.get()) != nullptr;
+                emit(spread                ? std::string("(prop-spread")
+                     : p.coverInitialized  ? "(prop-cover-init " + p.key
+                     : p.computed()        ? std::string("(prop-computed")
+                                           : "(prop " + p.key);
                 indented([&] {
                     if (p.keyExpr) p.keyExpr->accept(*this);
                     p.value->accept(*this);
@@ -88,21 +97,31 @@ public:
         });
         emit(")");
     }
+    // A spread prints under its own head. It contributes several elements
+    // where every neighbour contributes one, so `[a]` and `[...a]` must not
+    // dump the same.
+    void visit(const SpreadElement& n) override {
+        emit("(spread");
+        indented([&] { n.argument->accept(*this); });
+        emit(")");
+    }
+    void visit(const DestructuringAssign& n) override {
+        emit("(destructuring-assign");
+        indented([&] {
+            dumpPattern(n.pattern.get());
+            n.value->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const FunctionExpr& n) override {
         // An arrow prints under its own head: it is not a shorter spelling
         // of a function expression, it has no `this` of its own, and two
         // constructs that lower differently must not dump identically.
-        std::string head = std::string(n.isArrow ? "(arrow-expr " : "(function-expr ") +
-                           (n.name.empty() ? "<anon>" : n.name) + " (";
-        for (size_t i = 0; i < n.params.size(); ++i) {
-            if (i > 0) head += ' ';
-            head += n.params[i].name;
-            if (!n.params[i].typeAnnotation.empty()) head += ": " + n.params[i].typeAnnotation;
-        }
-        head += ')';
-        if (!n.returnType.empty()) head += ": " + n.returnType;
-        emit(head);
+        emit(std::string(n.isArrow ? "(arrow-expr " : "(function-expr ") +
+             (n.name.empty() ? "<anon>" : n.name) + paramHead(n.params) +
+             (n.returnType.empty() ? "" : ": " + n.returnType));
         indented([this, &n] {
+            dumpParamDetails(n.params);
             for (const auto& s : n.body) s->accept(*this);
         });
         emit(")");
@@ -162,12 +181,14 @@ public:
         emit(")");
     }
     void visit(const VarDecl& n) override {
-        std::string head = std::string("(") + (n.isConst ? "const " : n.isVar ? "var " : "let ") + n.name;
+        std::string head = std::string("(") + (n.isConst ? "const " : n.isVar ? "var " : "let ") +
+                           (n.pattern ? std::string("<pattern>") : n.name);
         if (!n.typeAnnotation.empty()) head += ": " + n.typeAnnotation;
         emit(head);
-        if (n.init) {
-            indented([&] { n.init->accept(*this); });
-        }
+        indented([&] {
+            if (n.pattern) dumpPattern(n.pattern.get());
+            if (n.init) n.init->accept(*this);
+        });
         emit(")");
     }
     void visit(const ReturnStmt& n) override {
@@ -230,8 +251,9 @@ public:
     void visit(const SwitchStmt&) override { emit("(switch)"); }
     void visit(const ForInStmt&) override { emit("(for-in)"); }
     void visit(const ForOfStmt& n) override {
-        emit("(for-of " + n.name);
+        emit("(for-of " + (n.pattern ? std::string("<pattern>") : n.name));
         indented([&] {
+            if (n.pattern) dumpPattern(n.pattern.get());
             if (n.iterable) n.iterable->accept(*this);
             for (const auto& s : n.body) s->accept(*this);
         });
@@ -240,17 +262,12 @@ public:
     void visit(const TryStmt&) override { emit("(try)"); }
     void visit(const ThrowStmt&) override { emit("(throw)"); }
     void visit(const FunctionDecl& n) override {
-        std::string head = "(function " + n.name + " (";
-        for (size_t i = 0; i < n.params.size(); ++i) {
-            if (i > 0) head += ' ';
-            head += n.params[i].name;
-            if (!n.params[i].typeAnnotation.empty()) head += ": " + n.params[i].typeAnnotation;
-        }
-        head += ')';
+        std::string head = "(function " + n.name + paramHead(n.params);
         if (!n.returnType.empty()) head += ": " + n.returnType;
         if (n.isExported) head += " exported";
         emit(head);
         indented([&] {
+            dumpParamDetails(n.params);
             for (const auto& s : n.body) s->accept(*this);
         });
         emit(")");
@@ -265,6 +282,60 @@ public:
 
 private:
     int depth_ = 0;
+
+    // The parameter list as it appears in the head. Every form a parameter
+    // can take is marked, because they lower differently: `...` for a rest
+    // parameter, a trailing `=` for one with a default (whose expression is
+    // dumped below, where an expression can be), and `<pattern>` for a
+    // destructuring parameter.
+    static std::string paramHead(const std::vector<Param>& params) {
+        std::string head = " (";
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (i > 0) head += ' ';
+            if (params[i].isRest) head += "...";
+            head += params[i].pattern ? std::string("<pattern>") : params[i].name;
+            if (!params[i].typeAnnotation.empty()) head += ": " + params[i].typeAnnotation;
+            if (params[i].defaultValue) head += " =";
+        }
+        return head + ')';
+    }
+
+    void dumpParamDetails(const std::vector<Param>& params) {
+        for (const auto& p : params) {
+            if (!p.pattern && !p.defaultValue) continue;
+            emit("(param " + (p.pattern ? std::string("<pattern>") : p.name));
+            indented([&] {
+                if (p.pattern) dumpPattern(p.pattern.get());
+                if (p.defaultValue) p.defaultValue->accept(*this);
+            });
+            emit(")");
+        }
+    }
+
+    void dumpPattern(const BindingPattern* pattern) {
+        if (!pattern) return;
+        emit(pattern->isObject ? "(pattern-object" : "(pattern-array");
+        indented([&] {
+            for (const auto& elem : pattern->elements) {
+                std::string head = elem.isRest ? "(elem ..." : "(elem ";
+                if (!elem.key.empty()) head += elem.key + ": ";
+                if (elem.keyExpr) head += "[computed]: ";
+                head += elem.pattern ? std::string("<pattern>") : elem.name;
+                emit(head);
+                indented([&] {
+                    if (elem.keyExpr) elem.keyExpr->accept(*this);
+                    if (elem.pattern) dumpPattern(elem.pattern.get());
+                    if (elem.defaultValue) {
+                        emit("(default");
+                        indented([&] { elem.defaultValue->accept(*this); });
+                        emit(")");
+                    }
+                });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
 
     void emit(const std::string& line) {
         result.append(static_cast<size_t>(depth_) * 2, ' ');

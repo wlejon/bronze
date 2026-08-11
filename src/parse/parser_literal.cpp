@@ -344,12 +344,28 @@ ExprPtr Parser::parseObjectLit() {
                 return nullptr;
             }
             if (check(TokenKind::Assign)) {
-                // `{ x = 1 }` is a CoverInitializedName: legal only when the
-                // literal turns out to be a destructuring PATTERN, never as
-                // an object literal in its own right.
-                error("unsupported construct: destructuring assignment pattern "
-                      "('{ x = ... }' is only ever a pattern, never an object literal)");
-                return nullptr;
+                // `{ x = 1 }` is a CoverInitializedName: the cover grammar
+                // admits it so that `({ x = 1 } = o)` can parse, and it is
+                // never an object literal in its own right. It is parsed as
+                // the assignment it looks like and FLAGGED, so the refinement
+                // at the `=` can read the default off it and lowering can
+                // refuse a literal that reaches it unrefined.
+                advance();
+                auto target = std::make_unique<Ident>();
+                target->span = nameTok.span;
+                target->name = prop.key;
+                auto init = parseAssign();
+                if (!init) return nullptr;
+                auto cover = std::make_unique<Binary>();
+                cover->span = {nameTok.span.begin, init->span.end};
+                cover->op = BinaryOp::Assign;
+                cover->lhs = std::move(target);
+                cover->rhs = std::move(init);
+                prop.coverInitialized = true;
+                prop.value = std::move(cover);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
             if (check(TokenKind::Comma) || check(TokenKind::RBrace)) {
                 // `{ x }` — shorthand. The key is the identifier's text and
@@ -371,10 +387,15 @@ ExprPtr Parser::parseObjectLit() {
             prop.value = parseAssign();
             if (!prop.value) return nullptr;
         } else if (check(TokenKind::Ellipsis)) {
-            // `{ ...src }` - a spread in key position, which the property
-            // key error named as a missing identifier.
-            error("unsupported construct: spread");
-            return nullptr;
+            // `{ ...src }` — a property definition with no key of its own: it
+            // contributes every own enumerable property of `src`, in the order
+            // docs/0009 pins, at the position it is written.
+            const Token& dots = advance();
+            auto spread = std::make_unique<SpreadElement>();
+            spread->argument = parseAssign();
+            if (!spread->argument) return nullptr;
+            spread->span = {dots.span.begin, spread->argument->span.end};
+            prop.value = std::move(spread);
         } else {
             // A numeric key (`{ 1: 'a' }`) lands here deliberately: its name
             // is ToString(Number), which is the runtime's formatter and not
@@ -401,11 +422,29 @@ ExprPtr Parser::parseArrayLit() {
     arr->span.begin = openToken.span.begin;
 
     while (!check(TokenKind::RBracket) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+        if (check(TokenKind::Comma)) {
+            // `[1, , 2]` — an ElementList elision, which denotes a HOLE and
+            // not `undefined`: the two differ under `in` and under the array
+            // methods that skip holes. bronze has no sparse arrays, so this
+            // is named rather than quietly filled in.
+            error("unsupported construct: an elision (a hole) in an array literal");
+            return nullptr;
+        }
         // AssignmentExpression, for the same reason the argument list is:
         // a comma operator here would make `[1, 2, 3]` one element long.
-        auto elemExpr = parseAssign();
-        if (!elemExpr) return nullptr;
-        arr->elements.push_back(std::move(elemExpr));
+        // A `...` element contributes several, so the list parses it.
+        if (check(TokenKind::Ellipsis)) {
+            const Token& dots = advance();
+            auto spread = std::make_unique<SpreadElement>();
+            spread->argument = parseAssign();
+            if (!spread->argument) return nullptr;
+            spread->span = {dots.span.begin, spread->argument->span.end};
+            arr->elements.push_back(std::move(spread));
+        } else {
+            auto elemExpr = parseAssign();
+            if (!elemExpr) return nullptr;
+            arr->elements.push_back(std::move(elemExpr));
+        }
         if (!match(TokenKind::Comma)) break;
     }
 

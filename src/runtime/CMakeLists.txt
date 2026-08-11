@@ -23,6 +23,7 @@ bronze_add_module(runtime
         rt_operator.cpp
         rt_prop.cpp
         rt_iter.cpp
+        rt_spread.cpp
         rt_print.cpp
     DEPS
         abi

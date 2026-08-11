@@ -21,6 +21,25 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
     emitInst(ilFn, inst);
 
     for (const auto& prop : objLit->props) {
+        // `{ x = 1 }` parses only because `{ x = 1 } = o` might follow: it is
+        // the cover grammar for an object PATTERN and means nothing on its
+        // own (ECMA-262 13.2.5.1). Reaching lowering means no `=` followed.
+        if (prop.coverInitialized) {
+            diags_.error(prop.value->span,
+                         "a shorthand property may not have an initializer outside a "
+                         "destructuring pattern");
+            return std::nullopt;
+        }
+        // `{ ...src }` copies src's own enumerable properties in here, in
+        // enumeration order, so a later key overwrites an earlier one exactly
+        // as a spelled-out property would (docs/0017 decision 3).
+        if (const auto* spread = dynamic_cast<const ast::SpreadElement*>(prop.value.get())) {
+            auto srcOpt = lowerExpr(*spread->argument, ilFn);
+            if (!srcOpt) return std::nullopt;
+            emitContainerOp(il::Op::ObjectSpread, Value{res, il::Type::Dynamic}, *srcOpt, ilFn);
+            continue;
+        }
+
         // A computed key is evaluated BEFORE its value, and the properties in
         // source order, so the two lowerings interleave exactly as ECMA-262
         // 13.2.5.5 evaluates them. Getting this backwards is observable the
@@ -59,6 +78,10 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
 
 std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit,
                                                      il::Function& ilFn) {
+    // A spread makes the length a runtime fact, so the literal is built by
+    // appending rather than by writing indices it cannot name.
+    if (listHasSpread(arrLit->elements)) return lowerListToArray(arrLit->elements, ilFn);
+
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::CreateArray;
@@ -90,7 +113,8 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
 std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
                                                     il::Function& ilFn) {
     if (newExpr->callee == "Float32Array" || newExpr->callee == "ArrayBuffer") {
-        if (newExpr->args.size() != 1) {
+        if (newExpr->args.size() != 1 ||
+            dynamic_cast<const ast::SpreadElement*>(newExpr->args[0].get())) {
             diags_.error(newExpr->span, "unsupported construct: new " + newExpr->callee +
                                             " expects exactly one argument");
             return std::nullopt;
@@ -118,17 +142,24 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
     auto calleeVal = lowerExpr(calleeIdent, ilFn);
     if (!calleeVal) return std::nullopt;
 
+    const bool spreadArgs = listHasSpread(newExpr->args);
     std::vector<il::ValueId> operands;
     operands.push_back(boxValueIfNeeded(*calleeVal, ilFn).id);
-    for (const auto& argPtr : newExpr->args) {
-        auto argVal = lowerExpr(*argPtr, ilFn);
-        if (!argVal) return std::nullopt;
-        operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+    if (spreadArgs) {
+        auto argsArr = lowerListToArray(newExpr->args, ilFn);
+        if (!argsArr) return std::nullopt;
+        operands.push_back(argsArr->id);
+    } else {
+        for (const auto& argPtr : newExpr->args) {
+            auto argVal = lowerExpr(*argPtr, ilFn);
+            if (!argVal) return std::nullopt;
+            operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+        }
     }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::Construct;
+    inst.op = spreadArgs ? il::Op::ConstructSpread : il::Op::Construct;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);
@@ -232,6 +263,13 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         std::vector<il::ValueId> args;
         args.reserve(call->args.size());
         for (const auto& argPtr : call->args) {
+            // `print` takes its arguments as operands, one per value, and a
+            // spread's length is not known until it runs. Naming it beats
+            // silently printing the array (docs/0017 decision 8).
+            if (dynamic_cast<const ast::SpreadElement*>(argPtr.get())) {
+                diags_.error(argPtr->span, "unsupported construct: a spread argument to console.log");
+                return std::nullopt;
+            }
             auto argVal = lowerExpr(*argPtr, ilFn);
             if (!argVal) return std::nullopt;
             args.push_back(boxValueIfNeeded(*argVal, ilFn).id);
@@ -257,7 +295,8 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 diags_.error(call->span, "unsupported builtin: Object." + mem->property);
                 return std::nullopt;
             }
-            if (call->args.size() != 1) {
+            if (call->args.size() != 1 ||
+                dynamic_cast<const ast::SpreadElement*>(call->args[0].get())) {
                 diags_.error(call->span, "Object.keys expects 1 argument");
                 return std::nullopt;
             }
@@ -276,7 +315,14 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         }
     }
 
-    if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
+    // A spread argument means the argument count is not known here, and a
+    // direct call's operand list is exactly its parameter list. So a spread
+    // call always takes the uniform path, where the argument vector is a real
+    // array the runtime unpacks (docs/0017 decision 3).
+    const bool spreadArgs = listHasSpread(call->args);
+
+    if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get());
+        calleeIdent && !spreadArgs) {
         // A local binding shadows a module-level function, and so
         // does an enclosing scope's environment slot: a nested
         // function declaration registers in functionIndices_ under
@@ -293,11 +339,17 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 uint32_t calleeIdx = it->second;
                 const auto& calleeFn = ilModule_.functions[calleeIdx];
 
-                // Synthetic parameters are not source arguments;
-                // the arity the program has to match is the source
-                // one.
+                // Synthetic parameters are not source arguments; the arity the
+                // program has to match is the source one. Defaults widen the
+                // bottom of that range and a rest parameter removes its top:
+                // the operand list is still fixed, because the padding and the
+                // leftover array are both built HERE, where the argument count
+                // is a compile-time fact.
                 const size_t base = calleeFn.firstSourceParam();
-                if (call->args.size() != calleeFn.params.size() - base) {
+                const size_t fixed = calleeFn.callerParamCount();
+                const bool tooFew = call->args.size() < calleeFn.requiredArgs;
+                const bool tooMany = !calleeFn.hasRestParam && call->args.size() > fixed;
+                if (tooFew || tooMany) {
                     diags_.error(call->span, "argument count mismatch in call to " + calleeIdent->name);
                     return std::nullopt;
                 }
@@ -311,7 +363,15 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 if (calleeFn.needsThis) {
                     argVals.push_back(emitConstUndefined(ilFn));
                 }
-                for (size_t i = 0; i < call->args.size(); ++i) {
+                for (size_t i = 0; i < fixed; ++i) {
+                    // An omitted optional argument IS `undefined` — that is
+                    // the value the callee's default tests for, so a short
+                    // direct call and a short uniform one reach the same
+                    // prologue with the same bits.
+                    if (i >= call->args.size()) {
+                        argVals.push_back(emitConstUndefined(ilFn));
+                        continue;
+                    }
                     auto argVal = lowerExpr(*call->args[i], ilFn);
                     if (!argVal) return std::nullopt;
                     const il::Type paramType = calleeFn.params[i + base].type;
@@ -321,6 +381,27 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                         argVal = unboxValueIfNeeded(*argVal, paramType, ilFn);
                     }
                     argVals.push_back(argVal->id);
+                }
+                if (calleeFn.hasRestParam) {
+                    // Everything past the fixed parameters, as one fresh
+                    // array — the value the rest parameter is bound to.
+                    il::ValueId restArr = ilFn.valueCount++;
+                    il::Instruction createInst;
+                    createInst.op = il::Op::CreateArray;
+                    createInst.type = il::Type::Dynamic;
+                    createInst.result = restArr;
+                    // Zero LENGTH, not zero capacity: `create.array n` makes
+                    // an array of n undefined elements, so anything built by
+                    // appending has to start empty.
+                    createInst.immI32 = 0;
+                    emitInst(ilFn, createInst);
+                    for (size_t i = fixed; i < call->args.size(); ++i) {
+                        auto elemVal = lowerExpr(*call->args[i], ilFn);
+                        if (!elemVal) return std::nullopt;
+                        emitContainerOp(il::Op::ArrayAppend, Value{restArr, il::Type::Dynamic},
+                                        *elemVal, ilFn);
+                    }
+                    argVals.push_back(restArr);
                 }
 
                 il::Instruction inst;
@@ -405,16 +486,25 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     dynOperands.push_back(calleeVal.id);
     dynOperands.push_back(thisArgVal.id);
 
-    for (const auto& argPtr : call->args) {
-        auto argVal = lowerExpr(*argPtr, ilFn);
-        if (!argVal) return std::nullopt;
-        auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
-        dynOperands.push_back(argBoxed.id);
+    if (spreadArgs) {
+        // One operand, an array: the runtime reads its length and passes its
+        // elements as the argument vector, which is the only place the count
+        // is known.
+        auto argsArr = lowerListToArray(call->args, ilFn);
+        if (!argsArr) return std::nullopt;
+        dynOperands.push_back(argsArr->id);
+    } else {
+        for (const auto& argPtr : call->args) {
+            auto argVal = lowerExpr(*argPtr, ilFn);
+            if (!argVal) return std::nullopt;
+            auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
+            dynOperands.push_back(argBoxed.id);
+        }
     }
 
     il::ValueId callRes = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::DynamicCall;
+    inst.op = spreadArgs ? il::Op::DynamicCallSpread : il::Op::DynamicCall;
     inst.type = il::Type::Dynamic;
     inst.result = callRes;
     inst.operands = std::move(dynOperands);

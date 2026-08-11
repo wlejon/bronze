@@ -89,30 +89,55 @@ ExprPtr Parser::parseArrowFunction() {
 }
 // One parameter list, for every function form there is — declaration,
 // expression, arrow and class method. One copy, because four copies of this
-// loop are four places for the diagnostics below to drift apart.
+// loop are four places for the rules below to drift apart.
 //
-// Rest, defaults and destructuring are all ES2015 parameter syntax bronze
-// has not built; each is named here rather than reported as a missing `)`.
+// A parameter is a binding target (a name or a pattern), optionally with a
+// default; or a rest parameter, which takes what is left and so must be last
+// and can have neither a default nor a pattern (docs/0017).
 bool Parser::parseParams(std::vector<ast::Param>& out) {
     while (!check(TokenKind::RParen)) {
-        if (check(TokenKind::Ellipsis)) {
-            error("unsupported construct: rest parameter");
+        if (check(TokenKind::EndOfFile)) {
+            error("unterminated parameter list");
             return false;
         }
-        if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
-            error("unsupported construct: destructuring parameter");
-            return false;
-        }
-        const Token* param = expect(TokenKind::Identifier, "parameter name");
-        if (!param) return false;
         Param p;
-        p.name = std::string(param->text);
+        p.span.begin = peek().span.begin;
+        const bool isRest = match(TokenKind::Ellipsis);
+        p.isRest = isRest;
+
+        if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+            if (isRest) {
+                error("a rest parameter must be a plain name");
+                return false;
+            }
+            p.pattern = parsePattern();
+            if (!p.pattern) return false;
+        } else {
+            const Token* param = expect(TokenKind::Identifier, "parameter name");
+            if (!param) return false;
+            p.name = std::string(param->text);
+        }
+
         if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
         if (check(TokenKind::Assign)) {
-            error("unsupported construct: default parameter value");
-            return false;
+            if (isRest) {
+                error("a rest parameter may not have a default value");
+                return false;
+            }
+            advance();
+            p.defaultValue = parseAssign();
+            if (!p.defaultValue) return false;
         }
+        p.span.end = peek().span.begin;
         out.push_back(std::move(p));
+
+        if (isRest) {
+            if (!check(TokenKind::RParen)) {
+                error("a rest parameter must be the last parameter");
+                return false;
+            }
+            break;
+        }
         if (!match(TokenKind::Comma)) break;
     }
     return true;
@@ -217,26 +242,48 @@ ast::StmtPtr Parser::parseClass() {
     if (!ok) return nullptr;
     if (!expect(TokenKind::RBrace, "'}' to close a class body")) return nullptr;
 
-    // Lowering wants exactly one constructor, always. A base class that
-    // writes none gets an empty one, which is what the language says it
-    // has. A DERIVED class that writes none is `constructor(...args) {
-    // super(...args); }` — rest and spread, neither of which bronze has, and
-    // forwarding fewer arguments than were passed would be a wrong answer
-    // given quietly. So it is named instead.
+    // Lowering wants exactly one constructor, always, so a class that writes
+    // none gets the one ECMA-262 15.7.14 says it has — synthesized here, in
+    // the parser, so lowering never has two shapes to reason about.
+    //
+    // For a base class that is an empty body. For a DERIVED one it is
+    // `constructor(...args) { super(...args); }`, which is exactly a rest
+    // parameter and a spread and nothing else: the forwarding has to be
+    // arity-preserving, and before those existed it was a named error rather
+    // than a quietly truncated argument list (docs/0012 decision 5).
     bool hasCtor = false;
     for (const auto& m : cls->methods) hasCtor = hasCtor || m.isConstructor;
     if (!hasCtor) {
-        if (!cls->superName.empty()) {
-            error("unsupported construct: a derived class with no constructor (write one "
-                  "that calls super)");
-            return nullptr;
-        }
         ClassMethod ctor;
         ctor.name = "constructor";
         ctor.isConstructor = true;
         ctor.fn = std::make_unique<FunctionExpr>();
         ctor.fn->name = cls->name + ".constructor";
         ctor.fn->span = cls->span;
+        if (!cls->superName.empty()) {
+            Param rest;
+            rest.name = "args";
+            rest.isRest = true;
+            rest.span = cls->span;
+            ctor.fn->params.push_back(std::move(rest));
+
+            auto argsRef = std::make_unique<Ident>();
+            argsRef->span = cls->span;
+            argsRef->name = "args";
+            auto spread = std::make_unique<SpreadElement>();
+            spread->span = cls->span;
+            spread->argument = std::move(argsRef);
+
+            auto call = std::make_unique<SuperCall>();
+            call->span = cls->span;
+            call->baseName = cls->superName;
+            call->args.push_back(std::move(spread));
+
+            auto stmt = std::make_unique<ExprStmt>();
+            stmt->span = cls->span;
+            stmt->expr = std::move(call);
+            ctor.fn->body.push_back(std::move(stmt));
+        }
         cls->methods.insert(cls->methods.begin(), std::move(ctor));
     }
     cls->span.end = peek().span.begin;

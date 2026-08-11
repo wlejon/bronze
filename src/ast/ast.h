@@ -29,8 +29,60 @@ struct Expr : Node {
 };
 using ExprPtr = std::unique_ptr<Expr>;
 
+// ---- Binding patterns (docs/0017) ------------------------------------------
+//
+// A pattern is what stands where a binding name would: in a declaration, in a
+// parameter, in a for-of head, and — after the cover-grammar refinement at the
+// `=` — on the left of a destructuring assignment. It nests, so it is a tree
+// and not a list.
+
+struct BindingPattern;
+using PatternPtr = std::unique_ptr<BindingPattern>;
+
+// One element of a binding pattern: where its value is read from, what it is
+// bound to, and the default that fires when the read produced `undefined`.
+struct PatternElement {
+    // The target. Exactly one of these is meaningful.
+    std::string name;
+    PatternPtr pattern;
+    // OBJECT patterns only: which property this element reads. `key` is a
+    // written name and `keyExpr` a computed `[e]`; the two are never both
+    // meaningful. An ARRAY pattern reads by position and uses neither.
+    std::string key;
+    ExprPtr keyExpr;
+    // `= expr`. Evaluated only when the read produced `undefined` — not on
+    // `null`, and not at all otherwise, so its side effects are observable
+    // evidence of whether it fired (docs/0017 decision 1).
+    ExprPtr defaultValue;
+    // `...rest`, which is always last and always binds a fresh container:
+    // an array for an array pattern, an object for an object one.
+    bool isRest = false;
+    Span span;
+};
+
+struct BindingPattern {
+    bool isObject = false;  // false: an array pattern, read by position
+    std::vector<PatternElement> elements;
+    Span span;
+};
+
+// Every name a pattern binds, in source order. Scope planning asks a pattern
+// the same question it asks a plain declaration — which names appear here —
+// and there is one answer to it rather than one per caller.
+std::vector<std::string> patternBoundNames(const BindingPattern& pattern);
+
 struct NumberLit final : Expr {
     double value = 0;
+    void accept(Visitor& v) const override;
+};
+
+// `...expr` in an argument list, an array literal or an object literal. Its
+// own node rather than a flag on the list, because it is not an expression
+// that produces one value: it contributes zero or more of them to the list it
+// sits in, so every position that lowers a list has to decide what to do with
+// it and none may treat it as an operand (docs/0017 decision 3).
+struct SpreadElement final : Expr {
+    ExprPtr argument;
     void accept(Visitor& v) const override;
 };
 
@@ -168,6 +220,17 @@ struct SuperMember final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `[a, b] = pair` — a destructuring ASSIGNMENT, which writes bindings that
+// already exist rather than making new ones. Its own node because it lowers
+// nothing like `Binary{Assign}`: there is no single target to evaluate, and
+// the whole right side is read before any target is written, which is what
+// makes `[a, b] = [b, a]` a swap (docs/0017 decision 5).
+struct DestructuringAssign final : Expr {
+    PatternPtr pattern;
+    ExprPtr value;
+    void accept(Visitor& v) const override;
+};
+
 // ---- Statements / declarations ---------------------------------------------
 
 struct Stmt : Node {};
@@ -185,7 +248,14 @@ struct ObjectProp {
     // fields are never both meaningful.
     std::string key;
     ExprPtr keyExpr;  // null unless the key is computed
+    // The value, or — for `{ ...src }` — a `SpreadElement` holding the source.
     ExprPtr value;
+    // `{ x = 1 }`, a CoverInitializedName: legal only once the literal is
+    // refined into a destructuring pattern, and never as a literal in its own
+    // right. `value` is then the `x = 1` assignment the cover grammar parsed,
+    // which is exactly what the refinement needs and what lowering must
+    // refuse (docs/0017 decision 5).
+    bool coverInitialized = false;
     bool computed() const { return keyExpr != nullptr; }
 };
 
@@ -195,13 +265,23 @@ struct ObjectLit final : Expr {
 };
 
 struct ArrayLit final : Expr {
+    // A `SpreadElement` among them contributes its source's elements rather
+    // than one value, so the literal's length is not its element count.
     std::vector<ExprPtr> elements;
     void accept(Visitor& v) const override;
 };
 
 struct Param {
+    // The parameter's name, or empty when the parameter is a `pattern`.
     std::string name;
     std::string typeAnnotation;
+    // `= expr`, evaluated at CALL time on every call that omits the argument,
+    // with the parameters to its left already bound (docs/0017 decision 1).
+    ExprPtr defaultValue;
+    PatternPtr pattern;
+    // `...rest` — always the last parameter, and always a real array.
+    bool isRest = false;
+    Span span;
 };
 
 struct FunctionExpr final : Expr {
@@ -222,7 +302,10 @@ struct FunctionExpr final : Expr {
 struct VarDecl final : Stmt {
     bool isConst = false;
     bool isVar = false;
-    std::string name;
+    std::string name;            // empty when the declarator is a `pattern`
+    // `const [a, b] = pair`. The binding target is a pattern rather than one
+    // name, which is why `name` and this are never both meaningful.
+    PatternPtr pattern;
     std::string typeAnnotation;  // raw text for now; the type system owns this later
     ExprPtr init;                // may be null (let without initializer)
     void accept(Visitor& v) const override;
@@ -294,7 +377,10 @@ struct ForInStmt final : Stmt {
 // in the body captures that iteration's value (contrast ForStmt, whose
 // header binding docs/0007 decision 2 diagnoses).
 struct ForOfStmt final : Stmt {
-    std::string name;
+    std::string name;  // empty when the head destructures
+    // `for (const [k, v] of pairs)`. Bound afresh per iteration like the
+    // named form, because the pattern's names are the loop's binding.
+    PatternPtr pattern;
     bool isConst = false;
     bool isLet = false;
     bool isVar = false;
@@ -353,6 +439,7 @@ class Visitor {
 public:
     virtual ~Visitor() = default;
     virtual void visit(const NumberLit&) = 0;
+    virtual void visit(const SpreadElement&) = 0;
     virtual void visit(const StringLit&) = 0;
     virtual void visit(const TemplateLit&) = 0;
     virtual void visit(const BoolLit&) = 0;
@@ -372,6 +459,7 @@ public:
     virtual void visit(const NewExpr&) = 0;
     virtual void visit(const SuperCall&) = 0;
     virtual void visit(const SuperMember&) = 0;
+    virtual void visit(const DestructuringAssign&) = 0;
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;
     virtual void visit(const FunctionExpr&) = 0;

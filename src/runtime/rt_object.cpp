@@ -75,6 +75,45 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     fn->properties = Value::fromObject(props);
 }
 
+// Spec order for a plain object's own string keys, in one place because three
+// callers need the same answer and a second copy of the integer-first split
+// would be a second chance to get `"10"` before `"2"` wrong (docs/0009).
+std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj) {
+    // Shape keys are arena-interned and immortal, so collecting them up front
+    // is safe across whatever the caller allocates while walking them.
+    Shape* shape = obj->shape;
+    std::vector<StringHeader*> inserted =
+        shape ? shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
+
+    std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
+    std::vector<StringHeader*> strKeys;
+    for (StringHeader* k : inserted) {
+        uint32_t idx = 0;
+        if (k->isLatin1() && rtIsIntegerLikeKey(latin1View(k), idx)) {
+            intKeys.emplace_back(idx, k);
+        } else {
+            strKeys.push_back(k);
+        }
+    }
+    std::sort(intKeys.begin(), intKeys.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::vector<StringHeader*> ordered;
+    ordered.reserve(intKeys.size() + strKeys.size());
+    for (const auto& [idx, name] : intKeys) ordered.push_back(name);
+    for (StringHeader* name : strKeys) ordered.push_back(name);
+    return ordered;
+}
+
+Value rtCopyKeyToHeap(const StringHeader* key) {
+    if (key->isLatin1()) {
+        return Value::fromString(
+            StringHeader::createLatin1(rtHeap(), key->latin1Data(), key->getLength()));
+    }
+    return Value::fromString(
+        StringHeader::createUTF16(rtHeap(), key->utf16Data(), key->getLength()));
+}
+
 extern "C" {
 
 uint64_t bronze_create_object() {
@@ -192,41 +231,20 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         fatal("Object.keys is only supported on plain objects and arrays");
     }
 
-    // Shape keys are arena-interned and immortal, so collecting them up front
-    // is safe across the allocations below.
-    Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
-    std::vector<StringHeader*> inserted =
-        shape ? shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
+    const std::vector<StringHeader*> ordered =
+        rtOwnKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
 
-    // Spec order: integer-like keys ascending, then the rest in insertion
-    // order. An explicit split keeps the numeric sort off the string keys.
-    std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
-    std::vector<StringHeader*> strKeys;
-    for (StringHeader* k : inserted) {
-        uint32_t idx = 0;
-        if (k->isLatin1() && rtIsIntegerLikeKey(latin1View(k), idx)) {
-            intKeys.emplace_back(idx, k);
-        } else {
-            strKeys.push_back(k);
-        }
-    }
-    std::sort(intKeys.begin(), intKeys.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    const uint32_t total = static_cast<uint32_t>(intKeys.size() + strKeys.size());
+    const uint32_t total = static_cast<uint32_t>(ordered.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
     out.get().asObject<ArrayHeader>()->header.flags = 1;
 
     uint32_t at = 0;
-    auto push = [&](StringHeader* name) {
+    for (StringHeader* name : ordered) {
         // Copy the immortal arena string into the heap: the result array holds
         // ordinary JS strings, not pointers into the shape arena.
-        Rooted<Value> key{
-            Value::fromString(StringHeader::createFromUTF8(rtHeap(), latin1View(name)))};
+        Rooted<Value> key{rtCopyKeyToHeap(name)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-    };
-    for (const auto& [idx, name] : intKeys) push(name);
-    for (StringHeader* name : strKeys) push(name);
+    }
 
     return out.get().rawBits();
 }

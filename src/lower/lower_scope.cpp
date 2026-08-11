@@ -176,16 +176,16 @@ void Lowerer::enterScope() {
 // per iteration at runtime, which is exactly the per-iteration binding
 // the language specifies.
 void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
-                         const std::string& extraDeclaration) {
+                         const std::vector<std::string>& extraDeclarations) {
     currentScopeDepth_++;
     std::vector<std::string> slots;
     // for-of's loop variable is declared by the loop HEAD but belongs to
     // the body's scope, so it is not in the statement list and has to be
     // named here. Without it a closure over the loop variable would find no
     // slot and read SSA that the next iteration overwrites (docs/0011
-    // decision 5).
-    if (!extraDeclaration.empty() && capturedNames_.contains(extraDeclaration)) {
-        slots.push_back(extraDeclaration);
+    // decision 5). A destructuring head names several.
+    for (const auto& name : extraDeclarations) {
+        if (!name.empty() && capturedNames_.contains(name)) slots.push_back(name);
     }
     for (const auto& name : ast::getScopeDeclarations(stmts)) {
         if (capturedNames_.contains(name)) slots.push_back(name);
@@ -273,11 +273,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // the honest report of "nothing was observed here", and every parameter
     // annotation on a closure is discarded with a warning saying so.
     for (const auto& param : params) {
-        newFn.params.push_back({param.name, il::Type::Dynamic});
+        newFn.params.push_back(
+            {param.pattern ? "__pattern" + std::to_string(newFn.params.size()) : param.name,
+             il::Type::Dynamic});
         if (!checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic())) {
             return std::nullopt;
         }
     }
+    applyParamShape(params, newFn);
     // The RETURN is different in kind: what a body returns is a fact about
     // the body alone, and inference joins every `return` in it — so a return
     // annotation on a closure CAN agree with a proof, where a parameter
@@ -345,7 +348,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.calleeIndex = createdFnIdx;
-    inst.immI32 = static_cast<int32_t>(params.size());
+    // The arity a CALL adapts to. A rest parameter is not one of them: it is
+    // built from whatever is left over, so counting it would have short calls
+    // padded with an `undefined` that the rest array then contained.
+    inst.immI32 = static_cast<int32_t>(params.size()) -
+                  (params.empty() || !params.back().isRest ? 0 : 1);
     inst.operands = {envArg};
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};

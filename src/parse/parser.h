@@ -82,6 +82,26 @@ private:
     ast::StmtPtr parseClass();
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
+
+    // --- parser_pattern.cpp: binding patterns (docs/0017) ----------------
+    // A pattern where the grammar spells one: a declarator, a parameter, a
+    // for-of head. Null on a diagnosed error.
+    ast::PatternPtr parsePattern();
+    ast::PatternPtr parseArrayPattern();
+    ast::PatternPtr parseObjectPattern();
+    // The target half of one element — a name or a nested pattern — filled
+    // into `elem`. False on a diagnosed error.
+    bool parsePatternTarget(ast::PatternElement& elem);
+    // ECMA-262 13.15.5's refinement: an ArrayLiteral or ObjectLiteral on the
+    // left of `=` was covering an AssignmentPattern all along, and this is
+    // the point the `=` reveals it. The parser owns both trees, so the nodes
+    // MOVE across rather than being copied or re-parsed.
+    ast::PatternPtr patternFromLiteral(ast::ExprPtr expr);
+    // The token index just past the binding target that starts at `at` — a
+    // name, or a bracketed/braced pattern. `for (const [k, v] of ...)` needs
+    // it: the token that decides between a `for`, a `for-in` and a `for-of`
+    // sits after a group of unbounded length.
+    size_t skipBindingTarget(size_t at) const;
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
     std::string parseTypeAnnotation();

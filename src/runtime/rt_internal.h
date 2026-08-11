@@ -44,6 +44,20 @@ Shape* rtPlainObjectShape();
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 
+// A plain object's own string keys in ECMA-262 order — integer-like keys
+// ascending, then the rest in insertion order (docs/0009 decision 1). The
+// pointers are arena-interned shape keys, so they are immortal and non-moving
+// and stay valid across the allocations a caller makes while walking them.
+// `Object.keys`, object spread and object rest all ask this one question.
+std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj);
+
+// A heap copy of an arena-interned key. Every consumer that hands a shape key
+// back to a program needs one — the arena string is immortal and the heap
+// string is an ordinary JS value — and it has to preserve the ENCODING:
+// re-reading a UTF-16 key's bytes as UTF-8 produced mojibake for any property
+// name outside Latin-1.
+Value rtCopyKeyToHeap(const StringHeader* key);
+
 // Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it
 // (docs/0009) and so does console.log of an object, which reports the same
 // order — one test, so the two answers cannot drift.

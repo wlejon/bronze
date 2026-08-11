@@ -174,27 +174,35 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
 
     bool first = true;
     for (;;) {
-        if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
-            error("unsupported construct: destructuring declaration");
-            return false;
-        }
         // The first declarator's span starts at the keyword, as it did when a
         // declaration was always one binding; a later one starts at its name,
         // which is the only text that is its own.
         const uint32_t declBegin = first ? kw.span.begin : peek().span.begin;
-        const Token* name = expect(TokenKind::Identifier, "variable name");
-        if (!name) return false;
-
         auto decl = std::make_unique<VarDecl>();
         decl->span.begin = declBegin;
         decl->isConst = isConst;
         decl->isVar = isVar;
-        decl->name = std::string(name->text);
+
+        const bool isPattern = check(TokenKind::LBracket) || check(TokenKind::LBrace);
+        if (isPattern) {
+            decl->pattern = parsePattern();
+            if (!decl->pattern) return false;
+        } else {
+            const Token* name = expect(TokenKind::Identifier, "variable name");
+            if (!name) return false;
+            decl->name = std::string(name->text);
+        }
 
         if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
         if (match(TokenKind::Assign)) {
             decl->init = parseAssign();
             if (!decl->init) return false;
+        } else if (isPattern) {
+            // ECMA-262 14.3.1: a BindingPattern declarator always has an
+            // Initializer, for every declaration keyword. There is nothing
+            // for `let [a, b];` to destructure.
+            error("a destructuring declaration requires an initializer");
+            return false;
         } else if (isConst) {
             error("'const' declaration requires an initializer");
             return false;
@@ -271,8 +279,11 @@ StmtPtr Parser::parseFor() {
     if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
 
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
-        size_t lookahead = 2;
-        if (peek(lookahead).kind == TokenKind::Colon) lookahead += 2;
+        // What comes after the binding TARGET decides which of the three
+        // `for` statements this is, and a target can be a pattern of
+        // unbounded length — `for (const [k, v] of pairs)` — so the lookahead
+        // has to skip a whole group rather than a fixed token count.
+        const size_t lookahead = skipBindingTarget(1);
         if (peek(lookahead).kind == TokenKind::KwIn) {
             advance(); advance(); advance();
             parseExpr(); expect(TokenKind::RParen, "')'"); parseBlockOrSingleStmt();
@@ -285,14 +296,19 @@ StmtPtr Parser::parseFor() {
             stmt->isLet = check(TokenKind::KwLet);
             stmt->isVar = check(TokenKind::KwVar);
             advance();  // const / let / var
-            const Token* name = expect(TokenKind::Identifier, "loop variable name");
-            if (!name) return nullptr;
-            stmt->name = std::string(name->text);
+            if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+                stmt->pattern = parsePattern();
+                if (!stmt->pattern) return nullptr;
+            } else {
+                const Token* name = expect(TokenKind::Identifier, "loop variable name");
+                if (!name) return nullptr;
+                stmt->name = std::string(name->text);
+            }
             if (check(TokenKind::Colon)) {
                 advance();
                 parseTypeAnnotation();  // read and discarded: a hint types nothing
             }
-            advance();  // `of`
+            if (!expect(TokenKind::KwOf, "'of' in a for-of header")) return nullptr;
             stmt->iterable = parseExpr();
             if (!stmt->iterable) return nullptr;
             if (!expect(TokenKind::RParen, "')' after the iterable")) return nullptr;
@@ -387,12 +403,26 @@ StmtPtr Parser::parseTry() {
     auto stmt = std::make_unique<TryStmt>();
     stmt->span = kw.span;
     if (check(TokenKind::LBrace)) parseBlock();
+    bool sawHandler = false;
     if (match(TokenKind::KwCatch)) {
+        sawHandler = true;
         if (match(TokenKind::LParen)) {
             match(TokenKind::Identifier);
             match(TokenKind::RParen);
         }
         if (check(TokenKind::LBrace)) parseBlock();
+    }
+    // `finally` is a keyword the lexer already produces, and leaving it here
+    // meant the block after it was read as an expression statement — so a
+    // `try/finally` was diagnosed as stray punctuation instead of as the
+    // construct lowering names. A parser must consume all of what it claims.
+    if (match(TokenKind::KwFinally)) {
+        sawHandler = true;
+        if (check(TokenKind::LBrace)) parseBlock();
+    }
+    if (!sawHandler) {
+        error("a 'try' requires a 'catch' or a 'finally'");
+        return nullptr;
     }
     return stmt;
 }

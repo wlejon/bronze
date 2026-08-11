@@ -22,6 +22,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwElse: return "else";
         case TokenKind::KwExport: return "export";
         case TokenKind::KwFalse: return "false";
+        case TokenKind::KwFinally: return "finally";
         case TokenKind::KwFor: return "for";
         case TokenKind::KwFunction: return "function";
         case TokenKind::KwIf: return "if";
@@ -177,6 +178,7 @@ Token Lexer::lexIdentifierOrKeyword() {
         {"do", TokenKind::KwDo},             {"else", TokenKind::KwElse},
         {"export", TokenKind::KwExport},     {"false", TokenKind::KwFalse},
         {"for", TokenKind::KwFor},           {"function", TokenKind::KwFunction},
+        {"finally", TokenKind::KwFinally},
         {"if", TokenKind::KwIf},             {"import", TokenKind::KwImport},
         {"in", TokenKind::KwIn},             {"instanceof", TokenKind::KwInstanceof},
         {"typeof", TokenKind::KwTypeof},     {"void", TokenKind::KwVoid},

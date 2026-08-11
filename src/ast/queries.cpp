@@ -5,6 +5,28 @@
 namespace bronze::ast {
 namespace {
 
+// A pattern's key expressions and defaults are ordinary expressions that run
+// where the pattern does, so every walk over a scope has to reach them. The
+// NAMES a pattern binds are a separate question, answered by
+// `patternBoundNames`.
+void visitPatternExprs(const BindingPattern* pattern, Visitor& v) {
+    if (!pattern) return;
+    for (const auto& elem : pattern->elements) {
+        if (elem.keyExpr) elem.keyExpr->accept(v);
+        if (elem.defaultValue) elem.defaultValue->accept(v);
+        visitPatternExprs(elem.pattern.get(), v);
+    }
+}
+
+// The same, for a parameter list: a default is a piece of code that runs in
+// the function's own scope on every call that omits the argument.
+void visitParamExprs(const std::vector<Param>& params, Visitor& v) {
+    for (const auto& p : params) {
+        if (p.defaultValue) p.defaultValue->accept(v);
+        visitPatternExprs(p.pattern.get(), v);
+    }
+}
+
 // Every identifier mentioned anywhere below a node, descending into nested
 // functions. Used to decide what an enclosing scope must put in an
 // environment record.
@@ -55,6 +77,12 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember& m) override { names.insert(m.baseName); }
+    void visit(const SpreadElement& s) override { s.argument->accept(*this); }
+    void visit(const DestructuringAssign& d) override {
+        for (const auto& n : patternBoundNames(*d.pattern)) names.insert(n);
+        visitPatternExprs(d.pattern.get(), *this);
+        d.value->accept(*this);
+    }
     void visit(const ClassDecl& c) override {
         names.insert(c.name);
         if (!c.superName.empty()) names.insert(c.superName);
@@ -69,14 +97,23 @@ public:
     void visit(const ArrayLit& a) override {
         for (const auto& elem : a.elements) elem->accept(*this);
     }
+    // A parameter's default is code that runs inside this function, so what
+    // it mentions is mentioned here; the parameter NAMES are declarations,
+    // not references, and are deliberately not recorded.
     void visit(const FunctionExpr& f) override {
+        visitParamExprs(f.params, *this);
         for (const auto& s : f.body) s->accept(*this);
     }
     void visit(const BlockStmt& b) override {
         for (const auto& s : b.stmts) s->accept(*this);
     }
     void visit(const VarDecl& v) override {
-        names.insert(v.name);
+        if (v.pattern) {
+            for (const auto& n : patternBoundNames(*v.pattern)) names.insert(n);
+            visitPatternExprs(v.pattern.get(), *this);
+        } else {
+            names.insert(v.name);
+        }
         if (v.init) v.init->accept(*this);
     }
     void visit(const ReturnStmt& r) override {
@@ -107,6 +144,10 @@ public:
     void visit(const SwitchStmt&) override {}
     void visit(const ForInStmt&) override {}
     void visit(const ForOfStmt& n) override {
+        if (n.pattern) {
+            for (const auto& bound : patternBoundNames(*n.pattern)) names.insert(bound);
+            visitPatternExprs(n.pattern.get(), *this);
+        }
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
@@ -114,6 +155,7 @@ public:
     void visit(const ThrowStmt&) override {}
     void visit(const FunctionDecl& f) override {
         names.insert(f.name);
+        visitParamExprs(f.params, *this);
         for (const auto& s : f.body) s->accept(*this);
     }
     void visit(const Module& m) override {
@@ -128,8 +170,14 @@ class CaptureVisitor : public Visitor {
 public:
     std::unordered_set<std::string> captured;
 
-    void addFunctionBody(const std::vector<StmtPtr>& body) {
+    // A nested function reaches this scope through its body AND through its
+    // parameter defaults, which are code that runs on every call that omits
+    // the argument and can name anything in scope where the function was
+    // written (docs/0017 decision 1).
+    void addFunctionBody(const std::vector<StmtPtr>& body,
+                         const std::vector<Param>* params = nullptr) {
         IdentVisitor idents;
+        if (params) visitParamExprs(*params, idents);
         for (const auto& s : body) {
             if (s) s->accept(idents);
         }
@@ -173,11 +221,16 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember&) override {}
+    void visit(const SpreadElement& s) override { s.argument->accept(*this); }
+    void visit(const DestructuringAssign& d) override {
+        visitPatternExprs(d.pattern.get(), *this);
+        d.value->accept(*this);
+    }
     // Every method of a class is a closure over this scope, so what its body
     // mentions is a candidate capture - including the parent class name that
     // a `super` inside it resolves against (docs/0012 decision 5).
     void visit(const ClassDecl& c) override {
-        for (const auto& m : c.methods) addFunctionBody(m.fn->body);
+        for (const auto& m : c.methods) addFunctionBody(m.fn->body, &m.fn->params);
     }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) {
@@ -189,19 +242,20 @@ public:
         for (const auto& elem : a.elements) elem->accept(*this);
     }
     void visit(const FunctionExpr& f) override {
-        addFunctionBody(f.body);
+        addFunctionBody(f.body, &f.params);
         // An arrow's `this` is the enclosing function's receiver, so it is
         // captured like a free variable — under the one name no source
         // binding can collide with, because `this` is a keyword
         // (docs/0012 decision 3).
         if (f.isArrow && usesThis(f.body)) captured.insert("this");
     }
-    void visit(const FunctionDecl& f) override { addFunctionBody(f.body); }
+    void visit(const FunctionDecl& f) override { addFunctionBody(f.body, &f.params); }
 
     void visit(const BlockStmt& b) override {
         for (const auto& s : b.stmts) s->accept(*this);
     }
     void visit(const VarDecl& v) override {
+        visitPatternExprs(v.pattern.get(), *this);
         if (v.init) v.init->accept(*this);
     }
     void visit(const ReturnStmt& r) override {
@@ -232,6 +286,7 @@ public:
     void visit(const SwitchStmt&) override {}
     void visit(const ForInStmt&) override {}
     void visit(const ForOfStmt& n) override {
+        visitPatternExprs(n.pattern.get(), *this);
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
@@ -287,9 +342,20 @@ public:
 
 void collectHoistedVars(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
 
+// A declarator contributes its name, or — when it is a pattern — every name
+// the pattern binds. One helper, because a scope that saw only the outermost
+// level of a pattern would leave the inner names with no slot to live in.
+void appendDeclaredNames(const VarDecl& decl, std::vector<std::string>& out) {
+    if (decl.pattern) {
+        for (auto& name : patternBoundNames(*decl.pattern)) out.push_back(std::move(name));
+    } else {
+        out.push_back(decl.name);
+    }
+}
+
 void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
     if (const auto* v = dynamic_cast<const VarDecl*>(&stmt)) {
-        if (v->isVar) out.push_back(v->name);
+        if (v->isVar) appendDeclaredNames(*v, out);
         return;
     }
     if (const auto* b = dynamic_cast<const BlockStmt*>(&stmt)) {
@@ -341,12 +407,18 @@ std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& s
     return v.names;
 }
 
+std::unordered_set<std::string> getParamReferencedNames(const std::vector<Param>& params) {
+    IdentVisitor v;
+    visitParamExprs(params, v);
+    return v.names;
+}
+
 std::vector<std::string> getScopeDeclarations(const std::vector<StmtPtr>& stmts) {
     std::vector<std::string> names;
     for (const auto& s : stmts) {
         if (!s) continue;
         if (const auto* v = dynamic_cast<const VarDecl*>(s.get())) {
-            if (!v->isVar) names.push_back(v->name);
+            if (!v->isVar) appendDeclaredNames(*v, names);
         } else if (const auto* f = dynamic_cast<const FunctionDecl*>(s.get())) {
             names.push_back(f->name);
         } else if (const auto* c = dynamic_cast<const ClassDecl*>(s.get())) {
@@ -378,7 +450,7 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
     for (const auto* s : stmts) {
         if (!s) continue;
         if (const auto* v = dynamic_cast<const VarDecl*>(s)) {
-            if (!v->isVar) names.push_back(v->name);
+            if (!v->isVar) appendDeclaredNames(*v, names);
         } else if (const auto* f = dynamic_cast<const FunctionDecl*>(s)) {
             names.push_back(f->name);
         } else if (const auto* c = dynamic_cast<const ClassDecl*>(s)) {

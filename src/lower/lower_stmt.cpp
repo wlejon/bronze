@@ -132,6 +132,21 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
     il::ValueId initId = il::kNoValue;
     il::Type declType = il::Type::Dynamic;
 
+    // A destructuring declaration binds several names from one value, so none
+    // of the single-name machinery below applies: no annotation (there is no
+    // one name to annotate), no proven-number unboxing (the pieces come out
+    // of a dynamic read), and an initialiser the parser has already made
+    // mandatory (docs/0017 decision 4).
+    if (varDecl->pattern) {
+        auto initVal = lowerExpr(*varDecl->init, ilFn);
+        if (!initVal) return false;
+        PatternTarget target{.declare = true,
+                             .isConst = varDecl->isConst,
+                             .isLet = !varDecl->isConst && !varDecl->isVar,
+                             .isVar = varDecl->isVar};
+        return lowerPattern(*varDecl->pattern, boxValueIfNeeded(*initVal, ilFn), target, ilFn);
+    }
+
     if (varDecl->init) {
         auto initVal = lowerExpr(*varDecl->init, ilFn);
         if (!initVal) return false;

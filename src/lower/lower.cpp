@@ -36,8 +36,15 @@ std::optional<il::Module> Lowerer::lower() {
             // checked below, after the proof is in hand, and it never
             // appears on the left of an assignment to a type.
             for (const auto& param : fnDecl->params) {
-                fn.params.push_back({param.name, il::Type::Dynamic});
+                // A pattern parameter binds names but has none of its own; the
+                // IL still needs one slot, and naming it for its position is
+                // what makes an IL dump of it readable.
+                fn.params.push_back({param.pattern
+                                         ? "__pattern" + std::to_string(fn.params.size())
+                                         : param.name,
+                                     il::Type::Dynamic});
             }
+            applyParamShape(fnDecl->params, fn);
             fn.returnType = il::Type::Void;
             // The module function index: the position among the top-level
             // declarations, which is exactly how inference numbers them.
@@ -188,7 +195,15 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // then `var`s hoisted from anywhere below (they are function-scoped
     // wherever they are written, so they belong to this record and not to
     // the block that spells them).
-    for (const auto& p : params) addSlot(p.name);
+    // A pattern parameter has no name of its own; the names it binds are the
+    // ones a closure can capture (docs/0017 decision 5).
+    for (const auto& p : params) {
+        if (p.pattern) {
+            for (const auto& bound : ast::patternBoundNames(*p.pattern)) addSlot(bound);
+        } else {
+            addSlot(p.name);
+        }
+    }
     for (const auto& declName : ast::getScopeDeclarations(body)) addSlot(declName);
     for (const auto& varName : ast::getHoistedVarDeclarations(body)) addSlot(varName);
     // The receiver, when an arrow in this body reads it (docs/0011 decision
@@ -286,9 +301,15 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
 // unresolved. `getReferencedNames` descends into nested functions, which is
 // what makes it right for a body whose own statements mention nothing but
 // whose closures do.
-bool Lowerer::referencesModuleEnv(const std::vector<ast::StmtPtr>& body) const {
+bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
+                                  const std::vector<ast::StmtPtr>& body) const {
     if (moduleEnvScope_ == SIZE_MAX) return false;
-    const auto referenced = ast::getReferencedNames(body);
+    auto referenced = ast::getReferencedNames(body);
+    // A parameter DEFAULT is code in this function that the body does not
+    // contain, and it can read a module-level binding like any other
+    // expression — `function bump(v = ++calls)`. Left out, the record is
+    // never loaded and the name resolves to nothing at all.
+    for (auto& name : ast::getParamReferencedNames(params)) referenced.insert(std::move(name));
     for (const auto& slot : moduleEnvSlots_) {
         if (referenced.contains(slot)) return true;
     }
@@ -319,7 +340,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
         // can still need, the module's, is loaded from the runtime
         // (docs/0016 decision 1).
         currentEnvValue_ =
-            referencesModuleEnv(body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
+            referencesModuleEnv(params, body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
     }
     currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
 
@@ -347,18 +368,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                    thisVal, ilFn);
     }
 
-    for (uint32_t i = 0; i < params.size(); ++i) {
-        declareVariable(params[i].name, ilFn.params[i + paramBase].type, /*isConst=*/false,
-                        /*isLet=*/false, /*isVar=*/false, /*isInitialized=*/true, i + paramBase,
-                        Span{});
-        // A captured parameter arrives in a register; copy it into its
-        // environment slot so closures see the same binding.
-        VarBinding& pb = varBindings_[activeVarMap_[params[i].name]];
-        if (pb.inEnv) {
-            emitEnvSet(envDepthOf(pb.envScopeIndex), pb.envSlot,
-                       Value{i + paramBase, ilFn.params[i + paramBase].type}, ilFn);
-        }
-    }
+    if (!lowerParamBindings(params, paramBase, ilFn)) return false;
 
     if (!lowerStmtList(stmts, ilFn)) return false;
 

@@ -169,7 +169,8 @@ private:
     void planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts);
     void openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
                        il::Function& mainFn);
-    bool referencesModuleEnv(const std::vector<ast::StmtPtr>& body) const;
+    bool referencesModuleEnv(const std::vector<ast::Param>& params,
+                             const std::vector<ast::StmtPtr>& body) const;
     bool lowerFunctionBody(const std::vector<ast::Param>& params,
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
@@ -207,8 +208,12 @@ private:
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
     void enterScope();
+    // `extraDeclarations` names bindings the scope owns that its statement
+    // list does not spell — a for-of head's, which is written outside the
+    // body but belongs to it. A LIST because a destructuring head binds
+    // several (docs/0017 decision 6).
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
-                    const std::string& extraDeclaration = std::string());
+                    const std::vector<std::string>& extraDeclarations = {});
     void exitScope();
     // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
     // nested `FunctionDecl` � docs/0007 decision 4 makes them one path). It
@@ -220,6 +225,49 @@ private:
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
                                       il::Function& ilFn, bool isArrow = false);
+
+    // --- lower_pattern.cpp: binding patterns, defaults, spread (docs/0017) --
+    // How a pattern's names reach their bindings. A declaration MAKES them
+    // and an assignment writes ones that already exist, which is the only
+    // difference between the two forms once the pattern itself is walked.
+    struct PatternTarget {
+        bool declare = true;
+        bool isConst = false;
+        bool isLet = true;
+        bool isVar = false;
+    };
+    bool lowerPattern(const ast::BindingPattern& pattern, Value source,
+                      const PatternTarget& target, il::Function& ilFn);
+    bool lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
+                           const PatternTarget& target, il::Function& ilFn);
+    bool lowerObjectPattern(const ast::BindingPattern& pattern, Value source,
+                            const PatternTarget& target, il::Function& ilFn);
+    bool bindPatternName(const std::string& name, Value value, const PatternTarget& target,
+                         Span span, il::Function& ilFn);
+    // `current === undefined ? <default> : current`, as a real branch rather
+    // than a select: the default's side effects must happen only when it
+    // fires, and only `undefined` fires it — `null` does not (docs/0017
+    // decision 1).
+    std::optional<Value> emitDefaultIfUndefined(Value current, const ast::Expr& defaultExpr,
+                                                il::Function& ilFn);
+    Value emitPatternCheck(Value source, bool isObject, il::Function& ilFn);
+    std::optional<Value> lowerDestructuringAssign(const ast::DestructuringAssign* node,
+                                                  il::Function& ilFn);
+    // One parameter list, bound left to right into the function's own scope:
+    // a default sees the parameters before it, so the order is the semantics
+    // and not an implementation detail.
+    bool lowerParamBindings(const std::vector<ast::Param>& params, uint32_t paramBase,
+                            il::Function& ilFn);
+    // The two facts about a parameter list that the CALLING CONVENTION needs
+    // and the parameter types cannot carry: whether the last parameter
+    // swallows the leftovers, and how few arguments a call may pass.
+    static void applyParamShape(const std::vector<ast::Param>& params, il::Function& fn);
+    static bool listHasSpread(const std::vector<ast::ExprPtr>& list);
+    // Every element of `list` as one array, spreads expanded — the argument
+    // vector of a call whose length is a runtime fact (docs/0017 decision 3).
+    std::optional<Value> lowerListToArray(const std::vector<ast::ExprPtr>& list,
+                                          il::Function& ilFn);
+    void emitContainerOp(il::Op op, Value container, Value value, il::Function& ilFn);
 
     // --- lower_stmt.cpp: statements --------------------------------------
     bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);

@@ -68,6 +68,14 @@ const char* opName(Op op) {
         case Op::IterLength: return "iter.length";
         case Op::IterAt: return "iter.at";
         case Op::IterAdvance: return "iter.advance";
+        case Op::IterRest: return "iter.rest";
+        case Op::PatternCheck: return "pattern.check";
+        case Op::ArrayAppend: return "array.append";
+        case Op::ArraySpread: return "array.spread";
+        case Op::ObjectSpread: return "object.spread";
+        case Op::ObjectRest: return "object.rest";
+        case Op::DynamicCallSpread: return "call.dynamic.spread";
+        case Op::ConstructSpread: return "new.spread";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
         case Op::EnvCreate: return "env.create";
@@ -241,9 +249,30 @@ std::string print(const Module& module) {
                     case Op::ClassExtend:
                     case Op::IterAt:
                     case Op::IterAdvance:
+                    case Op::IterRest:
+                    case Op::ArrayAppend:
+                    case Op::ArraySpread:
+                    case Op::ObjectSpread:
+                    case Op::ObjectRest:
+                    case Op::ConstructSpread:
                         out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    // The KIND, because which pattern asked for the check is
+                    // the whole content of the instruction: it decides which
+                    // diagnostic a bad source produces.
+                    case Op::PatternCheck:
+                        out += "pattern.check %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               (inst.immI32 == 0 ? "array" : "object");
+                        break;
+                    case Op::DynamicCallSpread:
+                        out += "call.dynamic.spread %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
                         break;
                     // The NAME, not the key index: which global is being
                     // resolved is the whole content of the instruction, and

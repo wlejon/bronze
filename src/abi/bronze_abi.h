@@ -79,6 +79,15 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_iter_length,         BRONZE_ABI_F64,  (BRONZE_ABI_U64)) \
     X(bronze_iter_at,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
     X(bronze_iter_advance,        BRONZE_ABI_F64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
+    X(bronze_iter_rest,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
+    X(bronze_pattern_check,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+    X(bronze_rest_args,           BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
+    X(bronze_array_append,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_array_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_object_spread,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_object_rest,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_call_spread, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_construct_spread,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_create_arraybuffer,  BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_create_float32array, BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
