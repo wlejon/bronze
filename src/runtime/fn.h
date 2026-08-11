@@ -18,10 +18,23 @@ using NativeFunctionCode = bronze_fn_code;
 struct FunctionHeader {
     HeapObjectHeader header;
     NativeFunctionCode code{nullptr};
-    void* env_record{nullptr};
+    // The closure's captured environment, or undefined (docs/0007). A Value,
+    // not a raw pointer, so the generic GC payload scan forwards it — as a
+    // `void*` it was invisible to the collector.
+    Value env_record;
+    // This function's `.prototype` object, or undefined until something
+    // asks for it — a function that is never a constructor and whose
+    // prototype is never decorated should not pay for the object, and
+    // closures are created in loops (docs/0008 decision 4).
+    Value prototype;
+    // Root shape for objects `new`ed from this function; its prototype is
+    // the object above. Non-moving, created with it, and reset if
+    // `.prototype` is reassigned.
+    class Shape* instance_shape{nullptr};
     uint32_t arity{0};
 
-    static FunctionHeader* create(Heap& heap, NativeFunctionCode code, void* env_record = nullptr, uint32_t arity = 0);
+    static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
+                                  Value env_record = Value::fromUndefined(), uint32_t arity = 0);
 
     Value call(Value thisArg, uint32_t argc, Value* argv) const;
 };

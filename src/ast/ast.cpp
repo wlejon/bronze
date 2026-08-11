@@ -7,6 +7,7 @@ void StringLit::accept(Visitor& v) const { v.visit(*this); }
 void BoolLit::accept(Visitor& v) const { v.visit(*this); }
 void NullLit::accept(Visitor& v) const { v.visit(*this); }
 void UndefinedLit::accept(Visitor& v) const { v.visit(*this); }
+void ThisExpr::accept(Visitor& v) const { v.visit(*this); }
 void Ident::accept(Visitor& v) const { v.visit(*this); }
 void Unary::accept(Visitor& v) const { v.visit(*this); }
 void Binary::accept(Visitor& v) const { v.visit(*this); }

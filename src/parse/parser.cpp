@@ -419,6 +419,14 @@ ExprPtr Parser::parseUnaryPrefix() {
     if (check(TokenKind::KwNew)) {
         return parseNew();
     }
+    if (check(TokenKind::KwDelete)) {
+        // `delete` is what transitions an object to dictionary mode, which
+        // is designed but unbuilt (docs/0009 decision 3). The keyword
+        // exists purely so the construct can be named: before it, this
+        // read as a stray-identifier syntax error naming nothing.
+        error("unsupported construct: delete (objects have no dictionary mode yet)");
+        return nullptr;
+    }
     if (match(TokenKind::Bang)) {
         auto sub = parseUnaryPrefix();
         if (!sub) return nullptr;
@@ -600,6 +608,12 @@ ExprPtr Parser::parsePrimary() {
             auto lit = std::make_unique<UndefinedLit>();
             lit->span = t.span;
             return lit;
+        }
+        case TokenKind::KwThis: {
+            advance();
+            auto self = std::make_unique<ThisExpr>();
+            self->span = t.span;
+            return self;
         }
         case TokenKind::Identifier: {
             advance();

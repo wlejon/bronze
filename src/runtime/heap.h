@@ -66,6 +66,21 @@ public:
     void set_collection_hook(CollectionHook hook) { collection_hook_ = std::move(hook); }
     void collect();
 
+    // A root that outlives every frame: runtime-owned caches of heap
+    // objects (lazily created builtins, and later the global object). The
+    // slot must outlive the heap; registering the same slot twice is a
+    // caller error, not something this checks for.
+    void add_permanent_root(Value* slot) { permanent_roots_.push_back(slot); }
+
+    // A root *source*: a callback invoked at collection time that yields
+    // every slot in a runtime-owned table. add_permanent_root pins one
+    // fixed address, which cannot describe a table that grows (and so
+    // reallocates) during the run — the shape registry's prototype slots
+    // (docs/0008) are the first such table.
+    using RootVisitor = std::function<void(Value&)>;
+    using RootSource = std::function<void(const RootVisitor&)>;
+    void add_root_source(RootSource src) { root_sources_.push_back(std::move(src)); }
+
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
@@ -91,6 +106,8 @@ private:
     Semispace from_space_;
     Semispace to_space_;
 
+    std::vector<Value*> permanent_roots_;
+    std::vector<RootSource> root_sources_;
     bool gc_stress_mode_{false};
     bool in_gc_{false};
     CollectionHook collection_hook_;

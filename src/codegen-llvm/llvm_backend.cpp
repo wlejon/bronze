@@ -38,6 +38,13 @@ struct AbiFns {
 #undef BRONZE_ABI_FIELD
 };
 
+// Likewise for the registry's data symbols.
+struct AbiGlobals {
+#define BRONZE_ABI_GLOBAL_FIELD(name, TYPE) llvm::GlobalVariable* name;
+    BRONZE_ABI_GLOBALS(BRONZE_ABI_GLOBAL_FIELD)
+#undef BRONZE_ABI_GLOBAL_FIELD
+};
+
 static llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
     switch (type) {
         case il::Type::Void:
@@ -80,6 +87,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 #define BRONZE_ABI_BOOL   llvm::Type::getInt1Ty(ctx)
 #define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_MU64   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_FRAMEPTR llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_VOID   llvm::Type::getVoidTy(ctx)
 #define BRONZE_ABI_NOARGS
@@ -90,6 +99,16 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         llvm::FunctionType::get(RET, {BRONZE_ABI_UNPAREN PARAMS}, false));
     BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
 #undef BRONZE_ABI_LLVM_DECLARE
+
+    // Data symbols from the same registry (currently just the root-frame
+    // list head); declaration only, so the runtime owns the definition.
+    AbiGlobals abiGlobals;
+#define BRONZE_ABI_LLVM_DECLARE_GLOBAL(name, TYPE)                                       \
+    abiGlobals.name = new llvm::GlobalVariable(*llvmModule, TYPE, /*isConstant=*/false, \
+                                               llvm::GlobalValue::ExternalLinkage,       \
+                                               /*Initializer=*/nullptr, #name);
+    BRONZE_ABI_GLOBALS(BRONZE_ABI_LLVM_DECLARE_GLOBAL)
+#undef BRONZE_ABI_LLVM_DECLARE_GLOBAL
 #undef BRONZE_ABI_UNPAREN
 #undef BRONZE_ABI_U64
 #undef BRONZE_ABI_U32
@@ -98,6 +117,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 #undef BRONZE_ABI_BOOL
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
+#undef BRONZE_ABI_MU64
+#undef BRONZE_ABI_FRAMEPTR
 #undef BRONZE_ABI_FNPTR
 #undef BRONZE_ABI_VOID
 #undef BRONZE_ABI_NOARGS
@@ -130,9 +151,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         llvmFunctions.push_back(llvmFunc);
     }
 
+    // Mirrors bronze_fn_code: (env, this, argc, argv) — docs/0007.
     llvm::FunctionType* wrapperTy = llvm::FunctionType::get(
         llvm::Type::getInt64Ty(ctx),
-        {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx), llvm::PointerType::getUnqual(ctx)},
+        {llvm::Type::getInt64Ty(ctx), llvm::Type::getInt64Ty(ctx), llvm::Type::getInt32Ty(ctx),
+         llvm::PointerType::getUnqual(ctx)},
         false);
     std::vector<llvm::Function*> wrapperFunctions(module.functions.size());
 
@@ -146,15 +169,23 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         llvm::IRBuilder<> wBuilder(wBb);
 
         auto argsIt = wFunc->arg_begin();
+        llvm::Value* wEnv = argsIt++;
         llvm::Value* wThisArg = argsIt++;
-        (void)wThisArg;
         llvm::Value* wArgc = argsIt++;
         (void)wArgc;
         llvm::Value* wArgv = argsIt;
 
         std::vector<llvm::Value*> callArgs;
-        for (size_t p = 0; p < func.params.size(); ++p) {
-            llvm::Value* slotPtr = wBuilder.CreateGEP(wBuilder.getInt64Ty(), wArgv, wBuilder.getInt32(static_cast<uint32_t>(p)));
+        // Synthetic leading parameters come from the calling convention,
+        // not from argv: the environment from the closure (docs/0007), the
+        // receiver from the caller (docs/0008).
+        size_t firstSourceParam = func.firstSourceParam();
+        if (func.needsEnv) callArgs.push_back(wEnv);
+        if (func.needsThis) callArgs.push_back(wThisArg);
+        for (size_t p = firstSourceParam; p < func.params.size(); ++p) {
+            llvm::Value* slotPtr = wBuilder.CreateGEP(
+                wBuilder.getInt64Ty(), wArgv,
+                wBuilder.getInt32(static_cast<uint32_t>(p - firstSourceParam)));
             llvm::Value* rawBits = wBuilder.CreateLoad(wBuilder.getInt64Ty(), slotPtr);
             il::Type pType = func.params[p].type;
             if (pType == il::Type::F64) {
@@ -204,6 +235,82 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             argIdx++;
         }
 
+        // --- GC root frame (docs/0006) ---------------------------------
+        // Every Dynamic-typed value gets a slot in one contiguous array the
+        // collector walks: defs store into it, uses load out of it. The load
+        // is the point — a collection inside any helper call moves the
+        // object and updates the slot, while an SSA register would keep
+        // pointing into dead from-space. A function with no Dynamic values
+        // (proven-f64 code) gets no frame and pays nothing at all.
+        constexpr uint32_t kNoSlot = UINT32_MAX;
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        std::vector<uint32_t> slotOf(func.valueCount, kNoSlot);
+        uint32_t slotCount = 0;
+        auto assignSlot = [&](il::ValueId id, il::Type ty) {
+            if (id == il::kNoValue || id >= func.valueCount) return;
+            if (ty != il::Type::Dynamic) return;
+            if (slotOf[id] == kNoSlot) slotOf[id] = slotCount++;
+        };
+        uint32_t maxArgc = 0;
+        for (size_t p = 0; p < func.params.size(); ++p) {
+            assignSlot(static_cast<il::ValueId>(p), func.params[p].type);
+        }
+        for (const auto& block : func.blocks) {
+            for (const auto& param : block.params) assignSlot(param.id, param.type);
+            for (const auto& inst : block.instructions) {
+                assignSlot(inst.result, inst.type);
+                if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2) {
+                    uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
+                    if (argc > maxArgc) maxArgc = argc;
+                }
+                if (inst.op == il::Op::Construct && !inst.operands.empty()) {
+                    uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
+                    if (argc > maxArgc) maxArgc = argc;
+                }
+            }
+        }
+        // Call arguments live in the frame too: they are live across the
+        // callee, and the widest call site's worth of slots is enough
+        // because IL is flat SSA — an argument list is built immediately
+        // before its call and dead immediately after, never nested.
+        const uint32_t argvBase = slotCount;
+        const uint32_t frameSlots = slotCount + maxArgc;
+
+        // The frame mirrors `bronze_gc_frame` from the ABI registry:
+        // { prev, count, slots[frameSlots] }, allocated in this function's
+        // own stack frame and linked onto the list head inline.
+        llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+        llvm::StructType* frameTy = nullptr;
+        llvm::Value* framePtr = nullptr;
+        llvm::Value* slotsBase = nullptr;
+        auto slotAddr = [&](llvm::IRBuilder<>& b, uint32_t slot) {
+            return b.CreateGEP(i64Ty, slotsBase, b.getInt32(slot));
+        };
+
+        if (frameSlots > 0 && !llvmBlocks.empty()) {
+            llvm::IRBuilder<> pro(llvmBlocks[0]);
+            frameTy = llvm::StructType::get(
+                ctx, {ptrTy, i64Ty, llvm::ArrayType::get(i64Ty, frameSlots)});
+            framePtr = pro.CreateAlloca(frameTy, nullptr, "gcframe");
+            slotsBase = pro.CreateStructGEP(frameTy, framePtr, 2);
+
+            // Every slot must hold a valid Value before the frame is
+            // linked: the collector reads all of them, including the ones
+            // whose defs have not run yet.
+            llvm::Value* undefBits = pro.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+            for (uint32_t s = 0; s < frameSlots; ++s) {
+                pro.CreateStore(undefBits, slotAddr(pro, s));
+            }
+            for (size_t p = 0; p < func.params.size(); ++p) {
+                if (slotOf[p] == kNoSlot) continue;
+                pro.CreateStore(values[p], slotAddr(pro, slotOf[p]));
+            }
+            pro.CreateStore(pro.getInt64(frameSlots), pro.CreateStructGEP(frameTy, framePtr, 1));
+            pro.CreateStore(pro.CreateLoad(ptrTy, abiGlobals.bronze_gc_frame_top),
+                            pro.CreateStructGEP(frameTy, framePtr, 0));
+            pro.CreateStore(framePtr, abiGlobals.bronze_gc_frame_top);
+        }
+
         std::vector<std::vector<llvm::PHINode*>> blockPhis(func.blocks.size());
         for (size_t bIdx = 0; bIdx < func.blocks.size(); ++bIdx) {
             const auto& block = func.blocks[bIdx];
@@ -231,7 +338,29 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             llvm::BasicBlock* bb = llvmBlocks[bIdx];
             llvm::IRBuilder<> builder(bb);
 
+            // A block parameter is a def like any other: the phi's value
+            // has to reach its root slot before anything can collect.
+            for (size_t pi = 0; pi < block.params.size(); ++pi) {
+                uint32_t slot = slotOf[block.params[pi].id];
+                if (slot == kNoSlot) continue;
+                builder.CreateStore(blockPhis[bIdx][pi], slotAddr(builder, slot));
+            }
+
+            // Reload a Dynamic value from its slot at the point of use: if
+            // anything collected since the def, the slot was forwarded and
+            // the register was not.
+            auto reload = [&](il::ValueId id) {
+                if (id == il::kNoValue || id >= func.valueCount) return;
+                uint32_t slot = slotOf[id];
+                if (slot == kNoSlot) return;
+                values[id] = builder.CreateLoad(i64Ty, slotAddr(builder, slot));
+            };
+
             for (const auto& inst : block.instructions) {
+                for (il::ValueId id : inst.operands) reload(id);
+                for (il::ValueId id : inst.target.args) reload(id);
+                for (il::ValueId id : inst.elseTarget.args) reload(id);
+
                 switch (inst.op) {
                     case il::Op::Jump: {
                         llvm::BasicBlock* tgtBb = llvmBlocks[inst.target.block];
@@ -326,6 +455,22 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
+                case il::Op::ObjectKeys: {
+                    if (inst.operands.empty()) {
+                        diags.error(Span{}, "Invalid operands for ObjectKeys");
+                        return false;
+                    }
+                    llvm::Value* target = values[inst.operands[0]];
+                    if (!target) {
+                        diags.error(Span{}, "Undefined operand in ObjectKeys instruction");
+                        return false;
+                    }
+                    llvm::Value* res = builder.CreateCall(abi.bronze_object_keys, {target});
+                    if (inst.result != il::kNoValue) {
+                        values[inst.result] = res;
+                    }
+                    break;
+                }
                 case il::Op::CreateArray: {
                     if (inst.result != il::kNoValue) {
                         llvm::Value* lenVal = builder.getInt32(inst.immI32);
@@ -337,8 +482,60 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     if (inst.result != il::kNoValue) {
                         llvm::Value* targetWrapper = wrapperFunctions[inst.calleeIndex];
                         llvm::Value* arityVal = builder.getInt32(inst.immI32);
-                        values[inst.result] = builder.CreateCall(abi.bronze_create_function, {targetWrapper, arityVal});
+                        llvm::Value* envVal = inst.operands.empty()
+                                                  ? builder.getInt64(BRONZE_ABI_UNDEFINED_BITS)
+                                                  : values[inst.operands[0]];
+                        if (!envVal) {
+                            diags.error(Span{}, "Undefined environment in CreateFunction");
+                            return false;
+                        }
+                        values[inst.result] = builder.CreateCall(abi.bronze_create_function,
+                                                                 {targetWrapper, arityVal, envVal});
                     }
+                    break;
+                }
+                case il::Op::EnvCreate: {
+                    if (inst.result == il::kNoValue) break;
+                    llvm::Value* parentVal = inst.operands.empty()
+                                                 ? builder.getInt64(BRONZE_ABI_UNDEFINED_BITS)
+                                                 : values[inst.operands[0]];
+                    if (!parentVal) {
+                        diags.error(Span{}, "Undefined parent in EnvCreate");
+                        return false;
+                    }
+                    values[inst.result] = builder.CreateCall(
+                        abi.bronze_env_create, {parentVal, builder.getInt32(inst.immI32)});
+                    break;
+                }
+                case il::Op::EnvGet: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for EnvGet");
+                        return false;
+                    }
+                    llvm::Value* envVal = values[inst.operands[0]];
+                    if (!envVal) {
+                        diags.error(Span{}, "Undefined environment in EnvGet");
+                        return false;
+                    }
+                    values[inst.result] = builder.CreateCall(
+                        abi.bronze_env_get,
+                        {envVal, builder.getInt32(inst.envDepth), builder.getInt32(inst.envIndex)});
+                    break;
+                }
+                case il::Op::EnvSet: {
+                    if (inst.operands.size() < 2) {
+                        diags.error(Span{}, "Invalid operands for EnvSet");
+                        return false;
+                    }
+                    llvm::Value* envVal = values[inst.operands[0]];
+                    llvm::Value* storeVal = values[inst.operands[1]];
+                    if (!envVal || !storeVal) {
+                        diags.error(Span{}, "Undefined operand in EnvSet");
+                        return false;
+                    }
+                    builder.CreateCall(abi.bronze_env_set,
+                                       {envVal, builder.getInt32(inst.envDepth),
+                                        builder.getInt32(inst.envIndex), storeVal});
                     break;
                 }
                 case il::Op::Print: {
@@ -450,8 +647,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
                     llvm::Value* argvPtr = nullptr;
                     if (argc > 0) {
-                        llvm::Value* arrLen = builder.getInt32(argc);
-                        argvPtr = builder.CreateAlloca(builder.getInt64Ty(), arrLen, "argv");
+                        // The argv region of this function's root frame, so
+                        // the arguments stay rooted across the callee (and
+                        // so a call inside a loop stops alloca'ing a fresh
+                        // buffer every iteration).
+                        argvPtr = slotAddr(builder, argvBase);
                         for (uint32_t a = 0; a < argc; ++a) {
                             llvm::Value* argV = values[inst.operands[2 + a]];
                             if (!argV) {
@@ -467,6 +667,59 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     llvm::Value* callRes = builder.CreateCall(abi.bronze_dynamic_call, {calleeVal, thisVal, builder.getInt32(argc), argvPtr});
                     if (inst.result != il::kNoValue) {
                         values[inst.result] = callRes;
+                    }
+                    break;
+                }
+                case il::Op::Construct: {
+                    if (inst.operands.empty()) {
+                        diags.error(Span{}, "Invalid operands for Construct");
+                        return false;
+                    }
+                    llvm::Value* ctorVal = values[inst.operands[0]];
+                    if (!ctorVal) {
+                        diags.error(Span{}, "Undefined constructor in Construct instruction");
+                        return false;
+                    }
+                    uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
+                    llvm::Value* argvPtr = nullptr;
+                    if (argc > 0) {
+                        // Same rooted argv region as a dynamic call: the
+                        // constructor body allocates, so the arguments have
+                        // to be findable by the collector.
+                        argvPtr = slotAddr(builder, argvBase);
+                        for (uint32_t a = 0; a < argc; ++a) {
+                            llvm::Value* argV = values[inst.operands[1 + a]];
+                            if (!argV) {
+                                diags.error(Span{}, "Undefined argument in Construct instruction");
+                                return false;
+                            }
+                            llvm::Value* slotPtr =
+                                builder.CreateGEP(builder.getInt64Ty(), argvPtr, builder.getInt32(a));
+                            builder.CreateStore(argV, slotPtr);
+                        }
+                    } else {
+                        argvPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+                    }
+                    llvm::Value* res = builder.CreateCall(abi.bronze_construct,
+                                                          {ctorVal, builder.getInt32(argc), argvPtr});
+                    if (inst.result != il::kNoValue) {
+                        values[inst.result] = res;
+                    }
+                    break;
+                }
+                case il::Op::FunctionRef: {
+                    if (inst.result != il::kNoValue) {
+                        if (inst.calleeIndex >= wrapperFunctions.size()) {
+                            diags.error(Span{}, "FunctionRef to an out-of-range function index");
+                            return false;
+                        }
+                        const auto& target = module.functions[inst.calleeIndex];
+                        uint32_t arity =
+                            static_cast<uint32_t>(target.params.size() - target.firstSourceParam());
+                        values[inst.result] =
+                            builder.CreateCall(abi.bronze_function_singleton,
+                                               {wrapperFunctions[inst.calleeIndex],
+                                                builder.getInt32(arity)});
                     }
                     break;
                 }
@@ -667,6 +920,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     break;
                 }
                 case il::Op::Ret: {
+                    if (framePtr) {
+                        builder.CreateStore(
+                            builder.CreateLoad(ptrTy, builder.CreateStructGEP(frameTy, framePtr, 0)),
+                            abiGlobals.bronze_gc_frame_top);
+                    }
                     if (inst.operands.empty()) {
                         builder.CreateRetVoid();
                     } else {
@@ -685,6 +943,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                 default:
                     diags.error(Span{}, "Unsupported IL instruction opcode");
                     return false;
+            }
+
+            if (inst.result != il::kNoValue && inst.result < func.valueCount &&
+                slotOf[inst.result] != kNoSlot && values[inst.result]) {
+                builder.CreateStore(values[inst.result], slotAddr(builder, slotOf[inst.result]));
             }
             }
         }

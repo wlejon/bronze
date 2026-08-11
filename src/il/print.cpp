@@ -45,9 +45,15 @@ const char* opName(Op op) {
         case Op::ElemGet: return "elem.get";
         case Op::ElemSet: return "elem.set";
         case Op::DynamicCall: return "call.dynamic";
+        case Op::FunctionRef: return "func.ref";
+        case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
+        case Op::ObjectKeys: return "object.keys";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
+        case Op::EnvCreate: return "env.create";
+        case Op::EnvGet: return "env.get";
+        case Op::EnvSet: return "env.set";
         case Op::CreateArrayBuffer: return "create.arraybuffer";
         case Op::CreateFloat32Array: return "create.f32array";
         case Op::Print: return "print";
@@ -161,6 +167,23 @@ std::string print(const Module& module) {
                         }
                         break;
                     }
+                    case Op::FunctionRef:
+                        out += "func.ref @" + (inst.calleeIndex < module.functions.size()
+                                                   ? module.functions[inst.calleeIndex].name
+                                                   : "?");
+                        break;
+                    case Op::Construct: {
+                        out += "new";
+                        if (!inst.operands.empty()) {
+                            out += " %" + std::to_string(inst.operands[0]);
+                        }
+                        size_t nargs = inst.operands.empty() ? 0 : inst.operands.size() - 1;
+                        out += ", " + std::to_string(nargs);
+                        for (size_t i = 1; i < inst.operands.size(); ++i) {
+                            out += ", %" + std::to_string(inst.operands[i]);
+                        }
+                        break;
+                    }
                     case Op::ElemGet:
                         out += "elem.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
@@ -186,7 +209,21 @@ std::string print(const Module& module) {
                         break;
                     case Op::CreateFunction:
                         out += "create.func @" + (inst.calleeIndex < module.functions.size() ? module.functions[inst.calleeIndex].name : "?") +
+                               ", " + std::to_string(inst.immI32) + ", %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::EnvCreate:
+                        out += "env.create %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::EnvGet:
+                        out += "env.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.envDepth) + ", " + std::to_string(inst.envIndex);
+                        break;
+                    case Op::EnvSet:
+                        out += "env.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.envDepth) + ", " + std::to_string(inst.envIndex) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
                         break;
                     case Op::Print:
                         out += "print %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);

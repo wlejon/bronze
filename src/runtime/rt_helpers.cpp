@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "runtime/array.h"
+#include "runtime/env.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/number_format.h"
@@ -22,10 +23,11 @@
 
 namespace bronze::runtime {
 
-// Reservation is virtual (commit is on demand), so reserve generously:
-// generated code cannot yet survive a moving collection (its SSA values
-// are unrooted — see docs/0004), so headroom delays that day of reckoning.
-static Heap g_heap(512 * 1024 * 1024);
+// Generated code roots its Dynamic values now (docs/0006), so a collection
+// is survivable and the reservation no longer has to postpone one. Sized so
+// ordinary programs DO collect: the 512MB it used to reserve meant nothing
+// short of a huge run ever exercised the collector outside gc-stress.
+static Heap g_heap(64 * 1024 * 1024);
 static NonMovingArena g_arena;
 static std::vector<std::string> g_keyStrings;
 // The same keys as immortal arena strings: property paths use these
@@ -34,12 +36,36 @@ static std::vector<StringHeader*> g_keyHeaders;
 static std::vector<InlineCache> g_inlineCaches;
 static const std::string g_emptyKey;
 
+// Root shapes the runtime has created. Shapes are immortal but the
+// prototype objects they name are not, so the collector has to forward
+// them; this table is what the root source below walks (docs/0008
+// decision 1). It lives here, beside g_arena and g_heap, because that is
+// where the three lifetimes match — a global registry would outlive the
+// per-test arenas that unit tests create and hand the collector dangling
+// shapes.
+static std::vector<Shape*> g_rootShapes;
+
+static const bool g_shapeRootsRegistered = [] {
+    g_heap.add_root_source([](const Heap::RootVisitor& visit) {
+        for (Shape* root : g_rootShapes) visit(root->prototype);
+    });
+    return true;
+}();
+
+static Shape* newRootShape(Value proto) {
+    Shape* root = Shape::createRoot(g_arena, proto);
+    g_rootShapes.push_back(root);
+    return root;
+}
+
 static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
 static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
               "BRONZE_ABI_NULL_BITS in bronze_abi.h has drifted from the value model");
 
-static uint64_t bronze_builtin_string_char_code_at(uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+static uint64_t bronze_builtin_string_char_code_at(uint64_t envBits, uint64_t thisBits, uint32_t argc,
+                                                   const uint64_t* argvBits) {
+    (void)envBits;  // builtins capture nothing
     Value thisArg(thisBits);
     if (!thisArg.isString()) return Value::fromDouble(0.0).rawBits();
     StringHeader* str = thisArg.asString<StringHeader>();
@@ -55,7 +81,10 @@ static uint64_t bronze_builtin_string_char_code_at(uint64_t thisBits, uint32_t a
     return Value::fromDouble(str->charCodeAt(idx)).rawBits();
 }
 
-static FunctionHeader* g_charCodeAtFn = nullptr;
+// Lazily created and cached forever, so it needs a root that outlives every
+// frame — a bare pointer here went stale on the first collection after a
+// string ever saw `.charCodeAt`.
+static Value g_charCodeAtFn = Value::fromUndefined();
 
 static Value valueToString(Value v) {
     if (v.isString()) return v;
@@ -73,6 +102,26 @@ static Value valueToString(Value v) {
         return Value::fromString(StringHeader::createFromUTF8(g_heap, "undefined"));
     }
     fatal("ToString on an object is unsupported");
+}
+
+// A canonical array index: the decimal form must round-trip, so "0" and
+// "42" qualify while "01", "1.0", "-1" and " 1" are ordinary string keys
+// (docs/0009 decision 1).
+static bool isIntegerLikeKey(std::string_view key, uint32_t& out) {
+    if (key.empty() || key.size() > 10) return false;
+    if (key.size() > 1 && key[0] == '0') return false;
+    uint64_t v = 0;
+    for (char c : key) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (v > 4294967294ull) return false;  // 2^32-2, the last array index
+    out = static_cast<uint32_t>(v);
+    return true;
+}
+
+static std::string_view latin1View(const StringHeader* s) {
+    return std::string_view(s->latin1Data(), s->getLength());
 }
 
 extern "C" {
@@ -160,8 +209,17 @@ bool bronze_unbox_bool(uint64_t bits) {
     return bronze_truthy(bits);
 }
 
+// One root shape shared by every plain `{}` literal (prototype undefined
+// until there is an Object.prototype to point at). Per-literal root shapes
+// would give two identical literals unrelated hidden classes, so any site
+// seeing both would miss its IC every time — docs/0008 decision 1.
+static Shape* plainObjectShape() {
+    static Shape* shape = newRootShape(Value::fromUndefined());
+    return shape;
+}
+
 uint64_t bronze_create_object() {
-    ObjectHeader* obj = ObjectHeader::create(g_heap, g_arena, nullptr);
+    ObjectHeader* obj = ObjectHeader::create(g_heap, g_arena, plainObjectShape());
     obj->header.flags = 0;
     return Value::fromObject(obj).rawBits();
 }
@@ -174,10 +232,190 @@ uint64_t bronze_create_array(uint32_t length) {
     return Value::fromObject(arr).rawBits();
 }
 
-uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity) {
-    FunctionHeader* fn = FunctionHeader::create(g_heap, code, nullptr, arity);
+uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint64_t envBits) {
+    Rooted<Value> env{Value(envBits)};
+    FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
+    // Read the environment through the root only AFTER allocating: the
+    // allocation above can collect, and a by-value copy taken before it
+    // would point into dead from-space.
+    fn->env_record = env.get();
     fn->header.flags = 2;
     return Value::fromObject(fn).rawBits();
+}
+
+// A function's `.prototype`, created on first demand — as a constructor's
+// instance prototype or as the target of `Foo.prototype.m = ...`, which
+// must be the same object, so both go through here (docs/0008 decision 4).
+// Allocates, so it takes and returns through a root and the caller must
+// re-derive its own pointer afterwards.
+static void ensureFunctionPrototype(Rooted<Value>& fnVal) {
+    FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
+    if (fn->prototype.isObject() && fn->instance_shape) {
+        return;
+    }
+    ObjectHeader* proto = ObjectHeader::create(g_heap, g_arena, plainObjectShape());
+    proto->header.flags = 0;
+
+    fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
+    fn->prototype = Value::fromObject(proto);
+    fn->instance_shape = newRootShape(fn->prototype);
+}
+
+uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
+    Value fnVal(fnBits);
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != 2) {
+        fatal("new on a value that is not a function");
+    }
+
+    Rooted<Value> fnRoot{fnVal};
+    ensureFunctionPrototype(fnRoot);
+
+    FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();
+    ObjectHeader* instance = ObjectHeader::create(g_heap, g_arena, fn->instance_shape);
+    instance->header.flags = 0;
+
+    Rooted<Value> self{Value::fromObject(instance)};
+    // argv is the caller's rooted frame slots (docs/0006), so the argument
+    // values stay live across the callee's allocations without a copy.
+    fn = fnRoot.get().asObject<FunctionHeader>();
+    Value result = fn->call(self.get(), argc,
+                            const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+
+    // JS: a constructor returning an object replaces the instance; any
+    // other return value (including undefined) is ignored.
+    if (result.isObject()) {
+        return result.rawBits();
+    }
+    return self.get().rawBits();
+}
+
+// The one function object for a top-level function declaration. A
+// declaration is evaluated once, so every mention of its name must yield
+// the SAME object — otherwise `Foo.prototype.m = ...` would decorate one
+// object and `new Foo()` would read another (docs/0008). Keyed on the code
+// pointer, which is 1:1 with the declaration; closures never come here,
+// since their identity is per-evaluation and they carry an environment.
+static std::vector<std::pair<bronze_fn_code, Value>>& functionSingletons() {
+    static std::vector<std::pair<bronze_fn_code, Value>> table;
+    return table;
+}
+
+static const bool g_functionSingletonsRooted = [] {
+    g_heap.add_root_source([](const Heap::RootVisitor& visit) {
+        for (auto& entry : functionSingletons()) visit(entry.second);
+    });
+    return true;
+}();
+
+uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
+    auto& table = functionSingletons();
+    for (const auto& entry : table) {
+        if (entry.first == code) return entry.second.rawBits();
+    }
+    FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
+    fn->header.flags = 2;
+    table.emplace_back(code, Value::fromObject(fn));
+    return table.back().second.rawBits();
+}
+
+uint64_t bronze_object_keys(uint64_t objBits) {
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("Object.keys on a value that is not an object");
+    }
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+
+    // An array's own keys are its indices, already in ascending order.
+    if (hdr->flags == 1) {
+        Rooted<Value> src{objVal};
+        uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
+        Rooted<Value> out{Value::fromObject(ArrayHeader::create(g_heap, length ? length : 4))};
+        out.get().asObject<ArrayHeader>()->header.flags = 1;
+        for (uint32_t i = 0; i < length; ++i) {
+            char buf[16];
+            auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
+            Rooted<Value> key{Value::fromString(
+                StringHeader::createFromUTF8(g_heap, std::string_view(buf, end - buf)))};
+            out.get().asObject<ArrayHeader>()->setElem(g_heap, i, key);
+        }
+        return out.get().rawBits();
+    }
+    if (hdr->flags != 0) {
+        fatal("Object.keys is only supported on plain objects and arrays");
+    }
+
+    // Shape keys are arena-interned and immortal, so collecting them up
+    // front is safe across the allocations below.
+    Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
+    std::vector<StringHeader*> inserted =
+        shape ? shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
+
+    // Spec order: integer-like keys ascending, then the rest in insertion
+    // order. stable_partition would also work; an explicit split keeps the
+    // numeric sort off the string keys.
+    std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
+    std::vector<StringHeader*> strKeys;
+    for (StringHeader* k : inserted) {
+        uint32_t idx = 0;
+        if (k->isLatin1() && isIntegerLikeKey(latin1View(k), idx)) {
+            intKeys.emplace_back(idx, k);
+        } else {
+            strKeys.push_back(k);
+        }
+    }
+    std::sort(intKeys.begin(), intKeys.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    const uint32_t total = static_cast<uint32_t>(intKeys.size() + strKeys.size());
+    Rooted<Value> out{Value::fromObject(ArrayHeader::create(g_heap, total ? total : 4))};
+    out.get().asObject<ArrayHeader>()->header.flags = 1;
+
+    uint32_t at = 0;
+    auto push = [&](StringHeader* name) {
+        // Copy the immortal arena string into the heap: the result array
+        // holds ordinary JS strings, not pointers into the shape arena.
+        Rooted<Value> key{Value::fromString(
+            StringHeader::createFromUTF8(g_heap, latin1View(name)))};
+        out.get().asObject<ArrayHeader>()->setElem(g_heap, at++, key);
+    };
+    for (const auto& [idx, name] : intKeys) push(name);
+    for (StringHeader* name : strKeys) push(name);
+
+    return out.get().rawBits();
+}
+
+// Environment records (docs/0007). `depth` parent hops then `index`.
+uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
+    Rooted<Value> parent{Value(parentBits)};
+    return Value::fromObject(EnvHeader::create(g_heap, parent, slotCount)).rawBits();
+}
+
+static EnvHeader* resolveEnv(uint64_t envBits, uint32_t depth) {
+    Value envVal(envBits);
+    if (!envVal.isObject()) {
+        fatal("environment access on a value that is not an environment record");
+    }
+    auto* env = envVal.asObject<EnvHeader>();
+    if (env->header.flags != EnvHeader::kFlags) {
+        fatal("environment access on a value that is not an environment record");
+    }
+    return env->ancestor(depth);
+}
+
+uint64_t bronze_env_get(uint64_t envBits, uint32_t depth, uint32_t index) {
+    EnvHeader* env = resolveEnv(envBits, depth);
+    if (index >= env->slotCount()) {
+        fatal("environment slot index out of range (lowering bug)");
+    }
+    return env->slotsData()[index].rawBits();
+}
+
+void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t valBits) {
+    EnvHeader* env = resolveEnv(envBits, depth);
+    if (index >= env->slotCount()) {
+        fatal("environment slot index out of range (lowering bug)");
+    }
+    env->slotsData()[index] = Value(valBits);
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) {
@@ -190,7 +428,18 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
             const InlineCache& fastIc = g_inlineCaches[icIndex];
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             if (fastIc.cached_shape && fastIc.cached_shape == fastObj->shape) {
-                return fastObj->getSlot(fastIc.cached_slot).rawBits();
+                // Depth 0 is an own property — the common case, straight to
+                // the slot. Anything else was found up the prototype chain,
+                // so the cached slot belongs to an ancestor and reading it
+                // off the receiver would return a completely unrelated
+                // property (docs/0008 decision 2).
+                if (fastIc.cached_depth == 0) {
+                    return fastObj->getSlot(fastIc.cached_slot).rawBits();
+                }
+                ObjectHeader* holder = fastObj->protoAncestor(fastIc.cached_depth);
+                if (holder) {
+                    return holder->getSlot(fastIc.cached_slot).rawBits();
+                }
             }
         }
     }
@@ -203,11 +452,15 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
             return Value::fromDouble(str->getLength()).rawBits();
         }
         if (keyStr == "charCodeAt") {
-            if (!g_charCodeAtFn) {
-                g_charCodeAtFn = FunctionHeader::create(g_heap, bronze_builtin_string_char_code_at, nullptr, 1);
-                g_charCodeAtFn->header.flags = 2;
+            if (g_charCodeAtFn.isUndefined()) {
+                FunctionHeader* fn =
+                    FunctionHeader::create(g_heap, bronze_builtin_string_char_code_at,
+                                           Value::fromUndefined(), 1);
+                fn->header.flags = 2;
+                g_charCodeAtFn = Value::fromObject(fn);
+                g_heap.add_permanent_root(&g_charCodeAtFn);
             }
-            return Value::fromObject(g_charCodeAtFn).rawBits();
+            return g_charCodeAtFn.rawBits();
         }
         return Value::fromUndefined().rawBits();
     }
@@ -254,6 +507,17 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
         auto* buf = reinterpret_cast<ArrayBufferHeader*>(hdr);
         if (keyStr == "byteLength") {
             return Value::fromDouble(buf->byteLength).rawBits();
+        }
+        return Value::fromUndefined().rawBits();
+    }
+    if (hdr->flags == 2) {
+        // Function. It carries a prototype slot rather than a shape, so
+        // `prototype` is the one property it has; `name` and `length` are
+        // not implemented (docs/0008 decision 5).
+        if (keyStr == "prototype") {
+            Rooted<Value> fnRoot{objVal};
+            ensureFunctionPrototype(fnRoot);
+            return fnRoot.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
         return Value::fromUndefined().rawBits();
     }
@@ -320,6 +584,24 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == 4) {
         fatal("property writes on an ArrayBuffer are unsupported");
     }
+    if (hdr->flags == 2) {
+        // A function has a prototype slot, not a shape, so `prototype` is
+        // the only property it can be given. Anything else is named rather
+        // than dropped (docs/0008 decision 5).
+        if (keyStr != "prototype") {
+            fatal("property writes on a function object other than `prototype` are "
+                  "unsupported until functions carry shapes");
+        }
+        if (!valVal.isObject()) {
+            fatal("assigning a non-object to a function's `prototype` is unsupported");
+        }
+        auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+        fn->prototype = valVal;
+        // Instances made from here on get the new prototype; ones already
+        // made keep their shape, and so keep the old one.
+        fn->instance_shape = newRootShape(valVal);
+        return;
+    }
 
     if (icIndex >= g_inlineCaches.size()) {
         g_inlineCaches.resize(icIndex + 1);
@@ -341,21 +623,25 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
     Value calleeVal(calleeBits);
     Value thisVal(thisBits);
+    char msg[128];
     if (!calleeVal.isObject()) {
-        std::cerr << "Hard runtime error: Attempted to call non-object dynamic value (" << std::hex << calleeBits << ")" << std::endl;
-        std::abort();
+        std::snprintf(msg, sizeof(msg), "attempted to call a non-object value (bits %016llx)",
+                      static_cast<unsigned long long>(calleeBits));
+        fatal(msg);
     }
     HeapObjectHeader* hdr = calleeVal.asObject<HeapObjectHeader>();
     if (hdr->flags != 2) {
-        std::cerr << "Hard runtime error: Attempted to call non-function object (flags=" << hdr->flags << ")" << std::endl;
-        std::abort();
+        std::snprintf(msg, sizeof(msg), "attempted to call a non-function object (flags=%u)",
+                      static_cast<unsigned>(hdr->flags));
+        fatal(msg);
     }
     FunctionHeader* fn = reinterpret_cast<FunctionHeader*>(hdr);
-    std::vector<Value> args(argc);
-    for (uint32_t i = 0; i < argc; ++i) {
-        args[i] = Value(argvBits[i]);
-    }
-    Value res = fn->call(thisVal, argc, args.data());
+    // argvBits already points into the caller's GC root frame (docs/0006),
+    // so it is rooted exactly as long as the call needs it. Copying it into
+    // a vector, as this used to, built an *unrooted* duplicate — and cost a
+    // malloc on every dynamic call for the privilege.
+    Value* argv = reinterpret_cast<Value*>(const_cast<uint64_t*>(argvBits));
+    Value res = fn->call(thisVal, argc, argv);
     return res.rawBits();
 }
 

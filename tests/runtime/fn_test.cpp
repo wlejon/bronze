@@ -6,7 +6,8 @@
 
 using namespace bronze;
 
-static uint64_t dummyAdd(uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+static uint64_t dummyAdd(uint64_t envBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+    (void)envBits;
     (void)thisBits;
     Value a0 = (argc > 0) ? Value(argvBits[0]) : Value::fromUndefined();
     Value a1 = (argc > 1) ? Value(argvBits[1]) : Value::fromUndefined();
@@ -19,7 +20,7 @@ TEST_CASE("FunctionHeader dynamic call execution and arity adaptation") {
     Heap heap;
     ShadowStackFrame frame;
 
-    Rooted<FunctionHeader*> fn(FunctionHeader::create(heap, dummyAdd, nullptr, 2));
+    Rooted<FunctionHeader*> fn(FunctionHeader::create(heap, dummyAdd, Value::fromUndefined(), 2));
     REQUIRE(fn.get() != nullptr);
 
     Value args[2] = {Value::fromDouble(10.0), Value::fromDouble(20.0)};

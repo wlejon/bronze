@@ -12,4 +12,11 @@ using FatalHandler = void (*)(const char* msg);
 [[noreturn]] void fatal(const char* msg);
 void setFatalHandler(FatalHandler handler);  // nullptr restores print+abort
 
+// Route the CRT's crash reporting to stderr instead of a modal dialog.
+// On Windows a debug-CRT abort() pops "Debug Error!" and blocks until a
+// human clicks it, which would hang the oracle harness (and any unattended
+// run) on exactly the hard errors the harness exists to observe. Called at
+// program entry and again on the fatal path; idempotent.
+void disableCrashDialogs() noexcept;
+
 }  // namespace bronze

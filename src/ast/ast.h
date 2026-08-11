@@ -48,6 +48,12 @@ struct UndefinedLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `this`. Not an identifier: it resolves to the receiver the caller passed
+// (docs/0008 decision 3), never to a binding in scope.
+struct ThisExpr final : Expr {
+    void accept(Visitor& v) const override;
+};
+
 enum class UnaryOp { Not, Negate, Posate, PreInc, PreDec, PostInc, PostDec };
 const char* unaryOpName(UnaryOp op);
 
@@ -242,6 +248,7 @@ public:
     virtual void visit(const BoolLit&) = 0;
     virtual void visit(const NullLit&) = 0;
     virtual void visit(const UndefinedLit&) = 0;
+    virtual void visit(const ThisExpr&) = 0;
     virtual void visit(const Ident&) = 0;
     virtual void visit(const Unary&) = 0;
     virtual void visit(const Binary&) = 0;

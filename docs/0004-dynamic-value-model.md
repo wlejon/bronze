@@ -72,10 +72,17 @@ Sharpenings (part of the accepted design, not optional):
   `__proto__` is a shape transition (or dictionary demotion). Own-miss
   walks the proto chain; proto-hit ICs cache `{receiver shape, holder,
   slot}`. Method calls are property lookups — no separate mechanism.
+  **Built — see docs/0008**, which refines the IC to cache a *depth*
+  rather than a holder (a holder is a movable pointer, which would have
+  contradicted the "no GC fixup" line above) and adds the `this` / `new`
+  surface without which none of this is reachable from source.
 - **Enumeration order is spec'd JS order and deterministic**: integer
   keys ascending, then string keys in insertion order (recoverable from
   the shape's transition chain). `Object.keys` / `for-in` print through
   the oracle, so this is a correctness surface, not a nicety.
+  **Built — see docs/0009**, with `Object.keys` as the surface; `for-in`
+  remains a named hard error, and the dictionary boundary is marked and
+  diagnosed rather than silently paid for.
 
 ## Decision 3 — memory management: tracing GC, precise, ours (accepted)
 
@@ -145,12 +152,16 @@ Accepted design, the same one production engines converged on:
 - A JS function is an object (shape — three.js attaches properties to
   functions) holding a code pointer + environment pointer.
 - **Uniform dynamic calling convention**:
-  `Value fn(Value thisArg, uint32_t argc, Value* argv)`; callee handles
-  arity adaptation (missing args read as undefined). Proven call sites
-  bypass this entirely with direct typed calls.
+  `Value fn(Value env, Value thisArg, uint32_t argc, Value* argv)`; callee
+  handles arity adaptation (missing args read as undefined). Proven call
+  sites bypass this entirely with direct typed calls. (The `env` parameter
+  was added by 0007; this section originally had no room for it.)
 - Captured variables live in GC-allocated environment records; escape
   analysis promoting captures to registers/stack is inference's job,
-  later.
+  later. **Built — see docs/0007**, which resolves the questions this
+  paragraph left open: one environment per *scope* rather than per
+  function, and the environment reaching the callee through the calling
+  convention.
 
 ## What phase 2 needed from this doc
 

@@ -55,3 +55,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0003 differential harness — pinned .expected files (node-free since 2026-08-10)
 - 0004 dynamic value model (NaN-boxing / shapes / GC / strings / arrays — accepted 2026-08-10)
 - 0005 control flow (blocks / block-argument SSA / truthiness — designed 2026-08-10)
+- 0006 rooting generated code (GC root frames in compiled output — completes 0004 decision 3)
+- 0007 closures (environment records per scope, threaded through the calling convention)
+- 0008 prototypes (`this` / `new` / proto chain / depth-caching proto ICs)
+- 0009 enumeration order (spec'd own-key order via the shape chain; dictionary boundary)

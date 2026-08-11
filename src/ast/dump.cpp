@@ -88,6 +88,7 @@ public:
     void visit(const BoolLit& n) override { emit(std::string("(bool ") + (n.value ? "true" : "false") + ")"); }
     void visit(const NullLit&) override { emit("(null)"); }
     void visit(const UndefinedLit&) override { emit("(undefined)"); }
+    void visit(const ThisExpr&) override { emit("(this)"); }
     void visit(const Unary& n) override {
         emit(std::string("(unary ") + unaryOpName(n.op));
         indented([&] { n.operand->accept(*this); });

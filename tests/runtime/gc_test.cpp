@@ -207,7 +207,8 @@ TEST_CASE("semispace copying collection reclaims unrooted memory and relocates r
     slots[0] = rootS2.get();
     slots[1] = Value::fromDouble(999.888);
 
-    Rooted<Value> rootObj(heap, Value::fromObject(raw_obj->payload()));
+    // A heap reference in a Value always points at the object's HEADER.
+    Rooted<Value> rootObj(heap, Value::fromObject(raw_obj));
     CHECK(rootObj.get().isObject());
 
     size_t used_before = heap.used_size();
@@ -223,7 +224,7 @@ TEST_CASE("semispace copying collection reclaims unrooted memory and relocates r
     CHECK(s2_relocated->length == 23);
 
     CHECK(rootObj.get().isObject());
-    Value* relocated_slots = rootObj.get().asObject<Value>();
+    Value* relocated_slots = rootObj.get().asObject<HeapObjectHeader>()->payload<Value>();
     CHECK(relocated_slots[0].isString());
     CHECK(relocated_slots[0] == rootS2.get());
     CHECK(relocated_slots[1].isNumber());

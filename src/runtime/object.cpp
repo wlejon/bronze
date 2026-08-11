@@ -5,8 +5,9 @@
 namespace bronze {
 
 ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape) {
+    (void)arena;
     if (!shape) {
-        shape = Shape::createRoot(arena);
+        fatal("object creation without a shape (the shape carries the prototype)");
     }
     size_t payload_bytes =
         (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) + kInlineSlots * sizeof(Value);
@@ -30,7 +31,7 @@ Value ObjectHeader::getSlot(uint32_t index) const {
     if (oi >= overflowCapacity()) {
         fatal("object slot index beyond overflow capacity (corrupt shape?)");
     }
-    return overflow.asObject<Value>()[oi];
+    return overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi];
 }
 
 void ObjectHeader::setSlot(uint32_t index, Value val) {
@@ -42,7 +43,7 @@ void ObjectHeader::setSlot(uint32_t index, Value val) {
     if (oi >= overflowCapacity()) {
         fatal("object slot index beyond overflow capacity (corrupt shape?)");
     }
-    overflow.asObject<Value>()[oi] = val;
+    overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi] = val;
 }
 
 // Grow self's overflow block to hold at least `needed` out-of-line slots.
@@ -64,7 +65,7 @@ static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t ne
     Value* slots = block->payload<Value>();
     uint32_t i = 0;
     if (obj->overflow.isPointer()) {
-        Value* old_slots = obj->overflow.asObject<Value>();
+        Value* old_slots = obj->overflow.asObject<HeapObjectHeader>()->payload<Value>();
         for (; i < cap; ++i) {
             slots[i] = old_slots[i];
         }
@@ -72,8 +73,25 @@ static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t ne
     for (; i < new_cap; ++i) {
         slots[i] = Value::fromUndefined();
     }
-    obj->overflow = Value::fromObject(block->payload());
+    obj->overflow = Value::fromObject(block);
     return obj;
+}
+
+// A cycle here would hang the property path rather than crash it, so the
+// walk is bounded and says so by name. Real chains are 1–3 links.
+static constexpr uint32_t kMaxPrototypeDepth = 1000;
+
+ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
+    ObjectHeader* cur = this;
+    for (uint32_t i = 0; i < depth; ++i) {
+        if (!cur->shape) return nullptr;
+        Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject()) return nullptr;
+        auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags != 0) return nullptr;
+        cur = reinterpret_cast<ObjectHeader*>(hdr);
+    }
+    return cur;
 }
 
 Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
@@ -84,19 +102,36 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
     if (ic && ic->cached_shape == shape) {
-        return getSlot(ic->cached_slot);
-    }
-
-    uint32_t slot = 0;
-    if (shape && shape->lookupProperty(prop_name, slot)) {
-        if (ic) {
-            ic->cached_shape = shape;
-            ic->cached_slot = slot;
+        ObjectHeader* holder = protoAncestor(ic->cached_depth);
+        if (holder) {
+            return holder->getSlot(ic->cached_slot);
         }
-        return getSlot(slot);
+        // The chain got shorter than the cache says, which the shape check
+        // should have caught: the prototype lives on the shape, so it
+        // cannot change without the shape changing.
+        fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
     }
 
-    return Value::fromUndefined();
+    // Own property first, then up the prototype chain. Nothing here
+    // allocates, so these raw pointers stay valid for the whole walk.
+    ObjectHeader* holder = this;
+    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
+        uint32_t slot = 0;
+        if (holder->shape && holder->shape->lookupProperty(prop_name, slot)) {
+            if (ic) {
+                ic->cached_shape = shape;
+                ic->cached_slot = slot;
+                ic->cached_depth = depth;
+            }
+            return holder->getSlot(slot);
+        }
+        ObjectHeader* next = holder->protoAncestor(1);
+        if (!next) {
+            return Value::fromUndefined();
+        }
+        holder = next;
+    }
+    fatal("prototype chain too deep (a cycle?)");
 }
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
@@ -106,7 +141,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     }
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
-    if (ic && ic->cached_shape == shape) {
+    // Writes never walk the prototype chain: assignment creates an OWN
+    // property (bronze has no setters), so a set-site IC only ever caches
+    // depth 0.
+    if (ic && ic->cached_shape == shape && ic->cached_depth == 0) {
         setSlot(ic->cached_slot, val.get());
         return this;
     }
@@ -116,6 +154,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         if (ic) {
             ic->cached_shape = shape;
             ic->cached_slot = slot;
+            ic->cached_depth = 0;
         }
         setSlot(slot, val.get());
         return this;
@@ -139,6 +178,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (ic) {
         ic->cached_shape = next_shape;
         ic->cached_slot = new_slot;
+        ic->cached_depth = 0;
     }
     return live;
 }

@@ -15,7 +15,7 @@ TEST_CASE("ObjectHeader property access and inline cache") {
     Heap heap;
     ShadowStackFrame frame;
 
-    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena));
+    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
     REQUIRE(obj.get() != nullptr);
 
     Rooted<Value> key_a(Value::fromString(StringHeader::createFromUTF8(heap, "a")));
@@ -57,7 +57,7 @@ TEST_CASE("properties beyond the inline slots spill to the overflow block") {
     Heap heap;
     ShadowStackFrame frame;
 
-    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena));
+    Rooted<ObjectHeader*> obj(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
     constexpr uint32_t kProps = 12;
     static_assert(kProps > ObjectHeader::kInlineSlots);
 

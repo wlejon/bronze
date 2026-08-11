@@ -175,6 +175,35 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             return false;
         }
     }
+
+    // A closure's environment reaches it through the dynamic calling
+    // convention, which a direct `call` does not use — so a direct call to
+    // a function that needs an environment would enter it with garbage in
+    // the environment parameter (docs/0007 decision 3). Lowering routes
+    // every call to a closure through call.dynamic; this checks that rather
+    // than trusting it.
+    for (const auto& fn : module.functions) {
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                const bool refersToFunction = inst.op == Op::Call ||
+                                              inst.op == Op::CreateFunction ||
+                                              inst.op == Op::FunctionRef;
+                if (!refersToFunction) continue;
+                if (inst.calleeIndex >= module.functions.size()) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " names an out-of-range function index");
+                    return false;
+                }
+                if (inst.op != Op::Call) continue;
+                const Function& callee = module.functions[inst.calleeIndex];
+                if (callee.needsEnv) {
+                    diags.error(Span{}, "Function " + fn.name + ": direct call to closure @" +
+                                            callee.name + ", which needs an environment");
+                    return false;
+                }
+            }
+        }
+    }
     return true;
 }
 

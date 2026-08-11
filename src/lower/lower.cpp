@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "lower/assigned_set.h"
+#include "lower/captures.h"
 
 namespace bronze::lower {
 namespace {
@@ -41,6 +42,14 @@ public:
                 il::Function fn;
                 fn.name = fnDecl->name;
                 fn.isExported = fnDecl->isExported;
+                // A body that mentions `this` gets the synthetic receiver
+                // parameter ahead of its source parameters; every call
+                // site supplies it, direct ones included, so this costs
+                // nothing to functions that do not use it (docs/0008).
+                if (usesThis(fnDecl->body)) {
+                    fn.needsThis = true;
+                    fn.params.push_back({"__this", il::Type::Dynamic});
+                }
                 for (const auto& param : fnDecl->params) {
                     if (!param.typeAnnotation.empty()) {
                         auto pType = mapTypeAnnotation(param.typeAnnotation, fnDecl->span, diags_);
@@ -68,6 +77,10 @@ public:
         size_t fnIndex = 0;
         for (const auto& stmtPtr : astModule_.body) {
             if (const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmtPtr.get())) {
+                // Lowered in place: a recursive call reads this very entry
+                // for its arity and its still-being-inferred return type.
+                // Safe only because Module::functions is reference-stable —
+                // lowering this body can append nested closures to it.
                 if (!lowerFunctionBody(*fnDecl, ilModule_.functions[fnIndex])) {
                     return std::nullopt;
                 }
@@ -82,6 +95,33 @@ public:
             mainFn.valueCount = 0;
             mainFn.blocks.push_back(il::Block{.id = 0});
             currentBlockIdx_ = 0;
+
+            // The module top level is a function body like any other: its
+            // variables can be captured by closures written at top level.
+            capturedNames_ = getCapturedNames(topLevelStmts);
+            functionEnvBase_ = envScopes_.size();
+            functionEnvScope_ = SIZE_MAX;
+            std::vector<std::string> mainEnvSlots;
+            for (const auto& declName : getScopeDeclarations(topLevelStmts)) {
+                if (capturedNames_.contains(declName)) mainEnvSlots.push_back(declName);
+            }
+            for (const auto& varName : getHoistedVarDeclarations(topLevelStmts)) {
+                if (capturedNames_.contains(varName) &&
+                    std::find(mainEnvSlots.begin(), mainEnvSlots.end(), varName) ==
+                        mainEnvSlots.end()) {
+                    mainEnvSlots.push_back(varName);
+                }
+            }
+            if (!mainEnvSlots.empty()) {
+                EnvScopeInfo info;
+                for (uint32_t i = 0; i < mainEnvSlots.size(); ++i) info.slotOf[mainEnvSlots[i]] = i;
+                info.envValue = emitEnvCreate(static_cast<uint32_t>(mainEnvSlots.size()), mainFn);
+                envScopes_.push_back(std::move(info));
+                savedEnvValues_.push_back(currentEnvValue_);
+                currentEnvValue_ = envScopes_.back().envValue;
+                functionEnvScope_ = envScopes_.size() - 1;
+            }
+
             if (!lowerStmtList(topLevelStmts, mainFn)) {
                 return std::nullopt;
             }
@@ -126,6 +166,12 @@ private:
         uint32_t declOrder = 0;
         size_t scopeDepth = 0;
         il::ValueId valueId = il::kNoValue;
+        // Captured by some nested function, so it lives in an environment
+        // record instead of in SSA (docs/0007). Reads become env.get and
+        // writes env.set, and it takes no part in SSA joins.
+        bool inEnv = false;
+        size_t envScopeIndex = 0;
+        uint32_t envSlot = 0;
     };
 
     struct LoopContext {
@@ -141,6 +187,26 @@ private:
     uint32_t varDeclCounter_ = 0;
     std::vector<LoopContext> loopStack_;
     size_t currentBlockIdx_ = 0;
+
+    // --- environments (docs/0007) ---------------------------------------
+    // One entry per open scope that declares a captured variable, innermost
+    // last. The stack spans function boundaries: that is exactly how a
+    // nested function resolves a free variable to a (depth, index) pair
+    // relative to the environment it is handed at entry.
+    struct EnvScopeInfo {
+        std::unordered_map<std::string, uint32_t> slotOf;
+        il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
+    };
+    std::vector<EnvScopeInfo> envScopes_;
+    std::vector<il::ValueId> savedEnvValues_;
+    std::vector<bool> scopeHasEnv_;
+    il::ValueId currentEnvValue_ = il::kNoValue;
+    // The `__this` parameter of the function being lowered, or kNoValue
+    // where there is no receiver to speak of (docs/0008 decision 3).
+    il::ValueId currentThisValue_ = il::kNoValue;
+    std::unordered_set<std::string> capturedNames_;
+    size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
+    size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
 
     uint32_t getKeyConstantIndex(const std::string& key) {
         auto it = keyConstants_.find(key);
@@ -267,9 +333,12 @@ private:
         return args;
     }
 
+    // Env-backed variables are memory, not SSA, so they never become join
+    // or loop-header parameters. This is the single funnel every join uses.
     std::vector<std::string> getActiveVarsInDeclOrder() const {
         std::vector<const VarBinding*> active;
         for (const auto& entry : activeVarMap_) {
+            if (varBindings_[entry.second].inEnv) continue;
             active.push_back(&varBindings_[entry.second]);
         }
         std::sort(active.begin(), active.end(), [](const VarBinding* a, const VarBinding* b) {
@@ -374,14 +443,143 @@ private:
         b.scopeDepth = currentScopeDepth_;
         b.valueId = valId;
 
+        // A captured declaration lives in its scope's environment. `var` is
+        // function-scoped wherever it is written, so it belongs to the
+        // function's environment, not the innermost block's.
+        size_t ownerScope = SIZE_MAX;
+        if (isVar) {
+            if (functionEnvScope_ != SIZE_MAX &&
+                envScopes_[functionEnvScope_].slotOf.contains(name)) {
+                ownerScope = functionEnvScope_;
+            }
+        } else if (envScopes_.size() > functionEnvBase_ &&
+                   envScopes_.back().slotOf.contains(name)) {
+            ownerScope = envScopes_.size() - 1;
+        }
+        if (ownerScope != SIZE_MAX) {
+            b.inEnv = true;
+            b.envScopeIndex = ownerScope;
+            b.envSlot = envScopes_[ownerScope].slotOf.at(name);
+            b.valueId = il::kNoValue;
+        }
+
         size_t idx = varBindings_.size();
         varBindings_.push_back(b);
         activeVarMap_[name] = idx;
         return true;
     }
 
+    // --- environment emission (docs/0007) --------------------------------
+
+    il::ValueId emitConstUndefined(il::Function& ilFn) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::ConstUndefined;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        emitInst(ilFn, inst);
+        return res;
+    }
+
+    il::ValueId emitEnvCreate(uint32_t slotCount, il::Function& ilFn) {
+        il::ValueId parent =
+            currentEnvValue_ == il::kNoValue ? emitConstUndefined(ilFn) : currentEnvValue_;
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::EnvCreate;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {parent};
+        inst.immI32 = static_cast<int32_t>(slotCount);
+        emitInst(ilFn, inst);
+        return res;
+    }
+
+    Value emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::EnvGet;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {currentEnvValue_};
+        inst.envDepth = depth;
+        inst.envIndex = index;
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
+
+    void emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn) {
+        Value boxed = boxValueIfNeeded(val, ilFn);
+        il::Instruction inst;
+        inst.op = il::Op::EnvSet;
+        inst.type = il::Type::Void;
+        inst.result = il::kNoValue;
+        inst.operands = {currentEnvValue_, boxed.id};
+        inst.envDepth = depth;
+        inst.envIndex = index;
+        emitInst(ilFn, inst);
+    }
+
+    uint32_t envDepthOf(size_t scopeIndex) const {
+        return static_cast<uint32_t>(envScopes_.size() - 1 - scopeIndex);
+    }
+
+    Value readBinding(const VarBinding& b, il::Function& ilFn) {
+        if (!b.inEnv) return Value{b.valueId, b.type};
+        return emitEnvGet(envDepthOf(b.envScopeIndex), b.envSlot, ilFn);
+    }
+
+    void writeBinding(VarBinding& b, Value val, il::Function& ilFn) {
+        if (b.inEnv) {
+            emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, val, ilFn);
+            b.isInitialized = true;
+            return;
+        }
+        b.valueId = val.id;
+        b.type = val.type;
+        b.isInitialized = true;
+    }
+
+    // A free variable of the function being lowered, resolved against the
+    // environments of enclosing scopes.
+    bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const {
+        for (size_t i = envScopes_.size(); i-- > 0;) {
+            auto it = envScopes_[i].slotOf.find(name);
+            if (it != envScopes_[i].slotOf.end()) {
+                depth = envDepthOf(i);
+                index = it->second;
+                return true;
+            }
+        }
+        return false;
+    }
+
     void enterScope() {
         currentScopeDepth_++;
+        scopeHasEnv_.push_back(false);
+    }
+
+    // Scope entry that first gives the scope an environment record if any
+    // of its own declarations are captured. For a loop body this runs once
+    // per iteration at runtime, which is exactly the per-iteration binding
+    // the language specifies.
+    void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn) {
+        currentScopeDepth_++;
+        std::vector<std::string> slots;
+        for (const auto& name : getScopeDeclarations(stmts)) {
+            if (capturedNames_.contains(name)) slots.push_back(name);
+        }
+        if (slots.empty()) {
+            scopeHasEnv_.push_back(false);
+            return;
+        }
+        EnvScopeInfo info;
+        for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
+        info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
+        envScopes_.push_back(std::move(info));
+        savedEnvValues_.push_back(currentEnvValue_);
+        currentEnvValue_ = envScopes_.back().envValue;
+        scopeHasEnv_.push_back(true);
     }
 
     void exitScope() {
@@ -393,6 +591,14 @@ private:
         }
         for (const auto& name : toRemove) {
             activeVarMap_.erase(name);
+        }
+        if (!scopeHasEnv_.empty()) {
+            if (scopeHasEnv_.back()) {
+                envScopes_.pop_back();
+                currentEnvValue_ = savedEnvValues_.back();
+                savedEnvValues_.pop_back();
+            }
+            scopeHasEnv_.pop_back();
         }
         currentScopeDepth_--;
     }
@@ -457,10 +663,55 @@ private:
         currentScopeDepth_ = 0;
         varDeclCounter_ = 0;
         loopStack_.clear();
+        scopeHasEnv_.clear();
+
+        // Which of this function's own variables must live in an
+        // environment record (docs/0007). The environment stack itself is
+        // NOT cleared: enclosing scopes' environments are how this
+        // function's free variables resolve.
+        capturedNames_ = getCapturedNames(body);
+        functionEnvBase_ = envScopes_.size();
+        functionEnvScope_ = SIZE_MAX;
+
+        // Synthetic parameters lead: [__env?][__this?] then source params.
+        const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());
+        if (ilFn.needsEnv) currentEnvValue_ = 0;
+        currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
+
+        std::vector<std::string> envSlots;
+        for (const auto& p : params) {
+            if (capturedNames_.contains(p.name)) envSlots.push_back(p.name);
+        }
+        for (const auto& declName : getScopeDeclarations(body)) {
+            if (capturedNames_.contains(declName)) envSlots.push_back(declName);
+        }
+        for (const auto& varName : getHoistedVarDeclarations(body)) {
+            if (capturedNames_.contains(varName) &&
+                std::find(envSlots.begin(), envSlots.end(), varName) == envSlots.end()) {
+                envSlots.push_back(varName);
+            }
+        }
+        if (!envSlots.empty()) {
+            EnvScopeInfo info;
+            for (uint32_t i = 0; i < envSlots.size(); ++i) info.slotOf[envSlots[i]] = i;
+            info.envValue = emitEnvCreate(static_cast<uint32_t>(envSlots.size()), ilFn);
+            envScopes_.push_back(std::move(info));
+            savedEnvValues_.push_back(currentEnvValue_);
+            currentEnvValue_ = envScopes_.back().envValue;
+            functionEnvScope_ = envScopes_.size() - 1;
+        }
 
         for (uint32_t i = 0; i < params.size(); ++i) {
-            declareVariable(params[i].name, ilFn.params[i].type, /*isConst=*/false,
-                            /*isLet=*/false, /*isVar=*/false, /*isInitialized=*/true, i, Span{});
+            declareVariable(params[i].name, ilFn.params[i + paramBase].type, /*isConst=*/false,
+                            /*isLet=*/false, /*isVar=*/false, /*isInitialized=*/true, i + paramBase,
+                            Span{});
+            // A captured parameter arrives in a register; copy it into its
+            // environment slot so closures see the same binding.
+            VarBinding& pb = varBindings_[activeVarMap_[params[i].name]];
+            if (pb.inEnv) {
+                emitEnvSet(envDepthOf(pb.envScopeIndex), pb.envSlot,
+                           Value{i + paramBase, ilFn.params[i + paramBase].type}, ilFn);
+            }
         }
 
         std::vector<const ast::Stmt*> stmts;
@@ -523,6 +774,12 @@ private:
                 emitInst(ilFn, retInst);
             }
         }
+
+        if (functionEnvScope_ != SIZE_MAX) {
+            envScopes_.pop_back();
+            currentEnvValue_ = savedEnvValues_.back();
+            savedEnvValues_.pop_back();
+        }
         return true;
     }
 
@@ -530,8 +787,124 @@ private:
         return lowerFunctionBody(fnDecl.name, fnDecl.params, fnDecl.returnType, fnDecl.body, ilFn);
     }
 
+    // Shared by function expressions and nested function declarations:
+    // both produce a closure value over the environment that is innermost
+    // at the creation site (docs/0007 decision 4).
+    std::optional<Value> lowerClosure(const std::string& declaredName,
+                                      const std::vector<ast::Param>& params,
+                                      const std::string& returnTypeAnn,
+                                      const std::vector<ast::StmtPtr>& body, Span span,
+                                      il::Function& ilFn) {
+            std::string fnName = declaredName;
+            if (fnName.empty()) {
+                fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
+            }
+            il::Function newFn;
+            newFn.name = fnName;
+            newFn.returnType = il::Type::Dynamic;
+            // Every function expression is a closure: it gets the synthetic
+            // environment parameter whether or not it turns out to capture
+            // anything (docs/0007). An unused one costs a parameter.
+            newFn.needsEnv = true;
+            newFn.params.push_back({"__env", il::Type::Dynamic});
+            if (usesThis(body)) {
+                newFn.needsThis = true;
+                newFn.params.push_back({"__this", il::Type::Dynamic});
+            }
+            for (const auto& param : params) {
+                if (!param.typeAnnotation.empty()) {
+                    auto pType = mapTypeAnnotation(param.typeAnnotation, span, diags_);
+                    if (!pType) return std::nullopt;
+                    newFn.params.push_back({param.name, *pType});
+                } else {
+                    newFn.params.push_back({param.name, il::Type::Dynamic});
+                }
+            }
+            if (!returnTypeAnn.empty()) {
+                auto rType = mapTypeAnnotation(returnTypeAnn, span, diags_);
+                if (!rType) return std::nullopt;
+                newFn.returnType = *rType;
+            }
+            newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
+
+            size_t outerBlockIdx = currentBlockIdx_;
+            auto outerVarBindings = varBindings_;
+            auto outerActiveVarMap = activeVarMap_;
+            auto outerScopeDepth = currentScopeDepth_;
+            auto outerVarDeclCounter = varDeclCounter_;
+            auto outerLoopStack = loopStack_;
+            auto outerScopeHasEnv = scopeHasEnv_;
+            auto outerCaptured = capturedNames_;
+            auto outerEnvValue = currentEnvValue_;
+            auto outerThisValue = currentThisValue_;
+            auto outerEnvBase = functionEnvBase_;
+            auto outerEnvScope = functionEnvScope_;
+            size_t outerEnvDepth = envScopes_.size();
+
+            if (!lowerFunctionBody(fnName, params, returnTypeAnn, body, newFn)) {
+                return std::nullopt;
+            }
+
+            varBindings_ = outerVarBindings;
+            activeVarMap_ = outerActiveVarMap;
+            currentScopeDepth_ = outerScopeDepth;
+            varDeclCounter_ = outerVarDeclCounter;
+            loopStack_ = outerLoopStack;
+            currentBlockIdx_ = outerBlockIdx;
+            scopeHasEnv_ = outerScopeHasEnv;
+            capturedNames_ = outerCaptured;
+            currentEnvValue_ = outerEnvValue;
+            currentThisValue_ = outerThisValue;
+            functionEnvBase_ = outerEnvBase;
+            functionEnvScope_ = outerEnvScope;
+            if (envScopes_.size() != outerEnvDepth) {
+                diags_.error(span, "internal: environment stack unbalanced after lowering " + fnName);
+                return std::nullopt;
+            }
+
+            uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
+            functionIndices_[fnName] = createdFnIdx;
+            ilModule_.functions.push_back(std::move(newFn));
+
+            // The closure captures the environment that is innermost right
+            // here, at its creation site.
+            il::ValueId envArg =
+                currentEnvValue_ == il::kNoValue ? emitConstUndefined(ilFn) : currentEnvValue_;
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::CreateFunction;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.calleeIndex = createdFnIdx;
+            inst.immI32 = static_cast<int32_t>(params.size());
+            inst.operands = {envArg};
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+    }
+
     bool lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn) {
+        // Function declarations hoist: every one in this list is bound
+        // before any statement runs, so code above a declaration can call
+        // it (docs/0007 decision 4). A nested declaration IS a closure —
+        // there is no second code path for it.
         for (const auto* stmt : stmts) {
+            const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt);
+            if (!fnDecl) continue;
+            auto closure = lowerClosure(fnDecl->name, fnDecl->params, fnDecl->returnType,
+                                        fnDecl->body, fnDecl->span, ilFn);
+            if (!closure) return false;
+            if (!declareVariable(fnDecl->name, il::Type::Dynamic, /*isConst=*/false,
+                                 /*isLet=*/true, /*isVar=*/false, /*isInitialized=*/true,
+                                 closure->id, fnDecl->span)) {
+                return false;
+            }
+            VarBinding& b = varBindings_[activeVarMap_[fnDecl->name]];
+            if (b.inEnv) {
+                emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, *closure, ilFn);
+            }
+        }
+        for (const auto* stmt : stmts) {
+            if (dynamic_cast<const ast::FunctionDecl*>(stmt)) continue;
             if (!lowerStmt(*stmt, ilFn)) return false;
         }
         return true;
@@ -539,7 +912,7 @@ private:
 
     bool lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
         if (const auto* blockStmt = dynamic_cast<const ast::BlockStmt*>(&stmt)) {
-            enterScope();
+            enterScope(blockStmt->stmts, ilFn);
             std::vector<const ast::Stmt*> stmts;
             for (const auto& s : blockStmt->stmts) stmts.push_back(s.get());
             if (!lowerStmtList(stmts, ilFn)) return false;
@@ -596,7 +969,19 @@ private:
             bool isVar = varDecl->isVar;
             bool isLet = !isConst && !isVar;
 
-            return declareVariable(varDecl->name, declType, isConst, isLet, isVar, isInitialized, initId, varDecl->span);
+            if (!declareVariable(varDecl->name, declType, isConst, isLet, isVar, isInitialized,
+                                 initId, varDecl->span)) {
+                return false;
+            }
+            // A captured declaration's initial value has to reach its
+            // environment slot; the SSA value alone is invisible to any
+            // closure over it.
+            VarBinding& bound = varBindings_[activeVarMap_[varDecl->name]];
+            if (bound.inEnv && isInitialized && initId != il::kNoValue) {
+                emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot,
+                           Value{initId, declType}, ilFn);
+            }
+            return true;
         }
 
         if (const auto* retStmt = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
@@ -667,7 +1052,7 @@ private:
 
             // Then branch
             setCurrentBlock(bThen);
-            enterScope();
+            enterScope(ifStmt->thenBody, ilFn);
             std::vector<const ast::Stmt*> thenStmts;
             for (const auto& s : ifStmt->thenBody) thenStmts.push_back(s.get());
             if (!lowerStmtList(thenStmts, ilFn)) return false;
@@ -680,7 +1065,7 @@ private:
             activeVarMap_ = envBefore;
             restore(stateBefore);
             setCurrentBlock(bElse);
-            enterScope();
+            enterScope(ifStmt->elseBody, ilFn);
             std::vector<const ast::Stmt*> elseStmts;
             for (const auto& s : ifStmt->elseBody) elseStmts.push_back(s.get());
             if (!lowerStmtList(elseStmts, ilFn)) return false;
@@ -842,7 +1227,7 @@ private:
             // Body
             setCurrentBlock(bBody);
             loopStack_.push_back(LoopContext{bHeader, bHeader, bExit, loopVars});
-            enterScope();
+            enterScope(whileStmt->body, ilFn);
             std::vector<const ast::Stmt*> bodyStmts;
             for (const auto& s : whileStmt->body) bodyStmts.push_back(s.get());
             if (!lowerStmtList(bodyStmts, ilFn)) return false;
@@ -931,7 +1316,7 @@ private:
             }
 
             loopStack_.push_back(LoopContext{bHeader, bCond, bExit, loopVars});
-            enterScope();
+            enterScope(doWhileStmt->body, ilFn);
             std::vector<const ast::Stmt*> bodyStmts;
             for (const auto& s : doWhileStmt->body) bodyStmts.push_back(s.get());
             if (!lowerStmtList(bodyStmts, ilFn)) return false;
@@ -978,6 +1363,22 @@ private:
         }
 
         if (const auto* forStmt = dynamic_cast<const ast::ForStmt*>(&stmt)) {
+            // A `for (let i = ...)` header binding is copied per iteration in
+            // JS, so a closure over it must capture a fresh binding each time
+            // round. That needs the environment threaded across the back
+            // edge, which the block-scope rule does not give for free
+            // (docs/0007 decision 2) — diagnose it rather than silently
+            // sharing one binding.
+            if (const auto* initDecl = dynamic_cast<const ast::VarDecl*>(forStmt->init.get())) {
+                if (capturedNames_.contains(initDecl->name)) {
+                    diags_.error(forStmt->span,
+                                 "unsupported construct: closure capturing the for-loop binding '" +
+                                     initDecl->name +
+                                     "' (per-iteration binding semantics); use a `let` declared "
+                                     "inside the loop body");
+                    return false;
+                }
+            }
             enterScope();
             if (forStmt->init) {
                 if (!lowerStmt(*forStmt->init, ilFn)) return false;
@@ -1068,7 +1469,7 @@ private:
             // Body
             setCurrentBlock(bBody);
             loopStack_.push_back(LoopContext{bHeader, bUpdate, bExit, loopVars});
-            enterScope();
+            enterScope(forStmt->body, ilFn);
             std::vector<const ast::Stmt*> bodyStmts;
             for (const auto& s : forStmt->body) bodyStmts.push_back(s.get());
             if (!lowerStmtList(bodyStmts, ilFn)) return false;
@@ -1234,6 +1635,17 @@ private:
             return Value{res, il::Type::Dynamic};
         }
 
+        if (dynamic_cast<const ast::ThisExpr*>(&expr)) {
+            if (currentThisValue_ == il::kNoValue) {
+                // usesThis() decided the parameter, so reaching here means
+                // `this` at module top level, where its value is a module
+                // system question bronze has not answered yet (docs/0008).
+                diags_.error(expr.span, "`this` outside a function is unsupported");
+                return std::nullopt;
+            }
+            return Value{currentThisValue_, il::Type::Dynamic};
+        }
+
         if (const auto* strLit = dynamic_cast<const ast::StringLit*>(&expr)) {
             uint32_t keyIdx = getKeyConstantIndex(strLit->value);
             il::ValueId res = ilFn.valueCount++;
@@ -1305,60 +1717,8 @@ private:
         }
 
         if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&expr)) {
-            std::string fnName = fnExpr->name;
-            if (fnName.empty()) {
-                fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
-            }
-            il::Function newFn;
-            newFn.name = fnName;
-            newFn.returnType = il::Type::Dynamic;
-            for (const auto& param : fnExpr->params) {
-                if (!param.typeAnnotation.empty()) {
-                    auto pType = mapTypeAnnotation(param.typeAnnotation, fnExpr->span, diags_);
-                    if (!pType) return std::nullopt;
-                    newFn.params.push_back({param.name, *pType});
-                } else {
-                    newFn.params.push_back({param.name, il::Type::Dynamic});
-                }
-            }
-            if (!fnExpr->returnType.empty()) {
-                auto rType = mapTypeAnnotation(fnExpr->returnType, fnExpr->span, diags_);
-                if (!rType) return std::nullopt;
-                newFn.returnType = *rType;
-            }
-            newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
-
-            size_t outerBlockIdx = currentBlockIdx_;
-            auto outerVarBindings = varBindings_;
-            auto outerActiveVarMap = activeVarMap_;
-            auto outerScopeDepth = currentScopeDepth_;
-            auto outerVarDeclCounter = varDeclCounter_;
-            auto outerLoopStack = loopStack_;
-
-            if (!lowerFunctionBody(fnName, fnExpr->params, fnExpr->returnType, fnExpr->body, newFn)) {
-                return std::nullopt;
-            }
-
-            varBindings_ = outerVarBindings;
-            activeVarMap_ = outerActiveVarMap;
-            currentScopeDepth_ = outerScopeDepth;
-            varDeclCounter_ = outerVarDeclCounter;
-            loopStack_ = outerLoopStack;
-            currentBlockIdx_ = outerBlockIdx;
-
-            uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
-            functionIndices_[fnName] = createdFnIdx;
-            ilModule_.functions.push_back(std::move(newFn));
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = il::Op::CreateFunction;
-            inst.type = il::Type::Dynamic;
-            inst.result = res;
-            inst.calleeIndex = createdFnIdx;
-            inst.immI32 = static_cast<int32_t>(fnExpr->params.size());
-            emitInst(ilFn, inst);
-            return Value{res, il::Type::Dynamic};
+            return lowerClosure(fnExpr->name, fnExpr->params, fnExpr->returnType, fnExpr->body,
+                                fnExpr->span, ilFn);
         }
 
         if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
@@ -1387,6 +1747,29 @@ private:
                     emitInst(ilFn, inst);
                     return Value{res, il::Type::Dynamic};
                 }
+                // A free variable of a nested function: resolved against
+                // the environments of the enclosing scopes (docs/0007).
+                uint32_t depth = 0;
+                uint32_t index = 0;
+                if (currentEnvValue_ != il::kNoValue &&
+                    findEnclosingEnvVar(ident->name, depth, index)) {
+                    return emitEnvGet(depth, index, ilFn);
+                }
+                // A top-level function declaration used as a value rather
+                // than called: `new Point(...)`, `Point.prototype`, passing
+                // it around. One object per declaration, so decorating it
+                // in one place is visible in every other (docs/0008).
+                auto fnIt = functionIndices_.find(ident->name);
+                if (fnIt != functionIndices_.end()) {
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction inst;
+                    inst.op = il::Op::FunctionRef;
+                    inst.type = il::Type::Dynamic;
+                    inst.result = res;
+                    inst.calleeIndex = fnIt->second;
+                    emitInst(ilFn, inst);
+                    return Value{res, il::Type::Dynamic};
+                }
                 diags_.error(ident->span, "undefined variable: " + ident->name);
                 return std::nullopt;
             }
@@ -1399,7 +1782,7 @@ private:
                 }
                 return std::nullopt;
             }
-            return Value{b.valueId, b.type};
+            return readBinding(b, ilFn);
         }
 
         if (const auto* un = dynamic_cast<const ast::Unary*>(&expr)) {
@@ -1461,7 +1844,7 @@ private:
                     return std::nullopt;
                 }
                 VarBinding& b = varBindings_[it->second];
-                Value oldVal{b.valueId, b.type};
+                Value oldVal = readBinding(b, ilFn);
                 Value numOld = unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
 
                 il::ValueId oneRes = ilFn.valueCount++;
@@ -1480,8 +1863,7 @@ private:
                 calcInst.operands = {numOld.id, oneRes};
                 emitInst(ilFn, calcInst);
 
-                b.valueId = newValId;
-                b.type = il::Type::F64;
+                writeBinding(b, Value{newValId, il::Type::F64}, ilFn);
 
                 if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec) {
                     return Value{newValId, il::Type::F64};
@@ -1577,8 +1959,32 @@ private:
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
-            diags_.error(newExpr->span, "unsupported constructor: new " + newExpr->callee);
-            return std::nullopt;
+            // Any other callee is an ordinary value: the whole ceremony
+            // (prototype, instance shape, receiver, result rule) lives in
+            // one runtime helper rather than in codegen — docs/0008
+            // decision 4.
+            ast::Ident calleeIdent;
+            calleeIdent.name = newExpr->callee;
+            calleeIdent.span = newExpr->span;
+            auto calleeVal = lowerExpr(calleeIdent, ilFn);
+            if (!calleeVal) return std::nullopt;
+
+            std::vector<il::ValueId> operands;
+            operands.push_back(boxValueIfNeeded(*calleeVal, ilFn).id);
+            for (const auto& argPtr : newExpr->args) {
+                auto argVal = lowerExpr(*argPtr, ilFn);
+                if (!argVal) return std::nullopt;
+                operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+            }
+
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::Construct;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = std::move(operands);
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
         }
 
         if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&expr)) {
@@ -1756,18 +2162,50 @@ private:
 
                     auto it = activeVarMap_.find(ident->name);
                     if (it == activeVarMap_.end()) {
+                        // Assignment to a variable captured from an
+                        // enclosing scope: the closure writes through the
+                        // environment, so the declaring scope sees it.
+                        uint32_t depth = 0;
+                        uint32_t index = 0;
+                        if (currentEnvValue_ != il::kNoValue &&
+                            findEnclosingEnvVar(ident->name, depth, index)) {
+                            if (bin->op == ast::BinaryOp::Assign) {
+                                emitEnvSet(depth, index, *rhsVal, ilFn);
+                                return rhsVal;
+                            }
+                            Value lhsOuter = emitEnvGet(depth, index, ilFn);
+                            il::Op outerOp;
+                            switch (bin->op) {
+                                case ast::BinaryOp::PlusAssign: outerOp = il::Op::Add; break;
+                                case ast::BinaryOp::MinusAssign: outerOp = il::Op::Sub; break;
+                                case ast::BinaryOp::StarAssign: outerOp = il::Op::Mul; break;
+                                case ast::BinaryOp::SlashAssign: outerOp = il::Op::Div; break;
+                                case ast::BinaryOp::PercentAssign: outerOp = il::Op::Mod; break;
+                                default: outerOp = il::Op::Add; break;
+                            }
+                            Value lhsNum = unboxValueIfNeeded(lhsOuter, il::Type::F64, ilFn);
+                            Value rhsNum = unboxValueIfNeeded(*rhsVal, il::Type::F64, ilFn);
+                            il::ValueId res = ilFn.valueCount++;
+                            il::Instruction inst;
+                            inst.op = outerOp;
+                            inst.type = il::Type::F64;
+                            inst.result = res;
+                            inst.operands = {lhsNum.id, rhsNum.id};
+                            emitInst(ilFn, inst);
+                            Value result{res, il::Type::F64};
+                            emitEnvSet(depth, index, result, ilFn);
+                            return result;
+                        }
                         diags_.error(ident->span, "undefined variable: " + ident->name);
                         return std::nullopt;
                     }
                     VarBinding& b = varBindings_[it->second];
 
                     if (bin->op == ast::BinaryOp::Assign) {
-                        b.valueId = rhsVal->id;
-                        b.type = rhsVal->type;
-                        b.isInitialized = true;
+                        writeBinding(b, *rhsVal, ilFn);
                         return rhsVal;
                     } else {
-                        Value lhsVal{b.valueId, b.type};
+                        Value lhsVal = readBinding(b, ilFn);
                         il::Op op;
                         switch (bin->op) {
                             case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
@@ -1788,9 +2226,7 @@ private:
                         inst.operands = {lhsNum.id, rhsNum.id};
                         emitInst(ilFn, inst);
 
-                        b.valueId = res;
-                        b.type = il::Type::F64;
-                        b.isInitialized = true;
+                        writeBinding(b, Value{res, il::Type::F64}, ilFn);
                         return Value{res, il::Type::F64};
                     }
                 }
@@ -2177,27 +2613,78 @@ private:
                 return Value{il::kNoValue, il::Type::Void};
             }
 
+            // `Object` is recognized here rather than looked up: bronze has
+            // no global object for it to live on (docs/0009 decision 2).
+            if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+                const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get());
+                if (baseIdent && baseIdent->name == "Object" &&
+                    activeVarMap_.find("Object") == activeVarMap_.end()) {
+                    if (mem->property != "keys") {
+                        diags_.error(call->span, "unsupported builtin: Object." + mem->property);
+                        return std::nullopt;
+                    }
+                    if (call->args.size() != 1) {
+                        diags_.error(call->span, "Object.keys expects 1 argument");
+                        return std::nullopt;
+                    }
+                    auto argVal = lowerExpr(*call->args[0], ilFn);
+                    if (!argVal) return std::nullopt;
+                    auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
+
+                    il::ValueId res = ilFn.valueCount++;
+                    il::Instruction inst;
+                    inst.op = il::Op::ObjectKeys;
+                    inst.type = il::Type::Dynamic;
+                    inst.result = res;
+                    inst.operands = {argBoxed.id};
+                    emitInst(ilFn, inst);
+                    return Value{res, il::Type::Dynamic};
+                }
+            }
+
             if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
+                // A local binding shadows a module-level function, and so
+                // does an enclosing scope's environment slot: a nested
+                // function declaration registers in functionIndices_ under
+                // its source name, but every reference to it — including a
+                // sibling closure's — has to go through the environment
+                // chain, not a direct call (docs/0007 decision 3).
+                uint32_t shadowDepth = 0;
+                uint32_t shadowIndex = 0;
                 auto envIt = activeVarMap_.find(calleeIdent->name);
-                if (envIt == activeVarMap_.end()) {
+                if (envIt == activeVarMap_.end() &&
+                    !findEnclosingEnvVar(calleeIdent->name, shadowDepth, shadowIndex)) {
                     auto it = functionIndices_.find(calleeIdent->name);
                     if (it != functionIndices_.end()) {
                         uint32_t calleeIdx = it->second;
                         const auto& calleeFn = ilModule_.functions[calleeIdx];
 
-                        if (call->args.size() != calleeFn.params.size()) {
+                        // Synthetic parameters are not source arguments;
+                        // the arity the program has to match is the source
+                        // one.
+                        const size_t base = calleeFn.firstSourceParam();
+                        if (call->args.size() != calleeFn.params.size() - base) {
                             diags_.error(call->span, "argument count mismatch in call to " + calleeIdent->name);
                             return std::nullopt;
                         }
 
                         std::vector<il::ValueId> argVals;
+                        // A plain `f()` has no receiver, so a direct call
+                        // supplies undefined for `__this` (docs/0008
+                        // decision 3). `__env` cannot be supplied this way,
+                        // which is why the verifier forbids direct calls to
+                        // closures outright.
+                        if (calleeFn.needsThis) {
+                            argVals.push_back(emitConstUndefined(ilFn));
+                        }
                         for (size_t i = 0; i < call->args.size(); ++i) {
                             auto argVal = lowerExpr(*call->args[i], ilFn);
                             if (!argVal) return std::nullopt;
-                            if (calleeFn.params[i].type == il::Type::Dynamic) {
+                            const il::Type paramType = calleeFn.params[i + base].type;
+                            if (paramType == il::Type::Dynamic) {
                                 argVal = boxValueIfNeeded(*argVal, ilFn);
                             } else if (argVal->type == il::Type::Dynamic) {
-                                argVal = unboxValueIfNeeded(*argVal, calleeFn.params[i].type, ilFn);
+                                argVal = unboxValueIfNeeded(*argVal, paramType, ilFn);
                             }
                             argVals.push_back(argVal->id);
                         }

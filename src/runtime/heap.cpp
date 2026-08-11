@@ -1,6 +1,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "runtime/heap.h"
+
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 
 #ifdef _WIN32
@@ -220,24 +222,22 @@ void Heap::forward_value(Value& val) {
         return;
     }
 
-    auto* p1 = reinterpret_cast<HeapObjectHeader*>(raw_ptr);
-    auto* p2 = p1 - 1;
-    HeapObjectHeader* header = nullptr;
-
-    if (reinterpret_cast<uint8_t*>(p2) >= from_space_.base && is_valid_object_tag(p2->tag)) {
-        header = p2;
-    } else if (is_valid_object_tag(p1->tag)) {
-        header = p1;
-    } else {
+    // Every heap reference in a Value points at the object's HEADER — not
+    // its payload. This used to guess (try ptr-8, fall back to ptr, accept
+    // whichever carried a plausible tag), which is ambiguous by
+    // construction: an object's last payload word can hold a Value, and a
+    // Value's low 16 bits can be anything at all, including a valid-looking
+    // tag. Out-of-line blocks (object overflow slots, array elements) now
+    // store header pointers like everything else, so there is nothing left
+    // to guess.
+    auto* header = reinterpret_cast<HeapObjectHeader*>(raw_ptr);
+    if (!is_valid_object_tag(header->tag)) {
         return;
     }
 
-    size_t offset = raw_ptr - reinterpret_cast<uint8_t*>(header);
-
     if (header->tag == static_cast<uint16_t>(Tag::Forwarded)) {
         auto* new_hdr = *reinterpret_cast<HeapObjectHeader**>(header->payload());
-        uint8_t* updated_ptr = reinterpret_cast<uint8_t*>(new_hdr) + offset;
-        val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(updated_ptr));
+        val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(new_hdr));
         return;
     }
 
@@ -249,8 +249,7 @@ void Heap::forward_value(Value& val) {
     header->tag = static_cast<uint16_t>(Tag::Forwarded);
     *reinterpret_cast<HeapObjectHeader**>(header->payload()) = new_hdr;
 
-    uint8_t* updated_ptr = reinterpret_cast<uint8_t*>(new_hdr) + offset;
-    val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(updated_ptr));
+    val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(new_hdr));
 }
 
 void Heap::collect() {
@@ -266,6 +265,15 @@ void Heap::collect() {
 
     to_space_.bump_ptr = to_space_.base;
 
+    for (Value* slot : permanent_roots_) {
+        forward_value(*slot);
+    }
+
+    RootVisitor visit = [this](Value& slot) { forward_value(slot); };
+    for (const RootSource& src : root_sources_) {
+        src(visit);
+    }
+
     for (ShadowStackFrame* frame = ShadowStackFrame::current(); frame != nullptr; frame = frame->prev()) {
         Value** root_slots = frame->roots();
         size_t count = frame->count();
@@ -273,6 +281,15 @@ void Heap::collect() {
             if (root_slots[i]) {
                 forward_value(*root_slots[i]);
             }
+        }
+    }
+
+    // Generated code's root frames (docs/0006): contiguous slot arrays in
+    // compiled functions' own stack frames, linked inline by compiled code.
+    for (bronze_gc_frame* frame = bronze_gc_frame_top; frame != nullptr; frame = frame->prev) {
+        Value* slots = reinterpret_cast<Value*>(frame->slots);
+        for (uint64_t i = 0; i < frame->count; ++i) {
+            forward_value(slots[i]);
         }
     }
 

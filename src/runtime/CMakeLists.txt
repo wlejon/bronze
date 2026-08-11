@@ -5,6 +5,7 @@ bronze_add_module(runtime
         value.cpp
         heap.cpp
         gc.cpp
+        env.cpp
         string.cpp
         shape.cpp
         object.cpp

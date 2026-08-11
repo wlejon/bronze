@@ -63,7 +63,8 @@ a perf smoke against node from the first day.
   - property_access.js — 1M-iteration `o.a + o.b` loop — avg 890.1ms / min
     876.0ms. The dynamic-dispatch gap is now cleanly visible in one number:
     ~0.9µs per iteration of two prop.get helper calls + boxing. This is the
-    number inference (0006) and generated-code IC fast paths must attack.
+    number inference (a future doc) and generated-code IC fast paths must
+    attack.
 - 2026-08-10 (out-of-line slots landed, property keys interned): fib
   118.4/113.4ms, numeric_loop 88.1/82.8ms (both noise-level vs above);
   property_access.js — avg 144.5ms / min 138.1ms — **6.2x faster**. The
@@ -75,4 +76,14 @@ a perf smoke against node from the first day.
   root registration. Remaining ~0.14µs/iteration is the helper-call +
   boxing overhead that inference and generated-code IC fast paths attack
   next.
+- 2026-08-10 (generated code rooted, docs/0006): fib 118.3/113.0ms,
+  numeric_loop 87.4/81.9ms, property_access 148.4/143.1ms. Cost of making
+  compiled code survive a moving collection: **nothing** on the two f64
+  benchmarks — they hold no `dynamic` values, so they get no root frame at
+  all — and **~3%** on property_access. The first implementation registered
+  each frame with a pair of helper calls and cost 2.1x on fib (248ms):
+  a tiny, hot, all-`dynamic` function pays a fixed per-call cost twice.
+  Linking the frame inline instead put fib back exactly where it was. The
+  512MB heap reservation that existed only to postpone the first collection
+  is now 64MB, so ordinary runs actually collect.
 

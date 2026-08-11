@@ -2,7 +2,7 @@
 
 Status: designed 2026-08-10, ready for implementation. Pulls the
 control-flow item of 0001 phase 4 forward: it gates real benchmarks,
-real libraries, and inference (0006, future) alike. The canonical text
+real libraries, and inference (a future doc) alike. The canonical text
 form below is a ratchet surface — settle it here, then never bend it.
 
 ## Decision 1 — join representation: block arguments, not phi instructions

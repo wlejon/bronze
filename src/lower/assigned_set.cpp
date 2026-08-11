@@ -12,6 +12,7 @@ public:
     void visit(const ast::BoolLit&) override {}
     void visit(const ast::NullLit&) override {}
     void visit(const ast::UndefinedLit&) override {}
+    void visit(const ast::ThisExpr&) override {}
     void visit(const ast::Ident&) override {}
 
     void visit(const ast::Unary& u) override {

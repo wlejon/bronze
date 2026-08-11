@@ -38,6 +38,8 @@ enum class TokenKind {
     KwThrow,
     KwTrue,
     KwTry,
+    KwDelete,
+    KwThis,
     KwUndefined,
     KwVar,
     KwWhile,

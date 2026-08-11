@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -53,9 +54,15 @@ enum class Op : uint8_t {
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
     ElemSet,    // elem.set obj, idx, val       (all dynamic)
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
+    Construct,  // a = new callee, args...              (docs/0008)
     CreateObject, // a = create.object
+    ObjectKeys, // a = object.keys b                  (docs/0009)
     CreateArray,  // a = create.array <length>
-    CreateFunction,// a = create.func <funcIndex>
+    CreateFunction,// a = create.func <funcIndex>, env
+    FunctionRef,   // a = func.ref <funcIndex>          (docs/0008)
+    EnvCreate,  // a = env.create parent, <slots>     (docs/0007)
+    EnvGet,     // a = env.get env, <depth>, <index>
+    EnvSet,     // env.set env, <depth>, <index>, v
     CreateArrayBuffer,  // a = create.arraybuffer len      (len dynamic)
     CreateFloat32Array, // a = create.f32array arg         (length or buffer, dynamic)
     Print,      // print a
@@ -90,6 +97,8 @@ struct Instruction {
     Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
+    uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
+    uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
 
     BlockTarget target;              // Jump target / Branch then-target
     BlockTarget elseTarget;          // Branch else-target
@@ -108,9 +117,22 @@ struct Param {
 
 struct Function {
     std::string name;
+    // Synthetic leading parameters come first, in this order:
+    //   [__env if needsEnv] [__this if needsThis] source parameters...
+    // __env can only come from the closure, so a needsEnv function is
+    // never a direct-call target (docs/0007); __this is supplied by every
+    // caller, including direct ones, so needsThis carries no such
+    // restriction (docs/0008 decision 3).
     std::vector<Param> params;
     Type returnType = Type::Void;
     bool isExported = false;
+    bool needsEnv = false;
+    bool needsThis = false;
+
+    // Index of the first source-level parameter.
+    size_t firstSourceParam() const {
+        return static_cast<size_t>(needsEnv) + static_cast<size_t>(needsThis);
+    }
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
@@ -118,7 +140,11 @@ struct Function {
 struct Module {
     std::string name;
     std::vector<std::string> keyConstants;
-    std::vector<Function> functions;
+    // A deque, not a vector: lowering a function body can append nested
+    // closures, and the body being lowered is itself an element. Only a
+    // reference-stable container lets a recursive call read its own
+    // (still-being-inferred) signature without dangling on a reallocation.
+    std::deque<Function> functions;
 };
 
 }  // namespace bronze::il
