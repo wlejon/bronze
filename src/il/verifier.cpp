@@ -204,6 +204,26 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             }
         }
     }
+
+    // The IC table is a fixed-size global array in the generated object
+    // file (docs/0010 decision 7), so an icIndex past the module's site
+    // count is an out-of-bounds store into the object file's data, not a
+    // missed optimization. Named here rather than clamped in the backend.
+    for (const auto& fn : module.functions) {
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op != Op::PropGet && inst.op != Op::PropSet) continue;
+                if (inst.icIndex >= module.icSiteCount) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " names inline-cache site " +
+                                            std::to_string(inst.icIndex) +
+                                            ", past the module's site count " +
+                                            std::to_string(module.icSiteCount));
+                    return false;
+                }
+            }
+        }
+    }
     return true;
 }
 

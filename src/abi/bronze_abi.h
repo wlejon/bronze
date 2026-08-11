@@ -62,8 +62,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_env_create,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_set,             BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
-    X(bronze_prop_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
-    X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+    X(bronze_prop_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
+    X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_create_arraybuffer,  BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
@@ -85,6 +85,63 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  */
 #define BRONZE_ABI_GLOBALS(X) \
     X(bronze_gc_frame_top, BRONZE_ABI_FRAMEPTR)
+
+/*
+ * ---- the inline property cache contract (docs/0010 decision 7) ----------
+ *
+ * The IC table is a zero-initialized global array in the GENERATED object
+ * file, one BRONZE_ABI_IC_ENTRY_SIZE-byte entry per property site, and the
+ * entry pointer is what `bronze_prop_get` / `bronze_prop_set` take (the
+ * BRONZE_ABI_MU64 above) instead of an index into a runtime vector. A vector
+ * reallocates, so generated code could not hold a pointer into it, so the
+ * check had to happen inside the helper and the CALL was most of the cost.
+ *
+ * Generated code loads these fields itself, so the runtime's C++ layouts
+ * below are part of this ABI, not private to the runtime. object.h and
+ * rt_helpers.cpp static_assert every constant here against the real struct,
+ * so adding a field to `InlineCache`, `HeapObjectHeader` or `ObjectHeader`
+ * is a compile error rather than a silent miscompile.
+ *
+ * The entry is three plain words the collector never touches: shapes are
+ * immortal and non-moving (docs/0004 decision 2), and the holder is derived
+ * from `cached_depth` rather than cached (docs/0008 decision 2).
+ */
+#define BRONZE_ABI_IC_ENTRY_SIZE     16 /* sizeof(InlineCache) */
+#define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
+#define BRONZE_ABI_IC_SLOT_OFFSET     8 /* InlineCache::cached_slot  (uint32) */
+#define BRONZE_ABI_IC_DEPTH_OFFSET   12 /* InlineCache::cached_depth (uint32) */
+/* slot and depth are adjacent and little-endian, so the single u64 at
+ * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
+ * therefore ONE compare meaning "own property, in an inline slot" — the
+ * exact envelope the inline fast path covers. Reading only the low half
+ * would forget the depth and return an ancestor's slot off the receiver,
+ * which is the bug docs/0008 decision 2 exists to prevent. */
+#define BRONZE_ABI_IC_SLOTWORD_OFFSET BRONZE_ABI_IC_SLOT_OFFSET
+
+/* Value: NaN-boxed, tag in the top 16 bits (runtime/value.h). */
+#define BRONZE_ABI_VALUE_TAG_SHIFT      48
+#define BRONZE_ABI_VALUE_PAYLOAD_MASK   0x0000FFFFFFFFFFFFull
+#define BRONZE_ABI_TAG_OBJECT           0xFFF1
+
+/* HeapObjectHeader::flags, and the value that means "a plain object" as
+ * opposed to an array (1), a function (2), a Float32Array (3) or an
+ * ArrayBuffer (4). All of them reach bronze_prop_get, so the fast path has
+ * to discriminate on this before it believes anything else. */
+#define BRONZE_ABI_OBJ_FLAGS_OFFSET      2
+#define BRONZE_ABI_OBJ_FLAGS_PLAIN       0
+
+/* ObjectHeader: the shape word, then the out-of-line overflow Value, then
+ * kInlineSlots inline Values. Slots at or past kInlineSlots live in the
+ * overflow block and are NOT covered by the inline fast path. */
+#define BRONZE_ABI_OBJ_SHAPE_OFFSET      8
+#define BRONZE_ABI_OBJ_SLOTS_OFFSET     24
+#define BRONZE_ABI_OBJ_INLINE_SLOTS      4
+
+/* Every Object-tagged heap allocation has at least this many payload bytes,
+ * which is what makes the fast path's unconditional load of the shape word
+ * (offset 8..15) safe BEFORE the flags discrimination has passed. Pinned by
+ * static_asserts over every Object-tagged header in rt_helpers.cpp. */
+#define BRONZE_ABI_OBJ_MIN_PAYLOAD       8
 
 /*
  * A generated function's GC root frame (docs/0006): allocated in the

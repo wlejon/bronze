@@ -33,8 +33,32 @@ static std::vector<std::string> g_keyStrings;
 // The same keys as immortal arena strings: property paths use these
 // directly so a property access allocates nothing.
 static std::vector<StringHeader*> g_keyHeaders;
-static std::vector<InlineCache> g_inlineCaches;
 static const std::string g_emptyKey;
+
+// The IC table is no longer here. It is a zero-initialized global array in
+// the GENERATED object file, one entry per property site, and the helpers
+// below take the entry pointer (docs/0010 decision 7). That is what lets
+// compiled code hold a stable address per site and inline the shape check,
+// which a std::vector — which reallocates — could never offer.
+//
+// `entry` is null only when a caller has no site to cache against (the
+// runtime's own property paths); ObjectHeader::getProp already treats a
+// null cache as "look it up and cache nothing", which is a difference in
+// speed and not in semantics.
+static InlineCache* asCache(uint64_t* entry) noexcept {
+    return reinterpret_cast<InlineCache*>(entry);
+}
+
+// The inline fast path in generated code loads HeapObjectHeader::flags
+// (offset 2) and ObjectHeader::shape (offsets 8..15) from any Object-tagged
+// pointer BEFORE it knows which kind of object it has, so every Object-
+// tagged allocation must be at least that large. An ArrayBuffer of zero
+// bytes is the smallest one there is.
+static_assert(sizeof(ObjectHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(ArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(FunctionHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(Float32ArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 
 // Root shapes the runtime has created. Shapes are immortal but the
 // prototype objects they name are not, so the collector has to forward
@@ -62,6 +86,13 @@ static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
 static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
               "BRONZE_ABI_NULL_BITS in bronze_abi.h has drifted from the value model");
+
+// Generated code open-codes the object test of the inline property fast
+// path (docs/0010 decision 7), so the boxing constants it uses are pinned
+// against the value model here, exactly like the two above.
+static_assert(kTagShift == BRONZE_ABI_VALUE_TAG_SHIFT);
+static_assert(kPayloadMask == BRONZE_ABI_VALUE_PAYLOAD_MASK);
+static_assert(static_cast<uint16_t>(Tag::Object) == BRONZE_ABI_TAG_OBJECT);
 
 static uint64_t bronze_builtin_string_char_code_at(uint64_t envBits, uint64_t thisBits, uint32_t argc,
                                                    const uint64_t* argvBits) {
@@ -418,14 +449,18 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
     env->slotsData()[index] = Value(valBits);
 }
 
-uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) {
+uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     Value objVal(objBits);
+    InlineCache* ic = asCache(icEntry);
 
-    // IC-hit fast path first: a shape match needs no key at all.
+    // IC-hit fast path first: a shape match needs no key at all. Generated
+    // code inlines the depth-0/inline-slot corner of exactly this check
+    // (docs/0010 decision 7) and only calls in when that misses, so what
+    // remains hot here is the proto-hit and overflow-slot case.
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
-        if (fastHdr->flags == 0 && icIndex < g_inlineCaches.size()) {
-            const InlineCache& fastIc = g_inlineCaches[icIndex];
+        if (fastHdr->flags == 0 && ic) {
+            const InlineCache& fastIc = *ic;
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             if (fastIc.cached_shape && fastIc.cached_shape == fastObj->shape) {
                 // Depth 0 is an own property — the common case, straight to
@@ -522,10 +557,6 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
         return Value::fromUndefined().rawBits();
     }
 
-    if (icIndex >= g_inlineCaches.size()) {
-        g_inlineCaches.resize(icIndex + 1);
-    }
-    InlineCache* ic = &g_inlineCaches[icIndex];
     if (keyIndex >= g_keyHeaders.size() || !g_keyHeaders[keyIndex]) {
         fatal("property access with an unregistered key index");
     }
@@ -536,17 +567,21 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint32_t icIndex) 
     return result.rawBits();
 }
 
-void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint32_t icIndex) {
+void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry) {
     Value objVal(objBits);
     Value valVal(valBits);
+    InlineCache* ic = asCache(icEntry);
     if (!objVal.isObject()) return;
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
 
     // IC-hit fast path: a shape match writes the slot with no key and no
-    // rooting (nothing below can allocate).
-    if (hdr->flags == 0 && icIndex < g_inlineCaches.size()) {
-        const InlineCache& fastIc = g_inlineCaches[icIndex];
+    // rooting (nothing below can allocate). Writes are NOT inlined into
+    // generated code: a write can transition the shape and grow the
+    // overflow block, so the interesting half of the work is the miss, and
+    // the miss is a call either way (docs/0010 decision 7 inlines the read).
+    if (hdr->flags == 0 && ic) {
+        const InlineCache& fastIc = *ic;
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (fastIc.cached_shape && fastIc.cached_shape == fastObj->shape) {
             fastObj->setSlot(fastIc.cached_slot, valVal);
@@ -603,10 +638,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         return;
     }
 
-    if (icIndex >= g_inlineCaches.size()) {
-        g_inlineCaches.resize(icIndex + 1);
-    }
-    InlineCache* ic = &g_inlineCaches[icIndex];
     if (keyIndex >= g_keyHeaders.size() || !g_keyHeaders[keyIndex]) {
         fatal("property write with an unregistered key index");
     }

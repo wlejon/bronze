@@ -121,6 +121,7 @@ private:
     static il::Type ilTypeOf(types::Type t);
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
+    bool monomorphicPropSite(const ast::Expr& receiver) const;
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,

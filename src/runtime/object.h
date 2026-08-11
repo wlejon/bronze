@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/shape.h"
@@ -65,5 +67,26 @@ struct ObjectHeader {
         return reinterpret_cast<const Value*>(this + 1);
     }
 };
+
+// These two layouts are part of the generated-code ABI (docs/0010 decision
+// 7): compiled code loads the shape word and the cache entry itself rather
+// than calling a helper to do it. The constants live in bronze_abi.h, which
+// is pure C and cannot see a C++ class, so this is where the two sides are
+// tied together — deliberately in the HEADER, so every translation unit
+// that can see the structs also checks them. Adding or reordering a field
+// breaks the build here instead of miscompiling every property read.
+static_assert(sizeof(InlineCache) == BRONZE_ABI_IC_ENTRY_SIZE);
+static_assert(alignof(InlineCache) <= 8);
+static_assert(offsetof(InlineCache, cached_shape) == BRONZE_ABI_IC_SHAPE_OFFSET);
+static_assert(offsetof(InlineCache, cached_slot) == BRONZE_ABI_IC_SLOT_OFFSET);
+static_assert(offsetof(InlineCache, cached_depth) == BRONZE_ABI_IC_DEPTH_OFFSET);
+static_assert(sizeof(InlineCache::cached_slot) == 4 && sizeof(InlineCache::cached_depth) == 4,
+              "the fast path reads slot and depth as one u64; both halves must be 32 bits");
+
+static_assert(offsetof(HeapObjectHeader, flags) == BRONZE_ABI_OBJ_FLAGS_OFFSET);
+static_assert(offsetof(ObjectHeader, shape) == BRONZE_ABI_OBJ_SHAPE_OFFSET);
+static_assert(sizeof(ObjectHeader) == BRONZE_ABI_OBJ_SLOTS_OFFSET,
+              "inline slots start immediately after ObjectHeader");
+static_assert(ObjectHeader::kInlineSlots == BRONZE_ABI_OBJ_INLINE_SLOTS);
 
 }  // namespace bronze

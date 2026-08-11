@@ -97,6 +97,16 @@ struct Instruction {
     Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
+    // PropGet: inference proved this site's receiver has ONE shape class
+    // (docs/0010 decision 4), so the backend may inline the cache check
+    // instead of calling the helper. False is always sound — it is the
+    // plain call — and an unproven site keeps it, so the inline form can
+    // never degenerate into a polymorphic guard chain in generated code.
+    // It licenses the inline sequence; it does not remove the guard. The
+    // shape word is the runtime's authority and a shape class can name a
+    // layout the runtime never builds (`this.x = ...` inside a branch), so
+    // the guard is what makes the proof sound, not a redundancy on top.
+    bool icMonomorphic = false;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
 
@@ -140,6 +150,12 @@ struct Function {
 struct Module {
     std::string name;
     std::vector<std::string> keyConstants;
+    // How many inline-cache sites lowering handed out across the whole
+    // module. The backend emits exactly this many entries as a global array
+    // in the object file (docs/0010 decision 7), so it is the size of a
+    // real allocation, not a hint: the verifier checks every icIndex
+    // against it.
+    uint32_t icSiteCount = 0;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

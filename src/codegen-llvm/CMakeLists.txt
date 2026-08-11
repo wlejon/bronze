@@ -4,6 +4,8 @@ llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target x86codegen
 
 bronze_add_module(codegen_llvm
     SOURCES
+        llvm_abi.cpp
+        llvm_prop.cpp
         llvm_backend.cpp
     DEPS
         abi

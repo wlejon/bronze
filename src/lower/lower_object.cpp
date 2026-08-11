@@ -134,6 +134,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     inst.operands = {objBoxed.id};
     inst.keyIndex = keyIdx;
     inst.icIndex = icIdx;
+    inst.icMonomorphic = monomorphicPropSite(*mem->object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
@@ -178,6 +179,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     inst.operands = {objBoxed.id};
     inst.keyIndex = keyIdx;
     inst.icIndex = icIdx;
+    inst.icMonomorphic = monomorphicPropSite(*idxAccess->object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
@@ -324,6 +326,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         inst.operands = {thisArgVal.id};
         inst.keyIndex = keyIdx;
         inst.icIndex = icIdx;
+        inst.icMonomorphic = monomorphicPropSite(*mem->object);
         emitInst(ilFn, inst);
         calleeVal = Value{getRes, il::Type::Dynamic};
     } else {

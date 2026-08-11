@@ -145,6 +145,11 @@ std::string print(const Module& module) {
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
+                        // The site inference proved monomorphic, which is
+                        // what licenses the inlined cache check in the
+                        // backend — visible in the canonical text because
+                        // it changes the code that gets emitted.
+                        if (inst.icMonomorphic) out += ", mono";
                         break;
                     case Op::PropSet:
                         out += "prop.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

@@ -24,26 +24,15 @@
 #include <llvm/TargetParser/Host.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_prop.h"
 #include "il/print.h"
 #include "il/verifier.h"
 
 namespace bronze {
 
-// One llvm::Function* per entry in the ABI registry, named after the
-// runtime symbol itself; populated in emitObject from the same X-macro
-// list that declares the C prototypes, so the two sides cannot drift.
-struct AbiFns {
-#define BRONZE_ABI_FIELD(name, RET, PARAMS) llvm::Function* name;
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_FIELD)
-#undef BRONZE_ABI_FIELD
-};
-
-// Likewise for the registry's data symbols.
-struct AbiGlobals {
-#define BRONZE_ABI_GLOBAL_FIELD(name, TYPE) llvm::GlobalVariable* name;
-    BRONZE_ABI_GLOBALS(BRONZE_ABI_GLOBAL_FIELD)
-#undef BRONZE_ABI_GLOBAL_FIELD
-};
+using codegen_llvm::AbiFns;
+using codegen_llvm::AbiGlobals;
 
 static llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
     switch (type) {
@@ -70,58 +59,19 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     llvm::LLVMContext ctx;
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
-    auto getOrDeclareFunc = [&](const std::string& name, llvm::FunctionType* fty) -> llvm::Function* {
-        llvm::Function* fn = llvmModule->getFunction(name);
-        if (!fn) {
-            fn = llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, llvmModule.get());
-        }
-        return fn;
-    };
-
-    // Declare every ABI helper from the registry (src/abi/bronze_abi.h) by
-    // rebinding its type tokens to llvm::Type*.
-#define BRONZE_ABI_U64    llvm::Type::getInt64Ty(ctx)
-#define BRONZE_ABI_U32    llvm::Type::getInt32Ty(ctx)
-#define BRONZE_ABI_I32    llvm::Type::getInt32Ty(ctx)
-#define BRONZE_ABI_F64    llvm::Type::getDoubleTy(ctx)
-#define BRONZE_ABI_BOOL   llvm::Type::getInt1Ty(ctx)
-#define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_MU64   llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_FRAMEPTR llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_VOID   llvm::Type::getVoidTy(ctx)
-#define BRONZE_ABI_NOARGS
-#define BRONZE_ABI_UNPAREN(...) __VA_ARGS__
+    // Every symbol generated code links against, declared from the registry
+    // in src/abi/bronze_abi.h (see codegen-llvm/llvm_abi.cpp).
     AbiFns abi;
-#define BRONZE_ABI_LLVM_DECLARE(name, RET, PARAMS) \
-    abi.name = getOrDeclareFunc(#name, \
-        llvm::FunctionType::get(RET, {BRONZE_ABI_UNPAREN PARAMS}, false));
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
-#undef BRONZE_ABI_LLVM_DECLARE
-
-    // Data symbols from the same registry (currently just the root-frame
-    // list head); declaration only, so the runtime owns the definition.
     AbiGlobals abiGlobals;
-#define BRONZE_ABI_LLVM_DECLARE_GLOBAL(name, TYPE)                                       \
-    abiGlobals.name = new llvm::GlobalVariable(*llvmModule, TYPE, /*isConstant=*/false, \
-                                               llvm::GlobalValue::ExternalLinkage,       \
-                                               /*Initializer=*/nullptr, #name);
-    BRONZE_ABI_GLOBALS(BRONZE_ABI_LLVM_DECLARE_GLOBAL)
-#undef BRONZE_ABI_LLVM_DECLARE_GLOBAL
-#undef BRONZE_ABI_UNPAREN
-#undef BRONZE_ABI_U64
-#undef BRONZE_ABI_U32
-#undef BRONZE_ABI_I32
-#undef BRONZE_ABI_F64
-#undef BRONZE_ABI_BOOL
-#undef BRONZE_ABI_CSTR
-#undef BRONZE_ABI_PU64
-#undef BRONZE_ABI_MU64
-#undef BRONZE_ABI_FRAMEPTR
-#undef BRONZE_ABI_FNPTR
-#undef BRONZE_ABI_VOID
-#undef BRONZE_ABI_NOARGS
+    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals);
+
+    // The module's inline-cache table, one entry per property site lowering
+    // numbered (docs/0010 decision 7). It is data in THIS object file, which
+    // is what gives every site a stable address and lets the check be
+    // inlined; the verifier has already checked every icIndex against the
+    // count, so the table cannot be indexed out of range below.
+    llvm::GlobalVariable* icTable =
+        codegen_llvm::createIcTable(*llvmModule, ctx, module.icSiteCount);
 
     std::vector<llvm::Function*> llvmFunctions;
     llvmFunctions.reserve(module.functions.size());
@@ -357,6 +307,12 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             };
 
             for (const auto& inst : block.instructions) {
+                // `bb` is the CURRENT insertion block, not the one this IL
+                // block started in: an inlined property guard splits the
+                // block, so a terminator later in the same IL block has a
+                // different LLVM predecessor and the phi incomings below
+                // have to name it. It is refreshed after every instruction.
+                bb = builder.GetInsertBlock();
                 for (il::ValueId id : inst.operands) reload(id);
                 for (il::ValueId id : inst.target.args) reload(id);
                 for (il::ValueId id : inst.elseTarget.args) reload(id);
@@ -557,9 +513,13 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined object in PropGet instruction");
                         return false;
                     }
-                    llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
-                    llvm::Value* icIdx = builder.getInt32(inst.icIndex);
-                    values[inst.result] = builder.CreateCall(abi.bronze_prop_get, {objVal, kIdx, icIdx});
+                    // A site inference proved monomorphic gets the guard
+                    // inlined here; an unproven one keeps the plain call, so
+                    // the inline form never grows into a polymorphic guard
+                    // chain in the object file (docs/0010 decisions 4, 7).
+                    values[inst.result] =
+                        codegen_llvm::emitPropGet(builder, abi, icTable, objVal, inst.keyIndex,
+                                                  inst.icIndex, inst.icMonomorphic);
                     break;
                 }
                 case il::Op::PropSet: {
@@ -573,9 +533,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                         diags.error(Span{}, "Undefined operand in PropSet instruction");
                         return false;
                     }
-                    llvm::Value* kIdx = builder.getInt32(inst.keyIndex);
-                    llvm::Value* icIdx = builder.getInt32(inst.icIndex);
-                    builder.CreateCall(abi.bronze_prop_set, {objVal, kIdx, valVal, icIdx});
+                    codegen_llvm::emitPropSet(builder, abi, icTable, objVal, inst.keyIndex, valVal,
+                                              inst.icIndex);
                     break;
                 }
                 case il::Op::ElemGet: {

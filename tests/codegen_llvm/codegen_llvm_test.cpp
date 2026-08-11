@@ -119,6 +119,11 @@ TEST_CASE("LLVM backend emits object file for comparison IL module") {
 TEST_CASE("LLVM backend emits object file for dynamic IL module with Box, Unbox, PropGet, PropSet, DynamicCall") {
     il::Module module;
     module.name = "test_dynamic_ops";
+    // Both property sites below name IC site 0, which the module has to
+    // declare: the backend emits exactly icSiteCount entries as a global
+    // array, so this is an allocation size, not a hint (docs/0010
+    // decision 7).
+    module.icSiteCount = 1;
 
     il::Function dynFunc;
     dynFunc.name = "dynTest";
@@ -164,4 +169,113 @@ TEST_CASE("LLVM backend emits object file for dynamic IL module with Box, Unbox,
     CHECK(std::filesystem::file_size(outPath) > 0);
 
     std::filesystem::remove(outPath);
+}
+
+// A monomorphic property site (docs/0010 decisions 4 and 7) emits a guarded
+// fast path instead of a plain call, which SPLITS the basic block. The IL
+// block therefore ends in a different LLVM block than it started in, and a
+// terminator carrying block arguments has to name that one as the phi's
+// predecessor — get it wrong and llvm::verifyModule rejects the module for
+// a phi whose entries do not match its predecessors, which is what this
+// pins. It also exercises the IC table global itself.
+TEST_CASE("LLVM backend emits the inlined cache guard and keeps block-argument phis honest") {
+    il::Module module;
+    module.name = "test_inline_ic";
+    module.icSiteCount = 2;
+
+    il::Instruction monoGet;
+    monoGet.op = il::Op::PropGet;
+    monoGet.type = il::Type::Dynamic;
+    monoGet.result = 1;
+    monoGet.operands = {0};
+    monoGet.keyIndex = 0;
+    monoGet.icIndex = 0;
+    monoGet.icMonomorphic = true;
+
+    // A second site at the same receiver, unproven: the plain call form,
+    // side by side with the inlined one in the same block.
+    il::Instruction plainGet;
+    plainGet.op = il::Op::PropGet;
+    plainGet.type = il::Type::Dynamic;
+    plainGet.result = 2;
+    plainGet.operands = {0};
+    plainGet.keyIndex = 0;
+    plainGet.icIndex = 1;
+
+    il::Instruction jump;
+    jump.op = il::Op::Jump;
+    jump.type = il::Type::Void;
+    jump.result = il::kNoValue;
+    jump.target = il::BlockTarget{1, {1, 2}};
+
+    il::Instruction ret;
+    ret.op = il::Op::Ret;
+    ret.type = il::Type::Dynamic;
+    ret.result = il::kNoValue;
+    ret.operands = {3};
+
+    il::Function fn;
+    fn.name = "icTest";
+    fn.params = {{"obj", il::Type::Dynamic}};
+    fn.returnType = il::Type::Dynamic;
+    fn.isExported = true;
+    fn.valueCount = 5;
+    fn.blocks = {
+        {0, {}, {monoGet, plainGet, jump}},
+        {1, {{3, il::Type::Dynamic}, {4, il::Type::Dynamic}}, {ret}},
+    };
+    module.functions.push_back(fn);
+
+    std::filesystem::path outPath = std::filesystem::temp_directory_path() / "bronze_test_ic.obj";
+    std::filesystem::remove(outPath);
+
+    DiagnosticSink diags;
+    LLVMBackend backend;
+    bool success = backend.emitObject(module, outPath.string(), diags);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(success);
+    REQUIRE(std::filesystem::exists(outPath));
+    CHECK(std::filesystem::file_size(outPath) > 0);
+
+    std::filesystem::remove(outPath);
+}
+
+// The IC table is a fixed-size global array in the object file, so a site
+// index past the module's count would be an out-of-bounds store into the
+// object file's own data. The verifier names it rather than the backend
+// clamping it (docs/0010 decision 7).
+TEST_CASE("IL verification rejects a property site past the module's IC site count") {
+    il::Module module;
+    module.name = "test_ic_overrun";
+    module.icSiteCount = 1;
+
+    il::Instruction get;
+    get.op = il::Op::PropGet;
+    get.type = il::Type::Dynamic;
+    get.result = 1;
+    get.operands = {0};
+    get.icIndex = 1;  // one past the end
+
+    il::Instruction ret;
+    ret.op = il::Op::Ret;
+    ret.type = il::Type::Dynamic;
+    ret.result = il::kNoValue;
+    ret.operands = {1};
+
+    il::Function fn;
+    fn.name = "overrun";
+    fn.params = {{"obj", il::Type::Dynamic}};
+    fn.returnType = il::Type::Dynamic;
+    fn.valueCount = 2;
+    fn.blocks = {{0, {}, {get, ret}}};
+    module.functions.push_back(fn);
+
+    std::filesystem::path outPath = std::filesystem::temp_directory_path() / "bronze_test_ic_bad.obj";
+    std::filesystem::remove(outPath);
+
+    DiagnosticSink diags;
+    LLVMBackend backend;
+    CHECK_FALSE(backend.emitObject(module, outPath.string(), diags));
+    CHECK(diags.hasErrors());
 }

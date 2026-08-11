@@ -519,6 +519,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.operands = {objBoxed.id};
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
+            getInst.icMonomorphic = monomorphicPropSite(*mem->object);
             emitInst(ilFn, getInst);
             curVal = Value{cur, il::Type::Dynamic};
         }
@@ -573,6 +574,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.operands = {objBoxed.id};
                 getInst.keyIndex = keyIdx;
                 getInst.icIndex = icSiteCounter_++;
+                getInst.icMonomorphic = monomorphicPropSite(*idxAccess->object);
             } else {
                 getInst.op = il::Op::ElemGet;
                 getInst.operands = {objBoxed.id, idxBoxed->id};

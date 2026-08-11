@@ -105,4 +105,17 @@ a perf smoke against node from the first day.
   only that the loop accumulator is carried honestly. That number is what
   docs/0010 decision 7 attacks — its 1.13x here is the control, not the
   result.
+- 2026-08-11 (inline property caches, docs/0010 step 4): property_access
+  **85.1/80.6ms — 37% faster** than the entry above; fib 10.7/6.9ms and
+  numeric_loop 37.5/33.3ms unchanged (they hold no objects).
+
+  The IC table moved out of a runtime `std::vector` and into a global array
+  in the generated object file, so generated code can finally hold a stable
+  pointer to a site's entry and do the check itself: tag check, `flags`
+  check, shape compare, one indexed load. Instrumented over the benchmark's
+  2,000,000 property reads, `bronze_prop_get` is entered **twice** — one
+  cold miss per site. The remaining time is no longer dispatch.
+
+  Cumulative over the three benchmarks since phase 3 began: fib **11.1x**,
+  numeric_loop **2.4x**, property_access **1.75x**.
 

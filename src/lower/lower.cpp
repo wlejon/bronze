@@ -156,6 +156,10 @@ std::optional<il::Module> Lowerer::lower() {
     for (const auto& entry : keyConstants_) {
         ilModule_.keyConstants[entry.second] = entry.first;
     }
+    // The site counter is now the size of a real allocation: the backend
+    // emits exactly this many IC entries as a global array in the object
+    // file (docs/0010 decision 7).
+    ilModule_.icSiteCount = icSiteCounter_;
     return ilModule_;
 }
 

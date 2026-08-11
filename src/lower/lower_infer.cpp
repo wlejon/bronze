@@ -46,6 +46,35 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
     return inferredType(expr).is(types::TypeKind::Number);
 }
 
+// Whether a property site's receiver is proven to have ONE compile-time
+// object identity, which is what licenses the inlined inline-cache check in
+// the backend (docs/0010 decisions 4 and 7).
+//
+// The test is on the RECEIVER, not on where the property is found. A shape
+// class is a claim about the object's layout, and a monomorphic receiver is
+// exactly the condition an inline cache is built for: one shape reaches the
+// site, so one cached entry serves it. Whether the hit is own (depth 0) or
+// up the prototype chain is a fact the runtime discovers and records in the
+// entry, not one the class can answer — docs/0008 puts `Foo.prototype.m`
+// on a different object with a different shape entirely, so demanding the
+// property be at a known index in the receiver's class would exclude every
+// method call, which is the case three.js is made of.
+//
+// A receiver that joins two classes answers `Object` with no class and gets
+// the plain call, so the inline form never becomes a polymorphic guard
+// chain in generated code — the named non-goal of decision 4.
+//
+// This never removes the guard. The proof is over THIS compilation's
+// source, and a shape class collects `this.x = ...` assignments
+// unconditionally, including ones inside branches, so a class can name a
+// layout the runtime never actually builds. The emitted sequence is sound
+// only because the shape word is still compared at run time; deleting the
+// compare needs escape analysis, which docs/0010 places outside this phase.
+bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
+    const types::Type t = inferredType(receiver);
+    return t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass;
+}
+
 // The IL type of a block parameter at a control-flow merge (docs/0005
 // decision 2): an if/else join, a loop header, a loop exit.
 //
