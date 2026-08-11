@@ -211,6 +211,196 @@ uint64_t objectIsFrozen(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
     return Value::fromBool(true).rawBits();
 }
 
+// 20.1.2.20 Object.seal, which is 20.1.2.6 SetIntegrityLevel(O, sealed):
+// `freeze` minus the writable half, so a sealed object's properties can still
+// be WRITTEN and cannot be added, removed or redefined.
+uint64_t objectSeal(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) return args[0].rawBits();
+    Rooted<Value> self{args[0]};
+    ObjectHeader::toDictionary(rtArena(), self);
+    Dictionary& d = *self.get().asObject<ObjectHeader>()->shape->dict;
+    for (DictEntry& e : d.entries) e.configurable = false;
+    d.extensible = false;
+    return self.get().rawBits();
+}
+
+uint64_t objectIsSealed(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) return Value::fromBool(true).rawBits();
+    auto* obj = args[0].asObject<ObjectHeader>();
+    if (!obj->shape || !obj->shape->isDictionary()) return Value::fromBool(false).rawBits();
+    const Dictionary& d = *obj->shape->dict;
+    if (d.extensible) return Value::fromBool(false).rawBits();
+    for (const DictEntry& e : d.entries) {
+        if (e.configurable) return Value::fromBool(false).rawBits();
+    }
+    return Value::fromBool(true).rawBits();
+}
+
+// 20.1.2.19 / 20.1.2.16. `extensible` is a field of the dictionary, so
+// clearing it is what moves the object there; asking about it does not.
+uint64_t objectPreventExtensions(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) return args[0].rawBits();
+    Rooted<Value> self{args[0]};
+    ObjectHeader::toDictionary(rtArena(), self);
+    self.get().asObject<ObjectHeader>()->shape->dict->extensible = false;
+    return self.get().rawBits();
+}
+
+uint64_t objectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) return Value::fromBool(false).rawBits();
+    auto* obj = args[0].asObject<ObjectHeader>();
+    if (!obj->shape || !obj->shape->isDictionary()) return Value::fromBool(true).rawBits();
+    return Value::fromBool(obj->shape->dict->extensible).rawBits();
+}
+
+// 20.1.2.12 Object.getPrototypeOf.
+//
+// bronze has no `Object.prototype`, so a plain `{}` has NO prototype at all —
+// where the language says its prototype is that object. Answering `null` for
+// it would be a wrong answer that reads exactly like the right one for
+// `Object.create(null)`, so the two are kept apart: an explicit null prototype
+// answers null, and the absence of a builtin prototype is a named error rather
+// than a lie. The same is true of an array and a function, whose prototypes
+// are the two other intrinsics bronze does not have.
+uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) {
+        if (!args[0].isObject()) {
+            return rtThrowTypeError(
+                       "Object.getPrototypeOf called on a value that is not an object")
+                .rawBits();
+        }
+        fatal("unsupported: Object.getPrototypeOf of an array or a function needs "
+              "Array.prototype / Function.prototype, which bronze does not provide");
+    }
+    Shape* shape = args[0].asObject<ObjectHeader>()->shape;
+    const Value proto = shape ? shape->prototypeValue() : Value::fromUndefined();
+    if (proto.isObject() || proto.isNull()) return proto.rawBits();
+    fatal("unsupported: Object.getPrototypeOf of a plain object needs Object.prototype, "
+          "which bronze does not provide");
+}
+
+// 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
+uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[1].isObject() && !args[1].isNull()) {
+        return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
+    }
+    if (!isPlainObject(args[0])) {
+        if (args[0].isNull() || args[0].isUndefined()) {
+            return rtThrowTypeError("Object.setPrototypeOf called on null or undefined")
+                .rawBits();
+        }
+        if (!args[0].isObject()) return args[0].rawBits();  // 20.1.2.21 step 3
+        fatal("unsupported: Object.setPrototypeOf on an array, a function, a Map or a Set "
+              "(only a plain object carries its prototype on a shape bronze can replace)");
+    }
+    Rooted<Value> self{args[0]};
+    Rooted<Value> proto{args[1]};
+    Shape* newRoot = rtRootShapeForPrototype(proto.get());
+    ObjectHeader::setPrototype(rtArena(), self, newRoot);
+    return self.get().rawBits();
+}
+
+// 20.1.2.2 Object.create. `null` really means no prototype, and every walk
+// over a prototype chain already stops at a shape whose prototype is not an
+// object — so an object with no prototype needs no special case anywhere,
+// which is the point of putting the prototype on the shape.
+uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+
+// 20.1.2.3 Object.defineProperties, and the loop `Object.create`'s second
+// argument shares with it.
+bool defineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descriptors) {
+    if (!isPlainObject(descriptors.get())) {
+        rtThrowTypeError("Property descriptors must be an object");
+        return false;
+    }
+    Rooted<Value> keys{Value(bronze_object_keys(descriptors.get().rawBits()))};
+    if (rtExceptionPending()) return false;
+    const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
+    for (uint32_t i = 0; i < count; ++i) {
+        Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
+        Rooted<Value> desc{
+            Value(bronze_elem_get(descriptors.get().rawBits(), key.get().rawBits()))};
+        if (rtExceptionPending()) return false;
+        // One implementation of DefineOwnProperty, reached through the same
+        // builtin a program would call: `defineProperties` is defined as a
+        // loop over `defineProperty` (20.1.2.3.1 step 4) and writing the
+        // descriptor decoding twice is how the two would come to disagree
+        // about a missing `enumerable`.
+        const uint64_t call[3] = {target.get().rawBits(), key.get().rawBits(),
+                                  desc.get().rawBits()};
+        objectDefineProperty(0, 0, 3, call);
+        if (rtExceptionPending()) return false;
+    }
+    return true;
+}
+
+uint64_t objectDefineProperties(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) {
+        return rtThrowTypeError("Object.defineProperties called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> target{args[0]};
+    Rooted<Value> descriptors{args[1]};
+    defineFromDescriptors(target, descriptors);
+    return target.get().rawBits();
+}
+
+uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject() && !args[0].isNull()) {
+        return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
+    }
+    if (args[0].isObject() && !isPlainObject(args[0])) {
+        fatal("unsupported: Object.create with an array, a function, a Map or a Set as the "
+              "prototype (only a plain object may be one)");
+    }
+    Rooted<Value> proto{args[0]};
+    Rooted<Value> out{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(proto.get())))};
+    out.get().asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    if (!args[1].isUndefined()) {
+        Rooted<Value> descriptors{args[1]};
+        defineFromDescriptors(out, descriptors);
+    }
+    return out.get().rawBits();
+}
+
+// 20.1.2.10 Object.getOwnPropertyNames: own string keys in the same order
+// `keys` reports, MINUS the enumerable filter — which is the only difference,
+// and is one argument to one walk rather than a second walk.
+uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) {
+        // An array's own names include `length`, which bronze stores outside
+        // the shape system entirely, so the answer would be incomplete rather
+        // than merely different.
+        if (!args[0].isObject()) {
+            return rtThrowTypeError(
+                       "Object.getOwnPropertyNames called on a value that is not an object")
+                .rawBits();
+        }
+        fatal("unsupported: Object.getOwnPropertyNames on an array, a function, a Map or a Set "
+              "(their own non-enumerable names are not properties bronze stores)");
+    }
+    Rooted<Value> self{args[0]};
+    const std::vector<StringHeader*> ordered =
+        rtOwnKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
+    Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(ordered.size())))};
+    uint32_t at = 0;
+    for (StringHeader* name : ordered) {
+        Rooted<Value> key{rtCopyKeyToHeap(name)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    return out.get().rawBits();
+}
+
 // The three whole-object reads. `keys` is `bronze_object_keys` — the same
 // function the IL instruction calls, so the fast path and the namespace
 // member can never answer differently.
@@ -317,30 +507,31 @@ const NamespaceFn kObjectFunctions[] = {
     {"fromEntries", objectFromEntries, 1},
     {"defineProperty", objectDefineProperty, 3},
     {"getOwnPropertyDescriptor", objectGetOwnPropertyDescriptor, 2},
+    {"defineProperties", objectDefineProperties, 2},
     {"freeze", objectFreeze, 1},
     {"isFrozen", objectIsFrozen, 1},
+    {"seal", objectSeal, 1},
+    {"isSealed", objectIsSealed, 1},
+    {"preventExtensions", objectPreventExtensions, 1},
+    {"isExtensible", objectIsExtensible, 1},
+    {"create", objectCreate, 2},
+    {"getPrototypeOf", objectGetPrototypeOf, 1},
+    {"setPrototypeOf", objectSetPrototypeOf, 2},
+    {"getOwnPropertyNames", objectGetOwnPropertyNames, 1},
 };
 
 // Real members of `Object` that bronze has not built (docs/0011 decision 3).
-// `create`, `getPrototypeOf` and `setPrototypeOf` are the notable absences:
-// bronze's prototype lives on the SHAPE, so handing one out or replacing one
-// is a shape question rather than a builtin.
+// `prototype` is the load-bearing one: bronze has no `Object.prototype`
+// object, which is why `Object.getPrototypeOf({})` is a named error rather
+// than a `null` that would be indistinguishable from `Object.create(null)`'s
+// honest answer (docs/0022).
 const char* const kObjectUnimplemented[] = {
-    "create",
-    "defineProperties",
     "getOwnPropertyDescriptors",
-    "getOwnPropertyNames",
     "getOwnPropertySymbols",
-    "getPrototypeOf",
     "groupBy",
     "hasOwn",
     "is",
-    "isExtensible",
-    "isSealed",
-    "preventExtensions",
     "prototype",
-    "seal",
-    "setPrototypeOf",
 };
 
 Value g_objectNamespace = Value::fromUndefined();

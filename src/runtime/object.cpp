@@ -100,14 +100,38 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
     return cur;
 }
 
-// A cached hit whose holder is an ANCESTOR is only sound while that
-// ancestor's slot numbering is the one the entry was filled against. Adding
-// a property to a prototype never renumbers an existing slot, so the
-// transition tree keeps that promise for free — but a delete does not, and
-// a dictionary reuses freed slots for unrelated names (docs/0019 decision
-// 5). One pointer load rules that out, on the proto-hit path only.
-static bool cachedProtoHolderIsStale(const ObjectHeader* holder) noexcept {
-    return holder->shape != nullptr && holder->shape->isDictionary();
+// A cached hit whose holder is an ANCESTOR is only sound while every object
+// between the receiver and that holder is the one the entry was filled
+// against, with the slot numbering it had then. Adding a property to a
+// prototype never renumbers an existing slot, so the transition tree keeps
+// half of that promise for free — but a delete reuses freed slots for
+// unrelated names (docs/0019 decision 5) and a prototype swap replaces the
+// holder outright (docs/0022), and both leave a dictionary behind. One
+// pointer load per link rules both out, on the proto-hit path only.
+ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept {
+    crossedDictionary = false;
+    ObjectHeader* cur = this;
+    for (uint32_t i = 0; i < depth; ++i) {
+        if (!cur->shape) return nullptr;
+        Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject()) return nullptr;
+        auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return nullptr;
+        cur = reinterpret_cast<ObjectHeader*>(hdr);
+        if (cur->shape && cur->shape->isDictionary()) {
+            crossedDictionary = true;
+            return nullptr;
+        }
+    }
+    return cur;
+}
+
+void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shape* newRoot) {
+    toDictionary(arena, self);
+    // Only the root of a transition tree carries a prototype, and a dictionary
+    // shape belongs to exactly one object — so repointing its root moves this
+    // object's prototype and nobody else's.
+    self.get().asObject<ObjectHeader>()->shape->root = newRoot;
 }
 
 Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
@@ -119,15 +143,15 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
     if (ic && ic->cached_shape == shape) {
-        ObjectHeader* holder = protoAncestor(ic->cached_depth);
-        if (!holder) {
+        if (ic->cached_depth == 0) return getSlot(ic->cached_slot);
+        bool crossedDictionary = false;
+        ObjectHeader* holder = cachedProtoHolder(ic->cached_depth, crossedDictionary);
+        if (holder) return holder->getSlot(ic->cached_slot);
+        if (!crossedDictionary) {
             // The chain got shorter than the cache says, which the shape check
             // should have caught: the prototype lives on the shape, so it
             // cannot change without the shape changing.
             fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
-        }
-        if (ic->cached_depth == 0 || !cachedProtoHolderIsStale(holder)) {
-            return holder->getSlot(ic->cached_slot);
         }
         // Fall through and look it up properly; the entry is refilled below,
         // or left alone if the answer is no longer cacheable.
@@ -150,8 +174,12 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
             // A dictionary receiver's shape is private to one object and its
             // slots are not shape-indexed, so an entry naming it could only
             // ever hit for that object and would go stale on its next delete.
+            // The proto-hit case fills only what the HIT path would accept —
+            // the walk is asked here rather than the condition restated, so
+            // the two cannot drift into disagreeing about the same entry.
+            bool crossedDictionary = false;
             if (ic && shape && !shape->isDictionary() &&
-                !(depth > 0 && cachedProtoHolderIsStale(holder))) {
+                (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                 ic->cached_shape = shape;
                 ic->cached_slot = info.slot;
                 ic->cached_depth = depth;

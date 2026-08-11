@@ -301,7 +301,7 @@ private:
                     const std::vector<std::string>& extraDeclarations = {});
     void exitScope();
     // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
-    // nested `FunctionDecl` � docs/0007 decision 4 makes them one path). It
+    // nested `FunctionDecl` — docs/0007 decision 4 makes them one path). It
     // is how inference is asked about a function with no module index.
     // `isArrow` decides one thing only: where `this` inside the body comes
     // from (docs/0012 decision 3).
@@ -485,7 +485,7 @@ private:
         VarStateMap state;
     };
     // What a SHORT-CIRCUITED chain produces. `undefined` for a read, which
-    // is 13.3.9's answer � and `true` for `delete`, because 13.5.1.2 asks
+    // is 13.3.9's answer — and `true` for `delete`, because 13.5.1.2 asks
     // whether the operand produced a Reference Record and a chain that
     // stopped early produced none (docs/0019 decision 2).
     enum class ChainMiss { Undefined, True };

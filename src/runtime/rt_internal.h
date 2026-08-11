@@ -31,6 +31,12 @@ NonMovingArena& rtArena();
 // own hidden class rather than the one every `{}` literal shares.
 Shape* rtNewRootShape(Value proto);
 
+// The root shape for objects whose prototype is `proto`, memoized on the
+// prototype's identity. `Object.create(p)` in a loop must not mint a hidden
+// class per object — every one of them would be a shape no inline cache had
+// ever seen, and each would leak an immortal arena shape.
+Shape* rtRootShapeForPrototype(Value proto);
+
 // The one root shape every plain `{}` literal starts from. Per-literal root
 // shapes would give two identical literals unrelated hidden classes, so a
 // site seeing both would miss its inline cache every time (docs/0008
@@ -49,7 +55,8 @@ StringHeader* rtKeyHeader(uint32_t index);
 // pointers are arena-interned shape keys, so they are immortal and non-moving
 // and stay valid across the allocations a caller makes while walking them.
 // `Object.keys`, object spread and object rest all ask this one question.
-std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj);
+std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj,
+                                            bool enumerableOnly = true);
 
 // A heap copy of an arena-interned key. Every consumer that hands a shape key
 // back to a program needs one — the arena string is immortal and the heap
@@ -84,6 +91,14 @@ double rtExponentiate(double base, double exponent);
 // replaced by 0xFF — enough for the numeric and structural parsing the
 // builtins do, and never enough to be mistaken for a general conversion.
 std::string rtAsciiChars(const StringHeader* s);
+
+// A string's UTF-16 code units, and the string a sequence of them makes.
+// This is the currency for anything defined PER CODE UNIT rather than per
+// code point — every `String.prototype` method, and 25.5.2.2's JSON quoting,
+// which escapes an unpaired surrogate and passes a paired one through. One
+// pair of conversions, so two callers cannot disagree about a lone surrogate.
+std::vector<uint16_t> rtStringUnits(const StringHeader* s);
+Value rtStringFromUnits(const std::vector<uint16_t>& units);
 
 // The same string as UTF-8, losing nothing. This is the conversion for text
 // that will be PRINTED; rtAsciiChars is the one for text that will be
@@ -175,6 +190,23 @@ void rtObjectCheckMissingMember(Value obj, const std::string& key);
 
 Value rtNumberNamespace();
 void rtNumberCheckMissingMember(Value obj, const std::string& key);
+
+// `Number.prototype`, reached by a property read on a PRIMITIVE number the
+// way `String.prototype` already is. `undefined` for a name that is not an
+// implemented method, so the caller falls through to the unimplemented-member
+// table and then to the language's own answer for a property that is not
+// there.
+Value rtNumberMethod(const std::string& key);
+void rtCheckNumberProtoMember(const std::string& key);
+
+Value rtJsonNamespace();
+void rtJsonCheckMissingMember(Value obj, const std::string& key);
+
+// 25.5.2 SerializeJSONProperty over the root, which is what `JSON.stringify`
+// is. Separate from the namespace object because it is a pinned BYTE FORMAT
+// with its own file, and deliberately not the one `console.log` uses
+// (docs/0013). `undefined` for a root the algorithm omits.
+Value rtJsonStringify(Value value, Value replacer, Value space);
 
 // `Map` / `Set`, by the name lowering resolved. `undefined` for anything else.
 Value rtMapConstructor(const std::string& name);

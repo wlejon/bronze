@@ -31,11 +31,16 @@ bronze_add_module(runtime
         builtin_map.cpp
         builtin_object.cpp
         builtin_number.cpp
+        builtin_number_proto.cpp
+        builtin_json.cpp
+        json_stringify.cpp
+        exact_decimal.cpp
         rt_enumerate.cpp
         rt_spread.cpp
         rt_print.cpp
     DEPS
         abi
+        json
     TEST_SOURCES
         ../../tests/runtime/number_format_test.cpp
         ../../tests/runtime/value_test.cpp
@@ -49,6 +54,7 @@ bronze_add_module(runtime
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp
         ../../tests/runtime/map_test.cpp
+        ../../tests/runtime/exact_decimal_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

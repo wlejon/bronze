@@ -330,7 +330,21 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
             const auto* ident = dynamic_cast<const ast::Ident*>(un->operand.get());
             if (!ident) {
-                diags_.error(un->span, "invalid update operand");
+                // `o.k++` and `a[i]++` are ordinary JavaScript and bronze has
+                // not built them: an update on a MemberExpression is a read
+                // and a write of the same reference, which the compound
+                // assignment path already knows how to do and this one does
+                // not. Named rather than reported as bad syntax, which is what
+                // "invalid update operand" read as.
+                if (dynamic_cast<const ast::MemberAccess*>(un->operand.get()) ||
+                    dynamic_cast<const ast::IndexAccess*>(un->operand.get())) {
+                    diags_.error(un->span,
+                                 "unsupported construct: ++/-- on a property "
+                                 "(write `o.k += 1`)");
+                    return std::nullopt;
+                }
+                diags_.error(un->span,
+                             "invalid update operand: ++/-- needs a variable or a property");
                 return std::nullopt;
             }
             // An update expression is a read and a write of the same target,

@@ -97,3 +97,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   key, the iteration record with fast kinds beside the protocol, IteratorClose
   as a cleanup frame, Map/Set as a table whose index carries a GC epoch, and
   `writable`/`configurable`/`extensible` in the dictionary)
+- 0022 exact numbers, JSON, and the rest of `Object` (object-literal method
+  shorthand, `toFixed` from bignum arithmetic on the double itself, JSON as its
+  own grammar module, `setPrototypeOf` made safe by dictionary mode, and the
+  Map epoch tied to the copy that relocates)

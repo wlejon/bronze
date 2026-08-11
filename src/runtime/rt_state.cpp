@@ -53,6 +53,31 @@ Shape* rtNewRootShape(Value proto) {
     return root;
 }
 
+Shape* rtRootShapeForPrototype(Value proto) {
+    // Memoized, and the memo needs no roots of its own: `g_rootShapes` already
+    // forwards every root shape's prototype slot, so comparing against that
+    // slot compares two CURRENT addresses. A table keyed on a private copy of
+    // the prototype would be the Map index's problem all over again — an
+    // address recorded before a collection and compared after one.
+    //
+    // Memoizing at all is what keeps `Object.create(proto)` in a loop from
+    // minting a hidden class per object: without it every created object would
+    // have a shape no inline cache had ever seen, and each call would leak an
+    // arena shape and a root-source entry.
+    //
+    // The list is its own and not a scan of `g_rootShapes`, because the
+    // namespace objects hold root shapes with no prototype ON PURPOSE — so
+    // that a site reading `Math.sqrt` does not share a transition tree with
+    // `{}` literals — and a scan would hand one of those out.
+    static std::vector<Shape*> prototypeShapes;
+    for (Shape* root : prototypeShapes) {
+        if (root->prototype.rawBits() == proto.rawBits()) return root;
+    }
+    Shape* root = rtNewRootShape(proto);
+    prototypeShapes.push_back(root);
+    return root;
+}
+
 Shape* rtPlainObjectShape() {
     // Prototype undefined until there is an Object.prototype to point at.
     static Shape* shape = rtNewRootShape(Value::fromUndefined());
@@ -171,6 +196,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = rtObjectNamespace();
     } else if (keyStr == "Number") {
         resolved = rtNumberNamespace();
+    } else if (keyStr == "JSON") {
+        resolved = rtJsonNamespace();
     } else if (keyStr == "Symbol") {
         resolved = rtSymbolFunction();
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {

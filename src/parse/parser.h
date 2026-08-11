@@ -40,6 +40,13 @@ private:
     // every return of that function, read only by the `**` rung of
     // `parseBinary`.
     bool lastOperandIsUnary_ = false;
+    // Ordinal of the next object-literal method, used only to build an IL
+    // function name for it. Lowering keys `functionIndices_` on that name, so
+    // a method called `next` must NOT be named `next` — a method name is a
+    // property key and never a binding — and two literals in one module must
+    // not agree on a name either, or the second's body would silently replace
+    // the first's.
+    size_t objectMethodOrdinal_ = 0;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -111,6 +118,11 @@ private:
     // arity rules ECMA-262 15.4.1 puts on each half. Null on error.
     std::unique_ptr<ast::FunctionExpr> parseAccessorMember(ast::AccessorKind kind,
                                                            std::string& outName);
+    // `m(params) { body }`, with the NAME already consumed and the cursor on
+    // the '('. The tail is the same production in an object literal and in a
+    // class body (ECMA-262 15.4 MethodDefinition), so there is one copy;
+    // what differs is what the caller does with the result.
+    std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan);
 
     // --- parser_pattern.cpp: binding patterns (docs/0017) ----------------
     // A pattern where the grammar spells one: a declarator, a parameter, a

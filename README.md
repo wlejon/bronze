@@ -98,6 +98,7 @@ means inference is.
 | `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_func`/`llvm_ops`/`llvm_arith` (one IL function's body), `llvm_backend` (module in, object file out) |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written |
 | `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments (docs/0004). The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_prop`, `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built) |
+| `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts (docs/0022) |
 | `src/rt` | The static library compiled output links against |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |

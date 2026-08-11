@@ -19,9 +19,11 @@
 // property in the same program disagree.
 //
 // The DELETE half of the same question is already closed. A delete puts the
-// holder into dictionary mode, and a dictionary-mode holder is what
-// `cachedProtoHolderIsStale` refuses (docs/0019 decision 5), so line 4 below
-// is right today. It is only the ADD that gets through, because an add is
+// object into dictionary mode, and a dictionary anywhere on the cached walk is
+// what `ObjectHeader::cachedProtoHolder` refuses (docs/0019 decision 5,
+// widened to the intermediate links by docs/0022) — so lines 4 and 5 below are
+// right today, and so is every `Object.setPrototypeOf`, which takes the same
+// escape deliberately. It is only the ADD that gets through, because an add is
 // exactly the operation the shape chain is designed to make free.
 //
 // The fix is a prototype-validity check, and it needs more than the 16 bytes
@@ -44,7 +46,9 @@
 // 3. Deleting the shadow must move the read back up. (Right today, for the
 //    dictionary reason above.)
 // 4. Shadowing at the NEAREST prototype instead — still not the receiver, so
-//    still no change to the receiver's shape. (Wrong today: `top`.)
+//    still no change to the receiver's shape. (Right today, but only by
+//    accident: the delete on the line before left a dictionary on the walk,
+//    which is what makes the entry miss. Reorder the case and it breaks.)
 // 5. An own property shadows everything, and deleting it unshadows back to
 //    the nearest prototype. (Right today: an own add and an own delete both
 //    change the receiver's own shape word, which is the case the cache was

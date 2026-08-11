@@ -36,12 +36,23 @@ struct MapHeader {
     Value index;
     Value liveCount;   // double: entries a program can see
     Value usedCount;   // double: entry slots handed out, tombstones included
-    // double: `Heap::collection_count()` when `index` was last built. An
+    // double: `Heap::relocation_epoch()` when `index` was last built. An
     // object key hashes by ADDRESS and the collector moves objects, so a
-    // collection invalidates every object key's bucket. Rebuilding lazily on
+    // relocation invalidates every object key's bucket. Rebuilding lazily on
     // the next lookup is what keeps that from being a correctness bug rather
-    // than a cost; see the header comment of Heap::collection_count.
+    // than a cost; see the header comment of Heap::relocation_epoch for why
+    // the number counts relocations and not collections.
     Value indexEpoch;
+    // double: this map's OWN address when `index` was last built, as an
+    // independent witness that nothing has moved. It is here because the
+    // epoch, however carefully placed, is a number some future collector
+    // could forget to touch — and this one it cannot forget: to relocate any
+    // object a collector must trace from the roots, a live map is on that
+    // trace, and moving the map changes this. Neither check subsumes the
+    // other (an epoch catches a map that happened to land back on its old
+    // address; the anchor catches a collector that bypassed the epoch), so
+    // the index is valid only when BOTH agree.
+    Value indexAnchor;
 
     static constexpr uint16_t kMapFlags = 5;
     static constexpr uint16_t kSetFlags = 6;

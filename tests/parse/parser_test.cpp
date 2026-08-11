@@ -686,11 +686,38 @@ TEST_CASE("object shorthand is the key and the identifier, and computed keys dum
           ")\n");
 }
 
-TEST_CASE("object method shorthand is a named error") {
-    const auto method = parseAndDump("const o = { m() { return 1; } };");
-    CHECK(method.substr(0, 7) == "ERRORS:");
-    CHECK(method.find("unsupported construct: object literal method shorthand") !=
-          std::string::npos);
+TEST_CASE("object method shorthand is an ordinary property holding a function") {
+    // `{ m() {} }` and `{ m: function () {} }` define the same property, so
+    // they dump the same way but for the function's IL SYMBOL. That symbol
+    // carries dots deliberately: lowering registers every function it makes
+    // under its name, and a method named `m` would otherwise answer a free
+    // `m(...)` elsewhere in the module.
+    const auto method = parseAndDump("const o = { m() { return 1; } };\n");
+    CHECK(method ==
+          "(module t\n"
+          "  (const o\n"
+          "    (object\n"
+          "      (prop m\n"
+          "        (function-expr obj.0.m ()\n"
+          "          (return\n"
+          "            (number 1)\n"
+          "          )\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
+}
+
+TEST_CASE("a method's `super` belongs to its own home object, not the class around it") {
+    // An object literal inside a class method is a different home object, so
+    // `super` in one of its methods does not mean the enclosing class's
+    // parent. bronze has no home-object model, so the honest answer is the
+    // error — not a silent binding to the wrong parent.
+    const auto out = parseAndDump(
+        "class A extends B { m() { const o = { go() { return super.m(); } }; return o; } }\n");
+    CHECK(out.substr(0, 7) == "ERRORS:");
+    CHECK(out.find("super outside a class method") != std::string::npos);
 }
 
 TEST_CASE("a cover-initialized name parses, and dumps as the pattern-only form it is") {

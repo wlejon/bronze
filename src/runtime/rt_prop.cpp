@@ -133,6 +133,14 @@ static Value mapMemberByName(HeapObjectHeader* hdr, const std::string& keyStr) {
 
 extern "C" {
 
+// A property read by NAME, with the receiver-kind dispatch that `o.k` and
+// `o[k]` must share. They reach it from two different places - one with the
+// key the compiler registered, one with the key ToPropertyKey just produced -
+// and a second copy of this dispatch would be a second answer to "does this
+// member exist?", which is the question rt_members.cpp exists to keep one of.
+static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+                              InlineCache* ic);
+
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     Value objVal(objBits);
     InlineCache* ic = asCache(icEntry);
@@ -154,23 +162,30 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 if (ic->cached_depth == 0) {
                     return fastObj->getSlot(ic->cached_slot).rawBits();
                 }
-                // An ancestor's slot numbering is stable while it is a
-                // transition-tree shape and not once it is a dictionary,
-                // which reuses freed slots for unrelated names — and the
-                // receiver's shape, which is all this entry checks, does not
-                // change when its PROTOTYPE is deleted from (docs/0019
-                // decision 5).
-                if (ObjectHeader* holder = fastObj->protoAncestor(ic->cached_depth)) {
-                    if (!holder->shape || !holder->shape->isDictionary()) {
-                        return holder->getSlot(ic->cached_slot).rawBits();
-                    }
+                // An ancestor's slot numbering is stable while every link on
+                // the way to it is a transition-tree shape, and not once one
+                // of them is a dictionary — which is what a delete and a
+                // prototype swap both leave behind, and neither of which the
+                // receiver's shape, all this entry checks, notices (docs/0019
+                // decision 5, docs/0022).
+                bool crossedDictionary = false;
+                if (ObjectHeader* holder =
+                        fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
+                    return holder->getSlot(ic->cached_slot).rawBits();
                 }
             }
         }
     }
 
-    const std::string& keyStr = rtKeyString(keyIndex);
+    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), ic);
+}
 
+static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+                              InlineCache* ic) {
+    // The interned key is needed by more than the plain-object branch now, so
+    // its registration is checked once at the top rather than where it is
+    // first read.
+    if (!keyHeader) fatal("property access with an unregistered key index");
     if (objVal.isString()) {
         if (keyStr == "length") {
             return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
@@ -193,6 +208,19 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                                 std::string(objVal.isNull() ? "null" : "undefined") +
                                 " (reading '" + keyStr + "')")
             .rawBits();
+    }
+    // A property read on a primitive NUMBER. bronze has no wrapper object to
+    // create (7.3.2 GetV would box, and the box is unobservable for every
+    // member that exists), so the method is handed out directly — the same
+    // shape the string branch above has. Answering `undefined` here is what
+    // made `(1.5).toFixed(2)` die as "undefined is not a function" instead of
+    // naming the member, which is the silent fallback docs/0011 decision 3
+    // exists to prevent.
+    if (objVal.isNumber()) {
+        Value method = rtNumberMethod(keyStr);
+        if (!method.isUndefined()) return method.rawBits();
+        rtCheckNumberProtoMember(keyStr);
+        return Value::fromUndefined().rawBits();
     }
     if (!objVal.isObject()) return Value::fromUndefined().rawBits();
 
@@ -256,7 +284,7 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             // getProp takes a receiver at all.
             Rooted<Value> fnRoot{objVal};
             Rooted<Value> propsRoot{props};
-            Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
+            Rooted<Value> key(Value::fromString(keyHeader));
             Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(
                 rtHeap(), key, /*ic=*/nullptr, fnRoot.slot_ptr());
             if (!found.isUndefined()) return found.rawBits();
@@ -270,8 +298,6 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         return Value::fromUndefined().rawBits();
     }
 
-    StringHeader* keyHeader = rtKeyHeader(keyIndex);
-    if (!keyHeader) fatal("property access with an unregistered key index");
     // Interned arena key: no allocation on the property path.
     //
     // The RECEIVER is rooted because a read can now run user code: a getter
@@ -289,6 +315,7 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         rtMathCheckMissingMember(objRoot.get(), keyStr);
         rtObjectCheckMissingMember(objRoot.get(), keyStr);
         rtNumberCheckMissingMember(objRoot.get(), keyStr);
+        rtJsonCheckMissingMember(objRoot.get(), keyStr);
     }
     return result.rawBits();
 }
@@ -540,8 +567,20 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
         return mapMemberByName(objRoot.get().asObject<HeapObjectHeader>(), name).rawBits();
     }
-    fatal("computed index access is only supported on arrays, plain objects "
-          "and Float32Array");
+    if (hdr->flags == 2) {  // Function
+        // `fn[k]` — a named read on a function object, which has no elements
+        // and so needs no index branch of its own. It reaches here rather than
+        // through `fn.k` because `JSON.stringify` asks every object it meets
+        // for `toJSON` with a key it built at run time, and a function is an
+        // object.
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
+        return propGetByName(objRoot.get(), name, key.get().asString<StringHeader>(),
+                             /*ic=*/nullptr);
+    }
+    fatal("computed index access is only supported on arrays, plain objects, "
+          "functions and Float32Array");
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {

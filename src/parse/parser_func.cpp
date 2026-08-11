@@ -204,6 +204,40 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     return fn;
 }
 
+// `m(params) { body }` with the name already consumed — the tail of every
+// MethodDefinition (ECMA-262 15.4), which an object literal and a class body
+// spell identically.
+//
+// A method's `super` is resolved against its HOME OBJECT, and an object
+// literal's home object is the literal. bronze resolves `super` by the class
+// name the parser is inside (docs/0012 decision 5), so an object literal
+// method nested in a class method must not inherit that binding: `super.m()`
+// there would silently call the enclosing class's parent. The two fields are
+// therefore saved and cleared for the body, which turns that into the
+// existing "super outside a class method" error.
+std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& name,
+                                                           Span nameSpan) {
+    auto fn = std::make_unique<FunctionExpr>();
+    fn->span.begin = nameSpan.begin;
+    fn->name = name;
+    if (!expect(TokenKind::LParen, "'(' after a method name")) return nullptr;
+    if (!parseParams(fn->params)) return nullptr;
+    if (!expect(TokenKind::RParen, "')' after method parameters")) return nullptr;
+    if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+
+    const bool savedInClassMethod = inClassMethod_;
+    const std::string savedClassSuper = currentClassSuper_;
+    inClassMethod_ = false;
+    currentClassSuper_.clear();
+    fn->body = parseBlock();
+    inClassMethod_ = savedInClassMethod;
+    currentClassSuper_ = savedClassSuper;
+
+    if (diags_.hasErrors()) return nullptr;
+    fn->span.end = peek().span.begin;
+    return fn;
+}
+
 // `class Name [extends Base] { members }`. A class introduces no runtime
 // concept - it is the constructor function plus its prototype, and lowering
 // desugars it into exactly that (docs/0012 decision 5). What the parser

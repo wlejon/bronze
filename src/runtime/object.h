@@ -58,6 +58,35 @@ struct ObjectHeader {
     // is safe to the next allocation.
     ObjectHeader* protoAncestor(uint32_t depth) noexcept;
 
+    // The same walk, made safe for an INLINE CACHE to read a slot off the
+    // end of. An entry is `(shape, slot, depth)`, and the receiver's shape is
+    // all it checks — so nothing an entry holds notices a change to an object
+    // between the receiver and the holder. Two such changes exist: a delete
+    // (which renumbers slots) and a prototype swap (which replaces the holder
+    // entirely), and BOTH put the object they touch into dictionary mode. So
+    // this refuses the walk if any link it crosses — the holder included — is
+    // a dictionary, which turns both into a cache miss and a correct slow
+    // lookup.
+    //
+    // `crossedDictionary` separates the two ways to answer null: a chain that
+    // is genuinely shorter than `depth` is impossible (the prototype lives on
+    // the shape, so it cannot change without the shape changing) and stays a
+    // tripwire; a dictionary on the path is ordinary and expected.
+    //
+    // What it does NOT close is an ADD to an intermediate prototype, which
+    // takes a shape transition and leaves no dictionary behind:
+    // `cases/blocked/proto_chain_invalidation.js` is that hole and needs the
+    // entry to grow, which is a generated-code contract change.
+    ObjectHeader* cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept;
+
+    // `Object.setPrototypeOf`. The prototype lives on the shape's ROOT
+    // (docs/0008 decision 1), which every object sharing that root shares —
+    // so a swap cannot write through it and must give this object a shape of
+    // its own. Dictionary mode is that shape, and it is not merely convenient:
+    // a dictionary is what `cachedProtoHolder` above refuses, so an entry that
+    // walks THROUGH this object stops hitting the moment the swap happens.
+    static void setPrototype(NonMovingArena& arena, Rooted<Value>& self, class Shape* newRoot);
+
     // May allocate and may run USER CODE: a property whose own-or-inherited
     // definition is an accessor calls its getter here (docs/0019 decision 3).
     // So `this` must be reachable from a root at the call and must not be

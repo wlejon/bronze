@@ -6,6 +6,27 @@
 
 namespace bronze {
 
+void jsShortestDigits(double x, char* digits, int& count, int& exp10) {
+    // Shortest round-trip digits via scientific form: "d[.ddd...]e±EE".
+    char sci[40];
+    auto res = std::to_chars(sci, sci + sizeof(sci), x, std::chars_format::scientific);
+    int k = 0;
+    const char* p = sci;
+    if (*p == '-') ++p;
+    digits[k++] = *p++;
+    if (*p == '.') {
+        ++p;
+        while (*p != 'e') digits[k++] = *p++;
+    }
+    ++p;  // 'e'
+    const bool expNeg = (*p == '-');
+    if (*p == '+' || *p == '-') ++p;
+    int e = 0;
+    while (p < res.ptr) e = e * 10 + (*p++ - '0');
+    count = k;
+    exp10 = expNeg ? -e : e;
+}
+
 size_t formatJsNumber(double x, char* out) {
     if (std::isnan(x)) {
         std::memcpy(out, "NaN", 3);
@@ -25,23 +46,10 @@ size_t formatJsNumber(double x, char* out) {
         return pos + 8;
     }
 
-    // Shortest round-trip digits via scientific form: "d[.ddd...]e±EE".
-    char sci[40];
-    auto res = std::to_chars(sci, sci + sizeof(sci), x, std::chars_format::scientific);
     char digits[20];
     int k = 0;
-    const char* p = sci;
-    digits[k++] = *p++;
-    if (*p == '.') {
-        ++p;
-        while (*p != 'e') digits[k++] = *p++;
-    }
-    ++p;  // 'e'
-    bool expNeg = (*p == '-');
-    if (*p == '+' || *p == '-') ++p;
     int exp10 = 0;
-    while (p < res.ptr) exp10 = exp10 * 10 + (*p++ - '0');
-    if (expNeg) exp10 = -exp10;
+    jsShortestDigits(x, digits, k, exp10);
 
     // ECMA-262 Number::toString: s = digits (k of them), n = exp10 + 1,
     // value = s * 10^(n-k).

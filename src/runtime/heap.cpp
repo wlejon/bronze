@@ -243,6 +243,12 @@ void Heap::forward_value(Value& val) {
     size_t total_size = header->size;
     uint8_t* new_mem = static_cast<uint8_t*>(allocate_in_space(to_space_, total_size));
     std::memcpy(new_mem, header, total_size);
+    // THIS is the relocation, so this is where the epoch moves. Anything that
+    // hashes an object by its address is wrong from this line onward, and
+    // putting the increment at the end of `collect()` instead would make that
+    // invalidation depend on a cycle completing rather than on an object
+    // actually moving (docs/0022).
+    ++relocations_;
     auto* new_hdr = reinterpret_cast<HeapObjectHeader*>(new_mem);
 
     header->tag = static_cast<uint16_t>(Tag::Forwarded);

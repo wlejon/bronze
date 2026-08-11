@@ -25,7 +25,8 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // survive a second member — `assign`, `defineProperty` and the rest would
     // each need their own IL op and arity check here. The `Object.keys`
     // recognition stays as a fast path over the same runtime function.
-    return name == "Math" || name == "Object" || name == "Number" || name == "Symbol" ||
+    return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
+           name == "Symbol" ||
            name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
            name == "RangeError";
 }

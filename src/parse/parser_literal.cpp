@@ -309,14 +309,25 @@ ExprPtr Parser::parseTemplateLiteral() {
         return nullptr;
     }
 }
-// The four PropertyDefinition forms bronze has (ECMA-262 13.2.5): a written
-// key with a value, a computed key with a value, and the IdentifierReference
-// shorthand. Every value is an *AssignmentExpression*, so the commas between
-// properties are the literal's own punctuation and never the comma operator.
+// The PropertyDefinition forms bronze has (ECMA-262 13.2.5): a written key
+// with a value, a computed key with a value, the IdentifierReference
+// shorthand, an accessor, a method, and a spread. Every value is an
+// *AssignmentExpression*, so the commas between properties are the literal's
+// own punctuation and never the comma operator.
 ExprPtr Parser::parseObjectLit() {
     const Token& openToken = advance();  // '{'
     auto obj = std::make_unique<ObjectLit>();
     obj->span.begin = openToken.span.begin;
+
+    // The IL symbol a method's body compiles to. It carries the dots on
+    // purpose: lowering registers every function it creates in
+    // `functionIndices_` under this name, and a method called `next` that was
+    // named `next` there would answer a free `next(...)` elsewhere in the
+    // module — a method name is a property key, not a binding. The ordinal
+    // keeps two literals in one module from naming the same symbol.
+    auto methodName = [this](const std::string& key) {
+        return "obj." + std::to_string(objectMethodOrdinal_++) + "." + key;
+    };
 
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
         ObjectProp prop;
@@ -325,13 +336,20 @@ ExprPtr Parser::parseObjectLit() {
             // whatever `e` evaluates to, at run time, and BEFORE `v` is
             // evaluated — which is why the key expression is a child of the
             // property rather than something the parser folds to text.
+            const Token& openBracket = peek();
             advance();
             prop.keyExpr = parseAssign();
             if (!prop.keyExpr) return nullptr;
             if (!expect(TokenKind::RBracket, "']' after a computed property key")) return nullptr;
-            if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
-            prop.value = parseAssign();
-            if (!prop.value) return nullptr;
+            if (check(TokenKind::LParen)) {
+                auto method = parseMethodTail(methodName("computed"), openBracket.span);
+                if (!method) return nullptr;
+                prop.value = std::move(method);
+            } else {
+                if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
+                prop.value = parseAssign();
+                if (!prop.value) return nullptr;
+            }
         } else if (isIdentifierName(peek().kind)) {
             // A PropertyName is an IdentifierName (13.2.5), so a reserved word
             // is an ordinary key here — `{ return: f }` is what an iterator
@@ -358,12 +376,18 @@ ExprPtr Parser::parseObjectLit() {
                 continue;
             }
             if (check(TokenKind::LParen)) {
-                // `{ m() {} }` — MethodDefinition shorthand. It is a function
-                // whose home object is this literal, which is a `super`
-                // question and not a property-key one, so it is named rather
-                // than reported as a missing ':'.
-                error("unsupported construct: object literal method shorthand");
-                return nullptr;
+                // `{ m() {} }` — MethodDefinition shorthand (13.2.5, 15.4).
+                // The property it defines is indistinguishable from
+                // `m: function () {}`: enumerable, writable, and holding an
+                // ordinary function object. The one thing that is not the
+                // same is `super`, and parseMethodTail is where that is dealt
+                // with.
+                auto method = parseMethodTail(methodName(prop.key), nameTok.span);
+                if (!method) return nullptr;
+                prop.value = std::move(method);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
             if (!reserved && check(TokenKind::Assign)) {
                 // `{ x = 1 }` is a CoverInitializedName: the cover grammar
@@ -405,9 +429,15 @@ ExprPtr Parser::parseObjectLit() {
         } else if (check(TokenKind::StringLiteral)) {
             auto sTok = advance();
             prop.key = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
-            if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
-            prop.value = parseAssign();
-            if (!prop.value) return nullptr;
+            if (check(TokenKind::LParen)) {
+                auto method = parseMethodTail(methodName(prop.key), sTok.span);
+                if (!method) return nullptr;
+                prop.value = std::move(method);
+            } else {
+                if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+                prop.value = parseAssign();
+                if (!prop.value) return nullptr;
+            }
         } else if (check(TokenKind::Ellipsis)) {
             // `{ ...src }` — a property definition with no key of its own: it
             // contributes every own enumerable property of `src`, in the order

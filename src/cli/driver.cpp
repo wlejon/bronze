@@ -154,16 +154,32 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
 
     if (rtLib) {
         std::string libStr = rtLib->string();
-        std::filesystem::path runtimeLibPath = rtLib->parent_path() / "bronze_runtime.lib";
-        if (!std::filesystem::exists(runtimeLibPath)) {
-            runtimeLibPath = rtLib->parent_path() / "../runtime/bronze_runtime.lib";
+        // Compiled output links `bronze_rt`, everything `bronze_runtime`
+        // holds, and everything the RUNTIME links in turn — CMake does not
+        // merge static archives, so a module the runtime depends on has to be
+        // named here too. The list grows with `src/runtime/CMakeLists.txt`'s
+        // DEPS and is the one place that coupling lives.
+        static const char* const kRuntimeLibs[][2] = {
+            {"runtime", "bronze_runtime.lib"},
+            {"json", "bronze_json.lib"},
+        };
+        std::string runtimeLibStr;
+        std::string runtimeWholeStr;
+        for (const auto& lib : kRuntimeLibs) {
+            std::filesystem::path path = rtLib->parent_path() / lib[1];
+            if (!std::filesystem::exists(path)) {
+                path = rtLib->parent_path() / ".." / lib[0] / lib[1];
+            }
+            if (!std::filesystem::exists(path)) continue;
+            const std::string quoted = "\"" + path.string() + "\"";
+            runtimeLibStr += (runtimeLibStr.empty() ? "" : " ") + quoted;
+            runtimeWholeStr += (runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
         }
-        std::string runtimeLibStr = std::filesystem::exists(runtimeLibPath) ? ("\"" + runtimeLibPath.string() + "\"") : "";
 
         commands.push_back("lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
-        commands.push_back("lld-link /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + (runtimeLibStr.empty() ? "" : "/wholearchive:" + runtimeLibStr) + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
+        commands.push_back("lld-link /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
         commands.push_back("link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
-        commands.push_back("link.exe /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + (runtimeLibStr.empty() ? "" : "/wholearchive:" + runtimeLibStr) + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
+        commands.push_back("link.exe /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
         commands.push_back("clang-cl /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
         commands.push_back("cl.exe /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
     }

@@ -38,42 +38,9 @@ namespace {
 
 using Units = std::vector<uint16_t>;
 
-Units unitsOf(const StringHeader* s) {
-    Units out;
-    const uint32_t len = s->getLength();
-    out.reserve(len);
-    if (s->isLatin1()) {
-        const char* data = s->latin1Data();
-        for (uint32_t i = 0; i < len; ++i) {
-            out.push_back(static_cast<unsigned char>(data[i]));
-        }
-    } else {
-        const uint16_t* data = s->utf16Data();
-        out.insert(out.end(), data, data + len);
-    }
-    return out;
-}
+Units unitsOf(const StringHeader* s) { return rtStringUnits(s); }
 
-// Latin-1 when every unit fits, so an ASCII result of an ASCII input stays
-// in the compact representation instead of doubling in size.
-Value stringFromUnits(const Units& units) {
-    bool latin1 = true;
-    for (uint16_t u : units) {
-        if (u > 0xFF) {
-            latin1 = false;
-            break;
-        }
-    }
-    if (latin1) {
-        std::string bytes;
-        bytes.reserve(units.size());
-        for (uint16_t u : units) bytes.push_back(static_cast<char>(u));
-        return Value::fromString(StringHeader::createLatin1(rtHeap(), bytes.data(),
-                                                            static_cast<uint32_t>(bytes.size())));
-    }
-    return Value::fromString(
-        StringHeader::createUTF16(rtHeap(), units.data(), static_cast<uint32_t>(units.size())));
-}
+Value stringFromUnits(const Units& units) { return rtStringFromUnits(units); }
 
 Units thisUnits(Value self, const char* method) {
     if (!self.isString()) {
@@ -512,6 +479,43 @@ const StringMethod kStringMethods[] = {
 };
 
 }  // namespace
+
+std::vector<uint16_t> rtStringUnits(const StringHeader* s) {
+    std::vector<uint16_t> out;
+    const uint32_t len = s->getLength();
+    out.reserve(len);
+    if (s->isLatin1()) {
+        const char* data = s->latin1Data();
+        for (uint32_t i = 0; i < len; ++i) {
+            out.push_back(static_cast<unsigned char>(data[i]));
+        }
+    } else {
+        const uint16_t* data = s->utf16Data();
+        out.insert(out.end(), data, data + len);
+    }
+    return out;
+}
+
+// Latin-1 when every unit fits, so an ASCII result of an ASCII input stays
+// in the compact representation instead of doubling in size.
+Value rtStringFromUnits(const std::vector<uint16_t>& units) {
+    bool latin1 = true;
+    for (uint16_t u : units) {
+        if (u > 0xFF) {
+            latin1 = false;
+            break;
+        }
+    }
+    if (latin1) {
+        std::string bytes;
+        bytes.reserve(units.size());
+        for (uint16_t u : units) bytes.push_back(static_cast<char>(u));
+        return Value::fromString(StringHeader::createLatin1(rtHeap(), bytes.data(),
+                                                            static_cast<uint32_t>(bytes.size())));
+    }
+    return Value::fromString(
+        StringHeader::createUTF16(rtHeap(), units.data(), static_cast<uint32_t>(units.size())));
+}
 
 Value rtStringMethod(const std::string& key) {
     for (const StringMethod& m : kStringMethods) {

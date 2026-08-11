@@ -82,12 +82,12 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
 // wrong (docs/0009). Enumerable-only because every caller — `Object.keys`,
 // object spread, object rest and `for-in` — is defined over own enumerable
 // keys, and a class method is not one (docs/0018 decision 2).
-std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj) {
+std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
     // Shape keys are arena-interned and immortal, so collecting them up front
     // is safe across whatever the caller allocates while walking them.
     Shape* shape = obj->shape;
     std::vector<StringHeader*> inserted =
-        shape ? shape->ownKeysInInsertionOrder(/*enumerableOnly=*/true)
+        shape ? shape->ownKeysInInsertionOrder(enumerableOnly)
               : std::vector<StringHeader*>{};
 
     std::vector<std::pair<uint32_t, StringHeader*>> intKeys;

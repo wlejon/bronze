@@ -1,31 +1,13 @@
-// BLOCKED: `undefined variable: JSON`. docs/0011 decision 1 keeps a global
-// bronze does not provide a named error at the point of use rather than a
-// stub, so this is the diagnosis working.
+// `JSON.stringify` and `JSON.parse` (ECMA-262 25.5), and the pinned bytes of
+// a format that is deliberately NOT console.log's (docs/0013).
 //
-// JSON was deliberately cut from docs/0021 rather than half-built. It is
-// self-contained — it needs no new value-model concept and no new syntax —
-// which is exactly what makes it a chunk of its own instead of the tail of a
-// chunk about iteration and descriptors. What it does need is two things
-// bronze has not written yet, and both are output-correctness work rather
-// than plumbing:
+// docs/0022 is the chunk this promoted. The two halves are two files and one
+// module boundary: `src/json` turns code units into a tree and rejects
+// everything JavaScript allows and JSON does not, and it can be driven with no
+// heap at all (`tests/json`), while `src/runtime/json_stringify.cpp` owns the
+// output bytes.
 //
-//  - `stringify` is a PINNED BYTE FORMAT, and it is not the one
-//    `console.log` uses. docs/0013 chose an inspect format with deliberate
-//    divergences from node; JSON has none available to it, because the
-//    output is data other programs read. Every number goes through
-//    ToString(Number) — no locale, no printf, `std::to_chars` like
-//    everything else (docs/0001) — every string is escaped by 25.5.2.2
-//    QuoteJSONString rather than by the printer's rules, and the key order
-//    is own-enumerable order (docs/0009), which bronze already fixes but
-//    has never had to emit as bytes.
-//  - `parse` is a second PARSER, and the project rule is that every parser
-//    consumes all input or errors. JSON's grammar is not JavaScript's
-//    (no trailing commas, no single quotes, no unquoted keys, no comments),
-//    so it cannot borrow `src/parse` and must be its own module with its own
-//    tests — which is a module-isolation decision, not a detail.
-//
-// What this case pins when it lands, from ECMA-262 25.5.2 (stringify) and
-// 25.5.1 (parse):
+// What this case pins, from ECMA-262 25.5.2 (stringify) and 25.5.1 (parse):
 //
 // 1. Key order in the output is own-enumerable insertion order, not sorted.
 // 2. `undefined`, functions and symbols are OMITTED from an object and

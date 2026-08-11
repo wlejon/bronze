@@ -170,3 +170,50 @@ TEST_CASE("the hash index agrees with a linear scan across collections") {
     }
     checkAll();
 }
+
+// The counter the index hangs off is the one thing in this file that cannot
+// be proved by comparing against a linear scan: the scan drives collections
+// through `collect()` too, so a counter that only `collect()` maintains would
+// look correct here and be wrong for any future collector with a second entry
+// point. So the property is pinned directly — the epoch is a count of
+// RELOCATIONS, moved by the copy itself (docs/0022).
+TEST_CASE("the relocation epoch counts objects moved, not cycles finished") {
+    Heap heap;
+    NonMovingArena arena;
+    ShadowStackFrame frame;
+
+    CHECK(heap.relocation_epoch() == 0);
+
+    // Allocation alone must not move it: an object that has never been copied
+    // still lives where its hash says it does.
+    Rooted<Value> kept{Value::fromObject(ObjectHeader::create(heap, arena,
+                                                              Shape::createRoot(arena)))};
+    CHECK(heap.relocation_epoch() == 0);
+
+    // A collection with a live object moves that object, so the epoch moves by
+    // at least one and the map's index is stale by construction.
+    heap.collect();
+    const uint64_t afterFirst = heap.relocation_epoch();
+    CHECK(afterFirst >= 1);
+    // Not an equality: under BRONZE_GC_STRESS every allocation collects, so
+    // the number of CYCLES is not a fact this test may assert — which is the
+    // point of the epoch not being one either.
+    CHECK(heap.collection_count() >= 1);
+
+    // And it keeps counting per object rather than per cycle: a second live
+    // object makes the second collection cost more than the first.
+    Rooted<Value> second{Value::fromObject(ObjectHeader::create(heap, arena,
+                                                               Shape::createRoot(arena)))};
+    heap.collect();
+    CHECK(heap.relocation_epoch() >= afterFirst + 2);
+
+    // A collection with nothing live to move leaves it alone, which is what
+    // makes it an honest "has anything moved?" and not a proxy for "has a
+    // cycle run?".
+    {
+        Heap empty;
+        empty.collect();
+        CHECK(empty.relocation_epoch() == 0);
+        CHECK(empty.collection_count() == 1);
+    }
+}

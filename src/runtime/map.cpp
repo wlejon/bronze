@@ -51,6 +51,14 @@ uint32_t hashKey(Value v) noexcept {
     return mix64(v.rawBits());
 }
 
+// The map's current address, as a double. Heap pointers are below 2^47
+// (heap.cpp reserves in the low range and refuses anything else), so the
+// conversion is exact and the comparison is not an approximation.
+double selfAddress(Rooted<Value>& self) noexcept {
+    return static_cast<double>(
+        reinterpret_cast<uintptr_t>(self.get().asObject<HeapObjectHeader>()));
+}
+
 uint32_t* bucketsOf(MapHeader* map) noexcept {
     if (!map->index.isPointer()) return nullptr;
     return map->index.asObject<HeapObjectHeader>()->payload<uint32_t>();
@@ -83,15 +91,20 @@ void reindex(Heap& heap, Rooted<Value>& self) {
         while (buckets[b] != 0) b = (b + 1) & mask;
         buckets[b] = slot + 1;
     }
-    map->indexEpoch = Value::fromDouble(static_cast<double>(heap.collection_count()));
+    map->indexEpoch = Value::fromDouble(static_cast<double>(heap.relocation_epoch()));
+    map->indexAnchor = Value::fromDouble(selfAddress(self));
 }
 
-// The index is valid for exactly one collection epoch, for the reason
-// hashKey's last branch gives.
+// The index is valid only while nothing has moved, for the reason hashKey's
+// last branch gives. Two independent tests, because either one alone is a
+// number somebody has to remember to maintain: the epoch is bumped by the
+// collector's own copy, and the anchor is this map's address, which a
+// collector cannot relocate anything without also changing.
 void ensureIndex(Heap& heap, Rooted<Value>& self) {
     auto* map = self.get().asObject<MapHeader>();
     if (map->index.isPointer() &&
-        map->indexEpoch.asNumber() == static_cast<double>(heap.collection_count())) {
+        map->indexEpoch.asNumber() == static_cast<double>(heap.relocation_epoch()) &&
+        map->indexAnchor.asNumber() == selfAddress(self)) {
         return;
     }
     reindex(heap, self);
@@ -161,6 +174,7 @@ MapHeader* MapHeader::create(Heap& heap, uint16_t flags) {
     map->liveCount = Value::fromDouble(0.0);
     map->usedCount = Value::fromDouble(0.0);
     map->indexEpoch = Value::fromDouble(-1.0);
+    map->indexAnchor = Value::fromDouble(-1.0);
     return map;
 }
 
@@ -237,6 +251,7 @@ void MapHeader::clear(Rooted<Value>& self) {
     map->liveCount = Value::fromDouble(0.0);
     map->usedCount = Value::fromDouble(0.0);
     map->indexEpoch = Value::fromDouble(-1.0);
+    map->indexAnchor = Value::fromDouble(-1.0);
 }
 
 }  // namespace bronze

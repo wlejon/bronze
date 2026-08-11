@@ -84,12 +84,25 @@ public:
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
-    // How many collections have completed. A hash table keyed on VALUES
-    // rather than on property names (a Map, docs/0021 decision 4) hashes an
-    // object key by its address, and this collector moves objects — so a
-    // table records the count its index was built at and rebuilds when the
-    // number has moved on. Nothing else can tell it that every object-key
-    // hash it holds is now wrong.
+    // How many objects this collector has RELOCATED. A hash table keyed on
+    // VALUES rather than on property names (a Map, docs/0021 decision 4)
+    // hashes an object key by its address, so every such table records this
+    // number when it builds its index and rebuilds when the number has moved
+    // on. Nothing else can tell it that every object-key hash it holds is now
+    // wrong.
+    //
+    // It counts RELOCATIONS and not collections, and the difference is the
+    // whole point (docs/0022): a "collections completed" counter lives at the
+    // end of `collect()`, so a second collection entry point — a nursery
+    // sweep, a compaction, anything that moves objects without finishing a
+    // full cycle — would move objects while leaving the count alone, and every
+    // Map index in the program would silently answer "not found" for a live
+    // key. This counter is incremented by the copy itself, so the only way to
+    // move an object past it is to write a second object-copy routine.
+    uint64_t relocation_epoch() const noexcept { return relocations_; }
+
+    // How many collections have completed. Statistics; nothing about
+    // correctness may hang off it — see relocation_epoch above.
     uint64_t collection_count() const noexcept { return collections_; }
 
     uintptr_t base_address() const noexcept { return reinterpret_cast<uintptr_t>(from_space_.base); }
@@ -119,6 +132,7 @@ private:
     bool gc_stress_mode_{false};
     bool in_gc_{false};
     uint64_t collections_{0};
+    uint64_t relocations_{0};
     CollectionHook collection_hook_;
 };
 
