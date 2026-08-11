@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/gc.h"
@@ -50,6 +51,52 @@ std::string rtAsciiChars(const StringHeader* s);
 void rtCheckUnimplementedMember(const char* receiver, const char* const* names, size_t count,
                                 const std::string& key);
 
+// A native builtin's prologue. bronze_dynamic_call hands a builtin an
+// argument block that is rooted only as long as the CALLER's frame is —
+// generated code's block lives in its GC root frame (docs/0006), but
+// FunctionHeader::call's arity-adaptation vector and the blocks builtins
+// build for callbacks are plain stack memory. The contract that makes both
+// safe is that the callee copies its parameters into roots of its own
+// before it allocates, and this is that copy, made explicit: after
+// constructing one, read arguments from HERE and never from `argv` again.
+//
+// The std::vector allocation is C++'s, not the bronze heap's, so no
+// collection can happen between the copy and the rooting.
+class RootedArgs {
+public:
+    RootedArgs(uint32_t argc, const uint64_t* argv) : slots_(argc) {
+        for (uint32_t i = 0; i < argc; ++i) slots_[i] = Value(argv[i]);
+        frame_ = ShadowStackFrame::current();
+        if (frame_) {
+            for (Value& slot : slots_) frame_->push(&slot);
+        }
+    }
+
+    ~RootedArgs() {
+        if (frame_) {
+            for (Value& slot : slots_) frame_->pop(&slot);
+        }
+    }
+
+    RootedArgs(const RootedArgs&) = delete;
+    RootedArgs& operator=(const RootedArgs&) = delete;
+
+    uint32_t count() const noexcept { return static_cast<uint32_t>(slots_.size()); }
+
+    // Out of range is `undefined`, which is what a JS call site that omitted
+    // the argument means — so a builtin never has to bounds-check first.
+    Value operator[](uint32_t i) const noexcept {
+        return i < slots_.size() ? slots_[i] : Value::fromUndefined();
+    }
+    Value at(uint32_t i, Value fallback) const noexcept {
+        return i < slots_.size() ? slots_[i] : fallback;
+    }
+
+private:
+    std::vector<Value> slots_;
+    ShadowStackFrame* frame_{nullptr};
+};
+
 // ---- builtin namespaces ---------------------------------------------------
 // Each family owns its own translation unit and exposes exactly two things:
 // the namespace object, and the miss check that keeps an unimplemented
@@ -57,5 +104,10 @@ void rtCheckUnimplementedMember(const char* receiver, const char* const* names, 
 
 Value rtMathObject();
 void rtMathCheckMissingMember(Value obj, const std::string& key);
+
+// `undefined` for a name that is not an implemented method, so the property
+// path can fall through to the unimplemented-member table and then to the
+// language's own answer for a property that does not exist.
+Value rtArrayMethod(const std::string& key);
 
 }  // namespace bronze::runtime

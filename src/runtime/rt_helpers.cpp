@@ -729,6 +729,10 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         if (ec == std::errc{} && idx >= 0) {
             return arr->getElem(static_cast<uint32_t>(idx)).rawBits();
         }
+        // Implemented members are answered before the table is consulted;
+        // the table is only ever the ECMA-262 question "does this exist?".
+        Value method = rtArrayMethod(keyStr);
+        if (!method.isUndefined()) return method.rawBits();
         checkUnimplementedMember("Array.prototype", kArrayMembers,
                                  std::size(kArrayMembers), keyStr);
         return Value::fromUndefined().rawBits();
