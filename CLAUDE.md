@@ -87,3 +87,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0018 selection, jumps and chains (`for-in` as a key snapshot, enumerability
   on the shape, `switch` as a test chain plus a body chain, one jump stack for
   `break`/`continue`/labels, and the optional chain as an n-way join)
+- 0019 delete and accessors (dictionary mode as the escape from the shape
+  chain, array holes and which methods skip them, the receiver an accessor
+  runs with, and what an inline-cache entry may describe)

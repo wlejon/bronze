@@ -106,16 +106,29 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         // invalidate it; the source is rooted anyway, because the array of
         // digit strings is built one allocation at a time.
         Rooted<Value> src{v};
+        // An array index that a `delete` turned into a HOLE is no longer an
+        // own property, so the enumeration skips it — 14.7.5.6 visits own
+        // keys, and a hole is not one (docs/0019 decision 2). The result is
+        // therefore not simply `0..indexCount-1`, which is why the length is
+        // left to the writes below rather than set up front.
+        //
+        // Asked BEFORE the allocation below, and of the ROOT: a plain `v`
+        // read afterwards is a pointer into dead from-space, which under
+        // --gc-stress reported every string as an array and every array as
+        // something else on the very first case that had a hole in it.
+        const bool skipHoles =
+            src.get().isObject() && src.get().asObject<HeapObjectHeader>()->flags == 1;
         Rooted<Value> out{Value::fromObject(
             ArrayHeader::create(rtHeap(), indexCount ? indexCount : 4))};
         out.get().asObject<ArrayHeader>()->header.flags = 1;
-        out.get().asObject<ArrayHeader>()->length = indexCount;
+        uint32_t at = 0;
         for (uint32_t i = 0; i < indexCount; ++i) {
+            if (skipHoles && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             char buf[16];
             auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
             Rooted<Value> key{Value::fromString(
                 StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)))};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
     }

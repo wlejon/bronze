@@ -96,6 +96,13 @@ private:
     ast::StmtPtr parseClass();
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
+    // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed.
+    // One copy for object literals and class bodies, because the only thing
+    // that differs between them is the enumerability the RUNTIME gives the
+    // result (docs/0019 decision 4) — the syntax is identical, including the
+    // arity rules ECMA-262 15.4.1 puts on each half. Null on error.
+    std::unique_ptr<ast::FunctionExpr> parseAccessorMember(ast::AccessorKind kind,
+                                                           std::string& outName);
 
     // --- parser_pattern.cpp: binding patterns (docs/0017) ----------------
     // A pattern where the grammar spells one: a declarator, a parameter, a

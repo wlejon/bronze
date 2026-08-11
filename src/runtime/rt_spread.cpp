@@ -169,9 +169,13 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
 
     if (isArray(srcVal)) {
         // An array's own enumerable keys are its indices; `length` is not
-        // enumerable and is deliberately not copied.
+        // enumerable and is deliberately not copied. A HOLE is not an own key
+        // either (docs/0019 decision 2), so `{ ...a }` after `delete a[1]`
+        // has no `'1'` at all — the same set `Object.keys`, `for-in` and `in`
+        // report, which is the whole point of asking one question in one way.
         const uint32_t length = srcVal.asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < length; ++i) {
+            if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits());

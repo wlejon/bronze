@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -390,7 +391,16 @@ private:
         il::ValueId result = il::kNoValue;  // kNoValue: this edge yields undefined
         VarStateMap state;
     };
+    // What a SHORT-CIRCUITED chain produces. `undefined` for a read, which
+    // is 13.3.9's answer � and `true` for `delete`, because 13.5.1.2 asks
+    // whether the operand produced a Reference Record and a chain that
+    // stopped early produced none (docs/0019 decision 2).
+    enum class ChainMiss { Undefined, True };
     std::optional<Value> lowerOptionalChain(const ast::Expr& expr, il::Function& ilFn);
+    // The n-way join of docs/0018 decision 7 around whatever `body` lowers.
+    // Two callers, differing only in `miss`.
+    std::optional<Value> lowerChainJoin(const std::function<std::optional<Value>()>& body,
+                                        ChainMiss miss, il::Function& ilFn);
     // Lowers the base of a link, keeping it on the current chain's spine.
     std::optional<Value> lowerChainBase(const ast::Expr& base, il::Function& ilFn, bool onSpine);
     // `base === null || base === undefined ? <the whole chain's undefined> :
@@ -423,6 +433,15 @@ private:
 
     // --- lower_object.cpp: objects, property access, new, calls (docs/0008)
     std::optional<Value> lowerObjectLit(const ast::ObjectLit* objLit, il::Function& ilFn);
+    // `delete <unary>`. Dispatches on the OPERAND's node kind rather than
+    // lowering it, because delete never reads the property it names
+    // (docs/0019 decision 2).
+    std::optional<Value> lowerDelete(const ast::Unary& del, il::Function& ilFn);
+    std::optional<Value> lowerDeleteReference(const ast::Unary& del, il::Function& ilFn);
+    // `get k() {}` / `set k(v) {}` on `target`, from an object literal or a
+    // class body; `enumerable` is the only thing that differs between them.
+    bool emitAccessorDef(Value target, const std::string& key, ast::AccessorKind kind,
+                         const ast::FunctionExpr& fn, bool enumerable, il::Function& ilFn);
     std::optional<Value> lowerArrayLit(const ast::ArrayLit* arrLit, il::Function& ilFn);
     std::optional<Value> lowerNewExpr(const ast::NewExpr* newExpr, il::Function& ilFn);
     // `onSpine` says this node is a link of an optional chain already being

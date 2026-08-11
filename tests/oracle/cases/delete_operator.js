@@ -1,27 +1,24 @@
-// BLOCKED: `delete` is `unsupported construct: delete (objects have no
-// dictionary mode yet)` in lowering today.
+// `delete o.k` — the operator, and the DICTIONARY MODE it forces underneath
+// (docs/0019 decisions 1 and 2).
 //
-// The blocker is docs/0004's layout, not the operator. An object's own
-// properties are the nodes of a shape transition chain (docs/0009 decision 1),
-// and a chain is exactly the wrong structure to remove from the middle of:
-// every shape below the removed node has the wrong `slot_index`, and shapes
-// are immortal and shared between objects, so the repair cannot be local to
-// the one object being deleted from. The spec answer is the DICTIONARY MODE
-// that `shape.h` already names in its `kDictionaryThreshold` error — an
-// object that has been deleted from stops being a record and becomes a map,
-// carrying its own key order in a side table. Until that exists there is no
-// honest `delete`, and the operator stays a named error rather than a silent
-// write of `undefined`, which is a DIFFERENT operation: `"k" in o` would
-// still be true afterwards.
+// An object's own properties are the nodes of a shape transition chain
+// (docs/0009 decision 1), and a chain is exactly the wrong structure to
+// remove from the middle of: every shape below the removed node would have
+// the wrong `slot_index`, and shapes are immortal and shared between
+// objects, so the repair could not be local to the one object being deleted
+// from. So the first successful delete moves that object — and only that
+// object — to a private table it can be removed from.
 //
-// What this case pins when it lands, from ECMA-262 13.5.1 (the operator),
-// 10.5.6 ([[Delete]]) and 13.3.9 (delete over an optional chain):
+// What this pins, from ECMA-262 13.5.1 (the operator), 10.5.6 ([[Delete]]),
+// 10.4.2.1 (an array's `length`) and 13.3.9 (delete over an optional chain):
 //
 // 1. `delete o.k` removes the property, so it differs observably from
 //    `o.k = undefined`: `"k" in o` goes false and the key leaves
 //    `Object.keys`.
 // 2. It evaluates to a boolean, and to `true` even when the property was
-//    never there — a missing property is already in the state delete wants.
+//    never there — a missing property is already in the state delete wants,
+//    and answering true without touching the object is also what keeps
+//    `delete o.missing` from demoting a record to a dictionary.
 // 3. Deleting does not disturb the order of the keys that remain, and a key
 //    RE-ADDED after a delete is a new insertion: it goes to the end rather
 //    than back to where it was. docs/0009's insertion order is by last
@@ -33,7 +30,10 @@
 //    property and is not touched, so it stays 3 while index 1 reads
 //    undefined.
 // 6. `delete a?.b` is legal and short-circuits like any other chain, so a
-//    nullish base makes it a no-op that still evaluates to true.
+//    nullish base makes it a no-op that still evaluates to true — 13.5.1.2
+//    asks whether the operand produced a Reference, and a chain that stopped
+//    early produced none. That is the one place a short-circuited chain is
+//    NOT `undefined`.
 const o = { a: 1, b: 2, c: 3 };
 console.log(delete o.b);
 console.log(o.b);

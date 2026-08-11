@@ -183,9 +183,21 @@ private:
             return "[Array]";
         }
         std::string out;
-        for (uint32_t i = 0; i < arr->length; ++i) {
-            if (i) out += ", ";
+        // A run of HOLES prints as node prints it: `<2 empty items>`, one
+        // entry for the whole run rather than one `undefined` each. The
+        // distinction is the point — a hole and a stored `undefined` read
+        // the same and enumerate differently (docs/0019 decision 2).
+        for (uint32_t i = 0; i < arr->length;) {
+            if (!out.empty()) out += ", ";
+            if (!arr->hasElem(i)) {
+                uint32_t run = 0;
+                while (i + run < arr->length && !arr->hasElem(i + run)) ++run;
+                out += "<" + std::to_string(run) + (run == 1 ? " empty item>" : " empty items>");
+                i += run;
+                continue;
+            }
             out += format(arr->getElem(i), depth + 1);
+            ++i;
         }
         leave();
         return out.empty() ? "[]" : "[ " + out + " ]";
@@ -234,13 +246,22 @@ private:
                   [](const auto& a, const auto& b) { return a.first < b.first; });
 
         auto emit = [&](StringHeader* k) {
-            uint32_t slot = 0;
-            if (!obj->shape || !obj->shape->lookupProperty(k, slot)) return;
+            PropertyInfo info;
+            if (!obj->shape || !obj->shape->lookupProperty(k, info)) return;
             const std::string name = utf8Of(k);
             if (!out.empty()) out += ", ";
             out += isIdentifierKey(name) ? name : quoted(name);
             out += ": ";
-            out += format(obj->getSlot(slot), depth + 1);
+            if (info.accessor) {
+                // node names the halves rather than RUNNING the getter, and
+                // so does bronze: inspecting a value must not have effects,
+                // and this walk deliberately allocates nothing.
+                const bool hasGet = !obj->getSlot(info.slot).isUndefined();
+                const bool hasSet = !obj->getSlot(info.slot + 1).isUndefined();
+                out += hasGet ? (hasSet ? "[Getter/Setter]" : "[Getter]") : "[Setter]";
+                return;
+            }
+            out += format(obj->getSlot(info.slot), depth + 1);
         };
         for (const auto& [idx, k] : intKeys) emit(k);
         for (StringHeader* k : strKeys) emit(k);

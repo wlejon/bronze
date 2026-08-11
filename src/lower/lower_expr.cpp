@@ -325,6 +325,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
+        if (un->op == ast::UnaryOp::Delete) return lowerDelete(*un, ilFn);
         if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec ||
             un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
             const auto* ident = dynamic_cast<const ast::Ident*>(un->operand.get());

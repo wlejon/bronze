@@ -55,6 +55,7 @@ const char* opName(Op op) {
         case Op::Box: return "box";
         case Op::Unbox: return "unbox";
         case Op::PropGet: return "prop.get";
+        case Op::SuperGet: return "super.get";
         case Op::PropSet: return "prop.set";
         case Op::ElemGet: return "elem.get";
         case Op::ElemSet: return "elem.set";
@@ -65,6 +66,9 @@ const char* opName(Op op) {
         case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
         case Op::MethodDef: return "method.def";
+        case Op::AccessorDef: return "accessor.def";
+        case Op::PropDelete: return "prop.delete";
+        case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
         case Op::ClassExtend: return "class.extend";
         case Op::IterLength: return "iter.length";
@@ -194,6 +198,30 @@ std::string print(const Module& module) {
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    // Both halves are printed even when one is undefined:
+                    // which half the source wrote is exactly what this op
+                    // carries, and a form that dropped the absent one would
+                    // print `get x` and `set x` identically.
+                    case Op::AccessorDef:
+                        out += "accessor.def %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", " + (inst.immI32 ? "enumerable" : "non-enumerable");
+                        break;
+                    case Op::SuperGet:
+                        out += "super.get %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::PropDelete:
+                        out += "prop.delete %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex);
                         break;
                     case Op::PropSet:
                         out += "prop.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

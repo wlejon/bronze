@@ -131,8 +131,16 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 if (ic->cached_depth == 0) {
                     return fastObj->getSlot(ic->cached_slot).rawBits();
                 }
+                // An ancestor's slot numbering is stable while it is a
+                // transition-tree shape and not once it is a dictionary,
+                // which reuses freed slots for unrelated names — and the
+                // receiver's shape, which is all this entry checks, does not
+                // change when its PROTOTYPE is deleted from (docs/0019
+                // decision 5).
                 if (ObjectHeader* holder = fastObj->protoAncestor(ic->cached_depth)) {
-                    return holder->getSlot(ic->cached_slot).rawBits();
+                    if (!holder->shape || !holder->shape->isDictionary()) {
+                        return holder->getSlot(ic->cached_slot).rawBits();
+                    }
                 }
             }
         }
@@ -209,9 +217,14 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         }
         Value props = objVal.asObject<FunctionHeader>()->properties;
         if (props.isObject()) {
+            // The receiver a `static get` sees is the CLASS, not the side
+            // object its statics are kept in — which is the whole reason
+            // getProp takes a receiver at all.
+            Rooted<Value> fnRoot{objVal};
             Rooted<Value> propsRoot{props};
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
-            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(
+                rtHeap(), key, /*ic=*/nullptr, fnRoot.slot_ptr());
             if (!found.isUndefined()) return found.rawBits();
         }
         rtCheckFunctionMember(keyStr);
@@ -221,14 +234,47 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("property access with an unregistered key index");
     // Interned arena key: no allocation on the property path.
+    //
+    // The RECEIVER is rooted because a read can now run user code: a getter
+    // is a call, so this load is a collection point like any other helper
+    // call (docs/0006 decision 4), and the raw bits this helper was handed
+    // are dead the moment one runs.
+    Rooted<Value> objRoot{objVal};
     Rooted<Value> key(Value::fromString(keyHeader));
-    Value result = objVal.asObject<ObjectHeader>()->getProp(rtHeap(), key, ic);
+    Value result = objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic);
     // A namespace object is an ordinary object, so a member it does not carry
     // reads `undefined` like any other miss — which for a name ECMA-262 says
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
-    if (result.isUndefined()) rtMathCheckMissingMember(objVal, keyStr);
+    if (result.isUndefined()) rtMathCheckMissingMember(objRoot.get(), keyStr);
     return result.rawBits();
+}
+
+// `super.k` — a read of the PARENT prototype's property, with `this` as the
+// receiver (ECMA-262 13.3.7.3, MakeSuperPropertyReference). For a method the
+// receiver makes no difference: the value is the same function object either
+// way, which is why lowering could spell `super.m` as an ordinary read for as
+// long as bronze had no accessors. For a GETTER it is the whole difference —
+// running it against the prototype would read the prototype's fields on every
+// instance, silently.
+uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits) {
+    Value protoVal(protoBits);
+    if (!protoVal.isObject() ||
+        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: super property read on a base whose prototype is not an object");
+    }
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("super property read with an unregistered key index");
+
+    Rooted<Value> receiver{Value(thisBits)};
+    Rooted<Value> protoRoot{protoVal};
+    Rooted<Value> key(Value::fromString(keyHeader));
+    // No inline cache: an entry describes ONE shape, and this read has two
+    // objects — the holder it walks from and the receiver it runs against.
+    return protoRoot.get()
+        .asObject<ObjectHeader>()
+        ->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr())
+        .rawBits();
 }
 
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry) {
@@ -297,7 +343,9 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             rtEnsureFunctionProperties(fnRoot);
             Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
-            propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+            propsRoot.get().asObject<ObjectHeader>()->setProp(
+                rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
+                /*defineOwn=*/false, fnRoot.slot_ptr());
             return;
         }
         if (!valVal.isObject()) {
@@ -346,7 +394,8 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
         Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
         propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                           /*ic=*/nullptr,
-                                                          /*enumerable=*/false);
+                                                          /*enumerable=*/false,
+                                                          /*defineOwn=*/true);
         return;
     }
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -354,8 +403,49 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
     }
     Rooted<Value> objRoot{objVal};
     Rooted<Value> key(Value::fromString(keyHeader));
+    // A DEFINITION, not an assignment: a base class's `set m(v)` must not
+    // swallow a derived class's `m() {}` (ECMA-262 15.7.14 defines a method
+    // with DefineMethod, which never consults the prototype chain).
     objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
-                                                    /*ic=*/nullptr, /*enumerable=*/false);
+                                                    /*ic=*/nullptr, /*enumerable=*/false,
+                                                    /*defineOwn=*/true);
+}
+
+// `get k() {}` / `set k(v) {}`, in an object literal or a class body. One
+// helper for both halves and both places, because they define one property
+// either way; `enumerable` is the whole difference between the two places
+// (ECMA-262 13.2.5.5 says an object literal's accessor is enumerable, 15.7.14
+// says a class's is not — the same split methods already have).
+//
+// No inline cache, for the reason bronze_method_def has none: a literal or a
+// class body defines each accessor once, so there is no repeat to cache.
+void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBits,
+                         uint64_t setterBits, bool enumerable) {
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("internal: an accessor defined on a value that is not an object");
+    }
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("accessor definition with an unregistered key index");
+
+    Rooted<Value> getter{Value(getterBits)};
+    Rooted<Value> setter{Value(setterBits)};
+    Rooted<Value> key(Value::fromString(keyHeader));
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == 2) {  // `static get k()`: an own property of the function
+        Rooted<Value> fnRoot{objVal};
+        rtEnsureFunctionProperties(fnRoot);
+        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
+                                     enumerable);
+        return;
+    }
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("an accessor property on an array or a typed array is unsupported");
+    }
+    Rooted<Value> objRoot{objVal};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
 }
 
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {

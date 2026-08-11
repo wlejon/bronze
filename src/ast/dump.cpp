@@ -80,9 +80,15 @@ public:
                 // means something else entirely.
                 const bool spread =
                     dynamic_cast<const SpreadElement*>(p.value.get()) != nullptr;
+                // An accessor half dumps under its own head: `get x` and
+                // `set x` build ONE property with two halves, and a form
+                // that printed both as `(prop x` would make the two
+                // indistinguishable from an ordinary property written twice.
                 emit(spread                ? std::string("(prop-spread")
                      : p.coverInitialized  ? "(prop-cover-init " + p.key
                      : p.computed()        ? std::string("(prop-computed")
+                     : p.accessor == AccessorKind::Getter ? "(prop-get " + p.key
+                     : p.accessor == AccessorKind::Setter ? "(prop-set " + p.key
                                            : "(prop " + p.key);
                 indented([&] {
                     if (p.keyExpr) p.keyExpr->accept(*this);
@@ -143,7 +149,12 @@ public:
         emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
-                emit(std::string(m.isStatic ? "(static-method " : "(method ") + m.name);
+                const char* head = m.accessor == AccessorKind::Getter
+                                       ? (m.isStatic ? "(static-get " : "(get ")
+                                   : m.accessor == AccessorKind::Setter
+                                       ? (m.isStatic ? "(static-set " : "(set ")
+                                       : (m.isStatic ? "(static-method " : "(method ");
+                emit(std::string(head) + m.name);
                 indented([&] { m.fn->accept(*this); });
                 emit(")");
             }

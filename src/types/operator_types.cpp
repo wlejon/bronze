@@ -53,6 +53,10 @@ Type unaryResult(ast::UnaryOp op, Type operand) {
         case ast::UnaryOp::TypeOf: return withBottom(operand, Type::string());
         // `void x` yields undefined, always; x is evaluated for effect.
         case ast::UnaryOp::Void: return withBottom(operand, Type::undefined());
+        // `delete` yields a boolean, always — and NOT `withBottom`: its
+        // operand is a reference that is never read, so a ⊥ operand type
+        // says nothing about whether the delete happens.
+        case ast::UnaryOp::Delete: return Type::boolean();
         // ToNumber, so the binding holds a number afterwards whatever it held
         // before. NOT `withBottom`: the update reads and writes a binding, and
         // a binding no value has reached is not a reason to call the result ⊥.

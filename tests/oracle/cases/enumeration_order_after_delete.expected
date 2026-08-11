@@ -1,0 +1,21 @@
+a,b,c,d
+a,c,d
+a,c
+a,c,b
+a,c,b,d
+a,c,b,d
+{ a: 100, c: 3, b: 20, d: 40 }
+1,7,10,z,x
+1|7|10|z|x
+1,7,10,z,x
+{ '1': 'one', '7': 'seven', '10': 'ten', z: 'z', x: 'x' }
+y,tag,x
+y|tag|x
+11
+4
+0,2
+0|2
+[ 1, <1 empty item>, 3, <1 empty item> ]
+undefined
+false
+true

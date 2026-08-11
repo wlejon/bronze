@@ -1,19 +1,16 @@
-// BLOCKED: an accessor property is `unsupported construct: object literal
-// getter or setter (accessor properties are not implemented)` in the parser
-// and `unsupported construct: class getter or setter` in lowering.
+// `get x() {}` and `set x(v) {}` — a property that is a PAIR OF FUNCTIONS
+// rather than a value in a slot (docs/0019 decisions 3 and 4).
 //
-// The blocker is that a property in bronze is a VALUE in a slot. docs/0004
-// gives an object a shape and a flat slot vector, and every read is
-// `shape.lookupProperty` then a load — there is no place to record that a
-// slot holds a pair of functions to be CALLED instead, and no place for the
-// inline caches of docs/0008 to record that a hit must become a call. The
-// shape node is where the answer belongs (it already carries `enumerable`
-// for docs/0018 decision 2), so the work is a property-attribute kind on the
-// shape plus an IC state that means "accessor, do not fold to a slot load" —
-// after which `Object.defineProperty` is mostly the same machinery.
+// docs/0004 gives an object a shape and a flat slot vector, and every read
+// was `shape.lookupProperty` then a load. An accessor makes the read a CALL,
+// which is why the shape node carries the kind and why the inline caches of
+// docs/0010 must refuse to describe one: a cached hit is an indexed load in
+// generated code, and folding an accessor into that would return the getter
+// function instead of running it (pinned separately by
+// `inline_cache_shape_changes`).
 //
-// What this case pins when it lands, from ECMA-262 6.1.7.1 (Property
-// Attributes), 10.5.1 and 15.7.14 (class accessors):
+// What this pins, from ECMA-262 6.1.7.1 (Property Attributes), 10.1.8.1,
+// 10.1.9.2 and 15.7.14 (class accessors):
 //
 // 1. A getter runs on READ, at the site of the read, with `this` bound to the
 //    receiver — so `full` recomputes after `first` changes rather than
@@ -22,14 +19,20 @@
 //    afterwards is whatever the getter says, not what was assigned. Assigning
 //    "Ada Lovelace" therefore shows up as two separate fields.
 // 3. An accessor with only a getter silently ignores a write in sloppy mode
-//    — `area` keeps computing from `side`.
+//    — `area` keeps computing from `side`. 10.1.9.2 returns false for it and
+//    a non-strict Set discards that; bronze has no `throw` with which to
+//    produce the strict-mode TypeError (docs/0019 decision 6).
 // 4. An accessor defined in an object literal is ENUMERABLE, so it appears in
 //    `Object.keys` and its getter runs when the key is read back. A class
 //    accessor is not: 15.7.14 defines it with `enumerable: false`, the same
 //    rule that already keeps class methods out of enumeration.
 // 5. An accessor on a PROTOTYPE is found by the ordinary proto walk and runs
 //    with `this` as the instance, not as the prototype — which is what makes
-//    a getter usable as a computed field on every instance at once.
+//    a getter usable as a computed field on every instance at once. `c.r` is
+//    an own data property and `diameter` is not, so the two `Object.keys`
+//    results below differ in exactly that.
+// 6. `get x` and `set x` are ONE property with two halves, not two
+//    properties: `person` has three keys, not four.
 const person = {
   first: "Ada",
   last: "L",

@@ -52,7 +52,18 @@ Value ArrayHeader::getElem(uint32_t index) const {
     if (index >= length) {
         return Value::fromUndefined();
     }
-    return elementsData()[index];
+    Value v = elementsData()[index];
+    return v.isHole() ? Value::fromUndefined() : v;
+}
+
+bool ArrayHeader::hasElem(uint32_t index) const noexcept {
+    if (index >= length) return false;
+    return !elementsData()[index].isHole();
+}
+
+void ArrayHeader::deleteElem(uint32_t index) noexcept {
+    if (index >= length) return;
+    elementsData()[index] = Value::fromHole();
 }
 
 void ArrayHeader::setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {

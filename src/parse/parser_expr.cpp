@@ -258,12 +258,19 @@ ExprPtr Parser::parseUnaryPrefix() {
         return ne;
     }
     if (check(TokenKind::KwDelete)) {
-        // `delete` is what transitions an object to dictionary mode, which
-        // is designed but unbuilt (docs/0009 decision 3). The keyword
-        // exists purely so the construct can be named: before it, this
-        // read as a stray-identifier syntax error naming nothing.
-        error("unsupported construct: delete (objects have no dictionary mode yet)");
-        return nullptr;
+        // A *UnaryExpression* operand, like every other prefix operator —
+        // but one whose value is never taken: `delete o.k` reads no
+        // property. Lowering dispatches on the operand's node kind
+        // (docs/0019 decision 2), so the parser's only job is to build it.
+        const Token& kw = advance();
+        auto operand = parseUnaryPrefix();
+        if (!operand) return nullptr;
+        auto del = std::make_unique<Unary>();
+        del->span = {kw.span.begin, operand->span.end};
+        del->op = UnaryOp::Delete;
+        del->operand = std::move(operand);
+        lastOperandIsUnary_ = true;
+        return del;
     }
     if (check(TokenKind::KwClass)) {
         error("unsupported construct: class expression");

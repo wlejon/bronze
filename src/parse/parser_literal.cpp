@@ -340,12 +340,16 @@ ExprPtr Parser::parseObjectLit() {
                  check(TokenKind::NumberLiteral) || check(TokenKind::LBracket))) {
                 // `get`/`set` are only contextual: `{ get: 1 }`, `{ get }` and
                 // `{ get() {} }` all name an ordinary property, and only a
-                // FOLLOWING property name makes this an accessor. Naming it
-                // here keeps the report about the missing feature rather than
-                // about the ':' that an accessor was never going to have.
-                error("unsupported construct: object literal getter or setter (accessor "
-                      "properties are not implemented)");
-                return nullptr;
+                // FOLLOWING property name makes this an accessor.
+                const AccessorKind kind =
+                    prop.key == "get" ? AccessorKind::Getter : AccessorKind::Setter;
+                auto accessorFn = parseAccessorMember(kind, prop.key);
+                if (!accessorFn) return nullptr;
+                prop.accessor = kind;
+                prop.value = std::move(accessorFn);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
             if (check(TokenKind::LParen)) {
                 // `{ m() {} }` — MethodDefinition shorthand. It is a function

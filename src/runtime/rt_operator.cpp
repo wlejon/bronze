@@ -189,8 +189,10 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (key == "length") return true;
         // An index within the length is a key; one past the end is not,
-        // which is the whole reason `in` exists on an array.
-        return rtIsIntegerLikeKey(key, index) && index < arr->length;
+        // which is the whole reason `in` exists on an array. A HOLE is not
+        // one either — `delete a[1]` takes index 1 out of the own keys
+        // without moving `length` (docs/0019 decision 2).
+        return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
     }
     if (hdr->flags == 3) {  // Float32Array view
         auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);

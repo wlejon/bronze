@@ -62,15 +62,28 @@ std::optional<Lowerer::Value> Lowerer::lowerChainBase(const ast::Expr& base, il:
 
 std::optional<Lowerer::Value> Lowerer::lowerOptionalChain(const ast::Expr& expr,
                                                           il::Function& ilFn) {
+    return lowerChainJoin(
+        [&] {
+            spinePos_ = true;
+            auto v = lowerExpr(expr, ilFn);
+            spinePos_ = false;
+            return v;
+        },
+        ChainMiss::Undefined, ilFn);
+}
+
+// The join itself, over whatever `body` lowers. Two callers: an optional
+// chain read, and a `delete` whose operand is one — which differ only in
+// what the short-circuit edges carry.
+std::optional<Lowerer::Value> Lowerer::lowerChainJoin(
+    const std::function<std::optional<Value>()>& body, ChainMiss miss, il::Function& ilFn) {
     // A chain nested inside another — `a?.b(c?.d)` — is lowered to completion
     // with its own edge list, so the inner one's short circuit reaches the
     // inner join and not the outer.
     auto savedExits = std::move(chainExits_);
     chainExits_.clear();
 
-    spinePos_ = true;
-    auto valOpt = lowerExpr(expr, ilFn);
-    spinePos_ = false;
+    auto valOpt = body();
     if (!valOpt) {
         chainExits_ = std::move(savedExits);
         return std::nullopt;
@@ -119,9 +132,24 @@ std::optional<Lowerer::Value> Lowerer::lowerOptionalChain(const ast::Expr& expr,
         setCurrentBlock(edge.blockIdx);
         restoreVarStates(edge.state);
         std::vector<il::ValueId> args;
-        // kNoValue is the short circuit's answer: the chain produces
-        // `undefined`, materialized on the edge that produces it.
-        args.push_back(edge.result == il::kNoValue ? emitConstUndefined(ilFn) : edge.result);
+        // kNoValue is the short circuit's answer, materialized on the edge
+        // that produces it: `undefined` for a read, `true` for a `delete`,
+        // which asks whether there was a Reference to remove rather than
+        // what it held.
+        if (edge.result != il::kNoValue) {
+            args.push_back(edge.result);
+        } else if (miss == ChainMiss::True) {
+            il::ValueId t = ilFn.valueCount++;
+            il::Instruction trueInst;
+            trueInst.op = il::Op::ConstBool;
+            trueInst.type = il::Type::Bool;
+            trueInst.result = t;
+            trueInst.immI32 = 1;
+            emitInst(ilFn, trueInst);
+            args.push_back(boxValueIfNeeded(Value{t, il::Type::Bool}, ilFn).id);
+        } else {
+            args.push_back(emitConstUndefined(ilFn));
+        }
         for (const auto& name : joinVars) {
             Value v{edge.state.at(name).valueId, edge.state.at(name).type};
             args.push_back(coerceToType(v, il::Type::Dynamic, ilFn).id);

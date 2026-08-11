@@ -61,6 +61,7 @@ const char* unaryOpName(UnaryOp op) {
         case UnaryOp::BitNot: return "~";
         case UnaryOp::TypeOf: return "typeof";
         case UnaryOp::Void: return "void";
+        case UnaryOp::Delete: return "delete";
     }
     return "?";
 }

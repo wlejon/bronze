@@ -84,6 +84,19 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
 
     for (const auto& m : cls->methods) {
         if (m.isConstructor) continue;
+        const il::ValueId homeObject = m.isStatic ? ctorVal->id : protoVal.id;
+
+        // A class accessor is NON-enumerable — ECMA-262 15.7.14 defines it
+        // exactly as it defines a method, and the two therefore share the
+        // rule that keeps them out of `for-in` (docs/0018 decision 2).
+        if (m.accessor != ast::AccessorKind::None) {
+            if (!emitAccessorDef(Value{homeObject, il::Type::Dynamic}, m.name, m.accessor, *m.fn,
+                                 /*enumerable=*/false, ilFn)) {
+                return false;
+            }
+            continue;
+        }
+
         auto fnVal = lowerClosure(*m.fn, m.fn->name, m.fn->params, m.fn->returnType, m.fn->body,
                                   m.fn->span, ilFn);
         if (!fnVal) return false;
@@ -101,7 +114,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         setInst.op = il::Op::MethodDef;
         setInst.type = il::Type::Void;
         setInst.result = il::kNoValue;
-        setInst.operands = {m.isStatic ? ctorVal->id : protoVal.id, fnVal->id};
+        setInst.operands = {homeObject, fnVal->id};
         setInst.keyIndex = getKeyConstantIndex(m.name);
         emitInst(ilFn, setInst);
     }
@@ -121,15 +134,20 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* 
     if (!baseVal) return std::nullopt;
     auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
 
+    // The receiver is `this`, not the prototype the lookup starts from
+    // (13.3.7.3). Indistinguishable from an ordinary read for a method and
+    // not at all for an accessor, which is why this stopped being a plain
+    // `prop.get` when accessors landed (docs/0019 decision 3).
+    auto thisVal = lowerThisValue(sm->span, ilFn);
+    if (!thisVal) return std::nullopt;
+
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::PropGet;
+    inst.op = il::Op::SuperGet;
     inst.type = il::Type::Dynamic;
     inst.result = res;
-    inst.operands = {protoVal.id};
+    inst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id};
     inst.keyIndex = getKeyConstantIndex(sm->property);
-    inst.icIndex = icSiteCounter_++;
-    inst.icMonomorphic = false;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }

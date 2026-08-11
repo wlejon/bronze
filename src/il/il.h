@@ -84,6 +84,13 @@ enum class Op : uint8_t {
     Box,        // a = box.<type> b
     Unbox,      // a = unbox.<type> b
     PropGet,    // a = prop.get b, <key_const_index>, <ic_site_index>
+    // `super.k`: a read of the PARENT prototype's property with `this` as
+    // the receiver. Identical to prop.get for a method — the value is the
+    // same function either way — and not identical at all for an accessor,
+    // whose getter would otherwise run with the prototype as its receiver
+    // (docs/0019 decision 3). No inline cache: the receiver and the holder
+    // are different objects, and an entry describes one shape.
+    SuperGet,   // a = super.get proto, <key_const_index>, thisArg
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
     ElemSet,    // elem.set obj, idx, val       (all dynamic)
@@ -102,6 +109,17 @@ enum class Op : uint8_t {
     // of `Object.keys` and `for-in` (docs/0018 decision 2). No IC index — a
     // class body runs once.
     MethodDef,  // method.def obj, <key_const_index>, v
+    // An accessor property: one property with two halves, either of which
+    // may be `undefined` here because the source wrote only one of them
+    // (docs/0019 decision 4). `immI32` is the enumerable attribute — 1 for
+    // an object literal's accessor, 0 for a class's, the same split methods
+    // already have. No IC index, for the reason `method.def` has none.
+    AccessorDef,  // accessor.def obj, <key_const_index>, getter, setter, <enumerable>
+    // `delete o.k` and `delete o[i]`. A reference operation, not a read:
+    // the operand's property is never loaded, and the result is the boolean
+    // ECMA-262 13.5.1 defines rather than the property's value.
+    PropDelete,  // a: bool = prop.delete obj, <key_const_index>
+    ElemDelete,  // a: bool = elem.delete obj, idx
     GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to

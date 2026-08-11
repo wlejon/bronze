@@ -300,8 +300,31 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     const auto field = parseAndDump("class C { x = 1; }");
     CHECK(field.find("unsupported construct: class field") != std::string::npos);
 
+    // A class accessor is BUILT (docs/0019), so what is pinned here is that
+    // it parses as one member with an accessor head rather than as a method
+    // named `get`, and that the forms around it stay named.
     const auto getter = parseAndDump("class C { get x() { return 1; } }");
-    CHECK(getter.find("unsupported construct: class getter or setter") != std::string::npos);
+    CHECK(getter.substr(0, 7) != "ERRORS:");
+    CHECK(getter.find("(get x") != std::string::npos);
+
+    const auto setter = parseAndDump("class C { static set x(v) { this.q = v; } }");
+    CHECK(setter.substr(0, 7) != "ERRORS:");
+    CHECK(setter.find("(static-set x") != std::string::npos);
+
+    // `get` is contextual in a class body too: a method may be called `get`.
+    const auto namedGet = parseAndDump("class C { get() { return 1; } }");
+    CHECK(namedGet.substr(0, 7) != "ERRORS:");
+    CHECK(namedGet.find("(method get") != std::string::npos);
+
+    const auto computedAccessor = parseAndDump("class C { get [k]() { return 1; } }");
+    CHECK(computedAccessor.find("unsupported construct: a computed getter name") !=
+          std::string::npos);
+
+    // ECMA-262 15.4.1 fixes the arity of each half; both are early errors.
+    const auto getterArity = parseAndDump("class C { get x(a) { return a; } }");
+    CHECK(getterArity.find("a getter must take exactly no parameters") != std::string::npos);
+    const auto setterArity = parseAndDump("class C { set x() {} }");
+    CHECK(setterArity.find("a setter must take exactly one parameter") != std::string::npos);
 
     const auto computed = parseAndDump("class C { [k]() { return 1; } }");
     CHECK(computed.find("unsupported construct: computed method name") != std::string::npos);
@@ -809,13 +832,36 @@ TEST_CASE("`?.` before a digit is the conditional operator, not a chain") {
     CHECK(out.find("(number 0.5)") != std::string::npos);
 }
 
-TEST_CASE("an object literal accessor is named, not reported as a missing ':'") {
-    const auto out = parseAndDump("const o = { get x() { return 1; } };\n");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: object literal getter or setter") != std::string::npos);
+TEST_CASE("an object literal accessor is one property with two halves") {
+    // The two halves of one name dump under separate heads, because that is
+    // exactly what distinguishes them — `(prop x` twice would print `get x`
+    // and `set x` identically (docs/0019 decision 4).
+    const auto out =
+        parseAndDump("const o = { get x() { return 1; }, set x(v) { this.q = v; } };\n");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(prop-get x") != std::string::npos);
+    CHECK(out.find("(prop-set x") != std::string::npos);
 
     // `get` is contextual: these three are ordinary properties and must keep
     // parsing.
     const auto plain = parseAndDump("const a = { get: 1 };\nconst get = 2;\nconst b = { get };\n");
     CHECK(plain.substr(0, 7) != "ERRORS:");
+
+    // A string-literal accessor name is legal; a computed one is named.
+    const auto strKey = parseAndDump("const o = { get \"a b\"() { return 1; } };\n");
+    CHECK(strKey.substr(0, 7) != "ERRORS:");
+    CHECK(strKey.find("(prop-get a b") != std::string::npos);
+    const auto computed = parseAndDump("const o = { set [k](v) {} };\n");
+    CHECK(computed.find("unsupported construct: a computed setter name") != std::string::npos);
+}
+
+TEST_CASE("`delete` is a reference operator, and a binding is not a reference") {
+    const auto prop = parseAndDump("delete o.a;\n");
+    CHECK(prop.substr(0, 7) != "ERRORS:");
+    CHECK(prop.find("(unary delete") != std::string::npos);
+
+    // `delete x` is a SyntaxError in strict mode (ECMA-262 13.5.1.1), and the
+    // message names the property form the author almost certainly meant.
+    const auto binding = parseAndDump("const x = 1;\ndelete x;\n");
+    CHECK(binding.substr(0, 7) != "ERRORS:");  // it parses; lowering refuses it
 }

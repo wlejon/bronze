@@ -1,5 +1,6 @@
 #include "runtime/object.h"
 
+#include "runtime/accessor.h"
 #include "runtime/fatal.h"
 
 namespace bronze {
@@ -49,7 +50,7 @@ void ObjectHeader::setSlot(uint32_t index, Value val) {
 // Grow self's overflow block to hold at least `needed` out-of-line slots.
 // Allocation may collect and move both the object and its old block, so
 // everything is re-derived through the root after allocating.
-static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t needed) {
+ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t needed) {
     auto* obj = self.get().asObject<ObjectHeader>();
     uint32_t cap = obj->overflowCapacity();
     if (needed <= cap) {
@@ -77,9 +78,13 @@ static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t ne
     return obj;
 }
 
-// A cycle here would hang the property path rather than crash it, so the
-// walk is bounded and says so by name. Real chains are 1–3 links.
-static constexpr uint32_t kMaxPrototypeDepth = 1000;
+// Slot indices [0, count) must be addressable. An accessor occupies two, so
+// the caller's "highest slot" and "slot count" differ by more than one and
+// the arithmetic belongs here rather than at each call site.
+ObjectHeader* ObjectHeader::ensureSlots(Heap& heap, Rooted<Value>& self, uint32_t count) {
+    if (count <= kInlineSlots) return self.get().asObject<ObjectHeader>();
+    return ensureOverflow(heap, self, count - kInlineSlots);
+}
 
 ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
     ObjectHeader* cur = this;
@@ -94,7 +99,18 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
     return cur;
 }
 
-Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
+// A cached hit whose holder is an ANCESTOR is only sound while that
+// ancestor's slot numbering is the one the entry was filled against. Adding
+// a property to a prototype never renumbers an existing slot, so the
+// transition tree keeps that promise for free — but a delete does not, and
+// a dictionary reuses freed slots for unrelated names (docs/0019 decision
+// 5). One pointer load rules that out, on the proto-hit path only.
+static bool cachedProtoHolderIsStale(const ObjectHeader* holder) noexcept {
+    return holder->shape != nullptr && holder->shape->isDictionary();
+}
+
+Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
+                            const Value* receiver) {
     (void)heap;
     if (!key.get().isString()) {
         fatal("property key must be a string");
@@ -103,27 +119,43 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
 
     if (ic && ic->cached_shape == shape) {
         ObjectHeader* holder = protoAncestor(ic->cached_depth);
-        if (holder) {
+        if (!holder) {
+            // The chain got shorter than the cache says, which the shape check
+            // should have caught: the prototype lives on the shape, so it
+            // cannot change without the shape changing.
+            fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
+        }
+        if (ic->cached_depth == 0 || !cachedProtoHolderIsStale(holder)) {
             return holder->getSlot(ic->cached_slot);
         }
-        // The chain got shorter than the cache says, which the shape check
-        // should have caught: the prototype lives on the shape, so it
-        // cannot change without the shape changing.
-        fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
+        // Fall through and look it up properly; the entry is refilled below,
+        // or left alone if the answer is no longer cacheable.
     }
 
     // Own property first, then up the prototype chain. Nothing here
-    // allocates, so these raw pointers stay valid for the whole walk.
+    // allocates until an accessor is found, so these raw pointers stay valid
+    // for the whole walk — and the accessor branch stops using them.
     ObjectHeader* holder = this;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
-        uint32_t slot = 0;
-        if (holder->shape && holder->shape->lookupProperty(prop_name, slot)) {
-            if (ic) {
+        PropertyInfo info;
+        if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
+            if (info.accessor) {
+                // Deliberately NOT cached: every consumer of an entry reads it
+                // as a slot index, including the load generated code inlines,
+                // and a getter is a call (docs/0019 decision 5).
+                Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
+                return callGetter(holder->getSlot(info.slot), self);
+            }
+            // A dictionary receiver's shape is private to one object and its
+            // slots are not shape-indexed, so an entry naming it could only
+            // ever hit for that object and would go stale on its next delete.
+            if (ic && shape && !shape->isDictionary() &&
+                !(depth > 0 && cachedProtoHolderIsStale(holder))) {
                 ic->cached_shape = shape;
-                ic->cached_slot = slot;
+                ic->cached_slot = info.slot;
                 ic->cached_depth = depth;
             }
-            return holder->getSlot(slot);
+            return holder->getSlot(info.slot);
         }
         ObjectHeader* next = holder->protoAncestor(1);
         if (!next) {
@@ -135,51 +167,85 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic) {
 }
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
-                                    Rooted<Value>& val, InlineCache* ic, bool enumerable) {
+                                    Rooted<Value>& val, InlineCache* ic, bool enumerable,
+                                    bool defineOwn, const Value* receiver) {
     if (!key.get().isString()) {
         fatal("property key must be a string");
     }
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
-    // Writes never walk the prototype chain: assignment creates an OWN
-    // property (bronze has no setters), so a set-site IC only ever caches
-    // depth 0.
+    // A set-site entry only ever describes an OWN DATA property of a
+    // non-dictionary shape (below), so a shape match is a slot write with
+    // nothing left to check.
     if (ic && ic->cached_shape == shape && ic->cached_depth == 0) {
         setSlot(ic->cached_slot, val.get());
         return this;
     }
 
-    uint32_t slot = 0;
-    if (shape && shape->lookupProperty(prop_name, slot)) {
-        if (ic) {
+    PropertyInfo own;
+    if (shape && shape->lookupProperty(prop_name, own)) {
+        if (own.accessor) {
+            if (defineOwn) {
+                // CreateDataProperty over an accessor would have to strip the
+                // pair and hand the name a data slot at the same position.
+                // Dictionary mode can express that; nothing asks for it yet,
+                // so it is named rather than half-built.
+                fatal("redefining an accessor property as a data property is unsupported");
+            }
+            Rooted<Value> live{Value::fromObject(this)};
+            Rooted<Value> recv{receiver ? *receiver : live.get()};
+            callSetter(getSlot(own.slot + 1), recv, val);
+            return live.get().asObject<ObjectHeader>();
+        }
+        if (ic && !shape->isDictionary()) {
             ic->cached_shape = shape;
-            ic->cached_slot = slot;
+            ic->cached_slot = own.slot;
             ic->cached_depth = 0;
         }
-        setSlot(slot, val.get());
+        setSlot(own.slot, val.get());
         return this;
     }
 
-    // Property not found: shape transition, possibly growing the overflow
-    // block. Growth allocates, which can move this object — operate through
-    // a root from here on.
-    Rooted<Value> self(Value::fromObject(this));
+    // No own property. An assignment then walks the prototype chain looking
+    // for an ACCESSOR to run (ECMA-262 10.1.9.2): an inherited setter takes
+    // the write, an inherited data property is merely shadowed by the new own
+    // one. Before accessors existed this walk could be skipped outright,
+    // which is why the write path used to say it never walked.
+    if (!defineOwn) {
+        ObjectHeader* holder = this;
+        for (uint32_t depth = 1; depth <= kMaxPrototypeDepth; ++depth) {
+            holder = holder->protoAncestor(1);
+            if (!holder) break;
+            PropertyInfo info;
+            if (!holder->shape || !holder->shape->lookupProperty(prop_name, info)) continue;
+            if (!info.accessor) break;  // shadowed by the own property created below
+            Rooted<Value> live{Value::fromObject(this)};
+            Rooted<Value> recv{receiver ? *receiver : live.get()};
+            callSetter(holder->getSlot(info.slot + 1), recv, val);
+            return live.get().asObject<ObjectHeader>();
+        }
+    }
+
+    // Create the own property: a shape transition, or an entry in the
+    // dictionary once one delete has made the chain unusable. Both may grow
+    // the overflow block, which allocates and can move this object — operate
+    // through a root from here on.
+    Rooted<Value> self{Value::fromObject(this)};
     uint32_t new_slot = 0;
-    Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
-
-    ObjectHeader* live = self.get().asObject<ObjectHeader>();
-    if (new_slot >= kInlineSlots) {
-        live = ensureOverflow(heap, self, new_slot - kInlineSlots + 1);
+    ObjectHeader* live = nullptr;
+    if (shape->isDictionary()) {
+        live = dictDefine(heap, arena, self, prop_name, enumerable, /*accessor=*/false, new_slot);
+    } else {
+        Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
+        live = ensureSlots(heap, self, new_slot + 1);
+        live->shape = next_shape;
+        if (ic) {
+            ic->cached_shape = next_shape;
+            ic->cached_slot = new_slot;
+            ic->cached_depth = 0;
+        }
     }
-
-    live->shape = next_shape;
     live->setSlot(new_slot, val.get());
-
-    if (ic) {
-        ic->cached_shape = next_shape;
-        ic->cached_slot = new_slot;
-        ic->cached_depth = 0;
-    }
     return live;
 }
 

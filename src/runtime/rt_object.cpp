@@ -216,18 +216,22 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
 
-    // An array's own keys are its indices, already in ascending order.
+    // An array's own keys are its indices, already in ascending order — the
+    // ones it actually HAS: a hole left by `delete a[i]` is not an own
+    // property, so the result is shorter than `length` (docs/0019 dec. 2).
     if (hdr->flags == 1) {
         Rooted<Value> src{objVal};
         uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
         Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
         out.get().asObject<ArrayHeader>()->header.flags = 1;
+        uint32_t at = 0;
         for (uint32_t i = 0; i < length; ++i) {
+            if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             char buf[16];
             auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
             Rooted<Value> key{Value::fromString(
                 StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)))};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
     }

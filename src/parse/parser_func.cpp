@@ -143,6 +143,67 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
     return true;
 }
 
+// `get k() {}` / `set k(v) {}`, with the contextual `get` or `set` already
+// consumed. Object literals and class bodies share this because they share
+// the whole of the syntax: what differs is the enumerable attribute the
+// runtime gives the result, which is the caller's to decide.
+//
+// The arity rules are 15.4.1's and are early errors, not runtime ones: a
+// getter that took a parameter could never be given one, and a setter that
+// took none would silently discard every write.
+std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind kind,
+                                                               std::string& outName) {
+    const bool isGetter = kind == ast::AccessorKind::Getter;
+    const char* word = isGetter ? "getter" : "setter";
+
+    if (check(TokenKind::LBracket)) {
+        error((std::string("unsupported construct: a computed ") + word +
+               " name (`get [e]() {}`)")
+                  .c_str());
+        return nullptr;
+    }
+    Span nameSpan = peek().span;
+    if (check(TokenKind::StringLiteral)) {
+        const Token& sTok = advance();
+        outName = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+    } else if (check(TokenKind::Identifier)) {
+        outName = std::string(advance().text);
+    } else {
+        // A numeric accessor name lands here with the object literal's own
+        // rule: the name is ToString(Number), which is the runtime's
+        // formatter and not something the parser may reimplement.
+        error((std::string("expected a ") + word +
+               " name: an identifier or a string literal")
+                  .c_str());
+        return nullptr;
+    }
+
+    auto fn = std::make_unique<FunctionExpr>();
+    fn->span.begin = nameSpan.begin;
+    fn->name = std::string(isGetter ? "get " : "set ") + outName;
+    if (!expect(TokenKind::LParen, "'(' after an accessor name")) return nullptr;
+    if (!parseParams(fn->params)) return nullptr;
+    if (!expect(TokenKind::RParen, "')' after accessor parameters")) return nullptr;
+    if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+
+    const size_t want = isGetter ? 0u : 1u;
+    if (fn->params.size() != want) {
+        error((std::string("a ") + word + " must take exactly " +
+               (isGetter ? "no parameters" : "one parameter"))
+                  .c_str());
+        return nullptr;
+    }
+    if (!fn->params.empty() && fn->params[0].isRest) {
+        error("a setter's parameter may not be a rest parameter");
+        return nullptr;
+    }
+
+    fn->body = parseBlock();
+    if (diags_.hasErrors()) return nullptr;
+    fn->span.end = peek().span.begin;
+    return fn;
+}
+
 // `class Name [extends Base] { members }`. A class introduces no runtime
 // concept - it is the constructor function plus its prototype, and lowering
 // desugars it into exactly that (docs/0012 decision 5). What the parser
@@ -202,11 +263,24 @@ ast::StmtPtr Parser::parseClass() {
             ok = false;
             break;
         }
+        // `get`/`set` are contextual here too: `get() {}` is a method named
+        // `get`, and only a following name makes this an accessor.
         if (check(TokenKind::Identifier) && (peek().text == "get" || peek().text == "set") &&
-            peek(1).kind == TokenKind::Identifier) {
-            error("unsupported construct: class getter or setter");
-            ok = false;
-            break;
+            (peek(1).kind == TokenKind::Identifier || peek(1).kind == TokenKind::StringLiteral ||
+             peek(1).kind == TokenKind::LBracket)) {
+            const ast::AccessorKind kind =
+                peek().text == "get" ? ast::AccessorKind::Getter : ast::AccessorKind::Setter;
+            advance();  // 'get' / 'set'
+            auto accessorFn = parseAccessorMember(kind, member.name);
+            if (!accessorFn) {
+                ok = false;
+                break;
+            }
+            accessorFn->name = cls->name + "." + accessorFn->name;
+            member.accessor = kind;
+            member.fn = std::move(accessorFn);
+            cls->methods.push_back(std::move(member));
+            continue;
         }
         const Token* memberName = expect(TokenKind::Identifier, "class member name");
         if (!memberName) {

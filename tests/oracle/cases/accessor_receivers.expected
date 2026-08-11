@@ -1,0 +1,26 @@
+2
+20
+4
+1
+true
+n=3
+4
+n=4
+derived(base:7)
+0
+1
+42
+42
+1
+plain,live
+{ plain: 1, live: [Getter] }
+1
+{ v: [Getter/Setter], other: 2 }
+true
+undefined
+other
+9
+other,v
+undefined
+5
+{ only: [Setter], seen: 5 }

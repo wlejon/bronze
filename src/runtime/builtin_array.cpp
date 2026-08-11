@@ -106,6 +106,27 @@ void requireCallable(Value v, const char* method) {
     }
 }
 
+// Whether index `i` is an OWN property of the receiver. `delete a[i]` leaves
+// a HOLE (docs/0019 decision 2), and every method ECMA-262 defines in terms
+// of HasProperty must skip one rather than visit it as `undefined` — the
+// difference between `[1, , 3].forEach(f)` calling `f` twice and calling it
+// three times. Deliberately not every method: `find`, `includes`, `join` and
+// `at` are defined with Get, so for them a hole IS `undefined` and the loops
+// below stay as they are.
+bool hasIndex(Value self, uint32_t i) {
+    return !isArray(self) || self.asObject<ArrayHeader>()->hasElem(i);
+}
+
+// Appends a hole, so a producer that skipped an element still lines its
+// output's indices up with its input's — `slice` and `concat` copy the
+// absence rather than densifying it.
+void appendHole(Rooted<Value>& out) {
+    const uint32_t at = out.get().asObject<ArrayHeader>()->length;
+    Rooted<Value> filler{Value::fromUndefined()};
+    appendTo(out, filler);
+    out.get().asObject<ArrayHeader>()->deleteElem(at);
+}
+
 // ---- mutators -------------------------------------------------------------
 
 uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -202,6 +223,7 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     uint32_t from =
         args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), arr->length) : 0;
     for (uint32_t i = from; i < arr->length; ++i) {
+        if (!arr->hasElem(i)) continue;
         if (bronze_strict_eq(arr->getElem(i).rawBits(), needle.rawBits())) {
             return Value::fromDouble(i).rawBits();
         }
@@ -216,6 +238,7 @@ uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     Value needle = args[0];
     for (uint32_t i = arr->length; i > 0; --i) {
+        if (!arr->hasElem(i - 1)) continue;
         if (bronze_strict_eq(arr->getElem(i - 1).rawBits(), needle.rawBits())) {
             return Value::fromDouble(i - 1).rawBits();
         }
@@ -260,6 +283,10 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
                        : len;
     Rooted<Value> out{newArray()};
     for (uint32_t i = start; i < end; ++i) {
+        if (!hasIndex(self.get(), i)) {
+            appendHole(out);
+            continue;
+        }
         Rooted<Value> elem{elemOf(self.get(), i)};
         appendTo(out, elem);
     }
@@ -272,6 +299,10 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     requireArray(self.get(), "concat");
     Rooted<Value> out{newArray()};
     for (uint32_t i = 0; i < lengthOf(self.get()); ++i) {
+        if (!hasIndex(self.get(), i)) {
+            appendHole(out);
+            continue;
+        }
         Rooted<Value> elem{elemOf(self.get(), i)};
         appendTo(out, elem);
     }
@@ -284,6 +315,10 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         // One level of spreading, which is all concat does — an array
         // nested inside an argument array stays nested.
         for (uint32_t i = 0; i < lengthOf(arg.get()); ++i) {
+            if (!hasIndex(arg.get(), i)) {
+                appendHole(out);
+                continue;
+            }
             Rooted<Value> elem{elemOf(arg.get(), i)};
             appendTo(out, elem);
         }
@@ -322,6 +357,7 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
+        if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         callBack(fn, thisArg, elem, i, self);
     }
@@ -338,6 +374,12 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     Rooted<Value> out{newArray()};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
+        // A hole is not mapped, and the result keeps it: `map` is the one
+        // producer whose output length is its input's by definition.
+        if (!hasIndex(self.get(), i)) {
+            appendHole(out);
+            continue;
+        }
         Rooted<Value> elem{elemOf(self.get(), i)};
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
         appendTo(out, mapped);
@@ -355,6 +397,9 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     Rooted<Value> out{newArray()};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
+        // `filter` DENSIFIES: a hole is never tested, and nothing is emitted
+        // for it, so the result has no holes even when the input did.
+        if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         if (bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
             appendTo(out, elem);
@@ -372,6 +417,7 @@ uint64_t arraySome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
+        if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         if (bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
             return Value::fromBool(true).rawBits();
@@ -389,6 +435,7 @@ uint64_t arrayEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
+        if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         if (!bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
             return Value::fromBool(false).rawBits();
@@ -432,15 +479,20 @@ uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     if (args.count() > 1) {
         acc.set(args[1]);
     } else {
-        if (len == 0) {
+        // With no initial value the seed is the first element that is
+        // PRESENT, not the first index: `[, 1, 2].reduce(f)` seeds with 1.
+        // An array of nothing but holes is as empty as one of length zero.
+        while (next < len && !hasIndex(self.get(), Reverse ? len - 1 - next : next)) ++next;
+        if (next == len) {
             fatal("Array.prototype.reduce of an empty array with no initial value");
         }
-        acc.set(elemOf(self.get(), Reverse ? len - 1 : 0));
-        next = 1;
+        acc.set(elemOf(self.get(), Reverse ? len - 1 - next : next));
+        next += 1;
     }
 
     for (uint32_t n = next; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
+        if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         // (accumulator, element, index, array) — four arguments, so this
         // one does not go through callBack.

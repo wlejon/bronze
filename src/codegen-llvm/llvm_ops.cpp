@@ -129,6 +129,44 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                      {target, builder_.getInt32(inst.keyIndex), value});
             return true;
         }
+        case il::Op::AccessorDef: {
+            if (!needs(3, false, "Invalid operands for AccessorDef")) return false;
+            const char* what = "Undefined operand in AccessorDef instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* getter = operand(inst, 1, what);
+            llvm::Value* setter = operand(inst, 2, what);
+            if (!target || !getter || !setter) return false;
+            callWith(abi.bronze_accessor_def,
+                     {target, builder_.getInt32(inst.keyIndex), getter, setter,
+                      builder_.getInt1(inst.immI32 != 0)});
+            return true;
+        }
+        case il::Op::SuperGet: {
+            if (!needs(2, false, "Invalid operands for SuperGet")) return false;
+            const char* what = "Undefined operand in SuperGet instruction";
+            llvm::Value* proto = operand(inst, 0, what);
+            llvm::Value* thisArg = operand(inst, 1, what);
+            if (!proto || !thisArg) return false;
+            callWith(abi.bronze_super_get,
+                     {proto, builder_.getInt32(inst.keyIndex), thisArg});
+            return true;
+        }
+        case il::Op::PropDelete: {
+            if (!needs(1, false, "Invalid operands for PropDelete")) return false;
+            llvm::Value* target = operand(inst, 0, "Undefined operand in PropDelete instruction");
+            if (!target) return false;
+            callWith(abi.bronze_prop_delete, {target, builder_.getInt32(inst.keyIndex)});
+            return true;
+        }
+        case il::Op::ElemDelete: {
+            if (!needs(2, false, "Invalid operands for ElemDelete")) return false;
+            const char* what = "Undefined operand in ElemDelete instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* index = operand(inst, 1, what);
+            if (!target || !index) return false;
+            callWith(abi.bronze_elem_delete, {target, index});
+            return true;
+        }
         case il::Op::GlobalGet:
             if (inst.result != il::kNoValue) {
                 callWith(abi.bronze_global_get, {builder_.getInt32(inst.keyIndex)});

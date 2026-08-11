@@ -125,11 +125,18 @@ struct ThisExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// Which half of an accessor a property definition writes, or neither.
+enum class AccessorKind { None, Getter, Setter };
+
 enum class UnaryOp {
     Not, Negate, Posate, PreInc, PreDec, PostInc, PostDec,
     // `~` is ToInt32 then a one's complement; `typeof` yields one of six
     // strings; `void` evaluates its operand and yields undefined (docs/0015).
-    BitNot, TypeOf, Void
+    BitNot, TypeOf, Void,
+    // `delete o.k` — a *reference* operator: its operand is not evaluated
+    // as a value, so lowering dispatches on the operand's own node kind
+    // rather than lowering it first (docs/0019 decision 2).
+    Delete
 };
 const char* unaryOpName(UnaryOp op);
 
@@ -271,6 +278,11 @@ struct ObjectProp {
     // which is exactly what the refinement needs and what lowering must
     // refuse (docs/0017 decision 5).
     bool coverInitialized = false;
+    // `get k() {}` / `set k(v) {}`. The property is then an ACCESSOR whose
+    // `value` is the getter or the setter function; the two halves of one
+    // name are one property, which is a fact only the runtime can enforce
+    // (docs/0019 decision 4).
+    AccessorKind accessor = AccessorKind::None;
     bool computed() const { return keyExpr != nullptr; }
 };
 
@@ -453,6 +465,10 @@ struct ClassMethod {
     std::string name;
     bool isStatic = false;
     bool isConstructor = false;
+    // A class accessor, which differs from an object literal's in exactly
+    // one attribute: ECMA-262 15.7.14 defines it non-enumerable, the same
+    // rule that already keeps a method out of `for-in` (docs/0018 dec. 2).
+    AccessorKind accessor = AccessorKind::None;
     std::unique_ptr<FunctionExpr> fn;
 };
 

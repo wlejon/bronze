@@ -8,6 +8,8 @@ bronze_add_module(runtime
         env.cpp
         string.cpp
         shape.cpp
+        dictionary.cpp
+        accessor.cpp
         object.cpp
         array.cpp
         typed_array.cpp
@@ -22,6 +24,7 @@ bronze_add_module(runtime
         rt_object.cpp
         rt_operator.cpp
         rt_prop.cpp
+        rt_delete.cpp
         rt_iter.cpp
         rt_enumerate.cpp
         rt_spread.cpp

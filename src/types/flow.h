@@ -73,8 +73,8 @@ struct FunctionOutcome {
 // `FunctionFacts`; the call-graph fixpoint's probe passes leave it off, so
 // each expression is recorded exactly once, on the final pass.
 //
-// `site` is the AST node that IS this function when it is a closure — a
-// `FunctionExpr` or a nested `FunctionDecl` — and null for a module-level
+// `site` is the AST node that IS this function when it is a closure â€” a
+// `FunctionExpr` or a nested `FunctionDecl` â€” and null for a module-level
 // function (which `moduleIndex` names instead) and for the module top level.
 // It is the key `InferenceResult::closureReturnAt` answers on, which is the
 // only handle a closure has: it has no module function index.
