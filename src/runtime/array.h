@@ -9,6 +9,9 @@
 
 namespace bronze {
 
+struct ObjectHeader;
+class Shape;
+
 struct ArrayHeader {
     HeapObjectHeader header;
     uint32_t length{0};
@@ -19,8 +22,26 @@ struct ArrayHeader {
     // pointing at this header stays valid. (Inline elements would have to
     // move the array object itself, invalidating every reference to it.)
     Value elements;
+    // Undefined, or a plain object holding this array's NAMED properties.
+    //
+    // Arrays store everything else by index, and until `exec` there was
+    // nothing that needed both: a match array is an array of captures that
+    // also carries `index`, `input` and `groups` (ECMA-262 22.2.7.2 steps
+    // 16-28), and there is nowhere else to put those. Created only when
+    // something writes one, so an ordinary array is the same size it was.
+    //
+    // Only the RUNTIME writes here. A program still cannot write `a.foo = 1`
+    // — that is a named error, as it was — because making assignment create
+    // one would also have to answer for `length`, for enumeration and for the
+    // inline caches, and none of that is what a match array needs.
+    Value properties;
 
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
+
+    // The named-property object, created if this is the first one. Allocates,
+    // so the array arrives through a root and `this` must not be reused.
+    static ObjectHeader* ensureProperties(Heap& heap, NonMovingArena& arena,
+                                          Rooted<Value>& self);
 
     // `undefined` for an index past the end AND for a HOLE — the internal
     // sentinel is never user-visible (docs/0004), so reading a deleted

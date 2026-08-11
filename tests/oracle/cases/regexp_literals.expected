@@ -1,0 +1,18 @@
+ab+c
+[]
+false false false false false
+/ab+c/
+/ab+c/
+true
+false
+imsy
+false true true true true
+g true 0
+ab b undefined
+2 zzabzz
+3
+[ 'ab', 'b', undefined, index: 2, input: 'zzabzz', groups: undefined ]
+4
+null
+0
+true 5

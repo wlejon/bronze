@@ -1,7 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 
 #include "lex/lexer.h"
 
@@ -248,4 +250,69 @@ TEST_CASE("a dot after a number is a member access unless a digit follows") {
     auto spread = lexAll("...x");
     REQUIRE(spread.tokens.size() == 3);
     CHECK(spread.tokens[0].kind == TokenKind::Ellipsis);
+}
+
+// ---- the `/` ambiguity (docs/0024 decision 1) --------------------------------
+//
+// `a / b` divides and `/ab/` is a literal, and only the PREVIOUS significant
+// token tells them apart. Every case below is one a wrong answer would
+// mis-parse silently rather than diagnose, which is why they are pinned here
+// rather than left to the parser to notice.
+
+static std::vector<TokenKind> kindsOf(const Lexed& lexed) {
+    std::vector<TokenKind> kinds;
+    for (const Token& t : lexed.tokens) kinds.push_back(t.kind);
+    return kinds;
+}
+
+TEST_CASE("a slash after something that ends an expression is a division") {
+    for (const char* src : {"a / b", "1 / b", "'s' / b", "(a) / b", "a[0] / b", "a++ / b",
+                            "a-- / b", "this / b", "true / b", "null / b", "undefined / b",
+                            "`t` / b"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::Slash) != kinds.end());
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) == kinds.end());
+    }
+}
+
+TEST_CASE("a slash anywhere an expression may start is a regular expression") {
+    for (const char* src : {"/ab/", "x = /ab/", "return /ab/", "typeof /ab/", "f(/ab/)",
+                            "[/ab/]", "a === /ab/", "case /ab/:", "in /ab/", "new /ab/",
+                            "delete /ab/", "void /ab/", "a, /ab/", "!/ab/", "a ? /ab/ : b",
+                            "} /ab/"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) != kinds.end());
+    }
+}
+
+TEST_CASE("a regular expression literal is one token, delimiters and flags included") {
+    auto lexed = lexAll("x = /ab+c/gi;");
+    REQUIRE(lexed.tokens.size() == 5);  // x, =, /ab+c/gi, ;, eof
+    CHECK(lexed.tokens[2].kind == TokenKind::RegExpLiteral);
+    CHECK(lexed.tokens[2].text == "/ab+c/gi");
+}
+
+TEST_CASE("a slash inside a class or behind a backslash does not end the literal") {
+    auto klass = lexAll("x = /[/]+/g");
+    CHECK(klass.tokens[2].text == "/[/]+/g");
+    auto escaped = lexAll(R"(x = /a\/b/)");
+    CHECK(escaped.tokens[2].text == R"(/a\/b/)");
+    // A `//` that follows an operand is still a comment, because the slash
+    // ambiguity is decided before the literal is ever entered.
+    auto comment = lexAll("a // /not a regexp/\nb");
+    REQUIRE(comment.tokens.size() == 3);
+    CHECK(comment.tokens[0].kind == TokenKind::Identifier);
+    CHECK(comment.tokens[1].kind == TokenKind::Identifier);
+}
+
+TEST_CASE("an unterminated regular expression literal is diagnosed, never guessed") {
+    lexAll("x = /abc", /*expectErrors=*/true);
+    // A line terminator ends the literal: 12.9.5's RegularExpressionChar
+    // excludes LineTerminator, so this is an error rather than a literal
+    // running to the end of the file.
+    lexAll("x = /abc\ny", /*expectErrors=*/true);
 }

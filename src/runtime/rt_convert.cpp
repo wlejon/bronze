@@ -43,6 +43,12 @@ static Value valueToString(Value v) {
         literal = "null";
     } else if (v.isUndefined()) {
         literal = "undefined";
+    } else if (rtIsRegExp(v)) {
+        // The one object bronze can convert without ToPrimitive: a RegExp's
+        // `toString` is a pure function of its source and flags (22.2.6.13),
+        // so `"" + /a/g` is "/a/g" rather than a named error. Every other
+        // object still needs valueOf/toString and is still refused.
+        return rtMakeString(rtRegExpText(v));
     } else {
         fatal("ToString on an object is unsupported");
     }

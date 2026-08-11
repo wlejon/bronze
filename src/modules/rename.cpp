@@ -273,7 +273,8 @@ private:
             rewrite(id->name);
         } else if (dynamic_cast<ast::NumberLit*>(&e) || dynamic_cast<ast::StringLit*>(&e) ||
                    dynamic_cast<ast::BoolLit*>(&e) || dynamic_cast<ast::NullLit*>(&e) ||
-                   dynamic_cast<ast::UndefinedLit*>(&e) || dynamic_cast<ast::ThisExpr*>(&e)) {
+                   dynamic_cast<ast::UndefinedLit*>(&e) || dynamic_cast<ast::ThisExpr*>(&e) ||
+                   dynamic_cast<ast::RegExpLit*>(&e)) {
             // Nothing below them names anything.
         } else if (auto* tpl = dynamic_cast<ast::TemplateLit*>(&e)) {
             for (auto& sub : tpl->exprs) expr(*sub);

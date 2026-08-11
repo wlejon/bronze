@@ -1,6 +1,8 @@
 #include "runtime/array.h"
 
 #include "runtime/fatal.h"
+#include "runtime/object.h"
+#include "runtime/rt_internal.h"
 
 namespace bronze {
 
@@ -39,6 +41,7 @@ ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
     arr->length = 0;
     arr->capacity = 0;
     arr->elements = Value::fromUndefined();
+    arr->properties = Value::fromUndefined();
 
     if (initial_capacity > 0) {
         Rooted<Value> self(Value::fromObject(arr));
@@ -46,6 +49,20 @@ ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
         arr = self.get().asObject<ArrayHeader>();
     }
     return arr;
+}
+
+ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
+                                            Rooted<Value>& self) {
+    if (self.get().asObject<ArrayHeader>()->properties.isObject()) {
+        return self.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
+    }
+    // The plain-object root shape, so a match array's `index`/`input`/`groups`
+    // share a transition tree with every other three-property object rather
+    // than minting a hidden class per match.
+    ObjectHeader* props = ObjectHeader::create(heap, arena, runtime::rtPlainObjectShape());
+    props->header.flags = 0;
+    self.get().asObject<ArrayHeader>()->properties = Value::fromObject(props);
+    return props;
 }
 
 Value ArrayHeader::getElem(uint32_t index) const {

@@ -22,6 +22,7 @@
 #include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -231,6 +232,16 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (keyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
+        // A named property, which only a match array has (docs/0024 decision
+        // 6). Read BEFORE the prototype methods, because an own property
+        // shadows an inherited one — and `m.index` must not answer with
+        // `Array.prototype.index` if one is ever added.
+        if (Value props = arr->properties; props.isObject()) {
+            Rooted<Value> propsRoot{props};
+            Rooted<Value> key(Value::fromString(keyHeader));
+            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+            if (!found.isUndefined()) return found.rawBits();
+        }
         Value method = rtArrayMethod(keyStr);
         if (!method.isUndefined()) return method.rawBits();
         rtCheckArrayMember(keyStr);
@@ -259,6 +270,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         return mapMemberByName(hdr, keyStr).rawBits();
+    }
+    if (hdr->flags == RegExpHeader::kFlags) {
+        // Every member of a RegExp is computed from the header and the
+        // compiled pattern; there is no shape and no slot to read, which is
+        // why this is a branch here rather than properties on an object.
+        return rtRegExpMember(objVal, keyStr).rawBits();
     }
     if (hdr->flags == IterRecordHeader::kFlags) {
         // The record of a live for-of is not a JS value: nothing hands one to
@@ -405,6 +422,17 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == 4) {
         fatal("property writes on an ArrayBuffer are unsupported");
     }
+    if (hdr->flags == RegExpHeader::kFlags) {
+        // `lastIndex` is the one writable property a RegExp has (22.2.6.9).
+        // Anything else would need a shape, and discarding the write would
+        // leave the program believing it stored something.
+        if (!rtRegExpSetMember(objVal, keyStr, valVal)) {
+            fatal(("named property writes on a RegExp are unsupported (only `lastIndex` is "
+                   "writable; tried to write `" + keyStr + "`)")
+                      .c_str());
+        }
+        return;
+    }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         // A Map's entries are reached by `set`/`get`, never by a property
         // write — and there is nowhere to put a named one, since a Map has no
@@ -538,7 +566,16 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     uint32_t idx = 0;
     if (hdr->flags == 1) {
         if (!valueToElementIndex(Value(idxBits), idx)) {
-            return Value::fromUndefined().rawBits();
+            // Not an index, so it names a property — which for an array is
+            // only ever a match array's `index`/`input`/`groups`. Answering
+            // `undefined` for `m["index"]` while `m.index` answered 0 would be
+            // two answers to one question.
+            Rooted<Value> objRoot{objVal};
+            Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+            Value props = objRoot.get().asObject<ArrayHeader>()->properties;
+            if (!props.isObject()) return Value::fromUndefined().rawBits();
+            Rooted<Value> propsRoot{props};
+            return propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits();
         }
         return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
     }

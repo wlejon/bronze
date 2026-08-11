@@ -21,6 +21,7 @@ public:
 
     void visit(const NumberLit&) override {}
     void visit(const StringLit&) override {}
+    void visit(const RegExpLit&) override {}
     void visit(const TemplateLit& n) override {
         for (const auto& e : n.exprs) e->accept(*this);
     }

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "regex/regex.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/shape.h"
@@ -219,6 +220,53 @@ void rtCheckMapMember(bool isSetReceiver, const std::string& key);
 // What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
 Value rtMapDefaultIterator(bool isSetReceiver);
+
+// ---- regular expressions (docs/0024) ---------------------------------------
+
+bool rtIsRegExp(Value v);
+// `RegExp`, for the provided-global path; `undefined` for any other name.
+Value rtRegExpConstructor(const std::string& name);
+// A member of a RegExp instance by name: the flag accessors, `source`,
+// `flags`, `lastIndex`, and the three methods. A name ECMA-262 defines and
+// bronze has not built is a named error here rather than `undefined`.
+Value rtRegExpMember(Value re, const std::string& key);
+Value rtRegExpMethod(const std::string& key);
+// True when the write was a RegExp's business. `lastIndex` is the only
+// writable property one has, and a write to anything else is the caller's to
+// diagnose.
+bool rtRegExpSetMember(Value re, const std::string& key, Value value);
+// `/source/flags`, which is both `toString` and what console.log prints.
+std::string rtRegExpText(Value re);
+// 22.2.7.2 RegExpBuiltinExec: the match array, or `null`. Honours `lastIndex`
+// for a `g` or `y` pattern and updates it. EVERY regular-expression operation
+// in bronze goes through this one function, so none of them can disagree about
+// the cursor.
+Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr);
+// The compiled pattern behind a RegExp, and the pieces `String.prototype`'s
+// pattern methods need to drive it directly rather than through `exec` (a
+// `replace` builds one result string from many matches, and going through the
+// match array per match would allocate an array per match).
+const regex::Pattern& rtRegExpPattern(Value re);
+Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
+                              const regex::MatchResult& match);
+void rtRegExpSetLastIndex(Value re, double value);
+double rtRegExpLastIndex(Value re);
+// A RegExp from a source string and a flags string, which is what
+// `String.prototype.matchAll` needs to make its own `g` copy of a pattern.
+Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText);
+
+// `String.prototype`'s members that take a PATTERN: `match`, `matchAll`,
+// `replace`, `replaceAll`, `search` and `split`. Their own translation unit
+// because they are the only string members that know what a RegExp is, and
+// because `$`-substitution and the function replacer are a shared algorithm
+// with nothing to do with the rest of `String.prototype`.
+Value rtStringPatternMethod(const std::string& key);
+// `String.prototype.split` with a RegExp separator, which is 22.2.6.14's
+// SplitMatcher and not the string search `split` otherwise does. It stays a
+// call from builtin_string.cpp rather than a second `split` in the method
+// table, because a program that reads `"".split` must get ONE function object
+// whichever kind of separator it later passes.
+uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the

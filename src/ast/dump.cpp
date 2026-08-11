@@ -27,6 +27,9 @@ public:
         emit("(number " + formatNumber(n.value) + ")");
     }
     void visit(const StringLit& n) override { emit("(string \"" + n.value + "\")"); }
+    void visit(const RegExpLit& n) override {
+        emit("(regexp /" + n.pattern + "/" + n.flags + ")");
+    }
     void visit(const Ident& n) override { emit("(ident " + n.name + ")"); }
     void visit(const Binary& n) override {
         emit(std::string("(binary ") + binaryOpName(n.op));

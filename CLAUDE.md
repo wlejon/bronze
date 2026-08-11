@@ -105,3 +105,8 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   exporting module's binding, relative specifiers only, cycles refused by
   name, the namespace object as a literal of getters, and multi-file oracle
   cases as directories)
+- 0024 regular expressions (the `/` ambiguity decided from the previous token,
+  a pattern grammar and backtracking matcher in `src/regex` compiled at the
+  literal, patterns shared by source through an index not a pointer, case
+  folding refused above Latin-1 by name, and the match array as an array with
+  named properties)

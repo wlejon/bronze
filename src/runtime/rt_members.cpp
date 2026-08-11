@@ -33,9 +33,9 @@ const char* const kArrayMembers[] = {
 // String.prototype, minus `length`, which is real.
 const char* const kStringMembers[] = {
     "at", "charAt", "charCodeAt", "codePointAt", "concat", "constructor", "endsWith",
-    "includes", "indexOf", "isWellFormed", "lastIndexOf", "localeCompare", "match",
-    "matchAll", "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll",
-    "search", "slice", "split", "startsWith", "substr", "substring", "toLocaleLowerCase",
+    "includes", "indexOf", "isWellFormed", "lastIndexOf", "localeCompare",
+    "normalize", "padEnd", "padStart", "repeat",
+    "slice", "startsWith", "substr", "substring", "toLocaleLowerCase",
     "toLocaleUpperCase", "toLowerCase", "toString", "toUpperCase", "toWellFormed",
     "trim", "trimEnd", "trimStart", "valueOf",
 };

@@ -39,12 +39,17 @@ void rtClearException() noexcept;
 // stores the returned value into a GC root slot before it tests the cell, so
 // a helper that returned anything the collector cannot parse would put a bad
 // word in a live root (docs/0020 decision 2).
-enum class ErrorKind { Error, TypeError, RangeError };
+enum class ErrorKind { Error, TypeError, RangeError, SyntaxError };
 
 Value rtThrow(Value thrown) noexcept;
 Value rtThrowError(ErrorKind kind, const std::string& message);
 Value rtThrowTypeError(const std::string& message);
 Value rtThrowRangeError(const std::string& message);
+// 22.2.3.1 step 4: a pattern that does not parse is a SyntaxError, and it is
+// the one such error a running program can produce — a literal's pattern was
+// compiled where it was written (docs/0024 decision 3), so only a pattern
+// built at run time can reach here.
+Value rtThrowSyntaxError(const std::string& message);
 
 // The constructor objects, by name, for the provided-global path
 // (docs/0011 decision 1). `undefined` for a name that is not one of them.

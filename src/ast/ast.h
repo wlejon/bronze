@@ -101,6 +101,19 @@ struct TemplateLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `/ab+/gi`. The pattern is held VERBATIM — a regular expression literal's
+// body is not a string literal and its escapes are the pattern grammar's, so
+// `\d` here is two characters and stays two (docs/0024 decision 2).
+//
+// It is a literal in the grammar and an object at run time: every evaluation
+// produces a fresh RegExp with its own `lastIndex`, which is why lowering
+// spells it as a construction rather than as a constant.
+struct RegExpLit final : Expr {
+    std::string pattern;
+    std::string flags;
+    void accept(Visitor& v) const override;
+};
+
 struct Ident final : Expr {
     std::string name;
     void accept(Visitor& v) const override;
@@ -582,6 +595,7 @@ public:
     virtual void visit(const SpreadElement&) = 0;
     virtual void visit(const StringLit&) = 0;
     virtual void visit(const TemplateLit&) = 0;
+    virtual void visit(const RegExpLit&) = 0;
     virtual void visit(const BoolLit&) = 0;
     virtual void visit(const NullLit&) = 0;
     virtual void visit(const UndefinedLit&) = 0;

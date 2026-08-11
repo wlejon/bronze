@@ -62,6 +62,7 @@ StringHeader* g_messageKey = nullptr;
 uint64_t errorCtorError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorTypeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorRangeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
+uint64_t errorCtorSyntaxError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 
 // Order matters only in that `Error` is first: the other two chain their
 // prototypes to its, so it has to exist before they are built.
@@ -69,6 +70,7 @@ ErrorClass g_errorClasses[] = {
     {"Error", ErrorKind::Error, errorCtorError},
     {"TypeError", ErrorKind::TypeError, errorCtorTypeError},
     {"RangeError", ErrorKind::RangeError, errorCtorRangeError},
+    {"SyntaxError", ErrorKind::SyntaxError, errorCtorSyntaxError},
 };
 
 ErrorClass& classFor(ErrorKind kind) {
@@ -149,6 +151,9 @@ uint64_t errorCtorTypeError(uint64_t, uint64_t thisBits, uint32_t argc, const ui
 }
 uint64_t errorCtorRangeError(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     return errorCtorImpl(ErrorKind::RangeError, thisBits, argc, argv);
+}
+uint64_t errorCtorSyntaxError(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return errorCtorImpl(ErrorKind::SyntaxError, thisBits, argc, argv);
 }
 
 void ensureErrorClasses() {
@@ -253,6 +258,10 @@ Value rtThrowTypeError(const std::string& message) {
 
 Value rtThrowRangeError(const std::string& message) {
     return rtThrowError(ErrorKind::RangeError, message);
+}
+
+Value rtThrowSyntaxError(const std::string& message) {
+    return rtThrowError(ErrorKind::SyntaxError, message);
 }
 
 Value rtErrorConstructor(const std::string& name) {

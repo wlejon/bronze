@@ -36,6 +36,7 @@ public:
 
     void visit(const NumberLit&) override {}
     void visit(const StringLit&) override {}
+    void visit(const RegExpLit&) override {}
     void visit(const BoolLit&) override {}
     void visit(const NullLit&) override {}
     void visit(const UndefinedLit&) override {}
@@ -216,6 +217,7 @@ public:
 
     void visit(const NumberLit&) override {}
     void visit(const StringLit&) override {}
+    void visit(const RegExpLit&) override {}
     void visit(const BoolLit&) override {}
     void visit(const NullLit&) override {}
     void visit(const UndefinedLit&) override {}

@@ -59,6 +59,10 @@ Type FlowAnalyzer::expr(const ast::Expr& e) {
 Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::NumberLit*>(&e)) return Type::number();
     if (dynamic_cast<const ast::StringLit*>(&e)) return Type::string();
+    // A regular expression literal is an OBJECT, and inference has no shape
+    // class for one: a RegExp carries no shape at all (docs/0024 decision 4),
+    // so every read off it goes through the runtime's own branch.
+    if (dynamic_cast<const ast::RegExpLit*>(&e)) return Type::dynamic();
     // A template is a string whatever its substitutions produce, since
     // every one of them goes through ToString. The substitutions are
     // still analysed — they are ordinary expressions and may write

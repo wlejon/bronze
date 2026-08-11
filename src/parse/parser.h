@@ -184,6 +184,11 @@ private:
     // parser decides what it means). False on a diagnosed error.
     bool decodeNumericLiteral(std::string_view raw, Span span, double& out);
     ast::ExprPtr parseTemplateLiteral();
+    // `/ab+/gi`. Splits the one token into its pattern and its flags and
+    // COMPILES the pattern, so a malformed regular expression is a compile
+    // error at the position it was written rather than a hard error the first
+    // time the line runs (docs/0024 decision 3).
+    ast::ExprPtr parseRegExpLiteral();
     bool looksLikeArrow() const;
     ast::ExprPtr parseArrowFunction();
 

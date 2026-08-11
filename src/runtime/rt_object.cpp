@@ -235,6 +235,18 @@ uint64_t bronze_object_keys(uint64_t objBits) {
                 StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)))};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
+        // Then the named ones — the indices come first because they are
+        // integer-like keys and docs/0009 decision 1 orders those ahead of the
+        // rest. Only a match array has any (docs/0024 decision 6).
+        if (src.get().asObject<ArrayHeader>()->properties.isObject()) {
+            Rooted<Value> props{src.get().asObject<ArrayHeader>()->properties};
+            const std::vector<StringHeader*> named =
+                rtOwnKeysOrdered(props.get().asObject<ObjectHeader>());
+            for (StringHeader* k : named) {
+                Rooted<Value> key{rtCopyKeyToHeap(k)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+            }
+        }
         return out.get().rawBits();
     }
     if (hdr->flags != 0) {

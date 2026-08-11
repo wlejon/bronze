@@ -336,69 +336,16 @@ uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     return stringFromUnits(out).rawBits();
 }
 
-// `$` in a replacement is a substitution pattern ($&, $1, $<name>, $$).
-// Implementing the search half without it would silently drop the pattern,
-// so it is diagnosed until the whole of it is written.
-void rejectDollarPatterns(const Units& replacement, const char* method) {
-    for (uint16_t u : replacement) {
-        if (u == '$') {
-            fatal((std::string("unsupported: $-substitution in String.prototype.") + method +
-                   " is not implemented")
-                      .c_str());
-        }
-    }
-}
-
-template <bool All>
-uint64_t stringReplaceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    const char* method = All ? "replaceAll" : "replace";
-    Units self = thisUnits(Value(thisBits), method);
-    if (args[0].isObject()) {
-        // A RegExp or a replacer function. bronze has neither, and matching
-        // a stringified object would be nonsense rather than an
-        // approximation.
-        fatal((std::string("unsupported: String.prototype.") + method +
-               " with a non-string pattern is not implemented")
-                  .c_str());
-    }
-    if (args[1].isObject()) {
-        fatal((std::string("unsupported: String.prototype.") + method +
-               " with a function replacement is not implemented")
-                  .c_str());
-    }
-    Units needle = argUnits(args[0]);
-    Units repl = argUnits(args[1]);
-    rejectDollarPatterns(repl, method);
-
-    Units out;
-    size_t at = 0;
-    while (at <= self.size()) {
-        int64_t found = indexOfUnits(self, needle, at);
-        if (found < 0) break;
-        out.insert(out.end(), self.begin() + at, self.begin() + found);
-        out.insert(out.end(), repl.begin(), repl.end());
-        at = static_cast<size_t>(found) + needle.size();
-        if constexpr (All) {
-            // An empty needle matches everywhere; without this the loop
-            // would never advance past the first position.
-            if (needle.empty()) {
-                if (at < self.size()) out.push_back(self[at]);
-                ++at;
-            }
-        } else {
-            break;
-        }
-    }
-    if (at < self.size()) out.insert(out.end(), self.begin() + at, self.end());
-    return stringFromUnits(out).rawBits();
-}
-
 uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "split");
     if (args[0].isObject()) {
-        fatal("unsupported: String.prototype.split with a non-string separator is not implemented");
+        // A RegExp separator is a different algorithm entirely (22.2.6.14
+        // SplitMatcher, which also yields the separator's captures), so it is
+        // handed to the module that owns the matcher.
+        if (rtIsRegExp(args[0])) return rtStringSplitWithRegExp(thisBits, argc, argv);
+        fatal("unsupported: String.prototype.split with a separator that is neither a string "
+              "nor a RegExp is not implemented");
     }
 
     ArrayHeader* raw = ArrayHeader::create(rtHeap(), 4);
@@ -463,8 +410,6 @@ const StringMethod kStringMethods[] = {
     {"padEnd", stringPadImpl<false>, 1},
     {"padStart", stringPadImpl<true>, 1},
     {"repeat", stringRepeat, 1},
-    {"replace", stringReplaceImpl<false>, 2},
-    {"replaceAll", stringReplaceImpl<true>, 2},
     {"slice", stringSlice, 0},
     {"split", stringSplit, 0},
     {"startsWith", stringStartsWith, 1},
@@ -521,7 +466,10 @@ Value rtStringMethod(const std::string& key) {
     for (const StringMethod& m : kStringMethods) {
         if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
     }
-    return Value::fromUndefined();
+    // The members that take a PATTERN live in their own translation unit
+    // (docs/0024), and this is the one table a property read consults, so the
+    // split between the two files is invisible to a program.
+    return rtStringPatternMethod(key);
 }
 
 }  // namespace bronze::runtime

@@ -19,6 +19,7 @@ class Walker : public ast::Visitor {
 public:
     void visit(const ast::NumberLit&) override {}
     void visit(const ast::StringLit&) override {}
+    void visit(const ast::RegExpLit&) override {}
     void visit(const ast::BoolLit&) override {}
     void visit(const ast::NullLit&) override {}
     void visit(const ast::UndefinedLit&) override {}

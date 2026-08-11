@@ -12,6 +12,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::TemplateHead: return "template-head";
         case TokenKind::TemplateMiddle: return "template-middle";
         case TokenKind::TemplateTail: return "template-tail";
+        case TokenKind::RegExpLiteral: return "regexp";
         case TokenKind::KwBreak: return "break";
         case TokenKind::KwCase: return "case";
         case TokenKind::KwCatch: return "catch";
@@ -406,6 +407,84 @@ Token Lexer::lexTemplatePart(bool isHead) {
     }
 }
 
+// The `/` ambiguity, decided the only way a lexer can decide it: `a / b`
+// divides and `/ab/` is a literal, and the two are told apart by whether the
+// token before the slash could END an expression. Everything that could is
+// listed here; everything else — an operator, an opening bracket, a keyword
+// that must be followed by an expression, the start of the file — leaves a
+// regular expression the only reading.
+//
+// Two entries are judgement calls the specification leaves to the parser,
+// which knows more than this does:
+//
+//  - `)` divides. `(a + b) / 2` is overwhelmingly what a `)` before a slash
+//    means; `if (x) /re/.test(y)` is the case this gets wrong, and it needs
+//    the parenthesis's OWN opener to be known, which is a parser fact.
+//  - `}` starts a regular expression. A `}` almost always ends a block or a
+//    function body, after which a slash begins a statement; `({}) / 2` is
+//    the reading this gives up, and it needs a `{` disambiguated as an object
+//    literal, which is again a parser fact.
+//
+// Both are pinned in tests/lex so a change of mind is a change of test.
+bool Lexer::regexAllowedAfter(const std::vector<Token>& tokens) {
+    if (tokens.empty()) return true;
+    switch (tokens.back().kind) {
+        case TokenKind::Identifier:
+        case TokenKind::NumberLiteral:
+        case TokenKind::StringLiteral:
+        case TokenKind::TemplateWhole:
+        case TokenKind::TemplateTail:
+        case TokenKind::RegExpLiteral:
+        case TokenKind::RParen:
+        case TokenKind::RBracket:
+        // `a++ / b` divides: the operand is behind the operator, so the
+        // increment is what ends the expression.
+        case TokenKind::PlusPlus:
+        case TokenKind::MinusMinus:
+        case TokenKind::KwThis:
+        case TokenKind::KwSuper:
+        case TokenKind::KwTrue:
+        case TokenKind::KwFalse:
+        case TokenKind::KwNull:
+        case TokenKind::KwUndefined:
+            return false;
+        default:
+            return true;
+    }
+}
+
+// From the opening `/` to the flags. The body is scanned, never interpreted:
+// a `\` escapes whatever follows it (including a `/`), and a `/` inside a
+// character class is an ordinary character, which is why the class bracket has
+// to be tracked here even though nothing else about the class matters.
+Token Lexer::lexRegExp() {
+    const uint32_t begin = pos_;
+    ++pos_;  // the opening '/'
+    bool inClass = false;
+    for (;;) {
+        if (atEnd() || peek() == '\n' || peek() == '\r') {
+            diags_.error({begin, pos_, buffer_.fileId()},
+                         "unterminated regular expression literal");
+            return make(TokenKind::RegExpLiteral, begin);
+        }
+        const char c = peek();
+        if (c == '\\') {
+            pos_ += 2;
+            continue;
+        }
+        if (c == '[') inClass = true;
+        else if (c == ']') inClass = false;
+        else if (c == '/' && !inClass) break;
+        ++pos_;
+    }
+    ++pos_;  // the closing '/'
+    // The flags are an IdentifierPart run, which is what makes `/a/gi` one
+    // token and `/a/ x` two. A letter that is not a flag is the pattern
+    // compiler's error to name, not this one's.
+    while (isIdentPart(peek())) ++pos_;
+    return make(TokenKind::RegExpLiteral, begin);
+}
+
 std::vector<Token> Lexer::lex() {
     std::vector<Token> tokens;
     bool newlineBefore = false;
@@ -424,6 +503,11 @@ std::vector<Token> Lexer::lex() {
             tokens.push_back(lexString());
         } else if (c == '`') {
             tokens.push_back(lexTemplatePart(/*isHead=*/true));
+        } else if (c == '/' && regexAllowedAfter(tokens)) {
+            // Comments are already gone: skipTrivia consumed `//` and `/*`
+            // before this loop saw anything, so a `/` here is either a
+            // division or the start of a literal.
+            tokens.push_back(lexRegExp());
         } else if (c == '}' && !substitutionBraces_.empty() && substitutionBraces_.back() == 0) {
             // This `}` closes the innermost template substitution rather
             // than a block or an object literal, so the template it

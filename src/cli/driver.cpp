@@ -163,6 +163,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
         static const char* const kRuntimeLibs[][2] = {
             {"runtime", "bronze_runtime.lib"},
             {"json", "bronze_json.lib"},
+            {"regex", "bronze_regex.lib"},
         };
         std::string runtimeLibStr;
         std::string runtimeWholeStr;

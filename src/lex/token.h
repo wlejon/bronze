@@ -24,6 +24,12 @@ enum class TokenKind {
     TemplateHead,
     TemplateMiddle,
     TemplateTail,
+    // A regular expression literal, delimiters and flags included, as ONE
+    // token: `/ab+/gi`. Its body is a second grammar (docs/0024) and none of
+    // its characters mean here what they mean in JavaScript, so the lexer's
+    // only job is to find where it ends. Whether a `/` starts one at all is
+    // decided by the PREVIOUS token — see `Lexer::regexAllowedAfter`.
+    RegExpLiteral,
 
     // Keywords (kept alphabetical).
     KwBreak,

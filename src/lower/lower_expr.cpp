@@ -91,6 +91,46 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
 
+    // A regular expression literal is `new RegExp(pattern, flags)`, spelled
+    // out. It is a CONSTRUCTION and not a constant because 22.2.4.1 evaluates
+    // the literal to a fresh object every time it is reached — two evaluations
+    // of the same literal in a loop must not share a `lastIndex` — and it goes
+    // through the provided-global path rather than through a `new` in the
+    // source so that a program's own binding named `RegExp` cannot change what
+    // a literal means (22.2.4.1 reads the intrinsic, not the binding).
+    if (const auto* re = dynamic_cast<const ast::RegExpLit*>(&expr)) {
+        auto emitStr = [&](const std::string& text) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::Box;
+            inst.type = il::Type::Dynamic;
+            inst.boxType = il::Type::Str;
+            inst.result = res;
+            inst.keyIndex = getKeyConstantIndex(text);
+            emitInst(ilFn, inst);
+            return res;
+        };
+        il::ValueId ctor = ilFn.valueCount++;
+        il::Instruction ctorInst;
+        ctorInst.op = il::Op::GlobalGet;
+        ctorInst.type = il::Type::Dynamic;
+        ctorInst.result = ctor;
+        ctorInst.keyIndex = getKeyConstantIndex("RegExp");
+        emitInst(ilFn, ctorInst);
+
+        const il::ValueId patternId = emitStr(re->pattern);
+        const il::ValueId flagsId = emitStr(re->flags);
+
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::Construct;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {ctor, patternId, flagsId};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
+
     // A template is left-to-right concatenation starting from its first
     // piece. `add.dynamic` is exactly the operation the language specifies —
     // ToString of whatever the substitution produced, because the left side

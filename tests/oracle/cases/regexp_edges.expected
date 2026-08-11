@@ -1,0 +1,15 @@
+ab+ gi true
+g i
+a.c
+(?:) (?:)
+true
+caught SyntaxError
+caught SyntaxError
+caught TypeError
+-a-b-c-
+4
+a|b|c
+b undefined b 3
+/a\/b/gi
+object function
+1 1

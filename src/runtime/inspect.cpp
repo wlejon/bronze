@@ -16,6 +16,7 @@
 #include "runtime/fn.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -140,6 +141,10 @@ private:
             case 2: return "[Function]";
             case 3: return typedArray(reinterpret_cast<Float32ArrayHeader*>(hdr), depth);
             case 4: fatal("printing an ArrayBuffer is not implemented");
+            // node prints a RegExp as its source form, and so does bronze:
+            // `/ab+/gi`, with no quotes, which is what distinguishes it in
+            // output from the string of the same characters.
+            case RegExpHeader::kFlags: return rtRegExpText(v);
             default: return object(reinterpret_cast<ObjectHeader*>(hdr), depth);
         }
     }
@@ -169,6 +174,24 @@ private:
             }
             out += format(arr->getElem(i), depth + 1);
             ++i;
+        }
+        // A match array's `index`, `input` and `groups` print after the
+        // elements as `key: value`, which is node's format for an array that
+        // carries named properties (docs/0024 decision 6). Ordinary arrays
+        // have none and are unchanged.
+        if (arr->properties.isObject()) {
+            auto* props = arr->properties.asObject<ObjectHeader>();
+            const std::vector<StringHeader*> keys =
+                props->shape ? props->shape->ownKeysInInsertionOrder()
+                             : std::vector<StringHeader*>{};
+            for (StringHeader* k : keys) {
+                PropertyInfo info;
+                if (!props->shape->lookupProperty(k, info) || info.accessor) continue;
+                if (!out.empty()) out += ", ";
+                const std::string name = utf8Of(k);
+                out += isIdentifierKey(name) ? name : quoted(name);
+                out += ": " + format(props->getSlot(info.slot), depth + 1);
+            }
         }
         leave();
         return out.empty() ? "[]" : "[ " + out + " ]";

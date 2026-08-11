@@ -26,9 +26,9 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // each need their own IL op and arity check here. The `Object.keys`
     // recognition stays as a fast path over the same runtime function.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
-           name == "Symbol" ||
+           name == "Symbol" || name == "RegExp" ||
            name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
-           name == "RangeError";
+           name == "RangeError" || name == "SyntaxError";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {

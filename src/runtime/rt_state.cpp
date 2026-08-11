@@ -200,6 +200,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = rtJsonNamespace();
     } else if (keyStr == "Symbol") {
         resolved = rtSymbolFunction();
+    } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
+        resolved = regexp;
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
         resolved = collection;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {

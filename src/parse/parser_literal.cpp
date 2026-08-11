@@ -7,6 +7,7 @@
 #include <string>
 
 #include "parse/parser.h"
+#include "regex/regex.h"
 
 namespace bronze {
 
@@ -508,6 +509,77 @@ ExprPtr Parser::parseArrayLit() {
     if (!expect(TokenKind::RBracket, "']' after array literal")) return nullptr;
     arr->span.end = peek().span.begin;
     return arr;
+}
+
+// `/ab+/gi` — one token, holding both delimiters and the flags.
+//
+// The pattern is taken VERBATIM. That is the whole difference between this and
+// every other literal in this file: a string literal's `\n` denotes a newline
+// and a regular expression's `\n` denotes the two characters the pattern
+// grammar reads as one, so decoding here would destroy the pattern. The only
+// conversion is UTF-8 to UTF-16, because a pattern speaks in code units.
+ast::ExprPtr Parser::parseRegExpLiteral() {
+    const Token& t = advance();
+    auto lit = std::make_unique<RegExpLit>();
+    lit->span = t.span;
+
+    // The closing delimiter is the LAST `/` in the token, because the lexer
+    // already found it and everything after it is an IdentifierPart run.
+    const size_t close = t.text.rfind('/');
+    if (close == std::string_view::npos || close == 0) {
+        // Only reachable if the lexer diagnosed the literal and produced a
+        // truncated token; the parser still refuses to invent a pattern.
+        diags_.error(t.span, "malformed regular expression literal");
+        return nullptr;
+    }
+    lit->pattern = std::string(t.text.substr(1, close - 1));
+    lit->flags = std::string(t.text.substr(close + 1));
+
+    // An empty body is `//`, which the lexer cannot produce (that is a line
+    // comment). `/(?:)/` is what an empty pattern is spelled as, and a literal
+    // that reached here with nothing between the slashes came from a
+    // diagnosed token.
+    if (lit->pattern.empty()) {
+        diags_.error(t.span, "an empty regular expression literal is a line comment; "
+                             "write /(?:)/ for a pattern that matches the empty string");
+        return nullptr;
+    }
+
+    regex::Flags flags;
+    std::string error;
+    if (!regex::parseFlags(lit->flags, flags, error)) {
+        diags_.error(t.span, error);
+        return nullptr;
+    }
+    // UTF-8 to UTF-16, so the pattern compiler sees the code units a JavaScript
+    // string is made of. Malformed bytes cannot occur: they would have been
+    // rejected as source text long before this.
+    regex::Units units;
+    for (size_t i = 0; i < lit->pattern.size();) {
+        const auto byte = static_cast<unsigned char>(lit->pattern[i]);
+        uint32_t cp = byte;
+        size_t width = 1;
+        if (byte >= 0xF0) { cp = byte & 0x07u; width = 4; }
+        else if (byte >= 0xE0) { cp = byte & 0x0Fu; width = 3; }
+        else if (byte >= 0xC0) { cp = byte & 0x1Fu; width = 2; }
+        if (i + width > lit->pattern.size()) width = 1;
+        for (size_t k = 1; k < width; ++k) {
+            cp = (cp << 6) | (static_cast<unsigned char>(lit->pattern[i + k]) & 0x3Fu);
+        }
+        i += width;
+        if (cp > 0xFFFF) {
+            cp -= 0x10000;
+            units.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
+            units.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
+        } else {
+            units.push_back(static_cast<char16_t>(cp));
+        }
+    }
+    if (!regex::compile(units, flags, error)) {
+        diags_.error(t.span, "invalid regular expression: " + error);
+        return nullptr;
+    }
+    return lit;
 }
 
 }  // namespace bronze

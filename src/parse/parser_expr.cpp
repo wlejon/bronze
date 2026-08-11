@@ -551,6 +551,8 @@ ExprPtr Parser::parsePrimary() {
         }
         case TokenKind::TemplateHead:
             return parseTemplateLiteral();
+        case TokenKind::RegExpLiteral:
+            return parseRegExpLiteral();
         case TokenKind::KwTrue: {
             advance();
             auto lit = std::make_unique<BoolLit>();
