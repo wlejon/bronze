@@ -124,6 +124,23 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
         return lowerThrowStmt(th, ilFn);
     }
 
+    if (dynamic_cast<const ast::ExportNamesDecl*>(&stmt)) {
+        // `export { a as b };` names bindings and evaluates nothing — all of
+        // its effect is in the declaration beside it, which is lowered as an
+        // ordinary declaration. The linker removes these before lowering runs
+        // on a real build; a test that lowers one parsed file still meets one.
+        return true;
+    }
+    if (dynamic_cast<const ast::ImportDecl*>(&stmt)) {
+        // Not the same: an import BINDS a name, and if one reaches lowering
+        // then the binding was never resolved to the module that defines it.
+        // That is a broken pipeline, not a construct with no effect.
+        diags_.error(stmt.span,
+                     "internal error: an import declaration reached lowering; the module linker "
+                     "did not run");
+        return false;
+    }
+
     diags_.error(stmt.span, "unsupported AST node");
     return false;
 }

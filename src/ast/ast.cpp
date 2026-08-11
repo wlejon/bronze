@@ -42,6 +42,8 @@ void TryStmt::accept(Visitor& v) const { v.visit(*this); }
 void ThrowStmt::accept(Visitor& v) const { v.visit(*this); }
 void ClassDecl::accept(Visitor& v) const { v.visit(*this); }
 void FunctionDecl::accept(Visitor& v) const { v.visit(*this); }
+void ImportDecl::accept(Visitor& v) const { v.visit(*this); }
+void ExportNamesDecl::accept(Visitor& v) const { v.visit(*this); }
 void Module::accept(Visitor& v) const { v.visit(*this); }
 
 const char* unaryOpName(UnaryOp op) {

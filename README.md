@@ -70,6 +70,9 @@ bronze il   <file> [--no-infer]
 bronze build <file> -o <exe> [--no-infer]
 ```
 
+`<file>` is the entry of a module graph: `import` and `export` with relative
+specifiers pull in the rest, each file parsed and evaluated once (docs/0023).
+
 `--no-infer` forces every inferred type to `dynamic` and lowers on the
 uniform dynamic convention. The annotation warnings go quiet with it —
 nothing is provable in that mode, so they would say only that the switch is
@@ -91,6 +94,7 @@ means inference is.
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |
+| `src/modules` | The module graph (docs/0023): specifier resolution, the depth-first load, the cycle refusal, and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
 | `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing (docs/0010) |
 | `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
@@ -102,5 +106,5 @@ means inference is.
 | `src/rt` | The static library compiled output links against |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
-| `tests/oracle` | Differential cases with pinned `.expected` stdout (docs/0003) |
+| `tests/oracle` | Differential cases with pinned `.expected` stdout (docs/0003). A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
 | `docs/` | Numbered decision/plan docs + architecture |

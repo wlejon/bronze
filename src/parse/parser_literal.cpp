@@ -325,8 +325,13 @@ ExprPtr Parser::parseObjectLit() {
     // named `next` there would answer a free `next(...)` elsewhere in the
     // module — a method name is a property key, not a binding. The ordinal
     // keeps two literals in one module from naming the same symbol.
+    // The ordinal is per parser, which is per FILE, so a graph needs the file
+    // in the name too or two files' first object methods collide on one IL
+    // symbol (docs/0023 decision 1). File 0 keeps the unqualified spelling,
+    // which is what every pinned single-file dump holds.
     auto methodName = [this](const std::string& key) {
-        return "obj." + std::to_string(objectMethodOrdinal_++) + "." + key;
+        std::string prefix = fileId_ == 0 ? "obj." : "obj." + std::to_string(fileId_) + ".";
+        return prefix + std::to_string(objectMethodOrdinal_++) + "." + key;
     };
 
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {

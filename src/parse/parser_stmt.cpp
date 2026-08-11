@@ -70,6 +70,10 @@ std::unique_ptr<Module> Parser::parseModule(std::string name) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
     while (!check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+        // The one position ECMA-262 16.2 allows an `import` or an `export`.
+        // The flag is cleared by parseStatement itself, so every nested
+        // production this reaches sees false.
+        atModuleTopLevel_ = true;
         if (!parseStatement(mod->body)) break;
     }
     if (diags_.hasErrors()) return nullptr;
@@ -100,6 +104,8 @@ bool one(std::vector<StmtPtr>& out, StmtPtr stmt) {
 }  // namespace
 
 bool Parser::parseStatement(std::vector<StmtPtr>& out) {
+    const bool atModuleTop = atModuleTopLevel_;
+    atModuleTopLevel_ = false;
     // ECMA-262 14.4: `;` on its own is the EmptyStatement, which evaluates to
     // empty and does nothing. It contributes no node — there is nothing for a
     // node to say — which is why this appends to a list instead of returning
@@ -107,18 +113,17 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     // progress and no input is silently dropped.
     if (match(TokenKind::Semicolon)) return true;
 
-    if (match(TokenKind::KwExport)) {
-        if (check(TokenKind::KwFunction)) return one(out, parseFunctionDecl(/*isExported=*/true));
-        error("only 'export function' is supported after 'export' for now");
-        return false;
-    }
-    if (check(TokenKind::KwImport)) {
-        // `import` lexes as a keyword but has never had a production. Without
-        // this it fell through to the expression parser and reported
-        // "expected expression", naming nothing — the one place bronze's
-        // unimplemented syntax was not diagnosed by name.
-        error("unsupported construct: import declaration (bronze has no modules yet)");
-        return false;
+    // `import` and `export` are ModuleItems (ECMA-262 16.2), not statements:
+    // they are legal directly in a module body and nowhere else. A nested one
+    // is a syntax error rather than something the linker later has to decide
+    // the meaning of, because there is no meaning to decide — a binding
+    // introduced into a block would be visible to nothing outside it.
+    if (check(TokenKind::KwExport) || check(TokenKind::KwImport)) {
+        if (!atModuleTop) {
+            error("an import or export declaration may only appear at the top level of a module");
+            return false;
+        }
+        return check(TokenKind::KwExport) ? parseExportDecl(out) : parseImportDecl(out);
     }
     if (check(TokenKind::KwFunction)) return one(out, parseFunctionDecl(/*isExported=*/false));
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {

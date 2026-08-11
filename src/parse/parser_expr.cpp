@@ -608,6 +608,20 @@ ExprPtr Parser::parsePrimary() {
             return parseArrayLit();
         case TokenKind::KwFunction:
             return parseFunctionExpr();
+        // The two `import` forms that are EXPRESSIONS rather than
+        // declarations (ECMA-262 13.3.10 and 13.3.12). Neither reaches the
+        // statement production, so naming them there is not enough — an
+        // `import(...)` in an initializer landed on "expected expression",
+        // which names nothing (docs/0023).
+        case TokenKind::KwImport:
+            if (peek(1).kind == TokenKind::LParen) {
+                error("unsupported construct: dynamic import() (bronze has no promises)");
+            } else if (peek(1).kind == TokenKind::Dot) {
+                error("unsupported construct: import.meta");
+            } else {
+                error("an import declaration may only appear at the top level of a module");
+            }
+            return nullptr;
         default:
             error("expected expression");
             return nullptr;

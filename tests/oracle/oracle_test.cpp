@@ -5,6 +5,12 @@
 // under a hard timeout and are killed on expiry, so a miscompiled loop can
 // never hang the suite.
 //
+// A case that needs SEVERAL files is a directory: `cases/<name>/main.js` is
+// the entry, its neighbours are what it imports, and the expectation is
+// `cases/<name>/main.expected` — the same "entry path with the extension
+// replaced" rule, one level deeper (docs/0023 decision 5). Everything below
+// this point treats the two kinds identically.
+//
 // Ratchet rules: expectations are never edited to match bronze; a
 // cases/blocked/ entry that builds and matches must be promoted to cases/;
 // and every case is compiled and run BOTH with inference and with
@@ -141,14 +147,42 @@ std::filesystem::path findCasesDirectory() {
     return {};
 }
 
-std::vector<std::filesystem::path> jsCasesIn(const std::filesystem::path& dir) {
-    std::vector<std::filesystem::path> cases;
+// One case: the entry file bronze is pointed at, and the name it is reported
+// and named its temporary executable by. For a single-file case the two are
+// the same thing they always were.
+struct OracleCase {
+    std::filesystem::path entry;
+    std::string id;
+};
+
+// A case is EITHER `cases/<name>.js`, as every case was before modules, OR a
+// directory `cases/<name>/` whose entry is `main.js` and whose other files
+// are what it imports (docs/0023 decision 5). Nothing about the first kind
+// changes: it is found the same way, paired with `<name>.expected` by the
+// same rule, and compared the same way. The second kind reuses that rule one
+// level deeper — `cases/<name>/main.expected` — so there is one pairing rule
+// and not two.
+std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
+    std::vector<OracleCase> cases;
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
         if (entry.is_regular_file() && entry.path().extension() == ".js") {
-            cases.push_back(entry.path());
+            cases.push_back({entry.path(), entry.path().stem().string()});
+            continue;
         }
+        if (!entry.is_directory()) continue;
+        // `blocked/` is the other suite's, and it is enumerated by its own
+        // TEST_CASE with the same two rules.
+        if (entry.path().filename() == "blocked") continue;
+        std::filesystem::path main = entry.path() / "main.js";
+        std::error_code ec;
+        if (!std::filesystem::exists(main, ec)) continue;
+        // Named for the DIRECTORY: every multi-file case's entry is
+        // `main.js`, so naming them for the entry would report them all
+        // identically and would collide on `main_oracle.exe`.
+        cases.push_back({main, entry.path().filename().string()});
     }
-    std::sort(cases.begin(), cases.end());
+    std::sort(cases.begin(), cases.end(),
+              [](const OracleCase& a, const OracleCase& b) { return a.entry < b.entry; });
     return cases;
 }
 
@@ -158,11 +192,12 @@ TEST_CASE("Oracle differential test suite") {
     std::filesystem::path casesDir = findCasesDirectory();
     REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
 
-    auto caseFiles = jsCasesIn(casesDir);
+    auto caseFiles = casesIn(casesDir);
     REQUIRE_MESSAGE(!caseFiles.empty(), "No .js test cases found in cases directory");
 
-    for (const auto& casePath : caseFiles) {
-        SUBCASE(casePath.filename().string().c_str()) {
+    for (const auto& oracleCase : caseFiles) {
+        const std::filesystem::path& casePath = oracleCase.entry;
+        SUBCASE(oracleCase.id.c_str()) {
             std::string code;
             REQUIRE(readFileBytes(casePath, code));
 
@@ -186,7 +221,7 @@ TEST_CASE("Oracle differential test suite") {
                 const std::string mode = infer ? " (inference on)" : " (--no-infer)";
                 std::filesystem::path exePath =
                     std::filesystem::temp_directory_path() /
-                    (casePath.stem().string() + (infer ? "_oracle.exe" : "_oracle_noinfer.exe"));
+                    (oracleCase.id + (infer ? "_oracle.exe" : "_oracle_noinfer.exe"));
                 std::error_code ec;
                 std::filesystem::remove(exePath, ec);
 
@@ -203,7 +238,7 @@ TEST_CASE("Oracle differential test suite") {
                 if (run.ran) {
                     CHECK_MESSAGE(expected == run.output,
                                   ("Output differs from the pinned expectation for " +
-                                   casePath.filename().string() + mode).c_str());
+                                   oracleCase.id + mode).c_str());
                 }
                 std::filesystem::remove(exePath, ec);
             }
@@ -221,8 +256,9 @@ TEST_CASE("Oracle blocked test suite") {
         return;
     }
 
-    for (const auto& casePath : jsCasesIn(blockedDir)) {
-        SUBCASE(casePath.filename().string().c_str()) {
+    for (const auto& oracleCase : casesIn(blockedDir)) {
+        const std::filesystem::path& casePath = oracleCase.entry;
+        SUBCASE(oracleCase.id.c_str()) {
             std::string code;
             REQUIRE(readFileBytes(casePath, code));
             CHECK(code.find("Date") == std::string::npos);
@@ -235,7 +271,7 @@ TEST_CASE("Oracle blocked test suite") {
                             ("Missing pinned expectation " + expectedPath.string()).c_str());
 
             std::filesystem::path exePath =
-                std::filesystem::temp_directory_path() / (casePath.stem().string() + "_blocked.exe");
+                std::filesystem::temp_directory_path() / (oracleCase.id + "_blocked.exe");
             std::filesystem::remove(exePath, ec);
 
             std::string errOut;
@@ -246,7 +282,7 @@ TEST_CASE("Oracle blocked test suite") {
                 std::filesystem::remove(exePath, ec);
                 bool matches = run.ran && (expected == run.output);
                 CHECK_MESSAGE(!matches,
-                              ("Blocked oracle case passes! Promote " + casePath.filename().string() +
+                              ("Blocked oracle case passes! Promote " + oracleCase.id +
                                " (and its .expected) from cases/blocked/ to cases/").c_str());
             } else {
                 CHECK(true);  // still blocked at build time

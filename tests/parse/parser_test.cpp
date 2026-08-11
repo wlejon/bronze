@@ -44,6 +44,13 @@ TEST_CASE("function with typed params, if/else, calls") {
           "      )\n"
           "    )\n"
           "  )\n"
+          // `export function f` records an export entry beside the
+          // declaration, because that is the one shape every export form
+          // reduces to — `export { a as b }` and `export ... from` cannot be
+          // spelled as a flag on a declaration (docs/0023).
+          "  (export\n"
+          "    (name max as max)\n"
+          "  )\n"
           "  (const r\n"
           "    (call\n"
           "      (ident max)\n"
@@ -513,12 +520,6 @@ TEST_CASE("the semicolons in a `for` header are punctuation, not terminators") {
     const auto out = parseAndDump("for (let i = 0\n i < 3; i++) {}");
     CHECK(out.substr(0, 7) == "ERRORS:");
     CHECK(out.find("expected ';' after for init") != std::string::npos);
-}
-
-TEST_CASE("`import` is diagnosed by name rather than as a missing expression") {
-    const auto out = parseAndDump("import x from \"y\";");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: import declaration") != std::string::npos);
 }
 
 TEST_CASE("the precedence ladder groups the new operators the way ECMA-262 does") {

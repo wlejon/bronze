@@ -5,8 +5,9 @@ bronze_add_module(parse
         parser_literal.cpp
         parser_func.cpp
         parser_pattern.cpp
+        parser_module.cpp
     # `support` is a direct dependency (parser.h includes
     # support/diagnostics.h), not one inherited through ast.
     DEPS lex ast support
-    TEST_SOURCES ../../tests/parse/parser_test.cpp
+    TEST_SOURCES ../../tests/parse/parser_test.cpp ../../tests/parse/parser_module_test.cpp
 )

@@ -511,6 +511,62 @@ struct FunctionDecl final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+// ---- Modules (docs/0023) ----------------------------------------------------
+//
+// Both of these are erased by the linker: it reads them, resolves the graph,
+// and builds a merged module in which no import or export node survives. They
+// exist between the parser and `src/modules` and nowhere else, which is why
+// their `visit` overloads are the only ones with a default — a consumer
+// downstream of the linker cannot meet one.
+
+// One binding an `import` declaration introduces. Exactly one of the three
+// forms holds: a default import (`import d from`), a namespace import
+// (`import * as ns from`), or a named one (`import { a as b } from`).
+struct ImportSpecifier {
+    std::string imported;  // the name in the exporting module; empty for a namespace
+    std::string local;     // the binding this file gets
+    bool isDefault = false;
+    bool isNamespace = false;
+    Span span;
+};
+
+struct ImportDecl final : Stmt {
+    std::string specifier;  // the module specifier text, decoded
+    Span specifierSpan;
+    // Empty for `import "./x.js"`, which binds nothing and exists only for
+    // the side effects of evaluating the module.
+    std::vector<ImportSpecifier> specifiers;
+    void accept(Visitor& v) const override;
+};
+
+struct ExportSpecifier {
+    std::string local;     // the name in the module being exported FROM
+    std::string exported;  // the name importers ask for
+    Span span;
+};
+
+// Every `export` form reduces to "these local names are visible under these
+// exported names", optionally from another module. `export <declaration>`
+// leaves the declaration itself in the statement list as an ordinary
+// declaration and adds one of these beside it — so nothing downstream has to
+// know that a declaration can be wrapped, and `export const a = 1, b = 2`
+// (which is two declarations) needs no special shape.
+struct ExportNamesDecl final : Stmt {
+    std::vector<ExportSpecifier> specifiers;
+    // `export ... from './x'`. The names are then the OTHER module's, and
+    // this file gets no binding for them.
+    bool hasFrom = false;
+    std::string fromSpecifier;
+    Span fromSpan;
+    // `export * from './x'` — every name the target exports except `default`,
+    // decided at link time because it depends on the target's own table.
+    // With `starAlias` non-empty it is `export * as ns from './x'`, which
+    // exports one name bound to the target's namespace object.
+    bool isStar = false;
+    std::string starAlias;
+    void accept(Visitor& v) const override;
+};
+
 struct Module final : Node {
     std::string name;
     std::vector<StmtPtr> body;
@@ -565,6 +621,14 @@ public:
     virtual void visit(const ThrowStmt&) = 0;
     virtual void visit(const ClassDecl&) = 0;
     virtual void visit(const FunctionDecl&) = 0;
+    // Not pure, and deliberately empty. The linker erases both nodes before
+    // inference or lowering runs (docs/0023 decision 1), so a visitor written
+    // for a merged module can never be handed one; requiring every existing
+    // visitor to write an override for a node it cannot meet would be a lot
+    // of code saying nothing. `ast::dump` overrides them, because
+    // `bronze parse` runs on ONE file and must show what it parsed.
+    virtual void visit(const ImportDecl&) {}
+    virtual void visit(const ExportNamesDecl&) {}
     virtual void visit(const Module&) = 0;
 };
 

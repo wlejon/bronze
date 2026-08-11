@@ -35,6 +35,9 @@ public:
 
     // Renders "name:line:col: severity: message" lines against a buffer.
     std::string render(const SourceBuffer& buffer) const;
+    // The same, for a build that read more than one file: each span names
+    // the buffer its offsets are into (docs/0023 decision 1).
+    std::string render(const SourceSet& sources) const;
 
 private:
     std::vector<Diagnostic> diags_;

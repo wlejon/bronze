@@ -15,8 +15,14 @@ namespace bronze {
 // sink; partial ASTs are never returned).
 class Parser {
 public:
-    Parser(std::vector<Token> tokens, DiagnosticSink& diags)
-        : tokens_(std::move(tokens)), diags_(diags) {}
+    // `fileId` is the module graph's numbering of this file (docs/0023). It
+    // is used for one thing: qualifying the IL symbol the parser invents for
+    // an object-literal method, whose ordinal is per parser and therefore per
+    // file, so two files each holding `{ next() {} }` would otherwise agree
+    // on `obj.0.next`. File 0 — a single-file build's only file, and a
+    // graph's entry — is spelled exactly as it was before modules existed.
+    Parser(std::vector<Token> tokens, DiagnosticSink& diags, uint16_t fileId = 0)
+        : tokens_(std::move(tokens)), diags_(diags), fileId_(fileId) {}
 
     // Parses a whole module (a file). Consumes ALL input: trailing tokens
     // after the last declaration are a hard error (lesson pinned by broc's
@@ -26,6 +32,7 @@ public:
 private:
     std::vector<Token> tokens_;
     DiagnosticSink& diags_;
+    uint16_t fileId_ = 0;
     size_t pos_ = 0;
     // Which class a `super` in the body being parsed belongs to, and
     // whether there is one at all. A class body is the only place `super`
@@ -47,6 +54,12 @@ private:
     // not agree on a name either, or the second's body would silently replace
     // the first's.
     size_t objectMethodOrdinal_ = 0;
+    // Whether the statement about to be parsed is directly in the module's
+    // body. `import` and `export` are legal there and nowhere else (ECMA-262
+    // 16.2), and the parser is the only place that still knows the
+    // difference — by the time the linker sees a statement list it cannot
+    // tell a module body from a block.
+    bool atModuleTopLevel_ = false;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -78,7 +91,22 @@ private:
     // BlockStmt would give them a scope they do not have), and the empty
     // statement is none at all. Returns false on a diagnosed error.
     bool parseStatement(std::vector<ast::StmtPtr>& out);
-    ast::StmtPtr parseFunctionDecl(bool isExported);
+    // `defaultName` is used only for `export default function () {}`, the
+    // one production in which a DECLARATION may be anonymous. Everything
+    // downstream identifies a function by its name, so it gets one.
+    ast::StmtPtr parseFunctionDecl(bool isExported, const std::string& defaultName = "");
+    // --- parser_module.cpp: `import` and `export` (docs/0023) -------------
+    // Both append rather than return: `export const a = 1, b = 2` is two
+    // declarations plus the record of what they export, and a side-effect
+    // `import` is one node with no bindings at all.
+    bool parseImportDecl(std::vector<ast::StmtPtr>& out);
+    bool parseExportDecl(std::vector<ast::StmtPtr>& out);
+    // The `from "spec"` tail, with the cursor on `from`. False on a
+    // diagnosed error.
+    bool parseFromClause(std::string& outSpecifier, Span& outSpan);
+    // The names a statement declares, for `export <declaration>` — which
+    // exports every name the declaration binds, patterns included.
+    static void declaredNamesOf(const ast::Stmt& stmt, std::vector<std::string>& out);
     // One `VarDecl` per declarator of the BindingList (ECMA-262 14.3.1),
     // appended in source order. `isStatement` is false inside a `for` header,
     // where the declaration is followed by the header's own semicolon and ASI
@@ -108,7 +136,8 @@ private:
     bool parseForBindingHead(ForBindingHead& head);
     ast::StmtPtr parseTry();
     ast::StmtPtr parseThrow();
-    ast::StmtPtr parseClass();
+    // `defaultName`, as for parseFunctionDecl: `export default class {}`.
+    ast::StmtPtr parseClass(const std::string& defaultName = "");
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
     // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed.

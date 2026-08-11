@@ -24,6 +24,7 @@
 #include "il/print.h"
 #include "lex/lexer.h"
 #include "lower/lower.h"
+#include "modules/modules.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
 #include "types/dump.h"
@@ -67,9 +68,9 @@ int fail(const std::string& message) {
 // only on failure, as the error path does, drops every annotation warning
 // docs/0010 decision 6 emits — and a diagnostic nobody prints is not a
 // diagnostic.
-void reportWarnings(const DiagnosticSink& diags, const SourceBuffer& buffer) {
+void reportWarnings(const DiagnosticSink& diags, const SourceSet& sources) {
     if (diags.all().empty()) return;
-    std::fputs(diags.render(buffer).c_str(), stderr);
+    std::fputs(diags.render(sources).c_str(), stderr);
 }
 
 bool readFile(const std::string& path, std::string& out) {
@@ -205,28 +206,11 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString) {
-    std::string text;
-    if (!readFile(sourcePath, text)) {
-        std::string msg = "error: cannot read " + sourcePath + "\n";
-        if (outString) *outString = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    SourceBuffer buffer(sourcePath, std::move(text));
+    SourceSet sources;
     DiagnosticSink diags;
-
-    auto tokens = Lexer(buffer, diags).lex();
-    if (diags.hasErrors()) {
-        std::string msg = diags.render(buffer);
-        if (outString) *outString = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    auto astModule = Parser(std::move(tokens), diags).parseModule(sourcePath);
-    if (diags.hasErrors() || !astModule) {
-        std::string msg = diags.render(buffer);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    if (!astModule) {
+        std::string msg = diags.render(sources);
         if (outString) *outString = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
@@ -234,7 +218,7 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
 
     auto inferred = types::inferModule(*astModule, diags);
     if (diags.hasErrors() || !inferred) {
-        std::string msg = diags.render(buffer);
+        std::string msg = diags.render(sources);
         if (outString) *outString = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
@@ -250,42 +234,29 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
 }
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
-    std::string text;
-    if (!readFile(sourcePath, text)) {
-        std::string msg = "error: cannot read " + sourcePath + "\n";
-        if (outString) *outString = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    SourceBuffer buffer(sourcePath, std::move(text));
+    // The graph — resolution, loading, cycle detection, linking — is
+    // `src/modules`' job; the CLI is a composition root and stays one. What
+    // comes back is the single merged AST module every later stage already
+    // understands (docs/0023 decision 1).
+    SourceSet sources;
     DiagnosticSink diags;
-
-    auto tokens = Lexer(buffer, diags).lex();
-    if (diags.hasErrors()) {
-        std::string msg = diags.render(buffer);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    if (!astModule) {
+        std::string msg = diags.render(sources);
         if (outString) *outString = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
 
-    auto astModule = Parser(std::move(tokens), diags).parseModule(sourcePath);
-    if (diags.hasErrors() || !astModule) {
-        std::string msg = diags.render(buffer);
-        if (outString) *outString = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    // The CLI is the composition root: it runs inference and hands the side
-    // table to lowering (docs/0010 decision 1). A null side table is the
-    // no-inference mode, not a failure mode — inference itself only ever
-    // fails on an internal impossibility, which is diagnosed and fatal.
+    // The CLI runs inference and hands the side table to lowering (docs/0010
+    // decision 1). A null side table is the no-inference mode, not a failure
+    // mode — inference itself only ever fails on an internal impossibility,
+    // which is diagnosed and fatal.
     std::optional<types::InferenceResult> inferred;
     if (infer) {
         inferred = types::inferModule(*astModule, diags);
         if (diags.hasErrors() || !inferred) {
-            std::string msg = diags.render(buffer);
+            std::string msg = diags.render(sources);
             if (outString) *outString = msg;
             else std::fputs(msg.c_str(), stderr);
             return 1;
@@ -295,13 +266,13 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr);
     if (diags.hasErrors() || !ilModule) {
-        std::string msg = diags.render(buffer);
+        std::string msg = diags.render(sources);
         if (outString) *outString = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
 
-    reportWarnings(diags, buffer);
+    reportWarnings(diags, sources);
     std::string printed = il::print(*ilModule);
     if (outString) {
         *outString = printed;
@@ -320,28 +291,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     else std::fputs(msg.c_str(), stderr);
     return 1;
 #else
-    std::string text;
-    if (!readFile(sourcePath, text)) {
-        std::string msg = "error: cannot read " + sourcePath + "\n";
-        if (errOut) *errOut = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    SourceBuffer buffer(sourcePath, std::move(text));
+    SourceSet sources;
     DiagnosticSink diags;
-
-    auto tokens = Lexer(buffer, diags).lex();
-    if (diags.hasErrors()) {
-        std::string msg = diags.render(buffer);
-        if (errOut) *errOut = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    }
-
-    auto astModule = Parser(std::move(tokens), diags).parseModule(sourcePath);
-    if (diags.hasErrors() || !astModule) {
-        std::string msg = diags.render(buffer);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    if (!astModule) {
+        std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
@@ -351,7 +305,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (infer) {
         inferred = types::inferModule(*astModule, diags);
         if (diags.hasErrors() || !inferred) {
-            std::string msg = diags.render(buffer);
+            std::string msg = diags.render(sources);
             if (errOut) *errOut = msg;
             else std::fputs(msg.c_str(), stderr);
             return 1;
@@ -361,13 +315,13 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr);
     if (diags.hasErrors() || !ilModule) {
-        std::string msg = diags.render(buffer);
+        std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
 
-    reportWarnings(diags, buffer);
+    reportWarnings(diags, sources);
 
     std::filesystem::path tempObj = std::filesystem::temp_directory_path() /
                                     (std::filesystem::path(sourcePath).stem().string() + "_temp.obj");
@@ -376,7 +330,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (!backend.emitObject(*ilModule, tempObj.string(), diags)) {
         std::error_code ec;
         if (std::filesystem::exists(tempObj, ec)) std::filesystem::remove(tempObj, ec);
-        std::string msg = diags.render(buffer);
+        std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
@@ -390,7 +344,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     if (!linked) {
-        std::string msg = diags.hasErrors() ? diags.render(buffer) : "error: linking failed\n";
+        std::string msg = diags.hasErrors() ? diags.render(sources) : "error: linking failed\n";
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;

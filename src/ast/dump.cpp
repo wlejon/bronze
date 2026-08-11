@@ -348,6 +348,37 @@ public:
         });
         emit(")");
     }
+    // `bronze parse` runs on one file, so it shows the import and export
+    // nodes the linker would later erase. Each binding form dumps under its
+    // own head: a default, a namespace and a named import bind by three
+    // different rules and two of them dumping identically would hide which
+    // one the parser chose.
+    void visit(const ImportDecl& n) override {
+        emit("(import \"" + n.specifier + "\"");
+        indented([&] {
+            for (const auto& s : n.specifiers) {
+                if (s.isNamespace) {
+                    emit("(namespace " + s.local + ")");
+                } else if (s.isDefault) {
+                    emit("(default " + s.local + ")");
+                } else {
+                    emit("(named " + s.imported + " as " + s.local + ")");
+                }
+            }
+        });
+        emit(")");
+    }
+    void visit(const ExportNamesDecl& n) override {
+        std::string head = "(export";
+        if (n.isStar) head += " *";
+        if (!n.starAlias.empty()) head += " as " + n.starAlias;
+        if (n.hasFrom) head += " from \"" + n.fromSpecifier + "\"";
+        emit(head);
+        indented([&] {
+            for (const auto& s : n.specifiers) emit("(name " + s.local + " as " + s.exported + ")");
+        });
+        emit(")");
+    }
     void visit(const Module& n) override {
         emit("(module " + n.name);
         indented([&] {

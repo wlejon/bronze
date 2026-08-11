@@ -197,16 +197,25 @@ void FlowAnalyzer::fail(Span span, const std::string& what) {
 
 // ---- statements --------------------------------------------------------
 
+// An export clause names bindings and evaluates nothing (ECMA-262 16.2.3), so
+// it is not a statement of the list at all — it is skipped BEFORE the index is
+// taken, or the statement after it would be numbered as though something ran.
+// The linker deletes these before a real build reaches inference; a test that
+// parses and infers one file directly still meets them (docs/0023).
+static bool isExportClause(const ast::Stmt& s) {
+    return dynamic_cast<const ast::ExportNamesDecl*>(&s) != nullptr;
+}
+
 void FlowAnalyzer::stmtList(const std::vector<ast::StmtPtr>& stmts, uint32_t depth) {
     uint32_t index = 0;
     for (const auto& s : stmts) {
-        if (s) stmt(*s, index++, depth);
+        if (s && !isExportClause(*s)) stmt(*s, index++, depth);
     }
 }
 void FlowAnalyzer::stmtList(const std::vector<const ast::Stmt*>& stmts, uint32_t depth) {
     uint32_t index = 0;
     for (const auto* s : stmts) {
-        if (s) stmt(*s, index++, depth);
+        if (s && !isExportClause(*s)) stmt(*s, index++, depth);
     }
 }
 

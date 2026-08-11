@@ -90,6 +90,13 @@ std::optional<il::Module> Lowerer::lower() {
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));
+        } else if (dynamic_cast<const ast::ExportNamesDecl*>(stmtPtr.get())) {
+            // An export clause names bindings and evaluates nothing (ECMA-262
+            // 16.2.3), so it is not a top-level statement. Counting it as one
+            // would give a module whose whole content is exported function
+            // declarations an empty `main` it never had — the IL of every
+            // such file would change with nothing running in it.
+            continue;
         } else {
             topLevelStmts.push_back(stmtPtr.get());
         }

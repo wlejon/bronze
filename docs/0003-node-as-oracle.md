@@ -26,6 +26,15 @@ test-time dependency and nothing in the build or CI invokes it.
   with bronze, runs the executable, and asserts byte equality with the
   expectation. Cases must be deterministic (no Date/random — enforced by
   grep in the harness, same lesson as broc's determinism bugs).
+- `tests/oracle/cases/<name>/main.js` — a case that needs SEVERAL files
+  (docs/0023). The directory is the case, `main.js` is what bronze is
+  pointed at, its neighbours are what it imports, and the expectation is
+  `main.expected` — the same "the entry's path with the extension replaced"
+  rule, one level deeper, so there is one pairing rule and not two. The case
+  is reported and names its temporary executable after the DIRECTORY, since
+  every such case's entry is called `main.js`. `cases/blocked/<name>/` is the
+  same convention for a blocked case. Nothing about how a single-file case is
+  found or compared changed to make room for this.
 - `.expected` files are byte-exact: LF line endings, protected from CRLF
   conversion by `.gitattributes` (`*.expected -text`).
 - Compiled cases run under a **hard timeout** (15s) and are killed on
@@ -69,11 +78,20 @@ reviewed output.
 `cases/blocked/` is therefore never allowed to run empty. An empty blocked
 list leaves the promote-on-pass ratchet with nothing to watch, and — worse,
 given the rules above — leaves no case list describing what comes next, so
-it is re-seeded as soon as it drains. It currently holds
+it is re-seeded as soon as it drains. It was first seeded with
 `default_and_rest_params`, `destructuring` and `spread`, chosen by what
-three.js writes on nearly every page; between them they are also what a
-derived class with no constructor needs before it can stop being a named
+three.js writes on nearly every page; between them they were also what a
+derived class with no constructor needed before it could stop being a named
 error (docs/0012 decision 5).
+
+The most recent re-seeding is docs/0023's, and all three of its entries are
+DIRECTORY cases: `module_cycle` (a cycle whose crossing bindings are all
+hoisted function declarations, which is well defined and which bronze refuses
+by name until it can tell that cycle from one that reads an uninitialised
+`let`), `module_bare_specifier` (with the `node_modules` package it would
+need already written beside it), and `module_namespace_object` (the exotic
+object's sorted keys and non-writable properties, which an object literal of
+getters is not).
 
 Two conventions the promotions so far have settled:
 

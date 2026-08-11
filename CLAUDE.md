@@ -101,3 +101,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   shorthand, `toFixed` from bignum arithmetic on the double itself, JSON as its
   own grammar module, `setPrototypeOf` made safe by dictionary mode, and the
   Map epoch tied to the copy that relocates)
+- 0023 ES modules (the graph as one flat namespace so an import binding IS the
+  exporting module's binding, relative specifiers only, cycles refused by
+  name, the namespace object as a literal of getters, and multi-file oracle
+  cases as directories)

@@ -127,7 +127,11 @@ the constant is dead and does not survive the backend.
 - `expected ';' after <what>` — unchanged in wording, and now reached only
   when none of decision 2's three conditions holds.
 - `unsupported construct: import declaration (bronze has no modules yet)` —
-  not ASI, but found in the same sweep and the same kind of hole. `import`
+  superseded: `import` has a production and a module graph as of docs/0023,
+  and this error no longer exists. It is kept here because the reason it was
+  written is the decision, and that decision still stands: an unimplemented
+  construct is named, not left to fall through to a production that reports
+  something unrelated. Not ASI, but found in the same sweep. `import`
   has lexed as a keyword since the beginning and never had a production, so
   it fell through to the expression parser and reported "expected
   expression", naming nothing. It was the one unimplemented construct in

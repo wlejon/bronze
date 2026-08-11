@@ -8,15 +8,23 @@ namespace bronze {
 
 using namespace ast;
 
-StmtPtr Parser::parseFunctionDecl(bool isExported) {
+StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultName) {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionDecl>();
     fn->span.begin = kw.span.begin;
     fn->isExported = isExported;
 
-    const Token* name = expect(TokenKind::Identifier, "function name");
-    if (!name) return nullptr;
-    fn->name = std::string(name->text);
+    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+        // `export default function () {}` (ECMA-262 16.2.3.7): a hoisted
+        // declaration with no name. It is still hoisted and still a
+        // declaration, so it gets the reserved word `default` as its name —
+        // which nothing in the source can spell, so it cannot collide.
+        fn->name = defaultName;
+    } else {
+        const Token* name = expect(TokenKind::Identifier, "function name");
+        if (!name) return nullptr;
+        fn->name = std::string(name->text);
+    }
 
     if (!expect(TokenKind::LParen, "'(' after function name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
@@ -247,14 +255,17 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
 // Everything ES2015+ puts in a class body that bronze has not built -
 // fields, getters and setters, computed keys, generators - is diagnosed by
 // name here rather than mis-parsed as a method.
-ast::StmtPtr Parser::parseClass() {
+ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     const Token& kw = advance();  // 'class'
-    const Token* nameTok = expect(TokenKind::Identifier, "class name");
-    if (!nameTok) return nullptr;
-
     auto cls = std::make_unique<ClassDecl>();
     cls->span.begin = kw.span.begin;
-    cls->name = std::string(nameTok->text);
+    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+        cls->name = defaultName;  // `export default class {}`, as above
+    } else {
+        const Token* nameTok = expect(TokenKind::Identifier, "class name");
+        if (!nameTok) return nullptr;
+        cls->name = std::string(nameTok->text);
+    }
 
     if (match(TokenKind::KwExtends)) {
         const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");

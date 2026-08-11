@@ -125,8 +125,14 @@ char Lexer::peek(uint32_t ahead) const {
 
 bool Lexer::atEnd() const { return pos_ >= buffer_.text().size(); }
 
+// Every token span carries the id of the buffer it indexes. This is the one
+// place a span is built from raw offsets, so stamping it here is what makes a
+// diagnostic about a file other than the entry render against that file's
+// text (docs/0023 decision 1).
 Token Lexer::make(TokenKind kind, uint32_t begin) const {
-    return Token{kind, {begin, pos_}, buffer_.text().substr(begin, pos_ - begin)};
+    return Token{kind,
+                 {begin, pos_, buffer_.fileId()},
+                 buffer_.text().substr(begin, pos_ - begin)};
 }
 
 bool Lexer::skipTrivia() {
@@ -151,7 +157,7 @@ bool Lexer::skipTrivia() {
                 ++pos_;
             }
             if (atEnd()) {
-                diags_.error({begin, pos_}, "unterminated block comment");
+                diags_.error({begin, pos_, buffer_.fileId()}, "unterminated block comment");
                 return sawNewline;
             }
             pos_ += 2;
@@ -258,7 +264,7 @@ Token Lexer::lexString() {
         ++pos_;
     }
     if (atEnd() || peek() != quote) {
-        diags_.error({begin, pos_}, "unterminated string literal");
+        diags_.error({begin, pos_, buffer_.fileId()}, "unterminated string literal");
         return make(TokenKind::StringLiteral, begin);
     }
     ++pos_;
@@ -362,7 +368,7 @@ Token Lexer::lexPunctuation() {
         default: break;
     }
     ++pos_;
-    diags_.error({begin, pos_}, std::string("unrecognized character '") + c + "'");
+    diags_.error({begin, pos_, buffer_.fileId()}, std::string("unrecognized character '") + c + "'");
     return make(TokenKind::EndOfFile, begin);
 }
 
@@ -379,7 +385,7 @@ Token Lexer::lexTemplatePart(bool isHead) {
     ++pos_;  // the ` or }
     for (;;) {
         if (atEnd()) {
-            diags_.error({begin, pos_}, "unterminated template literal");
+            diags_.error({begin, pos_, buffer_.fileId()}, "unterminated template literal");
             return make(TokenKind::TemplateWhole, begin);
         }
         const char c = peek();
@@ -433,7 +439,8 @@ std::vector<Token> Lexer::lex() {
         }
         tokens.back().newlineBefore = newlineBefore;
     }
-    tokens.push_back(Token{TokenKind::EndOfFile, {pos_, pos_}, {}, newlineBefore});
+    tokens.push_back(
+        Token{TokenKind::EndOfFile, {pos_, pos_, buffer_.fileId()}, {}, newlineBefore});
     return tokens;
 }
 

@@ -2,7 +2,7 @@ add_library(bronze_cli STATIC driver.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen)
+target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen bronze::modules)
 add_dependencies(bronze_cli bronze_rt)
 
 if(BRONZE_WITH_LLVM)

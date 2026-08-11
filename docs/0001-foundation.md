@@ -75,9 +75,15 @@ bronze inverts the defaults:
    case both ways.
 4. **Language growth**: builtins and prototype methods (docs/0011), the
    ES2015 syntax three.js is written in (docs/0012), container printing
-   (docs/0013), automatic semicolon insertion (docs/0014). Still open: parameter and binding patterns (defaults, rest,
-   destructuring, spread), `for-in`, `switch`, `try`/`catch`/`throw`,
-   `delete`, and modules/imports — `import` lexes but does not parse.
+   (docs/0013), automatic semicolon insertion (docs/0014), operators
+   (docs/0015), names and literals (docs/0016), binding patterns
+   (docs/0017), selection and jumps (docs/0018), `delete` and accessors
+   (docs/0019), exceptions (docs/0020), iteration and collections
+   (docs/0021), exact numbers and JSON (docs/0022), and ES modules
+   (docs/0023) — a build is a graph of files rather than one file. Still
+   open at the end of the phase: the temporal dead zone (and with it module
+   cycles), the intrinsic prototype objects, generators, and bare module
+   specifiers.
 5. **Dynamic boundary**: the `dynamic` type's runtime and the QuickJS
    interop seam for hot-loaded UI code — as a boundary module, never as the
    default representation.
