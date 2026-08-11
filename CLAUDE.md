@@ -61,3 +61,4 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0009 enumeration order (spec'd own-key order via the shape chain; dictionary boundary)
 - 0010 inference (phase 3: lattice, shape classes, call-graph signatures,
   annotations as untrusted hints, inline property caches — `src/types`)
+- 0011 builtins (phase 4: provided globals, prototype methods; current work)

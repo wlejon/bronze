@@ -9,6 +9,15 @@
 
 namespace bronze::lower {
 
+// The globals bronze provides, resolved by name because there is no global
+// object to look them up in (docs/0009 decision 2 made the same call for
+// `Object`). The list is closed: a free identifier that is not on it stays
+// a compile error, so adding a global is a deliberate act here and never a
+// program silently reading `undefined` at runtime.
+bool Lowerer::isProvidedGlobal(const std::string& name) const {
+    return name == "Math";
+}
+
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
     auto it = keyConstants_.find(key);
     if (it != keyConstants_.end()) return it->second;

@@ -140,6 +140,20 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
+            // A global bronze provides. The set is closed and checked
+            // HERE, at compile time, so an unknown free identifier stays
+            // the compile error it has always been rather than becoming a
+            // runtime miss (docs/0011 decision 1).
+            if (isProvidedGlobal(ident->name)) {
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction inst;
+                inst.op = il::Op::GlobalGet;
+                inst.type = il::Type::Dynamic;
+                inst.result = res;
+                inst.keyIndex = getKeyConstantIndex(ident->name);
+                emitInst(ilFn, inst);
+                return Value{res, il::Type::Dynamic};
+            }
             diags_.error(ident->span, "undefined variable: " + ident->name);
             return std::nullopt;
         }

@@ -458,3 +458,37 @@ TEST_CASE("a function returning two types returns dynamic, not its first return'
     CHECK(printed.find("func f(%0: dynamic) -> dynamic") != std::string::npos);
     CHECK(printed.find("unbox.f64") == std::string::npos);
 }
+
+TEST_CASE("a provided global resolves to global.get; an unknown free name still errors") {
+    // The globals list is closed at COMPILE time (docs/0011 decision 1):
+    // `Math` becomes an instruction, and anything not on the list keeps the
+    // diagnostic it has always had rather than becoming a runtime miss.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("const r = Math.sqrt(2);\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("global.get \"Math\"") != std::string::npos);
+
+    DiagnosticSink diags2;
+    SourceBuffer buf2("test.ts", "");
+    const auto unknown = parseAndLower("const r = Maths.sqrt(2);\n", diags2, buf2);
+    CHECK(diags2.hasErrors());
+    CHECK_FALSE(unknown.has_value());
+}
+
+TEST_CASE("a local binding shadows a provided global") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "const Math = { sqrt: 1 };\n"
+        "const r = Math.sqrt;\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("global.get") == std::string::npos);
+}

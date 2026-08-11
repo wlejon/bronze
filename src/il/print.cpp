@@ -49,6 +49,7 @@ const char* opName(Op op) {
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
         case Op::ObjectKeys: return "object.keys";
+        case Op::GlobalGet: return "global.get";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
         case Op::EnvCreate: return "env.create";
@@ -208,6 +209,17 @@ std::string print(const Module& module) {
                         break;
                     case Op::CreateObject:
                         out += "create.object";
+                        break;
+                    // The NAME, not the key index: which global is being
+                    // resolved is the whole content of the instruction, and
+                    // an index would make the dump move whenever an
+                    // unrelated property key was added ahead of it.
+                    case Op::GlobalGet:
+                        out += "global.get \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
                         break;
                     case Op::CreateArray:
                         out += "create.array " + std::to_string(inst.immI32);

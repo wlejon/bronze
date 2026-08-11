@@ -17,6 +17,7 @@
 #include "runtime/number_format.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
+#include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
@@ -82,6 +83,14 @@ static Shape* newRootShape(Value proto) {
     return root;
 }
 
+// The accessors of rt_internal.h. They exist so a builtin family can live
+// in its own translation unit without declaring heap state of its own —
+// definitions stay here, where the statics above are, so no initialization
+// order changes hands.
+Heap& rtHeap() { return g_heap; }
+NonMovingArena& rtArena() { return g_arena; }
+Shape* rtNewRootShape(Value proto) { return newRootShape(proto); }
+
 static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
 static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
@@ -124,6 +133,11 @@ static Value valueToString(Value v) {
         size_t len = formatJsNumber(v.asNumber(), buf);
         StringHeader* sh = StringHeader::createFromUTF8(g_heap, std::string_view(buf, len));
         return Value::fromString(sh);
+    } else if (v.isInt32()) {
+        char buf[64];
+        size_t len = formatJsNumber(static_cast<double>(static_cast<int32_t>(v.payload())), buf);
+        StringHeader* sh = StringHeader::createFromUTF8(g_heap, std::string_view(buf, len));
+        return Value::fromString(sh);
     } else if (v.isBool()) {
         StringHeader* sh = StringHeader::createFromUTF8(g_heap, v.asBool() ? "true" : "false");
         return Value::fromString(sh);
@@ -133,6 +147,94 @@ static Value valueToString(Value v) {
         return Value::fromString(StringHeader::createFromUTF8(g_heap, "undefined"));
     }
     fatal("ToString on an object is unsupported");
+}
+
+Value rtMakeString(std::string_view utf8) {
+    return Value::fromString(StringHeader::createFromUTF8(g_heap, utf8));
+}
+
+Value rtValueToString(Value v) { return valueToString(v); }
+
+std::string rtAsciiChars(const StringHeader* s) {
+    std::string out;
+    const uint32_t len = s->getLength();
+    out.reserve(len);
+    if (s->isLatin1()) {
+        const char* data = s->latin1Data();
+        for (uint32_t i = 0; i < len; ++i) {
+            unsigned char c = static_cast<unsigned char>(data[i]);
+            out.push_back(c < 0x80 ? static_cast<char>(c) : '\xFF');
+        }
+        return out;
+    }
+    const uint16_t* data = s->utf16Data();
+    for (uint32_t i = 0; i < len; ++i) {
+        out.push_back(data[i] < 0x80 ? static_cast<char>(data[i]) : '\xFF');
+    }
+    return out;
+}
+
+// ECMA-262 StringNumericLiteral: leading/trailing whitespace is stripped,
+// the empty string is 0, `Infinity` is spelled out, the three radix
+// prefixes are unsigned, and anything the whole of which is not consumed is
+// NaN. Deliberately NOT std::strtod: that accepts `0x` forms with a sign,
+// `nan`, and locale decimal points, none of which JS does.
+static double stringToNumber(const StringHeader* s) {
+    static constexpr std::string_view kSpace = " \t\n\r\f\v";
+    std::string text = rtAsciiChars(s);
+    size_t begin = text.find_first_not_of(kSpace);
+    if (begin == std::string::npos) return 0.0;
+    size_t end = text.find_last_not_of(kSpace) + 1;
+    std::string_view body(text.data() + begin, end - begin);
+    if (body.empty()) return 0.0;
+
+    if (body.size() > 2 && body[0] == '0') {
+        int base = 0;
+        switch (body[1]) {
+            case 'x': case 'X': base = 16; break;
+            case 'o': case 'O': base = 8; break;
+            case 'b': case 'B': base = 2; break;
+            default: break;
+        }
+        if (base != 0) {
+            uint64_t magnitude = 0;
+            auto [ptr, ec] = std::from_chars(body.data() + 2, body.data() + body.size(),
+                                             magnitude, base);
+            if (ec != std::errc{} || ptr != body.data() + body.size()) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            return static_cast<double>(magnitude);
+        }
+    }
+
+    std::string_view digits = body;
+    double sign = 1.0;
+    if (digits.front() == '+' || digits.front() == '-') {
+        sign = digits.front() == '-' ? -1.0 : 1.0;
+        digits.remove_prefix(1);
+    }
+    if (digits == "Infinity") return sign * std::numeric_limits<double>::infinity();
+
+    double magnitude = 0.0;
+    auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), magnitude,
+                                     std::chars_format::general);
+    if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return sign * magnitude;
+}
+
+double rtToNumber(Value v) {
+    if (v.isNumber()) return v.asNumber();
+    if (v.isInt32()) return static_cast<double>(static_cast<int32_t>(v.payload()));
+    if (v.isBool()) return v.asBool() ? 1.0 : 0.0;
+    if (v.isNull()) return 0.0;
+    if (v.isUndefined()) return std::numeric_limits<double>::quiet_NaN();
+    if (v.isString()) return stringToNumber(v.asString<StringHeader>());
+    // An object needs ToPrimitive — valueOf, then toString — and bronze has
+    // neither (docs/0008: there is no Object.prototype). Named rather than
+    // guessed at, exactly like ToString above.
+    fatal("ToNumber on an object is unsupported");
 }
 
 // A canonical array index: the decimal form must round-trip, so "0" and
@@ -557,6 +659,7 @@ static void checkUnimplementedMember(const char* receiver, const char* const* na
     fatal(msg.c_str());
 }
 
+
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     Value objVal(objBits);
     InlineCache* ic = asCache(icEntry);
@@ -684,7 +787,54 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     Rooted<Value> key(Value::fromString(g_keyHeaders[keyIndex]));
     ObjectHeader* obj = objVal.asObject<ObjectHeader>();
     Value result = obj->getProp(g_heap, key, ic);
+    // A namespace object is an ordinary object, so a member it does not
+    // carry reads `undefined` like any other miss — which for a name
+    // ECMA-262 says exists is the silent lie the tables above exist to
+    // prevent. Checked only on the miss, so the hit path is untouched.
+    if (result.isUndefined()) {
+        rtMathCheckMissingMember(objVal, keyStr);
+    }
     return result.rawBits();
+}
+
+// The free identifiers lowering is allowed to resolve (docs/0011 decision
+// 1). An unknown name never reaches here: lowering diagnoses it at compile
+// time, which is why this is an internal tripwire rather than a JS
+// ReferenceError.
+//
+// Every mention of `Math` in the source is one of these calls, including
+// one inside a loop, so the answer is cached per key index rather than
+// re-derived from a string compare. The cache holds heap Values, so it is a
+// root SOURCE: the namespace objects live in the moving heap and cached raw
+// bits would go stale at the first collection.
+static std::vector<Value>& globalCache() {
+    static std::vector<Value> cache;
+    return cache;
+}
+
+static const bool g_globalCacheRooted = [] {
+    g_heap.add_root_source([](const Heap::RootVisitor& visit) {
+        for (Value& v : globalCache()) visit(v);
+    });
+    return true;
+}();
+
+uint64_t bronze_global_get(uint32_t keyIndex) {
+    auto& cache = globalCache();
+    if (keyIndex < cache.size() && !cache[keyIndex].isUndefined()) {
+        return cache[keyIndex].rawBits();
+    }
+    const std::string& keyStr =
+        (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : g_emptyKey;
+    Value resolved = Value::fromUndefined();
+    if (keyStr == "Math") {
+        resolved = rtMathObject();
+    } else {
+        fatal(("internal: no global named " + keyStr).c_str());
+    }
+    if (keyIndex >= cache.size()) cache.resize(keyIndex + 1, Value::fromUndefined());
+    cache[keyIndex] = resolved;
+    return resolved.rawBits();
 }
 
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry) {
@@ -1030,4 +1180,12 @@ void bronze_register_key_string(uint32_t index, const char* str) {
 }
 
 }  // extern "C"
+
+// Outside the block above deliberately: this is C++ linkage, for the other
+// runtime translation units, and not part of the generated-code ABI.
+void rtCheckUnimplementedMember(const char* receiver, const char* const* names, size_t count,
+                                const std::string& key) {
+    checkUnimplementedMember(receiver, names, count, key);
+}
+
 }  // namespace bronze::runtime

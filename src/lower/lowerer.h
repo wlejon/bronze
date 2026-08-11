@@ -143,6 +143,7 @@ private:
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
     // --- lower_util.cpp: key constants, blocks, coercions, truthiness ----
+    bool isProvidedGlobal(const std::string& name) const;
     uint32_t getKeyConstantIndex(const std::string& key);
     il::BlockId createBlock(il::Function& ilFn);
     void setCurrentBlock(size_t blockIdx);
@@ -171,7 +172,7 @@ private:
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn);
     void exitScope();
     // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
-    // nested `FunctionDecl` — docs/0007 decision 4 makes them one path). It
+    // nested `FunctionDecl` ï¿½ docs/0007 decision 4 makes them one path). It
     // is how inference is asked about a function with no module index.
     std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
                                       const std::vector<ast::Param>& params,

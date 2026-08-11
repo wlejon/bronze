@@ -57,6 +57,7 @@ enum class Op : uint8_t {
     Construct,  // a = new callee, args...              (docs/0008)
     CreateObject, // a = create.object
     ObjectKeys, // a = object.keys b                  (docs/0009)
+    GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env
     FunctionRef,   // a = func.ref <funcIndex>          (docs/0008)

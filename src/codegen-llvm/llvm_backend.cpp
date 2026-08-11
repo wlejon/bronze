@@ -427,6 +427,13 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
+                case il::Op::GlobalGet: {
+                    if (inst.result != il::kNoValue) {
+                        llvm::Value* keyVal = builder.getInt32(inst.keyIndex);
+                        values[inst.result] = builder.CreateCall(abi.bronze_global_get, {keyVal});
+                    }
+                    break;
+                }
                 case il::Op::CreateArray: {
                     if (inst.result != il::kNoValue) {
                         llvm::Value* lenVal = builder.getInt32(inst.immI32);
