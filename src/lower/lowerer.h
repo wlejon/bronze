@@ -10,6 +10,7 @@
 #include "ast/ast.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
+#include "types/result.h"
 
 namespace bronze::lower {
 
@@ -20,14 +21,20 @@ std::optional<il::Type> mapTypeAnnotation(const std::string& ann, Span span, Dia
 // which is one seam of the design it implements.
 class Lowerer {
 public:
-    Lowerer(const ast::Module& astModule, DiagnosticSink& diags)
-        : astModule_(astModule), diags_(diags) {}
+    // `inference` may be null: that is the no-inference mode, and it
+    // reproduces the pre-inference calling convention exactly (see lower.h).
+    Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
+            const types::InferenceResult* inference)
+        : astModule_(astModule), diags_(diags), inference_(inference) {}
 
     std::optional<il::Module> lower();
 
 private:
     const ast::Module& astModule_;
     DiagnosticSink& diags_;
+    // Never dereferenced outside lower_infer.cpp: every other unit asks the
+    // accessors there, which answer "unproven" when this is null.
+    const types::InferenceResult* inference_ = nullptr;
     il::Module ilModule_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
@@ -107,6 +114,17 @@ private:
         std::unordered_map<std::string, il::Type> paramType;
     };
 
+    // --- lower_infer.cpp: what inference proved (docs/0010) --------------
+    // The single place "there is no inference result" is answered, so no
+    // other unit tests inference_ and --no-infer stays one null pointer
+    // rather than a flag threaded through every site.
+    static il::Type ilTypeOf(types::Type t);
+    types::Type inferredType(const ast::Expr& expr) const;
+    bool provenNumber(const ast::Expr& expr) const;
+    const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
+    bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
+                              il::Function& fn);
+
     // --- lower.cpp: module skeleton and function bodies ------------------
     bool lowerFunctionBody(const std::string& name, const std::vector<ast::Param>& params,
                            const std::string& returnTypeAnnotation,
@@ -121,7 +139,8 @@ private:
     bool currentBlockIsTerminated(const il::Function& ilFn) const;
     Value boxValueIfNeeded(Value val, il::Function& ilFn);
     Value unboxValueIfNeeded(Value val, il::Type targetType, il::Function& ilFn);
-    Value emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp, il::Function& ilFn);
+    Value emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp, bool provenNumeric,
+                              il::Function& ilFn);
     Value coerceToType(Value val, il::Type target, il::Function& ilFn);
     Value lowerCondition(const ast::Expr& expr, il::Function& ilFn);
     Value lowerConditionFromVal(Value val, il::Function& ilFn);

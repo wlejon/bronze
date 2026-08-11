@@ -123,6 +123,18 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         if (!initVal) return false;
         declType = initVal->type;
 
+        // A binding inference proved numeric holds an unboxed f64
+        // (docs/0010 decision 3), so the arithmetic over it needs no
+        // unbox per use, the SSA joins it takes part in stay f64, and it
+        // carries no GC obligation at all — an f64 gets no shadow-stack
+        // slot (docs/0006 decision 1). The unbox here cannot fail: the
+        // proof says every value that reaches this initialiser is a
+        // number.
+        if (initVal->type == il::Type::Dynamic && provenNumber(*varDecl->init)) {
+            initVal = unboxValueIfNeeded(*initVal, il::Type::F64, ilFn);
+            declType = il::Type::F64;
+        }
+
         if (!varDecl->typeAnnotation.empty()) {
             auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
             if (!annType) return false;

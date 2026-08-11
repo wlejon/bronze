@@ -525,7 +525,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
-        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
+        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
+                                                   provenNumber(*bin), ilFn)
                               : *rhsVal;
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
@@ -584,7 +585,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
-        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, ilFn)
+        Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
+                                                   provenNumber(*bin), ilFn)
                               : *rhsVal;
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
 
@@ -620,26 +622,12 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                     emitEnvSet(depth, index, *rhsVal, ilFn);
                     return rhsVal;
                 }
+                // Same rule as a member target: the combine decides
+                // numeric-vs-dynamic, and `+=` is numeric only where
+                // inference proved it (docs/0010 decision 3).
                 Value lhsOuter = emitEnvGet(depth, index, ilFn);
-                il::Op outerOp;
-                switch (bin->op) {
-                    case ast::BinaryOp::PlusAssign: outerOp = il::Op::Add; break;
-                    case ast::BinaryOp::MinusAssign: outerOp = il::Op::Sub; break;
-                    case ast::BinaryOp::StarAssign: outerOp = il::Op::Mul; break;
-                    case ast::BinaryOp::SlashAssign: outerOp = il::Op::Div; break;
-                    case ast::BinaryOp::PercentAssign: outerOp = il::Op::Mod; break;
-                    default: outerOp = il::Op::Add; break;
-                }
-                Value lhsNum = unboxValueIfNeeded(lhsOuter, il::Type::F64, ilFn);
-                Value rhsNum = unboxValueIfNeeded(*rhsVal, il::Type::F64, ilFn);
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = outerOp;
-                inst.type = il::Type::F64;
-                inst.result = res;
-                inst.operands = {lhsNum.id, rhsNum.id};
-                emitInst(ilFn, inst);
-                Value result{res, il::Type::F64};
+                Value result =
+                    emitCompoundCombine(lhsOuter, *rhsVal, bin->op, provenNumber(*bin), ilFn);
                 emitEnvSet(depth, index, result, ilFn);
                 return result;
             }
@@ -652,29 +640,17 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             writeBinding(b, *rhsVal, ilFn);
             return rhsVal;
         } else {
+            // Same rule as a member target: the combine decides
+            // numeric-vs-dynamic, and `+=` is numeric only where
+            // inference proved it (docs/0010 decision 3). Before that
+            // proof existed this path unboxed both sides to f64
+            // unconditionally, so `s += "a"` on a local read a string
+            // pointer as a double.
             Value lhsVal = readBinding(b, ilFn);
-            il::Op op;
-            switch (bin->op) {
-                case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
-                case ast::BinaryOp::MinusAssign: op = il::Op::Sub; break;
-                case ast::BinaryOp::StarAssign: op = il::Op::Mul; break;
-                case ast::BinaryOp::SlashAssign: op = il::Op::Div; break;
-                case ast::BinaryOp::PercentAssign: op = il::Op::Mod; break;
-                default: op = il::Op::Add; break;
-            }
-            Value lhsNum = unboxValueIfNeeded(lhsVal, il::Type::F64, ilFn);
-            Value rhsNum = unboxValueIfNeeded(*rhsVal, il::Type::F64, ilFn);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = op;
-            inst.type = il::Type::F64;
-            inst.result = res;
-            inst.operands = {lhsNum.id, rhsNum.id};
-            emitInst(ilFn, inst);
-
-            writeBinding(b, Value{res, il::Type::F64}, ilFn);
-            return Value{res, il::Type::F64};
+            Value result =
+                emitCompoundCombine(lhsVal, *rhsVal, bin->op, provenNumber(*bin), ilFn);
+            writeBinding(b, result, ilFn);
+            return result;
         }
     }
     diags_.error(bin->span, "invalid assignment target");

@@ -58,8 +58,12 @@ std::optional<il::Module> Lowerer::lower() {
             } else {
                 fn.returnType = il::Type::Void;
             }
+            // The module function index: the position among the top-level
+            // declarations, which is exactly how inference numbers them.
+            const uint32_t moduleFnIndex = static_cast<uint32_t>(ilModule_.functions.size());
+            if (!applyProvenSignature(*fnDecl, moduleFnIndex, fn)) return std::nullopt;
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
-            functionIndices_[fn.name] = static_cast<uint32_t>(ilModule_.functions.size());
+            functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));
         } else {
             topLevelStmts.push_back(stmtPtr.get());
@@ -271,8 +275,9 @@ bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& i
     return lowerFunctionBody(fnDecl.name, fnDecl.params, fnDecl.returnType, fnDecl.body, ilFn);
 }
 
-std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags) {
-    Lowerer lowerer(astModule, diags);
+std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
+                                      const types::InferenceResult* inference) {
+    Lowerer lowerer(astModule, diags, inference);
     return lowerer.lower();
 }
 

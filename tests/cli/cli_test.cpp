@@ -37,11 +37,27 @@ TEST_CASE("CLI driver il command produces canonical IL") {
     std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_il.js";
     writeTestFile(jsPath, "function add(a, b) {\n  return a + b;\n}\nadd(10, 20);\n");
 
+    // The CLI is the composition root: it runs inference and hands the side
+    // table to lowering. `add` is direct-callable and its only call site
+    // passes numbers, so decision 5 of docs/0010 gives it an unboxed f64
+    // signature and the call site a direct typed call.
     std::string ilOutput;
     int status = bronze::cli::runIl(jsPath.string(), &ilOutput);
     CHECK(status == 0);
-    CHECK(ilOutput.find("func add(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
+    CHECK(ilOutput.find("func add(%0: f64, %1: f64) -> f64") != std::string::npos);
     CHECK(ilOutput.find("func main() -> void") != std::string::npos);
+    CHECK(ilOutput.find("box.f64") == std::string::npos);
+
+    // The same source with inference switched off must reproduce the
+    // pre-inference lowering exactly: everything dynamic, every argument
+    // boxed (docs/0010 decision 8). Pinning both is what makes the switch a
+    // ratchet rather than a comfort blanket.
+    std::string noInferOutput;
+    status = bronze::cli::runIl(jsPath.string(), &noInferOutput, /*infer=*/false);
+    CHECK(status == 0);
+    CHECK(noInferOutput.find("func add(%0: dynamic, %1: dynamic) -> dynamic") !=
+          std::string::npos);
+    CHECK(noInferOutput.find("box.f64") != std::string::npos);
 
     std::filesystem::remove(jsPath);
 }

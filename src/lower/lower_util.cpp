@@ -75,11 +75,16 @@ Lowerer::Value Lowerer::unboxValueIfNeeded(Value val, il::Type targetType, il::F
 }
 
 // Combine the pre-read target value with the rhs of a compound
-// assignment. += routes through the dynamic add (JS + may
-// concatenate); the other operators are numeric.
+// assignment. `-=`, `*=`, `/=` and `%=` are ToNumber on both operands
+// whatever came in, so they are always numeric. `+=` is not: JS `+`
+// concatenates as soon as either side is a string, so it routes through
+// the dynamic add unless inference *proved* the result is a Number
+// (docs/0010 decision 3). Unproven is the dynamic path, never the
+// numeric one — unboxing a string pointer as a double is a miscompile,
+// not a pessimisation.
 Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp,
-                                            il::Function& ilFn) {
-    if (binOp == ast::BinaryOp::PlusAssign) {
+                                            bool provenNumeric, il::Function& ilFn) {
+    if (binOp == ast::BinaryOp::PlusAssign && !provenNumeric) {
         Value l = boxValueIfNeeded(cur, ilFn);
         Value r = boxValueIfNeeded(rhs, ilFn);
         il::ValueId res = ilFn.valueCount++;
@@ -93,6 +98,7 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
     }
     il::Op op = il::Op::Sub;
     switch (binOp) {
+        case ast::BinaryOp::PlusAssign: op = il::Op::Add; break;
         case ast::BinaryOp::MinusAssign: op = il::Op::Sub; break;
         case ast::BinaryOp::StarAssign: op = il::Op::Mul; break;
         case ast::BinaryOp::SlashAssign: op = il::Op::Div; break;

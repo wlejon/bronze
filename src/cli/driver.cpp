@@ -41,7 +41,12 @@ constexpr const char* kUsage =
     "  bronze types <file>                 Infer types and print the canonical type dump\n"
     "  bronze il <file>                    Lower to IL and print canonical IL dump\n"
     "  bronze build <file> -o <output>     Compile JS source to native executable\n"
-    "  bronze version                      Print version\n";
+    "  bronze version                      Print version\n"
+    "\n"
+    "Options (il, build):\n"
+    "  --no-infer                          Skip inference; lower everything on the\n"
+    "                                      uniform dynamic convention (docs/0010\n"
+    "                                      decision 8 — the bisection seam)\n";
 
 int fail(const std::string& message) {
     std::fputs(message.c_str(), stderr);
@@ -209,7 +214,7 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
     return 0;
 }
 
-int runIl(const std::string& sourcePath, std::string* outString) {
+int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
     std::string text;
     if (!readFile(sourcePath, text)) {
         std::string msg = "error: cannot read " + sourcePath + "\n";
@@ -237,7 +242,23 @@ int runIl(const std::string& sourcePath, std::string* outString) {
         return 1;
     }
 
-    auto ilModule = lower::lowerModule(*astModule, diags);
+    // The CLI is the composition root: it runs inference and hands the side
+    // table to lowering (docs/0010 decision 1). A null side table is the
+    // no-inference mode, not a failure mode — inference itself only ever
+    // fails on an internal impossibility, which is diagnosed and fatal.
+    std::optional<types::InferenceResult> inferred;
+    if (infer) {
+        inferred = types::inferModule(*astModule, diags);
+        if (diags.hasErrors() || !inferred) {
+            std::string msg = diags.render(buffer);
+            if (outString) *outString = msg;
+            else std::fputs(msg.c_str(), stderr);
+            return 1;
+        }
+    }
+
+    auto ilModule = lower::lowerModule(*astModule, diags,
+                                       inferred ? &*inferred : nullptr);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(buffer);
         if (outString) *outString = msg;
@@ -254,8 +275,10 @@ int runIl(const std::string& sourcePath, std::string* outString) {
     return 0;
 }
 
-int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut) {
+int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
+             bool infer) {
 #if !BRONZE_WITH_LLVM
+    (void)infer;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -288,7 +311,19 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    auto ilModule = lower::lowerModule(*astModule, diags);
+    std::optional<types::InferenceResult> inferred;
+    if (infer) {
+        inferred = types::inferModule(*astModule, diags);
+        if (diags.hasErrors() || !inferred) {
+            std::string msg = diags.render(buffer);
+            if (errOut) *errOut = msg;
+            else std::fputs(msg.c_str(), stderr);
+            return 1;
+        }
+    }
+
+    auto ilModule = lower::lowerModule(*astModule, diags,
+                                       inferred ? &*inferred : nullptr);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(buffer);
         if (errOut) *errOut = msg;
@@ -366,17 +401,33 @@ int runDriver(int argc, char** argv) {
 
     if (command == "il") {
         if (argc < 3) return fail("error: missing <file>\n");
-        return runIl(argv[2]);
+        std::string sourcePath;
+        bool infer = true;
+        for (int i = 2; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--no-infer") {
+                infer = false;
+            } else if (sourcePath.empty()) {
+                sourcePath = arg;
+            } else {
+                return fail("error: unexpected argument " + arg + "\n");
+            }
+        }
+        if (sourcePath.empty()) return fail("error: missing <file>\n");
+        return runIl(sourcePath, nullptr, infer);
     }
 
     if (command == "build") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string outputPath = "a.exe";
+        bool infer = true;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "-o") {
+            if (arg == "--no-infer") {
+                infer = false;
+            } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
                 } else {
@@ -390,7 +441,7 @@ int runDriver(int argc, char** argv) {
         }
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runBuild(sourcePath, outputPath);
+        return runBuild(sourcePath, outputPath, nullptr, infer);
     }
 
     return fail(kUsage);
