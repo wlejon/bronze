@@ -59,3 +59,5 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0007 closures (environment records per scope, threaded through the calling convention)
 - 0008 prototypes (`this` / `new` / proto chain / depth-caching proto ICs)
 - 0009 enumeration order (spec'd own-key order via the shape chain; dictionary boundary)
+- 0010 inference (phase 3: lattice, shape classes, call-graph signatures,
+  annotations as untrusted hints, inline property caches — `src/types`)

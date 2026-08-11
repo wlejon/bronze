@@ -18,8 +18,10 @@ namespace bronze::lower {
 //
 // It reproduces the pre-inference *convention*, not the pre-inference
 // bugs: where lowering used to specialize on something it had not proven,
-// the unproven answer is now the dynamic path in both modes. `s += "b"`
-// on a local is the one such site today (docs/0010 decision 3).
+// the unproven answer is now the dynamic path in both modes. Two such
+// sites: `s += "b"` on a local (docs/0010 decision 3), and every TS
+// annotation — which types nothing without a proof, so with no inference
+// result it types nothing at all and says so (decision 6).
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference = nullptr);
 

@@ -46,6 +46,37 @@ Rules that keep iteration fast:
 - **No module reaches into another's internals.** Dependencies flow through
   the `bronze::<module>` link targets only; the CLI is where modules meet.
 
+## Inference, and `--no-infer`
+
+bronze types nothing by declaration. `src/types` analyses the AST and proves
+what it can — a binding's type at a program point, an object site's shape,
+a function's signature joined over its call sites — and lowering emits a
+native type only where there is a proof. Everything else is `dynamic`, which
+is the designed sound fallback and never a diagnostic. `bronze types <file>`
+prints what was proven.
+
+A TS annotation is an **untrusted hint** (docs/0001 decision 4, docs/0010
+decision 6). It seeds nothing and constrains nothing: if inference proves the
+same type, the native path is taken *because of the proof*; if it proves
+something else or proves nothing, the annotation is discarded, the value
+stays `dynamic`, and you get a warning naming both. `function f(x: number)`
+reached with a string compiles and runs as JavaScript.
+
+```
+bronze il   <file> [--no-infer]
+bronze build <file> -o <exe> [--no-infer]
+```
+
+`--no-infer` forces every inferred type to `dynamic` and lowers on the
+uniform dynamic convention. It exists for one reason: it is the **bisection
+seam** for any miscompile inference is suspected of causing — if a program
+is right with it and wrong without it, the analysis is at fault, and if it is
+wrong with it too, the analysis is not. It is a ratchet rather than a comfort
+blanket because the oracle suite compiles and runs *every* case both ways and
+requires the same pinned bytes from both: a case only inference gets right
+means the dynamic path is unsound, and a case only `--no-infer` gets right
+means inference is.
+
 ## Layout
 
 | Path | Contents |
@@ -54,9 +85,15 @@ Rules that keep iteration fast:
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser |
-| `src/il` | Typed SSA IL: types, module model, canonical printer |
+| `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing (docs/0010) |
+| `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
+| `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
-| `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`) |
-| `src/cli` | `bronze` driver (`lex`, `parse`, `version`) |
+| `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_backend` |
+| `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written |
+| `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments (docs/0004) |
+| `src/rt` | The static library compiled output links against |
+| `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
+| `tests/oracle` | Differential cases with pinned `.expected` stdout (docs/0003) |
 | `docs/` | Numbered decision/plan docs + architecture |

@@ -10,12 +10,34 @@
 // is the uniform dynamic convention, which is always sound. A proven answer
 // only ever removes boxing. There is no speculation and no deoptimization.
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
+namespace {
+
+// The lattice element an annotation names — the ONLY meaning an annotation
+// has (docs/0010 decision 6). It is a claim to be checked against a proof,
+// never an IL type, which is why this replaced the old `mapTypeAnnotation`:
+// that function answered "what IL type does this annotation buy", and the
+// answer is now "none, on its own".
+//
+// Text bronze does not recognise stays a named hard error. An unreadable
+// annotation is a typo, not a hint: silently ignoring it would be the quiet
+// no-op the house rules forbid, and it costs nothing to say so.
+std::optional<types::Type> annotationClaim(const std::string& ann) {
+    if (ann == "number" || ann == "f64" || ann == "i32") return types::Type::number();
+    if (ann == "bool" || ann == "boolean") return types::Type::boolean();
+    if (ann == "str") return types::Type::string();
+    if (ann == "void") return types::Type::undefined();
+    if (ann == "dynamic" || ann == "any") return types::Type::dynamic();
+    return std::nullopt;
+}
+
+}  // namespace
 
 // The IL type a proven `types::Type` licenses.
 //
@@ -120,6 +142,79 @@ const types::Signature* Lowerer::provenSignature(uint32_t moduleFnIndex) const {
     return &inference_->signatureOf(moduleFnIndex);
 }
 
+// What inference proved about one position of a module-level function's
+// calling convention, for the annotation check to compare against. No proof
+// — no inference result, an escaping or exported function, an index out of
+// range — answers `Dynamic`, which is the honest report of "nothing was
+// observed here" and is exactly what the warning then says.
+types::Type Lowerer::provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const {
+    const types::Signature* sig = provenSignature(moduleFnIndex);
+    if (sig == nullptr || paramIndex >= sig->params.size()) return types::Type::dynamic();
+    return sig->params[paramIndex];
+}
+
+types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
+    const types::Signature* sig = provenSignature(moduleFnIndex);
+    return sig == nullptr ? types::Type::dynamic() : sig->returnType;
+}
+
+// docs/0010 decision 6, and with it docs/0001 decision 4: a TS annotation is
+// an untrusted optimization hint.
+//
+// This function is the whole policy, and note what it does NOT do — it does
+// not return a type. An annotation seeds nothing here and constrains nothing;
+// the caller has already chosen its IL type from what inference proved, and
+// this only decides whether to say something about the annotation:
+//
+//   - the proof agrees      -> silence. The typed path the caller took is
+//                              taken because of the PROOF; the annotation was
+//                              free information that happened to be right.
+//   - nothing was proven    -> "is not provable; ignoring".
+//   - something else proven -> "contradicts inferred".
+//
+// Both of the latter leave the value on the uniform dynamic convention. That
+// is what closes the live unsoundness docs/0010 named: `f(x: number)` reached
+// with a string used to map straight onto an f64 parameter and unbox the
+// string, which is a coercion the source never wrote — JS `"a" + 1` is `"a1"`.
+//
+// Warnings, never errors: wild JS with wrong annotations must still compile
+// (docs/0001 decision 4). A `--strict-hints` that promotes them is named as
+// future work in docs/0010 and deliberately not here.
+//
+// With `--no-infer` there is no proof to agree with, so every annotation is
+// discarded and every one of them warns. That is not a quirk of the switch:
+// it is what "the annotation constrains nothing" means when nothing else is
+// proving anything either, and it is why the oracle suite can pin the same
+// bytes in both modes.
+bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::string& name,
+                              types::Type proven) {
+    if (ann.empty()) return true;
+    const auto claim = annotationClaim(ann);
+    if (!claim) {
+        diags_.error(span, "unsupported type annotation: " + ann);
+        return false;
+    }
+    // `any`/`dynamic` claims nothing about the value, so no proof can
+    // disagree with it and there is nothing to discard.
+    if (claim->is(types::TypeKind::Dynamic)) return true;
+    if (*claim == proven) return true;
+
+    // The kind name, not `Type::str()`: a shape class id (`object#3`) is a
+    // compile-time identity with no meaning in the source the user wrote.
+    const std::string observed = types::typeKindName(proven.kind());
+    // `Never` is "no value ever arrives here" (a direct-callable function
+    // with no call sites), which is an absence of evidence rather than
+    // evidence against — so it is not provable, not a contradiction.
+    if (proven.is(types::TypeKind::Dynamic) || proven.is(types::TypeKind::Never)) {
+        diags_.warning(span, "annotation '" + ann + "' on '" + name +
+                                 "' is not provable; ignoring (inferred: " + observed + ")");
+    } else {
+        diags_.warning(span, "annotation '" + ann + "' on '" + name +
+                                 "' contradicts inferred " + observed);
+    }
+    return true;
+}
+
 // Give a module-level function's IL skeleton the parameter and return types
 // inference proved for it, so its call sites become direct *typed* calls
 // (docs/0010 decision 5). Returns false only on an internal impossibility.
@@ -148,12 +243,9 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
         return false;
     }
 
-    // Annotations do not survive a proof. Decision 6 makes an annotation a
-    // hint that can only agree with what inference proved or be discarded;
-    // taking the proof here is the half of that which does not need the
-    // warnings (those are step 5 of docs/0010's order of work). It also
-    // closes the live unsoundness for these functions: `f(x: number)`
-    // reached with a string no longer unboxes a string pointer as a double.
+    // The proof, and nothing else, types the parameters. An annotation never
+    // reaches this loop — `checkAnnotation` compares it to the same proof
+    // afterwards and either says nothing or warns (docs/0010 decision 6).
     const size_t base = fn.firstSourceParam();
     for (size_t i = 0; i < sig->params.size(); ++i) {
         fn.params[i + base].type = ilTypeOf(sig->params[i]);

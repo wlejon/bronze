@@ -14,8 +14,6 @@
 
 namespace bronze::lower {
 
-std::optional<il::Type> mapTypeAnnotation(const std::string& ann, Span span, DiagnosticSink& diags);
-
 // The AST -> IL pass. One instance per module; its methods are defined
 // across the lower_*.cpp units named in the group comments below, each of
 // which is one seam of the design it implements.
@@ -124,8 +122,15 @@ private:
     bool monomorphicPropSite(const ast::Expr& receiver) const;
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
+    types::Type provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const;
+    types::Type provenReturnType(uint32_t moduleFnIndex) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
+    // The annotation policy (docs/0010 decision 6). Returns false only for
+    // annotation text bronze cannot read, which is a hard error; a hint that
+    // no proof backs is a warning and compilation continues.
+    bool checkAnnotation(const std::string& ann, Span span, const std::string& name,
+                         types::Type proven);
 
     // --- lower.cpp: module skeleton and function bodies ------------------
     bool lowerFunctionBody(const std::string& name, const std::vector<ast::Param>& params,

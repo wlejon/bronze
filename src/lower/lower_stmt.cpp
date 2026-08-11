@@ -135,31 +135,39 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
             declType = il::Type::F64;
         }
 
-        if (!varDecl->typeAnnotation.empty()) {
-            auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
-            if (!annType) return false;
-            if (*annType == il::Type::Dynamic && initVal->type != il::Type::Dynamic) {
-                initVal = boxValueIfNeeded(*initVal, ilFn);
-            } else if (*annType != il::Type::Dynamic && initVal->type == il::Type::Dynamic) {
-                initVal = unboxValueIfNeeded(*initVal, *annType, ilFn);
-            }
-            declType = *annType;
+        // The binding's type came from the initialiser and the proof above,
+        // and the annotation does not get to overrule either (docs/0010
+        // decision 6). It used to: `let s: number = "abc"` emitted an
+        // `unbox.f64` of a boxed string, a coercion the source never wrote.
+        // The claim is now compared against what inference proved reaches
+        // this initialiser, and disagreement is a warning, not a cast.
+        if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
+                             inferredType(*varDecl->init))) {
+            return false;
         }
         initId = initVal->id;
     }
 
     bool isInitialized = varDecl->init != nullptr;
     if (!varDecl->init) {
-        if (!varDecl->typeAnnotation.empty()) {
-            auto annType = mapTypeAnnotation(varDecl->typeAnnotation, varDecl->span, diags_);
-            if (!annType) return false;
-            declType = *annType;
+        // `let x: number;` binds `undefined` at the declaration and may hold
+        // a number later, which is `number | undefined` — the exact case
+        // docs/0010 decision 2 says collapses to `Dynamic` because there are
+        // no union types. So nothing is proven here, and the annotation is
+        // reported as unprovable rather than as contradicted by the
+        // `undefined` the declaration happens to bind: bronze did not look
+        // at the later writes at all, and saying "contradicts" would claim
+        // more than it knows.
+        if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
+                             types::Type::dynamic())) {
+            return false;
         }
         if (!varDecl->isConst && declType == il::Type::Dynamic) {
-            // JS: `let x;` / `var x;` binds undefined right here —
-            // the TDZ ends at the declaration, not at the first
-            // assignment. (Annotated typed slots keep the stricter
-            // read-before-assign error: undefined has no typed form.)
+            // JS: `let x;` / `var x;` binds undefined right here — the TDZ
+            // ends at the declaration, not at the first assignment. An
+            // annotation no longer opts out of this by giving the slot a
+            // typed form `undefined` cannot fit into; `declType` is
+            // `Dynamic` for every uninitialised declaration now.
             il::ValueId undefId = ilFn.valueCount++;
             il::Instruction inst;
             inst.op = il::Op::ConstUndefined;

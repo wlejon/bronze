@@ -9,18 +9,6 @@
 
 namespace bronze::lower {
 
-std::optional<il::Type> mapTypeAnnotation(const std::string& ann, Span span, DiagnosticSink& diags) {
-    if (ann == "number" || ann == "f64") return il::Type::F64;
-    if (ann == "bool" || ann == "boolean") return il::Type::Bool;
-    if (ann == "void") return il::Type::Void;
-    if (ann == "i32") return il::Type::I32;
-    if (ann == "str") return il::Type::Str;
-    if (ann == "dynamic" || ann == "any") return il::Type::Dynamic;
-    if (ann.empty()) return il::Type::F64;
-    diags.error(span, "unsupported type annotation: " + ann);
-    return std::nullopt;
-}
-
 std::optional<il::Module> Lowerer::lower() {
     ilModule_.name = astModule_.name;
 
@@ -42,26 +30,35 @@ std::optional<il::Module> Lowerer::lower() {
                 fn.needsThis = true;
                 fn.params.push_back({"__this", il::Type::Dynamic});
             }
+            // Every source parameter starts on the uniform dynamic
+            // convention and stays there unless a PROOF moves it. An
+            // annotation is not a proof (docs/0010 decision 6): it is
+            // checked below, after the proof is in hand, and it never
+            // appears on the left of an assignment to a type.
             for (const auto& param : fnDecl->params) {
-                if (!param.typeAnnotation.empty()) {
-                    auto pType = mapTypeAnnotation(param.typeAnnotation, fnDecl->span, diags_);
-                    if (!pType) return std::nullopt;
-                    fn.params.push_back({param.name, *pType});
-                } else {
-                    fn.params.push_back({param.name, il::Type::Dynamic});
-                }
+                fn.params.push_back({param.name, il::Type::Dynamic});
             }
-            if (!fnDecl->returnType.empty()) {
-                auto rType = mapTypeAnnotation(fnDecl->returnType, fnDecl->span, diags_);
-                if (!rType) return std::nullopt;
-                fn.returnType = *rType;
-            } else {
-                fn.returnType = il::Type::Void;
-            }
+            fn.returnType = il::Type::Void;
             // The module function index: the position among the top-level
             // declarations, which is exactly how inference numbers them.
             const uint32_t moduleFnIndex = static_cast<uint32_t>(ilModule_.functions.size());
             if (!applyProvenSignature(*fnDecl, moduleFnIndex, fn)) return std::nullopt;
+            // Now the hints, against the proof that just typed the signature.
+            // Source order — parameters left to right, then the return —
+            // and the enclosing loop is in source order too, so the warning
+            // stream is deterministic.
+            for (size_t i = 0; i < fnDecl->params.size(); ++i) {
+                if (!checkAnnotation(fnDecl->params[i].typeAnnotation, fnDecl->span,
+                                     fnDecl->params[i].name, provenParamType(moduleFnIndex, i))) {
+                    return std::nullopt;
+                }
+            }
+            // A return annotation is reported on the function's own name:
+            // there is no other name for the position.
+            if (!checkAnnotation(fnDecl->returnType, fnDecl->span, fnDecl->name,
+                                 provenReturnType(moduleFnIndex))) {
+                return std::nullopt;
+            }
             // Every module function's return type is settled here, before
             // ANY body is lowered, because it is part of the calling
             // convention: `lowerCall` reads it off this entry, and for

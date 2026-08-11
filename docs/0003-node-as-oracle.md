@@ -31,6 +31,13 @@ test-time dependency and nothing in the build or CI invokes it.
   conversion by `.gitattributes` (`*.expected -text`).
 - Compiled cases run under a **hard timeout** (15s) and are killed on
   expiry — a miscompiled loop fails the case, never hangs the suite.
+- Every case is compiled and run **twice: with inference and with
+  `--no-infer`**, and both must produce the same pinned bytes (docs/0010
+  decision 8). This is what makes the switch a ratchet rather than a
+  comfort blanket — a case only inference gets right means the dynamic
+  path is unsound, and a case only `--no-infer` gets right means inference
+  is. It doubles the suite's build cost, which is the price of never
+  having to guess which half a failure came from.
 - The harness is a doctest suite (`tests/oracle/oracle_test.cpp`); a
   case without an `.expected` file is a hard failure, not a skip.
 - **Ratchet rules**: a case added is never removed or weakened, and an

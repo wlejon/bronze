@@ -62,14 +62,18 @@ bronze inverts the defaults:
 1. **Foundation (this doc, done)**: repo, build, module pattern, lexer,
    recursive-descent parser for the TS core, AST+visitor+dump, IL model +
    canonical printer, CLI (`lex`, `parse`), tests per module.
-2. **LLVM provisioning + minimal end-to-end**: vcpkg `llvm` feature build;
-   `codegen-llvm` implements `Backend::emitObject` for the current IL op
-   set; `bronze build main.ts` → exe printing a number. Perf smoke vs node
-   from day one.
-3. **Types**: inference-first — shape and type analysis over untyped JS
-   producing IL types/layouts, with `dynamic` as the proven-safe fallback;
-   TS annotations consumed as untrusted hints. The hint-trust/verify policy
-   gets its own numbered doc.
+2. **LLVM provisioning + minimal end-to-end (done, docs/0002)**: vcpkg
+   `llvm` feature build; `codegen-llvm` implements `Backend::emitObject` for
+   the current IL op set; `bronze build main.ts` → exe printing a number.
+   Perf smoke vs node from day one.
+3. **Types (done, docs/0010)**: inference-first — shape and type analysis
+   over untyped JS producing IL types/layouts, with `dynamic` as the
+   proven-safe fallback; TS annotations consumed as untrusted hints. The
+   hint-trust/verify policy got its own numbered doc, and decision 4 above
+   is true rather than aspirational as of 2026-08-11: an annotation is
+   compared against what inference proved and discarded with a warning when
+   no proof backs it. `src/types` is the module; `--no-infer` is the
+   bisection seam and the oracle suite runs every case both ways.
 4. **Language growth**: strings (ownership model decision), structs/
    interfaces → layouts, control flow (loops), modules/imports.
 5. **Dynamic boundary**: the `dynamic` type's runtime and the QuickJS

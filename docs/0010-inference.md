@@ -1,8 +1,10 @@
 # 0010 — Inference: proving types and layouts
 
-Status: designed 2026-08-10. This is phase 3 of docs/0001, and the reason
-bronze exists. Everything shipped through docs/0009 built the `dynamic`
-fallback well; this doc is where it stops being the substrate.
+Status: designed 2026-08-10, implemented 2026-08-11 — all five steps of the
+order of work below. This is phase 3 of docs/0001, and the reason bronze
+exists. Everything shipped through docs/0009 built the `dynamic` fallback
+well; this doc is where it stops being the substrate. What actually landed,
+and the corrections reality made to the design, are at the end.
 
 ## The hole this closes
 
@@ -232,3 +234,144 @@ Inference itself has none: every failure to prove is a sound fallback to
   this doc's lattice can carry, but the lowering is its own work.
 - **Deoptimization.** There is none and there must be none: every
   specialization here is guarded or proven, never speculative.
+
+## What shipped, and what is deliberately not here
+
+`src/types` exists: the lattice (`type.h`), the flow analysis and its two
+fixpoints (`flow.cpp`), shape classes (`shape_class.cpp`), the escape test
+(`escape.cpp`), the call-graph driver (`infer.cpp`), and the canonical dump
+behind `bronze types <file>` (`dump.cpp`). It reads the AST and writes a
+side table; it mutates nothing. `src/lower/lower_infer.cpp` is the only unit
+that reads that table, and the only one that knows it can be absent — which
+is all `--no-infer` is.
+
+What each step bought, measured in the docs/0002 log: `fib` **11.1x**,
+`numeric_loop` **2.4x**, `property_access` **1.75x** against the pre-phase-3
+baseline. The two numeric benchmarks are decision 5 (a proven signature and
+a direct typed call in place of boxing); `property_access` is decision 7
+(the IC table as a global in the object file, with the check inlined —
+`bronze_prop_get` is entered twice over 2,000,000 reads).
+
+Pinned oracle cases from this phase, each run twice, with inference and with
+`--no-infer` (decision 8): `typed_direct_calls`, `if_else_type_split`,
+`loop_type_change_{while,do_while,for,partial}`, `compound_assign_string`,
+`inline_cache_mono`, `inline_cache_receiver_kinds`, `proto_chain_inline`,
+and the four annotation cases named below.
+
+### Corrections reality made to this design
+
+- **The join rule in decision 2 is written too coarsely.** "Anything else
+  is `Dynamic`" would send two different object shape classes to `Dynamic`,
+  losing the fact that the value is an object at all. The implemented rule
+  keeps the kind and drops the identity: `Object#1 ⊔ Object#2 = Object`,
+  same for `Function`. That is what "an `Object` with no class" in decision
+  4 actually requires, and it matters — an unproven object is still known
+  not to be a double.
+- **`Never` lowers as `Dynamic`, and that is not a failure.** A `Never` in
+  a signature is real data: a direct-callable function that no call site
+  ever reaches. There is no IL type for "no value", and dead code still has
+  to be emitted, exported and verified, so it takes the uniform dynamic
+  convention. Mapping it onto f64 would be a specialization with nothing
+  behind it; diagnosing it would turn "you wrote a function nobody calls"
+  into a compile failure.
+- **`export` is an escape.** Decision 5's test is "the name appears
+  somewhere other than callee-of-a-call", which does not by itself catch an
+  exported function whose callers are outside the compilation. `export`
+  joined the escape test in `types::escapingNames`, and deliberately only
+  there: lowering does not re-test it, because a second copy of the rule is
+  a copy that can drift.
+- **Decision 3's query surface could not express what decision 3 needed.**
+  "Lowering asks about a use site, not a name" is right for expressions and
+  useless for a *merge*: a block parameter at an if-join or a loop header is
+  not an expression, and its type must bound edges lowering has not built
+  yet. `InferenceResult::typeOfBindingAt(mergePoint, name)` was added,
+  keyed on the statement that owns the merge — a node lowering holds in its
+  hand when it creates the block.
+- **Decision 6's "seeds the lattice" is implemented as no seed at all.**
+  Inference never reads an annotation. A seed that can only agree with a
+  proof or be discarded is observationally identical to no seed, and a seed
+  that joined into the lattice would *widen* what bronze believes, which
+  the same decision forbids. The annotation is compared against the proof
+  at the declaration and then thrown away.
+- **The warnings had nowhere to go.** These are the first warnings bronze
+  emits, and the CLI rendered diagnostics only when there were errors — so
+  a warning on a successful compile was collected and dropped. The driver
+  now prints them to stderr on success too; stdout stays the artefact.
+
+### Two live miscompiles found on the way
+
+Both were pre-existing, both are pinned by oracle cases, and neither was
+caused by inference — they were found because inference made lowering ask
+questions it had been guessing at.
+
+- **Loop-header block parameters took their type from whatever value was
+  live at loop *entry*.** That is not a conservative default; it is a claim
+  that the loop cannot change the binding's type. A loop that does compiled
+  into unboxing a string as a double. Header, exit and update parameters
+  now come from `typeOfBindingAt`, and with nothing proven the answer is
+  `Dynamic` (`loop_type_change_*`).
+- **A function's return type was discovered from whichever `return`
+  statement lowering reached first**, and every later return was coerced
+  into it — so `return 1; ... return "s"` read a string pointer as a
+  double. It also left the type `Void` while the body was being lowered,
+  which a recursive or mutually recursive call site read and could not use.
+  Every module function's return type is now settled before any body is
+  lowered (`returns`, `mutual_recursion`).
+
+### The annotation policy (decision 6), as built
+
+An annotation is checked at four sites — module function parameters and
+returns, closure parameters and returns, and variable declarations — always
+*after* the proof has typed the position, and it never types anything
+itself. A closure's annotations are never provable by construction:
+decision 5 excludes closures from signature specialization, so there is
+never a proof for one to agree with. Under `--no-infer` nothing is provable,
+so every annotation is discarded and every one of them warns.
+
+Pinned by `annotation_param_proven` (the annotation agrees with the proof,
+and the native path is taken because of the proof), `annotation_param_ignored`
+(reached with a string; must run as JS), `annotation_let_contradicted`, and
+`annotation_return_contradicted`.
+
+### Named diagnostics, in full
+
+Inference itself diagnoses nothing it can fall back from — every failure to
+prove is `Dynamic`. What exists is:
+
+- `warning: annotation '<t>' on '<name>' is not provable; ignoring
+  (inferred: <t2>)`
+- `warning: annotation '<t>' on '<name>' contradicts inferred <t2>`
+- `error: unsupported type annotation: <text>` — pre-dates this doc and is
+  kept. An annotation bronze cannot read is a typo, not a hint, and
+  ignoring it silently would be the quiet no-op the house rules forbid.
+  This is the one place an annotation is still an error rather than a hint.
+- `error: internal: type inference call-graph signatures did not converge`
+- `error: internal: type inference captured-variable types did not converge
+  in '<fn>'`
+- `error: internal: inference signature for '<name>' does not match the
+  module function table`
+
+The three `internal:` errors are tripwires for a rule that stopped being
+monotone. The lattice is three tall, so every fixpoint here settles in a
+couple of rounds; exceeding the bound is an impossibility, and it is
+diagnosed rather than looped on.
+
+### Still not here
+
+The list under "Not here, and named as such" above is unchanged by what
+shipped, and none of it was quietly attempted: **escape analysis** (and so
+guard-free property access and stack-allocated environments), **union
+types** (and so polymorphic-site specialization), **int32 specialization**,
+**cross-module inference**, **typed-array element access lowering to raw
+loads**, and **deoptimization**. Two further absences the implementation
+made concrete:
+
+- **`--strict-hints`** — promoting the annotation warnings to errors. Named
+  as future work in decision 6 and deliberately not built: the policy has
+  to be lived with before it is enforced.
+- **No proof surface for closures.** `InferenceResult` can answer for a
+  module function index; a closure has none, so lowering cannot ask about
+  one even where the analysis walked its body. Nothing is unsound about
+  this — a closure keeps the uniform dynamic convention — but it is why
+  every annotation on a closure reports as unprovable, including ones a
+  reader can see are right.

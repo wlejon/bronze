@@ -5,86 +5,206 @@
 #include "lex/lexer.h"
 #include "lower/lower.h"
 #include "parse/parser.h"
+#include "types/infer.h"
 
 using namespace bronze;
 
-static std::optional<il::Module> parseAndLower(std::string_view src, DiagnosticSink& diags, SourceBuffer& buf) {
+static std::unique_ptr<ast::Module> parseOnly(std::string_view src, DiagnosticSink& diags,
+                                              SourceBuffer& buf) {
     buf = SourceBuffer("test.ts", std::string(src));
     auto tokens = Lexer(buf, diags).lex();
-    if (diags.hasErrors()) return std::nullopt;
-    auto astMod = Parser(std::move(tokens), diags).parseModule("test");
+    if (diags.hasErrors()) return nullptr;
+    return Parser(std::move(tokens), diags).parseModule("test");
+}
+
+// Lowering with NO inference result — the `--no-infer` path of docs/0010
+// decision 8. Everything is the uniform dynamic convention, and an
+// annotation buys nothing, because nothing is proven for it to agree with.
+static std::optional<il::Module> parseAndLower(std::string_view src, DiagnosticSink& diags, SourceBuffer& buf) {
+    auto astMod = parseOnly(src, diags, buf);
     if (diags.hasErrors() || !astMod) return std::nullopt;
     return lower::lowerModule(*astMod, diags);
 }
 
-TEST_CASE("numeric arithmetic, variables, and function calls") {
+// The real pipeline: inference runs first and lowering consumes the side
+// table (docs/0010 decision 1).
+static std::optional<il::Module> inferAndLower(std::string_view src, DiagnosticSink& diags,
+                                               SourceBuffer& buf) {
+    auto astMod = parseOnly(src, diags, buf);
+    if (diags.hasErrors() || !astMod) return std::nullopt;
+    auto inferred = types::inferModule(*astMod, diags);
+    if (diags.hasErrors() || !inferred) return std::nullopt;
+    return lower::lowerModule(*astMod, diags, &*inferred);
+}
+
+// The same source in both tests below. `a` and `b` carry the SAME
+// annotation and get different IL types, which is the whole of docs/0010
+// decision 6 in one function: the type comes from the proof, never from the
+// annotation.
+static constexpr const char* kAnnotatedArithmetic =
+    "function add(a: number, b: number): number {\n"
+    "  return a + b;\n"
+    "}\n"
+    "export function calculate(x: number): number {\n"
+    "  const doubled = x * 2;\n"
+    "  const difference = doubled - 1;\n"
+    "  const ratio = difference / 2;\n"
+    "  return add(ratio, x);\n"
+    "}\n";
+
+TEST_CASE("a proven signature types the IL; the annotation on it does not") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
-    const auto optMod = parseAndLower(
-        "function add(a: number, b: number): number {\n"
-        "  return a + b;\n"
-        "}\n"
-        "export function calculate(x: number): number {\n"
-        "  const doubled = x * 2;\n"
-        "  const difference = doubled - 1;\n"
-        "  const ratio = difference / 2;\n"
-        "  return add(ratio, x);\n"
-        "}\n",
-        diags, buf);
+    const auto optMod = inferAndLower(kAnnotatedArithmetic, diags, buf);
 
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
 
     const std::string printed = il::print(*optMod);
+    // `add` is direct-callable and its one call site is `add(ratio, x)`:
+    // `ratio` is a proven number, so `a` is f64 — and `x` is a parameter of
+    // an EXPORTED function, whose callers are outside this compilation, so
+    // `b` is dynamic despite the identical `: number` on it. `a + b` is
+    // therefore the dynamic JS `+` (it must be: `b` could be a string), and
+    // the return joins to dynamic with it.
+    //
+    // `calculate` escapes through `export`, so it keeps the uniform dynamic
+    // convention whatever its annotations say. Its `x * 2` still unboxes,
+    // and that is not the old unsoundness: `*` is ToNumber on both operands
+    // in every case (ECMA-262 13.6), unlike `+`.
     CHECK(printed ==
           "module test\n"
           "\n"
-          "func add(%0: f64, %1: f64) -> f64 {\n"
+          "func add(%0: f64, %1: dynamic) -> dynamic {\n"
           "  b0:\n"
-          "    %2: f64 = add %0, %1\n"
-          "    ret %2\n"
+          "    %2: dynamic = box.f64 %0\n"
+          "    %3: dynamic = add %2, %1\n"
+          "    ret %3\n"
           "}\n"
           "\n"
-          "func calculate(%0: f64) -> f64 export {\n"
+          "func calculate(%0: dynamic) -> dynamic export {\n"
           "  b0:\n"
           "    %1: f64 = const.f64 2\n"
-          "    %2: f64 = mul %0, %1\n"
-          "    %3: f64 = const.f64 1\n"
-          "    %4: f64 = sub %2, %3\n"
-          "    %5: f64 = const.f64 2\n"
-          "    %6: f64 = div %4, %5\n"
-          "    %7: f64 = call @add(%6, %0)\n"
-          "    ret %7\n"
+          "    %2: f64 = unbox.f64 %0\n"
+          "    %3: f64 = mul %2, %1\n"
+          "    %4: f64 = const.f64 1\n"
+          "    %5: f64 = sub %3, %4\n"
+          "    %6: f64 = const.f64 2\n"
+          "    %7: f64 = div %5, %6\n"
+          "    %8: dynamic = call @add(%7, %0)\n"
+          "    ret %8\n"
           "}\n");
+
+    // Every discarded annotation is named, and the one the proof agreed
+    // with is not mentioned at all — it was free information.
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("annotation 'number' on 'a'") == std::string::npos);
+    CHECK(rendered.find("warning: annotation 'number' on 'b' is not provable; ignoring "
+                        "(inferred: dynamic)") != std::string::npos);
+    CHECK(rendered.find("warning: annotation 'number' on 'add' is not provable; ignoring "
+                        "(inferred: dynamic)") != std::string::npos);
+    CHECK(rendered.find("warning: annotation 'number' on 'x' is not provable; ignoring "
+                        "(inferred: dynamic)") != std::string::npos);
+    CHECK(rendered.find("warning: annotation 'number' on 'calculate' is not provable; ignoring "
+                        "(inferred: dynamic)") != std::string::npos);
+}
+
+TEST_CASE("with no inference, an annotation types nothing at all") {
+    // The same source through `--no-infer`. There is no proof for any
+    // annotation to agree with, so all four positions are dynamic and every
+    // annotation is discarded — including `a`, which the proof accepted
+    // above. That is what makes `--no-infer` a bisection seam rather than a
+    // second, more trusting compiler.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(kAnnotatedArithmetic, diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func add(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
+    CHECK(printed.find("func calculate(%0: dynamic) -> dynamic export") != std::string::npos);
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("annotation 'number' on 'a' is not provable") != std::string::npos);
 }
 
 TEST_CASE("numeric comparisons <, >, ==") {
+    // Unannotated, and proven numeric by the call site instead — which is
+    // the point: the comparisons lower to native `cmp.*` because inference
+    // proved the operands, not because anyone wrote `: number`.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
-    const auto optMod = parseAndLower(
-        "export function compare(a: number, b: number): void {\n"
+    const auto optMod = inferAndLower(
+        "function compare(a, b) {\n"
         "  const lt = a < b;\n"
         "  const gt = a > b;\n"
         "  const eq = a == b;\n"
         "  const seq = a === b;\n"
-        "}\n",
+        "  return lt;\n"
+        "}\n"
+        "console.log(compare(1, 2));\n",
         diags, buf);
 
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
 
     const std::string printed = il::print(*optMod);
-    CHECK(printed ==
-          "module test\n"
-          "\n"
-          "func compare(%0: f64, %1: f64) -> void export {\n"
-          "  b0:\n"
-          "    %2: bool = cmp.lt %0, %1\n"
-          "    %3: bool = cmp.gt %0, %1\n"
-          "    %4: bool = cmp.eq %0, %1\n"
-          "    %5: bool = cmp.eq %0, %1\n"
-          "    ret\n"
-          "}\n");
+    CHECK(printed.find(
+              "func compare(%0: f64, %1: f64) -> bool {\n"
+              "  b0:\n"
+              "    %2: bool = cmp.lt %0, %1\n"
+              "    %3: bool = cmp.gt %0, %1\n"
+              "    %4: bool = cmp.eq %0, %1\n"
+              "    %5: bool = cmp.eq %0, %1\n"
+              "    ret %2\n"
+              "}\n") != std::string::npos);
+}
+
+TEST_CASE("an annotation contradicted by the initialiser is a warning, not a cast") {
+    // `let s: number = "abc"` used to emit `unbox.f64` of a boxed string —
+    // a coercion the source never wrote, and the live unsoundness docs/0010
+    // named. The annotation is now discarded and the binding stays a string.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower("let s: number = \"abc\";\nconsole.log(s);\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("unbox.f64") == std::string::npos);
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("warning: annotation 'number' on 's' contradicts inferred string") !=
+          std::string::npos);
+}
+
+TEST_CASE("a closure's annotations are never provable") {
+    // A closure is reached through a function value, so its callers are not
+    // a set this compilation can close over (docs/0010 decision 5 excludes
+    // it from signature specialization). There is therefore never a proof
+    // for an annotation on one to agree with.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "const f = function (a: number): number { return a + 1; };\nconsole.log(f(1));\n", diags,
+        buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("warning: annotation 'number' on 'a' is not provable") !=
+          std::string::npos);
+}
+
+TEST_CASE("annotation text bronze cannot read is a hard error, not a silent skip") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower("function f(x: Widget) { return x; }\n", diags, buf);
+
+    CHECK_FALSE(optMod.has_value());
+    REQUIRE(diags.hasErrors());
+    CHECK(diags.render(buf).find("unsupported type annotation: Widget") != std::string::npos);
 }
 
 TEST_CASE("top-level statements lowered to main") {

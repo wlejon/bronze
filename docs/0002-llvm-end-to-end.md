@@ -119,3 +119,12 @@ a perf smoke against node from the first day.
   Cumulative over the three benchmarks since phase 3 began: fib **11.1x**,
   numeric_loop **2.4x**, property_access **1.75x**.
 
+- 2026-08-11 (annotations become hints, docs/0010 step 5 — phase 3
+  complete): **no benchmark entry, deliberately.** None of `bench/*.js`
+  carries a type annotation, so this step cannot move any of them by
+  construction — the numbers above stand unchanged. The step's effect is
+  the opposite of a speedup where it applies at all: an annotation that no
+  proof backs no longer buys a native type, so annotated code that was
+  fast *and wrong* becomes dynamic and correct. Code that was fast because
+  inference proved it is untouched, which is the entire point of decision
+  6.

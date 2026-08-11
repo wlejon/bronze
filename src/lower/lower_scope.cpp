@@ -215,19 +215,26 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const std::string& declaredN
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }
+    // A closure's parameters and return are always the uniform dynamic
+    // convention, and an annotation cannot change that (docs/0010 decision
+    // 6). Nothing here is a hole in the analysis: a closure is reached
+    // through a function value, so its callers are not a set this
+    // compilation can close over — decision 5 excludes it from signature
+    // specialization by construction, which means there is never a proof for
+    // an annotation on one to agree with. Every annotation written here is
+    // therefore discarded, and says so.
     for (const auto& param : params) {
-        if (!param.typeAnnotation.empty()) {
-            auto pType = mapTypeAnnotation(param.typeAnnotation, span, diags_);
-            if (!pType) return std::nullopt;
-            newFn.params.push_back({param.name, *pType});
-        } else {
-            newFn.params.push_back({param.name, il::Type::Dynamic});
+        newFn.params.push_back({param.name, il::Type::Dynamic});
+        if (!checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic())) {
+            return std::nullopt;
         }
     }
-    if (!returnTypeAnn.empty()) {
-        auto rType = mapTypeAnnotation(returnTypeAnn, span, diags_);
-        if (!rType) return std::nullopt;
-        newFn.returnType = *rType;
+    // The return annotation is reported on `fnName`, which for an anonymous
+    // function expression is the synthesized `__anon_fn_N` — deliberately,
+    // because that is the name it has in the IL dump and the span already
+    // points at the source.
+    if (!checkAnnotation(returnTypeAnn, span, fnName, types::Type::dynamic())) {
+        return std::nullopt;
     }
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
 

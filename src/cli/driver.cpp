@@ -44,13 +44,31 @@ constexpr const char* kUsage =
     "  bronze version                      Print version\n"
     "\n"
     "Options (il, build):\n"
-    "  --no-infer                          Skip inference; lower everything on the\n"
-    "                                      uniform dynamic convention (docs/0010\n"
-    "                                      decision 8 — the bisection seam)\n";
+    "  --no-infer                          Skip inference: force every inferred type\n"
+    "                                      to dynamic and lower on the uniform\n"
+    "                                      dynamic convention. This is the bisection\n"
+    "                                      seam for a suspected miscompile — right\n"
+    "                                      with it and wrong without means inference\n"
+    "                                      is at fault. The oracle suite runs every\n"
+    "                                      case both ways and requires the same bytes\n"
+    "                                      from both (docs/0010 decision 8).\n"
+    "\n"
+    "TS annotations are untrusted hints. One that inference does not prove is\n"
+    "discarded with a warning and the value stays dynamic (docs/0010 decision 6).\n";
 
 int fail(const std::string& message) {
     std::fputs(message.c_str(), stderr);
     return 1;
+}
+
+// Diagnostics from a compilation that SUCCEEDED — warnings, since an error
+// would have taken an early return. They go to stderr because stdout is the
+// artefact (the IL dump, the type dump) and a caller pipes it; a diagnostic
+// nobody prints is not a diagnostic, which is what these were before
+// docs/0010 decision 6 gave lowering something to warn about.
+void reportWarnings(const DiagnosticSink& diags, const SourceBuffer& buffer) {
+    if (diags.all().empty()) return;
+    std::fputs(diags.render(buffer).c_str(), stderr);
 }
 
 bool readFile(const std::string& path, std::string& out) {
@@ -266,6 +284,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
         return 1;
     }
 
+    reportWarnings(diags, buffer);
     std::string printed = il::print(*ilModule);
     if (outString) {
         *outString = printed;
@@ -330,6 +349,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
+
+    reportWarnings(diags, buffer);
 
     std::filesystem::path tempObj = std::filesystem::temp_directory_path() /
                                     (std::filesystem::path(sourcePath).stem().string() + "_temp.obj");
