@@ -86,4 +86,23 @@ a perf smoke against node from the first day.
   Linking the frame inline instead put fib back exactly where it was. The
   512MB heap reservation that existed only to postpone the first collection
   is now 64MB, so ordinary runs actually collect.
+- 2026-08-11 (inference landed, docs/0010 steps 1-3 + 3b): fib 10.7/6.6ms
+  (**11.3x** faster than the 118.3/113.0ms above), numeric_loop 37.7/33.4ms
+  (**2.4x**), property_access 134.0/126.9ms (1.13x). Outputs unchanged and
+  byte-exact.
+
+  The two numeric benchmarks are the whole argument of docs/0001 decision 4
+  in one line. Nothing about codegen changed: what changed is that
+  inference proves `fib`'s parameter and return are numbers and that its
+  name never escapes, so it lowers to `func fib(%0: f64) -> f64` with a
+  direct typed call instead of boxing an argument, calling through the
+  uniform dynamic convention, and unboxing a result — per call, on a
+  function whose body is two additions. LLVM could never see through that;
+  now there is nothing to see through.
+
+  property_access barely moves, exactly as predicted: every iteration is
+  still two `prop.get` helper calls, and inference's contribution so far is
+  only that the loop accumulator is carried honestly. That number is what
+  docs/0010 decision 7 attacks — its 1.13x here is the control, not the
+  result.
 
