@@ -109,5 +109,6 @@ void rtMathCheckMissingMember(Value obj, const std::string& key);
 // path can fall through to the unimplemented-member table and then to the
 // language's own answer for a property that does not exist.
 Value rtArrayMethod(const std::string& key);
+Value rtStringMethod(const std::string& key);
 
 }  // namespace bronze::runtime

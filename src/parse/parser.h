@@ -51,6 +51,10 @@ private:
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
     std::string parseTypeAnnotation();
+    // The characters a string literal denotes, escapes resolved (see the
+    // definition: the lexer finds the literal's end, the parser decides what
+    // it means).
+    std::string decodeStringLiteral(std::string_view raw, Span span);
 
     ast::ExprPtr parseExpr();
     ast::ExprPtr parseBinary(int minPrecedence);

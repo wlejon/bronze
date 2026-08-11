@@ -14,6 +14,7 @@ bronze_add_module(runtime
         fn.cpp
         builtin_math.cpp
         builtin_array.cpp
+        builtin_string.cpp
         rt_helpers.cpp
     DEPS
         abi

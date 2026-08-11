@@ -708,6 +708,8 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             }
             return g_charCodeAtFn.rawBits();
         }
+        Value method = rtStringMethod(keyStr);
+        if (!method.isUndefined()) return method.rawBits();
         checkUnimplementedMember("String.prototype", kStringMembers,
                                  std::size(kStringMembers), keyStr);
         return Value::fromUndefined().rawBits();
