@@ -253,3 +253,44 @@ TEST_CASE("an import outside the module top level is a syntax error") {
     CHECK_FALSE(r.ok);
     CHECK(contains(r.errors, "top level of a module"));
 }
+
+// The renamer walks `new`'s callee as an EXPRESSION now that the grammar
+// admits one (docs/0025). Getting this wrong is the worst failure this walk
+// has: an unrenamed base binds to whatever the importing file happens to call
+// `registry`, which is a silent wrong binding and not a diagnostic. Both
+// halves are pinned — the base is renamed, and the property name beside it,
+// which is a key and never a binding, is not.
+TEST_CASE("a new callee that is a member of an imported binding is renamed") {
+    Sandbox box("newcallee");
+    box.write("registry.js", "export function Ctor() { this.k = 1; }\nexport const table = { Ctor };\n");
+    const std::string entry =
+        box.write("main.js", "import { table } from './registry.js';\n"
+                             "const made = new table.Ctor();\n"
+                             "console.log(made.k);\n");
+
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "(const mod1.table"));
+    CHECK(contains(r.dump, "(ident mod1.table)"));
+    CHECK(contains(r.dump, "(member .Ctor"));
+    CHECK_FALSE(contains(r.dump, "(ident table)"));
+}
+
+// The same walk, one level deeper and through a computed key: the INDEX is an
+// ordinary expression and an imported binding used as one must be renamed too.
+TEST_CASE("both halves of a computed new callee are renamed") {
+    Sandbox box("newindex");
+    box.write("registry.js",
+              "export function Ctor() { this.k = 2; }\n"
+              "export const table = { Ctor };\nexport const which = 'Ctor';\n");
+    const std::string entry =
+        box.write("main.js", "import { table, which } from './registry.js';\n"
+                             "console.log(new table[which]().k);\n");
+
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "(ident mod1.table)"));
+    CHECK(contains(r.dump, "(ident mod1.which)"));
+    CHECK_FALSE(contains(r.dump, "(ident table)"));
+    CHECK_FALSE(contains(r.dump, "(ident which)"));
+}

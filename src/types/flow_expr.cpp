@@ -217,8 +217,21 @@ Type FlowAnalyzer::call(const ast::Call& c) {
 }
 
 Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
+    // A bare NAME is the only callee whose constructor identity is knowable
+    // here, and identity is what a shape class is: `new Foo()` names the
+    // function whose `this.x = ...` assignments describe the layout, where
+    // `new obj.Ctor()` names a value the analysis cannot follow back to one.
+    // The unproven site gets `kNoShapeClass`, which is the same answer an
+    // unknown name already produced — its property sites stay polymorphic
+    // rather than guessing a layout.
+    const auto* ident = dynamic_cast<const ast::Ident*>(n.callee.get());
+    // The callee is evaluated before the arguments (ECMA-262 13.3.5.1), so
+    // its effects are recorded first. A bare name is deliberately not walked:
+    // reading it is not what `new` does with it, and `constructorShape` below
+    // is the fact this site contributes about that name.
+    if (ident == nullptr) expr(*n.callee);
     for (const auto& a : n.args) expr(*a);
-    const ShapeClassId cls = constructorShape(n.callee);
+    const ShapeClassId cls = ident != nullptr ? constructorShape(ident->name) : kNoShapeClass;
     if (record_ && cls != kNoShapeClass) mod_.result->siteShapes[&n] = cls;
     return Type::object(cls);
 }

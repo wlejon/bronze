@@ -80,6 +80,7 @@ public:
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::NewExpr& n) override {
+        n.callee->accept(*this);
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::ObjectLit& n) override {

@@ -110,3 +110,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   literal, patterns shared by source through an index not a pointer, case
   folding refused above Latin-1 by name, and the match array as an array with
   named properties)
+- 0025 `new` on any callee (the callee as an expression and the four groupings
+  that fall out of stopping it at the argument list, `new Foo` without one,
+  the shape class a bare name still buys, the renamer recursing into it, and
+  the `Foo.prototype.constructor` back-pointer `new this.constructor()` needs)

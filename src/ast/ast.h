@@ -230,8 +230,18 @@ struct Call final : Expr {
 // between `a?.b.c` and `(a?.b).c`.
 bool containsOptionalLink(const Expr& expr);
 
+// `new MemberExpression Arguments` (ECMA-262 13.3.5). The callee is an
+// arbitrary expression because the grammar says so — `new this.constructor()`
+// and `new source.array.constructor(...)` are how prototype-style code clones
+// an object without naming its class — and because "which value is being
+// constructed" is a run-time question about a value, not a compile-time
+// question about a name.
+//
+// A missing `Arguments` (`new Foo`) leaves `args` empty, which is what
+// ECMA-262 13.3.5.1 says it means. It is therefore indistinguishable from
+// `new Foo()`, deliberately: the two constructs have identical semantics.
 struct NewExpr final : Expr {
-    std::string callee;  // constructor name; only identifier callees are supported
+    ExprPtr callee;
     std::vector<ExprPtr> args;
     void accept(Visitor& v) const override;
 };

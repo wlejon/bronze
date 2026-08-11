@@ -143,6 +143,17 @@ bool Lexer::skipTrivia() {
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
             if (c == '\n') sawNewline = true;
             ++pos_;
+        } else if (static_cast<unsigned char>(c) == 0xEF &&
+                   static_cast<unsigned char>(peek(1)) == 0xBB &&
+                   static_cast<unsigned char>(peek(2)) == 0xBF) {
+            // U+FEFF encoded as UTF-8. ECMA-262 12.2 lists <ZWNBSP> in
+            // WhiteSpace, so it is trivia wherever it appears and not only as
+            // a leading signature — which is also why this is one rule here
+            // rather than a special case at offset zero. It is NOT a line
+            // terminator (12.3 lists those separately), so it leaves ASI
+            // alone. Editors emit it at the head of a file; the source is
+            // otherwise rejected at its first character.
+            pos_ += 3;
         } else if (c == '/' && peek(1) == '/') {
             // The terminating newline is left for the branch above, so a line
             // comment reports through it like any other newline.

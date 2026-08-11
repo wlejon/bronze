@@ -244,10 +244,17 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
 
 std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
                                                     il::Function& ilFn) {
-    if (newExpr->callee == "Float32Array" || newExpr->callee == "ArrayBuffer") {
+    // The two provided globals that `new` builds directly rather than through
+    // the construct helper. They are recognised by NAME because there is no
+    // function object behind either one (docs/0011 decision 1), so only a
+    // bare identifier can ever be one — `new lib.Float32Array()` is an
+    // ordinary construction of whatever that property holds.
+    const auto* calleeIdent = dynamic_cast<const ast::Ident*>(newExpr->callee.get());
+    const std::string calleeName = calleeIdent != nullptr ? calleeIdent->name : std::string();
+    if (calleeName == "Float32Array" || calleeName == "ArrayBuffer") {
         if (newExpr->args.size() != 1 ||
             dynamic_cast<const ast::SpreadElement*>(newExpr->args[0].get())) {
-            diags_.error(newExpr->span, "unsupported construct: new " + newExpr->callee +
+            diags_.error(newExpr->span, "unsupported construct: new " + calleeName +
                                             " expects exactly one argument");
             return std::nullopt;
         }
@@ -256,8 +263,8 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
         auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
         il::ValueId res = ilFn.valueCount++;
         il::Instruction inst;
-        inst.op = (newExpr->callee == "Float32Array") ? il::Op::CreateFloat32Array
-                                                      : il::Op::CreateArrayBuffer;
+        inst.op = calleeName == "Float32Array" ? il::Op::CreateFloat32Array
+                                               : il::Op::CreateArrayBuffer;
         inst.type = il::Type::Dynamic;
         inst.result = res;
         inst.operands = {argBoxed.id};
@@ -267,11 +274,15 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
     // Any other callee is an ordinary value: the whole ceremony
     // (prototype, instance shape, receiver, result rule) lives in
     // one runtime helper rather than in codegen — docs/0008
-    // decision 4.
-    ast::Ident calleeIdent;
-    calleeIdent.name = newExpr->callee;
-    calleeIdent.span = newExpr->span;
-    auto calleeVal = lowerExpr(calleeIdent, ilFn);
+    // decision 4. "Is this a constructor" is therefore a check the helper
+    // makes on the VALUE, which is what lets the callee be an arbitrary
+    // expression at no cost to `new Foo()`: both reach the same
+    // `Op::Construct` over one operand, and the only difference is which
+    // instructions produced it.
+    //
+    // Lowered before the arguments, which is the order ECMA-262 13.3.5.1
+    // evaluates them in and therefore the order their side effects run.
+    auto calleeVal = lowerExpr(*newExpr->callee, ilFn);
     if (!calleeVal) return std::nullopt;
 
     const bool spreadArgs = listHasSpread(newExpr->args);

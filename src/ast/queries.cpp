@@ -70,7 +70,7 @@ public:
         // that does `new Point(...)` did not capture `Point`, which only
         // showed up once classes made the constructor an ordinary binding
         // rather than a module-level function declaration.
-        names.insert(n.callee);
+        n.callee->accept(*this);
         for (const auto& arg : n.args) arg->accept(*this);
     }
     void visit(const SuperCall& c) override {
@@ -247,6 +247,7 @@ public:
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const NewExpr& n) override {
+        n.callee->accept(*this);
         for (const auto& arg : n.args) arg->accept(*this);
     }
     void visit(const SuperCall& c) override {

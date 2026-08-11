@@ -316,3 +316,26 @@ TEST_CASE("an unterminated regular expression literal is diagnosed, never guesse
     // running to the end of the file.
     lexAll("x = /abc\ny", /*expectErrors=*/true);
 }
+
+// U+FEFF is <ZWNBSP>, which ECMA-262 12.2 lists in WhiteSpace — so it is
+// trivia wherever it appears, not only as a leading signature. Editors write
+// one at the head of a UTF-8 file (three.js ships one in
+// renderers/webgl/WebGLBindingStates.js) and it was reaching the punctuation
+// dispatch as `unrecognized character`.
+TEST_CASE("a UTF-8 BOM is whitespace, not a character the lexer rejects") {
+    auto leading = lexAll("\xEF\xBB\xBFlet x = 1;");
+    REQUIRE(leading.tokens.size() == 6);  // let, x, =, 1, ;, eof
+    CHECK(leading.tokens[0].kind == TokenKind::KwLet);
+    CHECK(leading.tokens[1].text == "x");
+
+    auto interior = lexAll("let\xEF\xBB\xBFx = 1;");
+    REQUIRE(interior.tokens.size() == 6);
+    CHECK(interior.tokens[1].kind == TokenKind::Identifier);
+    CHECK(interior.tokens[1].text == "x");
+
+    // Not a LineTerminator (12.3 lists those separately), so it must leave
+    // ASI alone: a `return` followed by one still returns the value.
+    auto sameLine = lexAll("return\xEF\xBB\xBF" "1;");
+    REQUIRE(sameLine.tokens.size() >= 2);
+    CHECK_FALSE(sameLine.tokens[1].newlineBefore);
+}

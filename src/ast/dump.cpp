@@ -64,8 +64,16 @@ public:
         emit(")");
     }
     void visit(const NewExpr& n) override {
-        emit("(new " + n.callee);
+        // A bare NAME prints on the head line, the way a member access prints
+        // its property: it is the form whose constructor identity inference
+        // can still recover (docs/0025 decision 3), and seeing that at a
+        // glance is the point of the dump. Any other callee prints as the
+        // first child, so a mis-grouped `new a.b().c` cannot look like a
+        // correctly grouped `new a.b.c()`.
+        const auto* ident = dynamic_cast<const Ident*>(n.callee.get());
+        emit(ident != nullptr ? "(new " + ident->name : "(new");
         indented([&] {
+            if (ident == nullptr) n.callee->accept(*this);
             for (const auto& a : n.args) a->accept(*this);
         });
         emit(")");

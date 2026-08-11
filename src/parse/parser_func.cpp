@@ -308,6 +308,21 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             ok = false;
             break;
         }
+        // `async` is contextual as well, and a ClassElementName on the SAME
+        // line is what makes it a modifier (ECMA-262 15.8.1 forbids a line
+        // terminator after it) — `async() {}` is a method named `async` and
+        // `async = 1` a field named `async`. Named here because the field
+        // diagnostic below fires on the identifier-then-identifier shape and
+        // would call an async method a field, which it never is.
+        if (check(TokenKind::Identifier) && peek().text == "async" && !peek(1).newlineBefore &&
+            (isIdentifierName(peek(1).kind) || peek(1).kind == TokenKind::Star ||
+             peek(1).kind == TokenKind::LBracket ||
+             peek(1).kind == TokenKind::StringLiteral ||
+             peek(1).kind == TokenKind::NumberLiteral)) {
+            error("unsupported construct: async method in a class body");
+            ok = false;
+            break;
+        }
         // `get`/`set` are contextual here too: `get() {}` is a method named
         // `get`, and only a following name makes this an accessor.
         if (check(TokenKind::Identifier) && (peek().text == "get" || peek().text == "set") &&

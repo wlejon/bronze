@@ -14,5 +14,5 @@ bronze_add_module(parse
     # (docs/0024 decision 3).
     DEPS lex ast support regex
     TEST_SOURCES ../../tests/parse/parser_test.cpp ../../tests/parse/parser_module_test.cpp
-                 ../../tests/parse/parser_regexp_test.cpp
+                 ../../tests/parse/parser_regexp_test.cpp ../../tests/parse/parser_new_test.cpp
 )

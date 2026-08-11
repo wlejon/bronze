@@ -347,6 +347,44 @@ ExprPtr Parser::parseUnaryPostfix() {
     return parsePostfixOps(std::move(expr));
 }
 
+// One non-optional link of a *MemberExpression* — `.name` or `[expr]` —
+// appended to `expr` in place, with the cursor on the `.` or `[`. There is
+// one copy because two productions admit exactly these links: the general
+// suffix chain below, and the callee of `new`, which is a MemberExpression
+// and therefore takes `.` and `[` and stops at the `(` that is its own
+// argument list (ECMA-262 13.3). Two copies would eventually disagree about
+// what `new a.b[c]()` constructs. False on a diagnosed error.
+bool Parser::parseMemberLink(ExprPtr& expr) {
+    if (match(TokenKind::Dot)) {
+        const Token* member = expectPropertyName("property name");
+        if (!member) return false;
+        const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
+        if (baseIdent && baseIdent->name == "console" && member->text == "log") {
+            auto ident = std::make_unique<ast::Ident>();
+            ident->span = {expr->span.begin, member->span.end};
+            ident->name = "console.log";
+            expr = std::move(ident);
+        } else {
+            auto mem = std::make_unique<MemberAccess>();
+            mem->span = {expr->span.begin, member->span.end};
+            mem->object = std::move(expr);
+            mem->property = std::string(member->text);
+            expr = std::move(mem);
+        }
+        return true;
+    }
+    advance();  // '['
+    auto indexExpr = parseExpr();
+    if (!indexExpr) return false;
+    if (!expect(TokenKind::RBracket, "']' after index expression")) return false;
+    auto idx = std::make_unique<IndexAccess>();
+    idx->span = {expr->span.begin, peek().span.begin};
+    idx->object = std::move(expr);
+    idx->index = std::move(indexExpr);
+    expr = std::move(idx);
+    return true;
+}
+
 // The `.p` / `[i]` / `(args)` / `++` / `--` suffix loop, split out from
 // parseUnaryPostfix so a `new` expression can be a receiver too: `new
 // Point(1, 2).scale(3)` is one member call on a fresh object, and before
@@ -400,31 +438,8 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             mem->property = std::string(member->text);
             mem->optional = true;
             expr = std::move(mem);
-        } else if (match(TokenKind::Dot)) {
-            const Token* member = expectPropertyName("property name");
-            if (!member) return nullptr;
-            const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
-            if (baseIdent && baseIdent->name == "console" && member->text == "log") {
-                auto ident = std::make_unique<ast::Ident>();
-                ident->span = {expr->span.begin, member->span.end};
-                ident->name = "console.log";
-                expr = std::move(ident);
-            } else {
-                auto mem = std::make_unique<MemberAccess>();
-                mem->span = {expr->span.begin, member->span.end};
-                mem->object = std::move(expr);
-                mem->property = std::string(member->text);
-                expr = std::move(mem);
-            }
-        } else if (match(TokenKind::LBracket)) {
-            auto indexExpr = parseExpr();
-            if (!indexExpr) return nullptr;
-            if (!expect(TokenKind::RBracket, "']' after index expression")) return nullptr;
-            auto idx = std::make_unique<IndexAccess>();
-            idx->span = {expr->span.begin, peek().span.begin};
-            idx->object = std::move(expr);
-            idx->index = std::move(indexExpr);
-            expr = std::move(idx);
+        } else if (check(TokenKind::Dot) || check(TokenKind::LBracket)) {
+            if (!parseMemberLink(expr)) return nullptr;
         } else if (check(TokenKind::LParen)) {
             advance();
             auto call = std::make_unique<Call>();
@@ -502,25 +517,68 @@ bool Parser::parseArgumentList(std::vector<ExprPtr>& args) {
     return expect(TokenKind::RParen, "')' after arguments") != nullptr;
 }
 
-// new <Identifier>(args) only for now. Anything fancier after 'new' (member
-// expressions, parenthesized callees, nested 'new') is a diagnosed hard error.
-ExprPtr Parser::parseNew() {
-    const Token& kw = advance();  // 'new'
-    if (!check(TokenKind::Identifier)) {
-        error("unsupported construct: new with a non-identifier callee");
+// The *MemberExpression* a `new` constructs (ECMA-262 13.3.5). It is the
+// suffix chain minus the call: the first `(` at this level is the `new`'s own
+// ArgumentList, and that single omission is the whole of the grammar's
+// grouping rules. `new a.b.c()` constructs `a.b.c` because `.b.c` are links
+// here; `new a.b().c` constructs `a.b` and reads `.c` off the result because
+// the `(` stopped this loop and `parseNew`'s trailing `parsePostfixOps`
+// picked the `.c` up.
+ExprPtr Parser::parseNewCallee() {
+    // `new NewExpression`: the operand of a `new` may itself be one, so
+    // `new new F()()` constructs the result of `new F()`.
+    if (check(TokenKind::KwNew)) return parseNewCore();
+    if (check(TokenKind::Dot)) {
+        // `new.target` is a MetaProperty, not a construction at all: it asks
+        // how the enclosing function was invoked. Named so it does not read
+        // as a missing constructor.
+        error("unsupported construct: new.target");
         return nullptr;
     }
-    const Token& name = advance();
+    auto expr = parsePrimary();
+    if (!expr) return nullptr;
+    for (;;) {
+        if (check(TokenKind::Dot) || check(TokenKind::LBracket)) {
+            if (!parseMemberLink(expr)) return nullptr;
+            continue;
+        }
+        if (check(TokenKind::QuestionDot)) {
+            // ECMA-262 13.3 has no OptionalExpression under `new`, precisely
+            // because the short circuit would have to produce something for
+            // `new` to construct and there is no such value.
+            error("an optional chain may not be the callee of 'new'");
+            return nullptr;
+        }
+        return expr;
+    }
+}
+
+// `new MemberExpression Arguments` and `new NewExpression`, WITHOUT the
+// suffix chain that may follow. Split from `parseNew` because a nested `new`
+// must not swallow the outer one's argument list: in `new new F()()` the
+// second `()` belongs to the outer `new`, and running the suffix loop on the
+// inner one would have made it a call on `new F()` instead.
+ExprPtr Parser::parseNewCore() {
+    const Token& kw = advance();  // 'new'
+    auto callee = parseNewCallee();
+    if (!callee) return nullptr;
     auto ne = std::make_unique<NewExpr>();
     ne->span.begin = kw.span.begin;
-    ne->callee = std::string(name.text);
-    if (!check(TokenKind::LParen)) {
-        error("new requires an argument list");
-        return nullptr;
+    ne->callee = std::move(callee);
+    // `new Foo` without an argument list is the `new NewExpression`
+    // production and means `new Foo()` (ECMA-262 13.3.5.1 passes an empty
+    // argument list). Diagnosing it would be a false error on valid code.
+    if (check(TokenKind::LParen)) {
+        advance();  // '('
+        if (!parseArgumentList(ne->args)) return nullptr;
     }
-    advance();  // '('
-    if (!parseArgumentList(ne->args)) return nullptr;
     ne->span.end = peek().span.begin;
+    return ne;
+}
+
+ExprPtr Parser::parseNew() {
+    auto ne = parseNewCore();
+    if (!ne) return nullptr;
     return parsePostfixOps(std::move(ne));
 }
 ExprPtr Parser::parsePrimary() {

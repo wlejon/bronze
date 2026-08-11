@@ -69,6 +69,7 @@ public:
     }
 
     void visit(const NewExpr& n) override {
+        n.callee->accept(*this);
         for (const auto& arg : n.args) arg->accept(*this);
     }
 

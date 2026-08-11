@@ -20,10 +20,10 @@ public:
         for (const auto& a : n.args) a->accept(*this);
     }
 
-    void visit(const ast::NewExpr& n) override {
-        escaping.insert(n.callee);
-        Walker::visit(n);
-    }
+    // `new` has no override: unlike a call, its callee is NOT a non-escaping
+    // position — the constructor's `.prototype` outlives the site and every
+    // instance holds it — so the base walk, which reaches the callee as an
+    // ordinary expression, records exactly what is wanted.
 
     void visit(const ast::VarDecl& n) override {
         escaping.insert(n.name);

@@ -206,7 +206,12 @@ private:
     ast::ExprPtr parseUnaryPrefix();
     ast::ExprPtr parseUnaryPostfix();
     ast::ExprPtr parsePostfixOps(ast::ExprPtr expr);
+    // One `.name` / `[expr]` link, appended in place (see the definition:
+    // the suffix chain and a `new` callee share it).
+    bool parseMemberLink(ast::ExprPtr& expr);
     ast::ExprPtr parseNew();
+    ast::ExprPtr parseNewCore();
+    ast::ExprPtr parseNewCallee();
     ast::ExprPtr parsePrimary();
     // Parses "expr, expr, ..." up to and including the closing ')' (the
     // caller has already consumed the opening '('). False on error.

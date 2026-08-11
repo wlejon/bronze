@@ -52,6 +52,29 @@ static std::string_view latin1View(const StringHeader* s) {
     return std::string_view(s->latin1Data(), s->getLength());
 }
 
+// ECMA-262 10.2.5 MakeConstructor step 6: the object a constructor hands its
+// instances carries a back-pointer to the constructor. Non-enumerable,
+// because a `for-in` over an instance must not visit it and `Object.keys` on
+// the prototype must not report it (the attributes 10.2.5 spells out).
+//
+// It is the link `new this.constructor()` reads — the prototype-style way to
+// clone an object without naming its class, and three.js's `Box3.clone`,
+// `BufferAttribute` and `AnimationUtils` all do exactly that. Without it the
+// expression is `undefined is not a constructor`, which is a hard error but a
+// wrong one: the language says the property is there.
+//
+// Assigning `Foo.prototype = {...}` afterwards drops it, which is also what
+// the language says: the object the program supplied has whatever it has.
+static void rtInstallPrototypeConstructor(Rooted<Value>& fnVal) {
+    Rooted<Value> protoRoot{fnVal.get().asObject<FunctionHeader>()->prototype};
+    Rooted<Value> key{rtMakeString("constructor")};
+    // A DEFINITION: a base prototype's `constructor` must not be found and
+    // written through when a derived prototype defines its own.
+    protoRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fnVal,
+                                                      /*ic=*/nullptr, /*enumerable=*/false,
+                                                      /*defineOwn=*/true);
+}
+
 // A function's `.prototype` serves both as a constructor's instance prototype
 // and as the target of `Foo.prototype.m = ...`, and those must be the same
 // object, so both go through here (docs/0008 decision 4).
@@ -65,6 +88,7 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
     fn->prototype = Value::fromObject(proto);
     fn->instance_shape = rtNewRootShape(fn->prototype);
+    rtInstallPrototypeConstructor(fnVal);
 }
 
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
@@ -183,6 +207,10 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     fn->prototype = protoRoot.get();
     fn->properties = Value::fromObject(props);
     fn->instance_shape = rtNewRootShape(protoRoot.get());
+    // The replacement prototype needs its own back-pointer, or `D.prototype`
+    // would inherit the BASE's and `new this.constructor()` on a derived
+    // instance would build a base instance.
+    rtInstallPrototypeConstructor(derived);
 }
 
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {

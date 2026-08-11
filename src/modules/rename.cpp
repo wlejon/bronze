@@ -297,7 +297,13 @@ private:
             expr(*call->callee);
             for (auto& arg : call->args) expr(*arg);
         } else if (auto* nw = dynamic_cast<ast::NewExpr*>(&e)) {
-            rewrite(nw->callee);
+            // The callee is an expression, so it recurses like any other one.
+            // A bare name still lands on the `Ident` branch above and is
+            // renamed there; what recursion adds is the base of
+            // `new imported.Ctor()`, which `rewrite` on a string could not
+            // have reached and which would otherwise have bound to whatever
+            // the importing file happened to call `imported`.
+            expr(*nw->callee);
             for (auto& arg : nw->args) expr(*arg);
         } else if (auto* sc = dynamic_cast<ast::SuperCall*>(&e)) {
             rewrite(sc->baseName);
