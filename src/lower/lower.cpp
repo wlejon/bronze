@@ -87,6 +87,10 @@ std::optional<il::Module> Lowerer::lower() {
         }
     }
 
+    // The module scope's environment layout, before any body is lowered: a
+    // top-level function declaration resolves module-level names against it.
+    planModuleEnv(topLevelStmts);
+
     size_t fnIndex = 0;
     for (const auto& stmtPtr : astModule_.body) {
         if (const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmtPtr.get())) {
@@ -109,10 +113,26 @@ std::optional<il::Module> Lowerer::lower() {
         mainFn.blocks.push_back(il::Block{.id = 0});
         currentBlockIdx_ = 0;
 
-        // The module top level is a function body like any other: its
-        // variables can be captured by closures written at top level, so it
-        // gets its environment record from the same rule (docs/0007).
-        enterFunctionEnv(/*params=*/{}, topLevelStmts, mainFn);
+        // The module top level is a function body like any other, and every
+        // function body starts from an empty scope. This reset is not
+        // housekeeping: without it the top level inherited the LAST module
+        // function's bindings, so a top-level `let` whose name matched one of
+        // that function's locals was rejected as a redeclaration, and a read
+        // of such a name resolved to a binding whose SSA value id names an
+        // unrelated instruction in `main` (docs/0016 decision 3).
+        varBindings_.clear();
+        activeVarMap_.clear();
+        currentScopeDepth_ = 0;
+        varDeclCounter_ = 0;
+        loopStack_.clear();
+        scopeHasEnv_.clear();
+        currentEnvValue_ = il::kNoValue;
+        currentThisValue_ = il::kNoValue;
+        currentFunctionIsArrow_ = false;
+        functionEnvBase_ = 0;
+        functionEnvScope_ = SIZE_MAX;
+
+        openModuleEnv(topLevelStmts, mainFn);
 
         if (!lowerStmtList(topLevelStmts, mainFn)) {
             return std::nullopt;
@@ -185,6 +205,96 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     functionEnvScope_ = envScopes_.size() - 1;
 }
 
+// The module scope's slot layout (docs/0016 decision 1), fixed here so that
+// every consumer agrees on it: the module functions, which are lowered next
+// and read it through the runtime, and `main`, which is lowered last and
+// creates the record it describes.
+//
+// The capture scan covers the WHOLE module body, top-level function
+// declarations included — that is the fix. `lower()` splits those
+// declarations out into module functions, so scanning only what is left meant
+// a module-level `let` read by a top-level function was not captured by
+// anything as far as this pass could see, got no slot, and the read reported
+// `undefined variable` for a binding written three lines above it.
+void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) {
+    // Deliberately a LOCAL set, not `capturedNames_`. The two answer
+    // different questions and the difference is not cosmetic:
+    //
+    //   - this one asks what the module scope's record must hold, so it must
+    //     see the top-level function declarations' bodies;
+    //   - `capturedNames_` asks which of the scope's BLOCK-level bindings a
+    //     closure can reach, and it drives the for-header capture diagnostic
+    //     (docs/0007 decision 2), which is a hard error.
+    //
+    // Widening `capturedNames_` to this set makes a top-level
+    // `for (let i = 0; ...)` illegal because some unrelated function's body
+    // also happens to declare an `i`. A block-level binding is not a module
+    // declaration, so it can never be in the record anyway, and nothing is
+    // lost by keeping the sets apart.
+    const std::unordered_set<std::string> moduleCaptures =
+        ast::getCapturedNames(astModule_.body);
+
+    auto addSlot = [&](const std::string& name) {
+        if (!moduleCaptures.contains(name)) return;
+        if (std::find(moduleEnvSlots_.begin(), moduleEnvSlots_.end(), name) !=
+            moduleEnvSlots_.end()) {
+            return;
+        }
+        moduleEnvSlots_.push_back(name);
+    };
+    // Only the top level's OWN declarations. A top-level function
+    // declaration is deliberately absent: it is a module symbol resolved
+    // through `functionIndices_`, and a slot for it would shadow that symbol
+    // with a slot nothing ever writes — every call to it would find
+    // undefined.
+    for (const auto& name : ast::getScopeDeclarations(topLevelStmts)) addSlot(name);
+    for (const auto& name : ast::getHoistedVarDeclarations(topLevelStmts)) addSlot(name);
+    addSlot("this");
+    if (moduleEnvSlots_.empty()) return;
+
+    EnvScopeInfo info;
+    for (uint32_t i = 0; i < moduleEnvSlots_.size(); ++i) info.slotOf[moduleEnvSlots_[i]] = i;
+    // No value yet, and that is the point: the record is created by `main`,
+    // which does not exist until every module function has been lowered.
+    // Readers in those functions load it from the runtime instead.
+    info.envValue = il::kNoValue;
+    envScopes_.push_back(std::move(info));
+    moduleEnvScope_ = envScopes_.size() - 1;
+}
+
+// `main` creates the module scope's record and publishes it, ahead of every
+// statement — including the hoisted closures, which capture it as their
+// parent environment.
+void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
+                            il::Function& mainFn) {
+    // The narrow set: what closures WRITTEN at top level capture. See
+    // planModuleEnv for why this is not the set the record's layout came
+    // from.
+    capturedNames_ = ast::getCapturedNames(topLevelStmts);
+    if (moduleEnvScope_ == SIZE_MAX) return;
+    envScopes_[moduleEnvScope_].envValue =
+        emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);
+    savedEnvValues_.push_back(currentEnvValue_);
+    currentEnvValue_ = envScopes_[moduleEnvScope_].envValue;
+    functionEnvScope_ = moduleEnvScope_;
+    emitModuleEnvSet(currentEnvValue_, mainFn);
+}
+
+// Does this module function need the module scope's record at entry? An
+// over-approximation on purpose: it costs one load in a function that turns
+// out not to need it, where guessing the other way would leave a name
+// unresolved. `getReferencedNames` descends into nested functions, which is
+// what makes it right for a body whose own statements mention nothing but
+// whose closures do.
+bool Lowerer::referencesModuleEnv(const std::vector<ast::StmtPtr>& body) const {
+    if (moduleEnvScope_ == SIZE_MAX) return false;
+    const auto referenced = ast::getReferencedNames(body);
+    for (const auto& slot : moduleEnvSlots_) {
+        if (referenced.contains(slot)) return true;
+    }
+    return false;
+}
+
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn) {
     ilFn.blocks.push_back(il::Block{.id = 0});
@@ -198,7 +308,19 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
 
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());
-    if (ilFn.needsEnv) currentEnvValue_ = 0;
+    if (ilFn.needsEnv) {
+        // A closure: its environment arrives as the first parameter
+        // (docs/0007 decision 3), and the chain from there already reaches
+        // every enclosing scope including the module's.
+        currentEnvValue_ = 0;
+    } else {
+        // A module function. It has no environment parameter and never will
+        // — that is what keeps it a direct-call target — so the one scope it
+        // can still need, the module's, is loaded from the runtime
+        // (docs/0016 decision 1).
+        currentEnvValue_ =
+            referencesModuleEnv(body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
+    }
     currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
 
     std::vector<const ast::Stmt*> stmts;

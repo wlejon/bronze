@@ -59,6 +59,13 @@ private:
         bool inEnv = false;
         size_t envScopeIndex = 0;
         uint32_t envSlot = 0;
+        // The binding this declaration displaced in `activeVarMap_`, if it
+        // shadowed one. A block's declarations are discarded on exit and the
+        // enclosing scope's are NOT (ECMA-262 14.2.2), so leaving the name
+        // simply erased made `let x = 1; { let x = 2; } x` report
+        // `undefined variable: x` — the inner declaration destroyed the outer
+        // binding instead of hiding it.
+        size_t shadowedBinding = SIZE_MAX;
     };
 
     struct LoopContext {
@@ -102,6 +109,15 @@ private:
     std::unordered_set<std::string> capturedNames_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
+    // The module scope (docs/0016 decision 1). Its slot layout is decided
+    // before ANY body is lowered, because a top-level function declaration
+    // resolves module-level names against it and is lowered long before
+    // `main` exists to create the record. It sits at the bottom of
+    // `envScopes_` for the whole compilation and is never popped, so every
+    // (depth, index) pair anywhere in the module counts hops to the same
+    // place.
+    std::vector<std::string> moduleEnvSlots_;
+    size_t moduleEnvScope_ = SIZE_MAX;
 
     // --- Conditional-expression joins -----------------------------------
     // &&, ||, ?? and ternary evaluate an operand on only some paths, so a
@@ -146,6 +162,14 @@ private:
     // function bodies and by the module top level lowered as `main`.
     void enterFunctionEnv(const std::vector<ast::Param>& params,
                           const std::vector<const ast::Stmt*>& body, il::Function& ilFn);
+    // The module scope, in two halves: its layout (before any body) and its
+    // record (in `main`, which is lowered last). Splitting them is the whole
+    // point — the layout is what a module function needs, the record is what
+    // only the top level can create.
+    void planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts);
+    void openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
+                       il::Function& mainFn);
+    bool referencesModuleEnv(const std::vector<ast::StmtPtr>& body) const;
     bool lowerFunctionBody(const std::vector<ast::Param>& params,
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
@@ -174,6 +198,8 @@ private:
                          bool isVar, bool isInitialized, il::ValueId valId, Span span);
     il::ValueId emitConstUndefined(il::Function& ilFn);
     il::ValueId emitEnvCreate(uint32_t slotCount, il::Function& ilFn);
+    il::ValueId emitModuleEnvGet(il::Function& ilFn);
+    void emitModuleEnvSet(il::ValueId env, il::Function& ilFn);
     Value emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn);
     void emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn);
     uint32_t envDepthOf(size_t scopeIndex) const;

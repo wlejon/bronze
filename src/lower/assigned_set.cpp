@@ -60,7 +60,10 @@ public:
     }
 
     void visit(const ast::ObjectLit& o) override {
-        for (const auto& prop : o.props) prop.value->accept(*this);
+        for (const auto& prop : o.props) {
+            if (prop.keyExpr) prop.keyExpr->accept(*this);
+            prop.value->accept(*this);
+        }
     }
 
     void visit(const ast::ArrayLit& a) override {
@@ -116,7 +119,7 @@ public:
     }
 
     void visit(const ast::ForStmt& f) override {
-        if (f.init) f.init->accept(*this);
+        for (const auto& s : f.init) s->accept(*this);
         if (f.condition) f.condition->accept(*this);
         if (f.update) f.update->accept(*this);
         for (const auto& s : f.body) s->accept(*this);

@@ -1,8 +1,6 @@
 // Expressions: precedence-climbing over the binary operators, the unary and
 // suffix forms, and the primary operands that are not literals.
 
-#include <charconv>
-
 #include "parse/parser.h"
 
 namespace bronze {
@@ -425,10 +423,7 @@ ExprPtr Parser::parsePrimary() {
             advance();
             auto lit = std::make_unique<NumberLit>();
             lit->span = t.span;
-            double value = 0;
-            const auto* begin = t.text.data();
-            std::from_chars(begin, begin + t.text.size(), value);
-            lit->value = value;
+            if (!decodeNumericLiteral(t.text, t.span, lit->value)) return nullptr;
             return lit;
         }
         case TokenKind::StringLiteral: {

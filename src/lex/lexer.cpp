@@ -111,6 +111,9 @@ static bool isIdentPart(char c) {
     return isIdentStart(c) || (c >= '0' && c <= '9');
 }
 static bool isDigit(char c) { return c >= '0' && c <= '9'; }
+static bool isHexDigit(char c) {
+    return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
 
 char Lexer::peek(uint32_t ahead) const {
     const auto text = buffer_.text();
@@ -192,12 +195,53 @@ Token Lexer::lexIdentifierOrKeyword() {
     return make(TokenKind::Identifier, begin);
 }
 
+// Where a numeric literal ENDS. What it denotes — the radix, the digits, the
+// separators — is `decodeNumericLiteral`'s to say, the same division of labour
+// string literals already have: a token whose text disagreed with its span
+// about what it describes would make every diagnostic about it point at the
+// wrong characters.
+//
+// So this is deliberately permissive. `0b19`, `1__0` and `1_` are each ONE
+// token here and each a named error there, which is what lets the message
+// quote the whole literal. Being permissive is also what stops `0xFF` from
+// lexing as `0` followed by an identifier `xFF`, which is what it did.
 Token Lexer::lexNumber() {
     const uint32_t begin = pos_;
-    while (isDigit(peek())) ++pos_;
-    if (peek() == '.' && isDigit(peek(1))) {
+    // A separator is legal only between digits, but it has to be CONSUMED
+    // wherever it appears, or `1_` would lex as `1` and an identifier `_`.
+    const auto takeDigits = [&](bool (*isPart)(char)) {
+        while (isPart(peek()) || peek() == '_') ++pos_;
+    };
+
+    if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X' || peek(1) == 'o' ||
+                          peek(1) == 'O' || peek(1) == 'b' || peek(1) == 'B')) {
+        pos_ += 2;
+        // Hex digits are a superset of octal's and binary's, so one scan finds
+        // the end of all three and the parser rejects a digit the radix does
+        // not have.
+        takeDigits(isHexDigit);
+        return make(TokenKind::NumberLiteral, begin);
+    }
+
+    takeDigits(isDigit);
+    // `1.foo` is a property access on a number, not a literal ending in a
+    // dot, so the dot is only part of the literal when a digit (or a
+    // separator, which is an error the parser names) follows it.
+    if (peek() == '.' && (isDigit(peek(1)) || peek(1) == '_')) {
         ++pos_;
-        while (isDigit(peek())) ++pos_;
+        takeDigits(isDigit);
+    }
+    // An ExponentPart, which needs at least one digit after the optional
+    // sign — otherwise the `e` is the start of an identifier and `1e` is two
+    // tokens, as it always was. A separator counts as the start of one so
+    // that `1e_5` is a single literal the parser can name the real fault in,
+    // rather than a number followed by an identifier `_5`.
+    const auto startsExponent = [&](char c) { return isDigit(c) || c == '_'; };
+    if ((peek() == 'e' || peek() == 'E') &&
+        (startsExponent(peek(1)) ||
+         ((peek(1) == '+' || peek(1) == '-') && startsExponent(peek(2))))) {
+        pos_ += 2;  // the `e`, and the sign or first digit
+        takeDigits(isDigit);
     }
     return make(TokenKind::NumberLiteral, begin);
 }
@@ -353,7 +397,10 @@ std::vector<Token> Lexer::lex() {
         const char c = peek();
         if (isIdentStart(c)) {
             tokens.push_back(lexIdentifierOrKeyword());
-        } else if (isDigit(c)) {
+        } else if (isDigit(c) || (c == '.' && isDigit(peek(1)))) {
+            // A DecimalLiteral may begin with the point (`.5`). The digit
+            // lookahead is what keeps `...` a spread and `a.b` a member
+            // access.
             tokens.push_back(lexNumber());
         } else if (c == '"' || c == '\'') {
             tokens.push_back(lexString());

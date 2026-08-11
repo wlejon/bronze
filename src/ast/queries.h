@@ -36,6 +36,18 @@ namespace bronze::ast {
 std::unordered_set<std::string> getCapturedNames(const std::vector<StmtPtr>& stmts);
 std::unordered_set<std::string> getCapturedNames(const std::vector<const Stmt*>& stmts);
 
+// Every name mentioned anywhere under `stmts`, INCLUDING inside nested
+// functions to any depth. The question `getCapturedNames` asks from the
+// declaring side, asked from the referencing side: "could this body, or
+// anything written inside it, need to reach that name?".
+//
+// Lowering asks it of a top-level function declaration to decide whether the
+// function must load the module environment record at entry (docs/0016
+// decision 1). An over-approximation is the safe direction — it costs one
+// load in a function that turns out not to need it, where an
+// under-approximation would be an unresolved name.
+std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& stmts);
+
 // Names declared directly by `stmts` — let/const and function declarations
 // in this statement list only, NOT inside nested blocks or functions — in
 // source order. This is the scope's own contribution to an environment.

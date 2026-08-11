@@ -179,8 +179,14 @@ struct BlockStmt final : Stmt {
 };
 
 struct ObjectProp {
+    // The property name, when the source wrote one. A COMPUTED key —
+    // `{ [e]: v }` — has no name until `keyExpr` is evaluated and
+    // ToPropertyKey'd, so `key` is empty and means nothing there; the two
+    // fields are never both meaningful.
     std::string key;
+    ExprPtr keyExpr;  // null unless the key is computed
     ExprPtr value;
+    bool computed() const { return keyExpr != nullptr; }
 };
 
 struct ObjectLit final : Expr {
@@ -252,7 +258,12 @@ struct DoWhileStmt final : Stmt {
 };
 
 struct ForStmt final : Stmt {
-    StmtPtr init;      // VarDecl or ExprStmt or empty
+    // A LIST, because `for (let i = 0, j = n; ...)` declares two bindings and
+    // both belong to the loop's own scope. One `VarDecl` per declarator, or a
+    // single `ExprStmt`, or empty. Not a `BlockStmt` holding them: a block
+    // would give the header a scope of its own, and the header's bindings are
+    // the loop's, visible to the condition, the update and the body.
+    std::vector<StmtPtr> init;
     ExprPtr condition; // optional
     ExprPtr update;    // optional
     std::vector<StmtPtr> body;

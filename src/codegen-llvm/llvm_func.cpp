@@ -87,6 +87,10 @@ void FunctionEmitter::planRootFrame() {
             if (inst.op == il::Op::Construct && !inst.operands.empty()) {
                 maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 1));
             }
+            // console.log with more than one argument builds an argv too.
+            if (inst.op == il::Op::Print && inst.operands.size() > 1) {
+                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size()));
+            }
         }
     }
 

@@ -61,7 +61,10 @@ public:
         for (const auto& m : c.methods) m.fn->accept(*this);
     }
     void visit(const ObjectLit& o) override {
-        for (const auto& prop : o.props) prop.value->accept(*this);
+        for (const auto& prop : o.props) {
+            if (prop.keyExpr) prop.keyExpr->accept(*this);
+            prop.value->accept(*this);
+        }
     }
     void visit(const ArrayLit& a) override {
         for (const auto& elem : a.elements) elem->accept(*this);
@@ -94,7 +97,7 @@ public:
         d.condition->accept(*this);
     }
     void visit(const ForStmt& f) override {
-        if (f.init) f.init->accept(*this);
+        for (const auto& s : f.init) s->accept(*this);
         if (f.condition) f.condition->accept(*this);
         if (f.update) f.update->accept(*this);
         for (const auto& s : f.body) s->accept(*this);
@@ -177,7 +180,10 @@ public:
         for (const auto& m : c.methods) addFunctionBody(m.fn->body);
     }
     void visit(const ObjectLit& o) override {
-        for (const auto& prop : o.props) prop.value->accept(*this);
+        for (const auto& prop : o.props) {
+            if (prop.keyExpr) prop.keyExpr->accept(*this);
+            prop.value->accept(*this);
+        }
     }
     void visit(const ArrayLit& a) override {
         for (const auto& elem : a.elements) elem->accept(*this);
@@ -216,7 +222,7 @@ public:
         d.condition->accept(*this);
     }
     void visit(const ForStmt& f) override {
-        if (f.init) f.init->accept(*this);
+        for (const auto& s : f.init) s->accept(*this);
         if (f.condition) f.condition->accept(*this);
         if (f.update) f.update->accept(*this);
         for (const auto& s : f.body) s->accept(*this);
@@ -304,7 +310,7 @@ void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
         return;
     }
     if (const auto* f = dynamic_cast<const ForStmt*>(&stmt)) {
-        if (f->init) collectHoistedVarsIn(*f->init, out);
+        collectHoistedVars(f->init, out);
         collectHoistedVars(f->body, out);
         return;
     }
@@ -325,6 +331,14 @@ std::unordered_set<std::string> getCapturedNames(const std::vector<StmtPtr>& stm
         if (s) s->accept(v);
     }
     return v.captured;
+}
+
+std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& stmts) {
+    IdentVisitor v;
+    for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.names;
 }
 
 std::vector<std::string> getScopeDeclarations(const std::vector<StmtPtr>& stmts) {

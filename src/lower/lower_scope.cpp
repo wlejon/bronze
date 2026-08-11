@@ -3,6 +3,7 @@
 // over the environment innermost at its creation site (docs/0007).
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ast/queries.h"
@@ -21,6 +22,7 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
         }
     }
     VarBinding b;
+    if (it != activeVarMap_.end()) b.shadowedBinding = it->second;
     b.name = name;
     b.type = type;
     b.isConst = isConst;
@@ -80,6 +82,28 @@ il::ValueId Lowerer::emitEnvCreate(uint32_t slotCount, il::Function& ilFn) {
     inst.immI32 = static_cast<int32_t>(slotCount);
     emitInst(ilFn, inst);
     return res;
+}
+
+// The module scope's record, reached through the runtime rather than through
+// a parameter (docs/0016 decision 1). `main` publishes it once; anything that
+// needs it loads it.
+il::ValueId Lowerer::emitModuleEnvGet(il::Function& ilFn) {
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::ModuleEnvGet;
+    inst.type = il::Type::Dynamic;
+    inst.result = res;
+    emitInst(ilFn, inst);
+    return res;
+}
+
+void Lowerer::emitModuleEnvSet(il::ValueId env, il::Function& ilFn) {
+    il::Instruction inst;
+    inst.op = il::Op::ModuleEnvSet;
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    inst.operands = {env};
+    emitInst(ilFn, inst);
 }
 
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
@@ -180,14 +204,22 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
 }
 
 void Lowerer::exitScope() {
-    std::vector<std::string> toRemove;
+    // Leaving a scope UNCOVERS what its declarations shadowed; it does not
+    // delete the name. Erasing outright made an inner `let x` remove the
+    // enclosing `x` for the rest of the function.
+    std::vector<std::pair<std::string, size_t>> toRestore;
     for (const auto& entry : activeVarMap_) {
-        if (varBindings_[entry.second].scopeDepth == currentScopeDepth_ && !varBindings_[entry.second].isVar) {
-            toRemove.push_back(entry.first);
+        const auto& binding = varBindings_[entry.second];
+        if (binding.scopeDepth == currentScopeDepth_ && !binding.isVar) {
+            toRestore.emplace_back(entry.first, binding.shadowedBinding);
         }
     }
-    for (const auto& name : toRemove) {
-        activeVarMap_.erase(name);
+    for (const auto& [name, shadowed] : toRestore) {
+        if (shadowed == SIZE_MAX) {
+            activeVarMap_.erase(name);
+        } else {
+            activeVarMap_[name] = shadowed;
+        }
     }
     if (!scopeHasEnv_.empty()) {
         if (scopeHasEnv_.back()) {

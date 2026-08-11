@@ -101,7 +101,7 @@ public:
         n.condition->accept(*this);
     }
     void visit(const ast::ForStmt& n) override {
-        if (n.init) n.init->accept(*this);
+        for (const auto& s : n.init) s->accept(*this);
         if (n.condition) n.condition->accept(*this);
         if (n.update) n.update->accept(*this);
         walkList(n.body);

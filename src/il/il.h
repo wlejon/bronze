@@ -108,6 +108,14 @@ enum class Op : uint8_t {
     EnvCreate,  // a = env.create parent, <slots>     (docs/0007)
     EnvGet,     // a = env.get env, <depth>, <index>
     EnvSet,     // env.set env, <depth>, <index>, v
+    // The MODULE scope's environment record, which is a singleton: the top
+    // level runs exactly once, so there is exactly one activation of that
+    // scope and no reason to thread it through every calling convention
+    // (docs/0016 decision 1). `main` publishes it; a module function that
+    // needs a module-level binding loads it at entry and chains its own
+    // record to it.
+    ModuleEnvSet,  // module.env.set %env
+    ModuleEnvGet,  // a: dynamic = module.env.get
     CreateArrayBuffer,  // a = create.arraybuffer len      (len dynamic)
     CreateFloat32Array, // a = create.f32array arg         (length or buffer, dynamic)
     Print,      // print a

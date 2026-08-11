@@ -8,13 +8,16 @@
 // `undefined`.
 
 #include <cmath>
+#include <cstring>
 #include <string>
+#include <string_view>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -57,6 +60,39 @@ static bool valueToElementIndex(Value idxVal, uint32_t& out) {
     if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) return false;
     out = static_cast<uint32_t>(d);
     return true;
+}
+
+// ToPropertyKey (ECMA-262 7.1.19) as a heap string: every property name is a
+// string, so `o[2]` and `o["2"]` name the same property and `{ [2]: v }` and
+// `{ 2: v }` write the same one. ToString(Number) is `formatJsNumber` and not
+// console.log's inspect spelling — ToString(-0) is "0", where inspect says
+// "-0" (docs/0013 decision 1).
+//
+// ALLOCATES, so the caller must have the receiver rooted before it calls.
+static Value elemKeyAsString(Value idxVal) {
+    if (idxVal.isString()) return idxVal;
+    char buf[64];
+    size_t len = 0;
+    if (idxVal.isNumber()) {
+        len = formatJsNumber(idxVal.asNumber(), buf);
+    } else if (idxVal.isBool()) {
+        len = idxVal.asBool() ? 4 : 5;
+        std::memcpy(buf, idxVal.asBool() ? "true" : "false", len);
+    } else if (idxVal.isUndefined()) {
+        len = 9;
+        std::memcpy(buf, "undefined", len);
+    } else if (idxVal.isNull()) {
+        len = 4;
+        std::memcpy(buf, "null", len);
+    } else {
+        // An object key would need ToPrimitive, which docs/0015 decision 7
+        // names as the same missing piece behind `String(obj)` and `==`
+        // between an object and a primitive.
+        fatal("a computed property key that is an object needs ToPrimitive, "
+              "which is unsupported");
+    }
+    return Value::fromString(
+        StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
 }
 
 extern "C" {
@@ -274,7 +310,17 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         }
         return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
     }
-    fatal("computed index access is only supported on arrays and Float32Array");
+    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        // A plain object stores everything by NAME, so a computed key is a
+        // property read with a key the compiler did not know: ToPropertyKey,
+        // then the ordinary lookup. No inline cache, because there is no
+        // per-site key to cache against.
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits();
+    }
+    fatal("computed index access is only supported on arrays, plain objects "
+          "and Float32Array");
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
@@ -299,7 +345,15 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         }
         return;  // out-of-bounds typed-array writes are discarded, per spec
     }
-    fatal("computed index writes are only supported on arrays and Float32Array");
+    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> val{Value(valBits)};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        return;
+    }
+    fatal("computed index writes are only supported on arrays, plain objects "
+          "and Float32Array");
 }
 
 }  // extern "C"

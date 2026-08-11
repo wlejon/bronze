@@ -113,18 +113,36 @@ static std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
 // thing to leave in a hot path.
 static std::vector<Value> g_globalCache;
 
-// Both hold heap Values, so both are root SOURCES rather than fixed slots:
-// the objects live in the moving heap and cached raw bits would go stale at
-// the first collection.
+// The module scope's environment record (docs/0016 decision 1). The top level
+// runs exactly once, so this scope has exactly one activation and its record
+// is a singleton — which is what lets a top-level function declaration reach
+// module-level `let`/`const` while staying a direct-call target, instead of
+// being handed the record through a calling convention it does not have.
+//
+// `main` publishes it before any statement runs; the module functions that
+// need it load it at entry.
+static Value g_moduleEnv = Value::fromUndefined();
+
+// All three hold heap Values, so all three are root SOURCES rather than fixed
+// slots: the objects live in the moving heap and cached raw bits would go
+// stale at the first collection. The module environment is the one whose
+// absence here would be invisible until a collection ran with a closure alive
+// over it, which is exactly what oracle-gc-stress forces at every allocation
+// (docs/0006 decision 5).
 static const bool g_valueCachesRegistered = [] {
     g_heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
         for (Value& v : g_globalCache) visit(v);
+        visit(g_moduleEnv);
     });
     return true;
 }();
 
 extern "C" {
+
+void bronze_module_env_set(uint64_t envBits) { g_moduleEnv = Value(envBits); }
+
+uint64_t bronze_module_env_get() { return g_moduleEnv.rawBits(); }
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
     for (const auto& entry : g_functionSingletons) {

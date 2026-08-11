@@ -61,43 +61,41 @@ void writeString(const StringHeader* str) {
     }
 }
 
-void writeNumberLine(double num) {
+void writeNumber(double num) {
     char buf[64];
     size_t len = 0;
     // console.log distinguishes -0 (inspect formatting), unlike
     // ToString(Number), which yields "0".
     if (num == 0.0 && std::signbit(num)) buf[len++] = '-';
     len += formatJsNumber(num, buf + len);
-    buf[len++] = '\n';
     std::fwrite(buf, 1, len, stdout);
 }
 
-}  // namespace
-
-extern "C" {
-
-void bronze_print_value(uint64_t valBits) {
+// One argument's worth of console.log output, with no line terminator. The
+// formatter, and the only one: `console.log(a)` and `console.log(a, b)` must
+// format `a` identically, so a second spelling of these rules for the
+// multi-argument case would be a drift waiting to happen — the same argument
+// that put `**` and `Math.pow` on one `rtExponentiate` (docs/0015 decision 3).
+void writeValue(uint64_t valBits) {
     Value v(valBits);
     if (v.isNumber()) {
-        writeNumberLine(v.asNumber());
+        writeNumber(v.asNumber());
     } else if (v.isInt32()) {
         // Lowering never boxes an Int32 today (docs/0004 decision 1), but an
         // int32 IS a JS number, so it prints as one rather than reaching the
         // object branch if the fast path ever lands.
-        writeNumberLine(static_cast<double>(static_cast<int32_t>(v.payload())));
+        writeNumber(static_cast<double>(static_cast<int32_t>(v.payload())));
     } else if (v.isString()) {
         writeString(v.asString<StringHeader>());
-        std::fputc('\n', stdout);
     } else if (v.isBool()) {
-        std::fputs(v.asBool() ? "true\n" : "false\n", stdout);
+        std::fputs(v.asBool() ? "true" : "false", stdout);
     } else if (v.isUndefined()) {
-        std::fputs("undefined\n", stdout);
+        std::fputs("undefined", stdout);
     } else if (v.isNull()) {
-        std::fputs("null\n", stdout);
+        std::fputs("null", stdout);
     } else if (v.isObject()) {
         const std::string text = rtInspect(v);
         std::fwrite(text.data(), 1, text.size(), stdout);
-        std::fputc('\n', stdout);
     } else if (v.isHole()) {
         // docs/0004: the hole is internal and never user-visible. Printing it
         // as anything would hide the bug that let it escape.
@@ -107,6 +105,28 @@ void bronze_print_value(uint64_t valBits) {
     } else {
         fatal("internal: console.log reached a value with an unknown tag");
     }
+}
+
+}  // namespace
+
+extern "C" {
+
+void bronze_print_value(uint64_t valBits) {
+    writeValue(valBits);
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+}
+
+// console.log's arguments, joined with a SINGLE space and terminated with one
+// newline — node's rule, and the reason each argument goes through the same
+// `writeValue` a lone argument does. Zero arguments is a bare newline: there
+// is nothing to join and node still ends the line.
+void bronze_print_values(uint32_t argc, const uint64_t* argv) {
+    for (uint32_t i = 0; i < argc; ++i) {
+        if (i > 0) std::fputc(' ', stdout);
+        writeValue(argv[i]);
+    }
+    std::fputc('\n', stdout);
     std::fflush(stdout);
 }
 

@@ -56,9 +56,7 @@ std::unique_ptr<Module> Parser::parseModule(std::string name) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
     while (!check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        auto stmt = parseStatement();
-        if (!stmt) break;
-        mod->body.push_back(std::move(stmt));
+        if (!parseStatement(mod->body)) break;
     }
     if (diags_.hasErrors()) return nullptr;
     if (!check(TokenKind::EndOfFile)) {
@@ -72,17 +70,33 @@ std::vector<StmtPtr> Parser::parseBlockOrSingleStmt() {
     if (check(TokenKind::LBrace)) {
         return parseBlock();
     }
-    auto stmt = parseStatement();
     std::vector<StmtPtr> res;
-    if (stmt) res.push_back(std::move(stmt));
+    parseStatement(res);
     return res;
 }
 
-StmtPtr Parser::parseStatement() {
+namespace {
+// One statement appended, or a diagnosed failure. The productions that
+// really do yield exactly one node all end this way.
+bool one(std::vector<StmtPtr>& out, StmtPtr stmt) {
+    if (!stmt) return false;
+    out.push_back(std::move(stmt));
+    return true;
+}
+}  // namespace
+
+bool Parser::parseStatement(std::vector<StmtPtr>& out) {
+    // ECMA-262 14.4: `;` on its own is the EmptyStatement, which evaluates to
+    // empty and does nothing. It contributes no node — there is nothing for a
+    // node to say — which is why this appends to a list instead of returning
+    // one. It still CONSUMES the semicolon, so the caller's loop makes
+    // progress and no input is silently dropped.
+    if (match(TokenKind::Semicolon)) return true;
+
     if (match(TokenKind::KwExport)) {
-        if (check(TokenKind::KwFunction)) return parseFunctionDecl(/*isExported=*/true);
+        if (check(TokenKind::KwFunction)) return one(out, parseFunctionDecl(/*isExported=*/true));
         error("only 'export function' is supported after 'export' for now");
-        return nullptr;
+        return false;
     }
     if (check(TokenKind::KwImport)) {
         // `import` lexes as a keyword but has never had a production. Without
@@ -90,37 +104,39 @@ StmtPtr Parser::parseStatement() {
         // "expected expression", naming nothing — the one place bronze's
         // unimplemented syntax was not diagnosed by name.
         error("unsupported construct: import declaration (bronze has no modules yet)");
-        return nullptr;
+        return false;
     }
-    if (check(TokenKind::KwFunction)) return parseFunctionDecl(/*isExported=*/false);
-    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) return parseVarDecl();
-    if (check(TokenKind::KwReturn)) return parseReturn();
-    if (check(TokenKind::KwIf)) return parseIf();
-    if (check(TokenKind::KwWhile)) return parseWhile();
-    if (check(TokenKind::KwDo)) return parseDoWhile();
-    if (check(TokenKind::KwFor)) return parseFor();
-    if (check(TokenKind::KwBreak)) return parseBreak();
-    if (check(TokenKind::KwContinue)) return parseContinue();
-    if (check(TokenKind::KwSwitch)) return parseSwitch();
-    if (check(TokenKind::KwClass)) return parseClass();
-    if (check(TokenKind::KwTry)) return parseTry();
-    if (check(TokenKind::KwThrow)) return parseThrow();
+    if (check(TokenKind::KwFunction)) return one(out, parseFunctionDecl(/*isExported=*/false));
+    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
+        return parseVarDecl(out);
+    }
+    if (check(TokenKind::KwReturn)) return one(out, parseReturn());
+    if (check(TokenKind::KwIf)) return one(out, parseIf());
+    if (check(TokenKind::KwWhile)) return one(out, parseWhile());
+    if (check(TokenKind::KwDo)) return one(out, parseDoWhile());
+    if (check(TokenKind::KwFor)) return one(out, parseFor());
+    if (check(TokenKind::KwBreak)) return one(out, parseBreak());
+    if (check(TokenKind::KwContinue)) return one(out, parseContinue());
+    if (check(TokenKind::KwSwitch)) return one(out, parseSwitch());
+    if (check(TokenKind::KwClass)) return one(out, parseClass());
+    if (check(TokenKind::KwTry)) return one(out, parseTry());
+    if (check(TokenKind::KwThrow)) return one(out, parseThrow());
     if (check(TokenKind::LBrace)) {
         auto blockSpan = peek().span;
         auto stmts = parseBlock();
         auto blk = std::make_unique<BlockStmt>();
         blk->span = blockSpan;
         blk->stmts = std::move(stmts);
-        return blk;
+        return one(out, std::move(blk));
     }
 
     auto expr = parseExpr();
-    if (!expr) return nullptr;
-    if (!consumeSemicolon("expression statement")) return nullptr;
+    if (!expr) return false;
+    if (!consumeSemicolon("expression statement")) return false;
     auto stmt = std::make_unique<ExprStmt>();
     stmt->span = expr->span;
     stmt->expr = std::move(expr);
-    return stmt;
+    return one(out, std::move(stmt));
 }
 std::string Parser::parseTypeAnnotation() {
     const Token* t = expect(TokenKind::Identifier, "type name");
@@ -131,44 +147,67 @@ std::vector<StmtPtr> Parser::parseBlock() {
     std::vector<StmtPtr> body;
     if (!expect(TokenKind::LBrace, "'{'")) return body;
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        auto stmt = parseStatement();
-        if (!stmt) return body;
-        body.push_back(std::move(stmt));
+        if (!parseStatement(body)) return body;
     }
     expect(TokenKind::RBrace, "'}' to close block");
     return body;
 }
 
-StmtPtr Parser::parseVarDecl(bool isStatement) {
+// `let a = 1, b = 2, c` — a BindingList, which is one declaration keyword and
+// several bindings (ECMA-262 14.3.1). Each declarator becomes its own
+// `VarDecl` so that everything downstream — hoisting, capture analysis,
+// inference, lowering — keeps seeing the one shape it already understands.
+//
+// They are appended to the enclosing statement list rather than wrapped in a
+// `BlockStmt`: a block introduces a scope, and these bindings belong to the
+// scope the declaration is written in. Wrapping them would make `let a = 1,
+// b = 2` declare nothing visible to the next line.
+//
+// The declarators are evaluated left to right, and each initializer is an
+// *AssignmentExpression*, so a comma ends the initializer rather than
+// continuing it — the same rule that keeps `f(a, b)` a two-argument call
+// (docs/0015 decision 6).
+bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
     const Token& kw = advance();  // const | let | var
-    auto decl = std::make_unique<VarDecl>();
-    decl->span.begin = kw.span.begin;
-    decl->isConst = kw.kind == TokenKind::KwConst;
-    decl->isVar = kw.kind == TokenKind::KwVar;
+    const bool isConst = kw.kind == TokenKind::KwConst;
+    const bool isVar = kw.kind == TokenKind::KwVar;
 
-    if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
-        error("unsupported construct: destructuring declaration");
-        return nullptr;
-    }
-    const Token* name = expect(TokenKind::Identifier, "variable name");
-    if (!name) return nullptr;
-    decl->name = std::string(name->text);
+    bool first = true;
+    for (;;) {
+        if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+            error("unsupported construct: destructuring declaration");
+            return false;
+        }
+        // The first declarator's span starts at the keyword, as it did when a
+        // declaration was always one binding; a later one starts at its name,
+        // which is the only text that is its own.
+        const uint32_t declBegin = first ? kw.span.begin : peek().span.begin;
+        const Token* name = expect(TokenKind::Identifier, "variable name");
+        if (!name) return false;
 
-    if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
-    if (match(TokenKind::Assign)) {
-        // AssignmentExpression: `let a = 1, b = 2` is two declarators, so a
-        // comma here ends the initializer rather than continuing it.
-        decl->init = parseAssign();
-        if (!decl->init) return nullptr;
-    } else if (decl->isConst) {
-        error("'const' declaration requires an initializer");
-        return nullptr;
+        auto decl = std::make_unique<VarDecl>();
+        decl->span.begin = declBegin;
+        decl->isConst = isConst;
+        decl->isVar = isVar;
+        decl->name = std::string(name->text);
+
+        if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
+        if (match(TokenKind::Assign)) {
+            decl->init = parseAssign();
+            if (!decl->init) return false;
+        } else if (isConst) {
+            error("'const' declaration requires an initializer");
+            return false;
+        }
+        decl->span.end = peek().span.begin;
+        out.push_back(std::move(decl));
+        first = false;
+        if (!match(TokenKind::Comma)) break;
     }
-    const bool ok = isStatement ? consumeSemicolon("declaration")
-                                : expect(TokenKind::Semicolon, "';' after for init") != nullptr;
-    if (!ok) return nullptr;
-    decl->span.end = peek().span.begin;
-    return decl;
+
+    // One terminator for the whole list, whichever kind this position takes.
+    return isStatement ? consumeSemicolon("declaration")
+                       : expect(TokenKind::Semicolon, "';' after for init") != nullptr;
 }
 
 StmtPtr Parser::parseReturn() {
@@ -267,16 +306,17 @@ StmtPtr Parser::parseFor() {
 
     if (!check(TokenKind::Semicolon)) {
         if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
-            stmt->init = parseVarDecl(/*isStatement=*/false);
+            // The header takes a whole BindingList: `for (let i = 0, j = n;
+            // ...)` declares both in the loop's own scope.
+            if (!parseVarDecl(stmt->init, /*isStatement=*/false)) return nullptr;
         } else {
             auto e = parseExpr();
-            if (e) {
-                expect(TokenKind::Semicolon, "';' after for init");
-                auto es = std::make_unique<ExprStmt>();
-                es->span = e->span;
-                es->expr = std::move(e);
-                stmt->init = std::move(es);
-            }
+            if (!e) return nullptr;
+            expect(TokenKind::Semicolon, "';' after for init");
+            auto es = std::make_unique<ExprStmt>();
+            es->span = e->span;
+            es->expr = std::move(e);
+            stmt->init.push_back(std::move(es));
         }
     } else {
         advance();

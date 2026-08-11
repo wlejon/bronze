@@ -1,18 +1,30 @@
 #include "ast/dump.h"
 
-#include <sstream>
+#include <charconv>
+#include <string>
 
 namespace bronze::ast {
 namespace {
+
+// The shortest text that round-trips to this double, which is what the IL
+// printer already uses. `ostringstream <<` was neither: its default precision
+// is six significant digits, so `1000000` dumped as `1e+06` and `123.4567`
+// as `123.457` — two different literals could dump identically, in the one
+// artefact the parser's tests compare. It also reads the stream's locale for
+// the decimal point, which the determinism rule (docs/0001) forbids outright
+// on an output path, and `bronze parse` prints this to stdout.
+std::string formatNumber(double v) {
+    char buf[32];
+    const auto res = std::to_chars(buf, buf + sizeof(buf), v);
+    return std::string(buf, res.ptr);
+}
 
 class DumpVisitor final : public Visitor {
 public:
     std::string result;
 
     void visit(const NumberLit& n) override {
-        std::ostringstream os;
-        os << n.value;
-        emit("(number " + os.str() + ")");
+        emit("(number " + formatNumber(n.value) + ")");
     }
     void visit(const StringLit& n) override { emit("(string \"" + n.value + "\")"); }
     void visit(const Ident& n) override { emit("(ident " + n.name + ")"); }
@@ -56,8 +68,14 @@ public:
         emit("(object");
         indented([&] {
             for (const auto& p : n.props) {
-                emit("(prop " + p.key);
-                indented([&] { p.value->accept(*this); });
+                // A computed key is a runtime ToPropertyKey of an evaluated
+                // expression and a written one is a compile-time constant, so
+                // the two must not dump the same (docs/0012 decision 3).
+                emit(p.computed() ? std::string("(prop-computed") : "(prop " + p.key);
+                indented([&] {
+                    if (p.keyExpr) p.keyExpr->accept(*this);
+                    p.value->accept(*this);
+                });
                 emit(")");
             }
         });
@@ -200,7 +218,7 @@ public:
     void visit(const ForStmt& n) override {
         emit("(for");
         indented([&] {
-            if (n.init) n.init->accept(*this);
+            for (const auto& s : n.init) s->accept(*this);
             if (n.condition) n.condition->accept(*this);
             if (n.update) n.update->accept(*this);
             for (const auto& s : n.body) s->accept(*this);

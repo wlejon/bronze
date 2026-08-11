@@ -57,11 +57,18 @@ private:
     // are the only readers.
     bool atLineBreak() const { return peek().newlineBefore; }
 
-    ast::StmtPtr parseStatement();
+    // Appends to a statement LIST rather than returning one node, because two
+    // productions do not map to exactly one statement: `let a = 1, b = 2` is
+    // several (each declarator is its own binding, and wrapping them in a
+    // BlockStmt would give them a scope they do not have), and the empty
+    // statement is none at all. Returns false on a diagnosed error.
+    bool parseStatement(std::vector<ast::StmtPtr>& out);
     ast::StmtPtr parseFunctionDecl(bool isExported);
-    // `isStatement` is false inside a `for` header, where the declaration is
-    // followed by the header's own semicolon and ASI must not apply.
-    ast::StmtPtr parseVarDecl(bool isStatement = true);
+    // One `VarDecl` per declarator of the BindingList (ECMA-262 14.3.1),
+    // appended in source order. `isStatement` is false inside a `for` header,
+    // where the declaration is followed by the header's own semicolon and ASI
+    // must not apply (docs/0014 decision 4).
+    bool parseVarDecl(std::vector<ast::StmtPtr>& out, bool isStatement = true);
     ast::StmtPtr parseReturn();
     ast::StmtPtr parseIf();
     ast::StmtPtr parseWhile();
@@ -82,6 +89,10 @@ private:
     // definition: the lexer finds the literal's end, the parser decides what
     // it means).
     std::string decodeStringLiteral(std::string_view raw, Span span);
+    // The Number a NumericLiteral denotes, radix prefixes and separators
+    // resolved (see the definition: the lexer finds the literal's end, the
+    // parser decides what it means). False on a diagnosed error.
+    bool decodeNumericLiteral(std::string_view raw, Span span, double& out);
     ast::ExprPtr parseTemplateLiteral();
     bool looksLikeArrow() const;
     ast::ExprPtr parseArrowFunction();

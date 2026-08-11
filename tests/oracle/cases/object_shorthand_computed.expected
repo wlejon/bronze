@@ -1,0 +1,21 @@
+{ x: 1, y: 'two' }
+1
+two
+{ x: 1, a: 10, z: true }
+{ a: 10, x: 1 }
+{ dyn: 10, plain: 20 }
+10
+10
+2,b,a
+two
+4
+zero
+one
+item0,item1
+k1v1k2v2
+3
+2
+2
+{ v: 3, w: 6 }
+{}
+{ single: 7 }

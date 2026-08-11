@@ -307,13 +307,29 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 diags_.error(un->span, "invalid update operand");
                 return std::nullopt;
             }
+            // An update expression is a read and a write of the same target,
+            // so it resolves the target exactly as assignment does: a binding
+            // of this function, or — failing that — a slot in an enclosing
+            // scope's environment record (docs/0007). Looking only in
+            // `activeVarMap_` made `() => ++n` report `undefined variable: n`
+            // for the very binding `n = n + 1` two lines away resolves
+            // through the environment.
             auto it = activeVarMap_.find(ident->name);
-            if (it == activeVarMap_.end()) {
+            const bool isLocal = it != activeVarMap_.end();
+            // An index rather than a reference, for the reason the assignment
+            // path records: nothing between here and the write may lower a
+            // closure, but the two paths must not differ in a way that only
+            // holds by accident.
+            const size_t bindingIdx = isLocal ? it->second : 0;
+            uint32_t depth = 0;
+            uint32_t index = 0;
+            if (!isLocal && (currentEnvValue_ == il::kNoValue ||
+                             !findEnclosingEnvVar(ident->name, depth, index))) {
                 diags_.error(ident->span, "undefined variable: " + ident->name);
                 return std::nullopt;
             }
-            VarBinding& b = varBindings_[it->second];
-            Value oldVal = readBinding(b, ilFn);
+            Value oldVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
+                                   : emitEnvGet(depth, index, ilFn);
             Value numOld = unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
 
             il::ValueId oneRes = ilFn.valueCount++;
@@ -332,7 +348,11 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             calcInst.operands = {numOld.id, oneRes};
             emitInst(ilFn, calcInst);
 
-            writeBinding(b, Value{newValId, il::Type::F64}, ilFn);
+            if (isLocal) {
+                writeBinding(varBindings_[bindingIdx], Value{newValId, il::Type::F64}, ilFn);
+            } else {
+                emitEnvSet(depth, index, Value{newValId, il::Type::F64}, ilFn);
+            }
 
             if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec) {
                 return Value{newValId, il::Type::F64};

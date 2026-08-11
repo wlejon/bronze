@@ -73,6 +73,8 @@ const char* opName(Op op) {
         case Op::EnvCreate: return "env.create";
         case Op::EnvGet: return "env.get";
         case Op::EnvSet: return "env.set";
+        case Op::ModuleEnvSet: return "module.env.set";
+        case Op::ModuleEnvGet: return "module.env.get";
         case Op::CreateArrayBuffer: return "create.arraybuffer";
         case Op::CreateFloat32Array: return "create.f32array";
         case Op::Print: return "print";
@@ -275,8 +277,20 @@ std::string print(const Module& module) {
                                ", " + std::to_string(inst.envDepth) + ", " + std::to_string(inst.envIndex) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
                         break;
+                    case Op::ModuleEnvSet:
+                        out += "module.env.set %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::ModuleEnvGet:
+                        out += "module.env.get";
+                        break;
                     case Op::Print:
-                        out += "print %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        // Every argument, because console.log takes any number
+                        // of them and the dump is what a reader bisects with.
+                        out += "print";
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            out += (i == 0 ? " %" : ", %") + std::to_string(inst.operands[i]);
+                        }
                         break;
                     default:
                         out += opName(inst.op);

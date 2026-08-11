@@ -204,3 +204,48 @@ TEST_CASE("the operator keywords are keywords, not identifiers") {
     CHECK(t[8].kind == TokenKind::KwIn);
     CHECK(t[11].kind == TokenKind::KwVoid);
 }
+
+// A numeric literal is ONE token however it is spelled, so a malformed one
+// can be diagnosed against its whole text (docs/0016 decision 5). The lexer
+// deliberately does not decide what the digits mean.
+TEST_CASE("radix prefixes, separators and exponents lex as one number token") {
+    for (const char* src : {"0xFF", "0X10", "0o17", "0b1010", "0B1111_0000",
+                            "1_000_000", "1e3", "1E3", "1.5e-3", "1e+7", ".5",
+                            "1_0.2_5", "0xA_B"}) {
+        auto lexed = lexAll(src);
+        REQUIRE(lexed.tokens.size() == 2);  // the number, then eof
+        CHECK(lexed.tokens[0].kind == TokenKind::NumberLiteral);
+        CHECK(lexed.tokens[0].text == src);
+    }
+}
+
+TEST_CASE("a malformed numeric literal is still one token") {
+    // Handed over whole so the parser's message can quote it; splitting `0xFF`
+    // into `0` and an identifier `xFF` is what it used to do, and that error
+    // named nothing.
+    for (const char* src : {"1_", "1__0", "0x_ff", "0b12", "0x"}) {
+        auto lexed = lexAll(src);
+        REQUIRE(lexed.tokens.size() == 2);
+        CHECK(lexed.tokens[0].kind == TokenKind::NumberLiteral);
+        CHECK(lexed.tokens[0].text == src);
+    }
+}
+
+TEST_CASE("a dot after a number is a member access unless a digit follows") {
+    auto member = lexAll("1.foo");
+    REQUIRE(member.tokens.size() == 4);  // 1, ., foo, eof
+    CHECK(member.tokens[0].kind == TokenKind::NumberLiteral);
+    CHECK(member.tokens[0].text == "1");
+    CHECK(member.tokens[1].kind == TokenKind::Dot);
+
+    // `1e` has no exponent digits, so the `e` starts an identifier.
+    auto notExponent = lexAll("1e");
+    REQUIRE(notExponent.tokens.size() == 3);
+    CHECK(notExponent.tokens[0].text == "1");
+    CHECK(notExponent.tokens[1].kind == TokenKind::Identifier);
+
+    // The leading-dot number lookahead must not swallow a spread.
+    auto spread = lexAll("...x");
+    REQUIRE(spread.tokens.size() == 3);
+    CHECK(spread.tokens[0].kind == TokenKind::Ellipsis);
+}

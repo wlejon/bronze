@@ -21,20 +21,37 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
     emitInst(ilFn, inst);
 
     for (const auto& prop : objLit->props) {
+        // A computed key is evaluated BEFORE its value, and the properties in
+        // source order, so the two lowerings interleave exactly as ECMA-262
+        // 13.2.5.5 evaluates them. Getting this backwards is observable the
+        // moment either expression has an effect.
+        std::optional<Value> keyBoxed;
+        if (prop.keyExpr) {
+            auto keyOpt = lowerExpr(*prop.keyExpr, ilFn);
+            if (!keyOpt) return std::nullopt;
+            keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+        }
+
         auto valOpt = lowerExpr(*prop.value, ilFn);
         if (!valOpt) return std::nullopt;
         auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
 
-        uint32_t keyIdx = getKeyConstantIndex(prop.key);
-        uint32_t icIdx = icSiteCounter_++;
-
         il::Instruction setInst;
-        setInst.op = il::Op::PropSet;
+        if (keyBoxed) {
+            // `elem.set` is the write whose key is a VALUE, which is what a
+            // computed key is: ToPropertyKey runs in the runtime, where the
+            // number-to-string rule already lives. No inline cache — there is
+            // no per-site key for one to be about.
+            setInst.op = il::Op::ElemSet;
+            setInst.operands = {res, keyBoxed->id, valBoxed.id};
+        } else {
+            setInst.op = il::Op::PropSet;
+            setInst.operands = {res, valBoxed.id};
+            setInst.keyIndex = getKeyConstantIndex(prop.key);
+            setInst.icIndex = icSiteCounter_++;
+        }
         setInst.type = il::Type::Void;
         setInst.result = il::kNoValue;
-        setInst.operands = {res, valBoxed.id};
-        setInst.keyIndex = keyIdx;
-        setInst.icIndex = icIdx;
         emitInst(ilFn, setInst);
     }
     return Value{res, il::Type::Dynamic};
@@ -208,21 +225,26 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     }
 
     if (isConsoleLog) {
-        if (call->args.size() != 1) {
-            diags_.error(call->span, "console.log expects 1 argument");
-            return std::nullopt;
+        // Any number of arguments, including none: node formats each one as
+        // it would a lone argument and joins them with a single space
+        // (docs/0016 decision 6). The joining is the runtime's, so there is
+        // one inspect formatter and not two.
+        std::vector<il::ValueId> args;
+        args.reserve(call->args.size());
+        for (const auto& argPtr : call->args) {
+            auto argVal = lowerExpr(*argPtr, ilFn);
+            if (!argVal) return std::nullopt;
+            args.push_back(boxValueIfNeeded(*argVal, ilFn).id);
         }
-        auto argVal = lowerExpr(*call->args[0], ilFn);
-        if (!argVal) return std::nullopt;
-
-        auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
         il::Instruction inst;
         inst.op = il::Op::Print;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
-        inst.operands = {argBoxed.id};
+        inst.operands = std::move(args);
         emitInst(ilFn, inst);
-        return Value{il::kNoValue, il::Type::Void};
+        // `console.log(...)` evaluates to undefined, like any call that
+        // returns nothing (docs/0014 decision 6).
+        return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
     }
 
     // `Object` is recognized here rather than looked up: bronze has

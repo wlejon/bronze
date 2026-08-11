@@ -387,8 +387,9 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     // edge, which the block-scope rule does not give for free
     // (docs/0007 decision 2) — diagnose it rather than silently
     // sharing one binding.
-    if (const auto* initDecl = dynamic_cast<const ast::VarDecl*>(forStmt->init.get())) {
-        if (capturedNames_.contains(initDecl->name)) {
+    for (const auto& initStmt : forStmt->init) {
+        const auto* initDecl = dynamic_cast<const ast::VarDecl*>(initStmt.get());
+        if (initDecl && capturedNames_.contains(initDecl->name)) {
             diags_.error(forStmt->span,
                          "unsupported construct: closure capturing the for-loop binding '" +
                              initDecl->name +
@@ -398,8 +399,8 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
         }
     }
     enterScope();
-    if (forStmt->init) {
-        if (!lowerStmt(*forStmt->init, ilFn)) return false;
+    for (const auto& initStmt : forStmt->init) {
+        if (!lowerStmt(*initStmt, ilFn)) return false;
     }
 
     const auto loopParams = collectLoopParams(*forStmt, getAssignedVariables(*forStmt));

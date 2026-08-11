@@ -371,11 +371,11 @@ private:
             // `for (let i = ...)` binds `i` in the loop's own scope, which
             // spans the condition, the body and the update and ends here.
             std::vector<const ast::Stmt*> initList;
-            if (f->init) initList.push_back(f->init.get());
+            for (const auto& initStmt : f->init) initList.push_back(initStmt.get());
             const ScopeSave saved = saveDeclarations(ast::getScopeDeclarations(initList));
-            if (f->init) {
+            if (!f->init.empty()) {
                 pushMarker("init", depth + 1);
-                stmt(*f->init, 0, depth + 2);
+                for (const auto& initStmt : f->init) stmt(*initStmt, 0, depth + 2);
             }
             LoopParts parts;
             parts.condition = f->condition.get();
@@ -708,13 +708,28 @@ private:
 
     Type objectLit(const ast::ObjectLit& o) {
         std::vector<std::string> props;
+        bool computedKey = false;
         for (const auto& p : o.props) {
+            // Key then value, left to right, which is the order the language
+            // specifies and therefore the order the effects are recorded in.
+            if (p.keyExpr) {
+                computedKey = true;
+                expr(*p.keyExpr);
+            }
             expr(*p.value);
+            if (p.keyExpr) continue;
             // A duplicate key overwrites; it does not transition again.
             if (std::find(props.begin(), props.end(), p.key) == props.end()) {
                 props.push_back(p.key);
             }
         }
+        // A computed key names its property only at run time, so this literal's
+        // own-property set is not known here. A shape class interned over the
+        // WRITTEN keys alone would be a claim about a layout the runtime never
+        // builds, and the inline caches rest on that claim being true
+        // (docs/0010 decision 4) — so a literal with any computed key is
+        // simply `dynamic`, and its sites stay polymorphic.
+        if (computedKey) return Type::dynamic();
         // Empty constructor name: a plain literal's prototype is the one root
         // shape every `{}` shares (docs/0008 decision 1).
         const ShapeClassId cls = mod_.result->shapes.intern(std::string(), std::move(props));

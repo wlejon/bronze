@@ -1,0 +1,15 @@
+1 2 3
+a b
+n = 42
+true null undefined
+[ 1, 2 ] { a: 1 }
+x [ 'y' ]
+-0 0
+1.5 ok
+one
+
+a b c
+123
+[ [ 1, [ 2, [Array] ] ] ] after
+{ s: "it's" } it's
+undefined and undefined

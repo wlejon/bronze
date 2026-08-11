@@ -199,11 +199,34 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
-        case il::Op::Print:
-            if (!inst.operands.empty() && values_[inst.operands[0]]) {
-                builder_.CreateCall(abi.bronze_print_value, {values_[inst.operands[0]]});
-            }
+        case il::Op::ModuleEnvSet: {
+            if (!needs(1, false, "Invalid operands for ModuleEnvSet")) return false;
+            llvm::Value* env = operand(inst, 0, "Undefined environment in ModuleEnvSet");
+            if (!env) return false;
+            builder_.CreateCall(abi.bronze_module_env_set, {env});
             return true;
+        }
+        case il::Op::ModuleEnvGet:
+            if (inst.result != il::kNoValue) callWith(abi.bronze_module_env_get, {});
+            return true;
+
+        case il::Op::Print: {
+            // One argument keeps the direct call; several go through the
+            // argv region of this function's root frame, exactly as a
+            // dynamic call's arguments do, so every one of them stays rooted
+            // across the helper.
+            if (inst.operands.size() == 1) {
+                if (!values_[inst.operands[0]]) return true;
+                builder_.CreateCall(abi.bronze_print_value, {values_[inst.operands[0]]});
+                return true;
+            }
+            const uint32_t argc = static_cast<uint32_t>(inst.operands.size());
+            bool ok = false;
+            llvm::Value* argv = emitArgv(inst, 0, argc, ok);
+            if (!ok) return false;
+            builder_.CreateCall(abi.bronze_print_values, {builder_.getInt32(argc), argv});
+            return true;
+        }
 
         case il::Op::PropGet: {
             if (!needs(1, true, "Invalid operands for PropGet")) return false;

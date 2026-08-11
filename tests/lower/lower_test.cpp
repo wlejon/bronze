@@ -678,3 +678,97 @@ TEST_CASE("loose equality on two proven numbers is the same compare as strict") 
     CHECK(printed.find("cmp.eq") != std::string::npos);
     CHECK(printed.find("loose.eq") == std::string::npos);
 }
+
+TEST_CASE("a module function's locals do not leak into the module top level") {
+    // The top level is a function body like any other and starts from an
+    // empty scope (docs/0016 decision 3). Before this, lowering carried the
+    // LAST module function's bindings into `main`, and the two faces of that
+    // are both checked here. This one is the dangerous face: the read
+    // resolved to a binding whose SSA value id names an unrelated
+    // instruction in `main`, so it compiled and printed a plausible number.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function f(p) { let secret = 42; return p + secret; }\n"
+        "console.log(f(1));\n"
+        "console.log(secret);\n",
+        diags, buf);
+
+    CHECK_FALSE(optMod.has_value());
+    REQUIRE(diags.hasErrors());
+    CHECK(diags.render(buf).find("undefined variable: secret") != std::string::npos);
+}
+
+TEST_CASE("a top-level let may share a name with a module function's local") {
+    // The other face: this is ordinary JS that did not compile at all,
+    // because the leaked binding made the top-level declaration look like a
+    // redeclaration in the same scope.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function g() { let acc = 7; return acc; }\n"
+        "let acc = 'module';\n"
+        "console.log(g());\n"
+        "console.log(acc);\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("a block declaration shadows an enclosing one and then uncovers it") {
+    // Leaving a scope uncovers what its declarations hid; it does not delete
+    // the name. `let x = 1; { let x = 2; } x` reported `undefined variable`.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function f() {\n"
+        "  let x = 1;\n"
+        "  { let x = 10; console.log(x); }\n"
+        "  return x;\n"
+        "}\n"
+        "console.log(f());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("a top-level function declaration reaches a module-level binding") {
+    // docs/0016 decision 1. The module scope is a singleton, so its record is
+    // published by `main` and loaded by the module functions that need it —
+    // which is what lets them stay direct-call targets.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "let count = 5;\n"
+        "function read() { return count; }\n"
+        "function bump() { count += 1; }\n"
+        "bump();\n"
+        "console.log(read());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("module.env.set") != std::string::npos);
+    CHECK(text.find("module.env.get") != std::string::npos);
+    // Still a direct call: the whole point of not desugaring these into
+    // closures (docs/0016 decision 1).
+    CHECK(text.find("call @read") != std::string::npos);
+}
+
+TEST_CASE("an update expression on a captured binding goes through the environment") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function outer() { let n = 0; return () => ++n; }\n"
+        "console.log(outer()());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.get") != std::string::npos);
+    CHECK(text.find("env.set") != std::string::npos);
+}

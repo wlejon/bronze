@@ -1,6 +1,10 @@
-// String literals, template literals, and the object and array literal
-// forms. What these have in common is that each turns source TEXT into a
-// value, which is why the escape decoder lives here with them.
+// String literals, numeric literals, template literals, and the object and
+// array literal forms. What these have in common is that each turns source
+// TEXT into a value, which is why the escape decoder and the numeric decoder
+// live here with them.
+
+#include <charconv>
+#include <string>
 
 #include "parse/parser.h"
 
@@ -42,6 +46,27 @@ bool readHex(std::string_view text, size_t at, size_t count, uint32_t& out) {
     }
     out = value;
     return true;
+}
+
+bool isDecimalDigit(char c) { return c >= '0' && c <= '9'; }
+
+// The value of a digit in base 36, which is enough to answer for every radix
+// a numeric literal can have and to REJECT a digit the radix does not have —
+// `0b19` must name the offending digit rather than stop reading at the 1.
+int digitValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    return -1;
+}
+
+const char* radixName(int radix) {
+    switch (radix) {
+        case 2: return "binary";
+        case 8: return "octal";
+        case 16: return "hexadecimal";
+        default: return "decimal";
+    }
 }
 
 }  // namespace
@@ -133,6 +158,123 @@ std::string Parser::decodeStringLiteral(std::string_view raw, Span span) {
     }
     return out;
 }
+// The Number a NumericLiteral DENOTES (ECMA-262 12.9.3), which — like a
+// string literal's characters — is not its source text. The lexer only found
+// where the literal ends; deciding what `0xFF`, `1_000_000` and `1.5e-3` mean
+// is this function's job, and keeping it here is what lets the lexer stay
+// permissive enough to hand a malformed literal over as ONE token, so the
+// diagnostic can point at the whole thing.
+//
+// Three rules from the grammar, each of which is an error rather than a
+// guess:
+//
+//  - a NumericLiteralSeparator contributes nothing to the mathematical value,
+//    but it may appear only BETWEEN two digits, so `1__0`, `1_`, `0x_1` and
+//    `1_.5` are not numbers;
+//  - a digit the radix does not have (`0b19`) is not a number; and
+//  - `017` is a LegacyOctalIntegerLiteral, which strict mode forbids
+//    outright. Reading it as decimal 17 or as octal 15 are both defensible
+//    and they differ, which is exactly the situation docs/0000 says to
+//    diagnose rather than choose.
+bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) {
+    out = 0;
+    if (raw.empty()) {
+        diags_.error(span, "empty numeric literal");
+        return false;
+    }
+
+    int radix = 10;
+    size_t digitsBegin = 0;
+    if (raw.size() >= 2 && raw[0] == '0') {
+        switch (raw[1]) {
+            case 'x': case 'X': radix = 16; digitsBegin = 2; break;
+            case 'o': case 'O': radix = 8;  digitsBegin = 2; break;
+            case 'b': case 'B': radix = 2;  digitsBegin = 2; break;
+            default:
+                // A leading zero followed by a digit or a separator is a
+                // legacy octal (or a NonOctalDecimalIntegerLiteral like `08`);
+                // `0.5`, `0e3` and a bare `0` are ordinary decimals.
+                if (isDecimalDigit(raw[1]) || raw[1] == '_') {
+                    diags_.error(span, "legacy octal literal '" + std::string(raw) +
+                                           "': a numeric literal may not start with '0' "
+                                           "followed by a digit (write 0o" +
+                                           std::string(raw.substr(1)) + " for octal, or " +
+                                           std::string(raw.substr(1)) + " for decimal)");
+                    return false;
+                }
+                break;
+        }
+    }
+
+    // Separator placement is checked against the ORIGINAL text, because the
+    // rule is about which characters neighbour it.
+    const auto isDigitOfRadix = [&](size_t at) {
+        if (at >= raw.size()) return false;
+        const int v = digitValue(raw[at]);
+        return v >= 0 && v < radix;
+    };
+    for (size_t i = digitsBegin; i < raw.size(); ++i) {
+        if (raw[i] != '_') continue;
+        if (i == digitsBegin || !isDigitOfRadix(i - 1) || !isDigitOfRadix(i + 1)) {
+            diags_.error(span, "numeric separator '_' must appear between two digits, in '" +
+                                   std::string(raw) + "'");
+            return false;
+        }
+    }
+
+    if (radix != 10) {
+        double value = 0;
+        size_t digits = 0;
+        for (size_t i = digitsBegin; i < raw.size(); ++i) {
+            if (raw[i] == '_') continue;
+            const int v = digitValue(raw[i]);
+            if (v < 0 || v >= radix) {
+                diags_.error(span, std::string("invalid digit '") + raw[i] + "' in the " +
+                                       radixName(radix) + " literal '" + std::string(raw) + "'");
+                return false;
+            }
+            value = value * radix + v;
+            ++digits;
+        }
+        if (digits == 0) {
+            diags_.error(span, std::string("the ") + radixName(radix) + " literal '" +
+                                   std::string(raw) + "' has no digits after its prefix");
+            return false;
+        }
+        out = value;
+        return true;
+    }
+
+    // Decimal: the separators are the only thing between this text and
+    // something `from_chars` reads. A leading `.` is normalized because the
+    // literal `.5` is a DecimalLiteral and `from_chars` is not required to
+    // accept one.
+    std::string text;
+    text.reserve(raw.size() + 1);
+    if (raw[0] == '.') text.push_back('0');
+    for (char c : raw) {
+        if (c != '_') text.push_back(c);
+    }
+
+    double value = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        // Out of range is the one `errc` that is not a malformed literal:
+        // ECMA-262 rounds an over-large MV to +Infinity and an under-small
+        // one to zero, which is what `from_chars` already put in `value`.
+        if (result.ec == std::errc::result_out_of_range && result.ptr == end) {
+            out = value;
+            return true;
+        }
+        diags_.error(span, "malformed numeric literal '" + std::string(raw) + "'");
+        return false;
+    }
+    out = value;
+    return true;
+}
+
 // `head ${ expr } middle ${ expr } tail`, with the lexer having already
 // decided where each piece ends. The delimiters are stripped by span
 // arithmetic: a head is `...${ (backtick plus two), a middle is }...${ and
@@ -167,36 +309,83 @@ ExprPtr Parser::parseTemplateLiteral() {
         return nullptr;
     }
 }
+// The four PropertyDefinition forms bronze has (ECMA-262 13.2.5): a written
+// key with a value, a computed key with a value, and the IdentifierReference
+// shorthand. Every value is an *AssignmentExpression*, so the commas between
+// properties are the literal's own punctuation and never the comma operator.
 ExprPtr Parser::parseObjectLit() {
     const Token& openToken = advance();  // '{'
     auto obj = std::make_unique<ObjectLit>();
     obj->span.begin = openToken.span.begin;
 
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        std::string keyStr;
-        if (check(TokenKind::Identifier)) {
-            keyStr = std::string(advance().text);
+        ObjectProp prop;
+        if (check(TokenKind::LBracket)) {
+            // `{ [e]: v }`. The key is not known here: ToPropertyKey runs on
+            // whatever `e` evaluates to, at run time, and BEFORE `v` is
+            // evaluated — which is why the key expression is a child of the
+            // property rather than something the parser folds to text.
+            advance();
+            prop.keyExpr = parseAssign();
+            if (!prop.keyExpr) return nullptr;
+            if (!expect(TokenKind::RBracket, "']' after a computed property key")) return nullptr;
+            if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
+            prop.value = parseAssign();
+            if (!prop.value) return nullptr;
+        } else if (check(TokenKind::Identifier)) {
+            const Token& nameTok = advance();
+            prop.key = std::string(nameTok.text);
+            if (check(TokenKind::LParen)) {
+                // `{ m() {} }` — MethodDefinition shorthand. It is a function
+                // whose home object is this literal, which is a `super`
+                // question and not a property-key one, so it is named rather
+                // than reported as a missing ':'.
+                error("unsupported construct: object literal method shorthand");
+                return nullptr;
+            }
+            if (check(TokenKind::Assign)) {
+                // `{ x = 1 }` is a CoverInitializedName: legal only when the
+                // literal turns out to be a destructuring PATTERN, never as
+                // an object literal in its own right.
+                error("unsupported construct: destructuring assignment pattern "
+                      "('{ x = ... }' is only ever a pattern, never an object literal)");
+                return nullptr;
+            }
+            if (check(TokenKind::Comma) || check(TokenKind::RBrace)) {
+                // `{ x }` — shorthand. The key is the identifier's text and
+                // the value is that same identifier evaluated here, so the
+                // two cannot disagree about which binding is meant.
+                auto ident = std::make_unique<Ident>();
+                ident->span = nameTok.span;
+                ident->name = prop.key;
+                prop.value = std::move(ident);
+            } else {
+                if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+                prop.value = parseAssign();
+                if (!prop.value) return nullptr;
+            }
         } else if (check(TokenKind::StringLiteral)) {
             auto sTok = advance();
-            keyStr = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+            prop.key = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+            if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+            prop.value = parseAssign();
+            if (!prop.value) return nullptr;
         } else if (check(TokenKind::Ellipsis)) {
             // `{ ...src }` - a spread in key position, which the property
             // key error named as a missing identifier.
             error("unsupported construct: spread");
             return nullptr;
         } else {
-            error("expected identifier or string literal for property key");
+            // A numeric key (`{ 1: 'a' }`) lands here deliberately: its name
+            // is ToString(Number), which is the runtime's formatter and not
+            // something the parser may reimplement. `{ [1]: 'a' }` is the
+            // spelling that works, and it is the same property.
+            error("expected a property key: an identifier, a string literal, "
+                  "or a computed '[expr]'");
             return nullptr;
         }
 
-        if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
-
-        // AssignmentExpression: the commas between properties are the
-        // literal's own punctuation, never the comma operator.
-        auto valExpr = parseAssign();
-        if (!valExpr) return nullptr;
-
-        obj->props.push_back(ObjectProp{std::move(keyStr), std::move(valExpr)});
+        obj->props.push_back(std::move(prop));
 
         if (!match(TokenKind::Comma)) break;
     }
