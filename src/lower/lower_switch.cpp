@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "lower/assigned_set.h"
+#include "ast/assigned.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -63,10 +63,12 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
             // Named rather than lowered, because bronze cannot enforce what
             // makes it safe. A case jump can enter a clause below the one
             // that initializes the binding, and ECMA-262 answers that with a
-            // temporal-dead-zone ReferenceError — which needs `throw`
-            // (docs/0018 decision 2). Wrapping the clause in a block gives the
-            // declaration a scope of its own and is what most JavaScript
-            // writes anyway.
+            // temporal-dead-zone ReferenceError. `throw` exists now
+            // (docs/0020); what does not is the uninitialized binding STATE
+            // that decides when to raise one, so this stays a named error —
+            // see cases/blocked/temporal_dead_zone.js. Wrapping the clause in
+            // a block gives the declaration a scope of its own and is what
+            // most JavaScript writes anyway.
             diags_.error(decl->span,
                          std::string("unsupported construct: a '") + what +
                              "' declaration directly in a switch case (the switch body is one "
@@ -85,7 +87,7 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
     // per variable the switch assigns anywhere. The body blocks need it
     // because they are reached both from a test and from the clause above,
     // and the exit block because a `break` can leave from any of them.
-    const auto params = collectLoopParams(*sw, getAssignedVariables(*sw));
+    const auto params = collectLoopParams(*sw, ast::getAssignedNames(*sw));
     std::vector<std::string> vars;
     for (const auto& p : params) vars.push_back(p.name);
 

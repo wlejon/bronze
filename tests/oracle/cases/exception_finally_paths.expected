@@ -1,0 +1,10 @@
+fin1
+try
+2
+3
+body0,fin0,fin1
+b0,f0,f1,b2,f2
+in,inner-fin,outer-fin,after
+second
+caught:x,fin,outer:again
+t,f,after

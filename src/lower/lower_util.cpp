@@ -15,7 +15,13 @@ namespace bronze::lower {
 // a compile error, so adding a global is a deliberate act here and never a
 // program silently reading `undefined` at runtime.
 bool Lowerer::isProvidedGlobal(const std::string& name) const {
-    return name == "Math";
+    // The Error constructors are globals for the same reason `Math` is
+    // (docs/0011 decision 1): a free identifier lowering can resolve, rather
+    // than a diagnosed unknown name. They are also what the runtime raises
+    // its own spec'd TypeErrors with, so a `catch` cannot tell a
+    // bronze-raised error from a hand-written one (docs/0020 decision 7).
+    return name == "Math" || name == "Error" || name == "TypeError" ||
+           name == "RangeError";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
@@ -28,7 +34,12 @@ uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
 
 il::BlockId Lowerer::createBlock(il::Function& ilFn) {
     il::BlockId id = static_cast<il::BlockId>(ilFn.blocks.size());
-    ilFn.blocks.push_back(il::Block{.id = id});
+    // Every block made inside a `try` names that try's handler, and the
+    // backend derives its cell tests from that (docs/0020 decision 3). It is
+    // stamped here, at creation, rather than set by each construct: a handler
+    // that had to be assigned by hand would be forgotten by exactly the
+    // construct that most needs it.
+    ilFn.blocks.push_back(il::Block{.id = id, .handler = currentHandler_});
     return id;
 }
 

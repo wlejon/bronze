@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "lower/assigned_set.h"
+#include "ast/assigned.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -42,7 +42,7 @@ bool Lowerer::lowerIndexWalkLoop(const ast::Stmt& loopStmt, Value iterVal,
     zeroInst.immF64 = 0.0;
     emitInst(ilFn, zeroInst);
 
-    const auto loopParams = collectLoopParams(loopStmt, getAssignedVariables(loopStmt));
+    const auto loopParams = collectLoopParams(loopStmt, ast::getAssignedNames(loopStmt));
     std::vector<std::string> loopVars;
     for (const auto& param : loopParams) loopVars.push_back(param.name);
 

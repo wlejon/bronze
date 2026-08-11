@@ -10,6 +10,7 @@ bronze_add_module(runtime
         shape.cpp
         dictionary.cpp
         accessor.cpp
+        exception.cpp
         object.cpp
         array.cpp
         typed_array.cpp
@@ -42,6 +43,7 @@ bronze_add_module(runtime
         ../../tests/runtime/typed_array_test.cpp
         ../../tests/runtime/fn_test.cpp
         ../../tests/runtime/inspect_test.cpp
+        ../../tests/runtime/exception_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

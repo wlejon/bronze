@@ -167,8 +167,22 @@ public:
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
-    void visit(const TryStmt&) override {}
-    void visit(const ThrowStmt&) override {}
+    void visit(const TryStmt& n) override {
+        for (const auto& s : n.body) s->accept(*this);
+        if (n.hasCatchParam) {
+            if (n.catchPattern) {
+                for (const auto& bound : patternBoundNames(*n.catchPattern)) names.insert(bound);
+                visitPatternExprs(n.catchPattern.get(), *this);
+            } else {
+                names.insert(n.catchName);
+            }
+        }
+        for (const auto& s : n.catchBody) s->accept(*this);
+        for (const auto& s : n.finallyBody) s->accept(*this);
+    }
+    void visit(const ThrowStmt& n) override {
+        if (n.value) n.value->accept(*this);
+    }
     void visit(const FunctionDecl& f) override {
         names.insert(f.name);
         visitParamExprs(f.params, *this);
@@ -319,8 +333,15 @@ public:
         if (n.iterable) n.iterable->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
-    void visit(const TryStmt&) override {}
-    void visit(const ThrowStmt&) override {}
+    void visit(const TryStmt& n) override {
+        for (const auto& s : n.body) s->accept(*this);
+        visitPatternExprs(n.catchPattern.get(), *this);
+        for (const auto& s : n.catchBody) s->accept(*this);
+        for (const auto& s : n.finallyBody) s->accept(*this);
+    }
+    void visit(const ThrowStmt& n) override {
+        if (n.value) n.value->accept(*this);
+    }
     void visit(const Module& m) override {
         for (const auto& s : m.body) s->accept(*this);
     }
@@ -428,6 +449,16 @@ void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
     }
     if (const auto* lb = dynamic_cast<const LabeledStmt*>(&stmt)) {
         if (lb->body) collectHoistedVarsIn(*lb->body, out);
+        return;
+    }
+    // None of a try statement's three parts is a function boundary, so a
+    // `var` in any of them is this function's. The catch PARAMETER is not one
+    // of them: 14.15.2 gives it its own declarative environment, and it is a
+    // lexical binding whatever the body does with it.
+    if (const auto* tr = dynamic_cast<const TryStmt*>(&stmt)) {
+        collectHoistedVars(tr->body, out);
+        collectHoistedVars(tr->catchBody, out);
+        collectHoistedVars(tr->finallyBody, out);
         return;
     }
     // A nested function's `var`s belong to that function, not this one.

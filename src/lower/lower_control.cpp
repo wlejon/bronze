@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "lower/assigned_set.h"
+#include "ast/assigned.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -250,7 +250,7 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
 
 bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn) {
     const std::string label = takePendingLabel();
-    const auto loopParams = collectLoopParams(*whileStmt, getAssignedVariables(*whileStmt));
+    const auto loopParams = collectLoopParams(*whileStmt, ast::getAssignedNames(*whileStmt));
     std::vector<std::string> loopVars;
     for (const auto& param : loopParams) loopVars.push_back(param.name);
 
@@ -321,7 +321,7 @@ bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn
 
 bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn) {
     const std::string label = takePendingLabel();
-    const auto loopParams = collectLoopParams(*doWhileStmt, getAssignedVariables(*doWhileStmt));
+    const auto loopParams = collectLoopParams(*doWhileStmt, ast::getAssignedNames(*doWhileStmt));
     std::vector<std::string> loopVars;
     for (const auto& param : loopParams) loopVars.push_back(param.name);
 
@@ -416,7 +416,7 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
         if (!lowerStmt(*initStmt, ilFn)) return false;
     }
 
-    const auto loopParams = collectLoopParams(*forStmt, getAssignedVariables(*forStmt));
+    const auto loopParams = collectLoopParams(*forStmt, ast::getAssignedNames(*forStmt));
     std::vector<std::string> loopVars;
     for (const auto& param : loopParams) loopVars.push_back(param.name);
 
@@ -510,25 +510,46 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     return true;
 }
 
+// A jump out of a `try` runs every `finally` it crosses, innermost first,
+// before it lands (docs/0020 decision 5). The target is re-read from the
+// index afterwards rather than held as a pointer: lowering a finally body
+// pushes and pops jump targets of its own, and `jumpStack_` can reallocate.
+//
+// If one of those finallys completes abruptly — a `return` or a `throw` of
+// its own — the current block is already terminated and the jump is simply
+// not emitted, which is how the override of 14.15.3 happens without a rule.
+bool Lowerer::emitJumpCrossingFinallys(size_t targetIndex, bool toExit,
+                                       il::Function& ilFn) {
+    if (!runFinallyBodies(finallyDepthForJump(targetIndex), ilFn)) return false;
+    if (currentBlockIsTerminated(ilFn)) return true;
+    const JumpTarget& target = jumpStack_[targetIndex];
+    if (toExit) {
+        emitJumpToTarget(target, target.exitBlock, {}, ilFn);
+        return true;
+    }
+    // for-of and for-in thread an index their update block takes as an extra
+    // parameter; a `continue` is an edge into that block like any other and
+    // has to hand it over (docs/0012 decision 2).
+    std::vector<il::ValueId> extra;
+    if (target.updateExtraArg != il::kNoValue) extra.push_back(target.updateExtraArg);
+    emitJumpToTarget(target, target.updateBlock, extra, ilFn);
+    return true;
+}
+
 bool Lowerer::lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn) {
     const JumpTarget* target =
         findJumpTarget(breakStmt->label, /*forContinue=*/false, breakStmt->span);
     if (!target) return false;
-    emitJumpToTarget(*target, target->exitBlock, {}, ilFn);
-    return true;
+    return emitJumpCrossingFinallys(static_cast<size_t>(target - jumpStack_.data()),
+                                    /*toExit=*/true, ilFn);
 }
 
 bool Lowerer::lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Function& ilFn) {
     const JumpTarget* target =
         findJumpTarget(continueStmt->label, /*forContinue=*/true, continueStmt->span);
     if (!target) return false;
-    // for-of and for-in thread an index their update block takes as an extra
-    // parameter; a `continue` is an edge into that block like any other and
-    // has to hand it over (docs/0012 decision 2).
-    std::vector<il::ValueId> extra;
-    if (target->updateExtraArg != il::kNoValue) extra.push_back(target->updateExtraArg);
-    emitJumpToTarget(*target, target->updateBlock, extra, ilFn);
-    return true;
+    return emitJumpCrossingFinallys(static_cast<size_t>(target - jumpStack_.data()),
+                                    /*toExit=*/false, ilFn);
 }
 
 }  // namespace bronze::lower

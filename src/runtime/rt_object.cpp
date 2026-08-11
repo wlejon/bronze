@@ -13,6 +13,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/env.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -187,7 +188,8 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
     Value fnVal(fnBits);
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != 2) {
-        fatal("new on a value that is not a function");
+        return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
+            .rawBits();
     }
 
     Rooted<Value> fnRoot{fnVal};
@@ -328,10 +330,8 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
                              const uint64_t* argvBits) {
     Value calleeVal(calleeBits);
     if (!calleeVal.isObject() || calleeVal.asObject<HeapObjectHeader>()->flags != 2) {
-        char msg[128];
-        std::snprintf(msg, sizeof(msg), "attempted to call %s, which is not a function",
-                      valueKindName(calleeVal));
-        fatal(msg);
+        return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
+            .rawBits();
     }
     auto* fn = calleeVal.asObject<FunctionHeader>();
     // argvBits already points into the caller's GC root frame (docs/0006), so

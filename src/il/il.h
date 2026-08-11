@@ -78,6 +78,16 @@ enum class Op : uint8_t {
     In,         // a: bool = in b, c          (b: key, c: object)
     IsNullish,  // a: bool = is.nullish b
     Ret,        // ret [a]
+    // `throw v`: stores v into the pending-exception cell and goes to this
+    // block's handler (docs/0020 decision 3). A terminator, because it is a
+    // way OUT of the block like a jump — the edge it takes is just written on
+    // the block rather than on the instruction.
+    Throw,      // throw a
+    // The pending value, taken and cleared. The first instruction of every
+    // handler block, and the only way to read the cell: clearing it here is
+    // what lets a `finally` run its body with nothing pending and then decide
+    // whether to re-raise (docs/0020 decision 5).
+    ExcTake,    // a: dynamic = exc.take
     Jump,       // jump bN(args...)
     Branch,     // br %cond, bThen(args...), bElse(args...)
     Call,       // a = call <funcRef>(args...)
@@ -221,10 +231,26 @@ struct Instruction {
     BlockTarget elseTarget;          // Branch else-target
 };
 
+// Whether this instruction can leave an exception pending, and so needs the
+// backend's cell test after it (docs/0020 decision 1). Defined in print.cpp,
+// beside `isTerminator`, because both are one-line facts about the op table.
+bool canThrow(const Instruction& inst);
+
 struct Block {
     BlockId id = 0;
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
+    // Where control goes if an exception becomes pending inside this block:
+    // the innermost enclosing handler, or `kNoBlock` for "leave the function"
+    // (docs/0020 decision 3). It sits on the block rather than on each call
+    // so that lowering emits no test at all — the backend derives them from
+    // `canThrow`, and the block is never split in the IL, so no join here
+    // grows a parameter.
+    //
+    // A handler block therefore takes NO parameters: it is entered from an
+    // arbitrary point in the protected region, and nothing here knows what a
+    // binding held there. Decision 4 is what makes that possible.
+    BlockId handler = kNoBlock;
 };
 
 struct Param {
@@ -243,6 +269,13 @@ struct Function {
     std::vector<Param> params;
     Type returnType = Type::Void;
     bool isExported = false;
+    // The module's entry point. Everything else about a function is the
+    // same, and one thing is not: it has no caller to propagate an exception
+    // to, so its unwind path reports the value and exits instead of returning
+    // (docs/0020 decision 2). A flag rather than a name comparison in the
+    // backend, because "which function is `main`" is a fact lowering knows
+    // and codegen should not have to spell.
+    bool isEntryPoint = false;
     bool needsEnv = false;
     bool needsThis = false;
     // `...rest`: the LAST source parameter, and the one no caller supplies a

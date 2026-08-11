@@ -15,6 +15,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -145,7 +146,8 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     Rooted<Value> objRoot{Value(objBits)};
     Rooted<Value> ctorRoot{Value(ctorBits)};
     if (!isCallable(ctorRoot.get())) {
-        fatal("the right operand of 'instanceof' is not callable");
+        rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
+        return false;
     }
     // A primitive left operand has no prototype chain, so the answer is
     // false — not an error, which is what makes `x instanceof C` a safe
@@ -177,7 +179,8 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
 bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     Rooted<Value> objRoot{Value(objBits)};
     if (!objRoot.get().isObject()) {
-        fatal("the right operand of 'in' must be an object");
+        rtThrowTypeError("Cannot use 'in' operator: the right-hand side is not an object");
+        return false;
     }
     // keyText allocates a string, so the header is derived only afterwards,
     // from the root the collector updates.

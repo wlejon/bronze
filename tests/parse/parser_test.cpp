@@ -714,10 +714,36 @@ TEST_CASE("a try statement consumes its finally block") {
     // construct lowering NAMES was reported as stray punctuation instead.
     const auto both = parseAndDump("try { f(); } catch (e) { g(); } finally { h(); }");
     CHECK(both.substr(0, 7) != "ERRORS:");
-    CHECK(both.find("(try)") != std::string::npos);
+    CHECK(both.find("(try\n") != std::string::npos);
+    CHECK(both.find("(catch e\n") != std::string::npos);
+    CHECK(both.find("(finally\n") != std::string::npos);
+    // All three parts keep their own statements: the body's call is a child of
+    // the try and not of the catch.
+    CHECK(both.find("(ident f)") < both.find("(catch e"));
+    CHECK(both.find("(ident g)") < both.find("(finally"));
+    CHECK(both.find("(ident h)") > both.find("(finally"));
 
     const auto onlyFinally = parseAndDump("try { f(); } finally { h(); }");
     CHECK(onlyFinally.substr(0, 7) != "ERRORS:");
+    CHECK(onlyFinally.find("(catch") == std::string::npos);
+    CHECK(onlyFinally.find("(finally\n") != std::string::npos);
+
+    // A catch parameter is a BindingPattern (ECMA-262 14.15), and it is
+    // optional: both forms dump under a head that says which one it is.
+    const auto destructured = parseAndDump("try { f(); } catch ({ message }) { g(); }");
+    CHECK(destructured.substr(0, 7) != "ERRORS:");
+    CHECK(destructured.find("(catch <pattern>") != std::string::npos);
+    CHECK(destructured.find("(pattern-object") != std::string::npos);
+
+    const auto bindingless = parseAndDump("try { f(); } catch { g(); }");
+    CHECK(bindingless.substr(0, 7) != "ERRORS:");
+    CHECK(bindingless.find("(catch <none>") != std::string::npos);
+
+    // `throw` carries its expression rather than dropping it.
+    const auto thrown = parseAndDump("throw new Error('x');");
+    CHECK(thrown.substr(0, 7) != "ERRORS:");
+    CHECK(thrown.find("(throw") != std::string::npos);
+    CHECK(thrown.find("(new") != std::string::npos);
 
     // A `try` with neither is a syntax error, not a silently accepted block.
     const auto bare = parseAndDump("try { f(); }");

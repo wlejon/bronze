@@ -110,6 +110,33 @@ private:
     // the labelled statement is lowered, and a loop pushes its jump target
     // only once lowering reaches it.
     std::vector<std::string> labelStack_;
+    // The innermost enclosing `try`'s handler block, stamped onto every block
+    // `createBlock` makes while it is set. `kNoBlock` means "an exception
+    // here leaves the function", which is what a body outside any `try` wants
+    // and what the backend turns into a frame pop and a `ret`.
+    il::BlockId currentHandler_ = il::kNoBlock;
+
+    // The `finally` bodies an abrupt completion has to run on its way out,
+    // innermost last (docs/0020 decision 5). Each records the `jumpStack_`
+    // depth it was pushed at, which is the whole of "does this `break` cross
+    // it?": a `break` to the target at index i crosses every entry pushed
+    // when the stack was deeper than i.
+    //
+    // Function-local, and saved/cleared/restored across a function boundary
+    // exactly as `labelStack_` is: a `return` inside a nested function runs
+    // that function's finallys and none of the enclosing ones.
+    struct FinallyFrame {
+        const ast::TryStmt* stmt = nullptr;
+        size_t jumpDepth = 0;
+        // The handler in effect OUTSIDE this try. Every copy of the finally
+        // body runs under it, never under the try's own handler: an exception
+        // the finally raises propagates outward, and a block still naming the
+        // try's handler would re-enter it and run the same finally a second
+        // time.
+        il::BlockId outerHandler = il::kNoBlock;
+    };
+    std::vector<FinallyFrame> finallyStack_;
+
     // The label a `label:` just read, waiting for the loop or switch it
     // fronts to claim it. Cleared by whichever statement lowering reaches
     // next, so a label can never leak onto a second statement.
@@ -136,6 +163,19 @@ private:
     // rather than to a parameter (docs/0012 decision 3).
     bool currentFunctionIsArrow_ = false;
     std::unordered_set<std::string> capturedNames_;
+    // Every binding of this function that may not live in SSA:
+    // `capturedNames_` (a closure can read it after the declaring scope's SSA
+    // values are gone, docs/0007) plus every name assigned inside a `try` (a
+    // handler is entered from a point no join can enumerate, docs/0020
+    // decision 4). One set, because `enterScope` and `enterFunctionEnv` ask
+    // one question — "does this name need an environment slot?" — and the two
+    // reasons have the same answer.
+    //
+    // Deliberately NOT the set `lowerForStmt`'s per-iteration-binding
+    // diagnostic reads: that is a hard error about closures, and widening it
+    // to this would make `try { for (let i = 0; ...) }` illegal for a binding
+    // nothing captures.
+    std::unordered_set<std::string> memoryNames_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
     // The module scope (docs/0016 decision 1). Its slot layout is decided
@@ -337,6 +377,9 @@ private:
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);
     bool lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn);
     bool lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn);
+    // `break`/`continue` to `jumpStack_[targetIndex]`, running every
+    // `finally` between here and there first (docs/0020 decision 5).
+    bool emitJumpCrossingFinallys(size_t targetIndex, bool toExit, il::Function& ilFn);
     bool lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Function& ilFn);
     // The label the statement now being lowered was written under, taken so
     // that no later statement can see it.
@@ -366,6 +409,36 @@ private:
 
     // --- lower_switch.cpp: selection and fallthrough (docs/0018) -----------
     bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);
+
+    // --- lower_try.cpp: try/catch/finally and throw (docs/0020) ------------
+    bool lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn);
+    // `try { ... } catch (e) { ... }` with no finally, which is also the
+    // protected region of a try/catch/finally: 14.15.3 defines the three-part
+    // form as the two-part one wrapped in a finally, so there is one lowering
+    // of each half rather than a third of the pair.
+    bool lowerTryCatch(const ast::TryStmt* tryStmt, il::Function& ilFn);
+    // The `try` BLOCK alone, in its own scope. Its own method because it is
+    // lowered from two places: as the protected region of a try/catch, and
+    // directly as the protected region of a try/finally with no catch.
+    bool lowerTryBlock(const ast::TryStmt* tryStmt, il::Function& ilFn);
+    bool lowerThrowStmt(const ast::ThrowStmt* throwStmt, il::Function& ilFn);
+    // Runs the `finally` bodies from the top of `finallyStack_` down to
+    // `downTo`, innermost first, each with the stack truncated below it so a
+    // jump inside a finally does not re-run that finally. Stops early if one
+    // of them completes abruptly — which is how `try { return 1 } finally
+    // { return 2 }` produces 2 without a rule about precedence.
+    bool runFinallyBodies(size_t downTo, il::Function& ilFn);
+    // The lowest `finallyStack_` index a jump to `jumpStack_[targetIndex]`
+    // has to run. `finallyStack_.size()` when it crosses none.
+    size_t finallyDepthForJump(size_t targetIndex) const;
+    // One copy of a finally body, in its own scope. Lowered from the AST
+    // rather than cloned: a re-lowering is fresh blocks and fresh SSA values,
+    // and nothing in lowering is stateful across it (docs/0020 decision 5).
+    bool lowerFinallyBody(const ast::TryStmt& stmt, il::Function& ilFn);
+    // Jumps into a fresh block stamped with `handler` and continues there.
+    // What every copy of a finally body needs, and the reason a copy is not
+    // simply emitted into whatever block lowering happens to be in.
+    void openBlockUnderHandler(il::BlockId handler, il::Function& ilFn);
 
     // --- lower_expr_cond.cpp: conditional-expression joins (docs/0005) ---
     VarStateMap snapshotVarStates() const;

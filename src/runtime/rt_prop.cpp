@@ -14,6 +14,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -161,13 +162,15 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     // Reading a property of null or undefined is a TypeError in ECMA-262
     // 7.3.2 (GetV -> ToObject), and answering `undefined` for it is the
     // silent-wrong-answer shape CLAUDE.md forbids: `a.b.c` where `a.b` is
-    // missing would report nothing and carry an undefined onward. bronze has
-    // no `throw`, so it is a hard error here — which is also what makes
-    // `(a?.b).c` differ observably from `a?.b.c` (docs/0018 decision 4).
+    // missing would report nothing and carry an undefined onward. It is also
+    // what makes `(a?.b).c` differ observably from `a?.b.c` (docs/0018
+    // decision 4). Catchable since docs/0020: the spec names it, so it is a
+    // thrown TypeError rather than the process death it used to be.
     if (objVal.isNull() || objVal.isUndefined()) {
-        fatal((std::string("reading property '") + keyStr + "' of " +
-               (objVal.isNull() ? "null" : "undefined"))
-                  .c_str());
+        return rtThrowTypeError("Cannot read properties of " +
+                                std::string(objVal.isNull() ? "null" : "undefined") +
+                                " (reading '" + keyStr + "')")
+            .rawBits();
     }
     if (!objVal.isObject()) return Value::fromUndefined().rawBits();
 
@@ -285,9 +288,10 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // reading one (ECMA-262 7.3.4), and discarding the write is worse than
     // reading `undefined`: the program believes it stored something.
     if (objVal.isNull() || objVal.isUndefined()) {
-        fatal((std::string("writing property '") + rtKeyString(keyIndex) + "' of " +
-               (objVal.isNull() ? "null" : "undefined"))
-                  .c_str());
+        rtThrowTypeError("Cannot set properties of " +
+                         std::string(objVal.isNull() ? "null" : "undefined") + " (setting '" +
+                         rtKeyString(keyIndex) + "')");
+        return;
     }
     if (!objVal.isObject()) return;
 

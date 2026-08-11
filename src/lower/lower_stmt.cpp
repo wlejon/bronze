@@ -117,13 +117,11 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
     }
 
     if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
-        diags_.error(tr->span, "unsupported construct: try/catch/throw");
-        return false;
+        return lowerTryStmt(tr, ilFn);
     }
 
     if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
-        diags_.error(th->span, "unsupported construct: try/catch/throw");
-        return false;
+        return lowerThrowStmt(th, ilFn);
     }
 
     diags_.error(stmt.span, "unsupported AST node");
@@ -240,6 +238,15 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
             val = unboxValueIfNeeded(*val, ilFn.returnType, ilFn);
         }
 
+        // 14.15.3: the try's completion is [return, V] and the finally runs
+        // AFTER V is computed — so the expression is lowered above, then
+        // every enclosing `finally` runs, then the value leaves. A `return`
+        // inside one of them terminates the block first and wins, which is
+        // the whole of "a completion from inside finally overrides the
+        // pending one" (docs/0020 decision 5).
+        if (!runFinallyBodies(0, ilFn)) return false;
+        if (currentBlockIsTerminated(ilFn)) return true;
+
         il::Instruction inst;
         inst.op = il::Op::Ret;
         inst.type = val->type;
@@ -247,6 +254,8 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.operands = {val->id};
         emitInst(ilFn, inst);
     } else {
+        if (!runFinallyBodies(0, ilFn)) return false;
+        if (currentBlockIsTerminated(ilFn)) return true;
         il::Instruction inst;
         inst.op = il::Op::Ret;
         inst.type = il::Type::Void;

@@ -185,10 +185,10 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     // slot and read SSA that the next iteration overwrites (docs/0011
     // decision 5). A destructuring head names several.
     for (const auto& name : extraDeclarations) {
-        if (!name.empty() && capturedNames_.contains(name)) slots.push_back(name);
+        if (!name.empty() && memoryNames_.contains(name)) slots.push_back(name);
     }
     for (const auto& name : ast::getScopeDeclarations(stmts)) {
-        if (capturedNames_.contains(name)) slots.push_back(name);
+        if (memoryNames_.contains(name)) slots.push_back(name);
     }
     if (slots.empty()) {
         scopeHasEnv_.push_back(false);
@@ -308,6 +308,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     labelStack_.clear();
     auto outerScopeHasEnv = scopeHasEnv_;
     auto outerCaptured = capturedNames_;
+    auto outerMemoryNames = memoryNames_;
+    // A `return` inside a nested function runs THAT function's finallys and
+    // none of the enclosing ones, exactly as `break outer` names nothing
+    // across the same boundary.
+    auto outerFinallyStack = finallyStack_;
+    finallyStack_.clear();
+    auto outerHandler = currentHandler_;
+    currentHandler_ = il::kNoBlock;
     auto outerEnvValue = currentEnvValue_;
     auto outerThisValue = currentThisValue_;
     auto outerIsArrow = currentFunctionIsArrow_;
@@ -336,6 +344,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentBlockIdx_ = outerBlockIdx;
     scopeHasEnv_ = outerScopeHasEnv;
     capturedNames_ = outerCaptured;
+    memoryNames_ = outerMemoryNames;
+    finallyStack_ = outerFinallyStack;
+    currentHandler_ = outerHandler;
     currentEnvValue_ = outerEnvValue;
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;

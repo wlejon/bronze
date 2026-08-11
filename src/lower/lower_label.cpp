@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "lower/assigned_set.h"
+#include "ast/assigned.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -129,7 +129,7 @@ bool Lowerer::lowerLabeledBlock(const ast::LabeledStmt* labeled, il::Function& i
     // every `break lbl` inside it, so it takes a parameter per variable the
     // statement assigns — the same shape a loop's exit block has, and for the
     // same reason.
-    const auto params = collectLoopParams(*labeled, getAssignedVariables(*labeled->body));
+    const auto params = collectLoopParams(*labeled, ast::getAssignedNames(*labeled->body));
     std::vector<std::string> vars;
     for (const auto& p : params) vars.push_back(p.name);
 

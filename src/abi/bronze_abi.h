@@ -37,6 +37,16 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_UNDEFINED_BITS 0xFFF6000000000000ull
 #define BRONZE_ABI_NULL_BITS      0xFFF5000000000000ull
 
+/* The Hole singleton, which is what `bronze_exception_cell` holds when no
+ * exception is pending (docs/0020 decision 1). The Hole is internal by
+ * construction — docs/0004 decision 1 forbids it from ever being a
+ * user-visible value — so it can mean "empty" without colliding with
+ * anything throwable, and its payload is 0, so "is something pending?" is one
+ * 64-bit compare against this constant rather than a mask and a shift. A
+ * separate boolean flag was rejected for the reason two words always are:
+ * they can disagree. */
+#define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
+
 /*
  * X(name, RET, PARAMS)
  *   RET    — one BRONZE_ABI_* type token (BRONZE_ABI_VOID for none)
@@ -105,7 +115,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_value,         BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_values,        BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_print_string,        BRONZE_ABI_VOID, (BRONZE_ABI_CSTR)) \
-    X(bronze_register_key_string, BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_CSTR))
+    X(bronze_register_key_string, BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_CSTR)) \
+    X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS))
 
 /*
  * Data symbols generated code links against. Same single-source-of-truth
@@ -114,7 +125,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * X(name, TYPE)
  */
 #define BRONZE_ABI_GLOBALS(X) \
-    X(bronze_gc_frame_top, BRONZE_ABI_FRAMEPTR)
+    X(bronze_gc_frame_top,   BRONZE_ABI_FRAMEPTR) \
+    X(bronze_exception_cell, BRONZE_ABI_U64)
 
 /*
  * ---- the inline property cache contract (docs/0010 decision 7) ----------
@@ -188,6 +200,26 @@ typedef struct bronze_gc_frame {
     uint64_t count;
     uint64_t slots[1];
 } bronze_gc_frame;
+
+/*
+ * The pending exception (docs/0020 decision 1). `bronze_exception_cell` holds
+ * the thrown value, or BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending.
+ * Generated code, after every instruction that can throw, loads it, compares
+ * it against that constant and branches — no helper call, for the same reason
+ * the GC frame is linked inline: this is on the call-heavy path.
+ *
+ * Two rules the runtime side must keep, because nothing enforces them:
+ *
+ *  - a helper that sets the cell RETURNS BRONZE_ABI_UNDEFINED_BITS. Its
+ *    caller stores the result into a GC root slot before it tests the cell,
+ *    and the collector reads every slot of a linked frame.
+ *  - the cell is a permanent GC root. A thrown object is live for exactly as
+ *    long as it is pending, across an arbitrary number of frames, and nothing
+ *    else roots it.
+ *
+ * There is no unwind ABI beyond this: propagation is an ordinary `ret`, so
+ * the frame pop before it is the one the non-throwing path already emits.
+ */
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds

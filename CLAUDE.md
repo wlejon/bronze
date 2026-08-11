@@ -90,3 +90,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0019 delete and accessors (dictionary mode as the escape from the shape
   chain, array holes and which methods skip them, the receiver an accessor
   runs with, and what an inline-cache entry may describe)
+- 0020 exceptions (the pending-exception cell and why not landingpads, the
+  handler as a property of the block, `finally` by duplication per exit path,
+  which runtime fatals became catchable, and the `Error` family)

@@ -182,8 +182,70 @@ bool FunctionEmitter::emit() {
     return true;
 }
 
+// ---- exceptions (docs/0020) -------------------------------------------------
+//
+// Propagation is a `ret`, so there is no unwind ABI: after any instruction
+// that can throw, generated code loads the pending cell, compares it against
+// the Hole singleton and branches. The not-taken path is the whole cost on a
+// program that never throws.
+
+void FunctionEmitter::popRootFrame() {
+    if (!framePtr_) return;
+    builder_.CreateStore(
+        builder_.CreateLoad(ptrTy_, builder_.CreateStructGEP(frameTy_, framePtr_, 0)),
+        shared_.globals.bronze_gc_frame_top);
+}
+
+llvm::BasicBlock* FunctionEmitter::functionUnwindBlock() {
+    if (unwindBlock_) return unwindBlock_;
+    llvm::IRBuilder<>::InsertPointGuard guard(builder_);
+    unwindBlock_ = llvm::BasicBlock::Create(shared_.ctx, "unwind", llvmFunc_);
+    builder_.SetInsertPoint(unwindBlock_);
+    // The entry point has no caller to propagate to: this is where the
+    // language runs out of handlers, so the value is reported on stderr and
+    // the process exits non-zero. Popping the frame first would be pointless
+    // and the helper does not return.
+    if (func_.isEntryPoint) {
+        builder_.CreateCall(shared_.abi.bronze_uncaught_exception, {});
+        builder_.CreateUnreachable();
+        return unwindBlock_;
+    }
+    // The same frame pop an ordinary return emits, and for the same reason:
+    // the collector walks the frame chain and cannot tell the two paths
+    // apart, which is the argument for this mechanism over `invoke`.
+    popRootFrame();
+    llvm::Type* retTy = llvmFunc_->getReturnType();
+    if (retTy->isVoidTy()) {
+        builder_.CreateRetVoid();
+    } else if (retTy->isIntegerTy(64)) {
+        // A Dynamic return. `undefined`, never garbage: the caller stores
+        // this into a GC root slot before it tests the cell, and the
+        // collector reads every slot of a linked frame.
+        builder_.CreateRet(builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS));
+    } else {
+        builder_.CreateRet(llvm::Constant::getNullValue(retTy));
+    }
+    return unwindBlock_;
+}
+
+llvm::BasicBlock* FunctionEmitter::unwindTargetFor(size_t blockIndex) {
+    const il::BlockId handler = func_.blocks[blockIndex].handler;
+    if (handler != il::kNoBlock && handler < blocks_.size()) return blocks_[handler];
+    return functionUnwindBlock();
+}
+
+void FunctionEmitter::emitExceptionCheck(size_t blockIndex) {
+    llvm::Value* cell = builder_.CreateLoad(i64Ty_, shared_.globals.bronze_exception_cell);
+    llvm::Value* pending = builder_.CreateICmpNE(
+        cell, builder_.getInt64(BRONZE_ABI_NO_EXCEPTION_BITS), "pending");
+    llvm::BasicBlock* cont = llvm::BasicBlock::Create(shared_.ctx, "cont", llvmFunc_);
+    builder_.CreateCondBr(pending, unwindTargetFor(blockIndex), cont);
+    builder_.SetInsertPoint(cont);
+}
+
 bool FunctionEmitter::emitBlock(size_t blockIndex) {
     const auto& block = func_.blocks[blockIndex];
+    currentILBlock_ = blockIndex;
     builder_.SetInsertPoint(blocks_[blockIndex]);
 
     // A block parameter is a def like any other: the phi's value has to reach
@@ -205,6 +267,11 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
             slotOf_[inst.result] != kNoSlot && values_[inst.result]) {
             builder_.CreateStore(values_[inst.result], slotAddr(slotOf_[inst.result]));
         }
+
+        // AFTER the result store, not after the call: the slot must hold a
+        // value the collector can parse before anything branches away from
+        // it (docs/0020 decision 2).
+        if (il::canThrow(inst)) emitExceptionCheck(blockIndex);
     }
     return true;
 }
@@ -214,6 +281,7 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::Jump:
         case il::Op::Branch:
         case il::Op::Ret:
+        case il::Op::Throw:
             return emitTerminator(inst);
 
         case il::Op::Add:
@@ -273,12 +341,19 @@ bool FunctionEmitter::emitTerminator(const il::Instruction& inst) {
         default: break;
     }
 
-    // Ret: unlink the root frame before leaving, on every return edge.
-    if (framePtr_) {
-        builder_.CreateStore(
-            builder_.CreateLoad(ptrTy_, builder_.CreateStructGEP(frameTy_, framePtr_, 0)),
-            shared_.globals.bronze_gc_frame_top);
+    if (inst.op == il::Op::Throw) {
+        // Set the cell and take this block's handler edge. The value is
+        // already in a root slot (it is an ordinary Dynamic def), and the
+        // cell is a permanent root, so it stays live across every frame it
+        // passes through.
+        llvm::Value* thrown = operand(inst, 0, "Undefined value in Throw instruction");
+        if (!thrown) return false;
+        builder_.CreateStore(thrown, shared_.globals.bronze_exception_cell);
+        builder_.CreateBr(unwindTargetFor(currentILBlock_));
+        return true;
     }
+    // Ret: unlink the root frame before leaving, on every return edge.
+    popRootFrame();
     if (inst.operands.empty()) {
         builder_.CreateRetVoid();
         return true;

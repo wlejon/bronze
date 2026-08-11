@@ -23,9 +23,11 @@
 #include <vector>
 
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -75,9 +77,14 @@ Value stringFromUnits(const Units& units) {
 
 Units thisUnits(Value self, const char* method) {
     if (!self.isString()) {
-        fatal((std::string("String.prototype.") + method +
-               " called on a value that is not a string")
-                  .c_str());
+        // 22.1.3's RequireObjectCoercible plus ToString: a String.prototype
+        // method reached with a non-string `this` is a TypeError, and since
+        // docs/0020 a catchable one. The empty unit sequence is what the
+        // caller then computes over, and its result is discarded — the cell
+        // is already set, so its caller's test fires before the value is read.
+        rtThrowTypeError(std::string("String.prototype.") + method +
+                         " called on a value that is not a string");
+        return Units{};
     }
     return unitsOf(self.asString<StringHeader>());
 }
@@ -175,7 +182,9 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     RootedArgs args(argc, argv);
     Value self(thisBits);
     if (!self.isString()) {
-        fatal("String.prototype.charCodeAt called on a value that is not a string");
+        return rtThrowTypeError(
+                   "String.prototype.charCodeAt called on a value that is not a string")
+            .rawBits();
     }
     StringHeader* str = self.asString<StringHeader>();
     double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
@@ -278,10 +287,12 @@ uint64_t stringRepeat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     Units self = thisUnits(Value(thisBits), "repeat");
     double n = toInteger(rtToNumber(args[0]));
     if (n < 0 || std::isinf(n)) {
-        // A RangeError in the language. bronze has no exceptions (docs/0001
-        // phase 4 has not reached try/catch), so it is a hard error naming
-        // itself rather than a silently clamped count.
-        fatal("String.prototype.repeat with a negative or infinite count");
+        // 22.1.3.16 step 4: a RangeError, not a clamp.
+        // The count is reported the way JS spells a number, not the way
+        // printf does: std::to_string(-1.0) is "-1.000000".
+        char buf[32];
+        const size_t len = formatJsNumber(n, buf);
+        return rtThrowRangeError("Invalid count value: " + std::string(buf, len)).rawBits();
     }
     Units out;
     out.reserve(self.size() * static_cast<size_t>(n));
@@ -460,7 +471,9 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 uint64_t stringItself(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!self.isString()) {
-        fatal("String.prototype.toString called on a value that is not a string");
+        return rtThrowTypeError(
+                   "String.prototype.toString called on a value that is not a string")
+            .rawBits();
     }
     return self.rawBits();
 }

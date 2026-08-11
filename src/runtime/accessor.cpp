@@ -43,9 +43,12 @@ void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value) {
     Rooted<Value> fnRoot{setter};
     if (!asAccessorFunction(setter, "setter")) {
         // A get-only property written to. Non-strict Set discards the false
-        // that [[Set]] returns; bronze has no `throw` to produce the
-        // strict-mode TypeError with, and this is the reading the pinned
-        // case derives (docs/0019 decision 6).
+        // that [[Set]] returns, and this is the reading the pinned case
+        // derives (docs/0019 decision 6). `throw` exists since docs/0020 and
+        // this still does not use it: raising here is not a bug fix but a
+        // decision that bronze's source language is strict-mode JavaScript,
+        // which changes five other constructs and has its own case list
+        // (cases/blocked/strict_mode.js).
         return;
     }
     // The argument buffer is the ROOT's slot, so the value stays live across

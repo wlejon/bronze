@@ -162,10 +162,10 @@ in an object literal.
 Before any element is read, the source goes through **one** `pattern.check`.
 It exists for two reasons:
 
-- Destructuring `null` or `undefined` is a TypeError in ECMA-262. bronze has
-  no `throw` (see the blocked case that says so), so it is a hard error here
-  rather than a set of quietly `undefined` bindings — the wrong answer given
-  silently, which is what CLAUDE.md forbids.
+- Destructuring `null` or `undefined` is a TypeError in ECMA-262, raised here
+  rather than left as a set of quietly `undefined` bindings — the wrong answer
+  given silently, which is what CLAUDE.md forbids. It was a fatal until
+  docs/0020 gave the runtime a way to raise a catchable one.
 - Checking up front is what lets the diagnostic name **the construct that
   asked**. Without it, `const [a] = 5` would be reported by the shared
   iterator helpers as a for-of error, which sends the reader to the wrong

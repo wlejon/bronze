@@ -306,8 +306,37 @@ public:
         });
         emit(")");
     }
-    void visit(const TryStmt&) override { emit("(try)"); }
-    void visit(const ThrowStmt&) override { emit("(throw)"); }
+    void visit(const TryStmt& n) override {
+        emit("(try");
+        indented([&] {
+            for (const auto& s : n.body) s->accept(*this);
+            if (n.hasCatch) {
+                emit("(catch " + (n.catchPattern    ? std::string("<pattern>")
+                                  : n.hasCatchParam ? n.catchName
+                                                    : std::string("<none>")));
+                indented([&] {
+                    if (n.catchPattern) dumpPattern(n.catchPattern.get());
+                    for (const auto& s : n.catchBody) s->accept(*this);
+                });
+                emit(")");
+            }
+            if (n.hasFinally) {
+                emit("(finally");
+                indented([&] {
+                    for (const auto& s : n.finallyBody) s->accept(*this);
+                });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
+    void visit(const ThrowStmt& n) override {
+        emit("(throw");
+        indented([&] {
+            if (n.value) n.value->accept(*this);
+        });
+        emit(")");
+    }
     void visit(const FunctionDecl& n) override {
         std::string head = "(function " + n.name + paramHead(n.params);
         if (!n.returnType.empty()) head += ": " + n.returnType;

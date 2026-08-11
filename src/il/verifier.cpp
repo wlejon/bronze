@@ -68,6 +68,28 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             return false;
         }
 
+        // A handler is a real edge the backend materializes, and it is
+        // entered from the middle of a block — so it can carry no arguments,
+        // and there is therefore nowhere for a parameter's incoming value to
+        // come from (docs/0020 decision 3). Both halves are checked here
+        // because lowering is the only producer and a violation would surface
+        // as an LLVM phi with a missing incoming, which names nothing.
+        if (block.handler != kNoBlock) {
+            if (block.handler >= fn.blocks.size()) {
+                diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
+                                        " names handler b" + std::to_string(block.handler) +
+                                        ", which is out of range");
+                return false;
+            }
+            if (!fn.blocks[block.handler].params.empty()) {
+                diags.error(Span{}, "Function " + fn.name + ": handler b" +
+                                        std::to_string(block.handler) +
+                                        " has block parameters, which no edge into a handler can "
+                                        "supply");
+                return false;
+            }
+        }
+
         for (size_t pIdx = 0; pIdx < block.params.size(); ++pIdx) {
             const auto& param = block.params[pIdx];
             // A block parameter is an SSA definition, so it needs a real type
@@ -178,6 +200,21 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
 
             for (ValueId opId : inst.operands) {
                 if (!checkUse(opId, bIdx, iIdx)) return false;
+            }
+
+            if (inst.op == Op::Throw) {
+                if (inst.operands.size() != 1) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": throw takes exactly one operand");
+                    return false;
+                }
+                if (definedTypes[inst.operands[0]] != Type::Dynamic) {
+                    diags.error(Span{}, "Function " + fn.name + ": throw operand %" +
+                                            std::to_string(inst.operands[0]) + " is " +
+                                            typeName(definedTypes[inst.operands[0]]) +
+                                            ", not dynamic (any value can be thrown)");
+                    return false;
+                }
             }
 
             if (inst.op == Op::Jump) {

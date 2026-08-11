@@ -1,15 +1,4 @@
-// BLOCKED: `try`/`catch`/`finally` and `throw` are
-// `unsupported construct: try/catch/throw` in lowering today. They parse;
-// nothing below the parser knows what a non-local exit is.
-//
-// This is the largest of the three blocked cases on purpose: it is the one
-// that needs a mechanism bronze does not have at all. Every hard error in
-// the runtime today aborts the process (`fatal`), and every IL edge is a
-// jump or a branch — there is no way for a callee to leave a frame its
-// caller has to unwind, and no way for the GC root frames of docs/0006 to
-// be popped on that path.
-//
-// What this case pins when it lands:
+// The shape of a non-local exit (docs/0020). What this case pins:
 //
 // 1. A throw crosses a call boundary: `risky(-1)` leaves `risky` and lands
 //    in the caller's `catch`, and the statements after it in the `try` do

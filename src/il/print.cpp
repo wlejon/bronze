@@ -49,6 +49,8 @@ const char* opName(Op op) {
         case Op::In: return "in";
         case Op::IsNullish: return "is.nullish";
         case Op::Ret: return "ret";
+        case Op::Throw: return "throw";
+        case Op::ExcTake: return "exc.take";
         case Op::Jump: return "jump";
         case Op::Branch: return "br";
         case Op::Call: return "call";
@@ -97,7 +99,74 @@ const char* opName(Op op) {
 }
 
 bool isTerminator(Op op) {
-    return op == Op::Ret || op == Op::Jump || op == Op::Branch;
+    return op == Op::Ret || op == Op::Jump || op == Op::Branch || op == Op::Throw;
+}
+
+// Can this instruction leave an exception pending (docs/0020 decision 1)?
+// The backend emits one cell test after every instruction that answers yes,
+// so the list is written the safe way round: the cases below are the ones
+// that provably cannot, and everything else does. An op added tomorrow gets
+// a redundant branch rather than a missed unwind.
+//
+// It is a property of the INSTRUCTION and not of the op because `add` is two
+// operations: f64 arithmetic, which cannot throw, and `bronze_dynamic_add`,
+// which reaches ToPrimitive.
+bool canThrow(const Instruction& inst) {
+    switch (inst.op) {
+        // Constants and pure arithmetic: no call at all.
+        case Op::ConstF64:
+        case Op::ConstI32:
+        case Op::ConstBool:
+        case Op::ConstUndefined:
+        case Op::ConstNull:
+        case Op::Neg:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Mod:
+        case Op::Pow:
+        case Op::ToInt32:
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::UShr:
+        case Op::CmpLt:
+        case Op::CmpGt:
+        case Op::CmpEq:
+        case Op::CmpNe:
+        case Op::NumTruthy:
+        case Op::StrictEq:
+        case Op::IsNullish:
+        case Op::TypeOf:
+        case Op::Box:
+        case Op::Unbox:
+        // Allocation and the environment: they can collect, and a failure to
+        // allocate is fatal rather than catchable (there is no `RangeError:
+        // out of memory` in bronze, and inventing one would let a program
+        // continue past a heap that could not grow).
+        case Op::CreateObject:
+        case Op::CreateArray:
+        case Op::CreateFunction:
+        case Op::FunctionRef:
+        case Op::EnvCreate:
+        case Op::EnvGet:
+        case Op::EnvSet:
+        case Op::ModuleEnvSet:
+        case Op::ModuleEnvGet:
+        case Op::GlobalGet:
+        // console.log never runs user code: inspect does not call a getter
+        // (docs/0019 decision 4).
+        case Op::Print:
+        case Op::ExcTake:
+            return false;
+        case Op::Add:
+            // Dynamic `+` is bronze_dynamic_add, which is ToPrimitive.
+            return inst.type == Type::Dynamic;
+        default:
+            return !isTerminator(inst.op);
+    }
 }
 
 // Shortest round-trippable float formatting (std::to_chars is locale-free).
@@ -141,6 +210,12 @@ std::string print(const Module& module) {
                     out += "%" + std::to_string(block.params[i].id) + ": " + typeName(block.params[i].type);
                 }
                 out += ")";
+            }
+            // Only when there is one, so the dump of a program with no `try`
+            // in it is byte-identical to what it was before exceptions
+            // existed — which is what keeps every pinned IL ratchet valid.
+            if (block.handler != kNoBlock) {
+                out += " handler b" + std::to_string(block.handler);
             }
             out += ":\n";
 

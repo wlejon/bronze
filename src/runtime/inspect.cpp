@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/number_format.h"
@@ -28,48 +29,10 @@ namespace {
 // `[Array]` / `[Object]` rather than being expanded.
 constexpr int kMaxDepth = 2;
 
-void appendCodePoint(std::string& out, uint32_t cp) {
-    if (cp <= 0x7F) {
-        out.push_back(static_cast<char>(cp));
-    } else if (cp <= 0x7FF) {
-        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else if (cp <= 0xFFFF) {
-        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    }
-}
-
-std::string utf8Of(StringHeader* str) {
-    std::string out;
-    const uint32_t len = str->getLength();
-    if (str->isLatin1()) {
-        const char* data = str->latin1Data();
-        for (uint32_t i = 0; i < len; ++i) {
-            appendCodePoint(out, static_cast<unsigned char>(data[i]));
-        }
-        return out;
-    }
-    const uint16_t* u16 = str->utf16Data();
-    for (uint32_t i = 0; i < len; ++i) {
-        uint32_t cp = u16[i];
-        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len) {
-            const uint32_t low = u16[i + 1];
-            if (low >= 0xDC00 && low <= 0xDFFF) {
-                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
-                ++i;
-            }
-        }
-        appendCodePoint(out, cp);
-    }
-    return out;
-}
+// The one UTF-8 encoder lives in rt_convert.cpp, next to rtAsciiChars: two
+// of them drifting is how a printed string and a printed error message start
+// disagreeing about an astral character.
+std::string utf8Of(StringHeader* str) { return rtUtf8Chars(str); }
 
 // node's quote choice: single quotes, unless the string contains one and no
 // double quote, and backticks when it contains both.
@@ -162,6 +125,14 @@ private:
         if (v.isHole()) fatal("internal: the hole sentinel reached console.log");
         if (v.isSymbol()) fatal("printing a symbol is unsupported (bronze has no symbols)");
         if (!v.isObject()) fatal("internal: console.log reached a value with an unknown tag");
+
+        // An Error prints as `Name: message`, which is what node shows on the
+        // first line of its output — and the whole of bronze's, because there
+        // is no stack to print (docs/0020 decision 7). Tested by walking the
+        // prototype chain rather than by a header flag, so an error instance
+        // stays a plain object (flags == 0) and stays on the inline property
+        // fast path.
+        if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
 
         auto* hdr = v.asObject<HeapObjectHeader>();
         switch (hdr->flags) {

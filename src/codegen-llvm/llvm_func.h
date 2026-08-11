@@ -69,6 +69,21 @@ private:
     // of the first argument operand.
     llvm::Value* emitArgv(const il::Instruction& inst, size_t first, uint32_t argc, bool& ok);
 
+    // The cell test of docs/0020 decision 1, emitted after any instruction
+    // `il::canThrow` admits: load the cell, compare it against "nothing
+    // pending", and branch to this block's handler or out of the function.
+    // Splits the current LLVM block, so everything after it in the same IL
+    // block is emitted into the continuation.
+    void emitExceptionCheck(size_t blockIndex);
+    // Where an unwind from `blockIndex` goes: the IL handler this block
+    // names, or the function's single unwind block, created on first demand.
+    llvm::BasicBlock* unwindTargetFor(size_t blockIndex);
+    // Pops the GC root frame and returns — byte-for-byte what `emitTerminator`
+    // does before an ordinary `ret`, which is the property that makes the
+    // whole mechanism sound with respect to docs/0006.
+    llvm::BasicBlock* functionUnwindBlock();
+    void popRootFrame();
+
     // An operand as an LLVM value, diagnosed as `what` when it has no def.
     llvm::Value* operand(const il::Instruction& inst, size_t index, const char* what);
     bool require(bool condition, const char* message);
@@ -93,6 +108,12 @@ private:
     llvm::StructType* frameTy_ = nullptr;
     llvm::Value* framePtr_ = nullptr;
     llvm::Value* slotsBase_ = nullptr;
+    llvm::BasicBlock* unwindBlock_ = nullptr;
+    // The IL block being emitted, which a terminator needs in order to find
+    // its handler: `builder_.GetInsertBlock()` may be a continuation an
+    // inlined guard or a cell test split off, and a continuation is not an
+    // IL block at all.
+    size_t currentILBlock_ = 0;
 };
 
 }  // namespace bronze::codegen_llvm

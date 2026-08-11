@@ -449,11 +449,31 @@ struct ForOfStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+// `try { } catch (e) { } finally { }`. The three parts are separate statement
+// lists rather than blocks because each is its own scope and none of them is
+// an expression; `hasCatch` and `hasFinally` distinguish an absent clause from
+// an empty one, which matters — `try { } finally { }` with no catch does not
+// stop an exception, and `try { } catch (e) { }` does (ECMA-262 14.15).
 struct TryStmt final : Stmt {
+    std::vector<StmtPtr> body;
+    bool hasCatch = false;
+    // The CatchParameter, which 14.15.1 makes an ordinary BindingIdentifier
+    // or BindingPattern — so `catch ({ message })` is legal, and `catch { }`
+    // with no parameter at all is too, which is why "has a catch clause" and
+    // "has a catch parameter" are two different questions here.
+    bool hasCatchParam = false;
+    std::string catchName;  // empty when the parameter destructures
+    PatternPtr catchPattern;
+    std::vector<StmtPtr> catchBody;
+    bool hasFinally = false;
+    std::vector<StmtPtr> finallyBody;
     void accept(Visitor& v) const override;
 };
 
+// `throw expr;`. The expression is mandatory — 14.14's restricted production
+// has no fallback reading, unlike `return`, which means `return undefined`.
 struct ThrowStmt final : Stmt {
+    ExprPtr value;
     void accept(Visitor& v) const override;
 };
 

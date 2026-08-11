@@ -55,6 +55,55 @@ Value rtMakeString(std::string_view utf8) {
 
 Value rtValueToString(Value v) { return valueToString(v); }
 
+namespace {
+
+void appendCodePoint(std::string& out, uint32_t cp) {
+    if (cp <= 0x7F) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FF) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+}  // namespace
+
+std::string rtUtf8Chars(const StringHeader* s) {
+    std::string out;
+    const uint32_t len = s->getLength();
+    if (s->isLatin1()) {
+        const char* data = s->latin1Data();
+        for (uint32_t i = 0; i < len; ++i) {
+            appendCodePoint(out, static_cast<unsigned char>(data[i]));
+        }
+        return out;
+    }
+    const uint16_t* u16 = s->utf16Data();
+    for (uint32_t i = 0; i < len; ++i) {
+        uint32_t cp = u16[i];
+        // A well-formed surrogate pair is one code point; a lone surrogate is
+        // encoded as itself, which is what a JS string is allowed to hold.
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len) {
+            const uint32_t low = u16[i + 1];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                ++i;
+            }
+        }
+        appendCodePoint(out, cp);
+    }
+    return out;
+}
+
 std::string rtAsciiChars(const StringHeader* s) {
     std::string out;
     const uint32_t len = s->getLength();

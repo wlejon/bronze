@@ -27,11 +27,20 @@ public:
     void visit(const ast::BreakStmt&) override {}
     void visit(const ast::ContinueStmt&) override {}
 
-    // The two statement kinds the parser accepts but models as empty nodes.
-    // There is nothing under them to walk; every analysis has to treat them
-    // as opaque, which is exactly what an empty visit means here.
-    void visit(const ast::TryStmt&) override {}
-    void visit(const ast::ThrowStmt&) override {}
+    // None of a try statement's three parts is a function boundary, so every
+    // analysis that walks a body has to reach into all three. Leaving them
+    // opaque here is the shape of docs/0018's second bug — a call written
+    // only inside a for-of body was invisible to the call-graph fixpoint, and
+    // an invisible call site is an UNSOUND proof, not a missed optimization.
+    void visit(const ast::TryStmt& n) override {
+        for (const auto& s : n.body) s->accept(*this);
+        walkPattern(n.catchPattern.get());
+        for (const auto& s : n.catchBody) s->accept(*this);
+        for (const auto& s : n.finallyBody) s->accept(*this);
+    }
+    void visit(const ast::ThrowStmt& n) override {
+        if (n.value) n.value->accept(*this);
+    }
 
     void visit(const ast::ForInStmt& n) override {
         walkPattern(n.pattern.get());

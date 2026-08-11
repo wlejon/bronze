@@ -23,6 +23,7 @@
 #include <string>
 
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
@@ -38,12 +39,15 @@ bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1;
 }
 
-void requireArray(Value v, const char* method) {
-    if (!isArray(v)) {
-        fatal((std::string("Array.prototype.") + method +
-               " called on a value that is not an array")
-                  .c_str());
-    }
+// True when the method may proceed. ECMA-262 defines every Array.prototype
+// method over an array-like via ToObject, so a non-array receiver is a
+// TypeError — catchable since docs/0020, which is why this reports a verdict
+// instead of ending the process.
+bool requireArray(Value v, const char* method) {
+    if (isArray(v)) return true;
+    rtThrowTypeError(std::string("Array.prototype.") + method +
+                     " called on a value that is not an array");
+    return false;
 }
 
 uint32_t lengthOf(Value v) { return v.asObject<ArrayHeader>()->length; }
@@ -100,10 +104,10 @@ Value callBack(Rooted<Value>& fn, Rooted<Value>& thisArg, Rooted<Value>& elem, u
                                      reinterpret_cast<const uint64_t*>(block)));
 }
 
-void requireCallable(Value v, const char* method) {
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != 2) {
-        fatal((std::string("Array.prototype.") + method + " needs a function argument").c_str());
-    }
+bool requireCallable(Value v, const char* method) {
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2) return true;
+    rtThrowTypeError(std::string("Array.prototype.") + method + " needs a function argument");
+    return false;
 }
 
 // Whether index `i` is an OWN property of the receiver. `delete a[i]` leaves
@@ -132,7 +136,7 @@ void appendHole(Rooted<Value>& out) {
 uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "push");
+    if (!requireArray(self.get(), "push")) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < args.count(); ++i) {
         Rooted<Value> val{args[i]};
         appendTo(self, val);
@@ -142,7 +146,7 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 
 uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
-    requireArray(self, "pop");
+    if (!requireArray(self, "pop")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     if (arr->length == 0) return Value::fromUndefined().rawBits();
     Value last = arr->getElem(arr->length - 1);
@@ -152,7 +156,7 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 
 uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
-    requireArray(self, "shift");
+    if (!requireArray(self, "shift")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     if (arr->length == 0) return Value::fromUndefined().rawBits();
     Value first = arr->getElem(0);
@@ -165,7 +169,7 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "unshift");
+    if (!requireArray(self.get(), "unshift")) return Value::fromUndefined().rawBits();
     const uint32_t n = args.count();
     if (n == 0) return Value::fromDouble(lengthOf(self.get())).rawBits();
 
@@ -187,7 +191,7 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
-    requireArray(self, "reverse");
+    if (!requireArray(self, "reverse")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     Value* data = arr->elementsData();
     for (uint32_t i = 0, j = arr->length; i + 1 < j; ++i, --j) {
@@ -199,7 +203,7 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self(thisBits);
-    requireArray(self, "fill");
+    if (!requireArray(self, "fill")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     const uint32_t len = arr->length;
     Value fillVal = args[0];
@@ -217,7 +221,7 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self(thisBits);
-    requireArray(self, "indexOf");
+    if (!requireArray(self, "indexOf")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     Value needle = args[0];
     uint32_t from =
@@ -234,7 +238,7 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self(thisBits);
-    requireArray(self, "lastIndexOf");
+    if (!requireArray(self, "lastIndexOf")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     Value needle = args[0];
     for (uint32_t i = arr->length; i > 0; --i) {
@@ -249,7 +253,7 @@ uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint
 uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self(thisBits);
-    requireArray(self, "includes");
+    if (!requireArray(self, "includes")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     for (uint32_t i = 0; i < arr->length; ++i) {
         if (sameValueZero(arr->getElem(i), args[0])) return Value::fromBool(true).rawBits();
@@ -260,7 +264,7 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 uint64_t arrayAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self(thisBits);
-    requireArray(self, "at");
+    if (!requireArray(self, "at")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     double rel = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
     double idx = rel < 0 ? static_cast<double>(arr->length) + rel : rel;
@@ -275,7 +279,7 @@ uint64_t arrayAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
 uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "slice");
+    if (!requireArray(self.get(), "slice")) return Value::fromUndefined().rawBits();
     const uint32_t len = lengthOf(self.get());
     uint32_t start = args.count() > 0 ? relativeIndex(toInteger(rtToNumber(args[0])), len) : 0;
     uint32_t end = args.count() > 1 && !args[1].isUndefined()
@@ -296,7 +300,7 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
 uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "concat");
+    if (!requireArray(self.get(), "concat")) return Value::fromUndefined().rawBits();
     Rooted<Value> out{newArray()};
     for (uint32_t i = 0; i < lengthOf(self.get()); ++i) {
         if (!hasIndex(self.get(), i)) {
@@ -329,7 +333,7 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "join");
+    if (!requireArray(self.get(), "join")) return Value::fromUndefined().rawBits();
     Rooted<Value> sep{args[0].isUndefined() ? rtMakeString(",") : rtValueToString(args[0])};
     Rooted<Value> acc{rtMakeString("")};
 
@@ -351,15 +355,19 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "forEach");
+    if (!requireArray(self.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "forEach");
+    if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
         if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
         callBack(fn, thisArg, elem, i, self);
+        // The callback is user code and may have thrown. No generated check
+        // runs inside this loop, so visiting the next element would be the
+        // runtime carrying on past an exception (docs/0020 decision 6).
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return Value::fromUndefined().rawBits();
 }
@@ -367,9 +375,9 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "map");
+    if (!requireArray(self.get(), "map")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "map");
+    if (!requireCallable(fn.get(), "map")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     Rooted<Value> out{newArray()};
     const uint32_t len = lengthOf(self.get());
@@ -382,6 +390,7 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
         }
         Rooted<Value> elem{elemOf(self.get(), i)};
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         appendTo(out, mapped);
     }
     return out.get().rawBits();
@@ -390,9 +399,9 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
 uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "filter");
+    if (!requireArray(self.get(), "filter")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "filter");
+    if (!requireCallable(fn.get(), "filter")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     Rooted<Value> out{newArray()};
     const uint32_t len = lengthOf(self.get());
@@ -401,7 +410,9 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         // for it, so the result has no holes even when the input did.
         if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
-        if (bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
+        Rooted<Value> kept{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (bronze_truthy(kept.get().rawBits())) {
             appendTo(out, elem);
         }
     }
@@ -411,15 +422,17 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 uint64_t arraySome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "some");
+    if (!requireArray(self.get(), "some")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "some");
+    if (!requireCallable(fn.get(), "some")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
         if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
-        if (bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
+        Rooted<Value> hit{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (bronze_truthy(hit.get().rawBits())) {
             return Value::fromBool(true).rawBits();
         }
     }
@@ -429,15 +442,17 @@ uint64_t arraySome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 uint64_t arrayEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "every");
+    if (!requireArray(self.get(), "every")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "every");
+    if (!requireCallable(fn.get(), "every")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
         if (!hasIndex(self.get(), i)) continue;
         Rooted<Value> elem{elemOf(self.get(), i)};
-        if (!bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
+        Rooted<Value> held{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!bronze_truthy(held.get().rawBits())) {
             return Value::fromBool(false).rawBits();
         }
     }
@@ -450,15 +465,17 @@ template <bool Reverse, bool WantIndex>
 uint64_t arrayFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "find");
+    if (!requireArray(self.get(), "find")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "find");
+    if (!requireCallable(fn.get(), "find")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = lengthOf(self.get());
     for (uint32_t n = 0; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
         Rooted<Value> elem{elemOf(self.get(), i)};
-        if (bronze_truthy(callBack(fn, thisArg, elem, i, self).rawBits())) {
+        Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (bronze_truthy(found.get().rawBits())) {
             return WantIndex ? Value::fromDouble(i).rawBits() : elem.get().rawBits();
         }
     }
@@ -469,9 +486,9 @@ template <bool Reverse>
 uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    requireArray(self.get(), "reduce");
+    if (!requireArray(self.get(), "reduce")) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
-    requireCallable(fn.get(), "reduce");
+    if (!requireCallable(fn.get(), "reduce")) return Value::fromUndefined().rawBits();
     const uint32_t len = lengthOf(self.get());
 
     Rooted<Value> acc{Value::fromUndefined()};
@@ -484,7 +501,7 @@ uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
         // An array of nothing but holes is as empty as one of length zero.
         while (next < len && !hasIndex(self.get(), Reverse ? len - 1 - next : next)) ++next;
         if (next == len) {
-            fatal("Array.prototype.reduce of an empty array with no initial value");
+            return rtThrowTypeError("Reduce of empty array with no initial value").rawBits();
         }
         acc.set(elemOf(self.get(), Reverse ? len - 1 - next : next));
         next += 1;
@@ -500,6 +517,7 @@ uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
                           self.get()};
         acc.set(Value(bronze_dynamic_call(fn.get().rawBits(), BRONZE_ABI_UNDEFINED_BITS, 4,
                                           reinterpret_cast<const uint64_t*>(block))));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return acc.get().rawBits();
 }

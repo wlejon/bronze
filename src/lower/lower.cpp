@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lower/lowerer.h"
 
@@ -115,6 +116,11 @@ std::optional<il::Module> Lowerer::lower() {
     if (!topLevelStmts.empty()) {
         il::Function mainFn;
         mainFn.name = "main";
+        // Nothing above `main` can catch, so its unwind path reports and
+        // exits rather than returning (docs/0020 decision 2). No handler
+        // BLOCK, and so no IL at all in a program that never throws — which
+        // is what keeps every pinned dump of one byte-identical.
+        mainFn.isEntryPoint = true;
         mainFn.returnType = il::Type::Void;
         mainFn.valueCount = 0;
         mainFn.blocks.push_back(il::Block{.id = 0});
@@ -182,12 +188,18 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
     capturedNames_ = ast::getCapturedNames(body);
+    // The second reason a binding cannot be in SSA (docs/0020 decision 4).
+    // Unioned here and nowhere else, so `capturedNames_` keeps meaning
+    // exactly "a closure can reach it" for the one consumer that needs that
+    // narrower question.
+    memoryNames_ = capturedNames_;
+    for (auto& name : ast::getTryAssignedNames(body)) memoryNames_.insert(std::move(name));
     functionEnvBase_ = envScopes_.size();
     functionEnvScope_ = SIZE_MAX;
 
     std::vector<std::string> slots;
     auto addSlot = [&](const std::string& slotName) {
-        if (!capturedNames_.contains(slotName)) return;
+        if (!memoryNames_.contains(slotName)) return;
         if (std::find(slots.begin(), slots.end(), slotName) != slots.end()) return;
         slots.push_back(slotName);
     };
@@ -246,8 +258,15 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // also happens to declare an `i`. A block-level binding is not a module
     // declaration, so it can never be in the record anyway, and nothing is
     // lost by keeping the sets apart.
-    const std::unordered_set<std::string> moduleCaptures =
-        ast::getCapturedNames(astModule_.body);
+    std::unordered_set<std::string> moduleCaptures = ast::getCapturedNames(astModule_.body);
+    // A module-level binding assigned inside a top-level `try` needs a slot
+    // in the module record for the same reason a captured one does, and the
+    // widening is safe HERE for the reason it is not safe for
+    // `capturedNames_`: the record holds only the top level's own
+    // declarations, and a for-header binding is not one of them.
+    for (auto& name : ast::getTryAssignedNames(astModule_.body)) {
+        moduleCaptures.insert(std::move(name));
+    }
 
     auto addSlot = [&](const std::string& name) {
         if (!moduleCaptures.contains(name)) return;
@@ -286,6 +305,8 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     // planModuleEnv for why this is not the set the record's layout came
     // from.
     capturedNames_ = ast::getCapturedNames(topLevelStmts);
+    memoryNames_ = capturedNames_;
+    for (auto& name : ast::getTryAssignedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
     if (moduleEnvScope_ == SIZE_MAX) return;
     envScopes_[moduleEnvScope_].envValue =
         emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);

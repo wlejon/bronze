@@ -272,7 +272,7 @@ see "the bug this chunk did not fix".
 
 10.1.9.2 returns `false` when a property has no setter, and a non-strict
 assignment discards that result. Strict mode makes it a TypeError, and bronze
-has no `throw` to raise one with (`cases/blocked/try_catch_throw.js`).
+has no strict mode (`cases/blocked/strict_mode.js`).
 
 The three readings available were: silent no-op (sloppy mode, and what the
 pinned `accessor_properties.expected` requires), a named hard error, or
@@ -280,8 +280,14 @@ creating an own data property that shadows the accessor. The third is simply
 wrong. The second is what CLAUDE.md's "hard errors over silent fallbacks"
 would normally choose — but that rule is about constructs bronze has not
 **built**, not about behaviour ECMA-262 defines as silent, and `square.area =
-100` doing nothing is the answer every JavaScript engine gives. It becomes a
-diagnosed TypeError when `throw` lands, not before.
+100` doing nothing is the answer every JavaScript engine gives.
+
+This decision expected `throw` to turn it into a TypeError. docs/0020 landed
+`throw` and left the no-op alone, because the reading was half wrong: 13.15.2
+PutValue step 6.d throws only when the REFERENCE IS STRICT, so raising here
+unconditionally would be wrong for the sloppy code that is bronze's only mode
+and would contradict `accessor_properties.expected`. The missing piece is the
+Directive Prologue of 11.2.2, not the mechanism.
 
 Symmetrically, a setter-only property reads as `undefined`, not as the setter
 function.

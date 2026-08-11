@@ -1,0 +1,14 @@
+Error boom
+true
+object
+Error true true
+0
+TypeError true true false
+RangeError true true
+nonew
+Error: boom
+Error
+[ TypeError: bad, RangeError: oob ]
+true true Error custom
+true thrown
+range type error other

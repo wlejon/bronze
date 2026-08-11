@@ -52,6 +52,20 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             }
             return true;
 
+        case il::Op::ExcTake: {
+            // The first instruction of every handler block. Reading and
+            // CLEARING together is what lets a `finally` run its body with
+            // nothing pending and then decide whether to re-raise (docs/0020
+            // decision 5) — two instructions here, no helper call, because
+            // the cell is an ordinary global on both sides.
+            if (inst.result == il::kNoValue) return true;
+            values_[inst.result] =
+                builder_.CreateLoad(i64Ty_, shared_.globals.bronze_exception_cell);
+            builder_.CreateStore(builder_.getInt64(BRONZE_ABI_NO_EXCEPTION_BITS),
+                                 shared_.globals.bronze_exception_cell);
+            return true;
+        }
+
         case il::Op::Box: {
             if (inst.result == il::kNoValue) return true;
             // A Str box names a registered key rather than boxing an operand:

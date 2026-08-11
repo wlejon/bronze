@@ -158,9 +158,9 @@ A switch body is one block scope (14.12.2 creates a single declarative
 environment for the whole CaseBlock), so `let x` in one clause is in scope in
 every clause, and in its temporal dead zone in the ones above it. Entering a
 clause below the declaration by a case match and then reading `x` is a
-`ReferenceError` — and bronze has no `throw`, so it cannot produce one. The
-choices were to read `undefined` silently, which is a wrong answer of exactly
-the kind docs/0000 exists to prevent, or to refuse.
+`ReferenceError` — and bronze cannot produce one. The choices were to read
+`undefined` silently, which is a wrong answer of exactly the kind docs/0000
+exists to prevent, or to refuse.
 
 It refuses, and the diagnostic names the fix:
 
@@ -170,10 +170,15 @@ It refuses, and the diagnostic names the fix:
 
 Wrapping the clause in `{ }` gives the declaration a scope of its own and is
 what most JavaScript writes anyway — it is what ESLint's `no-case-declarations`
-has asked for since 2015. The blocked case for `try`/`catch`/`throw` carries
-the mechanism that would lift this restriction; `lower_jumps_test.cpp` pins
-both the error and the fact that the suggested fix compiles, so the diagnostic
-cannot rot into a refusal that names a workaround that does not work.
+has asked for since 2015. `lower_jumps_test.cpp` pins both the error and the
+fact that the suggested fix compiles, so the diagnostic cannot rot into a
+refusal that names a workaround that does not work.
+
+This decision expected `throw` to lift the restriction. It did not, and
+docs/0020 says why: `throw` is the mechanism for raising a ReferenceError, and
+what is still missing is the uninitialized binding STATE that decides when to
+raise one. `cases/blocked/temporal_dead_zone.js` names that gap and
+`cases/blocked/switch_case_lexical.js` names this case as waiting on it.
 
 `var` in a clause is accepted, because it has no dead zone.
 
@@ -244,7 +249,9 @@ the way to avoid it, and the difference is pinned.
 
 - **No `throw`, so no TDZ.** Decision 6 above; and `(a?.b).c` with a nullish
   `a` aborts rather than throwing, which is why the oracle case pins only the
-  non-nullish spelling of it. Both wait on `cases/blocked/try_catch_throw.js`.
+  non-nullish spelling of it. docs/0020 landed `throw` and made the second of
+  these catchable; the TDZ is still open on
+  `cases/blocked/temporal_dead_zone.js`.
 - **No `delete`**, so the "deleted before it is visited" half of 14.7.5.6 is
   untested. `cases/blocked/delete_operator.js` holds the expectations.
 - **`for (k in o)` with an existing binding** — a for-in/for-of head that

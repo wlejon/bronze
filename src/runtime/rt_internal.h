@@ -85,6 +85,12 @@ double rtExponentiate(double base, double exponent);
 // builtins do, and never enough to be mistaken for a general conversion.
 std::string rtAsciiChars(const StringHeader* s);
 
+// The same string as UTF-8, losing nothing. This is the conversion for text
+// that will be PRINTED; rtAsciiChars is the one for text that will be
+// PARSED, and they are deliberately two functions so a caller has to say
+// which it meant.
+std::string rtUtf8Chars(const StringHeader* s);
+
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
 // which is what the language says for a property that does not exist.

@@ -16,6 +16,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -77,12 +78,13 @@ extern "C" {
 
 bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex) {
     Value objVal(objBits);
-    // ToObject first, exactly as a read does: `delete null.x` is a TypeError
-    // in 13.5.1 step 5, and bronze has no `throw` to raise it with.
+    // ToObject first, exactly as a read does: `delete null.x` is the
+    // TypeError of 13.5.1 step 5.
     if (objVal.isNull() || objVal.isUndefined()) {
-        fatal((std::string("deleting property '") + rtKeyString(keyIndex) + "' of " +
-               (objVal.isNull() ? "null" : "undefined"))
-                  .c_str());
+        rtThrowTypeError("Cannot convert " +
+                         std::string(objVal.isNull() ? "null" : "undefined") +
+                         " to object (deleting '" + rtKeyString(keyIndex) + "')");
+        return true;
     }
     if (!objVal.isObject()) return true;
 
@@ -104,7 +106,9 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits) {
     Value objVal(objBits);
     Value idxVal(idxBits);
     if (objVal.isNull() || objVal.isUndefined()) {
-        fatal("deleting a computed property of null or undefined");
+        rtThrowTypeError("Cannot convert " +
+                         std::string(objVal.isNull() ? "null" : "undefined") + " to object");
+        return true;
     }
     if (!objVal.isObject()) return true;
 

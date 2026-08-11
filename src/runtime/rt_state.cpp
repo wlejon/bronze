@@ -10,6 +10,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -165,6 +166,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
     Value resolved = Value::fromUndefined();
     if (keyStr == "Math") {
         resolved = rtMathObject();
+    } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
+        resolved = ctor;
     } else {
         fatal(("internal: no global named " + keyStr).c_str());
     }

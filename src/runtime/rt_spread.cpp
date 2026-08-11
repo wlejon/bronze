@@ -16,6 +16,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
@@ -61,18 +62,25 @@ bool isWalkable(Value v) {
 // Named, so a value bronze cannot walk says which construct asked. The three
 // callers differ only in that word, and printing "for-of" for a spread was
 // the kind of misdirection a diagnostic exists to avoid.
-[[noreturn]] void notWalkable(const char* what) {
-    char msg[128];
-    std::snprintf(msg, sizeof(msg), "%s of a value that is not an array, string or typed array",
-                  what);
-    fatal(msg);
+//
+// A TypeError rather than a fatal: 7.4.2 GetIterator throws when the value
+// has no @@iterator method, so this is behaviour ECMA-262 defines and a
+// program is entitled to catch it (docs/0020 decision 6). It raises and
+// returns, so every caller has to stop — there is no `[[noreturn]]` to lean
+// on any more.
+void raiseNotWalkable(const char* what) {
+    rtThrowTypeError(std::string(what) +
+                     " of a value that is not an array, string or typed array");
 }
 
 // Every element of `src` from `from` on, appended to `out`. The length is
 // re-read per step for the same reason for-of re-reads it: it is a property
 // of the value, not a snapshot.
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src, double from, const char* what) {
-    if (!isWalkable(src.get())) notWalkable(what);
+    if (!isWalkable(src.get())) {
+        raiseNotWalkable(what);
+        return;
+    }
     for (double i = from;;) {
         const double length = bronze_iter_length(src.get().rawBits());
         if (!(i < length)) break;
@@ -98,19 +106,26 @@ extern "C" {
 // The source of a destructuring, checked ONCE before any element is read.
 //
 // Two things make it worth its own instruction. Destructuring `null` or
-// `undefined` is a TypeError in ECMA-262 and bronze has no `throw`, so it is
-// a hard error here rather than a set of quietly `undefined` bindings. And
-// checking up front is what lets every read below it name the CONSTRUCT that
-// asked — without it, `const [a] = 5` would report a for-of error.
+// `undefined` is a TypeError (7.3.20 RequireObjectCoercible, reached by
+// 8.6.2 BindingInitialization), so it is raised here rather than left as a
+// set of quietly `undefined` bindings. And checking up front is what lets
+// every read below it name the CONSTRUCT that asked — without it,
+// `const [a] = 5` would report a for-of error.
+//
+// The value is returned unchanged on the raising path too. Generated code
+// stores this result into a GC root slot before it tests the pending cell,
+// and the slot has to hold something the collector can parse (docs/0020
+// decision 2).
 uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
     Value v(vBits);
     if (v.isUndefined() || v.isNull()) {
-        fatal(kind == kPatternArray
-                  ? "array destructuring of null or undefined"
-                  : "object destructuring of null or undefined");
+        rtThrowTypeError(kind == kPatternArray
+                             ? "array destructuring of null or undefined"
+                             : "object destructuring of null or undefined");
+        return vBits;
     }
     if (kind == kPatternArray && !isWalkable(v)) {
-        notWalkable("array destructuring");
+        raiseNotWalkable("array destructuring");
     }
     (void)kPatternObject;
     return vBits;
@@ -188,6 +203,11 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     }
     for (StringHeader* name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         copyProperty(target, src, name);
+        // `copyProperty` reads with Get, so a source property that is an
+        // accessor runs user code (docs/0019 decision 3). Copying the next
+        // one after that threw would be the runtime continuing past an
+        // exception (docs/0020 decision 6).
+        if (rtExceptionPending()) return;
     }
 }
 
@@ -221,6 +241,7 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
         }
         if (skip) continue;
         copyProperty(out, src, name);
+        if (rtExceptionPending()) return out.get().rawBits();
     }
     return out.get().rawBits();
 }

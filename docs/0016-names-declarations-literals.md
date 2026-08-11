@@ -75,8 +75,10 @@ direction is an unresolved name.
 
 **Not covered:** the temporal dead zone. Calling a top-level function above
 a `let` that the function reads yields `undefined` where ECMA-262 requires a
-ReferenceError. bronze has no `throw`, so there is nothing to raise; this
-belongs with exceptions, not here.
+ReferenceError. This belongs with exceptions, not here — and docs/0020's
+`throw` supplied only half of it, since what is still missing is the
+uninitialized binding state that decides when to raise:
+`cases/blocked/temporal_dead_zone.js`.
 
 ## Decision 2 — "what the record holds" and "what a closure captures" are different questions
 

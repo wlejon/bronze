@@ -500,28 +500,63 @@ StmtPtr Parser::parseTry() {
     const Token& kw = advance();
     auto stmt = std::make_unique<TryStmt>();
     stmt->span = kw.span;
-    if (check(TokenKind::LBrace)) parseBlock();
-    bool sawHandler = false;
+    if (!check(TokenKind::LBrace)) {
+        error("'{' to open a try block");
+        return nullptr;
+    }
+    stmt->body = parseBlock();
+    if (diags_.hasErrors()) return nullptr;
+
     if (match(TokenKind::KwCatch)) {
-        sawHandler = true;
+        stmt->hasCatch = true;
+        // `catch { }` with no parameter is ES2019's optional catch binding,
+        // and it is not a degenerate case to tolerate: it is the spelling for
+        // "I do not care what was thrown", which is common enough that the
+        // grammar grew a production for it.
         if (match(TokenKind::LParen)) {
-            match(TokenKind::Identifier);
-            match(TokenKind::RParen);
+            stmt->hasCatchParam = true;
+            if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
+                // 14.15.1's CatchParameter is a BindingIdentifier or a
+                // BindingPattern, so everything docs/0017 built applies
+                // unchanged — including an element default and a rest
+                // element, both of which a BindingPattern admits wherever it
+                // appears. Only a default on the parameter ITSELF is
+                // excluded, and the grammar excludes it: there is no `=` to
+                // reach after the pattern closes.
+                stmt->catchPattern = parsePattern();
+                if (!stmt->catchPattern) return nullptr;
+            } else {
+                const Token* name = expect(TokenKind::Identifier, "a catch parameter name");
+                if (!name) return nullptr;
+                stmt->catchName = std::string(name->text);
+            }
+            if (!expect(TokenKind::RParen, "')' after a catch parameter")) return nullptr;
         }
-        if (check(TokenKind::LBrace)) parseBlock();
+        if (!check(TokenKind::LBrace)) {
+            error("'{' to open a catch block");
+            return nullptr;
+        }
+        stmt->catchBody = parseBlock();
+        if (diags_.hasErrors()) return nullptr;
     }
     // `finally` is a keyword the lexer already produces, and leaving it here
     // meant the block after it was read as an expression statement — so a
     // `try/finally` was diagnosed as stray punctuation instead of as the
     // construct lowering names. A parser must consume all of what it claims.
     if (match(TokenKind::KwFinally)) {
-        sawHandler = true;
-        if (check(TokenKind::LBrace)) parseBlock();
+        stmt->hasFinally = true;
+        if (!check(TokenKind::LBrace)) {
+            error("'{' to open a finally block");
+            return nullptr;
+        }
+        stmt->finallyBody = parseBlock();
+        if (diags_.hasErrors()) return nullptr;
     }
-    if (!sawHandler) {
+    if (!stmt->hasCatch && !stmt->hasFinally) {
         error("a 'try' requires a 'catch' or a 'finally'");
         return nullptr;
     }
+    stmt->span.end = peek().span.begin;
     return stmt;
 }
 
@@ -536,8 +571,10 @@ StmtPtr Parser::parseThrow() {
         error("a line terminator is not allowed between 'throw' and its expression");
         return nullptr;
     }
-    parseExpr();
+    stmt->value = parseExpr();
+    if (!stmt->value) return nullptr;
     consumeSemicolon("throw");
+    stmt->span.end = stmt->value->span.end;
     return stmt;
 }
 
