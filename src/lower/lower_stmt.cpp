@@ -17,7 +17,7 @@ bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Func
     for (const auto* stmt : stmts) {
         const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt);
         if (!fnDecl) continue;
-        auto closure = lowerClosure(fnDecl->name, fnDecl->params, fnDecl->returnType,
+        auto closure = lowerClosure(*fnDecl, fnDecl->name, fnDecl->params, fnDecl->returnType,
                                     fnDecl->body, fnDecl->span, ilFn);
         if (!closure) return false;
         if (!declareVariable(fnDecl->name, il::Type::Dynamic, /*isConst=*/false,

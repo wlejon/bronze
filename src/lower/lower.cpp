@@ -110,30 +110,9 @@ std::optional<il::Module> Lowerer::lower() {
         currentBlockIdx_ = 0;
 
         // The module top level is a function body like any other: its
-        // variables can be captured by closures written at top level.
-        capturedNames_ = ast::getCapturedNames(topLevelStmts);
-        functionEnvBase_ = envScopes_.size();
-        functionEnvScope_ = SIZE_MAX;
-        std::vector<std::string> mainEnvSlots;
-        for (const auto& declName : ast::getScopeDeclarations(topLevelStmts)) {
-            if (capturedNames_.contains(declName)) mainEnvSlots.push_back(declName);
-        }
-        for (const auto& varName : ast::getHoistedVarDeclarations(topLevelStmts)) {
-            if (capturedNames_.contains(varName) &&
-                std::find(mainEnvSlots.begin(), mainEnvSlots.end(), varName) ==
-                    mainEnvSlots.end()) {
-                mainEnvSlots.push_back(varName);
-            }
-        }
-        if (!mainEnvSlots.empty()) {
-            EnvScopeInfo info;
-            for (uint32_t i = 0; i < mainEnvSlots.size(); ++i) info.slotOf[mainEnvSlots[i]] = i;
-            info.envValue = emitEnvCreate(static_cast<uint32_t>(mainEnvSlots.size()), mainFn);
-            envScopes_.push_back(std::move(info));
-            savedEnvValues_.push_back(currentEnvValue_);
-            currentEnvValue_ = envScopes_.back().envValue;
-            functionEnvScope_ = envScopes_.size() - 1;
-        }
+        // variables can be captured by closures written at top level, so it
+        // gets its environment record from the same rule (docs/0007).
+        enterFunctionEnv(/*params=*/{}, topLevelStmts, mainFn);
 
         if (!lowerStmtList(topLevelStmts, mainFn)) {
             return std::nullopt;
@@ -160,11 +139,51 @@ std::optional<il::Module> Lowerer::lower() {
     return ilModule_;
 }
 
-bool Lowerer::lowerFunctionBody(const std::string& name, const std::vector<ast::Param>& params,
-                                const std::string& returnTypeAnnotation,
+// One function's environment record: the slots for every name the function
+// declares that some nested function references, in a fixed source order
+// (docs/0007 decisions 1 and 2). The module top level takes exactly the same
+// rule with no parameters, which is why this is one function and not two —
+// two copies of "captured names intersected with this scope's declarations,
+// then the hoisted vars" is two copies that can drift, and a drift between
+// them is a closure reading a slot the declaring scope never allocated.
+//
+// Must run after `currentEnvValue_` names the environment this one chains
+// to: `emitEnvCreate` reads it as the parent link.
+void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
+                               const std::vector<const ast::Stmt*>& body, il::Function& ilFn) {
+    // Which of this function's own variables must live in an environment
+    // record. The environment STACK is not cleared with it: enclosing
+    // scopes' environments are how this function's free variables resolve.
+    capturedNames_ = ast::getCapturedNames(body);
+    functionEnvBase_ = envScopes_.size();
+    functionEnvScope_ = SIZE_MAX;
+
+    std::vector<std::string> slots;
+    auto addSlot = [&](const std::string& slotName) {
+        if (!capturedNames_.contains(slotName)) return;
+        if (std::find(slots.begin(), slots.end(), slotName) != slots.end()) return;
+        slots.push_back(slotName);
+    };
+    // Parameters first, then the body's own let/const/function declarations,
+    // then `var`s hoisted from anywhere below (they are function-scoped
+    // wherever they are written, so they belong to this record and not to
+    // the block that spells them).
+    for (const auto& p : params) addSlot(p.name);
+    for (const auto& declName : ast::getScopeDeclarations(body)) addSlot(declName);
+    for (const auto& varName : ast::getHoistedVarDeclarations(body)) addSlot(varName);
+    if (slots.empty()) return;
+
+    EnvScopeInfo info;
+    for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
+    info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
+    envScopes_.push_back(std::move(info));
+    savedEnvValues_.push_back(currentEnvValue_);
+    currentEnvValue_ = envScopes_.back().envValue;
+    functionEnvScope_ = envScopes_.size() - 1;
+}
+
+bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn) {
-    (void)name;
-    (void)returnTypeAnnotation;
     ilFn.blocks.push_back(il::Block{.id = 0});
     currentBlockIdx_ = 0;
     varBindings_.clear();
@@ -174,41 +193,15 @@ bool Lowerer::lowerFunctionBody(const std::string& name, const std::vector<ast::
     loopStack_.clear();
     scopeHasEnv_.clear();
 
-    // Which of this function's own variables must live in an
-    // environment record (docs/0007). The environment stack itself is
-    // NOT cleared: enclosing scopes' environments are how this
-    // function's free variables resolve.
-    capturedNames_ = ast::getCapturedNames(body);
-    functionEnvBase_ = envScopes_.size();
-    functionEnvScope_ = SIZE_MAX;
-
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());
     if (ilFn.needsEnv) currentEnvValue_ = 0;
     currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
 
-    std::vector<std::string> envSlots;
-    for (const auto& p : params) {
-        if (capturedNames_.contains(p.name)) envSlots.push_back(p.name);
-    }
-    for (const auto& declName : ast::getScopeDeclarations(body)) {
-        if (capturedNames_.contains(declName)) envSlots.push_back(declName);
-    }
-    for (const auto& varName : ast::getHoistedVarDeclarations(body)) {
-        if (capturedNames_.contains(varName) &&
-            std::find(envSlots.begin(), envSlots.end(), varName) == envSlots.end()) {
-            envSlots.push_back(varName);
-        }
-    }
-    if (!envSlots.empty()) {
-        EnvScopeInfo info;
-        for (uint32_t i = 0; i < envSlots.size(); ++i) info.slotOf[envSlots[i]] = i;
-        info.envValue = emitEnvCreate(static_cast<uint32_t>(envSlots.size()), ilFn);
-        envScopes_.push_back(std::move(info));
-        savedEnvValues_.push_back(currentEnvValue_);
-        currentEnvValue_ = envScopes_.back().envValue;
-        functionEnvScope_ = envScopes_.size() - 1;
-    }
+    std::vector<const ast::Stmt*> stmts;
+    stmts.reserve(body.size());
+    for (const auto& s : body) stmts.push_back(s.get());
+    enterFunctionEnv(params, stmts, ilFn);
 
     for (uint32_t i = 0; i < params.size(); ++i) {
         declareVariable(params[i].name, ilFn.params[i + paramBase].type, /*isConst=*/false,
@@ -223,8 +216,6 @@ bool Lowerer::lowerFunctionBody(const std::string& name, const std::vector<ast::
         }
     }
 
-    std::vector<const ast::Stmt*> stmts;
-    for (const auto& s : body) stmts.push_back(s.get());
     if (!lowerStmtList(stmts, ilFn)) return false;
 
     if (!currentBlockIsTerminated(ilFn)) {
@@ -292,8 +283,12 @@ bool Lowerer::lowerFunctionBody(const std::string& name, const std::vector<ast::
     return true;
 }
 
+// The return annotation is deliberately not passed down: it is a hint, and
+// the callers apply it — `lower()` and `lowerClosure` both check it against
+// the proof BEFORE the body is lowered, because the IL return type is part
+// of the calling convention (docs/0010 decision 6).
 bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
-    return lowerFunctionBody(fnDecl.name, fnDecl.params, fnDecl.returnType, fnDecl.body, ilFn);
+    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn);
 }
 
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,

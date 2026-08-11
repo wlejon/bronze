@@ -124,6 +124,7 @@ private:
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
     types::Type provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const;
     types::Type provenReturnType(uint32_t moduleFnIndex) const;
+    types::Type provenClosureReturn(const ast::Node& site) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
     // The annotation policy (docs/0010 decision 6). Returns false only for
@@ -133,8 +134,11 @@ private:
                          types::Type proven);
 
     // --- lower.cpp: module skeleton and function bodies ------------------
-    bool lowerFunctionBody(const std::string& name, const std::vector<ast::Param>& params,
-                           const std::string& returnTypeAnnotation,
+    // The one rule for a function-level environment record, shared by real
+    // function bodies and by the module top level lowered as `main`.
+    void enterFunctionEnv(const std::vector<ast::Param>& params,
+                          const std::vector<const ast::Stmt*>& body, il::Function& ilFn);
+    bool lowerFunctionBody(const std::vector<ast::Param>& params,
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
@@ -166,7 +170,10 @@ private:
     void enterScope();
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn);
     void exitScope();
-    std::optional<Value> lowerClosure(const std::string& declaredName,
+    // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
+    // nested `FunctionDecl` — docs/0007 decision 4 makes them one path). It
+    // is how inference is asked about a function with no module index.
+    std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
                                       const std::vector<ast::Param>& params,
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,

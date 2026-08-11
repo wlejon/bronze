@@ -87,8 +87,8 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&expr)) {
-        return lowerClosure(fnExpr->name, fnExpr->params, fnExpr->returnType, fnExpr->body,
-                            fnExpr->span, ilFn);
+        return lowerClosure(*fnExpr, fnExpr->name, fnExpr->params, fnExpr->returnType,
+                            fnExpr->body, fnExpr->span, ilFn);
     }
 
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
@@ -241,6 +241,15 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 return numOld;
             }
         }
+        // Every `UnaryOp` above is handled, so this is unreachable today —
+        // and that is exactly why it is here. Falling out of this `if` drops
+        // into the dispatcher's generic "unsupported AST expression" at the
+        // bottom, which names nothing; the house rule is that an unimplemented
+        // construct is diagnosed BY NAME, and the next operator added to the
+        // enum must not silently inherit the anonymous error.
+        diags_.error(un->span, "unsupported unary operator: " +
+                                   std::string(ast::unaryOpName(un->op)));
+        return std::nullopt;
     }
 
     if (const auto* tern = dynamic_cast<const ast::Ternary*>(&expr)) {
@@ -608,52 +617,63 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
+        const bool compound = bin->op != ast::BinaryOp::Assign;
+
+        // ECMA-262 13.15.2: the target *reference* is evaluated first, and
+        // for a compound assignment its current value is read (GetValue)
+        // BEFORE the right-hand side is evaluated. So the target is resolved
+        // and read here, above `lowerExpr(*bin->rhs)`, exactly as the member
+        // and index targets above already do it.
+        //
+        // Lowering the rhs first is observably wrong whenever the rhs can
+        // write the target: `x += f()` where `f` assigns `x` read the
+        // post-call value through `env.get` (docs/0007 makes a captured
+        // binding memory, so the read is a real instruction that moved with
+        // the code), and `x += (x = 3)` folded the inner assignment's value
+        // into both operands even for an SSA-backed binding.
+        auto it = activeVarMap_.find(ident->name);
+        const bool isLocal = it != activeVarMap_.end();
+        // An index, not a reference: lowering the rhs can lower a closure,
+        // which saves and restores `varBindings_` wholesale (docs/0007), so
+        // any reference taken now would be into a replaced vector. The index
+        // survives because the restore is of a snapshot taken after this
+        // lookup.
+        const size_t bindingIdx = isLocal ? it->second : 0;
+        uint32_t depth = 0;
+        uint32_t index = 0;
+        if (!isLocal) {
+            // Assignment to a variable captured from an enclosing scope: the
+            // closure writes through the environment, so the declaring scope
+            // sees it.
+            if (currentEnvValue_ == il::kNoValue ||
+                !findEnclosingEnvVar(ident->name, depth, index)) {
+                diags_.error(ident->span, "undefined variable: " + ident->name);
+                return std::nullopt;
+            }
+        }
+
+        std::optional<Value> curVal;
+        if (compound) {
+            curVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
+                             : emitEnvGet(depth, index, ilFn);
+        }
+
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
 
-        auto it = activeVarMap_.find(ident->name);
-        if (it == activeVarMap_.end()) {
-            // Assignment to a variable captured from an
-            // enclosing scope: the closure writes through the
-            // environment, so the declaring scope sees it.
-            uint32_t depth = 0;
-            uint32_t index = 0;
-            if (currentEnvValue_ != il::kNoValue &&
-                findEnclosingEnvVar(ident->name, depth, index)) {
-                if (bin->op == ast::BinaryOp::Assign) {
-                    emitEnvSet(depth, index, *rhsVal, ilFn);
-                    return rhsVal;
-                }
-                // Same rule as a member target: the combine decides
-                // numeric-vs-dynamic, and `+=` is numeric only where
-                // inference proved it (docs/0010 decision 3).
-                Value lhsOuter = emitEnvGet(depth, index, ilFn);
-                Value result =
-                    emitCompoundCombine(lhsOuter, *rhsVal, bin->op, provenNumber(*bin), ilFn);
-                emitEnvSet(depth, index, result, ilFn);
-                return result;
-            }
-            diags_.error(ident->span, "undefined variable: " + ident->name);
-            return std::nullopt;
-        }
-        VarBinding& b = varBindings_[it->second];
-
-        if (bin->op == ast::BinaryOp::Assign) {
-            writeBinding(b, *rhsVal, ilFn);
-            return rhsVal;
+        // The combine decides numeric-vs-dynamic, and `+=` is numeric only
+        // where inference proved it (docs/0010 decision 3). Before that proof
+        // existed this path unboxed both sides to f64 unconditionally, so
+        // `s += "a"` on a local read a string pointer as a double.
+        Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
+                                                      provenNumber(*bin), ilFn)
+                                : *rhsVal;
+        if (isLocal) {
+            writeBinding(varBindings_[bindingIdx], stored, ilFn);
         } else {
-            // Same rule as a member target: the combine decides
-            // numeric-vs-dynamic, and `+=` is numeric only where
-            // inference proved it (docs/0010 decision 3). Before that
-            // proof existed this path unboxed both sides to f64
-            // unconditionally, so `s += "a"` on a local read a string
-            // pointer as a double.
-            Value lhsVal = readBinding(b, ilFn);
-            Value result =
-                emitCompoundCombine(lhsVal, *rhsVal, bin->op, provenNumber(*bin), ilFn);
-            writeBinding(b, result, ilFn);
-            return result;
+            emitEnvSet(depth, index, stored, ilFn);
         }
+        return stored;
     }
     diags_.error(bin->span, "invalid assignment target");
     return std::nullopt;

@@ -35,6 +35,11 @@ Type InferenceResult::typeOfBindingAt(const ast::Stmt* mergePoint,
     return binding == point->second.end() ? Type::dynamic() : binding->second;
 }
 
+Type InferenceResult::closureReturnAt(const ast::Node* site) const {
+    const auto it = closureReturns.find(site);
+    return it == closureReturns.end() ? Type::dynamic() : it->second;
+}
+
 const Signature& InferenceResult::signatureOf(uint32_t functionIndex) const {
     if (functionIndex >= moduleSignatures.size()) return dynamicSignature();
     return moduleSignatures[functionIndex];

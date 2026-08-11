@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <vector>
+
 #include "il/print.h"
 #include "il/verifier.h"
 
@@ -207,5 +209,149 @@ TEST_CASE("IL Verifier catches errors") {
         bronze::DiagnosticSink diags;
         CHECK_FALSE(verify(m, diags));
         CHECK(diags.hasErrors());
+    }
+}
+
+// docs/0005 lists "argument count and types match target block parameters"
+// among the verifier's jobs. Block arguments are the SSA join, so a
+// malformed one becomes an LLVM phi incoming value; every shape below has
+// to be rejected before codegen ever sees it.
+TEST_CASE("IL Verifier checks block arguments") {
+    // b0: jump b1(<args>)   b1(<params>): ret
+    auto twoBlockModule = [](std::vector<BlockParam> params, std::vector<ValueId> args,
+                             std::vector<Instruction> b0Prefix, uint32_t valueCount) {
+        Module m;
+        m.name = "blockargs";
+        Function fn;
+        fn.name = "test";
+        fn.valueCount = valueCount;
+
+        Block b0{.id = 0};
+        for (auto& inst : b0Prefix) b0.instructions.push_back(inst);
+        Instruction jump;
+        jump.op = Op::Jump;
+        jump.target = BlockTarget{.block = 1, .args = std::move(args)};
+        b0.instructions.push_back(jump);
+        fn.blocks.push_back(std::move(b0));
+
+        Block b1{.id = 1};
+        b1.params = std::move(params);
+        b1.instructions.push_back({Op::Ret, Type::Void});
+        fn.blocks.push_back(std::move(b1));
+
+        m.functions.push_back(std::move(fn));
+        return m;
+    };
+
+    Instruction constF64;
+    constF64.op = Op::ConstF64;
+    constF64.type = Type::F64;
+    constF64.result = 0;
+    constF64.immF64 = 1.0;
+
+    SUBCASE("a well-formed edge verifies") {
+        Module m = twoBlockModule({BlockParam{1, Type::F64}}, {0}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK(verify(m, diags));
+        CHECK_FALSE(diags.hasErrors());
+    }
+
+    SUBCASE("kNoValue as a block parameter id is not a definition") {
+        // The hole this closes: recording kNoValue as a definition made every
+        // later use of it legal, so `jump b1(%4294967295)` type-checked and
+        // reached codegen.
+        Module m = twoBlockModule({BlockParam{kNoValue, Type::F64}}, {kNoValue}, {}, 1);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        CHECK(diags.hasErrors());
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("no-value sentinel") != std::string::npos);
+    }
+
+    SUBCASE("kNoValue as a block argument is named") {
+        Module m = twoBlockModule({BlockParam{1, Type::F64}}, {kNoValue}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("argument 0 to b1 is the no-value sentinel") !=
+              std::string::npos);
+    }
+
+    SUBCASE("an undefined block argument is rejected") {
+        Module m = twoBlockModule({BlockParam{1, Type::F64}}, {7}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("use of undefined value %7") != std::string::npos);
+    }
+
+    SUBCASE("too few block arguments is rejected") {
+        Module m = twoBlockModule({BlockParam{1, Type::F64}}, {}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("expects 1 arguments, got 0") != std::string::npos);
+    }
+
+    SUBCASE("a block argument of the wrong type is rejected") {
+        Module m = twoBlockModule({BlockParam{1, Type::Dynamic}}, {0}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("type mismatch for argument 0 passed to b1 "
+                                     "(argument is f64, parameter is dynamic)") !=
+              std::string::npos);
+    }
+
+    SUBCASE("a void block parameter is rejected") {
+        // The default-constructed BlockParam: no id and no type. Either half
+        // alone is enough to reject it.
+        Module m = twoBlockModule({BlockParam{1, Type::Void}}, {0}, {constF64}, 2);
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("block b1 parameter 0 has type void") != std::string::npos);
+    }
+
+    SUBCASE("br checks both edges") {
+        Module m;
+        m.name = "blockargs_br";
+        Function fn;
+        fn.name = "test";
+        fn.params = {{"cond", Type::Bool}};
+        fn.valueCount = 3;
+
+        Block b0{.id = 0};
+        Instruction c;
+        c.op = Op::ConstF64;
+        c.type = Type::F64;
+        c.result = 1;
+        c.immF64 = 1.0;
+        b0.instructions.push_back(c);
+        Instruction br;
+        br.op = Op::Branch;
+        br.operands = {0};
+        br.target = BlockTarget{.block = 1, .args = {1}};
+        br.elseTarget = BlockTarget{.block = 2, .args = {kNoValue}};
+        b0.instructions.push_back(br);
+        fn.blocks.push_back(std::move(b0));
+
+        Block b1{.id = 1};
+        b1.params.push_back(BlockParam{2, Type::F64});
+        b1.instructions.push_back({Op::Ret, Type::Void});
+        fn.blocks.push_back(std::move(b1));
+
+        Block b2{.id = 2};
+        b2.params.push_back(BlockParam{3, Type::F64});
+        b2.instructions.push_back({Op::Ret, Type::Void});
+        fn.blocks.push_back(std::move(b2));
+
+        m.functions.push_back(std::move(fn));
+
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        bronze::SourceBuffer buf("il", "");
+        CHECK(diags.render(buf).find("argument 0 to b2 is the no-value sentinel") !=
+              std::string::npos);
     }
 }

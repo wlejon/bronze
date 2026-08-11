@@ -394,7 +394,7 @@ private:
             // A nested declaration is a closure value (docs/0007 decision 4),
             // so it carries no module function index and no direct call.
             declare(fd->name, Type::function());
-            analyzeNested(fd->name, fd->params, fd->body, fd->span);
+            analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span);
             return;
         }
         // ForIn / ForOf / Try / Throw are parsed as childless nodes; nothing
@@ -532,7 +532,7 @@ private:
             return Type::object();
         }
         if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
-            analyzeNested(f->name, f->params, f->body, f->span);
+            analyzeNested(*f, f->name, f->params, f->body, f->span);
             return Type::function();
         }
         fail(e.span, "saw an unknown expression node kind");
@@ -670,7 +670,8 @@ private:
         return Type::object(cls);
     }
 
-    void analyzeNested(const std::string& declaredName, const std::vector<ast::Param>& params,
+    void analyzeNested(const ast::Node& site, const std::string& declaredName,
+                       const std::vector<ast::Param>& params,
                        const std::vector<ast::StmtPtr>& body, Span span) {
         std::string name = declaredName;
         if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
@@ -681,7 +682,7 @@ private:
         // A closure is never a direct-call target (docs/0007), so its
         // parameters keep the uniform dynamic convention.
         const std::vector<Type> paramTypes(params.size(), Type::dynamic());
-        analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex,
+        analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
                         /*directCallable=*/false, params, paramTypes, borrowed, span, record_);
     }
 
@@ -727,7 +728,8 @@ Env joinEnv(const Env& a, const Env& b) {
 
 FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::string& qualifiedName, uint32_t moduleIndex,
-                                bool directCallable, const std::vector<ast::Param>& params,
+                                const ast::Node* site, bool directCallable,
+                                const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record) {
@@ -784,6 +786,11 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
 
     const Type returnType = recorder.inferredReturn(body);
     facts.signature.returnType = returnType;
+    // A closure's only queryable proof (docs/0010 decision 5 excludes it
+    // from signature specialization, so its parameters stay dynamic — but
+    // what its body returns is a fact about the body alone, and throwing it
+    // away is what made every annotation on a closure unprovable).
+    if (record && site != nullptr) mod.result->closureReturns[site] = returnType;
     // Ordered map in, sorted vector out.
     for (const auto& cell : scope.cells) {
         facts.cells.push_back(BindingChange{cell.first, cell.second});

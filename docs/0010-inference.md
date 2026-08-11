@@ -255,8 +255,9 @@ a direct typed call in place of boxing); `property_access` is decision 7
 Pinned oracle cases from this phase, each run twice, with inference and with
 `--no-infer` (decision 8): `typed_direct_calls`, `if_else_type_split`,
 `loop_type_change_{while,do_while,for,partial}`, `compound_assign_string`,
-`inline_cache_mono`, `inline_cache_receiver_kinds`, `proto_chain_inline`,
-and the four annotation cases named below.
+`compound_assign_eval_order`, `inline_cache_mono`,
+`inline_cache_receiver_kinds`, `proto_chain_inline`, and the four annotation
+cases named below.
 
 ### Corrections reality made to this design
 
@@ -323,10 +324,35 @@ questions it had been guessing at.
 An annotation is checked at four sites — module function parameters and
 returns, closure parameters and returns, and variable declarations — always
 *after* the proof has typed the position, and it never types anything
-itself. A closure's annotations are never provable by construction:
-decision 5 excludes closures from signature specialization, so there is
-never a proof for one to agree with. Under `--no-infer` nothing is provable,
-so every annotation is discarded and every one of them warns.
+itself.
+
+A closure **parameter** annotation is never provable, by construction:
+decision 5 infers a signature by joining over every call site, which is
+sound only for a name whose callers this compilation can enumerate, and a
+closure is reached through a function value. A closure **return** annotation
+is checked against the type the analysis observed the body to produce
+(`InferenceResult::closureReturnAt`, keyed by the closure's AST node, since
+it has no module function index). That is a fact about the body alone, so a
+correct return annotation on a closure is silent and a wrong one is a
+contradiction — but it still buys nothing: the closure's IL return type is
+`dynamic` either way, because that is the calling convention.
+
+Under `--no-infer` nothing is provable, so every annotation is discarded —
+and none of them warns. The warning would fire on every annotation in the
+file and would say nothing about any of them, only that the switch is on.
+The suppression is the same "no inference result" test that *defines* the
+mode, so it cannot reach the normal one. The hard error below is **not**
+suppressed: unreadable text is a fact about the source, and a bisection seam
+must not accept a file the normal mode rejects.
+
+The spellings accepted are TypeScript's — `string`, `boolean`, `number`,
+`undefined`, `null`, `object`, `never`, `any`, `unknown` — alongside
+bronze's own IL names, which were the only ones the first cut read (`str`,
+`bool`, `f64`, `i32`, `void`, `dynamic`). A policy whose premise is
+"annotations are untrusted TS hints" cannot reject `x: string` while
+accepting `x: str`. The comparison is by lattice KIND, not by whole type:
+an annotation has no syntax for a shape class, so `object` agreeing with a
+proven `object#3` is agreement.
 
 Pinned by `annotation_param_proven` (the annotation agrees with the proof,
 and the native path is taken because of the proof), `annotation_param_ignored`
@@ -341,10 +367,15 @@ prove is `Dynamic`. What exists is:
 - `warning: annotation '<t>' on '<name>' is not provable; ignoring
   (inferred: <t2>)`
 - `warning: annotation '<t>' on '<name>' contradicts inferred <t2>`
-- `error: unsupported type annotation: <text>` — pre-dates this doc and is
-  kept. An annotation bronze cannot read is a typo, not a hint, and
-  ignoring it silently would be the quiet no-op the house rules forbid.
-  This is the one place an annotation is still an error rather than a hint.
+- `error: unsupported type annotation: <text> (bronze reads: <list>)` —
+  pre-dates this doc and is kept, now carrying the vocabulary so the fix is
+  visible from the message. Demoting it to warning-and-ignore was considered
+  and rejected: the hint policy is about TRUST (an annotation never types
+  anything), not about readability, and text bronze cannot read is not an
+  over-optimistic hint but a construct it has no lattice element for — a
+  nominal type, a generic, an interface. The house rule is that such a
+  construct is diagnosed by name. This is the one place an annotation is
+  still an error rather than a hint.
 - `error: internal: type inference call-graph signatures did not converge`
 - `error: internal: type inference captured-variable types did not converge
   in '<fn>'`
@@ -369,9 +400,13 @@ made concrete:
 - **`--strict-hints`** — promoting the annotation warnings to errors. Named
   as future work in decision 6 and deliberately not built: the policy has
   to be lived with before it is enforced.
-- **No proof surface for closures.** `InferenceResult` can answer for a
-  module function index; a closure has none, so lowering cannot ask about
-  one even where the analysis walked its body. Nothing is unsound about
-  this — a closure keeps the uniform dynamic convention — but it is why
-  every annotation on a closure reports as unprovable, including ones a
-  reader can see are right.
+- **No proof surface for a closure's PARAMETERS.** The return half of this
+  is closed: the analysis already joined every `return` in a closure body
+  and threw the answer away, and `closureReturnAt` now keys it on the
+  closure's AST node. The parameters are not, and closing them is not a
+  keying problem — it needs signatures inferred for a function reached
+  through a *value*, which means knowing every value the function flows
+  into: escape analysis, the step after this phase. A closure keeps the
+  uniform dynamic convention either way, so nothing here is unsound; it is
+  why an annotation on a closure parameter still reports as unprovable,
+  including one a reader can see is right.

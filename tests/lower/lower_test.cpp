@@ -124,8 +124,28 @@ TEST_CASE("with no inference, an annotation types nothing at all") {
     const std::string printed = il::print(*optMod);
     CHECK(printed.find("func add(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
     CHECK(printed.find("func calculate(%0: dynamic) -> dynamic export") != std::string::npos);
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("annotation 'number' on 'a' is not provable") != std::string::npos);
+
+    // ...but discarding them is not WARNED about here. Under `--no-infer`
+    // nothing is provable by construction, so the warning would fire on
+    // every annotation in the file and say nothing about any of them — only
+    // that the switch is on. The suppression is exactly the "no inference
+    // result" test, so it cannot reach the mode above, where the same source
+    // warns about `b`, `x`, `add` and `calculate` (the test before this one).
+    CHECK(diags.render(buf).find("annotation") == std::string::npos);
+}
+
+TEST_CASE("--no-infer suppresses annotation warnings but not the annotation error") {
+    // The suppression is about a warning that carries no information in that
+    // mode. Unreadable annotation text is information about the SOURCE, and
+    // `--no-infer` is a bisection seam: it must not accept a file the normal
+    // mode rejects.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("function f(x: Widget) { return x; }\n", diags, buf);
+
+    CHECK_FALSE(optMod.has_value());
+    REQUIRE(diags.hasErrors());
+    CHECK(diags.render(buf).find("unsupported type annotation: Widget") != std::string::npos);
 }
 
 TEST_CASE("numeric comparisons <, >, ==") {
@@ -177,16 +197,15 @@ TEST_CASE("an annotation contradicted by the initialiser is a warning, not a cas
           std::string::npos);
 }
 
-TEST_CASE("a closure's annotations are never provable") {
+TEST_CASE("a closure's parameter annotations are never provable") {
     // A closure is reached through a function value, so its callers are not
     // a set this compilation can close over (docs/0010 decision 5 excludes
-    // it from signature specialization). There is therefore never a proof
-    // for an annotation on one to agree with.
+    // it from signature specialization). A PARAMETER of one therefore has no
+    // proof at all, and cannot acquire one here.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = inferAndLower(
-        "const f = function (a: number): number { return a + 1; };\nconsole.log(f(1));\n", diags,
-        buf);
+        "const f = function (a: number) { return a + 1; };\nconsole.log(f(1));\n", diags, buf);
 
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
@@ -197,6 +216,58 @@ TEST_CASE("a closure's annotations are never provable") {
           std::string::npos);
 }
 
+TEST_CASE("a closure's RETURN annotation is checked against the body") {
+    // The proof surface docs/0010 recorded as missing. What a closure
+    // returns is a fact about its body, which the analysis already computes;
+    // only its parameters are beyond reach. So a correct return annotation
+    // on a closure is silent, and a wrong one is a contradiction rather than
+    // "not provable".
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "const good = function agrees(): number { return 1; };\n"
+        "const bad = function disagrees(): string { return 2; };\n"
+        "console.log(good());\nconsole.log(bad());\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string rendered = diags.render(buf);
+    // The agreeing one buys nothing: a closure's return is the uniform
+    // dynamic convention whatever the body does, and the annotation may not
+    // widen that. It is simply not complained about.
+    CHECK(rendered.find("on 'agrees'") == std::string::npos);
+    CHECK(rendered.find("warning: annotation 'string' on 'disagrees' contradicts inferred "
+                        "number") != std::string::npos);
+}
+
+TEST_CASE("annotations are read in TypeScript's spellings, not the IL's") {
+    // The premise of the policy is that an annotation is an untrusted TS
+    // hint, so `string`/`boolean`/`number` have to be readable. bronze's own
+    // IL names keep working beside them.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "let a: string = \"x\";\n"
+        "let b: str = \"y\";\n"
+        "let c: boolean = true;\n"
+        "let d: unknown = 1;\n"
+        "let e: number = \"nope\";\n"
+        "console.log(a);\nconsole.log(b);\nconsole.log(c);\nconsole.log(d);\nconsole.log(e);\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("on 'a'") == std::string::npos);
+    CHECK(rendered.find("on 'b'") == std::string::npos);
+    CHECK(rendered.find("on 'c'") == std::string::npos);
+    // `unknown` is the top type: it claims nothing, so nothing can disagree.
+    CHECK(rendered.find("on 'd'") == std::string::npos);
+    CHECK(rendered.find("warning: annotation 'number' on 'e' contradicts inferred string") !=
+          std::string::npos);
+}
+
 TEST_CASE("annotation text bronze cannot read is a hard error, not a silent skip") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
@@ -204,7 +275,10 @@ TEST_CASE("annotation text bronze cannot read is a hard error, not a silent skip
 
     CHECK_FALSE(optMod.has_value());
     REQUIRE(diags.hasErrors());
-    CHECK(diags.render(buf).find("unsupported type annotation: Widget") != std::string::npos);
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("unsupported type annotation: Widget") != std::string::npos);
+    // The vocabulary is in the message, so the fix does not need this file.
+    CHECK(rendered.find("bronze reads: any, bool, boolean") != std::string::npos);
 }
 
 TEST_CASE("top-level statements lowered to main") {

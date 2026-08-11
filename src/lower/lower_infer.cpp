@@ -25,17 +25,37 @@ namespace {
 // that function answered "what IL type does this annotation buy", and the
 // answer is now "none, on its own".
 //
-// Text bronze does not recognise stays a named hard error. An unreadable
-// annotation is a typo, not a hint: silently ignoring it would be the quiet
-// no-op the house rules forbid, and it costs nothing to say so.
+// The spellings are TypeScript's, because that is what the hint policy is
+// about: an annotation is an untrusted TS hint, so `x: string` has to be
+// readable and `x: str` was only ever readable because `str` is what bronze
+// happens to call the type in its own IL. Both are accepted — the IL names
+// stay because they were accepted before and a ratchet only grows — but a
+// user writing TS never has to learn them.
+//
+// Text bronze does not recognise stays a named hard error; see
+// `checkAnnotation` for why that is not the hint policy contradicting
+// itself.
 std::optional<types::Type> annotationClaim(const std::string& ann) {
+    // TS spelling first in each line, bronze's IL name after it.
     if (ann == "number" || ann == "f64" || ann == "i32") return types::Type::number();
-    if (ann == "bool" || ann == "boolean") return types::Type::boolean();
-    if (ann == "str") return types::Type::string();
-    if (ann == "void") return types::Type::undefined();
-    if (ann == "dynamic" || ann == "any") return types::Type::dynamic();
+    if (ann == "boolean" || ann == "bool") return types::Type::boolean();
+    if (ann == "string" || ann == "str") return types::Type::string();
+    // TS `void` is "returns nothing", which is bronze's Undefined.
+    if (ann == "undefined" || ann == "void") return types::Type::undefined();
+    if (ann == "null") return types::Type::null();
+    if (ann == "object") return types::Type::object();
+    if (ann == "never") return types::Type::never();
+    // The top type under three names. It claims nothing, so nothing can
+    // disagree with it (see `checkAnnotation`).
+    if (ann == "any" || ann == "unknown" || ann == "dynamic") return types::Type::dynamic();
     return std::nullopt;
 }
+
+// Every spelling above, for the error that rejects anything else — the fix
+// for `x: Widget` is not discoverable otherwise.
+constexpr const char* kReadableAnnotations =
+    "any, bool, boolean, dynamic, f64, i32, never, null, number, object, str, string, "
+    "undefined, unknown, void";
 
 }  // namespace
 
@@ -158,6 +178,24 @@ types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
     return sig == nullptr ? types::Type::dynamic() : sig->returnType;
 }
 
+// What a closure's body was observed to return. A closure has no module
+// function index, so `provenSignature` cannot speak for it; the AST node is
+// its only handle (`types::InferenceResult::closureReturnAt`).
+//
+// This is the whole of a closure's proof surface, and deliberately so. Its
+// PARAMETERS have no proof and cannot get one: a signature is inferred by
+// joining over all call sites (docs/0010 decision 5), which is sound only
+// where this compilation can enumerate the callers, and a closure is reached
+// through a function value. Its return is a different kind of fact — one
+// about the body alone, which the analysis already computes — so an
+// annotation on it can be told apart from one that merely was not checkable.
+// Nothing here changes the calling convention: a closure's return stays
+// `dynamic` whatever this answers.
+types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
+    if (inference_ == nullptr) return types::Type::dynamic();
+    return inference_->closureReturnAt(&site);
+}
+
 // docs/0010 decision 6, and with it docs/0001 decision 4: a TS annotation is
 // an untrusted optimization hint.
 //
@@ -181,23 +219,45 @@ types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
 // (docs/0001 decision 4). A `--strict-hints` that promotes them is named as
 // future work in docs/0010 and deliberately not here.
 //
-// With `--no-infer` there is no proof to agree with, so every annotation is
-// discarded and every one of them warns. That is not a quirk of the switch:
-// it is what "the annotation constrains nothing" means when nothing else is
-// proving anything either, and it is why the oracle suite can pin the same
-// bytes in both modes.
+// With `--no-infer` there is no proof for ANY annotation to agree with, so
+// every one of them would be discarded and every one would warn. Those
+// warnings are suppressed, because they say nothing about the source — only
+// about the mode, which the user chose one command line ago. The suppression
+// is exactly the `inference_ == nullptr` test that *defines* the mode, so it
+// cannot hide a warning in the normal mode: with an inference result in hand
+// every discarded annotation still warns, and that is what the lower tests
+// pin in both directions.
+//
+// What is NOT suppressed is the hard error below. Unreadable annotation text
+// is a fact about the source, and `--no-infer` is a bisection seam for a
+// suspected miscompile (docs/0010 decision 8) — it must not quietly accept
+// source that the normal mode rejects.
 bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::string& name,
                               types::Type proven) {
     if (ann.empty()) return true;
     const auto claim = annotationClaim(ann);
     if (!claim) {
-        diags_.error(span, "unsupported type annotation: " + ann);
+        // Kept a hard error, not turned into another discarded hint. The
+        // hint policy is about TRUST — an annotation never types anything —
+        // not about readability, and text bronze cannot read is not an
+        // over-optimistic hint but a construct it has no lattice element for
+        // (a nominal type, a generic, an interface). The house rule is that
+        // such a construct is diagnosed by name; ignoring it silently is the
+        // quiet no-op the rules forbid. The vocabulary is listed so the fix
+        // is visible from the message.
+        diags_.error(span, "unsupported type annotation: " + ann +
+                               " (bronze reads: " + kReadableAnnotations + ")");
         return false;
     }
-    // `any`/`dynamic` claims nothing about the value, so no proof can
-    // disagree with it and there is nothing to discard.
+    // `any`/`unknown`/`dynamic` claims nothing about the value, so no proof
+    // can disagree with it and there is nothing to discard.
     if (claim->is(types::TypeKind::Dynamic)) return true;
-    if (*claim == proven) return true;
+    // By KIND, not by whole type: an annotation can never carry an identity
+    // (there is no source syntax for a shape class), so `object` agreeing
+    // with a proven `object#3` is agreement, and comparing the payloads
+    // would report "annotation 'object' contradicts inferred object".
+    if (claim->kind() == proven.kind()) return true;
+    if (inference_ == nullptr) return true;
 
     // The kind name, not `Type::str()`: a shape class id (`object#3`) is a
     // compile-time identity with no meaning in the source the user wrote.

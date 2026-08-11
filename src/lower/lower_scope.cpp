@@ -194,7 +194,8 @@ void Lowerer::exitScope() {
 // Shared by function expressions and nested function declarations:
 // both produce a closure value over the environment that is innermost
 // at the creation site (docs/0007 decision 4).
-std::optional<Lowerer::Value> Lowerer::lowerClosure(const std::string& declaredName,
+std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
+                                                    const std::string& declaredName,
                                                     const std::vector<ast::Param>& params,
                                                     const std::string& returnTypeAnn,
                                                     const std::vector<ast::StmtPtr>& body,
@@ -217,23 +218,33 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const std::string& declaredN
     }
     // A closure's parameters and return are always the uniform dynamic
     // convention, and an annotation cannot change that (docs/0010 decision
-    // 6). Nothing here is a hole in the analysis: a closure is reached
-    // through a function value, so its callers are not a set this
-    // compilation can close over — decision 5 excludes it from signature
-    // specialization by construction, which means there is never a proof for
-    // an annotation on one to agree with. Every annotation written here is
-    // therefore discarded, and says so.
+    // 6).
+    //
+    // A closure PARAMETER has no proof and cannot have one: a signature is
+    // inferred by joining over every call site, which is sound only for a
+    // name whose callers this compilation can enumerate, and a closure is
+    // reached through a function value — decision 5 excludes it by
+    // construction. So the proof handed to the check is `dynamic`, which is
+    // the honest report of "nothing was observed here", and every parameter
+    // annotation on a closure is discarded with a warning saying so.
     for (const auto& param : params) {
         newFn.params.push_back({param.name, il::Type::Dynamic});
         if (!checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic())) {
             return std::nullopt;
         }
     }
-    // The return annotation is reported on `fnName`, which for an anonymous
-    // function expression is the synthesized `__anon_fn_N` — deliberately,
-    // because that is the name it has in the IL dump and the span already
-    // points at the source.
-    if (!checkAnnotation(returnTypeAnn, span, fnName, types::Type::dynamic())) {
+    // The RETURN is different in kind, and this is the closure proof surface
+    // docs/0010 recorded as missing: what a body returns is a fact about the
+    // body alone, and inference already joins every `return` in it. So a
+    // return annotation on a closure can agree with a proof after all, and a
+    // visibly correct one no longer reports as unprovable. It still buys
+    // nothing — the IL return type above stays dynamic, because that is the
+    // calling convention and no annotation may widen it.
+    //
+    // Reported on `fnName`, which for an anonymous function expression is
+    // the synthesized `__anon_fn_N` — deliberately, because that is the name
+    // it has in the IL dump and the span already points at the source.
+    if (!checkAnnotation(returnTypeAnn, span, fnName, provenClosureReturn(site))) {
         return std::nullopt;
     }
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
@@ -252,7 +263,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const std::string& declaredN
     auto outerEnvScope = functionEnvScope_;
     size_t outerEnvDepth = envScopes_.size();
 
-    if (!lowerFunctionBody(fnName, params, returnTypeAnn, body, newFn)) {
+    if (!lowerFunctionBody(params, body, newFn)) {
         return std::nullopt;
     }
 

@@ -31,6 +31,17 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     std::unordered_map<ValueId, DefLocation> defLocations;
 
     auto recordDef = [&](ValueId id, Type type, size_t blockIdx, int instIdx) -> bool {
+        // `kNoValue` is the "there is no value here" sentinel, never a name.
+        // Letting it become a definition is what made every use of it legal:
+        // one default-constructed BlockParam put UINT32_MAX into this map,
+        // and from then on `jump b1(%4294967295)` type-checked and reached
+        // codegen. Rejected here so the sentinel can never be looked up.
+        if (id == kNoValue) {
+            diags.error(Span{}, "Function " + fn.name +
+                                    ": the no-value sentinel %" + std::to_string(kNoValue) +
+                                    " is used as a definition");
+            return false;
+        }
         if (definedTypes.contains(id)) {
             diags.error(Span{}, "Function " + fn.name + ": duplicate definition of %" + std::to_string(id));
             return false;
@@ -57,7 +68,18 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             return false;
         }
 
-        for (const auto& param : block.params) {
+        for (size_t pIdx = 0; pIdx < block.params.size(); ++pIdx) {
+            const auto& param = block.params[pIdx];
+            // A block parameter is an SSA definition, so it needs a real type
+            // for the incoming arguments to be checked against. `Void` is the
+            // default-constructed state and means the producer never filled
+            // it in — every argument would then have to be Void too, which
+            // no instruction produces (docs/0005 decision 1).
+            if (param.type == Type::Void) {
+                diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
+                                        " parameter " + std::to_string(pIdx) + " has type void");
+                return false;
+            }
             if (!recordDef(param.id, param.type, bIdx, -1)) {
                 return false;
             }
@@ -88,7 +110,11 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         return true;
     };
 
-    // Helper to check target block arguments
+    // Block arguments are the SSA join (docs/0005 decision 1), so they carry
+    // the same obligations as any other use: one argument per target block
+    // parameter, each a value defined somewhere, each of the parameter's
+    // type. An argument list that satisfies none of that becomes an LLVM phi
+    // incoming value, which is why this is a hard error rather than a lint.
     auto checkTarget = [&](const BlockTarget& target, size_t useBlockIdx, size_t useInstIdx) -> bool {
         if (target.block >= fn.blocks.size()) {
             diags.error(Span{}, "Function " + fn.name + ": branch target b" +
@@ -104,10 +130,22 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         }
         for (size_t i = 0; i < target.args.size(); ++i) {
             ValueId argId = target.args[i];
+            // Named separately from "undefined value": a `kNoValue` argument
+            // is a producer that had no value to pass and passed the sentinel
+            // anyway (an env-backed or uninitialised binding reaching an edge
+            // it should never reach), not a typo'd id.
+            if (argId == kNoValue) {
+                diags.error(Span{}, "Function " + fn.name + ": argument " + std::to_string(i) +
+                                        " to b" + std::to_string(target.block) +
+                                        " is the no-value sentinel %" + std::to_string(kNoValue));
+                return false;
+            }
             if (!checkUse(argId, useBlockIdx, useInstIdx)) return false;
             if (definedTypes[argId] != tgtBlock.params[i].type) {
                 diags.error(Span{}, "Function " + fn.name + ": type mismatch for argument " +
-                                      std::to_string(i) + " passed to b" + std::to_string(target.block));
+                                      std::to_string(i) + " passed to b" + std::to_string(target.block) +
+                                      " (argument is " + typeName(definedTypes[argId]) +
+                                      ", parameter is " + typeName(tgtBlock.params[i].type) + ")");
                 return false;
             }
         }

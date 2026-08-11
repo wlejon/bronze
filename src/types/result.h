@@ -80,6 +80,12 @@ struct InferenceResult {
     // whole environments cheaply; nothing here reaches an output path.
     std::unordered_map<const ast::Stmt*, std::map<std::string, Type>> mergeBindings;
 
+    // Per closure: the type its `return` statements were observed to
+    // produce, keyed by the AST node that IS the closure — a `FunctionExpr`,
+    // or a nested `FunctionDecl`, which docs/0007 decision 4 desugars to one.
+    // See `closureReturnAt` for what this is and is not.
+    std::unordered_map<const ast::Node*, Type> closureReturns;
+
     std::map<std::string, uint32_t> moduleFunctionIndex;  // name -> index
     std::vector<uint32_t> moduleFunctionSlot;             // index -> `functions` slot
     std::vector<Signature> moduleSignatures;              // index -> signature
@@ -134,6 +140,27 @@ struct InferenceResult {
     // always read together.
     const Signature& signatureOf(uint32_t functionIndex) const;
     bool isDirectCallable(uint32_t functionIndex) const;
+
+    // A closure's proof surface, and the whole of it: what its body was
+    // observed to RETURN. A closure has no module function index, so
+    // `signatureOf` cannot speak for one; this is keyed by the AST node
+    // instead, which is what a consumer holds when it lowers the closure.
+    //
+    // Deliberately the return only. A closure's PARAMETERS have no proof
+    // and cannot get one here: decision 5 infers a signature by joining
+    // over all call sites, which is sound only for a name whose callers
+    // this compilation can enumerate, and a closure is reached through a
+    // function value. So its parameters keep the uniform dynamic convention
+    // and this reports nothing about them — an absence by design, not a
+    // gap. Its return, by contrast, is a fact about the body alone: the
+    // analysis already walks it and joins every `return`.
+    //
+    // This never types anything. It exists so a consumer can tell a
+    // closure annotation that agrees with the body from one that does not
+    // (docs/0010 decision 6); the calling convention is dynamic either way.
+    // A closure the analysis did not reach answers `Dynamic`, the designed
+    // sound fallback.
+    Type closureReturnAt(const ast::Node* site) const;
 
     bool isDirectCallable(const std::string& name) const;
     std::optional<uint32_t> functionIndexOf(const std::string& name) const;

@@ -60,7 +60,10 @@ decision 6). It seeds nothing and constrains nothing: if inference proves the
 same type, the native path is taken *because of the proof*; if it proves
 something else or proves nothing, the annotation is discarded, the value
 stays `dynamic`, and you get a warning naming both. `function f(x: number)`
-reached with a string compiles and runs as JavaScript.
+reached with a string compiles and runs as JavaScript. Annotations are read
+in TypeScript's spellings (`string`, `boolean`, `number`, `any`, `unknown`,
+…) as well as bronze's own IL names; text bronze cannot read at all is a
+hard error naming the vocabulary, not a silent skip.
 
 ```
 bronze il   <file> [--no-infer]
@@ -68,7 +71,10 @@ bronze build <file> -o <exe> [--no-infer]
 ```
 
 `--no-infer` forces every inferred type to `dynamic` and lowers on the
-uniform dynamic convention. It exists for one reason: it is the **bisection
+uniform dynamic convention. The annotation warnings go quiet with it —
+nothing is provable in that mode, so they would say only that the switch is
+on — while the annotation *error* still fires, because unreadable text is a
+fact about the source. It exists for one reason: it is the **bisection
 seam** for any miscompile inference is suspected of causing — if a program
 is right with it and wrong without it, the analysis is at fault, and if it is
 wrong with it too, the analysis is not. It is a ratchet rather than a comfort

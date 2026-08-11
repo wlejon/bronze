@@ -72,9 +72,16 @@ struct FunctionOutcome {
 // `record` fills the result side table and appends this function's
 // `FunctionFacts`; the call-graph fixpoint's probe passes leave it off, so
 // each expression is recorded exactly once, on the final pass.
+//
+// `site` is the AST node that IS this function when it is a closure — a
+// `FunctionExpr` or a nested `FunctionDecl` — and null for a module-level
+// function (which `moduleIndex` names instead) and for the module top level.
+// It is the key `InferenceResult::closureReturnAt` answers on, which is the
+// only handle a closure has: it has no module function index.
 FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::string& qualifiedName, uint32_t moduleIndex,
-                                bool directCallable, const std::vector<ast::Param>& params,
+                                const ast::Node* site, bool directCallable,
+                                const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record);
