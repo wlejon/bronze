@@ -25,6 +25,7 @@ const char* opName(Op op) {
         case Op::ConstNull: return "const.null";
         case Op::Add: return "add";
         case Op::Sub: return "sub";
+        case Op::Neg: return "neg";
         case Op::Mul: return "mul";
         case Op::Div: return "div";
         case Op::Mod: return "mod";
@@ -142,6 +143,10 @@ std::string print(const Module& module) {
                         } else {
                             out += " %" + std::to_string(inst.operands[0]);
                         }
+                        break;
+                    case Op::Neg:
+                        out += "neg %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +

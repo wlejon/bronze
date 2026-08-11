@@ -1,0 +1,18 @@
+[ 1, 2, 3 ]
+[]
+{}
+{ a: 1, b: 'x' }
+hi
+[ 'hi', "it's" ]
+[ true, false, null, undefined ]
+[ -0, 0, Infinity, NaN ]
+{ '2': 'two', 'a-b': 1, z: 3, a: 4 }
+[ [ 1, [ 2, [Array] ] ] ]
+[ { a: { b: [Object] } } ]
+[ 'tab\there', 'nl\nhere' ]
+<ref *1> { name: 'root', self: [Circular *1] }
+<ref *1> [ 1, [Circular *1] ]
+[ [Function] ]
+Float32Array(3) [ 0, 0, 0 ]
+{ x: 1, y: 2 }
+[ { x: 1, y: 2 }, { x: 3, y: 4 } ]

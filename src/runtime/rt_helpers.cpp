@@ -240,7 +240,7 @@ double rtToNumber(Value v) {
 // A canonical array index: the decimal form must round-trip, so "0" and
 // "42" qualify while "01", "1.0", "-1" and " 1" are ordinary string keys
 // (docs/0009 decision 1).
-static bool isIntegerLikeKey(std::string_view key, uint32_t& out) {
+bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out) {
     if (key.empty() || key.size() > 10) return false;
     if (key.size() > 1 && key[0] == '0') return false;
     uint64_t v = 0;
@@ -544,7 +544,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     std::vector<StringHeader*> strKeys;
     for (StringHeader* k : inserted) {
         uint32_t idx = 0;
-        if (k->isLatin1() && isIntegerLikeKey(latin1View(k), idx)) {
+        if (k->isLatin1() && rtIsIntegerLikeKey(latin1View(k), idx)) {
             intKeys.emplace_back(idx, k);
         } else {
             strKeys.push_back(k);
@@ -1223,9 +1223,12 @@ void bronze_print_value(uint64_t valBits) {
         buf[len++] = '\n';
         std::fwrite(buf, 1, len, stdout);
     } else if (v.isObject()) {
-        // Containers still have no pinned print format; choosing one is its
-        // own decision (docs/0009).
-        std::fputs("[object]\n", stdout);
+        // The container format is docs/0013's decision, and it lives in
+        // inspect.cpp rather than here: it is a recursive walk with its own
+        // rules, and none of them are this function's business.
+        const std::string text = rtInspect(v);
+        std::fwrite(text.data(), 1, text.size(), stdout);
+        std::fputc('\n', stdout);
     } else if (v.isHole()) {
         // 0004: the hole is internal and never user-visible. Printing it as
         // anything would hide the bug that let it escape.

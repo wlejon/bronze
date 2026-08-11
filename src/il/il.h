@@ -34,6 +34,9 @@ enum class Op : uint8_t {
     ConstNull,      // a: dynamic = const.null
     Add,        // a = add b, c        (numeric, operands same type)
     Sub,
+    // Unary minus, which is NOT `0 - x`: IEEE-754 says 0 - 0 is +0,
+    // while negation flips the sign bit, so `-0` was printing as 0.
+    Neg,        // a: f64 = neg b
     Mul,
     Div,
     Mod,

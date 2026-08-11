@@ -64,4 +64,6 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0011 builtins (provided globals by name, `Math`, `Array.prototype`,
   `String.prototype`; an unbuilt member stays a named error)
 - 0012 syntax growth (string-escape decoding, template literals, for-of
-  as an index walk, arrows and lexical `this`; classes designed, unbuilt)
+  as an index walk, arrows and lexical `this`, classes desugared)
+- 0013 printing containers (console.log's inspect format, and the
+  divergences from node that are deliberate)

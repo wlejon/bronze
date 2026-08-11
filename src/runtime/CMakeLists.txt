@@ -15,6 +15,7 @@ bronze_add_module(runtime
         builtin_math.cpp
         builtin_array.cpp
         builtin_string.cpp
+        inspect.cpp
         rt_helpers.cpp
     DEPS
         abi
@@ -28,6 +29,7 @@ bronze_add_module(runtime
         ../../tests/runtime/array_test.cpp
         ../../tests/runtime/typed_array_test.cpp
         ../../tests/runtime/fn_test.cpp
+        ../../tests/runtime/inspect_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

@@ -31,6 +31,15 @@ NonMovingArena& rtArena();
 // own hidden class rather than the one every `{}` literal shares.
 Shape* rtNewRootShape(Value proto);
 
+// Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it
+// (docs/0009) and so does console.log of an object, which reports the same
+// order — one test, so the two answers cannot drift.
+bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
+
+// console.log of a container, in the format docs/0013 pins. Returns the
+// text; the caller writes it.
+std::string rtInspect(Value v);
+
 // A heap string from UTF-8 bytes, and JS ToString / ToNumber. ToString on
 // an object and ToNumber on an object are hard errors: both need
 // ToPrimitive, which bronze has not built.

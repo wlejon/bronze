@@ -772,6 +772,22 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                     }
                     break;
                 }
+                case il::Op::Neg: {
+                    if (inst.operands.empty() || inst.result == il::kNoValue) {
+                        diags.error(Span{}, "Invalid operands for Neg");
+                        return false;
+                    }
+                    llvm::Value* operand = values[inst.operands[0]];
+                    if (!operand) {
+                        diags.error(Span{}, "Undefined value in Neg instruction");
+                        return false;
+                    }
+                    if (operand->getType()->isIntegerTy(1)) {
+                        operand = builder.CreateUIToFP(operand, builder.getDoubleTy());
+                    }
+                    values[inst.result] = builder.CreateFNeg(operand);
+                    break;
+                }
                 case il::Op::Mul: {
                     if (inst.operands.size() < 2 || inst.result == il::kNoValue) {
                         diags.error(Span{}, "Invalid operands for Mul");

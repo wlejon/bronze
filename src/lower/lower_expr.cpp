@@ -239,21 +239,17 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             auto valOpt = lowerExpr(*un->operand, ilFn);
             if (!valOpt) return std::nullopt;
             Value val = unboxValueIfNeeded(*valOpt, il::Type::F64, ilFn);
-            il::ValueId zeroRes = ilFn.valueCount++;
-            il::Instruction zeroInst;
-            zeroInst.op = il::Op::ConstF64;
-            zeroInst.type = il::Type::F64;
-            zeroInst.result = zeroRes;
-            zeroInst.immF64 = 0.0;
-            emitInst(ilFn, zeroInst);
-
+            // Negation, not `0 - x`: IEEE-754 makes 0 - 0 positive zero, so
+            // the subtraction spelling printed `-0` as `0` — the sign of
+            // zero is observable (docs/0013), and `Object.is(-0, 0)` is
+            // false in the language.
             il::ValueId res = ilFn.valueCount++;
-            il::Instruction subInst;
-            subInst.op = il::Op::Sub;
-            subInst.type = il::Type::F64;
-            subInst.result = res;
-            subInst.operands = {zeroRes, val.id};
-            emitInst(ilFn, subInst);
+            il::Instruction negInst;
+            negInst.op = il::Op::Neg;
+            negInst.type = il::Type::F64;
+            negInst.result = res;
+            negInst.operands = {val.id};
+            emitInst(ilFn, negInst);
             return Value{res, il::Type::F64};
         }
         if (un->op == ast::UnaryOp::Posate) {
