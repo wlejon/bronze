@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "lower/assigned_set.h"
-#include "lower/captures.h"
+#include "ast/queries.h"
 
 namespace bronze::lower {
 namespace {
@@ -46,7 +46,7 @@ public:
                 // parameter ahead of its source parameters; every call
                 // site supplies it, direct ones included, so this costs
                 // nothing to functions that do not use it (docs/0008).
-                if (usesThis(fnDecl->body)) {
+                if (ast::usesThis(fnDecl->body)) {
                     fn.needsThis = true;
                     fn.params.push_back({"__this", il::Type::Dynamic});
                 }
@@ -98,14 +98,14 @@ public:
 
             // The module top level is a function body like any other: its
             // variables can be captured by closures written at top level.
-            capturedNames_ = getCapturedNames(topLevelStmts);
+            capturedNames_ = ast::getCapturedNames(topLevelStmts);
             functionEnvBase_ = envScopes_.size();
             functionEnvScope_ = SIZE_MAX;
             std::vector<std::string> mainEnvSlots;
-            for (const auto& declName : getScopeDeclarations(topLevelStmts)) {
+            for (const auto& declName : ast::getScopeDeclarations(topLevelStmts)) {
                 if (capturedNames_.contains(declName)) mainEnvSlots.push_back(declName);
             }
-            for (const auto& varName : getHoistedVarDeclarations(topLevelStmts)) {
+            for (const auto& varName : ast::getHoistedVarDeclarations(topLevelStmts)) {
                 if (capturedNames_.contains(varName) &&
                     std::find(mainEnvSlots.begin(), mainEnvSlots.end(), varName) ==
                         mainEnvSlots.end()) {
@@ -566,7 +566,7 @@ private:
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn) {
         currentScopeDepth_++;
         std::vector<std::string> slots;
-        for (const auto& name : getScopeDeclarations(stmts)) {
+        for (const auto& name : ast::getScopeDeclarations(stmts)) {
             if (capturedNames_.contains(name)) slots.push_back(name);
         }
         if (slots.empty()) {
@@ -669,7 +669,7 @@ private:
         // environment record (docs/0007). The environment stack itself is
         // NOT cleared: enclosing scopes' environments are how this
         // function's free variables resolve.
-        capturedNames_ = getCapturedNames(body);
+        capturedNames_ = ast::getCapturedNames(body);
         functionEnvBase_ = envScopes_.size();
         functionEnvScope_ = SIZE_MAX;
 
@@ -682,10 +682,10 @@ private:
         for (const auto& p : params) {
             if (capturedNames_.contains(p.name)) envSlots.push_back(p.name);
         }
-        for (const auto& declName : getScopeDeclarations(body)) {
+        for (const auto& declName : ast::getScopeDeclarations(body)) {
             if (capturedNames_.contains(declName)) envSlots.push_back(declName);
         }
-        for (const auto& varName : getHoistedVarDeclarations(body)) {
+        for (const auto& varName : ast::getHoistedVarDeclarations(body)) {
             if (capturedNames_.contains(varName) &&
                 std::find(envSlots.begin(), envSlots.end(), varName) == envSlots.end()) {
                 envSlots.push_back(varName);
@@ -807,7 +807,7 @@ private:
             // anything (docs/0007). An unused one costs a parameter.
             newFn.needsEnv = true;
             newFn.params.push_back({"__env", il::Type::Dynamic});
-            if (usesThis(body)) {
+            if (ast::usesThis(body)) {
                 newFn.needsThis = true;
                 newFn.params.push_back({"__this", il::Type::Dynamic});
             }

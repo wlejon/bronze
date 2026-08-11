@@ -26,6 +26,8 @@
 #include "lower/lower.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
+#include "types/dump.h"
+#include "types/infer.h"
 
 namespace bronze::cli {
 namespace {
@@ -36,6 +38,7 @@ constexpr const char* kUsage =
     "Usage:\n"
     "  bronze lex <file>                   Tokenize and print one token per line\n"
     "  bronze parse <file>                 Parse and print the canonical AST dump\n"
+    "  bronze types <file>                 Infer types and print the canonical type dump\n"
     "  bronze il <file>                    Lower to IL and print canonical IL dump\n"
     "  bronze build <file> -o <output>     Compile JS source to native executable\n"
     "  bronze version                      Print version\n";
@@ -160,6 +163,51 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
 }
 
 }  // namespace
+
+int runTypes(const std::string& sourcePath, std::string* outString) {
+    std::string text;
+    if (!readFile(sourcePath, text)) {
+        std::string msg = "error: cannot read " + sourcePath + "\n";
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
+    SourceBuffer buffer(sourcePath, std::move(text));
+    DiagnosticSink diags;
+
+    auto tokens = Lexer(buffer, diags).lex();
+    if (diags.hasErrors()) {
+        std::string msg = diags.render(buffer);
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
+    auto astModule = Parser(std::move(tokens), diags).parseModule(sourcePath);
+    if (diags.hasErrors() || !astModule) {
+        std::string msg = diags.render(buffer);
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
+    auto inferred = types::inferModule(*astModule, diags);
+    if (diags.hasErrors() || !inferred) {
+        std::string msg = diags.render(buffer);
+        if (outString) *outString = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
+    std::string printed = types::dump(*inferred);
+    if (outString) {
+        *outString = printed;
+    } else {
+        std::fputs(printed.c_str(), stdout);
+    }
+    return 0;
+}
 
 int runIl(const std::string& sourcePath, std::string* outString) {
     std::string text;
@@ -309,6 +357,11 @@ int runDriver(int argc, char** argv) {
         if (diags.hasErrors() || !module) return fail(diags.render(buffer));
         std::fputs(ast::dump(*module).c_str(), stdout);
         return 0;
+    }
+
+    if (command == "types") {
+        if (argc < 3) return fail("error: missing <file>\n");
+        return runTypes(argv[2]);
     }
 
     if (command == "il") {

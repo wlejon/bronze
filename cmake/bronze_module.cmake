@@ -1,4 +1,9 @@
-# bronze_add_module(<name> SOURCES ... [DEPS ...] [TEST_SOURCES ...])
+# bronze_add_module(<name> SOURCES ... [DEPS ...] [TEST_SOURCES ...] [TEST_DEPS ...])
+#
+# TEST_DEPS links extra modules into the TEST binary only, for building
+# fixtures. It deliberately does not touch the library's own dependencies:
+# a module that analyses the AST needs a parser to get one in a test, and
+# that must not become a dependency of the module itself.
 #
 # Every compiler component is an isolated STATIC library with its own test
 # executable. Nothing links more than it declares; the CLI is the only place
@@ -9,7 +14,7 @@
 #     ctest --preset dev -L lex
 #
 function(bronze_add_module name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;DEPS;TEST_SOURCES" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;DEPS;TEST_SOURCES;TEST_DEPS" ${ARGN})
 
     add_library(bronze_${name} STATIC ${ARG_SOURCES})
     add_library(bronze::${name} ALIAS bronze_${name})
@@ -26,6 +31,9 @@ function(bronze_add_module name)
     if(ARG_TEST_SOURCES)
         add_executable(bronze_${name}_tests ${ARG_TEST_SOURCES})
         target_link_libraries(bronze_${name}_tests PRIVATE bronze::${name} doctest::doctest)
+        foreach(dep IN LISTS ARG_TEST_DEPS)
+            target_link_libraries(bronze_${name}_tests PRIVATE bronze::${dep})
+        endforeach()
         if(MSVC)
             target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive-)
         endif()

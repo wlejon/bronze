@@ -46,6 +46,20 @@ TEST_CASE("CLI driver il command produces canonical IL") {
     std::filesystem::remove(jsPath);
 }
 
+TEST_CASE("CLI driver types command produces the canonical type dump") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_types.js";
+    writeTestFile(jsPath, "function add(a, b) {\n  return a + b;\n}\nadd(10, 20);\n");
+
+    std::string typesOutput;
+    int status = bronze::cli::runTypes(jsPath.string(), &typesOutput);
+    CHECK(status == 0);
+    CHECK(typesOutput.find("func add(a: number, b: number) -> number direct-callable") !=
+          std::string::npos);
+    CHECK(typesOutput.find("func main() -> undefined") != std::string::npos);
+
+    std::filesystem::remove(jsPath);
+}
+
 TEST_CASE("CLI driver build command compiles and links executable") {
     std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_build.js";
     std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_build.exe";
