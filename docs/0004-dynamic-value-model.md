@@ -141,6 +141,15 @@ Accepted design, the same one production engines converged on:
   specialization (packed-double etc.) is deferred until a benchmark asks.
   Out-of-range / sparse writes beyond a threshold: named hard error until
   dictionary elements land (no silent slow-mode).
+  **Amended 2026-08-11**: "an object (shape for named props)" describes the
+  design, not what shipped — an array header carries no shape, so a *named*
+  write (`a.foo = 1`) fell off the end of the element path and was silently
+  discarded, and the subsequent read of `a.foo` answered `undefined`. That
+  is the silent slow-mode this bullet forbids one line later, so it is now
+  `named property writes on an array are unsupported (arrays carry no shape
+  for named properties yet)`, matching what the Float32Array branch beside
+  it already did. Giving arrays a shape is the fix; diagnosing is the
+  boundary marker until then.
 - **Typed arrays are first-class, early** — `Float32Array` is the beating
   heart of three.js. `ArrayBuffer` = GC object owning a byte buffer;
   views = `{buffer ref, byteOffset, length, element type}`. Element

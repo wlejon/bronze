@@ -66,3 +66,14 @@ Each language-growth phase (0001 phase 4) adds its cases FIRST — the
 case list is the feature's spec. The end state is the broc gate reborn:
 real libraries (three.js modules) compiled by bronze producing pinned,
 reviewed output.
+
+**2026-08-11**: `cases/blocked/` had been emptied by the promotions of
+phases 2 and 3, which left the promote-on-pass ratchet with nothing to
+watch and — worse, given the rule above — left no case list describing what
+comes next. It is seeded again with the first three of phase 4:
+`math_builtin` (bronze has no `Math` at all, so three.js cannot begin),
+`array_methods` and `string_methods` (every real member of those prototypes
+is a named hard error today). All three deliberately route their results
+through `join` or print scalars, because `console.log` of a container has no
+pinned format yet (docs/0009) and a blocked case must not smuggle that
+decision in through an `.expected` file.

@@ -449,6 +449,114 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
     env->slotsData()[index] = Value(valBits);
 }
 
+// The kind of a value, named. Diagnostics print this rather than raw bits:
+// "attempted to call undefined" bisects to a construct, `fff6000000000000`
+// bisects to nothing (CLAUDE.md: hard errors name the construct).
+static const char* valueKindName(Value v) {
+    if (v.isNumber() || v.isInt32()) return "a number";
+    if (v.isString()) return "a string";
+    if (v.isBool()) return "a boolean";
+    if (v.isNull()) return "null";
+    if (v.isUndefined()) return "undefined";
+    if (v.isHole()) return "the internal hole sentinel";
+    if (v.isSymbol()) return "a symbol";
+    if (v.isObject()) {
+        switch (v.asObject<HeapObjectHeader>()->flags) {
+            case 1: return "an array";
+            case 2: return "a function";
+            case 3: return "a Float32Array";
+            case 4: return "an ArrayBuffer";
+            default: return "an object";
+        }
+    }
+    return "a value of an unknown kind";
+}
+
+// ---- Unimplemented builtin members ------------------------------------------
+//
+// A property JS really does not define reads as `undefined`, which is
+// correct and stays. A property the LANGUAGE defines and bronze has not
+// built is a different thing: returning `undefined` for it claims arrays
+// have no `push`, and the program then feature-tests it away or calls it
+// and dies naming bits. That is the silent fallback the house rules forbid,
+// so every name below is diagnosed by name until it lands.
+//
+// Membership in these tables is therefore the ECMA-262 question "does this
+// member exist?", never "have we got round to it?" — a name bronze DOES
+// implement is simply handled before the table is consulted.
+
+struct MemberTable {
+    const char* receiver;
+    const char* const* names;
+    size_t count;
+};
+
+// Array.prototype (plus `constructor`), minus `length`, which is real.
+static const char* const kArrayMembers[] = {
+    "at", "concat", "constructor", "copyWithin", "entries", "every", "fill", "filter",
+    "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach",
+    "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce",
+    "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toLocaleString",
+    "toReversed", "toSorted", "toSpliced", "toString", "unshift", "values", "with",
+};
+
+// String.prototype, minus `length` and `charCodeAt`, which are real.
+static const char* const kStringMembers[] = {
+    "at", "charAt", "codePointAt", "concat", "constructor", "endsWith", "includes",
+    "indexOf", "isWellFormed", "lastIndexOf", "localeCompare", "match", "matchAll",
+    "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll", "search",
+    "slice", "split", "startsWith", "substr", "substring", "toLocaleLowerCase",
+    "toLocaleUpperCase", "toLowerCase", "toString", "toUpperCase", "toWellFormed",
+    "trim", "trimEnd", "trimStart", "valueOf",
+};
+
+// %TypedArray%.prototype, minus `length` and `buffer`, which are real.
+static const char* const kTypedArrayMembers[] = {
+    "BYTES_PER_ELEMENT", "at", "byteLength", "byteOffset", "constructor", "copyWithin",
+    "entries", "every", "fill", "filter", "find", "findIndex", "findLast", "findLastIndex",
+    "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "reduce",
+    "reduceRight", "reverse", "set", "slice", "some", "sort", "subarray", "toLocaleString",
+    "toReversed", "toSorted", "toString", "values", "with",
+};
+
+// ArrayBuffer.prototype, minus `byteLength`, which is real.
+static const char* const kArrayBufferMembers[] = {
+    "constructor", "detached", "maxByteLength", "resizable", "resize", "slice",
+    "transfer", "transferToFixedLength",
+};
+
+// Function.prototype, minus `prototype`, which is real (docs/0008 decision 5
+// listed `name` and `length` as unimplemented; listing is weaker than
+// diagnosing, so they are diagnosed now).
+static const char* const kFunctionMembers[] = {
+    "apply", "bind", "call", "constructor", "length", "name", "toString",
+};
+
+// Object.prototype. bronze has none (docs/0008), so a plain object's chain
+// walk misses every one of these.
+static const char* const kObjectMembers[] = {
+    "constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    "toLocaleString", "toString", "valueOf",
+};
+
+static bool nameInTable(const char* const* names, size_t count, const std::string& key) {
+    for (size_t i = 0; i < count; ++i) {
+        if (key == names[i]) return true;
+    }
+    return false;
+}
+
+// Diagnose `key` if it is a real member of `receiver` that bronze has not
+// built; otherwise return so the caller can read `undefined`, which is what
+// the language says for a property that does not exist.
+static void checkUnimplementedMember(const char* receiver, const char* const* names,
+                                     size_t count, const std::string& key) {
+    if (!nameInTable(names, count, key)) return;
+    std::string msg = std::string("unsupported: ") + receiver + "." + key +
+                      " is not implemented";
+    fatal(msg.c_str());
+}
+
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     Value objVal(objBits);
     InlineCache* ic = asCache(icEntry);
@@ -497,6 +605,8 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             }
             return g_charCodeAtFn.rawBits();
         }
+        checkUnimplementedMember("String.prototype", kStringMembers,
+                                 std::size(kStringMembers), keyStr);
         return Value::fromUndefined().rawBits();
     }
 
@@ -516,6 +626,8 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         if (ec == std::errc{} && idx >= 0) {
             return arr->getElem(static_cast<uint32_t>(idx)).rawBits();
         }
+        checkUnimplementedMember("Array.prototype", kArrayMembers,
+                                 std::size(kArrayMembers), keyStr);
         return Value::fromUndefined().rawBits();
     }
     if (hdr->flags == 3) {
@@ -535,6 +647,8 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             }
             return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
         }
+        checkUnimplementedMember("Float32Array.prototype", kTypedArrayMembers,
+                                 std::size(kTypedArrayMembers), keyStr);
         return Value::fromUndefined().rawBits();
     }
     if (hdr->flags == 4) {
@@ -543,17 +657,23 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         if (keyStr == "byteLength") {
             return Value::fromDouble(buf->byteLength).rawBits();
         }
+        checkUnimplementedMember("ArrayBuffer.prototype", kArrayBufferMembers,
+                                 std::size(kArrayBufferMembers), keyStr);
         return Value::fromUndefined().rawBits();
     }
     if (hdr->flags == 2) {
         // Function. It carries a prototype slot rather than a shape, so
-        // `prototype` is the one property it has; `name` and `length` are
-        // not implemented (docs/0008 decision 5).
+        // `prototype` is the one property it has; `name`, `length`, `call`,
+        // `apply` and `bind` are real members bronze has not built, so they
+        // are diagnosed rather than read as undefined (docs/0008 decision 5,
+        // amended).
         if (keyStr == "prototype") {
             Rooted<Value> fnRoot{objVal};
             ensureFunctionPrototype(fnRoot);
             return fnRoot.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
+        checkUnimplementedMember("Function.prototype", kFunctionMembers,
+                                 std::size(kFunctionMembers), keyStr);
         return Value::fromUndefined().rawBits();
     }
 
@@ -592,14 +712,21 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     const std::string& keyStr = (keyIndex < g_keyStrings.size()) ? g_keyStrings[keyIndex] : g_emptyKey;
 
     if (hdr->flags == 1) {
-        // Array
+        // Array: numeric keys store an element. A NAMED write used to fall
+        // off the end of this branch and be discarded, so `a.foo = 1`
+        // followed by `a.foo` read undefined — a silent divergence from JS,
+        // which creates the property. Arrays carry no shape for named
+        // properties yet, so it is diagnosed, exactly as the Float32Array
+        // branch below already did.
         ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
         int idx = -1;
         auto [ptr, ec] = std::from_chars(keyStr.data(), keyStr.data() + keyStr.size(), idx);
-        if (ec == std::errc{} && idx >= 0) {
-            Rooted<Value> val(valVal);
-            arr->setElem(g_heap, static_cast<uint32_t>(idx), val);
+        if (ec != std::errc{} || idx < 0) {
+            fatal("named property writes on an array are unsupported "
+                  "(arrays carry no shape for named properties yet)");
         }
+        Rooted<Value> val(valVal);
+        arr->setElem(g_heap, static_cast<uint32_t>(idx), val);
         return;
     }
     if (hdr->flags == 3) {
@@ -655,17 +782,15 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
     Value calleeVal(calleeBits);
     Value thisVal(thisBits);
     char msg[128];
-    if (!calleeVal.isObject()) {
-        std::snprintf(msg, sizeof(msg), "attempted to call a non-object value (bits %016llx)",
-                      static_cast<unsigned long long>(calleeBits));
+    if (!calleeVal.isObject() || calleeVal.asObject<HeapObjectHeader>()->flags != 2) {
+        // Name the kind, not the bits: `attempted to call undefined` points
+        // at the missing member that produced it, `fff6000000000000` points
+        // nowhere.
+        std::snprintf(msg, sizeof(msg), "attempted to call %s, which is not a function",
+                      valueKindName(calleeVal));
         fatal(msg);
     }
     HeapObjectHeader* hdr = calleeVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != 2) {
-        std::snprintf(msg, sizeof(msg), "attempted to call a non-function object (flags=%u)",
-                      static_cast<unsigned>(hdr->flags));
-        fatal(msg);
-    }
     FunctionHeader* fn = reinterpret_cast<FunctionHeader*>(hdr);
     // argvBits already points into the caller's GC root frame (docs/0006),
     // so it is rooted exactly as long as the call needs it. Copying it into
@@ -762,8 +887,34 @@ void bronze_print_value(uint64_t valBits) {
         std::fputs(s, stdout);
     } else if (v.isUndefined()) {
         std::fputs("undefined\n", stdout);
-    } else {
+    } else if (v.isNull()) {
+        // `null` carries its own tag (0xFFF5), so it never satisfied
+        // isUndefined() and fell through to the object branch below —
+        // printing `[object]` where node prints `null`. Pinned by
+        // print_primitives.
+        std::fputs("null\n", stdout);
+    } else if (v.isInt32()) {
+        // The Int32 tag is reserved and lowering never boxes one today
+        // (docs/0004 decision 1), but an int32 IS a JS number, so it prints
+        // as one rather than reaching the object branch if the fast path
+        // ever lands.
+        char buf[64];
+        size_t len = formatJsNumber(
+            static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(v.payload()))), buf);
+        buf[len++] = '\n';
+        std::fwrite(buf, 1, len, stdout);
+    } else if (v.isObject()) {
+        // Containers still have no pinned print format; choosing one is its
+        // own decision (docs/0009).
         std::fputs("[object]\n", stdout);
+    } else if (v.isHole()) {
+        // 0004: the hole is internal and never user-visible. Printing it as
+        // anything would hide the bug that let it escape.
+        fatal("internal: the hole sentinel reached console.log");
+    } else if (v.isSymbol()) {
+        fatal("printing a symbol is unsupported (bronze has no symbols)");
+    } else {
+        fatal("internal: console.log reached a value with an unknown tag");
     }
     std::fflush(stdout);
 }
