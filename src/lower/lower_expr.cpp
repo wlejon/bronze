@@ -78,6 +78,51 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
 
+    // A template is left-to-right concatenation starting from its first
+    // piece. `add.dynamic` is exactly the operation the language specifies —
+    // ToString of whatever the substitution produced, because the left side
+    // is already a string — so no separate ToString op is needed.
+    //
+    // The leading piece is emitted even when it is empty, and that is not a
+    // missed optimization: `${a}${b}` without it would be `a + b`, which for
+    // two numbers is addition rather than concatenation. Every LATER empty
+    // piece is skipped, because by then the accumulator is a string and the
+    // operation cannot change meaning.
+    if (const auto* tmpl = dynamic_cast<const ast::TemplateLit*>(&expr)) {
+        auto emitStr = [&](const std::string& text) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::Box;
+            inst.type = il::Type::Dynamic;
+            inst.boxType = il::Type::Str;
+            inst.result = res;
+            inst.keyIndex = getKeyConstantIndex(text);
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        };
+        auto emitConcat = [&](Value lhs, Value rhs) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::Add;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = {lhs.id, rhs.id};
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        };
+
+        Value acc = emitStr(tmpl->quasis.empty() ? std::string() : tmpl->quasis[0]);
+        for (size_t i = 0; i < tmpl->exprs.size(); ++i) {
+            auto sub = lowerExpr(*tmpl->exprs[i], ilFn);
+            if (!sub) return std::nullopt;
+            acc = emitConcat(acc, boxValueIfNeeded(*sub, ilFn));
+            if (i + 1 < tmpl->quasis.size() && !tmpl->quasis[i + 1].empty()) {
+                acc = emitConcat(acc, emitStr(tmpl->quasis[i + 1]));
+            }
+        }
+        return acc;
+    }
+
     if (const auto* objLit = dynamic_cast<const ast::ObjectLit*>(&expr)) {
         return lowerObjectLit(objLit, ilFn);
     }

@@ -55,6 +55,7 @@ private:
     // definition: the lexer finds the literal's end, the parser decides what
     // it means).
     std::string decodeStringLiteral(std::string_view raw, Span span);
+    ast::ExprPtr parseTemplateLiteral();
 
     ast::ExprPtr parseExpr();
     ast::ExprPtr parseBinary(int minPrecedence);

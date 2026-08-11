@@ -25,6 +25,9 @@ public:
         b.lhs->accept(*this);
         b.rhs->accept(*this);
     }
+    void visit(const TemplateLit& t) override {
+        for (const auto& e : t.exprs) e->accept(*this);
+    }
     void visit(const Ternary& t) override {
         t.condition->accept(*this);
         t.thenExpr->accept(*this);
@@ -124,6 +127,9 @@ public:
     void visit(const Binary& b) override {
         b.lhs->accept(*this);
         b.rhs->accept(*this);
+    }
+    void visit(const TemplateLit& t) override {
+        for (const auto& e : t.exprs) e->accept(*this);
     }
     void visit(const Ternary& t) override {
         t.condition->accept(*this);

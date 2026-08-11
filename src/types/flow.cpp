@@ -491,6 +491,14 @@ private:
     Type exprKind(const ast::Expr& e) {
         if (dynamic_cast<const ast::NumberLit*>(&e)) return Type::number();
         if (dynamic_cast<const ast::StringLit*>(&e)) return Type::string();
+        // A template is a string whatever its substitutions produce, since
+        // every one of them goes through ToString. The substitutions are
+        // still analysed â€” they are ordinary expressions and may write
+        // bindings.
+        if (const auto* t = dynamic_cast<const ast::TemplateLit*>(&e)) {
+            for (const auto& sub : t->exprs) expr(*sub);
+            return Type::string();
+        }
         if (dynamic_cast<const ast::BoolLit*>(&e)) return Type::boolean();
         if (dynamic_cast<const ast::NullLit*>(&e)) return Type::null();
         if (dynamic_cast<const ast::UndefinedLit*>(&e)) return Type::undefined();
@@ -787,7 +795,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     const Type returnType = recorder.inferredReturn(body);
     facts.signature.returnType = returnType;
     // A closure's only queryable proof (docs/0010 decision 5 excludes it
-    // from signature specialization, so its parameters stay dynamic — but
+    // from signature specialization, so its parameters stay dynamic ï¿½ but
     // what its body returns is a fact about the body alone, and throwing it
     // away is what made every annotation on a closure unprovable).
     if (record && site != nullptr) mod.result->closureReturns[site] = returnType;

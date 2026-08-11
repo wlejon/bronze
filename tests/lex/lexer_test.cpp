@@ -80,3 +80,25 @@ TEST_CASE("unrecognized input is a hard error") {
 TEST_CASE("unterminated string is a hard error") {
     (void)lexAll("'abc", /*expectErrors=*/true);
 }
+
+TEST_CASE("a template literal lexes as a sequence, not one token") {
+    // The interior of a substitution is ordinary source, lexed by the
+    // ordinary loop. What the lexer has to get right is which `}` ends the
+    // substitution: an object literal inside one opens a brace that must
+    // not be mistaken for it.
+    auto lexed = lexAll("`a${ {x: 1}.x }b`");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() > 2);
+    CHECK(tokens[0].kind == TokenKind::TemplateHead);
+    CHECK(tokens[tokens.size() - 2].kind == TokenKind::TemplateTail);
+
+    auto whole = lexAll("`no subs`");
+    CHECK(whole.tokens[0].kind == TokenKind::TemplateWhole);
+
+    auto nested = lexAll("`a${`b${1}c`}d`");
+    CHECK(nested.tokens[0].kind == TokenKind::TemplateHead);
+    CHECK(nested.tokens[1].kind == TokenKind::TemplateHead);
+    CHECK(nested.tokens[nested.tokens.size() - 2].kind == TokenKind::TemplateTail);
+
+    lexAll("`unterminated", /*expectErrors=*/true);
+}

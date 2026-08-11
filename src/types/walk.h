@@ -40,6 +40,9 @@ public:
         n.lhs->accept(*this);
         n.rhs->accept(*this);
     }
+    void visit(const ast::TemplateLit& n) override {
+        for (const auto& e : n.exprs) e->accept(*this);
+    }
     void visit(const ast::Ternary& n) override {
         n.condition->accept(*this);
         n.thenExpr->accept(*this);

@@ -30,6 +30,16 @@ struct StringLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// A template literal. `quasis` is always one longer than `exprs`: the
+// pieces alternate, starting and ending with a (possibly empty) piece, so
+// `${x}` is ["", ""] with one expression. The pieces are DECODED, like any
+// other string literal.
+struct TemplateLit final : Expr {
+    std::vector<std::string> quasis;
+    std::vector<ExprPtr> exprs;
+    void accept(Visitor& v) const override;
+};
+
 struct Ident final : Expr {
     std::string name;
     void accept(Visitor& v) const override;
@@ -245,6 +255,7 @@ public:
     virtual ~Visitor() = default;
     virtual void visit(const NumberLit&) = 0;
     virtual void visit(const StringLit&) = 0;
+    virtual void visit(const TemplateLit&) = 0;
     virtual void visit(const BoolLit&) = 0;
     virtual void visit(const NullLit&) = 0;
     virtual void visit(const UndefinedLit&) = 0;

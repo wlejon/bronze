@@ -690,6 +690,41 @@ ExprPtr Parser::parseNew() {
     return ne;
 }
 
+// `head ${ expr } middle ${ expr } tail`, with the lexer having already
+// decided where each piece ends. The delimiters are stripped by span
+// arithmetic: a head is `...${ (backtick plus two), a middle is }...${ and
+// a tail is }...` — so every piece drops one leading and two-or-one
+// trailing characters, and what is left is decoded like any string literal.
+ExprPtr Parser::parseTemplateLiteral() {
+    auto lit = std::make_unique<TemplateLit>();
+    const Token& headTok = peek();
+    lit->span = headTok.span;
+
+    auto cook = [&](const Token& tok, size_t trailing) {
+        return decodeStringLiteral(tok.text.substr(1, tok.text.size() - 1 - trailing), tok.span);
+    };
+
+    lit->quasis.push_back(cook(advance(), 2));  // strips the `${`
+    for (;;) {
+        auto expr = parseExpr();
+        if (!expr) return nullptr;
+        lit->exprs.push_back(std::move(expr));
+
+        if (check(TokenKind::TemplateMiddle)) {
+            lit->quasis.push_back(cook(advance(), 2));
+            continue;
+        }
+        if (check(TokenKind::TemplateTail)) {
+            const Token& tail = advance();
+            lit->quasis.push_back(cook(tail, 1));  // strips the closing backtick
+            lit->span = {lit->span.begin, tail.span.end};
+            return lit;
+        }
+        error("expected '}' to close a template substitution");
+        return nullptr;
+    }
+}
+
 ExprPtr Parser::parsePrimary() {
     const Token& t = peek();
     switch (t.kind) {
@@ -710,6 +745,17 @@ ExprPtr Parser::parsePrimary() {
             lit->value = decodeStringLiteral(t.text.substr(1, t.text.size() - 2), t.span);
             return lit;
         }
+        case TokenKind::TemplateWhole: {
+            // No substitutions: exactly a string literal, and lowered as
+            // one. The token text includes both backticks.
+            advance();
+            auto lit = std::make_unique<StringLit>();
+            lit->span = t.span;
+            lit->value = decodeStringLiteral(t.text.substr(1, t.text.size() - 2), t.span);
+            return lit;
+        }
+        case TokenKind::TemplateHead:
+            return parseTemplateLiteral();
         case TokenKind::KwTrue: {
             advance();
             auto lit = std::make_unique<BoolLit>();

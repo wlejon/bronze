@@ -21,6 +21,9 @@ private:
     const SourceBuffer& buffer_;
     DiagnosticSink& diags_;
     uint32_t pos_ = 0;
+    // One entry per template substitution currently open, counting the
+    // braces opened inside it. Empty means `}` is just a `}`.
+    std::vector<uint32_t> substitutionBraces_;
 
     char peek(uint32_t ahead = 0) const;
     bool atEnd() const;
@@ -29,6 +32,7 @@ private:
     Token lexIdentifierOrKeyword();
     Token lexNumber();
     Token lexString();
+    Token lexTemplatePart(bool isHead);
     Token lexPunctuation();
 };
 

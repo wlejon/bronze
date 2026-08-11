@@ -94,6 +94,16 @@ public:
         indented([&] { n.operand->accept(*this); });
         emit(")");
     }
+    void visit(const TemplateLit& n) override {
+        emit("(template");
+        indented([&] {
+            for (size_t i = 0; i < n.quasis.size(); ++i) {
+                emit("(quasi \"" + n.quasis[i] + "\")");
+                if (i < n.exprs.size()) n.exprs[i]->accept(*this);
+            }
+        });
+        emit(")");
+    }
     void visit(const Ternary& n) override {
         emit("(ternary");
         indented([&] {

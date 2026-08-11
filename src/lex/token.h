@@ -12,6 +12,18 @@ enum class TokenKind {
     Identifier,
     NumberLiteral,
     StringLiteral,
+    // Template literals. A template is lexed as a SEQUENCE — the pieces
+    // between the substitutions, with the substitutions' own tokens in
+    // between — because a substitution holds an arbitrary expression, which
+    // may itself contain a template. One token per whole template would
+    // mean re-lexing its interior from a detached string, and every span
+    // inside it would point at the wrong place.
+    //   `abc`            -> TemplateWhole
+    //   `a${x}b${y}c`    -> TemplateHead x TemplateMiddle y TemplateTail
+    TemplateWhole,
+    TemplateHead,
+    TemplateMiddle,
+    TemplateTail,
 
     // Keywords (kept alphabetical).
     KwBreak,

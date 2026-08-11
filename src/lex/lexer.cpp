@@ -8,6 +8,10 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::Identifier: return "ident";
         case TokenKind::NumberLiteral: return "number";
         case TokenKind::StringLiteral: return "string";
+        case TokenKind::TemplateWhole: return "template";
+        case TokenKind::TemplateHead: return "template-head";
+        case TokenKind::TemplateMiddle: return "template-middle";
+        case TokenKind::TemplateTail: return "template-tail";
         case TokenKind::KwBreak: return "break";
         case TokenKind::KwCase: return "case";
         case TokenKind::KwCatch: return "catch";
@@ -242,6 +246,40 @@ Token Lexer::lexPunctuation() {
     return make(TokenKind::EndOfFile, begin);
 }
 
+// One piece of a template literal, from the opening delimiter (a backtick
+// for the head, the `}` that closed the previous substitution otherwise) to
+// whichever delimiter ends it: `${` starts a substitution, a backtick ends
+// the template.
+//
+// The substitution's own tokens are lexed by the main loop, which is what
+// `substitutionBraces_` tracks: a `}` closes the substitution only when no
+// object literal or block inside it is still open.
+Token Lexer::lexTemplatePart(bool isHead) {
+    const uint32_t begin = pos_;
+    ++pos_;  // the ` or }
+    for (;;) {
+        if (atEnd()) {
+            diags_.error({begin, pos_}, "unterminated template literal");
+            return make(TokenKind::TemplateWhole, begin);
+        }
+        const char c = peek();
+        if (c == '\\') {
+            pos_ += 2;  // escape: consume the backslash and whatever follows
+            continue;
+        }
+        if (c == '`') {
+            ++pos_;
+            return make(isHead ? TokenKind::TemplateWhole : TokenKind::TemplateTail, begin);
+        }
+        if (c == '$' && peek(1) == '{') {
+            pos_ += 2;
+            substitutionBraces_.push_back(0);
+            return make(isHead ? TokenKind::TemplateHead : TokenKind::TemplateMiddle, begin);
+        }
+        ++pos_;  // a newline inside a template is content, not a terminator
+    }
+}
+
 std::vector<Token> Lexer::lex() {
     std::vector<Token> tokens;
     for (;;) {
@@ -254,7 +292,19 @@ std::vector<Token> Lexer::lex() {
             tokens.push_back(lexNumber());
         } else if (c == '"' || c == '\'') {
             tokens.push_back(lexString());
+        } else if (c == '`') {
+            tokens.push_back(lexTemplatePart(/*isHead=*/true));
+        } else if (c == '}' && !substitutionBraces_.empty() && substitutionBraces_.back() == 0) {
+            // This `}` closes the innermost template substitution rather
+            // than a block or an object literal, so the template it
+            // interrupted resumes here.
+            substitutionBraces_.pop_back();
+            tokens.push_back(lexTemplatePart(/*isHead=*/false));
         } else {
+            if (!substitutionBraces_.empty()) {
+                if (c == '{') ++substitutionBraces_.back();
+                else if (c == '}') --substitutionBraces_.back();
+            }
             tokens.push_back(lexPunctuation());
         }
     }
