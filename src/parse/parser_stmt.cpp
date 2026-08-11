@@ -32,6 +32,20 @@ const Token* Parser::expect(TokenKind kind, const char* what) {
     return nullptr;
 }
 
+// The reserved words are a contiguous run of the enum, kept alphabetical in
+// token.h between the template pieces and the punctuation — so membership is
+// a range test rather than a switch that a new keyword could be forgotten
+// from.
+bool Parser::isIdentifierName(TokenKind kind) {
+    return kind == TokenKind::Identifier ||
+           (kind >= TokenKind::KwBreak && kind <= TokenKind::KwWhile);
+}
+
+const Token* Parser::expectPropertyName(const char* what) {
+    if (isIdentifierName(peek().kind)) return &advance();
+    return expect(TokenKind::Identifier, what);
+}
+
 void Parser::error(const char* message) { diags_.error(peek().span, message); }
 
 // ECMA-262 12.10. A missing semicolon is supplied when the token that would

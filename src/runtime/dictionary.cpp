@@ -96,6 +96,13 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, StringHeader* name) {
     // `delete o.missing` from demoting a record to a dictionary.
     if (!shape->lookupProperty(name, info)) return true;
 
+    // 13.5.1.2 -> 10.1.10.1: a non-configurable property refuses, and in
+    // sloppy mode the operator simply answers false. This is the ONLY way
+    // `delete` in bronze can answer false, and it is why docs/0019's
+    // "delete never answers false" line is retired rather than merely
+    // qualified.
+    if (!info.configurable) return false;
+
     if (!shape->isDictionary()) {
         // Nothing below allocates on the heap, so the root is a formality —
         // but toDictionary takes one because the object it edits must be

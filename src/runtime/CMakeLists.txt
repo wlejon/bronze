@@ -26,7 +26,11 @@ bronze_add_module(runtime
         rt_operator.cpp
         rt_prop.cpp
         rt_delete.cpp
-        rt_iter.cpp
+        iterator.cpp
+        map.cpp
+        builtin_map.cpp
+        builtin_object.cpp
+        builtin_number.cpp
         rt_enumerate.cpp
         rt_spread.cpp
         rt_print.cpp
@@ -44,6 +48,7 @@ bronze_add_module(runtime
         ../../tests/runtime/fn_test.cpp
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp
+        ../../tests/runtime/map_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

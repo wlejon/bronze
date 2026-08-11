@@ -159,7 +159,8 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
 
     // --- the body chain -----------------------------------------------------
     jumpStack_.push_back(
-        JumpTarget{JumpKind::Switch, label, il::kNoBlock, il::kNoBlock, bExit, vars});
+        JumpTarget{JumpKind::Switch, label, il::kNoBlock, il::kNoBlock, bExit, vars,
+                   cleanupStack_.size(), cleanupStack_.size()});
     for (size_t i = 0; i < clauseCount; ++i) {
         setCurrentBlock(bodyBlocks[i]);
         // Every binding this block can see arrives as a parameter or was

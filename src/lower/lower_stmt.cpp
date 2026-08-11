@@ -244,7 +244,7 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         // inside one of them terminates the block first and wins, which is
         // the whole of "a completion from inside finally overrides the
         // pending one" (docs/0020 decision 5).
-        if (!runFinallyBodies(0, ilFn)) return false;
+        if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
 
         il::Instruction inst;
@@ -254,7 +254,7 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.operands = {val->id};
         emitInst(ilFn, inst);
     } else {
-        if (!runFinallyBodies(0, ilFn)) return false;
+        if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
         il::Instruction inst;
         inst.op = il::Op::Ret;

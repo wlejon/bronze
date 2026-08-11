@@ -332,11 +332,17 @@ ExprPtr Parser::parseObjectLit() {
             if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
             prop.value = parseAssign();
             if (!prop.value) return nullptr;
-        } else if (check(TokenKind::Identifier)) {
+        } else if (isIdentifierName(peek().kind)) {
+            // A PropertyName is an IdentifierName (13.2.5), so a reserved word
+            // is an ordinary key here — `{ return: f }` is what an iterator
+            // object is written as. The three forms that are NOT keys, though,
+            // want an IdentifierReference: `{ x }` and `{ x = 1 }` evaluate
+            // the name, and no binding is spelled `return`.
             const Token& nameTok = advance();
+            const bool reserved = nameTok.kind != TokenKind::Identifier;
             prop.key = std::string(nameTok.text);
-            if ((prop.key == "get" || prop.key == "set") &&
-                (check(TokenKind::Identifier) || check(TokenKind::StringLiteral) ||
+            if (!reserved && (prop.key == "get" || prop.key == "set") &&
+                (isIdentifierName(peek().kind) || check(TokenKind::StringLiteral) ||
                  check(TokenKind::NumberLiteral) || check(TokenKind::LBracket))) {
                 // `get`/`set` are only contextual: `{ get: 1 }`, `{ get }` and
                 // `{ get() {} }` all name an ordinary property, and only a
@@ -359,7 +365,7 @@ ExprPtr Parser::parseObjectLit() {
                 error("unsupported construct: object literal method shorthand");
                 return nullptr;
             }
-            if (check(TokenKind::Assign)) {
+            if (!reserved && check(TokenKind::Assign)) {
                 // `{ x = 1 }` is a CoverInitializedName: the cover grammar
                 // admits it so that `({ x = 1 } = o)` can parse, and it is
                 // never an object literal in its own right. It is parsed as
@@ -383,7 +389,7 @@ ExprPtr Parser::parseObjectLit() {
                 if (!match(TokenKind::Comma)) break;
                 continue;
             }
-            if (check(TokenKind::Comma) || check(TokenKind::RBrace)) {
+            if (!reserved && (check(TokenKind::Comma) || check(TokenKind::RBrace))) {
                 // `{ x }` — shorthand. The key is the identifier's text and
                 // the value is that same identifier evaluated here, so the
                 // two cannot disagree about which binding is meant.

@@ -27,6 +27,13 @@ namespace bronze::runtime {
 // inside a builtin's loop.
 bool rtExceptionPending() noexcept;
 
+// Discard whatever is pending. Exactly one caller, and it is ECMA-262 7.4.9
+// step 6: closing an iterator while a throw is already in flight discards an
+// error the iterator's `return` method raises, because the completion already
+// on its way out is the one the program is entitled to see (docs/0021
+// decision 3). Anywhere else this would be a silent swallow.
+void rtClearException() noexcept;
+
 // The three ways to raise, all of which RETURN `undefined` so that a helper
 // can `return rtThrowTypeError(...)`. That is not a convenience: the caller
 // stores the returned value into a GC root slot before it tests the cell, so

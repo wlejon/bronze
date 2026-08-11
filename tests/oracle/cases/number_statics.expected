@@ -1,0 +1,12 @@
+true false false
+true false true
+false true false
+true false
+9007199254740991 -9007199254740991
+2.220446049250313e-16 1.7976931348623157e+308 5e-324
+Infinity -Infinity NaN
+42 -17 31
+255 5 NaN
+3.25 0.5 1000
+Infinity NaN
+NaN -12.5

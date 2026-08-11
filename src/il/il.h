@@ -135,16 +135,28 @@ enum class Op : uint8_t {
     // D's static properties to B's. One op because both links have to
     // be made together, before any method is stored (docs/0012 dec. 5).
     ClassExtend, // class.extend derived, base
-    // for-of, as an index walk (docs/0012 decision 2). Three ops rather
-    // than one because a string iterates by CODE POINT: the step is not
-    // always one, so the advance cannot be an `add 1` in the IL.
-    IterLength,  // a: f64 = iter.length b
-    IterAt,      // a = iter.at b, %index
-    IterAdvance, // a: f64 = iter.advance b, %index
-    // Everything from %index on, as a fresh array — a rest element's value
-    // (docs/0017 decision 2). The same walk IterAt/IterAdvance do, run to the
-    // end in the runtime, because its length is not known here.
-    IterRest,    // a = iter.rest b, %index
+    // The iterator protocol (docs/0021 decision 2). One iteration is a
+    // CURSOR — opened once, stepped, read, and closed if it is abandoned —
+    // rather than an index and a length, because a Map, a Set and a
+    // user-defined iterable have no length to compare against and no index
+    // to read at. The array/string/typed-array walk survives as a kind
+    // INSIDE the record, so the common case still costs no allocation and
+    // no call into user code.
+    IterOpen,    // a: dynamic = iter.open b        (GetIterator, 7.4.2)
+    // Advances the cursor, stashes what it produced in the record, and
+    // answers whether there was anything. Two ops rather than one because
+    // an SSA instruction has one result and a step has two answers.
+    IterStep,    // a: bool = iter.step %record     (IteratorStep, 7.4.6)
+    IterValue,   // a: dynamic = iter.value %record
+    // IteratorClose (7.4.9): the iterator's `return` method, for a for-of
+    // left by `break`, `return` or `throw`. `immI32` is 1 when a throw is
+    // already in flight, which is when 7.4.9 step 6 discards an error the
+    // `return` method raises rather than letting it replace the original.
+    IterClose,   // iter.close %record, <suppress>
+    // Everything the cursor has left, as a fresh array — a rest element's
+    // value (docs/0017 decision 2). Drains the same record the elements
+    // before it were stepped from.
+    IterRest,    // a = iter.rest %record
     // The source of a destructuring, checked once before any element is read
     // (docs/0017 decision 4). `immI32` names which pattern asked, so the
     // diagnostic can say `array destructuring` rather than `for-of`, and the

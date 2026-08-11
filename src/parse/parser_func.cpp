@@ -166,7 +166,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     if (check(TokenKind::StringLiteral)) {
         const Token& sTok = advance();
         outName = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
-    } else if (check(TokenKind::Identifier)) {
+    } else if (isIdentifierName(peek().kind)) {
         outName = std::string(advance().text);
     } else {
         // A numeric accessor name lands here with the object literal's own
@@ -282,7 +282,9 @@ ast::StmtPtr Parser::parseClass() {
             cls->methods.push_back(std::move(member));
             continue;
         }
-        const Token* memberName = expect(TokenKind::Identifier, "class member name");
+        // A ClassElementName is a PropertyName is an IdentifierName (15.7), so
+        // `delete()` and `return()` are ordinary method names on a class.
+        const Token* memberName = expectPropertyName("class member name");
         if (!memberName) {
             ok = false;
             break;
@@ -387,7 +389,7 @@ ExprPtr Parser::parseSuper() {
         return call;
     }
     if (match(TokenKind::Dot)) {
-        const Token* member = expect(TokenKind::Identifier, "property name after 'super.'");
+        const Token* member = expectPropertyName("property name after 'super.'");
         if (!member) return nullptr;
         auto mem = std::make_unique<SuperMember>();
         mem->span = {kw.span.begin, member->span.end};

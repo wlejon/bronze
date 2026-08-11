@@ -137,7 +137,8 @@ bool Lowerer::lowerLabeledBlock(const ast::LabeledStmt* labeled, il::Function& i
     auto exitParamMap = addLoopBlockParams(params, bExit, ilFn);
 
     jumpStack_.push_back(
-        JumpTarget{JumpKind::LabeledBlock, labeled->label, il::kNoBlock, il::kNoBlock, bExit, vars});
+        JumpTarget{JumpKind::LabeledBlock, labeled->label, il::kNoBlock, il::kNoBlock, bExit,
+                   vars, cleanupStack_.size(), cleanupStack_.size()});
     const bool ok = lowerStmt(*labeled->body, ilFn);
     jumpStack_.pop_back();
     if (!ok) return false;

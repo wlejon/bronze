@@ -18,6 +18,8 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/iterator.h"
+#include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -107,6 +109,26 @@ static Value elemKeyAsString(Value idxVal) {
     }
     return Value::fromString(
         StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
+}
+
+// A member of a Map or a Set, by name. Its own function because BOTH `m.get`
+// and `m[k]` reach it: a Map's keys are values and its members are names, so
+// the computed-index path cannot treat the key as an element the way it does
+// for an array.
+static Value mapMemberByName(HeapObjectHeader* hdr, const std::string& keyStr) {
+    const bool set = hdr->flags == MapHeader::kSetFlags;
+    // `size` is an ACCESSOR in the specification (24.1.3.10) and a plain read
+    // here: bronze has no Map.prototype for a getter to live on, and the
+    // observable difference — `Object.getOwnPropertyDescriptor` of it — is
+    // unreachable, since a Map has no own properties at all.
+    if (keyStr == "size") {
+        return Value::fromDouble(reinterpret_cast<MapHeader*>(hdr)->liveSize());
+    }
+    if (keyStr == "@@iterator") return rtMapDefaultIterator(set);
+    Value method = rtMapMethod(set, keyStr);
+    if (!method.isUndefined()) return method;
+    rtCheckMapMember(set, keyStr);
+    return Value::fromUndefined();
 }
 
 extern "C" {
@@ -207,6 +229,15 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         rtCheckArrayBufferMember(keyStr);
         return Value::fromUndefined().rawBits();
     }
+    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
+        return mapMemberByName(hdr, keyStr).rawBits();
+    }
+    if (hdr->flags == IterRecordHeader::kFlags) {
+        // The record of a live for-of is not a JS value: nothing hands one to
+        // a program, so reaching this is a lowering bug rather than something
+        // a program did.
+        fatal("internal: a property read on an iteration record");
+    }
     if (hdr->flags == 2) {  // Function
         // `prototype` lives in its own slot; every other own property lives in
         // the function's property object and is found through ITS prototype
@@ -230,6 +261,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 rtHeap(), key, /*ic=*/nullptr, fnRoot.slot_ptr());
             if (!found.isUndefined()) return found.rawBits();
         }
+        // `Symbol` is a function object so that `Symbol("tag")` names bronze
+        // rather than reporting that an object is not callable, which means
+        // its unimplemented members reach the FUNCTION miss path rather than
+        // a namespace object's (docs/0021 decision 1).
+        rtSymbolCheckMissingMember(objVal, keyStr);
         rtCheckFunctionMember(keyStr);
         return Value::fromUndefined().rawBits();
     }
@@ -249,7 +285,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     // reads `undefined` like any other miss — which for a name ECMA-262 says
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
-    if (result.isUndefined()) rtMathCheckMissingMember(objRoot.get(), keyStr);
+    if (result.isUndefined()) {
+        rtMathCheckMissingMember(objRoot.get(), keyStr);
+        rtObjectCheckMissingMember(objRoot.get(), keyStr);
+        rtNumberCheckMissingMember(objRoot.get(), keyStr);
+    }
     return result.rawBits();
 }
 
@@ -337,6 +377,16 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
     if (hdr->flags == 4) {
         fatal("property writes on an ArrayBuffer are unsupported");
+    }
+    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
+        // A Map's entries are reached by `set`/`get`, never by a property
+        // write — and there is nowhere to put a named one, since a Map has no
+        // shape. Diagnosing is what keeps `m.foo = 1` from being discarded.
+        fatal("named property writes on a Map or a Set are unsupported "
+              "(use .set(key, value); a Map's keys are not properties)");
+    }
+    if (hdr->flags == IterRecordHeader::kFlags) {
+        fatal("internal: a property write on an iteration record");
     }
     if (hdr->flags == 2) {  // Function
         if (keyStr != "prototype") {
@@ -480,6 +530,15 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> key{elemKeyAsString(Value(idxBits))};
         return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits();
+    }
+    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
+        // `m[Symbol.iterator]` — a computed read of a MEMBER, not of a key.
+        // A Map's keys never live in its property space at all, which is the
+        // whole difference between a Map and an object used as one.
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
+        return mapMemberByName(objRoot.get().asObject<HeapObjectHeader>(), name).rawBits();
     }
     fatal("computed index access is only supported on arrays, plain objects "
           "and Float32Array");

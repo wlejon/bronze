@@ -1,0 +1,376 @@
+// `Map` and `Set` — the constructors, the methods, and the iterator objects
+// `keys()` / `values()` / `entries()` hand back (docs/0021 decision 4).
+//
+// The table itself is map.{h,cpp}; what is here is the JS surface over it.
+// The seam is that a Map's METHODS are ordinary bronze function objects
+// reached through `bronze_prop_get`, exactly as `Array.prototype`'s are —
+// there is no Map.prototype object, because a Map carries no shape and so has
+// no prototype link to hang one on. That is a real divergence and is recorded
+// as one: `m instanceof Map` is false, and `Map.prototype` is a named error.
+
+#include <string>
+
+#include "abi/bronze_abi.h"
+#include "runtime/array.h"
+#include "runtime/exception.h"
+#include "runtime/fatal.h"
+#include "runtime/fn.h"
+#include "runtime/iterator.h"
+#include "runtime/map.h"
+#include "runtime/object.h"
+#include "runtime/rt_internal.h"
+#include "runtime/string.h"
+#include "runtime/value.h"
+
+namespace bronze::runtime {
+
+namespace {
+
+bool isMapLike(Value v) {
+    if (!v.isObject()) return false;
+    const uint16_t f = v.asObject<HeapObjectHeader>()->flags;
+    return f == MapHeader::kMapFlags || f == MapHeader::kSetFlags;
+}
+
+bool isSet(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags;
+}
+
+// The receiver of a Map or Set method. `undefined` is not "no arguments": a
+// detached `const g = m.get; g(1)` reaches here with no map at all, and
+// answering as though it had one would be a silent wrong answer.
+bool requireMapLike(Value self, const char* method) {
+    if (isMapLike(self)) return true;
+    rtThrowTypeError("Method " + std::string(method) + " called on an incompatible receiver");
+    return false;
+}
+
+StringHeader* internKey(const char* text) {
+    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
+    return StringHeader::internToArena(rtArena(), tmp);
+}
+
+// The iterator object's private state. Spelled with the `@@` prefix so the
+// enumerability rule of docs/0021 decision 1 hides it: an iterator prints as
+// `{}` and `Object.keys` of one is empty, which is what a real internal slot
+// would do.
+StringHeader* keyTarget() {
+    static StringHeader* k = internKey("@@mapTarget");
+    return k;
+}
+StringHeader* keyCursor() {
+    static StringHeader* k = internKey("@@mapCursor");
+    return k;
+}
+StringHeader* keyKind() {
+    static StringHeader* k = internKey("@@mapKind");
+    return k;
+}
+
+enum IterKind : uint32_t { Keys = 0, Values = 1, Entries = 2 };
+
+Value readSlot(Rooted<Value>& obj, StringHeader* name) {
+    Rooted<Value> key{Value::fromString(name)};
+    return obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+}
+
+void writeSlot(Rooted<Value>& obj, StringHeader* name, Rooted<Value>& val) {
+    Rooted<Value> key{Value::fromString(name)};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+}
+
+Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
+    Rooted<Value> pair{Value(bronze_create_array(2))};
+    pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 0, a);
+    pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 1, b);
+    return pair.get();
+}
+
+// 7.4.1 CreateIterResultObject, in the field order the spec writes it.
+Value iterResult(Rooted<Value>& value, bool done) {
+    Rooted<Value> out{Value(bronze_create_object())};
+    Rooted<Value> vk{rtMakeString("value")};
+    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
+    Rooted<Value> dk{rtMakeString("done")};
+    Rooted<Value> dv{Value::fromBool(done)};
+    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
+    return out.get();
+}
+
+uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!self.get().isObject() ||
+        self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        return rtThrowTypeError("next called on an incompatible receiver").rawBits();
+    }
+    Rooted<Value> target{readSlot(self, keyTarget())};
+    if (!isMapLike(target.get())) {
+        Rooted<Value> none;
+        return iterResult(none, true).rawBits();
+    }
+    const auto kind = static_cast<uint32_t>(readSlot(self, keyKind()).asNumber());
+    uint32_t at = static_cast<uint32_t>(readSlot(self, keyCursor()).asNumber());
+
+    auto* map = target.get().asObject<MapHeader>();
+    while (at < map->used() && !map->liveAt(at)) ++at;
+    if (at >= map->used()) {
+        Rooted<Value> none;
+        // The cursor is left past the end, so a live iterator over a map that
+        // grows after it finished does NOT resume — 24.1.5.1 step 4.c sets
+        // [[Map]] to undefined once, and this is that latch.
+        Rooted<Value> stop{Value::fromUndefined()};
+        writeSlot(self, keyTarget(), stop);
+        return iterResult(none, true).rawBits();
+    }
+    Rooted<Value> k{map->keyAt(at)};
+    Rooted<Value> v{map->valueAt(at)};
+    Rooted<Value> cursor{Value::fromDouble(static_cast<double>(at + 1))};
+    writeSlot(self, keyCursor(), cursor);
+
+    Rooted<Value> produced;
+    if (kind == Keys) {
+        produced.set(k.get());
+    } else if (kind == Values) {
+        produced.set(isSet(target.get()) ? k.get() : v.get());
+    } else {
+        Rooted<Value> second{isSet(target.get()) ? k.get() : v.get()};
+        produced.set(makePair(k, second));
+    }
+    return iterResult(produced, false).rawBits();
+}
+
+// `iterator[Symbol.iterator]()` is the iterator itself (%IteratorPrototype%'s
+// one member, 27.1.2.1), which is what makes `for (const k of m.keys())`
+// work: the for-of opens the value it is given, and the value it is given is
+// already an iterator.
+uint64_t iterSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) { return thisBits; }
+
+Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
+    // One shared root shape, so every map iterator has the same hidden class
+    // and the `next` read inside a loop is a monomorphic cache hit.
+    static Shape* shape = nullptr;
+    if (!shape) shape = rtNewRootShape(Value::fromUndefined());
+
+    Rooted<Value> it{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), shape))};
+    it.get().asObject<ObjectHeader>()->header.flags = 0;
+    Rooted<Value> nextFn{Value(bronze_function_singleton(mapIterNext, 0))};
+    Rooted<Value> nk{rtMakeString("next")};
+    it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
+    Rooted<Value> selfFn{Value(bronze_function_singleton(iterSelf, 0))};
+    writeSlot(it, rtIteratorKey(), selfFn);
+    writeSlot(it, keyTarget(), map);
+    Rooted<Value> zero{Value::fromDouble(0.0)};
+    writeSlot(it, keyCursor(), zero);
+    Rooted<Value> kindVal{Value::fromDouble(static_cast<double>(kind))};
+    writeSlot(it, keyKind(), kindVal);
+    return it.get();
+}
+
+// ---- the methods ------------------------------------------------------------
+
+uint64_t mapGet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "get")) return Value::fromUndefined().rawBits();
+    Rooted<Value> key{args[0]};
+    const uint32_t slot = MapHeader::find(rtHeap(), self, key);
+    if (slot == UINT32_MAX) return Value::fromUndefined().rawBits();
+    return self.get().asObject<MapHeader>()->valueAt(slot).rawBits();
+}
+
+uint64_t mapSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "set")) return Value::fromUndefined().rawBits();
+    Rooted<Value> key{args[0]};
+    Rooted<Value> val{args[1]};
+    MapHeader::set(rtHeap(), self, key, val);
+    return self.get().rawBits();  // 24.1.3.9 returns the map, so `.set` chains
+}
+
+uint64_t setAdd(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "add")) return Value::fromUndefined().rawBits();
+    Rooted<Value> key{args[0]};
+    // 24.2.3.1: an element already present keeps its POSITION, which falls
+    // out of MapHeader::set updating in place rather than re-inserting.
+    MapHeader::set(rtHeap(), self, key, key);
+    return self.get().rawBits();
+}
+
+uint64_t mapHas(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "has")) return Value::fromUndefined().rawBits();
+    Rooted<Value> key{args[0]};
+    return Value::fromBool(MapHeader::find(rtHeap(), self, key) != UINT32_MAX).rawBits();
+}
+
+uint64_t mapDelete(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "delete")) return Value::fromUndefined().rawBits();
+    Rooted<Value> key{args[0]};
+    return Value::fromBool(MapHeader::remove(rtHeap(), self, key)).rawBits();
+}
+
+uint64_t mapClear(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "clear")) return Value::fromUndefined().rawBits();
+    MapHeader::clear(self);
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t mapForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "forEach")) return Value::fromUndefined().rawBits();
+    Rooted<Value> cb{args[0]};
+    if (!cb.get().isObject() || cb.get().asObject<HeapObjectHeader>()->flags != 2) {
+        return rtThrowTypeError("Map.prototype.forEach needs a function argument").rawBits();
+    }
+    Rooted<Value> thisArg{args[1]};
+    const bool set = isSet(self.get());
+    // The bound is re-read every step: 24.1.3.5 visits entries added DURING
+    // the walk, which is the one place a Map's iteration is not a snapshot.
+    for (uint32_t at = 0; at < self.get().asObject<MapHeader>()->used(); ++at) {
+        auto* map = self.get().asObject<MapHeader>();
+        if (!map->liveAt(at)) continue;
+        Value block[3] = {set ? map->keyAt(at) : map->valueAt(at), map->keyAt(at), self.get()};
+        cb.get().asObject<FunctionHeader>()->call(thisArg.get(), 3, block);
+        // A callback that threw stops the walk, for the reason every callback
+        // loop in builtin_array.cpp does (docs/0020 decision 6).
+        if (rtExceptionPending()) break;
+    }
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t mapKeys(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "keys")) return Value::fromUndefined().rawBits();
+    return makeMapIterator(self, Keys).rawBits();
+}
+uint64_t mapValues(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "values")) return Value::fromUndefined().rawBits();
+    return makeMapIterator(self, Values).rawBits();
+}
+uint64_t mapEntries(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireMapLike(self.get(), "entries")) return Value::fromUndefined().rawBits();
+    return makeMapIterator(self, Entries).rawBits();
+}
+
+// ---- the constructors -------------------------------------------------------
+
+// `new Map(iterable)` and `new Set(iterable)`. The instance `bronze_construct`
+// built is discarded: a constructor that returns an object replaces it, which
+// is how a native constructor produces a header type of its own.
+// `arg` arrives through a ROOT, not by value: creating the collection is an
+// allocation, so an iterable held as raw bits would be read after a
+// collection had moved it — which is exactly what `new Set([3, 1, 3, 2])`
+// did under BRONZE_GC_STRESS=1 before it did.
+uint64_t buildCollection(Rooted<Value>& arg, uint16_t flags) {
+    Rooted<Value> self{Value::fromObject(MapHeader::create(rtHeap(), flags))};
+    if (arg.get().isUndefined() || arg.get().isNull()) return self.get().rawBits();
+
+    Rooted<Value> rec{Value(bronze_iter_open(arg.get().rawBits()))};
+    if (rtExceptionPending()) return self.get().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        if (flags == MapHeader::kSetFlags) {
+            MapHeader::set(rtHeap(), self, item, item);
+        } else {
+            if (!item.get().isObject()) {
+                rtThrowTypeError("Iterator value is not an entry object");
+                break;
+            }
+            Rooted<Value> k{
+                Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(0.0).rawBits()))};
+            Rooted<Value> v{
+                Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(1.0).rawBits()))};
+            MapHeader::set(rtHeap(), self, k, v);
+        }
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+    return self.get().rawBits();
+}
+
+uint64_t mapConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> arg{args[0]};
+    return buildCollection(arg, MapHeader::kMapFlags);
+}
+
+uint64_t setConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> arg{args[0]};
+    return buildCollection(arg, MapHeader::kSetFlags);
+}
+
+struct Method {
+    const char* name;
+    bronze_fn_code code;
+    uint32_t arity;
+};
+
+const Method kMapMethods[] = {
+    {"get", mapGet, 1},        {"set", mapSet, 2},         {"has", mapHas, 1},
+    {"delete", mapDelete, 1},  {"clear", mapClear, 0},     {"forEach", mapForEach, 1},
+    {"keys", mapKeys, 0},      {"values", mapValues, 0},   {"entries", mapEntries, 0},
+};
+
+const Method kSetMethods[] = {
+    {"add", setAdd, 1},        {"has", mapHas, 1},         {"delete", mapDelete, 1},
+    {"clear", mapClear, 0},    {"forEach", mapForEach, 1}, {"keys", mapKeys, 0},
+    {"values", mapValues, 0},  {"entries", mapEntries, 0},
+};
+
+// Real members of `Map` / `Set` that bronze has not built. `prototype` is on
+// both lists deliberately: a Map has no prototype OBJECT here (see the file
+// header), and answering `undefined` for it would let a program install a
+// method that nothing would ever find.
+const char* const kMapUnimplemented[] = {
+    "constructor", "groupBy", "prototype",
+};
+const char* const kSetUnimplemented[] = {
+    "constructor",   "difference", "intersection", "isDisjointFrom", "isSubsetOf",
+    "isSupersetOf",  "prototype",  "symmetricDifference", "union",
+};
+
+}  // namespace
+
+Value rtMapConstructor(const std::string& name) {
+    if (name == "Map") return Value(bronze_function_singleton(mapConstructor, 0));
+    if (name == "Set") return Value(bronze_function_singleton(setConstructor, 0));
+    return Value::fromUndefined();
+}
+
+Value rtMapMethod(bool isSetReceiver, const std::string& key) {
+    if (isSetReceiver) {
+        for (const Method& m : kSetMethods) {
+            if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        }
+        return Value::fromUndefined();
+    }
+    for (const Method& m : kMapMethods) {
+        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+    }
+    return Value::fromUndefined();
+}
+
+void rtCheckMapMember(bool isSetReceiver, const std::string& key) {
+    if (isSetReceiver) {
+        rtCheckUnimplementedMember("Set", kSetUnimplemented, std::size(kSetUnimplemented), key);
+        return;
+    }
+    rtCheckUnimplementedMember("Map", kMapUnimplemented, std::size(kMapUnimplemented), key);
+}
+
+Value rtMapDefaultIterator(bool isSetReceiver) {
+    return Value(bronze_function_singleton(isSetReceiver ? mapValues : mapEntries, 0));
+}
+
+}  // namespace bronze::runtime

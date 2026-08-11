@@ -2,6 +2,7 @@
 
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
+#include "runtime/iterator.h"
 
 namespace bronze {
 
@@ -197,6 +198,16 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             callSetter(getSlot(own.slot + 1), recv, val);
             return live.get().asObject<ObjectHeader>();
         }
+        // A non-writable own property discards the write in sloppy mode
+        // (10.1.9.2 -> 10.1.6.3 returns false, and 13.15.2 PutValue only
+        // throws for a STRICT reference — the same reading docs/0019
+        // decision 6 gives a getter-only property). Reachable only through
+        // `Object.defineProperty` or `Object.freeze`, both of which put the
+        // object in dictionary mode, so the IC fill below is already
+        // unreachable for it — but the guard is written here rather than
+        // inferred from that, because "the cache happens to miss" is not a
+        // reason a write is discarded.
+        if (!own.writable) return this;
         if (ic && !shape->isDictionary()) {
             ic->cached_shape = shape;
             ic->cached_slot = own.slot;
@@ -225,6 +236,20 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             return live.get().asObject<ObjectHeader>();
         }
     }
+
+    // A frozen or sealed object adds nothing (10.1.9.2 step 3 -> 10.1.6.3
+    // step 2.b), silently, for the same sloppy-mode reason a non-writable
+    // property discards its write.
+    if (shape->isDictionary() && !shape->dict->extensible) return this;
+
+    // A well-known symbol key is not an enumerable property. bronze spells
+    // `Symbol.iterator` as the string `"@@iterator"` (docs/0021 decision 1),
+    // and a real symbol key would never appear in `Object.keys`, `for-in`,
+    // object spread or console.log — so the string standing in for one must
+    // not either. The rule is on the KEY rather than on the call site
+    // because there are four call sites and one of them is `o[k] = v` with a
+    // computed key, where nothing but the key is known.
+    if (runtime::rtIsWellKnownSymbolKey(prop_name)) enumerable = false;
 
     // Create the own property: a shape transition, or an entry in the
     // dictionary once one delete has made the chain unusable. Both may grow

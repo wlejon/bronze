@@ -46,6 +46,14 @@ private:
     bool check(TokenKind kind) const { return peek().kind == kind; }
     bool match(TokenKind kind);
     const Token* expect(TokenKind kind, const char* what);
+    // An IdentifierName (ECMA-262 12.7.1), which is an identifier OR a
+    // reserved word. `o.delete`, `o.new` and `{ default: 1 }` are all legal
+    // JavaScript and all of them reached bronze's lexer as keyword tokens, so
+    // an `expect(Identifier, ...)` after a `.` rejected the ordinary spelling
+    // of `Map.prototype.delete`. Only the position decides: a reserved word
+    // is a name only after `.`, `?.` or in a property-key slot.
+    const Token* expectPropertyName(const char* what);
+    static bool isIdentifierName(TokenKind kind);
     void error(const char* message);
     // Consumes a statement's terminating semicolon, or inserts one where
     // ECMA-262 12.10 says the program means one (docs/0014). Every statement

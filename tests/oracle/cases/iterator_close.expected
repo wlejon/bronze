@@ -1,0 +1,9 @@
+a:close@2;
+body-finally;body-finally;b:close@2;
+c:close@3;outer-finally;
+1;2;3;4;5;
+took2 e:close@2;
+f:close@2;caught:boom;
+1 2 g:close@2;
+1 2,3,4,5 log=
+ab12x

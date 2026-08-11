@@ -392,7 +392,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
                 error("a tagged template may not be part of an optional chain");
                 return nullptr;
             }
-            const Token* member = expect(TokenKind::Identifier, "property name after '?.'");
+            const Token* member = expectPropertyName("property name after '?.'");
             if (!member) return nullptr;
             auto mem = std::make_unique<MemberAccess>();
             mem->span = {expr->span.begin, member->span.end};
@@ -401,7 +401,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             mem->optional = true;
             expr = std::move(mem);
         } else if (match(TokenKind::Dot)) {
-            const Token* member = expect(TokenKind::Identifier, "property name");
+            const Token* member = expectPropertyName("property name");
             if (!member) return nullptr;
             const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
             if (baseIdent && baseIdent->name == "console" && member->text == "log") {

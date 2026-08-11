@@ -195,34 +195,28 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
-        case il::Op::IterLength:
-        case il::Op::IterAt:
-        case il::Op::IterAdvance: {
-            const bool unary = inst.op == il::Op::IterLength;
-            if (!needs(unary ? 1 : 2, true, "Invalid operands for an iteration instruction")) {
-                return false;
-            }
-            const char* what = "Undefined value in an iteration instruction";
-            llvm::Value* target = operand(inst, 0, what);
-            llvm::Value* index = unary ? nullptr : operand(inst, 1, what);
-            if (!target || (!unary && !index)) return false;
-            if (unary) {
-                callWith(abi.bronze_iter_length, {target});
-            } else if (inst.op == il::Op::IterAt) {
-                callWith(abi.bronze_iter_at, {target, index});
-            } else {
-                callWith(abi.bronze_iter_advance, {target, index});
+        case il::Op::IterOpen:
+        case il::Op::IterStep:
+        case il::Op::IterValue:
+        case il::Op::IterRest: {
+            if (!needs(1, true, "Invalid operands for an iteration instruction")) return false;
+            llvm::Value* rec = operand(inst, 0, "Undefined value in an iteration instruction");
+            if (!rec) return false;
+            switch (inst.op) {
+                case il::Op::IterOpen: callWith(abi.bronze_iter_open, {rec}); break;
+                case il::Op::IterStep: callWith(abi.bronze_iter_step, {rec}); break;
+                case il::Op::IterValue: callWith(abi.bronze_iter_value, {rec}); break;
+                default: callWith(abi.bronze_iter_rest, {rec}); break;
             }
             return true;
         }
 
-        case il::Op::IterRest: {
-            if (!needs(2, true, "Invalid operands for IterRest")) return false;
-            const char* what = "Undefined value in an iteration instruction";
-            llvm::Value* target = operand(inst, 0, what);
-            llvm::Value* index = operand(inst, 1, what);
-            if (!target || !index) return false;
-            callWith(abi.bronze_iter_rest, {target, index});
+        case il::Op::IterClose: {
+            if (!needs(1, false, "Invalid operands for IterClose")) return false;
+            llvm::Value* rec = operand(inst, 0, "Undefined record in IterClose instruction");
+            if (!rec) return false;
+            builder_.CreateCall(abi.bronze_iter_close,
+                                {rec, builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::PatternCheck: {

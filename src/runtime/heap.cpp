@@ -314,6 +314,7 @@ void Heap::collect() {
     from_space_.bump_ptr = from_space_.base;
     std::swap(from_space_, to_space_);
 
+    ++collections_;
     in_gc_ = false;
 }
 

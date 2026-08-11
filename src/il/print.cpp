@@ -73,9 +73,10 @@ const char* opName(Op op) {
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
         case Op::ClassExtend: return "class.extend";
-        case Op::IterLength: return "iter.length";
-        case Op::IterAt: return "iter.at";
-        case Op::IterAdvance: return "iter.advance";
+        case Op::IterOpen: return "iter.open";
+        case Op::IterStep: return "iter.step";
+        case Op::IterValue: return "iter.value";
+        case Op::IterClose: return "iter.close";
         case Op::IterRest: return "iter.rest";
         case Op::PatternCheck: return "pattern.check";
         case Op::ArrayAppend: return "array.append";
@@ -357,14 +358,23 @@ std::string print(const Module& module) {
                         out += "create.object";
                         break;
                     case Op::ForInKeys:
-                    case Op::IterLength:
+                    case Op::IterOpen:
+                    case Op::IterStep:
+                    case Op::IterValue:
+                    case Op::IterRest:
                         out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
+                    // The SUPPRESS flag, because it is the whole content of
+                    // the instruction: a close on the throw path discards an
+                    // error `return` raises and one on a `break` path does
+                    // not (ECMA-262 7.4.9 step 6).
+                    case Op::IterClose:
+                        out += "iter.close %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               (inst.immI32 == 0 ? "abrupt" : "suppress");
+                        break;
                     case Op::ClassExtend:
-                    case Op::IterAt:
-                    case Op::IterAdvance:
-                    case Op::IterRest:
                     case Op::ArrayAppend:
                     case Op::ArraySpread:
                     case Op::ObjectSpread:

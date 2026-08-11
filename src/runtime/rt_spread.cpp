@@ -52,41 +52,17 @@ bool isPlainObject(Value v) {
 
 bool isArray(Value v) { return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1; }
 
-bool isWalkable(Value v) {
-    if (v.isString()) return true;
-    if (!v.isObject()) return false;
-    const uint32_t flags = v.asObject<HeapObjectHeader>()->flags;
-    return flags == 1 || flags == 3;
-}
-
-// Named, so a value bronze cannot walk says which construct asked. The three
-// callers differ only in that word, and printing "for-of" for a spread was
-// the kind of misdirection a diagnostic exists to avoid.
-//
-// A TypeError rather than a fatal: 7.4.2 GetIterator throws when the value
-// has no @@iterator method, so this is behaviour ECMA-262 defines and a
-// program is entitled to catch it (docs/0020 decision 6). It raises and
-// returns, so every caller has to stop — there is no `[[noreturn]]` to lean
-// on any more.
-void raiseNotWalkable(const char* what) {
-    rtThrowTypeError(std::string(what) +
-                     " of a value that is not an array, string or typed array");
-}
-
-// Every element of `src` from `from` on, appended to `out`. The length is
-// re-read per step for the same reason for-of re-reads it: it is a property
-// of the value, not a snapshot.
-void appendIterable(Rooted<Value>& out, Rooted<Value>& src, double from, const char* what) {
-    if (!isWalkable(src.get())) {
-        raiseNotWalkable(what);
-        return;
-    }
-    for (double i = from;;) {
-        const double length = bronze_iter_length(src.get().rawBits());
-        if (!(i < length)) break;
-        Rooted<Value> elem{Value(bronze_iter_at(src.get().rawBits(), i))};
+// Every element of `src`, appended to `out`, through the iterator protocol
+// (docs/0021 decision 2) — so `[...someSet]` and `f(...someMap)` walk the
+// same way `for-of` does, which is the whole reason spread stopped being an
+// index walk. A value with no @@iterator method raises the TypeError 7.4.2
+// defines rather than producing an empty result.
+void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
+    Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
+    if (rtExceptionPending()) return;
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> elem{Value(bronze_iter_value(rec.get().rawBits()))};
         appendTo(out, elem);
-        i = bronze_iter_advance(src.get().rawBits(), i);
     }
 }
 
@@ -124,21 +100,14 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
                              : "object destructuring of null or undefined");
         return vBits;
     }
-    if (kind == kPatternArray && !isWalkable(v)) {
-        raiseNotWalkable("array destructuring");
-    }
+    // An array pattern's source no longer needs a kind test here: `iter.open`
+    // is the next instruction and 7.4.2 already raises for a value with no
+    // @@iterator method. What survives is the null/undefined case, which
+    // 8.6.2 reaches through RequireObjectCoercible BEFORE GetIterator and
+    // which therefore has to name the CONSTRUCT rather than the protocol.
+    (void)kPatternArray;
     (void)kPatternObject;
     return vBits;
-}
-
-// `[p, ...rest] = xs` — everything from the cursor on, as a fresh array.
-// Empty rather than `undefined` when nothing is left, which is the whole
-// point of a rest element: it is always a container.
-uint64_t bronze_iter_rest(uint64_t vBits, double index) {
-    Rooted<Value> src{Value(vBits)};
-    Rooted<Value> out{newArray()};
-    appendIterable(out, src, index, "array destructuring");
-    return out.get().rawBits();
 }
 
 // `function f(a, ...rest)` — the arguments past the fixed ones, as an array.
@@ -162,7 +131,7 @@ void bronze_array_append(uint64_t arrBits, uint64_t valBits) {
 void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
     Rooted<Value> arr{Value(arrBits)};
     Rooted<Value> src{Value(srcBits)};
-    appendIterable(arr, src, 0.0, "spread");
+    appendIterable(arr, src);
 }
 
 // `{ ...src }` — CopyDataProperties (ECMA-262 7.3.25) over own ENUMERABLE

@@ -312,8 +312,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // A `return` inside a nested function runs THAT function's finallys and
     // none of the enclosing ones, exactly as `break outer` names nothing
     // across the same boundary.
-    auto outerFinallyStack = finallyStack_;
-    finallyStack_.clear();
+    auto outerCleanupStack = cleanupStack_;
+    cleanupStack_.clear();
     auto outerHandler = currentHandler_;
     currentHandler_ = il::kNoBlock;
     auto outerEnvValue = currentEnvValue_;
@@ -345,7 +345,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     scopeHasEnv_ = outerScopeHasEnv;
     capturedNames_ = outerCaptured;
     memoryNames_ = outerMemoryNames;
-    finallyStack_ = outerFinallyStack;
+    cleanupStack_ = outerCleanupStack;
     currentHandler_ = outerHandler;
     currentEnvValue_ = outerEnvValue;
     currentThisValue_ = outerThisValue;

@@ -93,3 +93,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 - 0020 exceptions (the pending-exception cell and why not landingpads, the
   handler as a property of the block, `finally` by duplication per exit path,
   which runtime fatals became catchable, and the `Error` family)
+- 0021 iteration and collections (`Symbol.iterator` as a well-known string
+  key, the iteration record with fast kinds beside the protocol, IteratorClose
+  as a cleanup frame, Map/Set as a table whose index carries a GC epoch, and
+  `writable`/`configurable`/`extensible` in the dictionary)

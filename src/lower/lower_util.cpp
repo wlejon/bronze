@@ -20,7 +20,13 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // than a diagnosed unknown name. They are also what the runtime raises
     // its own spec'd TypeErrors with, so a `catch` cannot tell a
     // bronze-raised error from a hand-written one (docs/0020 decision 7).
-    return name == "Math" || name == "Error" || name == "TypeError" ||
+    // `Object` joined the list with docs/0021: `Object.keys` was recognized
+    // at the CALL (docs/0009 decision 2), which is an answer that does not
+    // survive a second member — `assign`, `defineProperty` and the rest would
+    // each need their own IL op and arity check here. The `Object.keys`
+    // recognition stays as a fast path over the same runtime function.
+    return name == "Math" || name == "Object" || name == "Number" || name == "Symbol" ||
+           name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
            name == "RangeError";
 }
 

@@ -170,6 +170,24 @@ private:
 Value rtMathObject();
 void rtMathCheckMissingMember(Value obj, const std::string& key);
 
+Value rtObjectNamespace();
+void rtObjectCheckMissingMember(Value obj, const std::string& key);
+
+Value rtNumberNamespace();
+void rtNumberCheckMissingMember(Value obj, const std::string& key);
+
+// `Map` / `Set`, by the name lowering resolved. `undefined` for anything else.
+Value rtMapConstructor(const std::string& name);
+// A method of a Map (or, with `isSetReceiver`, of a Set), by name. The two
+// tables differ — `add` is a Set's and `get`/`set` are a Map's — which is why
+// the receiver kind is a parameter rather than something the caller applies
+// afterwards.
+Value rtMapMethod(bool isSetReceiver, const std::string& key);
+void rtCheckMapMember(bool isSetReceiver, const std::string& key);
+// What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
+// and a Set's is `values` (24.1.3.12, 24.2.3.11).
+Value rtMapDefaultIterator(bool isSetReceiver);
+
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the
 // language's own answer for a property that does not exist.

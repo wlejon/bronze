@@ -1,0 +1,28 @@
+{"b":1,"a":2,"nested":{"z":[1,2],"y":"q"}}
+{"n":null,"ok":1}
+[null,null,null,1]
+[null,null,null,0,1e+21,0.1]
+"a\"b\\c\nd\tef"
+{
+  "b": 1,
+  "a": 2,
+  "nested": {
+    "z": [
+      1,
+      2
+    ],
+    "y": "q"
+  }
+}
+{
+	"a": [
+		1
+	]
+}
+{"at":"STAMP","n":1}
+{"a":1}
+x true null 3
+{"b":1,"a":2,"nested":{"z":[1,2],"y":"q"}}
+SyntaxError for an unquoted key
+SyntaxError for a trailing comma
+10

@@ -56,11 +56,11 @@ std::string printOf(std::string_view src) {
 
 TEST_CASE("for-in snapshots the key list before walking it") {
     // docs/0018 decision 1: the keys are materialized once, into an array,
-    // and the loop is then the same index walk `for-of` uses. A `forin.keys`
+    // and the loop is then the same iterator walk `for-of` uses. A `forin.keys`
     // inside the loop body would mean the snapshot is being retaken.
     const std::string printed = printOf("const o = { a: 1 };\nfor (const k in o) { console.log(k); }\n");
     CHECK(printed.find("forin.keys") != std::string::npos);
-    CHECK(printed.find("iter.length") != std::string::npos);
+    CHECK(printed.find("iter.open") != std::string::npos);
 }
 
 TEST_CASE("a class method is defined non-enumerably, not assigned") {

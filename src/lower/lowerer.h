@@ -93,11 +93,14 @@ private:
         // those parameters were added. A jump from anywhere inside has to
         // hand over the same list.
         std::vector<std::string> vars;
-        // A loop whose update block takes a parameter that is not a source
-        // binding — for-of's index (docs/0012 decision 2). `continue` jumps
-        // to that block, so it has to hand the value over like any other
-        // edge argument. kNoValue for every other form.
-        il::ValueId updateExtraArg = il::kNoValue;
+        // Where `cleanupStack_` stood when this statement was reached, and
+        // where it stood once the statement's OWN cleanup (a for-of's
+        // IteratorClose) was on it. The two differ for exactly one form, and
+        // the difference is the whole of "a `break` closes the iterator and a
+        // `continue` does not": both jumps cross the same finallys, and only
+        // the break crosses the loop's own close.
+        size_t cleanupDepthAtEntry = 0;
+        size_t cleanupDepthInBody = 0;
     };
 
     std::vector<VarBinding> varBindings_;
@@ -116,17 +119,30 @@ private:
     // and what the backend turns into a frame pop and a `ret`.
     il::BlockId currentHandler_ = il::kNoBlock;
 
-    // The `finally` bodies an abrupt completion has to run on its way out,
-    // innermost last (docs/0020 decision 5). Each records the `jumpStack_`
-    // depth it was pushed at, which is the whole of "does this `break` cross
-    // it?": a `break` to the target at index i crosses every entry pushed
-    // when the stack was deeper than i.
+    // The work an abrupt completion has to do on its way out, innermost last.
+    // Two kinds, and they are one stack because they interleave: `break outer`
+    // from inside `for (const x of it) { try { ... } finally { ... } }` runs
+    // the finally and THEN closes the iterator, and only their relative order
+    // on one stack says so.
+    //
+    // Each records the `jumpStack_` depth it was pushed at, which is the whole
+    // of "does this `break` cross it?": a `break` to the target at index i
+    // crosses every entry pushed when the stack was deeper than i.
     //
     // Function-local, and saved/cleared/restored across a function boundary
     // exactly as `labelStack_` is: a `return` inside a nested function runs
-    // that function's finallys and none of the enclosing ones.
-    struct FinallyFrame {
-        const ast::TryStmt* stmt = nullptr;
+    // that function's cleanups and none of the enclosing ones.
+    enum class CleanupKind {
+        // docs/0020 decision 5: the `finally` body, lowered again here.
+        Finally,
+        // docs/0021 decision 3: IteratorClose on a for-of left early.
+        IteratorClose,
+    };
+
+    struct CleanupFrame {
+        CleanupKind kind = CleanupKind::Finally;
+        const ast::TryStmt* stmt = nullptr;      // Finally only
+        il::ValueId iterRecord = il::kNoValue;   // IteratorClose only
         size_t jumpDepth = 0;
         // The handler in effect OUTSIDE this try. Every copy of the finally
         // body runs under it, never under the try's own handler: an exception
@@ -135,7 +151,7 @@ private:
         // time.
         il::BlockId outerHandler = il::kNoBlock;
     };
-    std::vector<FinallyFrame> finallyStack_;
+    std::vector<CleanupFrame> cleanupStack_;
 
     // The label a `label:` just read, waiting for the loop or switch it
     // fronts to claim it. Cleared by whichever statement lowering reaches
@@ -397,15 +413,16 @@ private:
                           const std::vector<il::ValueId>& extraArgs, il::Function& ilFn);
 
     // --- lower_iter_loop.cpp: the two loops that walk a container ----------
-    // for-of over the iterable, and for-in over the KEY SNAPSHOT the runtime
-    // builds (docs/0018 decision 1). One index walk, because once the keys are
-    // an array the two loops differ in nothing but what they walk.
+    // for-of over the iterator (docs/0021 decision 2), and for-in over the KEY
+    // SNAPSHOT the runtime builds (docs/0018 decision 1). One walk, because
+    // once the keys are an array the two loops differ in nothing but what they
+    // open an iterator over.
     bool lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn);
     bool lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn);
-    bool lowerIndexWalkLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
-                            const ast::BindingPattern* headPattern, bool isConst, bool isLet,
-                            bool isVar, const std::vector<ast::StmtPtr>& body,
-                            il::Function& ilFn);
+    bool lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
+                           const ast::BindingPattern* headPattern, bool isConst, bool isLet,
+                           bool isVar, const std::vector<ast::StmtPtr>& body,
+                           il::Function& ilFn);
 
     // --- lower_switch.cpp: selection and fallthrough (docs/0018) -----------
     bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);
@@ -422,15 +439,18 @@ private:
     // directly as the protected region of a try/finally with no catch.
     bool lowerTryBlock(const ast::TryStmt* tryStmt, il::Function& ilFn);
     bool lowerThrowStmt(const ast::ThrowStmt* throwStmt, il::Function& ilFn);
-    // Runs the `finally` bodies from the top of `finallyStack_` down to
-    // `downTo`, innermost first, each with the stack truncated below it so a
-    // jump inside a finally does not re-run that finally. Stops early if one
-    // of them completes abruptly — which is how `try { return 1 } finally
+    // Runs the cleanups from the top of `cleanupStack_` down to `downTo`,
+    // innermost first, each with the stack truncated below it so a jump
+    // inside a finally does not re-run that finally. Stops early if one of
+    // them completes abruptly — which is how `try { return 1 } finally
     // { return 2 }` produces 2 without a rule about precedence.
-    bool runFinallyBodies(size_t downTo, il::Function& ilFn);
-    // The lowest `finallyStack_` index a jump to `jumpStack_[targetIndex]`
-    // has to run. `finallyStack_.size()` when it crosses none.
-    size_t finallyDepthForJump(size_t targetIndex) const;
+    bool runCleanups(size_t downTo, il::Function& ilFn);
+    // The lowest `cleanupStack_` index a jump to `jumpStack_[targetIndex]`
+    // has to run. `cleanupStack_.size()` when it crosses none.
+    size_t cleanupDepthForJump(size_t targetIndex) const;
+    // `iter.close %record, <suppress>`, the one instruction an
+    // IteratorClose cleanup emits.
+    void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn);
     // One copy of a finally body, in its own scope. Lowered from the AST
     // rather than cloned: a re-lowering is fresh blocks and fresh SSA values,
     // and nothing in lowering is stateful across it (docs/0020 decision 5).

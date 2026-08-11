@@ -67,14 +67,24 @@ bool Lowerer::lowerThrowStmt(const ast::ThrowStmt* throwStmt, il::Function& ilFn
     return true;
 }
 
-size_t Lowerer::finallyDepthForJump(size_t targetIndex) const {
-    // A finally pushed when `jumpStack_` had size S is nested inside the
+size_t Lowerer::cleanupDepthForJump(size_t targetIndex) const {
+    // A cleanup pushed when `jumpStack_` had size S is nested inside the
     // targets at indices 0..S-1, so a jump to index i crosses it exactly when
     // S > i. The stack is ordered, so the first crossing entry is the lowest
     // one that has to run.
-    size_t depth = finallyStack_.size();
-    while (depth > 0 && finallyStack_[depth - 1].jumpDepth > targetIndex) --depth;
+    size_t depth = cleanupStack_.size();
+    while (depth > 0 && cleanupStack_[depth - 1].jumpDepth > targetIndex) --depth;
     return depth;
+}
+
+void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn) {
+    il::Instruction inst;
+    inst.op = il::Op::IterClose;
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    inst.operands = {record};
+    inst.immI32 = suppress ? 1 : 0;
+    emitInst(ilFn, inst);
 }
 
 void Lowerer::openBlockUnderHandler(il::BlockId handler, il::Function& ilFn) {
@@ -93,23 +103,32 @@ bool Lowerer::lowerFinallyBody(const ast::TryStmt& stmt, il::Function& ilFn) {
     return ok;
 }
 
-bool Lowerer::runFinallyBodies(size_t downTo, il::Function& ilFn) {
-    for (size_t i = finallyStack_.size(); i-- > downTo;) {
+bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
+    for (size_t i = cleanupStack_.size(); i-- > downTo;) {
         // A completion from inside a `finally` overrides the one that was on
         // its way out, and the way that happens here is that the block is
         // already terminated: there is nothing left to emit the pending jump
         // or return into.
         if (currentBlockIsTerminated(ilFn)) break;
-        const FinallyFrame frame = finallyStack_[i];
+        const CleanupFrame frame = cleanupStack_[i];
+        if (frame.kind == CleanupKind::IteratorClose) {
+            // No block of its own and no handler dance: closing an iterator
+            // is one call, and an error its `return` method raises on THIS
+            // path (a `break` or a `return`, not a throw) propagates like any
+            // other — 7.4.9 discards one only when a throw is already in
+            // flight, which is the handler's copy, not this one.
+            emitIterClose(frame.iterRecord, /*suppress=*/false, ilFn);
+            continue;
+        }
         // Truncated below this entry while its body runs, so a `break` inside
         // a `finally` does not run that same `finally` again on its way out.
-        auto saved = finallyStack_;
-        finallyStack_.resize(i);
+        auto saved = cleanupStack_;
+        cleanupStack_.resize(i);
         const il::BlockId savedHandler = currentHandler_;
         openBlockUnderHandler(frame.outerHandler, ilFn);
         const bool ok = lowerFinallyBody(*frame.stmt, ilFn);
         currentHandler_ = savedHandler;
-        finallyStack_ = std::move(saved);
+        cleanupStack_ = std::move(saved);
         if (!ok) return false;
     }
     return true;
@@ -135,10 +154,11 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
     emitInst(ilFn, jumpTo(bProtected));
     setCurrentBlock(bProtected);
 
-    finallyStack_.push_back(FinallyFrame{tryStmt, jumpStack_.size(), outerHandler});
+    cleanupStack_.push_back(CleanupFrame{CleanupKind::Finally, tryStmt, il::kNoValue,
+                                        jumpStack_.size(), outerHandler});
     const bool protectedOk =
         tryStmt->hasCatch ? lowerTryCatch(tryStmt, ilFn) : lowerTryBlock(tryStmt, ilFn);
-    finallyStack_.pop_back();
+    cleanupStack_.pop_back();
     currentHandler_ = outerHandler;
     if (!protectedOk) return false;
 

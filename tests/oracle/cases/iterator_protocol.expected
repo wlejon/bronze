@@ -1,0 +1,16 @@
+10
+1-2-3-4
+1 2 3,4
+string
+from,to
+in:from
+in:to
+c1,c2,c3
+c1c1;c1c2;c1c3;c2c1;c2c2;c2c3;c3c1;c3c2;c3c3;
+an object is not iterable
+a number is not iterable
+null is not iterable
+the result of Symbol.iterator is not an object
+the iterator has no `next` method
+the iterator result is not an object
+next threw

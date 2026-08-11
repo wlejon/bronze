@@ -426,17 +426,15 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // no global object for it to live on (docs/0009 decision 2).
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get());
-        if (baseIdent && baseIdent->name == "Object" &&
+        // `Object.keys(x)` keeps its own instruction — every other member of
+        // `Object` now resolves through the namespace object like a member of
+        // `Math` does (docs/0021 decision 6), so this is a fast path rather
+        // than the only path, and it falls through to the general call
+        // lowering for anything it does not recognize.
+        if (baseIdent && baseIdent->name == "Object" && mem->property == "keys" &&
+            call->args.size() == 1 &&
+            !dynamic_cast<const ast::SpreadElement*>(call->args[0].get()) &&
             activeVarMap_.find("Object") == activeVarMap_.end()) {
-            if (mem->property != "keys") {
-                diags_.error(call->span, "unsupported builtin: Object." + mem->property);
-                return std::nullopt;
-            }
-            if (call->args.size() != 1 ||
-                dynamic_cast<const ast::SpreadElement*>(call->args[0].get())) {
-                diags_.error(call->span, "Object.keys expects 1 argument");
-                return std::nullopt;
-            }
             auto argVal = lowerExpr(*call->args[0], ilFn);
             if (!argVal) return std::nullopt;
             auto argBoxed = boxValueIfNeeded(*argVal, ilFn);

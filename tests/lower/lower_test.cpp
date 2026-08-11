@@ -497,10 +497,12 @@ TEST_CASE("a local binding shadows a provided global") {
     CHECK(printed.find("global.get") == std::string::npos);
 }
 
-TEST_CASE("for-of lowers to an index walk with a separate advance step") {
-    // There is no iterator protocol (docs/0012 decision 2): the loop reads
-    // a length, indexes, and advances. `advance` is its own op rather than
-    // `i + 1` because a string steps by code point, not by code unit.
+TEST_CASE("for-of opens an iterator and closes it when the body throws") {
+    // docs/0021 decision 2: the loop is a cursor, not an index and a length
+    // — an iterator is opened once, stepped, and read. And decision 3: the
+    // body runs under a handler whose only job is to close the iterator and
+    // re-raise, so a `throw` from inside the loop still reaches the
+    // iterator's `return` method.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -512,9 +514,16 @@ TEST_CASE("for-of lowers to an index walk with a separate advance step") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    CHECK(printed.find("iter.length") != std::string::npos);
-    CHECK(printed.find("iter.at") != std::string::npos);
-    CHECK(printed.find("iter.advance") != std::string::npos);
+    CHECK(printed.find("iter.open") != std::string::npos);
+    CHECK(printed.find("iter.step") != std::string::npos);
+    CHECK(printed.find("iter.value") != std::string::npos);
+    // Suppressed, because a throw is already on its way out and 7.4.9 step 6
+    // keeps that one rather than anything `return` might raise.
+    CHECK(printed.find("iter.close %4, suppress") != std::string::npos);
+    CHECK(printed.find("exc.take") != std::string::npos);
+    // No index is threaded through the loop's blocks any more: the record
+    // holds the cursor, so the only block parameters are source bindings.
+    CHECK(printed.find("iter.advance") == std::string::npos);
 }
 
 TEST_CASE("an arrow reaches `this` through the environment, not a parameter") {
@@ -615,11 +624,16 @@ TEST_CASE("a destructuring assignment reads the whole right side before writing"
     // The source is checked once, up front, so a later element read cannot
     // blame for-of for a destructuring failure.
     CHECK(printed.find("pattern.check %2, array") != std::string::npos);
-    // The cursor is CHAINED through iter.advance rather than counted: a
-    // string steps by code point, and a surrogate pair moves it by two.
-    CHECK(printed.find("iter.at %5, %6") != std::string::npos);
-    CHECK(printed.find("iter.advance %5, %6") != std::string::npos);
-    CHECK(printed.find("iter.at %5, %8") != std::string::npos);
+    // One iterator over that array, stepped once per element, and closed at
+    // the end because the pattern stopped before the source was exhausted
+    // (ECMA-262 8.6.2 step 5). Every read names the SAME record, which is
+    // what makes the swap a swap.
+    CHECK(printed.find("iter.open %5") != std::string::npos);
+    CHECK(printed.find("%8: bool = iter.step %6") != std::string::npos);
+    CHECK(printed.find("%7: dynamic = iter.value %6") != std::string::npos);
+    CHECK(printed.find("%10: bool = iter.step %6") != std::string::npos);
+    CHECK(printed.find("%9: dynamic = iter.value %6") != std::string::npos);
+    CHECK(printed.find("iter.close %6, abrupt") != std::string::npos);
 }
 
 TEST_CASE("a default parameter is a branch, and only undefined takes it") {

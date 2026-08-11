@@ -1,0 +1,14 @@
+symbol
+false true
+Symbol(tag) tag
+plain
+1
+1 undefined
+plain;
+true
+false
+shared undefined
+symbol
+string key is not an iterator hook
+false
+a symbol does not coerce

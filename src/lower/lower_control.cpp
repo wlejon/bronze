@@ -290,7 +290,8 @@ bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn
 
     // Body
     setCurrentBlock(bBody);
-    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bHeader, bExit, loopVars});
+    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bHeader, bExit, loopVars,
+                                    cleanupStack_.size(), cleanupStack_.size()});
     enterScope(whileStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : whileStmt->body) bodyStmts.push_back(s.get());
@@ -348,7 +349,8 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
     // edges, so it takes the loop variables as parameters.
     auto condParamMap = addLoopBlockParams(loopParams, bCond, ilFn);
 
-    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bCond, bExit, loopVars});
+    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bCond, bExit, loopVars,
+                                    cleanupStack_.size(), cleanupStack_.size()});
     enterScope(doWhileStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : doWhileStmt->body) bodyStmts.push_back(s.get());
@@ -467,7 +469,8 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 
     // Body
     setCurrentBlock(bBody);
-    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bUpdate, bExit, loopVars});
+    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bUpdate, bExit, loopVars,
+                                    cleanupStack_.size(), cleanupStack_.size()});
     enterScope(forStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : forStmt->body) bodyStmts.push_back(s.get());
@@ -520,19 +523,12 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 // not emitted, which is how the override of 14.15.3 happens without a rule.
 bool Lowerer::emitJumpCrossingFinallys(size_t targetIndex, bool toExit,
                                        il::Function& ilFn) {
-    if (!runFinallyBodies(finallyDepthForJump(targetIndex), ilFn)) return false;
+    const size_t downTo = toExit ? jumpStack_[targetIndex].cleanupDepthAtEntry
+                                 : jumpStack_[targetIndex].cleanupDepthInBody;
+    if (!runCleanups(downTo, ilFn)) return false;
     if (currentBlockIsTerminated(ilFn)) return true;
     const JumpTarget& target = jumpStack_[targetIndex];
-    if (toExit) {
-        emitJumpToTarget(target, target.exitBlock, {}, ilFn);
-        return true;
-    }
-    // for-of and for-in thread an index their update block takes as an extra
-    // parameter; a `continue` is an edge into that block like any other and
-    // has to hand it over (docs/0012 decision 2).
-    std::vector<il::ValueId> extra;
-    if (target.updateExtraArg != il::kNoValue) extra.push_back(target.updateExtraArg);
-    emitJumpToTarget(target, target.updateBlock, extra, ilFn);
+    emitJumpToTarget(target, toExit ? target.exitBlock : target.updateBlock, {}, ilFn);
     return true;
 }
 

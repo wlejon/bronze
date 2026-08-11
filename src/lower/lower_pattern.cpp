@@ -150,34 +150,56 @@ bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
                             : lowerArrayPattern(pattern, checked, target, ilFn);
 }
 
-// `[a, b = 1, [c], ...rest]`. An ordered walk, not an iterator protocol:
-// bronze has no `Symbol.iterator` (docs/0012 decision 2), so this is the same
-// three ops for-of uses over the same three kinds of value. The cursor is
-// chained through `iter.advance` rather than incremented, because a string
-// steps by CODE POINT and a surrogate pair moves it by two.
+// `[a, b = 1, [c], ...rest]` — 8.6.2 ArrayBindingPattern, which is defined
+// over an ITERATOR (docs/0021 decision 2) and not over indices. That is what
+// makes `const [first] = mySet` work, and it is why the reads below are a
+// straight-line chain of `iter.step` / `iter.value` rather than a cursor
+// threaded through an advance: the record holds the cursor, and a string's
+// code-point step lives inside it where it belongs.
+//
+// `iter.step`'s boolean result is deliberately unused: an exhausted record
+// answers `undefined`, which is exactly what an element past the end of the
+// source must see so that its default can fire.
 bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
                                 const PatternTarget& target, il::Function& ilFn) {
-    il::ValueId cursor = ilFn.valueCount++;
-    il::Instruction zeroInst;
-    zeroInst.op = il::Op::ConstF64;
-    zeroInst.type = il::Type::F64;
-    zeroInst.result = cursor;
-    zeroInst.immF64 = 0.0;
-    emitInst(ilFn, zeroInst);
+    il::ValueId recId = ilFn.valueCount++;
+    il::Instruction openInst;
+    openInst.op = il::Op::IterOpen;
+    openInst.type = il::Type::Dynamic;
+    openInst.result = recId;
+    openInst.operands = {source.id};
+    emitInst(ilFn, openInst);
 
+    bool sawRest = false;
     for (size_t i = 0; i < pattern.elements.size(); ++i) {
         const auto& elem = pattern.elements[i];
 
         il::ValueId readId = ilFn.valueCount++;
-        il::Instruction readInst;
-        // A rest element is everything from here on, as one fresh array;
-        // every other element is the one value at the cursor, which is
-        // `undefined` past the end and so lets a default fire there.
-        readInst.op = elem.isRest ? il::Op::IterRest : il::Op::IterAt;
-        readInst.type = il::Type::Dynamic;
-        readInst.result = readId;
-        readInst.operands = {source.id, cursor};
-        emitInst(ilFn, readInst);
+        if (elem.isRest) {
+            // Everything the cursor has left, as one fresh array.
+            il::Instruction restInst;
+            restInst.op = il::Op::IterRest;
+            restInst.type = il::Type::Dynamic;
+            restInst.result = readId;
+            restInst.operands = {recId};
+            emitInst(ilFn, restInst);
+            sawRest = true;
+        } else {
+            il::ValueId stepId = ilFn.valueCount++;
+            il::Instruction stepInst;
+            stepInst.op = il::Op::IterStep;
+            stepInst.type = il::Type::Bool;
+            stepInst.result = stepId;
+            stepInst.operands = {recId};
+            emitInst(ilFn, stepInst);
+
+            il::Instruction readInst;
+            readInst.op = il::Op::IterValue;
+            readInst.type = il::Type::Dynamic;
+            readInst.result = readId;
+            readInst.operands = {recId};
+            emitInst(ilFn, readInst);
+        }
 
         Value value{readId, il::Type::Dynamic};
         if (elem.defaultValue) {
@@ -191,18 +213,12 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
             if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) return false;
         }
         if (elem.isRest) break;
-
-        if (i + 1 < pattern.elements.size()) {
-            il::ValueId nextCursor = ilFn.valueCount++;
-            il::Instruction advInst;
-            advInst.op = il::Op::IterAdvance;
-            advInst.type = il::Type::F64;
-            advInst.result = nextCursor;
-            advInst.operands = {source.id, cursor};
-            emitInst(ilFn, advInst);
-            cursor = nextCursor;
-        }
     }
+    // 8.6.2 step 5: a pattern that stopped before the iterator was exhausted
+    // closes it. A rest element drained it, so there is nothing left to close
+    // — and every fast kind treats this as a no-op, so an array destructuring
+    // pays one call and no user code.
+    if (!sawRest) emitIterClose(recId, /*suppress=*/false, ilFn);
     return true;
 }
 

@@ -25,6 +25,16 @@ struct DictEntry {
     // The slot holds the getter and `slot + 1` the setter, either of which
     // may be `undefined` (docs/0019 decision 4).
     bool accessor{false};
+    // The other two attributes of 6.2.6.1, which live HERE and nowhere else
+    // (docs/0021 decision 5): a shape transition is matched on
+    // (name, enumerable, accessor), and adding two more bits to that key
+    // would fork the transition tree for every object that had reached the
+    // node a late `writable: false` was defined on. An object that wants a
+    // non-default attribute becomes a dictionary instead, which is the same
+    // escape `delete` already takes and is the reason the inline caches need
+    // no change: a dictionary's private shape is one no entry has ever seen.
+    bool writable{true};
+    bool configurable{true};
 };
 
 // The own-property table of one object, hung off that object's own private
@@ -47,6 +57,13 @@ public:
     // One past the highest slot ever handed out — the object's slot storage
     // must cover it.
     uint32_t nextSlot{0};
+
+    // [[Extensible]] (6.1.7.2). False after `Object.freeze` /
+    // `Object.preventExtensions`, and the reason those move an object here:
+    // an object with a shape has nowhere to record it, and a bit in the
+    // header would have to be somewhere the generated fast path's flags word
+    // already is.
+    bool extensible{true};
 
     const DictEntry* find(const StringHeader* name) const noexcept;
     DictEntry* find(const StringHeader* name) noexcept;

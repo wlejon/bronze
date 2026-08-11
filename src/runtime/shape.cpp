@@ -78,6 +78,8 @@ bool Shape::lookupProperty(StringHeader* name, PropertyInfo& out) const noexcept
         out.slot = e->slot;
         out.enumerable = e->enumerable;
         out.accessor = e->accessor;
+        out.writable = e->writable;
+        out.configurable = e->configurable;
         return true;
     }
 

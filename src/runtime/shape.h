@@ -22,6 +22,12 @@ struct PropertyInfo {
     // `slot` holds the getter and `slot + 1` the setter; either may be
     // `undefined` for a half-written accessor.
     bool accessor{false};
+    // True for every property in a shape chain: the two attributes a
+    // transition key does not carry are the DEFAULTS there, and an object
+    // that wants either of them false is in dictionary mode (docs/0021
+    // decision 5).
+    bool writable{true};
+    bool configurable{true};
 };
 
 struct ShapeTransition {

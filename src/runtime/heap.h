@@ -84,6 +84,14 @@ public:
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
+    // How many collections have completed. A hash table keyed on VALUES
+    // rather than on property names (a Map, docs/0021 decision 4) hashes an
+    // object key by its address, and this collector moves objects — so a
+    // table records the count its index was built at and rebuilds when the
+    // number has moved on. Nothing else can tell it that every object-key
+    // hash it holds is now wrong.
+    uint64_t collection_count() const noexcept { return collections_; }
+
     uintptr_t base_address() const noexcept { return reinterpret_cast<uintptr_t>(from_space_.base); }
     size_t reserved_size() const noexcept { return reserved_bytes_; }
     size_t committed_size() const noexcept { return from_space_.committed_bytes; }
@@ -110,6 +118,7 @@ private:
     std::vector<RootSource> root_sources_;
     bool gc_stress_mode_{false};
     bool in_gc_{false};
+    uint64_t collections_{0};
     CollectionHook collection_hook_;
 };
 

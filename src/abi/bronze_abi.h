@@ -92,10 +92,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_super_get,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
-    X(bronze_iter_length,         BRONZE_ABI_F64,  (BRONZE_ABI_U64)) \
-    X(bronze_iter_at,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
-    X(bronze_iter_advance,        BRONZE_ABI_F64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
-    X(bronze_iter_rest,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_F64)) \
+    X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_iter_step,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
+    X(bronze_iter_value,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_iter_close,          BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
+    X(bronze_iter_rest,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_pattern_check,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_rest_args,           BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_array_append,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

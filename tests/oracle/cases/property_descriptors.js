@@ -1,43 +1,16 @@
-// BLOCKED: `unsupported builtin: Object.defineProperty`, and the same for
-// `Object.getOwnPropertyDescriptor`, `Object.freeze` and `Object.isFrozen`.
-// docs/0011 decision 1 keeps an unbuilt member a named error rather than a
-// stub, so the diagnosis is working — but this is now the largest remaining
-// hole in the property model, and it is the direct successor to the chunk
-// that added accessors.
-//
-// The blocker is that a bronze property has exactly TWO attributes. A shape
-// node records the key, whether it is enumerable, and whether it is an
-// accessor pair (docs/0019 decision 1); `writable` and `configurable` are
-// deliberately absent, which is why `delete` in bronze can never answer
-// `false` and why a write can never be silently discarded for any reason
-// other than a missing setter. Landing descriptors means all four of:
-//
-//  - Two more bits in the shape TRANSITION KEY. A transition is matched on
-//    (name, enumerable, accessor) today; adding two more attributes doubles
-//    the ways two objects that "have the same properties" can fail to share a
-//    shape, and a `writable: false` property added late would fork the tree
-//    for every object that had reached that point. That is a shape-tree cost
-//    question, not a syntax one.
-//  - A `[[DefineOwnProperty]]` that is genuinely separate from `[[Set]]`.
-//    The `defineOwn` flag added for `method.def` is a first step, but it says
-//    only "do not run an inherited setter"; a real DefineOwnProperty has to
-//    validate the incoming descriptor against the existing one (6.2.6.6).
-//  - An `extensible` bit per object, which is what `Object.freeze` and
-//    `Object.preventExtensions` actually set, and which the inline caches
-//    have to treat the way they already treat dictionary mode: a frozen
-//    object's writes must not be folded into a cached slot store.
-//  - A descriptor OBJECT round trip. `getOwnPropertyDescriptor` builds a
-//    fresh object whose field order is fixed by 6.2.6.4, and
-//    `defineProperty` reads one back with every field optional.
+// Property descriptors: the two attributes a bronze property gained in
+// docs/0021 decision 5, `writable` and `configurable`, and the `extensible`
+// bit `Object.freeze` sets. All three live in the DICTIONARY rather than in
+// the shape transition key, so an object with a non-default attribute has a
+// private shape no inline cache can ever match.
 //
 // Not pinned here, deliberately: redefining a non-configurable property, and
-// `defineProperty` on a frozen object, are both TypeErrors, and bronze has no
-// `throw` yet (`try_catch_throw` in this directory is the case for that).
-// Every line below is a sloppy-mode SILENT outcome, which is what makes it
-// checkable today.
+// `defineProperty` on a frozen object, are both TypeErrors, and they belong
+// with the other throwing cases. Every line below is a sloppy-mode SILENT
+// outcome, which is what makes it checkable without a `try`.
 //
-// What this case pins when it lands, from ECMA-262 6.2.6 (property
-// descriptors), 10.1.6.3, 7.3.5, 20.1.2.6 and 20.1.2.10:
+// From ECMA-262 6.2.6 (property descriptors), 10.1.6.3, 7.3.5, 20.1.2.6 and
+// 20.1.2.10:
 //
 // 1. `defineProperty` can create a property that reads back normally but is
 //    invisible to `Object.keys` and to `for-in`, cannot be assigned over, and

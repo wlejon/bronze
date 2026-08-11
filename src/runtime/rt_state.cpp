@@ -14,6 +14,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -166,6 +167,14 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
     Value resolved = Value::fromUndefined();
     if (keyStr == "Math") {
         resolved = rtMathObject();
+    } else if (keyStr == "Object") {
+        resolved = rtObjectNamespace();
+    } else if (keyStr == "Number") {
+        resolved = rtNumberNamespace();
+    } else if (keyStr == "Symbol") {
+        resolved = rtSymbolFunction();
+    } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
+        resolved = collection;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
         resolved = ctor;
     } else {
