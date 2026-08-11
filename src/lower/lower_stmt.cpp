@@ -32,6 +32,17 @@ bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Func
     }
     for (const auto* stmt : stmts) {
         if (dynamic_cast<const ast::FunctionDecl*>(stmt)) continue;
+        // Statements after this list's `return`, `break` or `continue` are
+        // unreachable, and there is no block left to put them in: emitting
+        // them would append instructions after a terminator, which the
+        // verifier rejects — `function f() { return 3; g(); }` failed to
+        // compile at all, reporting the verifier's internal wording.
+        //
+        // Dropping them is the language's answer rather than a convenience:
+        // unreachable code has no effect. What a dead region CAN still
+        // contribute is hoisting, and the pass above has already done it, so
+        // a function declared below a `return` is bound either way.
+        if (currentBlockIsTerminated(ilFn)) break;
         if (!lowerStmt(*stmt, ilFn)) return false;
     }
     return true;

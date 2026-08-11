@@ -106,6 +106,11 @@ struct Token {
     TokenKind kind;
     Span span;
     std::string_view text;  // view into the SourceBuffer
+    // Whether a line terminator separates this token from the one before it.
+    // Trivia is discarded here, so the lexer is the only place that can still
+    // see it, and automatic semicolon insertion is the only thing that needs
+    // it — the grammar is otherwise whitespace-insensitive (docs/0014).
+    bool newlineBefore = false;
 };
 
 }  // namespace bronze

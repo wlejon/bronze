@@ -34,6 +34,24 @@ const Token* Parser::expect(TokenKind kind, const char* what) {
 
 void Parser::error(const char* message) { diags_.error(peek().span, message); }
 
+// ECMA-262 12.10. A missing semicolon is supplied when the token that would
+// have followed it is on a later line, closes the enclosing block, or is the
+// end of input — and only then. `foo bar` on one line stays the error it was.
+//
+// Nothing here inspects what the expression grammar already ate: the rule is
+// about the *offending token*, which is the token this is looking at, so
+// `const c = 1\n+ 2` gets no semicolon after `1` — parseExpr consumed the
+// `+ 2` before reaching here, which is exactly what the spec describes and
+// why ASI cannot be implemented in the lexer.
+bool Parser::consumeSemicolon(const char* what) {
+    if (match(TokenKind::Semicolon)) return true;
+    if (atLineBreak() || check(TokenKind::RBrace) || check(TokenKind::EndOfFile)) return true;
+    std::string msg = std::string("expected ';' after ") + what + ", got '" +
+                      std::string(peek().text.empty() ? tokenKindName(peek().kind) : peek().text) + "'";
+    diags_.error(peek().span, msg);
+    return false;
+}
+
 std::unique_ptr<Module> Parser::parseModule(std::string name) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
@@ -66,6 +84,14 @@ StmtPtr Parser::parseStatement() {
         error("only 'export function' is supported after 'export' for now");
         return nullptr;
     }
+    if (check(TokenKind::KwImport)) {
+        // `import` lexes as a keyword but has never had a production. Without
+        // this it fell through to the expression parser and reported
+        // "expected expression", naming nothing — the one place bronze's
+        // unimplemented syntax was not diagnosed by name.
+        error("unsupported construct: import declaration (bronze has no modules yet)");
+        return nullptr;
+    }
     if (check(TokenKind::KwFunction)) return parseFunctionDecl(/*isExported=*/false);
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) return parseVarDecl();
     if (check(TokenKind::KwReturn)) return parseReturn();
@@ -90,7 +116,7 @@ StmtPtr Parser::parseStatement() {
 
     auto expr = parseExpr();
     if (!expr) return nullptr;
-    if (!expect(TokenKind::Semicolon, "';' after expression statement")) return nullptr;
+    if (!consumeSemicolon("expression statement")) return nullptr;
     auto stmt = std::make_unique<ExprStmt>();
     stmt->span = expr->span;
     stmt->expr = std::move(expr);
@@ -113,7 +139,7 @@ std::vector<StmtPtr> Parser::parseBlock() {
     return body;
 }
 
-StmtPtr Parser::parseVarDecl() {
+StmtPtr Parser::parseVarDecl(bool isStatement) {
     const Token& kw = advance();  // const | let | var
     auto decl = std::make_unique<VarDecl>();
     decl->span.begin = kw.span.begin;
@@ -136,7 +162,9 @@ StmtPtr Parser::parseVarDecl() {
         error("'const' declaration requires an initializer");
         return nullptr;
     }
-    if (!expect(TokenKind::Semicolon, "';' after declaration")) return nullptr;
+    const bool ok = isStatement ? consumeSemicolon("declaration")
+                                : expect(TokenKind::Semicolon, "';' after for init") != nullptr;
+    if (!ok) return nullptr;
     decl->span.end = peek().span.begin;
     return decl;
 }
@@ -145,11 +173,16 @@ StmtPtr Parser::parseReturn() {
     const Token& kw = advance();
     auto ret = std::make_unique<ReturnStmt>();
     ret->span = kw.span;
-    if (!check(TokenKind::Semicolon)) {
+    // `return` is a restricted production: a line terminator after it ends the
+    // statement, so `return\n  value` returns undefined and the value becomes
+    // dead code. The most famous consequence of ASI, and one bronze must
+    // reproduce rather than improve on.
+    if (!check(TokenKind::Semicolon) && !check(TokenKind::RBrace) &&
+        !check(TokenKind::EndOfFile) && !atLineBreak()) {
         ret->value = parseExpr();
         if (!ret->value) return nullptr;
     }
-    if (!expect(TokenKind::Semicolon, "';' after return")) return nullptr;
+    if (!consumeSemicolon("return")) return nullptr;
     return ret;
 }
 
@@ -232,7 +265,7 @@ StmtPtr Parser::parseFor() {
 
     if (!check(TokenKind::Semicolon)) {
         if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
-            stmt->init = parseVarDecl();
+            stmt->init = parseVarDecl(/*isStatement=*/false);
         } else {
             auto e = parseExpr();
             if (e) {
@@ -265,10 +298,12 @@ StmtPtr Parser::parseBreak() {
     const Token& kw = advance();
     auto stmt = std::make_unique<BreakStmt>();
     stmt->span = kw.span;
-    if (check(TokenKind::Identifier)) {
+    // Restricted, like `return`: the identifier on the next line is the next
+    // statement, not this one's label.
+    if (check(TokenKind::Identifier) && !atLineBreak()) {
         stmt->label = std::string(advance().text);
     }
-    expect(TokenKind::Semicolon, "';' after break");
+    consumeSemicolon("break");
     return stmt;
 }
 
@@ -276,10 +311,10 @@ StmtPtr Parser::parseContinue() {
     const Token& kw = advance();
     auto stmt = std::make_unique<ContinueStmt>();
     stmt->span = kw.span;
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) && !atLineBreak()) {
         stmt->label = std::string(advance().text);
     }
-    expect(TokenKind::Semicolon, "';' after continue");
+    consumeSemicolon("continue");
     return stmt;
 }
 
@@ -324,8 +359,15 @@ StmtPtr Parser::parseThrow() {
     const Token& kw = advance();
     auto stmt = std::make_unique<ThrowStmt>();
     stmt->span = kw.span;
+    // The one restricted production with no fallback reading: `return` on its
+    // own line is a statement that returns undefined, but `throw` has nothing
+    // to throw, so the spec makes it a syntax error rather than inserting.
+    if (atLineBreak()) {
+        error("a line terminator is not allowed between 'throw' and its expression");
+        return nullptr;
+    }
     parseExpr();
-    match(TokenKind::Semicolon);
+    consumeSemicolon("throw");
     return stmt;
 }
 

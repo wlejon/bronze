@@ -28,7 +28,8 @@ private:
     char peek(uint32_t ahead = 0) const;
     bool atEnd() const;
     Token make(TokenKind kind, uint32_t begin) const;
-    void skipTrivia();
+    // True when the trivia it consumed contained a line terminator.
+    bool skipTrivia();
     Token lexIdentifierOrKeyword();
     Token lexNumber();
     Token lexString();

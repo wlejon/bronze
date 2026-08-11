@@ -124,3 +124,40 @@ TEST_CASE("a single dot is still a dot") {
     REQUIRE(tokens.size() > 2);
     CHECK(tokens[1].kind == TokenKind::Dot);
 }
+
+TEST_CASE("a token records whether a line terminator precedes it") {
+    // The only fact the lexer keeps about discarded trivia, and the only one
+    // automatic semicolon insertion needs (docs/0014).
+    auto lexed = lexAll("a b\nc");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() == 4);  // a, b, c, eof
+    CHECK_FALSE(tokens[0].newlineBefore);  // nothing precedes the first token
+    CHECK_FALSE(tokens[1].newlineBefore);  // `b`, same line
+    CHECK(tokens[2].newlineBefore);        // `c`, next line
+}
+
+TEST_CASE("a comment reports the line terminator it spans or ends at") {
+    // A line comment's terminating newline is left for the whitespace branch,
+    // and a block comment spanning lines IS a line terminator for ASI
+    // purposes (ECMA-262 12.4) — `return /*\n*/ 1` returns undefined.
+    auto lineComment = lexAll("a // trailing\nb");
+    CHECK(lineComment.tokens[1].newlineBefore);
+
+    auto multiLineBlock = lexAll("a /* one\ntwo */ b");
+    CHECK(multiLineBlock.tokens[1].newlineBefore);
+
+    auto singleLineBlock = lexAll("a /* one */ b");
+    CHECK_FALSE(singleLineBlock.tokens[1].newlineBefore);
+}
+
+TEST_CASE("end of input reports the line terminator before it") {
+    // The last statement in a file that ends with a newline is terminated by
+    // the end of input either way, but the restricted productions read this
+    // flag on whatever token follows the keyword — including this one.
+    auto withNewline = lexAll("return\n");
+    CHECK(withNewline.tokens.back().kind == TokenKind::EndOfFile);
+    CHECK(withNewline.tokens.back().newlineBefore);
+
+    auto withoutNewline = lexAll("return");
+    CHECK_FALSE(withoutNewline.tokens.back().newlineBefore);
+}

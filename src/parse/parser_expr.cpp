@@ -219,12 +219,21 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // a missing semicolon.
             error("unsupported construct: tagged template literal");
             return nullptr;
+        } else if (check(TokenKind::PlusPlus) && atLineBreak()) {
+            // Postfix `++`/`--` are restricted productions: a line terminator
+            // before the operator ends the statement, and the `++` belongs to
+            // the next one as a PREFIX operator. `let e = d\n++d` leaves e at
+            // d's old value and increments d — folding the two lines together
+            // would be a silent wrong answer (docs/0014).
+            break;
         } else if (match(TokenKind::PlusPlus)) {
             auto u = std::make_unique<Unary>();
             u->span = {expr->span.begin, peek().span.begin};
             u->op = UnaryOp::PostInc;
             u->operand = std::move(expr);
             expr = std::move(u);
+        } else if (check(TokenKind::MinusMinus) && atLineBreak()) {
+            break;
         } else if (match(TokenKind::MinusMinus)) {
             auto u = std::make_unique<Unary>();
             u->span = {expr->span.begin, peek().span.begin};

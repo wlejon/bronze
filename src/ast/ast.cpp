@@ -46,10 +46,15 @@ const char* unaryOpName(UnaryOp op) {
         case UnaryOp::Not: return "!";
         case UnaryOp::Negate: return "-";
         case UnaryOp::Posate: return "+";
-        case UnaryOp::PreInc: return "++";
-        case UnaryOp::PreDec: return "--";
-        case UnaryOp::PostInc: return "++";
-        case UnaryOp::PostDec: return "--";
+        // The prefix and postfix forms mutate identically and EVALUATE
+        // differently, so the canonical dump has to separate them: printing
+        // both as "++" made `d++` and `++d` indistinguishable in the one
+        // artefact the parser's tests compare, which is exactly where the
+        // postfix line-break rule has to be read (docs/0014).
+        case UnaryOp::PreInc: return "++pre";
+        case UnaryOp::PreDec: return "--pre";
+        case UnaryOp::PostInc: return "++post";
+        case UnaryOp::PostDec: return "--post";
     }
     return "?";
 }

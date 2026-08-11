@@ -73,3 +73,5 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   as an index walk, arrows and lexical `this`, classes desugared)
 - 0013 printing containers (console.log's inspect format, and the
   divergences from node that are deliberate)
+- 0014 automatic semicolon insertion (the restricted productions, and the
+  unreachable-code and void-call bugs it uncovered)

@@ -106,24 +106,34 @@ Token Lexer::make(TokenKind kind, uint32_t begin) const {
     return Token{kind, {begin, pos_}, buffer_.text().substr(begin, pos_ - begin)};
 }
 
-void Lexer::skipTrivia() {
+bool Lexer::skipTrivia() {
+    bool sawNewline = false;
     for (;;) {
         const char c = peek();
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            if (c == '\n') sawNewline = true;
             ++pos_;
         } else if (c == '/' && peek(1) == '/') {
+            // The terminating newline is left for the branch above, so a line
+            // comment reports through it like any other newline.
             while (!atEnd() && peek() != '\n') ++pos_;
         } else if (c == '/' && peek(1) == '*') {
             const uint32_t begin = pos_;
             pos_ += 2;
-            while (!atEnd() && !(peek() == '*' && peek(1) == '/')) ++pos_;
+            while (!atEnd() && !(peek() == '*' && peek(1) == '/')) {
+                // A block comment spanning lines IS a line terminator for the
+                // purposes of ASI (ECMA-262 12.4): `return /*\n*/ 1` returns
+                // undefined, exactly as `return\n1` does.
+                if (peek() == '\n') sawNewline = true;
+                ++pos_;
+            }
             if (atEnd()) {
                 diags_.error({begin, pos_}, "unterminated block comment");
-                return;
+                return sawNewline;
             }
             pos_ += 2;
         } else {
-            return;
+            return sawNewline;
         }
     }
 }
@@ -293,8 +303,9 @@ Token Lexer::lexTemplatePart(bool isHead) {
 
 std::vector<Token> Lexer::lex() {
     std::vector<Token> tokens;
+    bool newlineBefore = false;
     for (;;) {
-        skipTrivia();
+        newlineBefore = skipTrivia();
         if (atEnd() || diags_.hasErrors()) break;
         const char c = peek();
         if (isIdentStart(c)) {
@@ -318,8 +329,9 @@ std::vector<Token> Lexer::lex() {
             }
             tokens.push_back(lexPunctuation());
         }
+        tokens.back().newlineBefore = newlineBefore;
     }
-    tokens.push_back(Token{TokenKind::EndOfFile, {pos_, pos_}, {}});
+    tokens.push_back(Token{TokenKind::EndOfFile, {pos_, pos_}, {}, newlineBefore});
     return tokens;
 }
 

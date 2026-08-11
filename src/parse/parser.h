@@ -40,10 +40,21 @@ private:
     bool match(TokenKind kind);
     const Token* expect(TokenKind kind, const char* what);
     void error(const char* message);
+    // Consumes a statement's terminating semicolon, or inserts one where
+    // ECMA-262 12.10 says the program means one (docs/0014). Every statement
+    // terminator goes through here; the semicolons that are punctuation of a
+    // production — the two in a `for` header — go through expect() instead.
+    bool consumeSemicolon(const char* what);
+    // Whether a line terminator precedes the next token. The restricted
+    // productions (`return`, `throw`, `break`, `continue`, postfix `++`/`--`)
+    // are the only readers.
+    bool atLineBreak() const { return peek().newlineBefore; }
 
     ast::StmtPtr parseStatement();
     ast::StmtPtr parseFunctionDecl(bool isExported);
-    ast::StmtPtr parseVarDecl();
+    // `isStatement` is false inside a `for` header, where the declaration is
+    // followed by the header's own semicolon and ASI must not apply.
+    ast::StmtPtr parseVarDecl(bool isStatement = true);
     ast::StmtPtr parseReturn();
     ast::StmtPtr parseIf();
     ast::StmtPtr parseWhile();

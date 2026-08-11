@@ -316,6 +316,18 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 }
 
                 emitInst(ilFn, inst);
+                if (calleeFn.returnType == il::Type::Void) {
+                    // A function that returns no value still EVALUATES to
+                    // one: `undefined`. The IL return type stays void so the
+                    // call itself costs nothing, and the undefined is
+                    // materialized here, where the only thing that can see it
+                    // is the expression the call sits in. Handing back the
+                    // void call's absent result instead let it escape into
+                    // arbitrary expression contexts — `console.log(f())`
+                    // reached the verifier as a box of value %kNoValue and
+                    // failed to compile at all.
+                    return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+                }
                 return Value{res, calleeFn.returnType};
             }
         }
