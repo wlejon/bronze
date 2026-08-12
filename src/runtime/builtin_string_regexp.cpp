@@ -61,7 +61,7 @@ bool requireString(Value self, const char* method, Value& out) {
 }
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 // The pattern argument as a RegExp. A string argument is matched LITERALLY,

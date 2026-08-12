@@ -37,7 +37,7 @@ ObjectHeader* namedPropertyOwner(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
-    if (hdr->flags == 2) {
+    if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
@@ -48,7 +48,7 @@ ObjectHeader* namedPropertyOwner(Value v) {
 // property and 10.4.2.1 only intercepts writes to it, so it does not move.
 bool deleteElementByIndex(Value objVal, Value idxVal) {
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != 1) return true;
+    if (hdr->flags != HeapKind::Array) return true;
 
     uint32_t idx = 0;
     if (idxVal.isNumber()) {
@@ -92,7 +92,7 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex) {
 
     // A key that names an ARRAY ELEMENT reaches the elements, not a shape:
     // `delete a["1"]` and `delete a[1]` are the same property (7.1.19).
-    if (objVal.asObject<HeapObjectHeader>()->flags == 1) {
+    if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         return deleteElementByIndex(objVal, Value::fromString(keyHeader));
     }
 
@@ -111,7 +111,7 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits) {
     }
     if (!objVal.isObject()) return true;
 
-    if (objVal.asObject<HeapObjectHeader>()->flags == 1) {
+    if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         return deleteElementByIndex(objVal, idxVal);
     }
 

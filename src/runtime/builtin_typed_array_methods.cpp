@@ -40,7 +40,7 @@ bool isTypedArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags;
 }
 bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
 // ECMA-262 defines every %TypedArray%.prototype method with a
@@ -94,7 +94,7 @@ Value newViewLike(Value model, uint32_t length) {
 }
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 // ---- the methods ------------------------------------------------------------

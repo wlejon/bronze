@@ -24,9 +24,9 @@ namespace bronze::lower {
 //
 // The head binding is per-iteration BY DEFINITION. It is declared inside the
 // body's scope, which is entered once per iteration, so a closure over it
-// captures that iteration's value. `for (let i = ...)` needs the same thing
-// and does not get it (diagnoses it); here it is free,
-// because there is no binding outside the body to share.
+// captures that iteration's value — free here, because there is no binding
+// outside the body to share. `for (let i = ...)` has one, and so has to build
+// the copies explicitly (14.7.4.9, see lowerForStmt).
 //
 // The fifth block is the one this doc's chunk adds: a handler that closes the
 // iterator when the body throws. It costs a block per loop in the IL and

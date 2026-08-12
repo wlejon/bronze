@@ -143,7 +143,7 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
         Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (hdr->flags != 0) return nullptr;
+        if (hdr->flags != HeapKind::Plain) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
     }
     return cur;

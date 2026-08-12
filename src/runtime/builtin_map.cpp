@@ -207,7 +207,8 @@ uint64_t mapForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     Rooted<Value> self{Value(thisBits)};
     if (!requireMapLike(self.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> cb{args[0]};
-    if (!cb.get().isObject() || cb.get().asObject<HeapObjectHeader>()->flags != 2) {
+    if (!cb.get().isObject() ||
+        cb.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError("Map.prototype.forEach needs a function argument").rawBits();
     }
     Rooted<Value> thisArg{args[1]};
@@ -329,7 +330,9 @@ Value rtMapConstructor(const std::string& name) {
 }
 
 const char* rtMapConstructorName(Value fn) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return nullptr;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     if (code == mapConstructor) return "Map";
     if (code == setConstructor) return "Set";

@@ -34,11 +34,11 @@ namespace {
 using Units = std::vector<uint16_t>;
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
 bool isNumberLike(Value v) { return v.isNumber() || v.isInt32(); }

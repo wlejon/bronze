@@ -63,7 +63,7 @@ Value rtErrorConstructor(const std::string& name);
 // prototype chain? Asked by `console.log`, which prints an error as `Name:
 // message` rather than as a plain object. Walking the chain rather than reading
 // a header flag keeps error instances on the inline property fast path, which
-// only believes flags == 0.
+// only believes flags == HeapKind::Plain.
 bool rtIsErrorInstance(Value v);
 
 // `Name: message` into `out`, or just `Name` when the message is empty. bronze

@@ -206,7 +206,7 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     // overflow-slot case.
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
-        if (fastHdr->flags == 0 && ic && ic->cached_shape) {
+        if (fastHdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             if (ic->describes(fastObj->shape)) {
                 // Depth 0 is an own property — the common case, straight to the
@@ -277,7 +277,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;
 
-    if (hdr->flags == 1) {  // Array
+    if (hdr->flags == HeapKind::Array) {
         ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (keyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
@@ -328,7 +328,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // a program did.
         fatal("internal: a property read on an iteration record");
     }
-    if (hdr->flags == 2) {  // Function
+    if (hdr->flags == HeapKind::Function) {
         // A GLOBAL CONSTRUCTOR's statics come first, ahead of the `prototype`
         // slot below. That order is the whole point: a FunctionHeader answers
         // `prototype` from a slot it creates on demand, so `Array.prototype`
@@ -497,7 +497,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // generated code: a write can transition the shape and grow the overflow
     // block, so the interesting half of the work is the miss, and the miss is
     // a call either way (inlines the read).
-    if (hdr->flags == 0 && ic && ic->cached_shape) {
+    if (hdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
             fastObj->setSlot(ic->cached_slot, valVal);
@@ -508,7 +508,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     const std::string& keyStr = rtKeyString(keyIndex);
     uint32_t idx = 0;
 
-    if (hdr->flags == 1) {  // Array
+    if (hdr->flags == HeapKind::Array) {
         // Numeric keys store an element. A named write is diagnosed rather
         // than discarded: JS would create the property, and arrays carry no
         // shape for named properties yet.
@@ -561,7 +561,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == IterRecordHeader::kFlags) {
         fatal("internal: a property write on an iteration record");
     }
-    if (hdr->flags == 2) {  // Function
+    if (hdr->flags == HeapKind::Function) {
         if (keyStr != "prototype") {
             // A static member: an own property of the function object itself.
             Rooted<Value> fnRoot{objVal};
@@ -613,7 +613,7 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     Rooted<Value> val{Value(valBits)};
-    if (hdr->flags == 2) {  // a `static` member: an own property of the function
+    if (hdr->flags == HeapKind::Function) {  // a `static` member: an own property of the function
         Rooted<Value> fnRoot{objVal};
         rtEnsureFunctionProperties(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
@@ -689,7 +689,7 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
     Rooted<Value> key(Value::fromString(keyHeader));
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags == 2) {  // `static get k()`: an own property of the function
+    if (hdr->flags == HeapKind::Function) {  // `static get k()`: an own property of the function
         Rooted<Value> fnRoot{objVal};
         rtEnsureFunctionProperties(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
@@ -720,7 +720,7 @@ static ObjectHeader* symbolKeyHolder(Value objVal) {
     if (!objVal.isObject()) return nullptr;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
-    if (hdr->flags == 2) {
+    if (hdr->flags == HeapKind::Function) {
         Value props = objVal.asObject<FunctionHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
@@ -767,7 +767,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     uint32_t idx = 0;
     if (objVal.isObject()) {
         HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-        if (hdr->flags == 1 && valueToElementIndex(Value(idxBits), idx)) {
+        if (hdr->flags == HeapKind::Array && valueToElementIndex(Value(idxBits), idx)) {
             return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
         }
         if (hdr->flags == TypedArrayHeader::kFlags && valueToElementIndex(Value(idxBits), idx)) {
@@ -818,7 +818,8 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         // a function that had never been given a static reached the "no shape"
         // error below and the write was refused for a receiver that can hold
         // one perfectly well.
-        if (recv.get().isObject() && recv.get().asObject<HeapObjectHeader>()->flags == 2) {
+        if (recv.get().isObject() &&
+            recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
             rtEnsureFunctionProperties(recv);
         }
         if (ObjectHeader* holder = symbolKeyHolder(recv.get())) {
@@ -856,7 +857,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;
-    if (hdr->flags == 1) {
+    if (hdr->flags == HeapKind::Array) {
         if (!valueToElementIndex(Value(idxBits), idx)) {
             fatal("non-integer array index write is unsupported");
         }

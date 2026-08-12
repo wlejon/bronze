@@ -109,6 +109,14 @@ private:
         // the break crosses the loop's own close.
         size_t cleanupDepthAtEntry = 0;
         size_t cleanupDepthInBody = 0;
+        // The `for` loop's per-iteration environment record (14.7.4.9), which
+        // its update block takes as one more parameter than its variables. A
+        // `continue` is an edge into that block and so has to hand it over
+        // too, and the value is the loop header's — not whatever record is
+        // innermost where the `continue` is written, which may be several
+        // blocks deep inside the body. `kNoValue` for every other statement,
+        // and for a `for` whose head binds nothing a closure reaches.
+        il::ValueId perIterationEnv = il::kNoValue;
     };
 
     std::vector<VarBinding> varBindings_;
@@ -203,10 +211,10 @@ private:
     // `enterFunctionEnv` ask one question — "does this name need an environment
     // slot?" — and the two reasons have the same answer.
     //
-    // Deliberately NOT the set `lowerForStmt`'s per-iteration-binding
-    // diagnostic reads: that is a hard error about closures, and widening it
-    // to this would make `try { for (let i = 0; ...) }` illegal for a binding
-    // nothing captures.
+    // Deliberately NOT the set `lowerForStmt` copies per iteration: a slot is
+    // one thing and 14.7.4.9's copy is another. `try { for (let i = 0; ...) }`
+    // puts `i` in a record because a handler may read it, and copying that
+    // record every time round would be allocation no closure can observe.
     std::unordered_set<std::string> memoryNames_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
@@ -447,6 +455,24 @@ private:
         const std::vector<LoopParam>& loopParams, il::BlockId block, il::Function& ilFn);
     void bindLoopBlockParams(const std::vector<LoopParam>& loopParams,
                              const std::unordered_map<std::string, il::ValueId>& paramOf);
+    // One more parameter on a loop block, for the environment record rather
+    // than for a variable. Appended AFTER `addLoopBlockParams` has run, so
+    // that `collectEdgeArgs`'s positional match between `loopVars` and the
+    // target's parameter list still holds for every edge.
+    il::ValueId addEnvBlockParam(il::BlockId block, il::Function& ilFn);
+    // Does ECMA-262 14.7.4.9 have anything to copy for this `for`? Only when
+    // the head declared a lexical binding that lives in an environment record
+    // AND a closure written under the loop reaches it. The second half is not
+    // an optimisation: the copy is observable through a closure and through
+    // nothing else, so a loop with none of them must keep the one-record shape
+    // rather than allocate per iteration for a difference no program can see.
+    bool forNeedsPerIterationEnv(const ast::ForStmt& forStmt) const;
+    // 14.7.4.9 CreatePerIterationEnvironment itself: a record with the head
+    // scope's layout hanging off the head scope's own parent — a SIBLING of
+    // the record `source` is, never a child of it — with every head binding's
+    // current value copied in.
+    il::ValueId emitPerIterationEnv(il::ValueId source, uint32_t slotCount, il::ValueId parent,
+                                    il::Function& ilFn);
     bool lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn);
     bool lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn);
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);

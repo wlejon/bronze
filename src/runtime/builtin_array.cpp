@@ -36,7 +36,7 @@ namespace bronze::runtime {
 namespace {
 
 bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
 // True when the method may proceed. ECMA-262 defines every Array.prototype
@@ -84,7 +84,7 @@ bool sameValueZero(Value a, Value b) {
 
 Value newArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr);
 }
@@ -105,7 +105,7 @@ Value callBack(Rooted<Value>& fn, Rooted<Value>& thisArg, Rooted<Value>& elem, u
 }
 
 bool requireCallable(Value v, const char* method) {
-    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2) return true;
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) return true;
     rtThrowTypeError(std::string("Array.prototype.") + method + " needs a function argument");
     return false;
 }

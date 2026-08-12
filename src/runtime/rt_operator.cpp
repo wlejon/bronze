@@ -71,7 +71,7 @@ Value typeofString(TypeOfKind kind) {
 // The spec asks for a callable, and the only callable bronze builds is a
 // function object.
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 // A key as the string the language would use to look it up. `in` takes an
@@ -209,13 +209,13 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     // chain would have made the two differ.
     if (rtIsArrayConstructor(ctorRoot.get())) {
         return objRoot.get().isObject() &&
-               objRoot.get().asObject<HeapObjectHeader>()->flags == 1;
+               objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
     }
     // A primitive left operand has no prototype chain, so the answer is
     // false — not an error, which is what makes `x instanceof C` a safe
     // guard on an unknown value.
     if (!objRoot.get().isObject()) return false;
-    if (objRoot.get().asObject<HeapObjectHeader>()->flags != 0) {
+    if (objRoot.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
         return false;  // arrays, functions, typed arrays
     }
 
@@ -254,7 +254,7 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         ObjectHeader* symHolder = nullptr;
         if (symHdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
             symHolder = reinterpret_cast<ObjectHeader*>(symHdr);
-        } else if (symHdr->flags == 2) {
+        } else if (symHdr->flags == HeapKind::Function) {
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
             if (!props.isObject()) return false;
             symHolder = props.asObject<ObjectHeader>();
@@ -269,7 +269,7 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     uint32_t index = 0;
 
     HeapObjectHeader* hdr = objRoot.get().asObject<HeapObjectHeader>();
-    if (hdr->flags == 1) {  // Array
+    if (hdr->flags == HeapKind::Array) {
         auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (key == "length") return true;
         // An index within the length is a key; one past the end is not, which
@@ -288,7 +288,7 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) return key == "byteLength";
 
-    const bool isFunction = hdr->flags == 2;
+    const bool isFunction = hdr->flags == HeapKind::Function;
     if (isFunction && key == "prototype") return true;
 
     // A String exotic object's index properties are own properties that live

@@ -390,7 +390,7 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     }
 
     ArrayHeader* raw = ArrayHeader::create(rtHeap(), 4);
-    raw->header.flags = 1;
+    raw->header.flags = HeapKind::Array;
     raw->length = 0;
     Rooted<Value> out{Value::fromObject(raw)};
 

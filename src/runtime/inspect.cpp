@@ -148,7 +148,7 @@ private:
         // first line of its output — and the whole of bronze's, because there
         // is no stack to print. Tested by walking the prototype chain rather
         // than by a header flag, so an error instance stays a plain object
-        // (flags == 0) and stays on the inline property fast path.
+        // (flags == HeapKind::Plain) and stays on the inline property fast path.
         if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
 
         // A primitive wrapper prints as node prints one — `[String: 'ab']`,
@@ -173,8 +173,8 @@ private:
         switch (hdr->flags) {
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
                 return object(reinterpret_cast<ObjectHeader*>(hdr), depth);
-            case 1: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);
-            case 2: return "[Function]";
+            case HeapKind::Array: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);
+            case HeapKind::Function: return "[Function]";
             case TypedArrayHeader::kFlags:
                 return typedArray(reinterpret_cast<TypedArrayHeader*>(hdr), depth);
             case ArrayBufferHeader::kFlags:

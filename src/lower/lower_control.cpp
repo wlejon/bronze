@@ -83,6 +83,68 @@ void Lowerer::bindLoopBlockParams(const std::vector<LoopParam>& loopParams,
     }
 }
 
+il::ValueId Lowerer::addEnvBlockParam(il::BlockId block, il::Function& ilFn) {
+    il::ValueId pId = ilFn.valueCount++;
+    ilFn.blocks[block].params.push_back({pId, il::Type::Dynamic});
+    return pId;
+}
+
+bool Lowerer::forNeedsPerIterationEnv(const ast::ForStmt& forStmt) const {
+    // No record for the head scope means no head binding is env-backed, and a
+    // binding that lives in SSA is already one value per iteration — the back
+    // edge's block argument IS the copy.
+    if (scopeHasEnv_.empty() || !scopeHasEnv_.back()) return false;
+    // The record's slots are exactly `getScopeDeclarations(init)` filtered by
+    // what needs memory, and that query drops `var` — so every slot here is a
+    // LexicalDeclaration's, which is 14.7.4.9's `perIterationBindings` and the
+    // reason the whole record can be copied rather than a subset of it.
+    for (const auto& name : envScopes_.back().slotNames) {
+        if (ast::closureCapturesLoopBinding(forStmt, name)) return true;
+    }
+    return false;
+}
+
+il::ValueId Lowerer::emitPerIterationEnv(il::ValueId source, uint32_t slotCount,
+                                         il::ValueId parent, il::Function& ilFn) {
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction create;
+    create.op = il::Op::EnvCreate;
+    create.type = il::Type::Dynamic;
+    create.result = res;
+    create.operands = {parent};
+    create.immI32 = static_cast<int32_t>(slotCount);
+    emitInst(ilFn, create);
+
+    for (uint32_t slot = 0; slot < slotCount; ++slot) {
+        // The UNCHECKED read, though the slot holds a lexical binding and
+        // every read written in the source gets 9.1.1.1.6's check. Step 2.d.ii
+        // reads with a throw on uninitialized, and it cannot fire here: the
+        // head is one LexicalDeclaration evaluated to completion above the
+        // first copy, so every binding it declares is initialized — `let i;`
+        // to undefined — before any copy is made, and each later copy reads
+        // the copy before it.
+        il::ValueId cur = ilFn.valueCount++;
+        il::Instruction get;
+        get.op = il::Op::EnvGet;
+        get.type = il::Type::Dynamic;
+        get.result = cur;
+        get.operands = {source};
+        get.envDepth = 0;
+        get.envIndex = slot;
+        emitInst(ilFn, get);
+
+        il::Instruction set;
+        set.op = il::Op::EnvSet;
+        set.type = il::Type::Void;
+        set.result = il::kNoValue;
+        set.operands = {res, cur};
+        set.envDepth = 0;
+        set.envIndex = slot;
+        emitInst(ilFn, set);
+    }
+    return res;
+}
+
 // Env-backed variables are memory, not SSA, so they never become join
 // or loop-header parameters. This is the single funnel every join uses.
 std::vector<std::string> Lowerer::getActiveVarsInDeclOrder() const {
@@ -396,30 +458,6 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
 
 bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     const std::string label = takePendingLabel();
-    // A `for (let i =...)` header binding is copied per iteration (14.7.4.9),
-    // so a closure over it must capture a fresh binding each time round. That
-    // needs the environment threaded across the back edge, which the
-    // block-scope rule does not give for free — diagnose it rather than
-    // silently sharing one binding.
-    //
-    // The test is whether a closure UNDER THIS LOOP reaches this binding, not
-    // whether the enclosing function captures the name anywhere: `for (let i…)`
-    // beside an unrelated `arr.map((i) => …)` shares nothing but a spelling,
-    // and rejecting it rejects a large fraction of ordinary JavaScript. `var`
-    // is exempt outright — it declares ONE binding for the whole loop, so a
-    // closure over it is already correct.
-    for (const auto& initStmt : forStmt->init) {
-        const auto* initDecl = dynamic_cast<const ast::VarDecl*>(initStmt.get());
-        if (initDecl && !initDecl->isVar &&
-            ast::closureCapturesLoopBinding(*forStmt, initDecl->name)) {
-            diags_.error(forStmt->span,
-                         "unsupported construct: closure capturing the for-loop binding '" +
-                             initDecl->name +
-                             "' (per-iteration binding semantics); use a `let` declared "
-                             "inside the loop body");
-            return false;
-        }
-    }
     // The header's own scope, and it needs an environment record of its own
     // whenever one of its bindings is env-backed. Entered with `init` so that
     // `getScopeDeclarations` sees the header's declarations: without them the
@@ -429,6 +467,34 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     enterScope(forStmt->init, ilFn);
     for (const auto& initStmt : forStmt->init) {
         if (!lowerStmt(*initStmt, ilFn)) return false;
+    }
+
+    // ECMA-262 14.7.4.9: a `for` whose head is a LexicalDeclaration gets a
+    // FRESH copy of the record that head ran in before each iteration, with
+    // the previous copy's values carried in. So the loop's environment is not
+    // one record threaded round the back edge but a chain of siblings, and the
+    // record the head itself ran in is never any iteration's — which is the
+    // whole of why `for (let i = 0, f = () => i; …)` has `f` see 0 forever
+    // while the body's closures see 0, 1, 2.
+    //
+    // That makes the environment a loop-carried value like any other, so it
+    // becomes a block parameter of the header and of the update block, and
+    // `collectEdgeArgs`'s vector grows by one on every edge into them. The
+    // body needs no parameter: it is dominated by the header, so the header's
+    // is the one it reads and the one every closure in it captures.
+    const bool perIteration = forNeedsPerIterationEnv(*forStmt);
+    const uint32_t headSlots =
+        perIteration ? static_cast<uint32_t>(envScopes_.back().slotNames.size()) : 0;
+    il::ValueId headEnvParent = il::kNoValue;
+    il::ValueId entryEnv = il::kNoValue;
+    if (perIteration) {
+        // Hoisted above the loop so that both copy sites — the entry one here
+        // and the one in the update block — name a value that dominates them.
+        headEnvParent = savedEnvValues_.back() == il::kNoValue ? emitConstUndefined(ilFn)
+                                                               : savedEnvValues_.back();
+        // ForBodyEvaluation step 2: the first copy is made before the first
+        // test, so no iteration ever reads or writes the head's own record.
+        entryEnv = emitPerIterationEnv(currentEnvValue_, headSlots, headEnvParent, ilFn);
     }
 
     const auto loopParams = collectLoopParams(*forStmt, ast::getAssignedNames(*forStmt));
@@ -442,17 +508,24 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 
     // Header params, then the entry edge into them.
     auto headerParamMap = addLoopBlockParams(loopParams, bHeader, ilFn);
+    const il::ValueId headerEnvParam =
+        perIteration ? addEnvBlockParam(bHeader, ilFn) : il::kNoValue;
 
+    std::vector<il::ValueId> entryArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
+    if (perIteration) entryArgs.push_back(entryEnv);
     il::Instruction jmpEntry;
     jmpEntry.op = il::Op::Jump;
     jmpEntry.type = il::Type::Void;
     jmpEntry.result = il::kNoValue;
-    jmpEntry.target =
-        il::BlockTarget{.block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
+    jmpEntry.target = il::BlockTarget{.block = bHeader, .args = std::move(entryArgs)};
     emitInst(ilFn, jmpEntry);
 
     setCurrentBlock(bHeader);
     bindLoopBlockParams(loopParams, headerParamMap);
+    // The condition is 14.7.4.8 step 3.a, which runs in THIS iteration's
+    // environment — so a closure created in it captures the same record the
+    // body's do.
+    if (perIteration) currentEnvValue_ = headerEnvParam;
 
     auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
     std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
@@ -479,11 +552,15 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     // The update block joins the body fall-through and continue
     // edges, so it takes the loop variables as parameters.
     auto updateParamMap = addLoopBlockParams(loopParams, bUpdate, ilFn);
+    const il::ValueId updateEnvParam =
+        perIteration ? addEnvBlockParam(bUpdate, ilFn) : il::kNoValue;
 
     // Body
     setCurrentBlock(bBody);
-    jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bUpdate, bExit, loopVars,
-                                    cleanupStack_.size(), cleanupStack_.size()});
+    JumpTarget forTarget{JumpKind::Loop, label, bHeader, bUpdate, bExit, loopVars,
+                         cleanupStack_.size(), cleanupStack_.size()};
+    forTarget.perIterationEnv = headerEnvParam;
+    jumpStack_.push_back(forTarget);
     enterScope(forStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : forStmt->body) bodyStmts.push_back(s.get());
@@ -497,27 +574,42 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     if (!bodyOk) return false;
 
     if (!currentBlockIsTerminated(ilFn)) {
+        std::vector<il::ValueId> updateArgs = collectEdgeArgs(loopVars, bUpdate, ilFn);
+        if (perIteration) updateArgs.push_back(headerEnvParam);
         il::Instruction toUpdate;
         toUpdate.op = il::Op::Jump;
         toUpdate.type = il::Type::Void;
         toUpdate.result = il::kNoValue;
-        toUpdate.target = il::BlockTarget{
-            .block = bUpdate, .args = collectEdgeArgs(loopVars, bUpdate, ilFn)};
+        toUpdate.target = il::BlockTarget{.block = bUpdate, .args = std::move(updateArgs)};
         emitInst(ilFn, toUpdate);
     }
 
     // Update
     setCurrentBlock(bUpdate);
     bindLoopBlockParams(loopParams, updateParamMap);
+    il::ValueId nextEnv = il::kNoValue;
+    if (perIteration) {
+        // Step 3.e before step 3.f: the copy is made and only THEN does the
+        // increment run, so `i++` writes the next iteration's binding rather
+        // than the one the body just closed over. Getting these two the other
+        // way round is not a reordering — it is the difference between an
+        // arrow seeing 0 and seeing 1.
+        nextEnv = emitPerIterationEnv(updateEnvParam, headSlots, headEnvParent, ilFn);
+        currentEnvValue_ = nextEnv;
+    }
     if (forStmt->update) {
         if (!lowerExpr(*forStmt->update, ilFn)) return false;
     }
+    // The copy by name rather than `currentEnvValue_`: what the back edge owes
+    // the header is the record this iteration made, whatever the update
+    // expression did to the innermost one on its way past.
+    std::vector<il::ValueId> backArgs = collectEdgeArgs(loopVars, bHeader, ilFn);
+    if (perIteration) backArgs.push_back(nextEnv);
     il::Instruction backJmp;
     backJmp.op = il::Op::Jump;
     backJmp.type = il::Type::Void;
     backJmp.result = il::kNoValue;
-    backJmp.target = il::BlockTarget{
-        .block = bHeader, .args = collectEdgeArgs(loopVars, bHeader, ilFn)};
+    backJmp.target = il::BlockTarget{.block = bHeader, .args = std::move(backArgs)};
     emitInst(ilFn, backJmp);
 
     setCurrentBlock(bExit);

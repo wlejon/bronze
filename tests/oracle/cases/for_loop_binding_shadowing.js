@@ -3,9 +3,9 @@
 // else (ECMA-262 14.7.4.9 CreatePerIterationEnvironment).
 //
 // A `let` loop binding is copied per iteration, so a closure that reaches it
-// must capture that iteration's copy; bronze does not thread an environment
-// across the loop's back edge, so it diagnoses that case by name
-// (pinned as `blocked/for_loop_per_iteration_binding`). The test for WHEN it
+// must capture that iteration's copy (pinned as
+// `for_loop_per_iteration_binding`) — and a loop no closure reaches must not
+// pay for the copies, which is what these pin. The test for WHEN it
 // matters used to be "does any closure anywhere in this function mention this
 // name", which is not the same question: a callback with a parameter called
 // `i` never touches the loop's `i` at all. `for (let i = 0, il = a.length; i <
@@ -22,8 +22,9 @@
 //    two closures down where the inner one's parameter shadows for it. Only
 //    declarations that cover the closure's WHOLE body count: a `var` written
 //    inside a nested block is function-scoped by 8.6.2 but bronze does not
-//    hoist it out of that block, so such a closure stays diagnosed rather
-//    than compiled against a shadow that would not exist.
+//    hoist it out of that block, so such a closure is treated as reaching the
+//    loop's binding rather than a shadow that would not exist — the copies get
+//    built, and the answer stays right either way.
 // 4. A closure OUTSIDE the loop over an enclosing binding the loop's own
 //    declaration shadows. Its `v` is the outer one, and the loop must not
 //    reuse the outer binding's storage for the inner declaration: the answer

@@ -60,7 +60,7 @@ ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
     // share a transition tree with every other three-property object rather
     // than minting a hidden class per match.
     ObjectHeader* props = ObjectHeader::create(heap, arena, runtime::rtPlainObjectShape());
-    props->header.flags = 0;
+    props->header.flags = HeapKind::Plain;
     self.get().asObject<ArrayHeader>()->properties = Value::fromObject(props);
     return props;
 }

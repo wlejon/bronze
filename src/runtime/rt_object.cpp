@@ -86,7 +86,7 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     if (fn->prototype.isObject() && fn->instance_shape) return;
 
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
-    proto->header.flags = 0;
+    proto->header.flags = HeapKind::Plain;
 
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
     fn->prototype = Value::fromObject(proto);
@@ -98,7 +98,7 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
     if (fn->properties.isObject()) return;
     ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
-    props->header.flags = 0;
+    props->header.flags = HeapKind::Plain;
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it
     fn->properties = Value::fromObject(props);
 }
@@ -183,7 +183,7 @@ extern "C" {
 
 uint64_t bronze_create_object() {
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
-    obj->header.flags = 0;
+    obj->header.flags = HeapKind::Plain;
     return Value::fromObject(obj).rawBits();
 }
 
@@ -200,7 +200,7 @@ uint64_t bronze_create_generator_object() {
 uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < 4) ? 4 : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = length;
     return Value::fromObject(arr).rawBits();
 }
@@ -212,7 +212,7 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint64_t en
     // allocation above can collect, and a by-value copy taken before it would
     // point into dead from-space.
     fn->env_record = env.get();
-    fn->header.flags = 2;
+    fn->header.flags = HeapKind::Function;
     return Value::fromObject(fn).rawBits();
 }
 
@@ -227,10 +227,11 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint64_t en
 void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     Value derivedVal(derivedBits);
     Value baseVal(baseBits);
-    if (!derivedVal.isObject() || derivedVal.asObject<HeapObjectHeader>()->flags != 2) {
+    if (!derivedVal.isObject() ||
+        derivedVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal("internal: class extends with a non-function derived class");
     }
-    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != 2) {
+    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal("a class can only extend another class or a constructor function");
     }
     // A native intrinsic cannot be a base, and saying so is the point. The
@@ -253,12 +254,12 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
 
     Rooted<Value> baseProto{base.get().asObject<FunctionHeader>()->prototype};
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProto.get()));
-    proto->header.flags = 0;
+    proto->header.flags = HeapKind::Plain;
     Rooted<Value> protoRoot{Value::fromObject(proto)};
 
     Rooted<Value> baseProps{base.get().asObject<FunctionHeader>()->properties};
     ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProps.get()));
-    props->header.flags = 0;
+    props->header.flags = HeapKind::Plain;
 
     FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
     fn->prototype = protoRoot.get();
@@ -272,7 +273,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
 
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
     Value fnVal(fnBits);
-    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != 2) {
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
     }
@@ -294,7 +295,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
 
     FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();
     ObjectHeader* instance = ObjectHeader::create(rtHeap(), rtArena(), fn->instance_shape);
-    instance->header.flags = 0;
+    instance->header.flags = HeapKind::Plain;
 
     Rooted<Value> self{Value::fromObject(instance)};
     // This helper is the one place in the runtime that ALLOCATES before it
@@ -324,11 +325,11 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // An array's own keys are its indices, already in ascending order — the
     // ones it actually HAS: a hole left by `delete a[i]` is not an own
  // property, so the result is shorter than `length`.
-    if (hdr->flags == 1) {
+    if (hdr->flags == HeapKind::Array) {
         Rooted<Value> src{objVal};
         uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
         Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
-        out.get().asObject<ArrayHeader>()->header.flags = 1;
+        out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
         uint32_t at = 0;
         for (uint32_t i = 0; i < length; ++i) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
@@ -352,7 +353,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (hdr->flags != 0) {
+    if (hdr->flags != HeapKind::Plain) {
         fatal("Object.keys is only supported on plain objects and arrays");
     }
 
@@ -366,7 +367,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
 
     const uint32_t total = static_cast<uint32_t>(ordered.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-    out.get().asObject<ArrayHeader>()->header.flags = 1;
+    out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
 
     uint32_t at = 0;
     for (StringHeader* name : ordered) {
@@ -448,7 +449,8 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,
                              const uint64_t* argvBits) {
     Value calleeVal(calleeBits);
-    if (!calleeVal.isObject() || calleeVal.asObject<HeapObjectHeader>()->flags != 2) {
+    if (!calleeVal.isObject() ||
+        calleeVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
             .rawBits();
     }

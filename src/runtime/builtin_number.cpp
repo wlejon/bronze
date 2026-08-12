@@ -226,7 +226,7 @@ Value rtNumberNamespace() {
     if (g_numberNamespace.isObject()) return g_numberNamespace;
     Rooted<Value> obj{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    obj.get().asObject<ObjectHeader>()->header.flags = 0;
+    obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kNumberFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};

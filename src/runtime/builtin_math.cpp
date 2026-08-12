@@ -281,7 +281,7 @@ Value rtMathObject() {
     // walk the same transition tree and miss each other's caches forever.
     Rooted<Value> obj{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    obj.get().asObject<ObjectHeader>()->header.flags = 0;
+    obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const MathFn& fn : kMathFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};

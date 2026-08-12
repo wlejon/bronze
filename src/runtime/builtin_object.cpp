@@ -43,7 +43,7 @@ bool isPlainObject(Value v) {
 }
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 // ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
@@ -573,7 +573,7 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     HeapObjectHeader* hdr = self.get().asObject<HeapObjectHeader>();
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         holder = reinterpret_cast<ObjectHeader*>(hdr);
-    } else if (hdr->flags == 2) {
+    } else if (hdr->flags == HeapKind::Function) {
         Value props = self.get().asObject<FunctionHeader>()->properties;
         if (props.isObject()) holder = props.asObject<ObjectHeader>();
     }
@@ -871,7 +871,7 @@ void ensureObjectIntrinsics() {
     // `Object.keys` must not share a transition tree with `{}` literals.
     Rooted<Value> ns{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    ns.get().asObject<ObjectHeader>()->header.flags = 0;
+    ns.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const NamespaceFn& fn : kObjectFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};

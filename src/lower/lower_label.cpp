@@ -68,6 +68,14 @@ const Lowerer::JumpTarget* Lowerer::findJumpTarget(const std::string& label, boo
 void Lowerer::emitJumpToTarget(const JumpTarget& target, il::BlockId block,
                                const std::vector<il::ValueId>& extraArgs, il::Function& ilFn) {
     auto args = collectEdgeArgs(target.vars, block, ilFn);
+    // A `continue` is an edge into the update block like the body's
+    // fall-through, so it hands over the same list — and for a `for` whose
+    // head binding is copied per iteration (14.7.4.9) that list ends with the
+    // environment record. The `break` edge into the exit block does not: the
+    // loop's scope is over there.
+    if (block == target.updateBlock && target.perIterationEnv != il::kNoValue) {
+        args.push_back(target.perIterationEnv);
+    }
     for (il::ValueId extra : extraArgs) args.push_back(extra);
     il::Instruction jmpInst;
     jmpInst.op = il::Op::Jump;

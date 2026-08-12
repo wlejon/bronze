@@ -43,12 +43,12 @@ namespace bronze::runtime {
 namespace {
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 Value newEmptyArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr);
 }
@@ -78,7 +78,7 @@ Value arrayOfLength(uint32_t n) {
         return Value::fromUndefined();
     }
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), n > 0 ? n : 4);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = n;
     // Nothing between `create` and here allocates, so the raw pointer is live.
     Value* slots = arr->elementsData();
@@ -115,7 +115,9 @@ uint64_t arrayConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 uint64_t arrayIsArray(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const Value v = args[0];
-    return Value::fromBool(v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1).rawBits();
+    return Value::fromBool(v.isObject() &&
+                           v.asObject<HeapObjectHeader>()->flags == HeapKind::Array)
+        .rawBits();
 }
 
 uint64_t arrayOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
@@ -138,7 +140,8 @@ bool hasIterator(Rooted<Value>& src) {
     if (src.get().isString()) return true;
     if (!src.get().isObject()) return false;
     const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
-    if (flags == 1 || flags == TypedArrayHeader::kFlags || flags == MapHeader::kMapFlags ||
+    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags ||
+        flags == MapHeader::kMapFlags ||
         flags == MapHeader::kSetFlags) {
         return true;
     }
@@ -377,7 +380,9 @@ Value rtStringConstructorObject() { return ctorObject(kCtors[1]); }
 Value rtBooleanConstructorObject() { return ctorObject(kCtors[2]); }
 
 const char* rtPrimitiveWrapperConstructorName(Value fn) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return nullptr;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code == code && entry.prototype) return entry.name;
@@ -386,7 +391,9 @@ const char* rtPrimitiveWrapperConstructorName(Value fn) {
 }
 
 const char* rtIntrinsicConstructorName(Value fn) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return nullptr;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code == code) return entry.name;
@@ -395,12 +402,14 @@ const char* rtIntrinsicConstructorName(Value fn) {
 }
 
 bool rtIsArrayConstructor(Value fn) {
-    return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == 2 &&
+    return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
            fn.asObject<FunctionHeader>()->code == kCtors[0].code;
 }
 
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return false;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return false;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;

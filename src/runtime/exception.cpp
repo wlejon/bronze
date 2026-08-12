@@ -87,7 +87,7 @@ ErrorClass& classFor(ErrorKind kind) {
 Value newErrorInstance(ErrorClass& cls) {
     ObjectHeader* instance = ObjectHeader::create(
         rtHeap(), rtArena(), cls.constructor.asObject<FunctionHeader>()->instance_shape);
-    instance->header.flags = 0;
+    instance->header.flags = HeapKind::Plain;
     return Value::fromObject(instance);
 }
 
@@ -135,7 +135,8 @@ void ensureExceptionRoots() {
 // object, so the instance is made here rather than borrowed.
 uint64_t errorCtorImpl(ErrorKind kind, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> self{Value(thisBits)};
-    if (!self.get().isObject() || self.get().asObject<HeapObjectHeader>()->flags != 0) {
+    if (!self.get().isObject() ||
+        self.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
         self.set(newErrorInstance(classFor(kind)));
     }
     if (argc == 0 || Value(argv[0]).isUndefined()) return self.get().rawBits();
@@ -177,7 +178,7 @@ void ensureErrorClasses() {
         Rooted<Value> parent{parentProto};
         ObjectHeader* protoObj =
             ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(parent.get()));
-        protoObj->header.flags = 0;
+        protoObj->header.flags = HeapKind::Plain;
         Rooted<Value> proto{Value::fromObject(protoObj)};
 
         // 20.5.3.2 and 20.5.3.3: both are data properties ON THE PROTOTYPE,
@@ -300,7 +301,7 @@ Value rtErrorConstructor(const std::string& name) {
 
 bool rtIsErrorInstance(Value v) {
     if (!g_errorClasses[0].prototype.isObject()) return false;
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != 0) return false;
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
     ObjectHeader* obj = v.asObject<ObjectHeader>();
     const uint64_t errorProtoBits = g_errorClasses[0].prototype.rawBits();
     for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
@@ -313,7 +314,7 @@ bool rtIsErrorInstance(Value v) {
 
 bool rtErrorText(Value v, std::string& out) {
     if (g_nameKey == nullptr || g_messageKey == nullptr) return false;
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != 0) return false;
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
     ObjectHeader* obj = v.asObject<ObjectHeader>();
     Value nameValue;
     Value messageValue;

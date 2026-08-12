@@ -33,7 +33,9 @@ namespace bronze::runtime {
 namespace {
 
 bool requireFunctionReceiver(Value self, const char* method) {
-    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == 2) return true;
+    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        return true;
+    }
     rtThrowTypeError(std::string("Function.prototype.") + method +
                      " called on a value that is not a function");
     return false;
@@ -77,7 +79,8 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
         RootedBlock empty(0);
         return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), 0, empty.data());
     }
-    if (!list.get().isObject() || list.get().asObject<HeapObjectHeader>()->flags != 1) {
+    if (!list.get().isObject() ||
+        list.get().asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
         fatal("unsupported: Function.prototype.apply with an argument list that is not an array "
               "(bronze has no array-like protocol; pass a real array)");
     }

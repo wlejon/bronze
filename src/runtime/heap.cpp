@@ -198,6 +198,10 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
     void* mem = allocate_raw(total_bytes);
     auto* header = static_cast<HeapObjectHeader*>(mem);
     header->tag = static_cast<uint16_t>(tag);
+    // A raw zero and deliberately not `HeapKind::Plain`: this word is a heap
+    // kind only for a `Tag::Object`, and a String spends it on its encoding
+    // bits. The caller that knows which tag it asked for is the one that gets
+    // to name what goes in here.
     header->flags = 0;
     header->size = static_cast<uint32_t>((total_bytes + 7) & ~static_cast<size_t>(7));
     return header;

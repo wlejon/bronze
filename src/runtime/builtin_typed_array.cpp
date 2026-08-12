@@ -36,7 +36,7 @@ bool isBuffer(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == ArrayBufferHeader::kFlags;
 }
 bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
 // 7.1.22 ToIndex, and it is deliberately NOT "reject anything that is not an
@@ -203,7 +203,7 @@ Value constructTypedArray(ElementKind kind, uint32_t argc, const uint64_t* argv)
     if (arg.get().isObject()) {
         const uint16_t flags = arg.get().asObject<HeapObjectHeader>()->flags;
         if (flags == TypedArrayHeader::kFlags) return fromTypedArray(kind, arg);
-        if (flags == 2) {
+        if (flags == HeapKind::Function) {
             return rtThrowTypeError(std::string(elementKindInfo(kind).name) +
                                     " constructor: a function is not iterable");
         }
@@ -286,7 +286,9 @@ Value rtTypedArrayConstructor(const std::string& name) {
 }
 
 const char* rtTypedArrayConstructorName(Value fn) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return nullptr;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     if (code == arrayBufferCtor) return "ArrayBuffer";
     for (const CtorEntry& entry : kCtors) {
@@ -303,7 +305,9 @@ Value rtTypedArrayConstructorFor(ElementKind kind) {
 }
 
 bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return false;
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return false;
+    }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;

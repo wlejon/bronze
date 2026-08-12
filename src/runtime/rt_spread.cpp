@@ -34,7 +34,7 @@ constexpr uint32_t kPatternObject = 1;
 
 Value newArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr);
 }
@@ -50,7 +50,9 @@ bool isPlainObject(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN;
 }
 
-bool isArray(Value v) { return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1; }
+bool isArray(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
+}
 
 // Every element of `src`, appended to `out`, through the iterator protocol — so
 // `[...someSet]` and `f(...someMap)` walk the same way `for-of` does, which is

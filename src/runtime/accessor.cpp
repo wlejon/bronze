@@ -20,7 +20,7 @@ namespace {
 // not an accessor, which is a runtime bug and not a program error.
 FunctionHeader* asAccessorFunction(Value v, const char* which) {
     if (v.isUndefined()) return nullptr;
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != 2) {
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal((std::string("internal: a property's ") + which +
                " slot holds something that is not a function")
                   .c_str());

@@ -62,7 +62,7 @@ bool isSurrogatePair(uint16_t high, uint16_t low) {
 }
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 // A named property of a PLAIN object, by its arena-interned key. Every object

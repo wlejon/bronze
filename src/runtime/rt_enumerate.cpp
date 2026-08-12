@@ -54,7 +54,7 @@ bool indexedLength(Value v, uint32_t& outLength) {
     }
     if (!v.isObject()) return false;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
-    if (hdr->flags == 1) {
+    if (hdr->flags == HeapKind::Array) {
         outLength = reinterpret_cast<ArrayHeader*>(hdr)->length;
         return true;
     }
@@ -75,7 +75,7 @@ ObjectHeader* namedPropertyHolder(Value v) {
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         return reinterpret_cast<ObjectHeader*>(hdr);
     }
-    if (hdr->flags == 2) {
+    if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
@@ -87,7 +87,7 @@ ObjectHeader* namedPropertyHolder(Value v) {
 // throwing, and a program that writes `for (const k in maybe)` depends on it.
 uint64_t emptyKeyArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = 1;
+    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr).rawBits();
 }
@@ -117,10 +117,11 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         // --gc-stress reported every string as an array and every array as
         // something else on the very first case that had a hole in it.
         const bool skipHoles =
-            src.get().isObject() && src.get().asObject<HeapObjectHeader>()->flags == 1;
+            src.get().isObject() &&
+            src.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         Rooted<Value> out{Value::fromObject(
             ArrayHeader::create(rtHeap(), indexCount ? indexCount : 4))};
-        out.get().asObject<ArrayHeader>()->header.flags = 1;
+        out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
         uint32_t at = 0;
         for (uint32_t i = 0; i < indexCount; ++i) {
             if (skipHoles && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
@@ -159,7 +160,7 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
 
     const auto total = static_cast<uint32_t>(keys.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-    out.get().asObject<ArrayHeader>()->header.flags = 1;
+    out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
     uint32_t at = 0;
     for (StringHeader* key : keys) {
         Rooted<Value> copy{rtCopyKeyToHeap(key)};

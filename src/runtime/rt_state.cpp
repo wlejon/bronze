@@ -185,7 +185,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
         if (entry.first == code) return entry.second.rawBits();
     }
     FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
-    fn->header.flags = 2;
+    fn->header.flags = HeapKind::Function;
     g_functionSingletons.emplace_back(code, Value::fromObject(fn));
     return g_functionSingletons.back().second.rawBits();
 }

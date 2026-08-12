@@ -29,7 +29,7 @@ namespace bronze::runtime {
 namespace {
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
 Value stringFromUnits16(const json::Units& units) {
@@ -82,7 +82,8 @@ Value internalize(Rooted<Value>& holder, Rooted<Value>& key, Rooted<Value>& revi
 
 void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
     const bool isArray =
-        value.get().isObject() && value.get().asObject<HeapObjectHeader>()->flags == 1;
+        value.get().isObject() &&
+        value.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
     if (isArray) {
         const uint32_t length = value.get().asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < length; ++i) {
@@ -118,7 +119,7 @@ Value internalize(Rooted<Value>& holder, Rooted<Value>& key, Rooted<Value>& revi
     if (rtExceptionPending()) return Value::fromUndefined();
     if (value.get().isObject()) {
         const uint16_t flags = value.get().asObject<HeapObjectHeader>()->flags;
-        if (flags == 1 || flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        if (flags == HeapKind::Array || flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
             internalizeChildren(value, reviver);
             if (rtExceptionPending()) return Value::fromUndefined();
         }
@@ -187,7 +188,7 @@ Value rtJsonNamespace() {
     if (g_jsonNamespace.isObject()) return g_jsonNamespace;
     Rooted<Value> obj{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    obj.get().asObject<ObjectHeader>()->header.flags = 0;
+    obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kJsonFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
