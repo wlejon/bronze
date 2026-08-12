@@ -363,6 +363,14 @@ struct FunctionExpr final : Expr {
     // rather than one the caller supplies. An expression body is stored as a
     // single synthesized `return`.
     bool isArrow = false;
+    // Strict mode code (ECMA-262 11.2.2). A flag on the FUNCTION and on the
+    // module, because that is the granularity the language defines: strictness
+    // is a property of a Script or a function body, fixed by the Directive
+    // Prologue at PARSE time, inherited by everything written inside, and never
+    // a property of a call. A field here is therefore the whole of it — the
+    // parser writes it once and lowering reads it, and no pass in between has
+    // to reconstruct which enclosing body a node came from.
+    bool strict = false;
     void accept(Visitor& v) const override;
 };
 
@@ -557,6 +565,7 @@ struct FunctionDecl final : Stmt {
     std::vector<Param> params;
     std::string returnType;  // raw annotation text
     std::vector<StmtPtr> body;
+    bool strict = false;  // see FunctionExpr::strict
     void accept(Visitor& v) const override;
 };
 
@@ -619,6 +628,11 @@ struct ExportNamesDecl final : Stmt {
 struct Module final : Node {
     std::string name;
     std::vector<StmtPtr> body;
+    // The Script's own strictness (see FunctionExpr::strict): its Directive
+    // Prologue said `"use strict"`, or it is a Module in ECMA-262's sense —
+    // one that declares an `import` or an `export` — which 16.2.1.6 makes
+    // strict whether or not anything said so.
+    bool strict = false;
     void accept(Visitor& v) const override;
 };
 

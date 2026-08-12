@@ -197,7 +197,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits());
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/false);
         }
         return;
     }

@@ -28,6 +28,7 @@ bool Parser::parsePatternTarget(PatternElement& elem) {
     }
     const Token* name = expect(TokenKind::Identifier, "a binding name in a pattern");
     if (!name) return false;
+    if (!checkStrictBindingName(name->text, name->span, "binding")) return false;
     elem.name = std::string(name->text);
     return true;
 }

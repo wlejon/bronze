@@ -361,7 +361,7 @@ Value rtJsonStringify(Value value, Value replacer, Value space) {
     // that reads `this[""]` must see the value.
     Rooted<Value> wrapper{Value(bronze_create_object())};
     Rooted<Value> emptyKey{rtMakeString("")};
-    bronze_elem_set(wrapper.get().rawBits(), emptyKey.get().rawBits(), valueRoot.get().rawBits());
+    bronze_elem_set(wrapper.get().rawBits(), emptyKey.get().rawBits(), valueRoot.get().rawBits(), /*strict=*/false);
 
     Units out;
     if (!serializeProperty(state, Units{}, wrapper, out)) {

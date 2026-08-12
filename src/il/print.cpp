@@ -325,13 +325,15 @@ std::string print(const Module& module) {
                     case Op::PropDelete:
                         out += "prop.delete %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
-                               ", " + std::to_string(inst.keyIndex);
+                               ", " + std::to_string(inst.keyIndex) + ", " +
+                               std::to_string(inst.immI32);
                         break;
                     case Op::PropSet:
                         out += "prop.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
-                               ", " + std::to_string(inst.icIndex);
+                               ", " + std::to_string(inst.icIndex) + ", " +
+                               std::to_string(inst.immI32);
                         break;
                     case Op::DynamicCall: {
                         out += "call.dynamic";
@@ -372,7 +374,8 @@ std::string print(const Module& module) {
                     case Op::ElemSet:
                         out += "elem.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
-                               ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
+                               ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", " + std::to_string(inst.immI32);
                         break;
                     case Op::CreateObject:
                         out += "create.object";

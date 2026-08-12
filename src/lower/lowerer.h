@@ -203,6 +203,19 @@ private:
     // Lowering an arrow body, where `this` resolves through the environment
     // rather than to a parameter.
     bool currentFunctionIsArrow_ = false;
+    // Whether the code being lowered is STRICT (ECMA-262 11.2.2). Read off the
+    // AST node the parser wrote it onto — a module or a function — and saved
+    // and restored across every nested body: strictness only ever rises on the
+    // way in, but a sloppy function lowered after a strict sibling must not
+    // inherit its neighbour's mode.
+    //
+    // The one thing it selects here is `strictFlag()`, which travels on every
+    // write instruction. It has to be per-INSTRUCTION and not per-IL-function
+    // because a single IL function can be neither: `main` holds the module's
+    // top level, and a strict function's body and a sloppy one's are separate
+    // IL functions but reach the same helper.
+    bool strictCode_ = false;
+    int32_t strictFlag() const { return strictCode_ ? 1 : 0; }
     std::unordered_set<std::string> capturedNames_;
     // Every binding of this function that may not live in SSA: `capturedNames_`
     // (a closure can read it after the declaring scope's SSA values are gone)

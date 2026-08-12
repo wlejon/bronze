@@ -125,9 +125,16 @@ enum class Op : uint8_t {
     // cache: the receiver and the holder are different objects, and an entry
     // describes one shape.
     SuperGet,   // a = super.get proto, <key_const_index>, thisArg
-    PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
+    // `immI32` is 1 when the reference this write goes through is STRICT
+    // (ECMA-262 11.2.2 decides which code is; 13.15.2 PutValue step 6.d is what
+    // reads it). It is the whole difference between a refused Set — a
+    // getter-only property, a non-writable one, a non-extensible receiver —
+    // raising a TypeError and being discarded, so it is carried per
+    // INSTRUCTION: a module holds strict and sloppy bodies at once, and both
+    // reach the same helper.
+    PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>, <strict>
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
-    ElemSet,    // elem.set obj, idx, val       (all dynamic)
+    ElemSet,    // elem.set obj, idx, val, <strict>   (all dynamic)
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
@@ -164,8 +171,11 @@ enum class Op : uint8_t {
     // `delete o.k` and `delete o[i]`. A reference operation, not a read:
     // the operand's property is never loaded, and the result is the boolean
     // ECMA-262 13.5.1 defines rather than the property's value.
-    PropDelete,  // a: bool = prop.delete obj, <key_const_index>
-    ElemDelete,  // a: bool = elem.delete obj, idx
+    // `immI32` is the strict flag, on the same rule prop.set carries one:
+    // 13.5.1.2 step 5.b turns a delete that answers false into a TypeError,
+    // but only for strict code.
+    PropDelete,  // a: bool = prop.delete obj, <key_const_index>, <strict>
+    ElemDelete,  // a: bool = elem.delete obj, idx, <strict>
     GlobalGet,  // a = global.get <key_const_index>
     // A name lowering could not resolve to anything, EVALUATED. Raises
     // ReferenceError at run time rather than refusing the program at compile

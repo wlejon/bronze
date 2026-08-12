@@ -222,6 +222,13 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     const Span bodySpan = peek().span;
     if (!expect(TokenKind::LBrace, "'{' to open a generator body")) return false;
 
+    // A generator body is a function body, so it has a Directive Prologue of
+    // its own (ECMA-262 11.2.2). The guard restores the enclosing mode when the
+    // body ends, exactly as `parseFunctionBody` does for every other form.
+    StrictScopeGuard strictGuard(*this);
+    if (prologueSelectsStrict()) strict_ = true;
+    fn.strict = strict_;
+
     const size_t ordinal = generatorOrdinal_++;
     const std::string qualifier =
         fileId_ == 0 ? std::to_string(ordinal) : std::to_string(fileId_) + "." + std::to_string(ordinal);
@@ -303,7 +310,9 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
             // line; the useful one is the yield.
             const Span declSpan = peek().span;
             yieldRefusal_ = kValueUsedRefusal;
-            const bool parsed = parseStatement(pending);
+            atBodyTopLevel_ = true;  // a generator body is a function body (14.1)
+            atBodyTopLevel_ = true;  // a generator body is a function body (14.1)
+        const bool parsed = parseStatement(pending);
             yieldRefusal_ = nullptr;
             if (parsed) {
                 diags_.error(declSpan,
@@ -388,6 +397,7 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     nextFn->span = bodySpan;
     nextFn->name = "gen." + qualifier + ".next";
     nextFn->isArrow = true;
+    nextFn->strict = fn.strict;  // the desugaring is the generator body's code
     nextFn->body = std::move(nextBody);
 
     // 27.5.1.2: a generator object is its own iterator — and it is so by
@@ -413,7 +423,10 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     fn.body.push_back(std::move(stepDecl));
     fn.body.push_back(returnStmt(std::move(iterObj), bodySpan));
     fn.span.end = peek().span.begin;
-    return true;
+    // After the body, because a generator's own `"use strict"` is what makes
+    // its parameter list subject to the rule — the same ordering every other
+    // function form takes.
+    return checkStrictParams(fn.params, fn.strict);
 }
 
 }  // namespace bronze

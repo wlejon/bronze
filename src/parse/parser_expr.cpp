@@ -140,6 +140,7 @@ ExprPtr Parser::parseAssign() {
         error("an optional chain is not a valid assignment target");
         return nullptr;
     }
+    if (!checkStrictAssignmentTarget(*lhs)) return nullptr;
     // `[a, b] = pair` and `({ x } = o)`. Nothing before the `=` distinguishes
     // the pattern from the literal that covers it, which is why ECMA-262
     // 13.15.5 refines it exactly here — at the token that reveals which one
@@ -265,6 +266,19 @@ ExprPtr Parser::parseUnaryPrefix() {
         const Token& kw = advance();
         auto operand = parseUnaryPrefix();
         if (!operand) return nullptr;
+        // 13.5.1.1: in strict code the operand may not be an identifier
+        // reference — there is no binding a `delete` could remove, and the
+        // sloppy answer (`false`, or `true` for a var-less global) is exactly
+        // the kind of quiet wrong answer the early error exists to prevent.
+        // Parentheses do not help: the rule is stated over the expression the
+        // parentheses CONTAIN, so `delete (x)` is the same error.
+        if (strict_ && dynamic_cast<const Ident*>(operand.get())) {
+            diags_.error({kw.span.begin, operand->span.end},
+                         "strict mode: 'delete' of the unqualified identifier '" +
+                             static_cast<const Ident*>(operand.get())->name +
+                             "' is not allowed (ECMA-262 13.5.1.1)");
+            return nullptr;
+        }
         auto del = std::make_unique<Unary>();
         del->span = {kw.span.begin, operand->span.end};
         del->op = UnaryOp::Delete;
@@ -319,6 +333,9 @@ ExprPtr Parser::parseUnaryPrefix() {
     if (match(TokenKind::PlusPlus)) {
         auto sub = parseUnaryPrefix();
         if (!sub) return nullptr;
+        // An update operator writes its operand, so 13.15.1's rule about
+        // `eval` and `arguments` as targets covers it too (13.4.2.1).
+        if (!checkStrictAssignmentTarget(*sub)) return nullptr;
         auto u = std::make_unique<Unary>();
         u->span = {t.span.begin, sub->span.end};
         u->op = UnaryOp::PreInc;
@@ -329,6 +346,7 @@ ExprPtr Parser::parseUnaryPrefix() {
     if (match(TokenKind::MinusMinus)) {
         auto sub = parseUnaryPrefix();
         if (!sub) return nullptr;
+        if (!checkStrictAssignmentTarget(*sub)) return nullptr;
         auto u = std::make_unique<Unary>();
         u->span = {t.span.begin, sub->span.end};
         u->op = UnaryOp::PreDec;
@@ -487,6 +505,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // would be a silent wrong answer.
             break;
         } else if (match(TokenKind::PlusPlus)) {
+            if (!checkStrictAssignmentTarget(*expr)) return nullptr;
             auto u = std::make_unique<Unary>();
             u->span = {expr->span.begin, peek().span.begin};
             u->op = UnaryOp::PostInc;
@@ -495,6 +514,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
         } else if (check(TokenKind::MinusMinus) && atLineBreak()) {
             break;
         } else if (match(TokenKind::MinusMinus)) {
+            if (!checkStrictAssignmentTarget(*expr)) return nullptr;
             auto u = std::make_unique<Unary>();
             u->span = {expr->span.begin, peek().span.begin};
             u->op = UnaryOp::PostDec;
@@ -667,6 +687,7 @@ ExprPtr Parser::parsePrimary() {
             // — so this is always a refusal, and which one it is depends on
             // where the statement above put us.
             if (inGeneratorBody_ && t.text == "yield") return refuseYield();
+            if (!checkStrictIdentifierReference(t.text, t.span)) return nullptr;
             advance();
             auto ident = std::make_unique<Ident>();
             ident->span = t.span;

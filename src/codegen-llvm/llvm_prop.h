@@ -32,6 +32,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 // shape and grow the out-of-line overflow block, so its interesting half is
 // a miss, and a miss is a call whichever way the check is placed.
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::GlobalVariable* icTable,
-                 llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex);
+                 llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex,
+                 bool strict);
 
 }  // namespace bronze::codegen_llvm

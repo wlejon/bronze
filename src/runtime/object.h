@@ -13,6 +13,17 @@
 
 namespace bronze {
 
+// Why an ordinary [[Set]] answered false (ECMA-262 10.1.9.2). Every one of
+// them is a silent no-op in sloppy code and a TypeError in strict code, and
+// they are the ONLY three ways an assignment can fail without throwing on its
+// own — so this enum is also the list of what `strict` changes about a write.
+enum class SetRefusal {
+    None,
+    NoSetter,       // an accessor property with no `set` half (step 5.c)
+    NotWritable,    // a non-writable data property (step 3 -> 10.1.6.3)
+    NotExtensible,  // a new property on a non-extensible receiver (10.1.6.3 2.b)
+};
+
 // The number of property ADDS that have happened anywhere in the program. A
 // depth > 0 inline-cache entry records it and re-checks it, because the
 // receiver's shape — the only thing the entry compares — cannot see a property
@@ -186,10 +197,17 @@ struct ObjectHeader {
     // (10.1.6): a definition never runs an inherited setter. A class method
     // and an object spread are definitions; `o.k = v` is not, and the
     // difference is only observable now that a prototype can carry one.
+    //
+    // `refused` reports the three ways ECMA-262 10.1.9.2 can answer FALSE. The
+    // answer is discarded by a sloppy assignment and turned into a TypeError by
+    // a strict one (13.15.2 PutValue step 6.d), so the reason has to survive
+    // the call — and it is an enum rather than a bool because the three want
+    // three different messages, and "the write did not happen" with no reason
+    // named is the diagnostic that sends a reader nowhere.
     ObjectHeader* setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                           Rooted<Value>& val, InlineCache* ic = nullptr,
                           bool enumerable = true, bool defineOwn = false,
-                          const Value* receiver = nullptr);
+                          const Value* receiver = nullptr, SetRefusal* refused = nullptr);
 
     // `delete o.k`, which removes an OWN property and answers true — also when
     // the property was never there, and when only a prototype has it (ECMA-262

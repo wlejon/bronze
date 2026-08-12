@@ -75,6 +75,23 @@ private:
     // Same reasoning as `objectMethodOrdinal_`, including the file
     // qualification: two files' first generators must not name one symbol.
     size_t generatorOrdinal_ = 0;
+    // Whether the code under the cursor is STRICT (ECMA-262 11.2.2).
+    // Strictness is a property of a Script or a function body, decided by that
+    // body's Directive Prologue and fixed for good at parse time — so a flag
+    // that follows the cursor is the whole of it: everything written inside a
+    // strict body is parsed with it set, which is exactly what "a function
+    // declared inside strict code is strict" means. Nothing later can ask the
+    // question, which is why the answer is written onto the AST nodes here.
+    bool strict_ = false;
+    // Whether the statement about to be parsed sits DIRECTLY in a script or
+    // function body, as opposed to inside a block, a switch clause or the body
+    // of an `if`. Those are the only positions ECMA-262 14.1 admits a
+    // HoistableDeclaration in strict code; everywhere else a function
+    // declaration is block-scoped (Annex B gives sloppy code the legacy
+    // hoisting bronze implements), and bronze has not built the block-scoped
+    // form. Cleared by parseStatement itself, exactly as `atModuleTopLevel_`
+    // is, so every nested production sees false.
+    bool atBodyTopLevel_ = false;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -201,6 +218,46 @@ private:
     // Diagnoses the `yield` under the cursor, which is only ever reached from
     // a position the subset refuses. Always returns null.
     ast::ExprPtr refuseYield();
+
+    // --- parser_strict.cpp: the Directive Prologue and the early errors -----
+    // Restores `strict_` on the way out of a body that may have raised it.
+    // Strictness only ever goes UP on the way in — a `"use strict"` prologue,
+    // a class body — so a sloppy function written after a strict sibling would
+    // otherwise inherit its neighbour's mode.
+    struct StrictScopeGuard {
+        Parser& p;
+        bool saved;
+        explicit StrictScopeGuard(Parser& parser) : p(parser), saved(parser.strict_) {}
+        ~StrictScopeGuard() { p.strict_ = saved; }
+    };
+    // Whether the Directive Prologue at the cursor (ECMA-262 11.2.2) selects
+    // strict mode. Consumes nothing: the directives are ordinary
+    // ExpressionStatements and are parsed as such afterwards. The prologue has
+    // to be read BEFORE the body, because it decides which early errors the
+    // body's own statements are subject to.
+    bool prologueSelectsStrict() const;
+    // A function BODY: a braced StatementList that has a Directive Prologue,
+    // which is the one thing an ordinary block does not have. `outStrict` is
+    // the strictness of the body — the enclosing code's, raised by the
+    // prologue — and is what the FunctionExpr/FunctionDecl node records.
+    std::vector<ast::StmtPtr> parseFunctionBody(bool& outStrict);
+    // The strict-mode early errors, each named after the rule it enforces.
+    // All are no-ops in sloppy code, where the construct is legal.
+    //
+    // A BINDING name (12.7.2 / 13.15.1): `eval` and `arguments` may not be
+    // bound, and the nine future reserved words may not be used at all.
+    // `role` names the position for the diagnostic ("parameter", "variable").
+    bool checkStrictBindingName(std::string_view name, Span span, const char* role);
+    // An identifier REFERENCE: the future reserved words only — `eval` and
+    // `arguments` are legal to read, and illegal only as a target.
+    bool checkStrictIdentifierReference(std::string_view name, Span span);
+    // An assignment or update TARGET (13.15.1): `eval` and `arguments`.
+    bool checkStrictAssignmentTarget(const ast::Expr& target);
+    // A parameter list, once the body's strictness is known: duplicates
+    // (15.1.2 / 15.2.1), and every name through checkStrictBindingName. Run
+    // after the body because a function's own `"use strict"` is what makes its
+    // parameter list subject to the rule.
+    bool checkStrictParams(const std::vector<ast::Param>& params, bool bodyStrict);
 
     // --- parser_pattern.cpp: binding patterns ---------------- A pattern where
     // the grammar spells one: a declarator, a parameter, a for-of head. Null on

@@ -76,6 +76,10 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         if (!valOpt) return std::nullopt;
         auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
 
+        // No strict flag on either spelling: a literal DEFINES a property
+        // on an object it has just created (13.2.5.5 CreateDataProperty),
+        // which cannot be refused and is not a reference at all — so there is
+        // no reference for 13.15.2's strictness to be a property of.
         il::Instruction setInst;
         if (keyBoxed) {
             // `elem.set` is the write whose key is a VALUE, which is what a
@@ -139,6 +143,9 @@ std::optional<Lowerer::Value> Lowerer::lowerDeleteReference(const ast::Unary& de
         inst.result = res;
         inst.operands = {objBoxed.id};
         inst.keyIndex = getKeyConstantIndex(mem->property);
+        // 13.5.1.2 step 5.b: a delete that answers false is a TypeError in
+        // strict code and the boolean `false` in sloppy code.
+        inst.immI32 = strictFlag();
         emitInst(ilFn, inst);
         return Value{res, il::Type::Bool};
     }
@@ -153,6 +160,7 @@ std::optional<Lowerer::Value> Lowerer::lowerDeleteReference(const ast::Unary& de
         il::Instruction inst;
         inst.result = res;
         inst.type = il::Type::Bool;
+        inst.immI32 = strictFlag();
         // A literal key folds onto the named form, exactly as the read path
         // folds `o["k"]` onto `o.k` — the same property, so the same op.
         if (const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess->index)) {
@@ -234,6 +242,8 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
         uint32_t keyIdx = getKeyConstantIndex(std::to_string(i));
         uint32_t icIdx = icSiteCounter_++;
 
+        // Sloppy for the reason the object literal's writes are: an array
+        // literal's elements are defined on a fresh array, never assigned.
         il::Instruction setInst;
         setInst.op = il::Op::PropSet;
         setInst.type = il::Type::Void;
@@ -627,14 +637,19 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         if (!cVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*cVal, ilFn);
 
-        il::ValueId zeroRes = ilFn.valueCount++;
-        il::Instruction zeroInst;
-        zeroInst.op = il::Op::ConstF64;
-        zeroInst.type = il::Type::F64;
-        zeroInst.result = zeroRes;
-        zeroInst.immF64 = 0.0;
-        emitInst(ilFn, zeroInst);
-        thisArgVal = boxValueIfNeeded(Value{zeroRes, il::Type::F64}, ilFn);
+        // No receiver: `f()` is a call with no base, so 13.3.6.1 passes
+        // `undefined` as the this value. bronze has no global object to
+        // substitute for it in sloppy mode, so `undefined` is its one answer in
+        // every mode — which is also the strict one. It used to pass a boxed
+        // ZERO here, so `const g = o.m; g()` ran with `this === 0` while the
+        // direct-call path in the same program ran with `this` undefined.
+        il::ValueId undefRes = ilFn.valueCount++;
+        il::Instruction undefInst;
+        undefInst.op = il::Op::ConstUndefined;
+        undefInst.type = il::Type::Dynamic;
+        undefInst.result = undefRes;
+        emitInst(ilFn, undefInst);
+        thisArgVal = Value{undefRes, il::Type::Dynamic};
     }
 
     // `f?.()` — the CALLEE is what may be nullish here, and the check comes

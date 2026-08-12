@@ -69,11 +69,16 @@ bool Parser::consumeSemicolon(const char* what) {
 std::unique_ptr<Module> Parser::parseModule(std::string name) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
+    // The Script's own Directive Prologue, read before the first statement so
+    // that every early error below is decided in the mode the file asked for.
+    if (prologueSelectsStrict()) strict_ = true;
+    mod->strict = strict_;
     while (!check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
         // The one position ECMA-262 16.2 allows an `import` or an `export`.
         // The flag is cleared by parseStatement itself, so every nested
         // production this reaches sees false.
         atModuleTopLevel_ = true;
+        atBodyTopLevel_ = true;
         if (!parseStatement(mod->body)) break;
     }
     if (diags_.hasErrors()) return nullptr;
@@ -106,6 +111,8 @@ bool one(std::vector<StmtPtr>& out, StmtPtr stmt) {
 bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     const bool atModuleTop = atModuleTopLevel_;
     atModuleTopLevel_ = false;
+    const bool atBodyTop = atBodyTopLevel_;
+    atBodyTopLevel_ = false;
     // ECMA-262 14.4: `;` on its own is the EmptyStatement, which evaluates to
     // empty and does nothing. It contributes no node — there is nothing for a
     // node to say — which is why this appends to a list instead of returning
@@ -125,7 +132,22 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         }
         return check(TokenKind::KwExport) ? parseExportDecl(out) : parseImportDecl(out);
     }
-    if (check(TokenKind::KwFunction)) return one(out, parseFunctionDecl(/*isExported=*/false));
+    if (check(TokenKind::KwFunction)) {
+        // ECMA-262 14.1 / Annex B.3.3: in STRICT code a function declaration
+        // written anywhere but directly in a script or function body is
+        // block-scoped — visible inside its block and nowhere else. bronze
+        // hoists every declaration to the enclosing function, which is the
+        // sloppy-mode Annex B reading and a WRONG answer for strict code the
+        // moment the name is read outside the block. Named here rather than
+        // compiled into the other mode's scoping.
+        if (strict_ && !atBodyTop) {
+            error("unsupported construct: a function declaration inside a block in strict code "
+                  "(ECMA-262 14.1 makes it block-scoped, and bronze hoists it to the enclosing "
+                  "function); write `const f = function () { ... }` instead");
+            return false;
+        }
+        return one(out, parseFunctionDecl(/*isExported=*/false));
+    }
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
         return parseVarDecl(out);
     }
@@ -147,6 +169,18 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         blk->span = blockSpan;
         blk->stmts = std::move(stmts);
         return one(out, std::move(blk));
+    }
+    // `with (o) stmt`. Not a keyword in bronze's lexer, so without this it
+    // parsed as a CALL of a variable named `with` followed by a block, and a
+    // program that used it got a wrong answer rather than a diagnostic.
+    // ECMA-262 14.11.1 makes it an early SyntaxError in strict code; bronze has
+    // not built its object environment record in either mode, so both readings
+    // are named errors and the strict one cites the rule.
+    if (check(TokenKind::Identifier) && peek().text == "with" &&
+        peek(1).kind == TokenKind::LParen) {
+        error(strict_ ? "strict mode: the 'with' statement is not allowed (ECMA-262 14.11.1)"
+                      : "unsupported construct: the 'with' statement");
+        return false;
     }
     // `name:` at the head of a statement is a label and can be nothing else —
     // no expression statement begins with an identifier followed by a colon,
@@ -214,6 +248,7 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
         } else {
             const Token* name = expect(TokenKind::Identifier, "variable name");
             if (!name) return false;
+            if (!checkStrictBindingName(name->text, name->span, "variable")) return false;
             decl->name = std::string(name->text);
         }
 
@@ -326,6 +361,7 @@ bool Parser::parseForBindingHead(ForBindingHead& head) {
     } else {
         const Token* name = expect(TokenKind::Identifier, "loop variable name");
         if (!name) return false;
+        if (!checkStrictBindingName(name->text, name->span, "loop variable")) return false;
         head.name = std::string(name->text);
     }
     if (check(TokenKind::Colon)) {
@@ -560,6 +596,9 @@ StmtPtr Parser::parseTry() {
             } else {
                 const Token* name = expect(TokenKind::Identifier, "a catch parameter name");
                 if (!name) return nullptr;
+                if (!checkStrictBindingName(name->text, name->span, "catch parameter")) {
+                    return nullptr;
+                }
                 stmt->catchName = std::string(name->text);
             }
             if (!expect(TokenKind::RParen, "')' after a catch parameter")) return nullptr;

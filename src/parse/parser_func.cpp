@@ -34,6 +34,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     } else {
         const Token* name = expect(TokenKind::Identifier, "function name");
         if (!name) return nullptr;
+        if (!checkStrictBindingName(name->text, name->span, "function name")) return nullptr;
         fn->name = std::string(name->text);
     }
 
@@ -50,6 +51,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->params = std::move(shell.params);
         fn->returnType = std::move(shell.returnType);
         fn->body = std::move(shell.body);
+        fn->strict = shell.strict;
         fn->span.end = peek().span.begin;
         return fn;
     }
@@ -61,8 +63,9 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
 
     {
         GeneratorScopeGuard guard(*this);
-        fn->body = parseBlock();
+        fn->body = parseFunctionBody(fn->strict);
     }
+    if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -113,8 +116,12 @@ ExprPtr Parser::parseArrowFunction() {
     // `yield` is an ordinary identifier in it and `return` an ordinary return.
     GeneratorScopeGuard guard(*this);
     if (check(TokenKind::LBrace)) {
-        fn->body = parseBlock();
+        fn->body = parseFunctionBody(fn->strict);
     } else {
+        // A concise body has no Directive Prologue to read — there is no
+        // StatementList for one to be the head of — so an arrow written this
+        // way is strict exactly when the code around it is.
+        fn->strict = strict_;
         // An expression body IS a return, and is stored as one so that
         // every consumer below — capture analysis, inference, lowering —
         // sees one shape of function body and not two.
@@ -125,6 +132,7 @@ ExprPtr Parser::parseArrowFunction() {
         ret->value = std::move(value);
         fn->body.push_back(std::move(ret));
     }
+    if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -157,6 +165,10 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
         } else {
             const Token* param = expect(TokenKind::Identifier, "parameter name");
             if (!param) return false;
+            // What fires here is the ENCLOSING code's mode. A list belonging to
+            // a function whose own directive has not been read yet is checked
+            // again by `checkStrictParams`, once the body has said so.
+            if (!checkStrictBindingName(param->text, param->span, "parameter")) return false;
             p.name = std::string(param->text);
         }
 
@@ -242,8 +254,9 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
 
     {
         GeneratorScopeGuard guard(*this);
-        fn->body = parseBlock();
+        fn->body = parseFunctionBody(fn->strict);
     }
+    if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -275,10 +288,11 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     inClassMethod_ = false;
     currentClassSuper_.clear();
     GeneratorScopeGuard guard(*this);
-    fn->body = parseBlock();
+    fn->body = parseFunctionBody(fn->strict);
     inClassMethod_ = savedInClassMethod;
     currentClassSuper_ = savedClassSuper;
 
+    if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -295,6 +309,13 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
 // name here rather than mis-parsed as a method.
 ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     const Token& kw = advance();  // 'class'
+    // ECMA-262 10.2.11 / 15.7: ALL parts of a class definition are strict mode
+    // code, whether or not anything said so — the name it binds, the `extends`
+    // clause, and every method body. Raised once here rather than per member,
+    // so that "a class body is strict" is one statement in the code and not
+    // one for each of the six ways a member can be written.
+    StrictScopeGuard strictGuard(*this);
+    strict_ = true;
     auto cls = std::make_unique<ClassDecl>();
     cls->span.begin = kw.span.begin;
     if (!defaultName.empty() && !check(TokenKind::Identifier)) {
@@ -302,6 +323,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     } else {
         const Token* nameTok = expect(TokenKind::Identifier, "class name");
         if (!nameTok) return nullptr;
+        if (!checkStrictBindingName(nameTok->text, nameTok->span, "class name")) return nullptr;
         cls->name = std::string(nameTok->text);
     }
 
@@ -403,8 +425,9 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
                 if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
                 {
                     GeneratorScopeGuard guard(*this);
-                    fn->body = parseBlock();
+                    fn->body = parseFunctionBody(fn->strict);
                 }
+                if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
                 if (diags_.hasErrors()) return nullptr;
                 fn->span.end = peek().span.begin;
                 member.fn = std::move(fn);
@@ -475,8 +498,9 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
         {
             GeneratorScopeGuard guard(*this);
-            fn->body = parseBlock();
+            fn->body = parseFunctionBody(fn->strict);
         }
+        if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
         if (diags_.hasErrors()) return nullptr;
         fn->span.end = peek().span.begin;
         member.fn = std::move(fn);
@@ -506,6 +530,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         ctor.fn = std::make_unique<FunctionExpr>();
         ctor.fn->name = cls->name + ".constructor";
         ctor.fn->span = cls->span;
+        ctor.fn->strict = true;  // synthesized class code, which 15.7 makes strict
         if (!cls->superName.empty()) {
             Param rest;
             rest.name = "args";
@@ -578,7 +603,9 @@ ExprPtr Parser::parseFunctionExpr() {
     const bool isGenerator = match(TokenKind::Star);
 
     if (check(TokenKind::Identifier)) {
-        fn->name = std::string(advance().text);
+        const Token& nameTok = advance();
+        if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
+        fn->name = std::string(nameTok.text);
     }
 
     GeneratorScopeGuard guard(*this);
@@ -592,7 +619,8 @@ ExprPtr Parser::parseFunctionExpr() {
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
-    fn->body = parseBlock();
+    fn->body = parseFunctionBody(fn->strict);
+    if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;

@@ -255,7 +255,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                                     Rooted<Value>& val, InlineCache* ic, bool enumerable,
-                                    bool defineOwn, const Value* receiver) {
+                                    bool defineOwn, const Value* receiver, SetRefusal* refused) {
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
         fatal("property key must be a string or a symbol");
@@ -281,7 +281,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             }
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
-            callSetter(getSlot(own.slot + 1), recv, val);
+            bool noSetter = false;
+            callSetter(getSlot(own.slot + 1), recv, val, &noSetter);
+            if (noSetter && refused) *refused = SetRefusal::NoSetter;
             return live.get().asObject<ObjectHeader>();
         }
         // A non-writable own property discards the write in sloppy mode
@@ -292,7 +294,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // the IC fill below is already unreachable for it — but the guard is
         // written here rather than inferred from that, because "the cache
         // happens to miss" is not a reason a write is discarded.
-        if (!own.writable) return this;
+        if (!own.writable) {
+            if (refused) *refused = SetRefusal::NotWritable;
+            return this;
+        }
         if (ic && !shape->isDictionary()) ic->fill(shape, own.slot, /*depth=*/0);
         setSlot(own.slot, val.get());
         return this;
@@ -313,7 +318,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (!info.accessor) break;  // shadowed by the own property created below
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
-            callSetter(holder->getSlot(info.slot + 1), recv, val);
+            bool noSetter = false;
+            callSetter(holder->getSlot(info.slot + 1), recv, val, &noSetter);
+            if (noSetter && refused) *refused = SetRefusal::NoSetter;
             return live.get().asObject<ObjectHeader>();
         }
     }
@@ -321,7 +328,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // A frozen or sealed object adds nothing (10.1.9.2 step 3 -> 10.1.6.3
     // step 2.b), silently, for the same sloppy-mode reason a non-writable
     // property discards its write.
-    if (shape->isDictionary() && !shape->dict->extensible) return this;
+    if (shape->isDictionary() && !shape->dict->extensible) {
+        if (refused) *refused = SetRefusal::NotExtensible;
+        return this;
+    }
 
     // There is no rule here about what a key is SPELLED like, and there must not
     // be one. A symbol key is enumerable (10.1.9.2 -> 7.3.5 CreateDataProperty:

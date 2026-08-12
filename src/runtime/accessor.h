@@ -22,8 +22,10 @@ namespace bronze {
 Value callGetter(Value getter, Rooted<Value>& receiver);
 
 // `setter` undefined is a get-only accessor. ECMA-262 10.1.9.2 step 5.c returns
-// false there, which the caller's non-strict Set discards: the write is a
-// silent no-op.
-void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value);
+// false there; `noSetter` is how that false reaches the caller, which discards
+// it for a sloppy assignment and raises a TypeError for a strict one. Passing
+// null asks not to be told, which is what every definition-time caller wants.
+void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value,
+                bool* noSetter = nullptr);
 
 }  // namespace bronze

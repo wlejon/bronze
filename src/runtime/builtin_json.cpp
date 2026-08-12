@@ -66,7 +66,7 @@ Value buildValue(const json::Value& node) {
                 // the position its FIRST appearance gave it — which is what
                 // 25.5.1's CreateDataProperty over an ordinary object does,
                 // and is observable through Object.keys.
-                bronze_elem_set(obj.get().rawBits(), key.get().rawBits(), value.get().rawBits());
+                bronze_elem_set(obj.get().rawBits(), key.get().rawBits(), value.get().rawBits(), /*strict=*/false);
             }
             return obj.get();
         }
@@ -91,10 +91,10 @@ void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
             Rooted<Value> replaced{internalize(value, key, reviver)};
             if (rtExceptionPending()) return;
             if (replaced.get().isUndefined()) {
-                bronze_elem_delete(value.get().rawBits(), key.get().rawBits());
+                bronze_elem_delete(value.get().rawBits(), key.get().rawBits(), /*strict=*/false);
             } else {
                 bronze_elem_set(value.get().rawBits(), key.get().rawBits(),
-                                replaced.get().rawBits());
+                                replaced.get().rawBits(), /*strict=*/false);
             }
         }
         return;
@@ -107,9 +107,9 @@ void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
         Rooted<Value> replaced{internalize(value, key, reviver)};
         if (rtExceptionPending()) return;
         if (replaced.get().isUndefined()) {
-            bronze_elem_delete(value.get().rawBits(), key.get().rawBits());
+            bronze_elem_delete(value.get().rawBits(), key.get().rawBits(), /*strict=*/false);
         } else {
-            bronze_elem_set(value.get().rawBits(), key.get().rawBits(), replaced.get().rawBits());
+            bronze_elem_set(value.get().rawBits(), key.get().rawBits(), replaced.get().rawBits(), /*strict=*/false);
         }
     }
 }
@@ -152,7 +152,7 @@ uint64_t jsonParse(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // document under the empty key, so the root itself can be replaced.
     Rooted<Value> wrapper{Value(bronze_create_object())};
     Rooted<Value> emptyKey{rtMakeString("")};
-    bronze_elem_set(wrapper.get().rawBits(), emptyKey.get().rawBits(), result.get().rawBits());
+    bronze_elem_set(wrapper.get().rawBits(), emptyKey.get().rawBits(), result.get().rawBits(), /*strict=*/false);
     return internalize(wrapper, emptyKey, reviver).rawBits();
 }
 

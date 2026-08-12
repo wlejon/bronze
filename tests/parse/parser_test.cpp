@@ -168,6 +168,10 @@ TEST_CASE("string escapes are decoded at parse time, not left raw") {
     CHECK(out.find("a\tbA") != std::string::npos);
 }
 
+// The ` strict` on every function head below is ECMA-262 10.2.11 / 15.7: all
+// parts of a class definition are strict mode code, whether or not anything
+// said so. It is in the canonical dump because it changes what the code MEANS
+// — a refused write throws inside these bodies and is discarded outside them.
 TEST_CASE("a class body parses into methods, statics and a super call") {
     const auto out = parseAndDump(
         "class P extends Q {\n"
@@ -179,7 +183,7 @@ TEST_CASE("a class body parses into methods, statics and a super call") {
           "(module t\n"
           "  (class P extends Q\n"
           "    (method constructor\n"
-          "      (function-expr P.constructor (x)\n"
+          "      (function-expr P.constructor (x) strict\n"
           "        (expr\n"
           "          (binary =\n"
           "            (member .x\n"
@@ -191,7 +195,7 @@ TEST_CASE("a class body parses into methods, statics and a super call") {
           "      )\n"
           "    )\n"
           "    (method get\n"
-          "      (function-expr P.get ()\n"
+          "      (function-expr P.get () strict\n"
           "        (return\n"
           "          (call\n"
           "            (super-member Q.get)\n"
@@ -200,7 +204,7 @@ TEST_CASE("a class body parses into methods, statics and a super call") {
           "      )\n"
           "    )\n"
           "    (static-method make\n"
-          "      (function-expr P.make ()\n"
+          "      (function-expr P.make () strict\n"
           "        (return\n"
           "          (number 1)\n"
           "        )\n"
@@ -218,7 +222,7 @@ TEST_CASE("a base class with no constructor gets the empty one it has") {
           "(module t\n"
           "  (class E\n"
           "    (method constructor\n"
-          "      (function-expr E.constructor ()\n"
+          "      (function-expr E.constructor () strict\n"
           "      )\n"
           "    )\n"
           "  )\n"
@@ -234,7 +238,7 @@ TEST_CASE("a derived class with no constructor forwards every argument") {
           "(module t\n"
           "  (class D extends B\n"
           "    (method constructor\n"
-          "      (function-expr D.constructor (...args)\n"
+          "      (function-expr D.constructor (...args) strict\n"
           "        (expr\n"
           "          (super-call B\n"
           "            (spread\n"

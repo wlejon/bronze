@@ -410,6 +410,31 @@ bool Linker::run(ast::Module& out) {
         }
     }
 
+    // Strictness is a property of a SCRIPT (ECMA-262 11.2.2), and the merge
+    // below produces exactly one: N files' top levels become one `main`. So
+    // the linked program has one mode, and it is the entry's.
+    //
+    // A file whose own Directive Prologue disagrees is diagnosed by name rather
+    // than quietly compiled in the other mode. That is the whole point of the
+    // flag — the two modes differ, and a top-level write in a `"use strict"`
+    // file that was linked as sloppy would silently discard where it should
+    // throw. A FUNCTION in such a file is unaffected either way: the parser
+    // stamped the mode onto the function node, and lowering reads it there.
+    out.strict = graph_.modules[0]->ast->strict;
+    for (const uint16_t id : graph_.evaluationOrder) {
+        ModuleFile& file = *graph_.modules[id];
+        if (file.ast->strict == out.strict) continue;
+        diags_.error(Span{},
+                     "unsupported construct: a module graph whose files disagree about strict "
+                     "mode — '" + file.displayName + "' is " +
+                         (file.ast->strict ? "strict" : "sloppy") + " and the entry '" +
+                         graph_.modules[0]->displayName + "' is " +
+                         (out.strict ? "strict" : "sloppy") +
+                         ". The linker merges every file's top level into one script, which has "
+                         "one mode; write the same `\"use strict\"` in both, or in neither");
+        return false;
+    }
+
     // The merge. Evaluation order is the post-order of the load, so a module's
     // statements run after everything it imports — which is ES semantics for
     // module bodies, and graph-wide function hoisting comes free, because

@@ -4,9 +4,13 @@
 // people expect: for a property that was removed, for one that was never
 // there, and for one only a prototype defines — all three are already the
 // state delete wants. `false` is reserved for a non-configurable property,
-// which bronze cannot yet create, so nothing here returns it. That is a
-// gap in what bronze can *express*, not a shortcut: `Object.defineProperty`
-// is where non-configurable properties come from, and it is not built.
+// which `Object.defineProperty`, `Object.seal` and `Object.freeze` create.
+//
+// In STRICT code that false is not an answer at all: 13.5.1.2 step 5.b makes
+// it a TypeError, on the same rule that turns a refused assignment into one.
+// `strict` is therefore a parameter here rather than a fact the runtime could
+// look up — strictness is a property of the code the operator was WRITTEN in,
+// and only the compiler still knows that.
 //
 // Deleting is not writing `undefined`. `"k" in o` goes false, the key leaves
 // every enumeration, and an inherited property it was shadowing becomes
@@ -75,7 +79,15 @@ bool deleteElementByIndex(Value objVal, Value idxVal) {
 
 extern "C" {
 
-bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex) {
+// The strict half of 13.5.1.2 step 5.b, in one place because `delete o.k` and
+// `delete o[i]` differ only in how they spell the key.
+static bool reportRefusedDelete(bool removed, bool strict, const std::string& key) {
+    if (removed || !strict) return removed;
+    rtThrowTypeError("Cannot delete property '" + key + "': it is not configurable");
+    return false;
+}
+
+bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
     Value objVal(objBits);
     // ToObject first, exactly as a read does: `delete null.x` is the
     // TypeError of 13.5.1 step 5.
@@ -98,10 +110,11 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex) {
 
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
-    return owner->deleteProperty(rtArena(), keyHeader);
+    return reportRefusedDelete(owner->deleteProperty(rtArena(), keyHeader), strict,
+                               rtKeyString(keyIndex));
 }
 
-bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits) {
+bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     Value objVal(objBits);
     Value idxVal(idxBits);
     if (objVal.isNull() || objVal.isUndefined()) {
@@ -122,14 +135,17 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits) {
     // must simply remove the property. It also cannot allocate, so the owner
     // pointer taken above is still live.
     if (idxVal.isSymbol()) {
-        return owner->deleteProperty(rtArena(), PropertyKey::fromValue(idxVal));
+        return reportRefusedDelete(owner->deleteProperty(rtArena(), PropertyKey::fromValue(idxVal)),
+                                   strict, "<symbol>");
     }
     // ToPropertyKey allocates the key string, so the owner is reached through
     // a root afterwards rather than through the pointer taken above.
     Rooted<Value> ownerRoot{Value::fromObject(owner)};
     Rooted<Value> key{rtValueToString(idxVal)};
-    return ownerRoot.get().asObject<ObjectHeader>()->deleteProperty(
-        rtArena(), key.get().asString<StringHeader>());
+    StringHeader* keyHeader = key.get().asString<StringHeader>();
+    return reportRefusedDelete(
+        ownerRoot.get().asObject<ObjectHeader>()->deleteProperty(rtArena(), keyHeader), strict,
+        rtUtf8Chars(keyHeader));
 }
 
 }  // extern "C"

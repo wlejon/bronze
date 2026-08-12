@@ -138,9 +138,13 @@ public:
         // An arrow prints under its own head: it is not a shorter spelling
         // of a function expression, it has no `this` of its own, and two
         // constructs that lower differently must not dump identically.
+        // `strict` is printed only when it is set, so the dump of sloppy code
+        // is unchanged and a strict body is visibly a different tree — which
+        // it is, because the flag selects a different meaning for the writes
+        // inside it.
         emit(std::string(n.isArrow ? "(arrow-expr " : "(function-expr ") +
              (n.name.empty() ? "<anon>" : n.name) + paramHead(n.params) +
-             (n.returnType.empty() ? "" : ": " + n.returnType));
+             (n.returnType.empty() ? "" : ": " + n.returnType) + (n.strict ? " strict" : ""));
         indented([this, &n] {
             dumpParamDetails(n.params);
             for (const auto& s : n.body) s->accept(*this);
@@ -363,6 +367,7 @@ public:
         std::string head = "(function " + n.name + paramHead(n.params);
         if (!n.returnType.empty()) head += ": " + n.returnType;
         if (n.isExported) head += " exported";
+        if (n.strict) head += " strict";
         emit(head);
         indented([&] {
             dumpParamDetails(n.params);
@@ -402,7 +407,7 @@ public:
         emit(")");
     }
     void visit(const Module& n) override {
-        emit("(module " + n.name);
+        emit("(module " + n.name + (n.strict ? " strict" : ""));
         indented([&] {
             for (const auto& s : n.body) s->accept(*this);
         });

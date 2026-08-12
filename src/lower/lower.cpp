@@ -119,9 +119,13 @@ std::optional<il::Module> Lowerer::lower() {
             // for its arity and its still-being-inferred return type.
             // Safe only because Module::functions is reference-stable —
             // lowering this body can append nested closures to it.
-            if (!lowerFunctionBody(*fnDecl, ilModule_.functions[fnIndex])) {
-                return std::nullopt;
-            }
+            // A top-level declaration does not go through `lowerClosure`,
+            // so its mode is set here — from the node, for the same reason.
+            const bool outerStrict = strictCode_;
+            strictCode_ = fnDecl->strict;
+            const bool ok = lowerFunctionBody(*fnDecl, ilModule_.functions[fnIndex]);
+            strictCode_ = outerStrict;
+            if (!ok) return std::nullopt;
             fnIndex++;
         }
     }
@@ -155,6 +159,8 @@ std::optional<il::Module> Lowerer::lower() {
         currentEnvValue_ = il::kNoValue;
         currentThisValue_ = il::kNoValue;
         currentFunctionIsArrow_ = false;
+        // `main` is the Script's own code, so it takes the Script's mode.
+        strictCode_ = astModule_.strict;
         functionEnvBase_ = 0;
         functionEnvScope_ = SIZE_MAX;
 

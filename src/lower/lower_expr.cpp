@@ -473,6 +473,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         inst.operands = {objBoxed.id, storedBoxed.id};
         inst.keyIndex = keyIdx;
         inst.icIndex = icSiteCounter_++;
+        // The reference this write goes through is strict exactly when the
+        // code that wrote it is (13.15.2 PutValue step 6.d), and that is the
+        // only thing that decides whether a refused Set throws.
+        inst.immI32 = strictFlag();
         emitInst(ilFn, inst);
         return storedBoxed;
     }
@@ -531,6 +535,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         }
         setInst.type = il::Type::Void;
         setInst.result = il::kNoValue;
+        setInst.immI32 = strictFlag();
         emitInst(ilFn, setInst);
         return storedBoxed;
     }

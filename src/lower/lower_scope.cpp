@@ -418,6 +418,17 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerThisValue = currentThisValue_;
     auto outerIsArrow = currentFunctionIsArrow_;
     currentFunctionIsArrow_ = isArrow;
+    // Strictness comes from the FUNCTION NODE, not from the enclosing code:
+    // the parser has already resolved inheritance (a function inside strict
+    // code is strict) and a body's own `"use strict"` (a strict function
+    // inside sloppy code). `site` is that node, which is why nothing here has
+    // to be passed a flag.
+    const bool outerStrict = strictCode_;
+    if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&site)) {
+        strictCode_ = fnExpr->strict;
+    } else if (const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(&site)) {
+        strictCode_ = fnDecl->strict;
+    }
     auto outerEnvBase = functionEnvBase_;
     auto outerEnvScope = functionEnvScope_;
     // `var` names are per FUNCTION, so the nested body's list must not outlive
@@ -444,6 +455,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     const bool bodyOk = lowerFunctionBody(params, body, newFn);
     if (isNamedFunctionExpr) namedFunctionExprs_.pop_back();
 
+    strictCode_ = outerStrict;
     varBindings_ = outerVarBindings;
     activeVarMap_ = outerActiveVarMap;
     currentScopeDepth_ = outerScopeDepth;

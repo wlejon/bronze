@@ -9,10 +9,12 @@
 namespace bronze::codegen_llvm {
 
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::GlobalVariable* icTable,
-                 llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex) {
+                 llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex,
+                 bool strict) {
     llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
     builder.CreateCall(abi.bronze_prop_set,
-                       {objBits, builder.getInt32(keyIndex), valBits, entry});
+                       {objBits, builder.getInt32(keyIndex), valBits, entry,
+                        builder.getInt1(strict)});
 }
 
 // The slow arm, which is also the whole of an unproven site.

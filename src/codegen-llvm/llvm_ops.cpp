@@ -166,7 +166,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, false, "Invalid operands for PropDelete")) return false;
             llvm::Value* target = operand(inst, 0, "Undefined operand in PropDelete instruction");
             if (!target) return false;
-            callWith(abi.bronze_prop_delete, {target, builder_.getInt32(inst.keyIndex)});
+            callWith(abi.bronze_prop_delete,
+                     {target, builder_.getInt32(inst.keyIndex), builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::ElemDelete: {
@@ -175,7 +176,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* target = operand(inst, 0, what);
             llvm::Value* index = operand(inst, 1, what);
             if (!target || !index) return false;
-            callWith(abi.bronze_elem_delete, {target, index});
+            callWith(abi.bronze_elem_delete, {target, index, builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::GlobalGet:
@@ -401,7 +402,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* obj = operand(inst, 0, "Undefined operand in PropSet instruction");
             llvm::Value* val = operand(inst, 1, "Undefined operand in PropSet instruction");
             if (!obj || !val) return false;
-            emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex);
+            emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex,
+                        inst.immI32 != 0);
             return true;
         }
         case il::Op::ElemGet: {
@@ -418,7 +420,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSet instruction");
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSet instruction");
             if (!obj || !idx || !val) return false;
-            builder_.CreateCall(abi.bronze_elem_set, {obj, idx, val});
+            builder_.CreateCall(abi.bronze_elem_set,
+                                {obj, idx, val, builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
 

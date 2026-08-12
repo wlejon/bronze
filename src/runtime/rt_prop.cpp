@@ -466,7 +466,32 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
         .rawBits();
 }
 
-void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry) {
+// The three ways ECMA-262 10.1.9.2 answers false, turned into the TypeError
+// 13.15.2 PutValue step 6.d raises for a STRICT reference — and into nothing at
+// all for a sloppy one, which is the answer `cases/accessor_properties` pins.
+// One place, because `prop.set` and `elem.set` differ only in how they spell
+// the key and must not differ in what they do with a refusal.
+static void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key) {
+    if (!strict || refusal == SetRefusal::None) return;
+    switch (refusal) {
+        case SetRefusal::NoSetter:
+            rtThrowTypeError("Cannot set property '" + key +
+                             "' of an object that has only a getter");
+            return;
+        case SetRefusal::NotWritable:
+            rtThrowTypeError("Cannot assign to read only property '" + key + "'");
+            return;
+        case SetRefusal::NotExtensible:
+            rtThrowTypeError("Cannot add property '" + key +
+                             "' to an object that is not extensible");
+            return;
+        case SetRefusal::None:
+            return;
+    }
+}
+
+void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry,
+                     bool strict) {
     Value objVal(objBits);
     Value valVal(valBits);
     InlineCache* ic = asCache(icEntry);
@@ -479,11 +504,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                          rtKeyString(keyIndex) + "')");
         return;
     }
-    // A write to a property of a primitive. 6.2.5.6 PutValue takes the
-    // strict-mode branch — a module is always strict code (16.2.1.6) — and
-    // throws, and the two lines above have just said that discarding a write
-    // is worse than answering `undefined`. Discarding it here was the same
-    // silent lie in the same function.
+    // A write to a property of a primitive. 6.2.5.6 PutValue throws for a
+    // STRICT reference and discards for a sloppy one, and bronze throws for
+    // both — deliberately, and not because `strict` is unavailable here: it is
+    // a parameter now. The two lines above have just said that discarding a
+    // write is worse than answering `undefined`, and a receiver that can never
+    // hold the property is the case where that is most true. It is the one
+    // place strict and sloppy are answered the same way on purpose; the house
+    // rule prefers the loud answer to the silent one.
     if (!objVal.isObject()) {
         rtThrowTypeError("Cannot create property '" + rtKeyString(keyIndex) +
                          "' on " + primitiveTypeName(objVal));
@@ -569,9 +597,11 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             rtEnsureFunctionProperties(fnRoot);
             Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
+            SetRefusal refusal = SetRefusal::None;
             propsRoot.get().asObject<ObjectHeader>()->setProp(
                 rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
-                /*defineOwn=*/false, fnRoot.slot_ptr());
+                /*defineOwn=*/false, fnRoot.slot_ptr(), &refusal);
+            rtReportSetRefusal(refusal, strict, keyStr);
             return;
         }
         if (!valVal.isObject()) {
@@ -593,7 +623,11 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // the call, so that is safe.
     Rooted<Value> key(Value::fromString(keyHeader));
     Rooted<Value> val(valVal);
-    objVal.asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, ic);
+    SetRefusal refusal = SetRefusal::None;
+    objVal.asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, ic,
+                                             /*enumerable=*/true, /*defineOwn=*/false,
+                                             /*receiver=*/nullptr, &refusal);
+    rtReportSetRefusal(refusal, strict, keyStr);
 }
 
 // A class method, installed on a prototype (or, for a `static`, on the
@@ -796,7 +830,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     return propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, /*ic=*/nullptr);
 }
 
-void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
+void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
     Value objVal(objBits);
     if (Value(idxBits).isSymbol()) {
         if (objVal.isNull() || objVal.isUndefined()) {
@@ -825,9 +859,14 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         if (ObjectHeader* holder = symbolKeyHolder(recv.get())) {
             Rooted<Value> holderRoot{Value::fromObject(holder)};
             Rooted<Value> key{Value(idxBits)};
+            SetRefusal refusal = SetRefusal::None;
             holderRoot.get().asObject<ObjectHeader>()->setProp(
                 rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
-                /*defineOwn=*/false, recv.slot_ptr());
+                /*defineOwn=*/false, recv.slot_ptr(), &refusal);
+            // A symbol has no spelling a message can quote back — its
+            // description is not its identity — so the position is named
+            // instead of the key.
+            rtReportSetRefusal(refusal, strict, "<symbol>");
             return;
         }
         // A receiver with no shape has nowhere to put one, and discarding the
@@ -881,7 +920,13 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> val{Value(valBits)};
         Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-        objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        SetRefusal refusal = SetRefusal::None;
+        objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                        /*ic=*/nullptr, /*enumerable=*/true,
+                                                        /*defineOwn=*/false,
+                                                        /*receiver=*/nullptr, &refusal);
+        rtReportSetRefusal(refusal, strict,
+                           rtUtf8Chars(key.get().asString<StringHeader>()));
         return;
     }
     fatal("computed index writes are only supported on arrays, plain objects "

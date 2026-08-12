@@ -135,6 +135,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.operands = {objBoxed.id, storedBoxed.id};
     setInst.keyIndex = keyIdx;
     setInst.icIndex = icSiteCounter_++;
+    setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
     return isPrefix(op) ? newVal : numOld;
@@ -193,6 +194,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
     }
     setInst.type = il::Type::Void;
     setInst.result = il::kNoValue;
+    setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
     return isPrefix(op) ? newVal : numOld;

@@ -19,8 +19,12 @@
 // was assigned. Assigning "Ada Lovelace" therefore shows up as two separate
 // fields. 3. An accessor with only a getter silently ignores a write in sloppy
 // mode — `area` keeps computing from `side`. 10.1.9.2 returns false for it and
-// a non-strict Set discards that; the TypeError is the STRICT-mode answer and
-// bronze has no strict mode. 4. An accessor defined in an object literal is
+// a non-strict Set discards that; the TypeError is the STRICT-mode answer, and
+// `cases/strict_mode` is where that half is pinned. The two cases hold the two
+// halves of one rule (13.15.2 PutValue step 6.d) and neither is a special case
+// of the other, which is why this file must keep printing 9 after the write:
+// the flag rides on the write INSTRUCTION, so one program can hold both.
+// 4. An accessor defined in an object literal is
 // ENUMERABLE, so it appears in `Object.keys` and its getter runs when the key
 // is read back. A class accessor is not: 15.7.14 defines it with `enumerable:
 // false`, the same rule that already keeps class methods out of enumeration. 5.

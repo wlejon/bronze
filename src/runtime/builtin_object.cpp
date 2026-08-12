@@ -679,7 +679,7 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
                                               Value::fromDouble(0.0).rawBits()))};
         Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
                                               Value::fromDouble(1.0).rawBits()))};
-        bronze_elem_set(out.get().rawBits(), k.get().rawBits(), v.get().rawBits());
+        bronze_elem_set(out.get().rawBits(), k.get().rawBits(), v.get().rawBits(), /*strict=*/false);
         if (rtExceptionPending()) break;
     }
     if (rtExceptionPending()) bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
