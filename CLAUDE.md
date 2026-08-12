@@ -126,3 +126,10 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   the named function expression kept out of it, `arguments` as an ordinary
   binding carried in by the call wrapper with padding turned off, and the
   four global numeric functions)
+- 0028 update expressions and loop capture (`o.k++` as a reference evaluated
+  once so an accessor pair and `a[i++]++` come out right, generated code
+  reduced to ONE ToNumber, the per-iteration test narrowed to a closure that
+  references the loop binding FREELY with `var` heads exempt, the `for` head
+  given an environment record so a shadowing `let` stops aliasing what it
+  shadows, `return;` made to return a value, and the Error family given the
+  10.2.5 back-pointer)

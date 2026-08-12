@@ -277,6 +277,26 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.op = il::Op::Ret;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
+        // 14.10.1: `return;` returns UNDEFINED, which is a value — so in a
+        // function whose calling convention says it returns one, this is not
+        // a void return. Emitting one anyway produced a `ret void` in a
+        // function typed to return an i64, which LLVM's verifier rejected
+        // and nothing before it did: the early-exit-then-value-return shape
+        // (`if (x === undefined) return; ... return v;`) is ordinary, and it
+        // failed to compile at all. Falling off the END of the same function
+        // already produced the undefined here (see lowerFunctionBody); this
+        // is the same rule reached by the other door.
+        if (ilFn.returnType != il::Type::Void) {
+            il::ValueId undefVal = ilFn.valueCount++;
+            il::Instruction constInst;
+            constInst.op = il::Op::ConstUndefined;
+            constInst.type = il::Type::Dynamic;
+            constInst.result = undefVal;
+            emitInst(ilFn, constInst);
+            Value ret = coerceToType(Value{undefVal, il::Type::Dynamic}, ilFn.returnType, ilFn);
+            inst.type = ret.type;
+            inst.operands = {ret.id};
+        }
         emitInst(ilFn, inst);
     }
     return true;

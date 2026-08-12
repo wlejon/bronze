@@ -228,14 +228,15 @@ uint64_t bronze_box_str_key(uint32_t keyIndex) {
 }
 
 double bronze_unbox_f64(uint64_t bits) {
-    // ToNumber for the primitives it is defined on; anything needing string
-    // parsing or ToPrimitive is a named hard error, never a silent 0.
-    Value v(bits);
-    if (v.isNumber()) return v.asNumber();
-    if (v.isBool()) return v.asBool() ? 1.0 : 0.0;
-    if (v.isNull()) return 0.0;
-    if (v.isUndefined()) return std::numeric_limits<double>::quiet_NaN();
-    fatal("ToNumber on a string or object is unsupported");
+    // Generated code's only numeric coercion, and it is exactly ToNumber
+    // (7.1.4) — the same function the builtins already call, rather than a
+    // second, smaller one that agreed with it on four tags and diverged on the
+    // rest. It had its own copy that fataled on a string, so `+"5"` and
+    // `o.k = "5", o.k--` were hard errors while `Number("5")` next to them was
+    // 5, and an int32-tagged value fell all the way through to the fatal.
+    // Only ToPrimitive on an object is still unbuilt, and that stays a named
+    // hard error rather than a silent 0.
+    return rtToNumber(Value(bits));
 }
 
 int32_t bronze_unbox_i32(uint64_t bits) {

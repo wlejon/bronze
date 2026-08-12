@@ -526,6 +526,16 @@ private:
     std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn);
     std::optional<Value> lowerAssignment(const ast::Binary* bin, il::Function& ilFn);
 
+    // --- lower_update.cpp: `++`/`--` on each reference kind (docs/0028) -----
+    std::optional<Value> lowerUpdate(const ast::Unary& un, il::Function& ilFn);
+    std::optional<Value> lowerMemberUpdate(const ast::MemberAccess& mem, ast::UnaryOp op,
+                                           il::Function& ilFn);
+    std::optional<Value> lowerIndexUpdate(const ast::IndexAccess& idx, ast::UnaryOp op,
+                                          il::Function& ilFn);
+    // The arithmetic half, shared so that the three reference kinds cannot
+    // disagree about what ToNumeric produced.
+    Value emitUpdateStep(Value oldNumeric, ast::UnaryOp op, il::Function& ilFn);
+
     // --- lower_expr_binary.cpp: the binary operator families (docs/0015) ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,

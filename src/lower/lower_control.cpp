@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ast/assigned.h"
+#include "ast/queries.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -396,15 +397,22 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
 
 bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     const std::string label = takePendingLabel();
-    // A `for (let i = ...)` header binding is copied per iteration in
-    // JS, so a closure over it must capture a fresh binding each time
-    // round. That needs the environment threaded across the back
-    // edge, which the block-scope rule does not give for free
-    // (docs/0007 decision 2) — diagnose it rather than silently
-    // sharing one binding.
+    // A `for (let i = ...)` header binding is copied per iteration
+    // (14.7.4.9), so a closure over it must capture a fresh binding each time
+    // round. That needs the environment threaded across the back edge, which
+    // the block-scope rule does not give for free (docs/0007 decision 2) —
+    // diagnose it rather than silently sharing one binding.
+    //
+    // The test is whether a closure UNDER THIS LOOP reaches this binding, not
+    // whether the enclosing function captures the name anywhere: `for (let i…)`
+    // beside an unrelated `arr.map((i) => …)` shares nothing but a spelling,
+    // and rejecting it rejects a large fraction of ordinary JavaScript
+    // (docs/0028 decision 3). `var` is exempt outright — it declares ONE
+    // binding for the whole loop, so a closure over it is already correct.
     for (const auto& initStmt : forStmt->init) {
         const auto* initDecl = dynamic_cast<const ast::VarDecl*>(initStmt.get());
-        if (initDecl && capturedNames_.contains(initDecl->name)) {
+        if (initDecl && !initDecl->isVar &&
+            ast::closureCapturesLoopBinding(*forStmt, initDecl->name)) {
             diags_.error(forStmt->span,
                          "unsupported construct: closure capturing the for-loop binding '" +
                              initDecl->name +
@@ -413,7 +421,13 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
             return false;
         }
     }
-    enterScope();
+    // The header's own scope, and it needs an environment record of its own
+    // whenever one of its bindings is env-backed. Entered with `init` so that
+    // `getScopeDeclarations` sees the header's declarations: without them the
+    // innermost record at the declaration is the enclosing function's, and a
+    // `let i` here would be given the slot that scope's OWN `i` already
+    // occupies — a shadowing declaration aliasing what it shadows.
+    enterScope(forStmt->init, ilFn);
     for (const auto& initStmt : forStmt->init) {
         if (!lowerStmt(*initStmt, ilFn)) return false;
     }

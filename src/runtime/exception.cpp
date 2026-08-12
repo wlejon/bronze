@@ -191,6 +191,17 @@ void ensureErrorClasses() {
         Rooted<Value> msgVal{rtMakeString("")};
         setMessage(proto, msgVal);
 
+        // 10.2.5 step 6 again, for a class the runtime provides rather than
+        // one the program wrote: `e.constructor` is how idiomatic code asks
+        // what kind of error it caught, and without the back-pointer
+        // `e.constructor.name` threw on undefined. A DEFINITION, because
+        // `TypeError.prototype` inherits from `Error.prototype` and must get
+        // its own rather than write through to the parent's.
+        Rooted<Value> ctorKey{rtMakeString("constructor")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), ctorKey, ctor,
+                                                     /*ic=*/nullptr, /*enumerable=*/false,
+                                                     /*defineOwn=*/true);
+
         FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
         fn->prototype = proto.get();
         fn->instance_shape = rtNewRootShape(proto.get());

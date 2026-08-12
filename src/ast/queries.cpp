@@ -405,6 +405,122 @@ public:
     void visit(const ClassDecl&) override {}
 };
 
+void appendDeclaredNames(const VarDecl& decl, std::vector<std::string>& out);
+
+// Does a function body bind `name` itself, so that every reference to it
+// anywhere inside resolves to that binding (or to an inner shadow of it)
+// rather than reaching out to the enclosing scope?
+//
+// Three sources, and no more: parameters, the body's own top-level lexical and
+// function declarations, and a top-level `var`. Anything declared deeper is
+// deliberately not counted, in BOTH directions of the spec:
+//
+//   - a `let` inside an inner block covers only that block, so `{ let x; }
+//     use(x)` still reaches outward and counting it would hide a real capture;
+//   - a `var` inside an inner block is function-scoped by 8.6.2 and so DOES
+//     cover the whole body — but bronze does not hoist one out of the block it
+//     is written in, and this predicate must describe the bindings lowering
+//     actually makes rather than the ones the spec describes. Claiming the
+//     shadow that lowering will not create is how `for (let i…)` came to be
+//     captured by a closure whose `var i` sat one block down.
+//
+// Erring toward "not bound" costs a diagnostic; erring the other way is a
+// silently wrong capture.
+bool functionBindsName(const std::vector<Param>& params, const std::vector<StmtPtr>& body,
+                       const std::string& name) {
+    for (const auto& p : params) {
+        if (p.name == name) return true;
+        if (p.pattern) {
+            for (const auto& bound : patternBoundNames(*p.pattern)) {
+                if (bound == name) return true;
+            }
+        }
+    }
+    for (const auto& declared : getScopeDeclarations(body)) {
+        if (declared == name) return true;
+    }
+    for (const auto& s : body) {
+        const auto* decl = dynamic_cast<const VarDecl*>(s.get());
+        if (!decl || !decl->isVar) continue;
+        std::vector<std::string> declared;
+        appendDeclaredNames(*decl, declared);
+        for (const auto& d : declared) {
+            if (d == name) return true;
+        }
+    }
+    return false;
+}
+
+bool functionFreelyReferences(const std::vector<Param>& params, const std::vector<StmtPtr>& body,
+                              const std::string& name);
+
+// Does a function nested under this node reach `name` in the scope the node
+// sits in? CaptureVisitor's traversal already stops at every function
+// boundary, so overriding only the boundaries turns "what could a closure
+// capture" into "does a closure capture THIS name" — and the answer is no
+// whenever the closure binds the name itself.
+class NestedFunctionRefVisitor : public CaptureVisitor {
+public:
+    explicit NestedFunctionRefVisitor(std::string name) : name_(std::move(name)) {}
+    bool found = false;
+
+    void visit(const FunctionExpr& f) override {
+        if (functionFreelyReferences(f.params, f.body, name_)) found = true;
+    }
+    void visit(const FunctionDecl& f) override {
+        if (functionFreelyReferences(f.params, f.body, name_)) found = true;
+    }
+    // `super` in a method resolves against the class's BASE, so a method body
+    // reaches the base name without ever spelling it as an identifier
+    // (docs/0012 decision 5).
+    void visit(const ClassDecl& c) override {
+        if (c.superName == name_) found = true;
+        for (const auto& m : c.methods) {
+            if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+        }
+    }
+
+protected:
+    std::string name_;
+};
+
+// The same, widened to the scope's OWN mentions: inside a function, a
+// reference in the body counts as much as one two closures down.
+//
+// Over-approximates in the direction of "free": a mention inside an inner
+// BLOCK that redeclares the name still counts, because `functionBindsName`
+// looks only at bindings that cover the whole body. That costs a diagnostic a
+// fully scope-resolved walk would not raise, and never the reverse — and the
+// reverse is a silently wrong capture.
+class FreeMentionVisitor final : public NestedFunctionRefVisitor {
+public:
+    using NestedFunctionRefVisitor::NestedFunctionRefVisitor;
+
+    void visit(const Ident& i) override {
+        if (i.name == name_) found = true;
+    }
+    // A destructuring assignment's TARGETS are writes of those names, which is
+    // a reference like any read. CaptureVisitor walks only the pattern's
+    // expressions, because for its own question a target is a declaration.
+    void visit(const DestructuringAssign& d) override {
+        for (const auto& bound : patternBoundNames(*d.pattern)) {
+            if (bound == name_) found = true;
+        }
+        CaptureVisitor::visit(d);
+    }
+};
+
+bool functionFreelyReferences(const std::vector<Param>& params, const std::vector<StmtPtr>& body,
+                              const std::string& name) {
+    if (functionBindsName(params, body, name)) return false;
+    FreeMentionVisitor v{name};
+    visitParamExprs(params, v);
+    for (const auto& s : body) {
+        if (s) s->accept(v);
+    }
+    return v.found;
+}
+
 // Finds a `return <expr>;` in a function body, stopping at any nested
 // function: an inner `return` returns from that function, not this one.
 // Same traversal shape as ThisVisitor, recording something else again.
@@ -568,6 +684,21 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
         }
     }
     return names;
+}
+
+bool closureCapturesLoopBinding(const ForStmt& forStmt, const std::string& name) {
+    NestedFunctionRefVisitor v{name};
+    // The head is walked too: `for (let i = 0, f = () => i; …)` puts a closure
+    // over the loop binding in the declaration list itself.
+    for (const auto& s : forStmt.init) {
+        if (s) s->accept(v);
+    }
+    if (forStmt.condition) forStmt.condition->accept(v);
+    if (forStmt.update) forStmt.update->accept(v);
+    for (const auto& s : forStmt.body) {
+        if (s) s->accept(v);
+    }
+    return v.found;
 }
 
 bool returnsAValue(const std::vector<StmtPtr>& stmts) {

@@ -65,6 +65,21 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<StmtPtr>& stmts);
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*>& stmts);
 
+// Does a function nested anywhere inside this `for` statement — its head, its
+// condition, its update or its body — reference `name` in a way that resolves
+// to the LOOP's binding of it?
+//
+// The question ECMA-262 14.7.4 forces: a `let` loop binding is copied per
+// iteration, so a closure that reaches it must capture that iteration's copy.
+// A closure that binds `name` itself — a parameter called `i`, a `let i` of
+// its own — never touches the loop's, and `for (let i…)` beside a callback
+// taking `i` is ubiquitous, so the two must not be confused.
+//
+// Answers "yes" whenever it cannot tell (docs/0028 decision 3): a false yes
+// is a diagnostic, a false no is a closure silently sharing one binding
+// across every iteration.
+bool closureCapturesLoopBinding(const ForStmt& forStmt, const std::string& name);
+
 // Does this function body mention `this`? Deliberately does NOT descend
 // into nested functions: each one binds its own receiver, so an inner
 // `this` says nothing about the outer function (docs/0008 decision 3).

@@ -1,6 +1,7 @@
 bronze_add_module(lower
     SOURCES lower.cpp lower_infer.cpp lower_util.cpp lower_scope.cpp lower_stmt.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_binary.cpp lower_expr_cond.cpp
+            lower_update.cpp
             lower_object.cpp lower_pattern.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp
