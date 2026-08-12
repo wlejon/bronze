@@ -60,15 +60,29 @@ invokes it.
 
 ## Build
 
-Prereqs on this machine: CMake ≥ 3.24, Ninja, clang-cl (LLVM toolchain in
-`C:\Program Files\LLVM`), vcpkg at `D:\vcpkg` (auto-detected; override with
-`VCPKG_ROOT` or `-DCMAKE_TOOLCHAIN_FILE`).
+Prereqs on this machine: CMake ≥ 3.24, Ninja, MSVC (`cl`, reached through
+`dev.cmd`, which is the one place the vcvars path lives), vcpkg at `D:\vcpkg`
+(auto-detected; override with `VCPKG_ROOT` or `-DCMAKE_TOOLCHAIN_FILE`).
 
 ```
 cmake --preset dev          # configure (vcpkg installs doctest, small)
 cmake --build --preset dev  # build everything
 ctest --preset dev          # run all module tests
 ```
+
+That is the light configure, and it does not build a compiler that can emit
+an executable: the LLVM backend is opt-in, and `tests/oracle` is only defined
+when it is on. Working on the front half — lexer, parser, inference, lowering,
+IL — that is the loop you want, and its 13 tests are the whole suite.
+
+```
+cmake --preset dev -DBRONZE_WITH_LLVM=ON
+```
+
+is the other one, and it is what `bronze build`, the oracle suite and the
+three.js milestone need — 16 tests. **It is the configure the pre-commit run
+means.** Without it `ctest` does not fail, it runs a smaller suite, which is
+the more dangerous of the two.
 
 ## Iteration workflow (the point of this repo layout)
 

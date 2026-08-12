@@ -160,6 +160,39 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     return Value::fromDouble(str->charCodeAt(static_cast<uint32_t>(idx))).rawBits();
 }
 
+// Out of range is `undefined` here and NaN in charCodeAt above. That is
+// 22.1.3.4 step 4 rather than an inconsistency between the two: charCodeAt
+// answers a Number at every position it accepts, so it has to answer one
+// where it accepts none, and codePointAt is free to say "no code point here".
+//
+// The pairing rule is 11.1.4 CodePointAt. A leading surrogate followed by a
+// trailing one is ONE code point; an unpaired surrogate is its own code unit,
+// which covers three cases that all read the same way — a lead at the very end
+// of the string, a lead not followed by a trail, and a trail read directly.
+// Reading at the second half of a pair therefore answers that half and not the
+// pair, which is what makes this the member that walks a string by code point.
+uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value self(thisBits);
+    if (!self.isString()) {
+        return rtThrowTypeError(
+                   "String.prototype.codePointAt called on a value that is not a string")
+            .rawBits();
+    }
+    StringHeader* str = self.asString<StringHeader>();
+    const uint32_t size = str->getLength();
+    double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    if (idx < 0 || idx >= static_cast<double>(size)) return Value::fromUndefined().rawBits();
+    const uint32_t at = static_cast<uint32_t>(idx);
+    const uint32_t first = str->charCodeAt(at);
+    if (first < 0xD800 || first > 0xDBFF || at + 1 == size) {
+        return Value::fromDouble(first).rawBits();
+    }
+    const uint32_t second = str->charCodeAt(at + 1);
+    if (second < 0xDC00 || second > 0xDFFF) return Value::fromDouble(first).rawBits();
+    return Value::fromDouble((first - 0xD800) * 0x400 + (second - 0xDC00) + 0x10000).rawBits();
+}
+
 uint64_t stringIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "indexOf");
@@ -401,6 +434,7 @@ const StringMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
     {"charCodeAt", stringCharCodeAt, 1},
+    {"codePointAt", stringCodePointAt, 1},
     {"concat", stringConcat, 0},
     {"endsWith", stringEndsWith, 1},
     {"includes", stringIncludes, 1},

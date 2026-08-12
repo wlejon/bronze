@@ -3,7 +3,7 @@
   "configurePresets": [
     {
       "name": "dev",
-      "displayName": "Dev (Ninja + clang-cl, Debug)",
+      "displayName": "Dev (Ninja + cl, Debug)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
@@ -15,7 +15,7 @@
     },
     {
       "name": "release",
-      "displayName": "Release (Ninja + clang-cl)",
+      "displayName": "Release (Ninja + cl)",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }

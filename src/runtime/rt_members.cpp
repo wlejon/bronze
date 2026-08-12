@@ -21,23 +21,25 @@ namespace bronze::runtime {
 
 namespace {
 
-// Array.prototype, minus `length` and `constructor`, which are real.
+// Array.prototype. What is NOT here is either implemented — the table in
+// builtin_array.cpp answers first — or `length` and `constructor`, which are
+// real. `sort` and `splice` are the two a real program misses first.
 const char* const kArrayMembers[] = {
-    "at", "concat", "copyWithin", "entries", "every", "fill", "filter",
-    "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach",
-    "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce",
-    "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toLocaleString",
-    "toReversed", "toSorted", "toSpliced", "toString", "unshift", "values", "with",
+    "copyWithin", "entries", "flat", "flatMap", "keys", "sort", "splice",
+    "toLocaleString", "toReversed", "toSorted", "toSpliced", "toString", "values", "with",
 };
 
-// String.prototype, minus `length` and `constructor`, which are real.
+// String.prototype, on the same rule — and the answering side is TWO tables,
+// the plain members in builtin_string.cpp and the pattern-taking ones
+// (`match`, `replace`, `search`, …) in builtin_string_regexp.cpp.
+//
+// The four locale members are here as unimplemented rather than aliased to
+// their non-locale twins: the deterministic-output rule forbids a locale
+// function, and answering with `toLowerCase` would be right for most inputs
+// and silently wrong for the ones the member exists to get right.
 const char* const kStringMembers[] = {
-    "at", "charAt", "charCodeAt", "codePointAt", "concat", "endsWith",
-    "includes", "indexOf", "isWellFormed", "lastIndexOf", "localeCompare",
-    "normalize", "padEnd", "padStart", "repeat",
-    "slice", "startsWith", "substr", "substring", "toLocaleLowerCase",
-    "toLocaleUpperCase", "toLowerCase", "toString", "toUpperCase", "toWellFormed",
-    "trim", "trimEnd", "trimStart", "valueOf",
+    "isWellFormed", "localeCompare", "normalize", "substr",
+    "toLocaleLowerCase", "toLocaleUpperCase", "toWellFormed",
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in

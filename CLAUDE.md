@@ -9,7 +9,7 @@ out of scope.
 ## Build & test (Ninja + cl via the vcvars wrapper)
 
 ```
-.\dev.cmd cmake --preset dev              # configure
+.\dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON   # configure
 .\dev.cmd cmake --build --preset dev      # build (incremental ~2s)
 .\dev.cmd ctest --preset dev              # all tests (~7 min)
 .\dev.cmd ctest --preset dev -L lex       # one module's tests
@@ -18,6 +18,13 @@ out of scope.
 ```
 
 Iterate with scoped module tests; run the full `ctest` before any commit.
+
+`-DBRONZE_WITH_LLVM=ON` is on the configure line and not in the preset,
+because the hard rule below keeps the default build free of LLVM. It is not
+optional for the pre-commit run: `tests/oracle` is only defined when the
+backend is built, so without it `ctest` silently runs 13 tests instead of 16
+and the entire oracle ratchet — the thing that decides whether bronze is
+correct — is absent rather than failing.
 
 `oracle-threejs` compiles unmodified three.js r160 from vendored source and
 checks the scene graph it builds (`tests/oracle/threejs/README.md`).
