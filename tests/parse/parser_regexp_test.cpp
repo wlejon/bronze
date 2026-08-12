@@ -64,10 +64,18 @@ TEST_CASE("a pattern that does not compile is a compile error where it is writte
 }
 
 TEST_CASE("a construct bronze refuses is named at the literal, not at the run") {
-    const auto lookbehind = parseRegExp("const re = /(?<=a)b/;\n");
-    CHECK(lookbehind.find("lookbehind") != std::string::npos);
+    // A case fold bronze carries no table for is decided when the literal is
+    // compiled, so the code point is named at the line that wrote it.
+    const auto fold = parseRegExp("const re = /\\u1E9E/i;\n");
+    CHECK(fold.find("U+1E9E") != std::string::npos);
     const auto property = parseRegExp("const re = /\\p{L}/;\n");
     CHECK(property.find("unicode property escapes") != std::string::npos);
     const auto unicode = parseRegExp("const re = /a/u;\n");
     CHECK(unicode.find("`u` flag") != std::string::npos);
+    // And a construct bronze implements is compiled at the literal without a
+    // word about it: `(?<` is the prefix the lexer must NOT mistake for the
+    // start of a named group's `>`-terminated name.
+    const auto lookbehind = parseRegExp("const re = /(?<=a)b/;\n");
+    CHECK(lookbehind.substr(0, 7) != "ERRORS:");
+    CHECK(lookbehind.find("(regexp /(?<=a)b/)") != std::string::npos);
 }

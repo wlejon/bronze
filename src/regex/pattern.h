@@ -35,6 +35,12 @@ enum class NodeKind : uint8_t {
     // accepts immediately, so the inner match is never retried to satisfy what
     // follows it.
     Lookahead,
+    // `(?<=...)` / `(?<!...)`. The same node as a lookahead in every respect
+    // but one: 22.2.2.6 matches its Disjunction with `direction` = backward, so
+    // its terms run right to left from the assertion's position and every
+    // position inside it DECREASES. Like a lookahead it is atomic and consumes
+    // nothing.
+    Lookbehind,
     // `(...)` / `(?:...)` / `(?<name>...)`. `captureIndex` is 0 for a
     // non-capturing group, since capture 0 is the whole match and can never be
     // a group's own.
@@ -57,7 +63,7 @@ struct Node {
     RangeList ranges;                 // Class
     bool negated = false;             // Class
     AssertionKind assertion = AssertionKind::Start;
-    bool lookaheadNegative = false;   // Lookahead
+    bool lookaroundNegative = false;  // Lookahead, Lookbehind
     uint32_t captureIndex = 0;        // Group
     uint32_t backreference = 0;       // Backreference
 

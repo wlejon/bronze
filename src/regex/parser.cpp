@@ -30,6 +30,15 @@ bool isIdentifierStart(uint16_t c) {
 
 bool isIdentifierPart(uint16_t c) { return isIdentifierStart(c) || isDecimalDigit(c); }
 
+// What an IdentityEscape may NOT be. 22.2.1 lets `\` precede a SyntaxCharacter
+// — `^ $ \ . * + ? ( ) [ ] { } |` — or `/`, and Annex B widens that to almost
+// anything; a LETTER OR DIGIT is where the two readings stop agreeing, and a
+// pattern written for another engine's `\q` extension would otherwise match a
+// plain `q` here. `$` and `_` are neither, so `\$` is the ordinary dollar sign.
+bool isAlphanumeric(uint16_t c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDecimalDigit(c);
+}
+
 // A group name is written back out in diagnostics and used as a property key,
 // so it is carried as UTF-8. Names are restricted to ASCII identifiers
 // (bronze's own identifier rule), which is narrower than the
@@ -193,8 +202,10 @@ private:
         // 22.2.1's Term production has no `Assertion Quantifier`: `^*` is a
         // syntax error, and a lookahead is quantifiable only under Annex B,
         // which bronze does not take (a quantified lookahead consumes nothing
-        // and its only effect is on captures).
-        if (atom->kind == NodeKind::Assertion || atom->kind == NodeKind::Lookahead) {
+        // and its only effect is on captures). A lookbehind is not quantifiable
+        // even there.
+        if (atom->kind == NodeKind::Assertion || atom->kind == NodeKind::Lookahead ||
+            atom->kind == NodeKind::Lookbehind) {
             return fail("a quantifier applied to an assertion");
         }
         if (min > max) return fail("a quantifier whose minimum exceeds its maximum");
@@ -315,28 +326,33 @@ private:
         for (int i = 0; i < 4; ++i) buf[3 - i] = kHex[(unit >> (i * 4)) & 0xF];
         buf[4] = '\0';
         return fail("unsupported: case-insensitive matching of U+" + std::string(buf) +
-                    " (bronze carries no Unicode case tables; only ASCII and Latin-1 "
-                    "fold under the `i` flag)");
+                    " (bronze carries no Unicode case tables; only ASCII, Latin-1, Latin "
+                    "Extended-A, Greek, Cyrillic and Armenian fold under the `i` flag)");
     }
 
     NodePtr parseGroup() {
         ++pos_;  // '('
         uint32_t captureIndex = 0;
         std::string name;
-        bool lookahead = false;
-        bool lookaheadNegative = false;
+        // Which production this `(` opens. `(?<` is the ambiguous prefix —
+        // only the character after it separates a lookbehind from a named
+        // group — and it is the one thing the pre-scan has to agree with,
+        // since a lookbehind does not capture and a named group does.
+        NodeKind kind = NodeKind::Group;
+        bool negative = false;
 
         if (eat('?')) {
             if (eat(':')) {
                 // non-capturing
             } else if (eat('=')) {
-                lookahead = true;
+                kind = NodeKind::Lookahead;
             } else if (eat('!')) {
-                lookahead = true;
-                lookaheadNegative = true;
+                kind = NodeKind::Lookahead;
+                negative = true;
             } else if (peek() == '<' && (peek(1) == '=' || peek(1) == '!')) {
-                return fail("unsupported: lookbehind assertions `(?<=` and `(?<!` "
-                            "are not implemented");
+                negative = peek(1) == '!';
+                pos_ += 2;
+                kind = NodeKind::Lookbehind;
             } else if (eat('<')) {
                 const size_t begin = pos_;
                 if (atEnd() || !isIdentifierStart(peek())) {
@@ -357,8 +373,8 @@ private:
         if (!body) return nullptr;
         if (!eat(')')) return fail("`)` was expected to close a group");
 
-        NodePtr node = make(lookahead ? NodeKind::Lookahead : NodeKind::Group);
-        node->lookaheadNegative = lookaheadNegative;
+        NodePtr node = make(kind);
+        node->lookaroundNegative = negative;
         node->captureIndex = captureIndex;
         node->children.push_back(std::move(body));
         return node;
@@ -525,7 +541,7 @@ private:
         // an ALPHANUMERIC one is refused: `\q` reading as `q` is how a pattern
         // meant for another engine's extension silently matches the wrong
         // thing. Every escape bronze implements is named above.
-        if (isIdentifierPart(c)) {
+        if (isAlphanumeric(c)) {
             fail("`\\" + std::string(1, static_cast<char>(c)) +
                  "` is not an escape sequence bronze implements");
             return false;

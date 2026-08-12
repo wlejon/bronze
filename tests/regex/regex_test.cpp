@@ -55,6 +55,20 @@ std::string firstMatch(const regex::Pattern& pattern, std::string_view input, si
     return out;
 }
 
+// A string spelled by code point, for the case table: `u()` above is ASCII
+// only, and a fold question is never about a character that fits in it.
+regex::Units unitsOf(std::initializer_list<uint32_t> codes) {
+    regex::Units out;
+    for (uint32_t c : codes) out.push_back(static_cast<char16_t>(c));
+    return out;
+}
+
+bool matches(const regex::Pattern& pattern, const regex::Units& input) {
+    regex::MatchResult result;
+    std::string error;
+    return regex::search(pattern, input, 0, result, error) == regex::ExecStatus::Match;
+}
+
 std::string capture(const regex::Pattern& pattern, std::string_view input, uint32_t group) {
     regex::MatchResult result;
     std::string error;
@@ -101,6 +115,11 @@ TEST_CASE("literals, alternation and quantifiers") {
     CHECK(firstMatch(*compileOk("colou?r"), "color") == "color");
     // The alternation is ordered, not longest-match: `a` wins at index 0.
     CHECK(firstMatch(*compileOk("a|ab"), "ab") == "a");
+    // IdentityEscape (22.2.1): `\` before a SyntaxCharacter is that character,
+    // which is the only way to write a literal `$`. Only a LETTER OR DIGIT is
+    // refused, since that is where Annex B and the strict grammar diverge.
+    CHECK(firstMatch(*compileOk("\\$\\d+"), "cost: $42") == "$42");
+    CHECK(firstMatch(*compileOk("a\\-b"), "xa-by") == "a-b");
 }
 
 TEST_CASE("an invalid brace is an ordinary character (Annex B)") {
@@ -181,17 +200,141 @@ TEST_CASE("case-insensitive matching over ASCII and Latin-1") {
     CHECK(regex::search(*micro, greek, 0, result, error) == regex::ExecStatus::Match);
 }
 
+TEST_CASE("the case table above Latin-1, rule by rule") {
+    // Greek is +32 from U+0391 Α to U+03A9 Ω, with U+03C2 FINAL SIGMA at -31
+    // because it shares the capital U+03A3 with U+03C3.
+    CHECK(matches(*compileOk("\\u03A9", "i"), unitsOf({0x03C9})));
+    CHECK(matches(*compileOk("\\u03c3", "i"), unitsOf({0x03A3})));
+    CHECK(matches(*compileOk("\\u03c2", "i"), unitsOf({0x03A3})));
+    // The glyph-variant symbols uppercase to the ordinary capital of the
+    // letter they vary, which is no offset at all.
+    CHECK(matches(*compileOk("\\u03d0", "i"), unitsOf({0x0392})));
+    CHECK(matches(*compileOk("\\u03f0", "i"), unitsOf({0x039A})));
+    CHECK(matches(*compileOk("\\u03d1", "i"), unitsOf({0x0398})));
+    // U+0390's uppercase is three code units, so step 3 leaves it alone and it
+    // matches nothing but itself.
+    CHECK(matches(*compileOk("\\u0390", "i"), unitsOf({0x0390})));
+    CHECK_FALSE(matches(*compileOk("\\u0390", "i"), unitsOf({0x0399})));
+    // Cyrillic is +32 for the alphabet at U+0410 and +80 for the block at
+    // U+0400, whose small letters were encoded a row further down.
+    CHECK(matches(*compileOk("\\u0410", "i"), unitsOf({0x0430})));
+    CHECK(matches(*compileOk("\\u0451", "i"), unitsOf({0x0401})));
+    // U+04CF SMALL PALOCHKA was added long after its capital U+04C0 and is the
+    // one member of the block not adjacent to its pair.
+    CHECK(matches(*compileOk("\\u04cf", "i"), unitsOf({0x04C0})));
+    // Latin Extended-A is capital/small pairs, and these four are not: U+0131
+    // and U+017F uppercase to ASCII (step 4 keeps them), U+0149's uppercase is
+    // two units, and U+0130 is itself a capital.
+    CHECK(matches(*compileOk("\\u0161", "i"), unitsOf({0x0160})));
+    CHECK_FALSE(matches(*compileOk("\\u0131", "i"), unitsOf({0x0049})));
+    CHECK_FALSE(matches(*compileOk("\\u017f", "i"), unitsOf({0x0053})));
+    CHECK(matches(*compileOk("\\u0149", "i"), unitsOf({0x0149})));
+    CHECK_FALSE(matches(*compileOk("\\u0131", "i"), unitsOf({0x0130})));
+    // Armenian is +48.
+    CHECK(matches(*compileOk("\\u0561", "i"), unitsOf({0x0531})));
+}
+
+TEST_CASE("a range folds through the reverse direction of the table") {
+    // 22.2.2.7.1: the SET must hold a member canonicalizing to what the input
+    // canonicalizes to. U+0393's own canonicalization is itself and is outside
+    // [α-ω], so nothing but the reverse table finds U+03B3 for it.
+    CHECK(matches(*compileOk("[\\u03b1-\\u03c9]", "i"), unitsOf({0x0393})));
+    CHECK(matches(*compileOk("[\\u0391-\\u03a9]", "i"), unitsOf({0x03C2})));
+    CHECK(matches(*compileOk("[\\u0430-\\u044f]", "i"), unitsOf({0x041F})));
+    CHECK(matches(*compileOk("[\\u0561-\\u0586]", "i"), unitsOf({0x0556})));
+    // A negated class inverts the ANSWER, after that membership test — not the
+    // ranges before it.
+    CHECK_FALSE(matches(*compileOk("[^\\u03b1-\\u03c9]", "i"), unitsOf({0x0393})));
+    // `\w` grows by exactly the two units whose canonicalization is already a
+    // word character, and only under `i`.
+    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x017F})));
+    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x212A})));
+    CHECK_FALSE(matches(*compileOk("\\w"), unitsOf({0x212A})));
+}
+
 TEST_CASE("a case fold bronze has no table for is a named error, never a guess") {
-    const std::string error = compileError("\\u03A9", "i");
-    CHECK(error.find("U+03A9") != std::string::npos);
+    // U+1E9E LATIN CAPITAL LETTER SHARP S: Latin Extended Additional is one of
+    // the blocks whose mappings bronze states no rule for.
+    const std::string error = compileError("\\u1E9E", "i");
+    CHECK(error.find("U+1E9E") != std::string::npos);
     CHECK(error.find("no Unicode case tables") != std::string::npos);
     // Without `i` the same pattern is ordinary.
-    CHECK(compileOk("\\u03A9") != nullptr);
+    CHECK(compileOk("\\u1E9E") != nullptr);
+    // Latin Extended-B and Georgian are refused for the same reason, and
+    // U+037A is refused inside a block that otherwise folds.
+    CHECK(compileError("\\u01C5", "i").find("U+01C5") != std::string::npos);
+    CHECK(compileError("\\u10A0", "i").find("U+10A0") != std::string::npos);
+    CHECK(compileError("\\u037A", "i").find("U+037A") != std::string::npos);
+    // The blocks that DO fold are not refused — a refusal that outlived its
+    // table would be a hard error for nothing.
+    CHECK(compileOk("\\u03A9", "i") != nullptr);
+    CHECK(compileOk("\\u0410", "i") != nullptr);
+    CHECK(compileOk("\\u0161", "i") != nullptr);
+    CHECK(compileOk("\\u0561", "i") != nullptr);
+}
+
+TEST_CASE("a lookbehind matches its Disjunction backward (22.2.2.6)") {
+    CHECK(firstMatch(*compileOk("(?<=a)b"), "ab") == "b");
+    CHECK(firstMatch(*compileOk("(?<=a)b"), "cb") == "<none>");
+    CHECK(firstMatch(*compileOk("(?<!a)b"), "ab") == "<none>");
+    CHECK(firstMatch(*compileOk("(?<!a)b"), "cb") == "b");
+    // An Alternative's terms run last to first, so the group written FIRST is
+    // the one that ends up leftmost — and the one written second is the one
+    // that gets to be greedy first.
+    auto letters = compileOk("(?<=([ab]+)([bc]+))$");
+    CHECK(capture(*letters, "abc", 1) == "a");
+    CHECK(capture(*letters, "abc", 2) == "bc");
+    auto digits = compileOk("(?<=(\\d+)(\\d+))$");
+    CHECK(capture(*digits, "1053", 1) == "1");
+    CHECK(capture(*digits, "1053", 2) == "053");
+    // A capture closed backward opened at the HIGHER index, so 22.2.2.8 orders
+    // the pair rather than assigning it in the order it was written.
+    CHECK(capture(*compileOk("(?<=(ab))c"), "abc", 1) == "ab");
+    // A backreference backward is compared against the text ENDING at the
+    // position. Reversing the terms means `\1` is reached BEFORE the group it
+    // names, so it is still an unparticipating group and matches the empty
+    // string (22.2.2.9 step 2) — the group then takes the two units behind it.
+    CHECK(firstMatch(*compileOk("(?<=(a)\\1)b"), "aab") == "b");
+    CHECK(capture(*compileOk("(?<=(ab)\\1)c"), "ababc", 1) == "ab");
+    // `\b` and `^` consume nothing whichever direction they ran.
+    CHECK(firstMatch(*compileOk("(?<=\\bfoo)bar"), "foobar") == "bar");
+    CHECK(firstMatch(*compileOk("(?<=\\bfoo)bar"), "xfoobar") == "<none>");
+    CHECK(firstMatch(*compileOk("(?<=^ab)c"), "abc") == "c");
+    CHECK(firstMatch(*compileOk("(?<=^b)c"), "abc") == "<none>");
+    // A Disjunction is ordered left to right either way: only the terms WITHIN
+    // an Alternative reverse.
+    CHECK(firstMatch(*compileOk("(?<=ab|b)c"), "abc") == "c");
+    CHECK(firstMatch(*compileOk("(?<=cd|b)c"), "abc") == "c");
+    // A negative lookbehind discards what its body captured, like a negative
+    // lookahead — and a lookbehind nested in a lookahead runs backward from
+    // where the outer one reached, after which the outer resumes forward.
+    CHECK(capture(*compileOk("(?<!(a))b"), "cb", 1) == "<undefined>");
+    CHECK(firstMatch(*compileOk("a(?=b(?<=ab))"), "ab") == "a");
+    CHECK(firstMatch(*compileOk("a(?=b(?<=xb))"), "ab") == "<none>");
+}
+
+TEST_CASE("a quantified single-unit atom is counted backward too") {
+    CHECK(firstMatch(*compileOk("(?<=a{2,3})b"), "aab") == "b");
+    CHECK(firstMatch(*compileOk("(?<=a{2,3})b"), "ab") == "<none>");
+    CHECK(firstMatch(*compileOk("(?<=a*)b"), "b") == "b");
+    // Lazy backward still takes the fewest turns it can.
+    CHECK(capture(*compileOk("(?<=(a+?))b"), "aaab", 1) == "a");
+    // The same guarantee the forward path carries: 50 000 repetitions is far
+    // past the continuation-depth limit, so a backward walk that recursed per
+    // repetition would be a named depth error rather than a match. `from` puts
+    // the one attempt at the `b`, since the scan itself is not what is tested.
+    std::string big(50000, 'a');
+    big += "b";
+    CHECK(firstMatch(*compileOk("(?<=a*)b"), big, big.size() - 1) == "b");
+    CHECK(firstMatch(*compileOk("(?<=[a]{4,})b"), big, big.size() - 1) == "b");
 }
 
 TEST_CASE("refused constructs are named, never silently reinterpreted") {
-    CHECK(compileError("(?<=a)b").find("lookbehind") != std::string::npos);
-    CHECK(compileError("(?<!a)b").find("lookbehind") != std::string::npos);
+    // A lookbehind is an Assertion, and 22.2.1's Term production has no
+    // `Assertion Quantifier` — not even under Annex B, which allows it for a
+    // lookahead only.
+    CHECK(compileError("(?<=a)*").find("assertion") != std::string::npos);
+    CHECK(compileError("(?<=a").find("`)` was expected") != std::string::npos);
     CHECK(compileError("\\p{L}").find("unicode property escapes") != std::string::npos);
     CHECK(compileError("\\q").find("not an escape sequence") != std::string::npos);
     CHECK(compileError("\\1").find("has 0") != std::string::npos);

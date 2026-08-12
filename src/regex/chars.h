@@ -43,11 +43,14 @@ const RangeList& digitRanges();
 const RangeList& spaceRanges();
 const RangeList& wordRanges(bool ignoreCase);
 
-// Canonicalize (22.2.2.9) for the units bronze has case data for: ASCII and
-// the Latin-1 supplement, exactly, including the two members whose uppercase
-// leaves Latin-1 (U+00B5 MICRO SIGN and U+00FF) and the one whose uppercase is
-// two units and therefore does not apply (U+00DF). Everything else is returned
-// unchanged, which is correct for every unit `isUnknownCasedUnit` rejects.
+// Canonicalize (22.2.2.9) for the units bronze has case data for. There is no
+// Unicode data file behind it: each block is written as the RULE that
+// generated that part of the Default Case Conversion table, plus the members
+// that break the rule, so every mapping in it can be read and checked without
+// one. The blocks are ASCII and Latin-1, Latin Extended-A, Greek and Coptic,
+// Cyrillic with its supplement, and the two Armenian letter runs. Everything
+// else is returned unchanged, which is correct for every unit
+// `isUnknownCasedUnit` rejects.
 uint16_t canonicalize(uint16_t unit, bool ignoreCase);
 
 // Does this unit live in a block that carries case mappings bronze has no
@@ -55,14 +58,20 @@ uint16_t canonicalize(uint16_t unit, bool ignoreCase);
 // error, because answering "no match" for `/Ω/i` against `ω` would
 // be a silent wrong answer — and answering it for CJK, Hebrew or an emoji
 // would be a hard error for nothing, since none of them has a case at all.
+//
+// Shrinking this is what adding a block to `canonicalize` means. The two must
+// move together: a unit that is folded but still refused is a hard error for
+// nothing, and a unit that is neither is the silent wrong answer.
 bool isUnknownCasedUnit(uint32_t unit);
 
-// Every unit at or below 0xFF whose canonicalization is `cc`. CharacterSetMatcher
-// asks whether the SET holds any member that canonicalizes to the input's
-// canonicalization (22.2.2.7.1), which is not the same as asking whether the
-// input's canonicalization is in the set: `/[µ]/i` matches U+039C, whose
-// canonicalization no Latin-1 character equals. Answering it needs the reverse
-// direction of the table, which is what this is.
+// Every unit whose canonicalization is `cc` and is not `cc` itself.
+// CharacterSetMatcher asks whether the SET holds any member that canonicalizes
+// to the input's canonicalization (22.2.2.7.1), which is not the same as
+// asking whether the input's canonicalization is in the set: `/[µ]/i` matches
+// U+039C, whose canonicalization no Latin-1 character equals, and
+// `/[α-ω]/i` matches "Γ" only because U+03B3 canonicalizes the same
+// way it does. Answering that needs the reverse direction of the table, which
+// is what this is.
 const std::vector<uint16_t>& caseCandidates(uint16_t cc);
 
 }  // namespace bronze::regex

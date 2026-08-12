@@ -18,6 +18,15 @@
 // naive backtracking is not merely slow but unsound in practice — a quantified
 // single-unit atom, which would otherwise recurse once per input unit and
 // exhaust the stack on an ordinary `.*` over an ordinary string.
+//
+// Everything here carries a DIRECTION, which is 22.2.2.6's `direction`
+// parameter and exists for exactly one production: a lookbehind matches its
+// Disjunction backward. Backward means three things and only three — an
+// Alternative's terms are taken last to first, an atom that consumes a unit
+// reads the one BEFORE the current position and continues one earlier, and a
+// group's capture range is ordered rather than assumed. Nothing else changes:
+// a quantifier is still greedy, an assertion still consumes nothing, and the
+// continuation chain still names what is left to do.
 
 #include <cstdint>
 #include <string>
@@ -60,6 +69,12 @@ struct Cont {
     // empty-iteration guard compares against. Capture: where the group opened.
     size_t mark = 0;
     uint32_t captureIndex = 0;  // Capture
+    // Sequence, Repeat: the direction the node that parked this continuation
+    // was running in. It rides on the Cont rather than being threaded through
+    // `runCont` because a continuation is resumed from wherever the match got
+    // to — including from inside a lookbehind whose direction is not the
+    // enclosing one.
+    bool backward = false;
     const Cont* next = nullptr;
 };
 
@@ -79,7 +94,7 @@ public:
 
         Cont done;
         done.kind = Cont::Kind::Done;
-        const bool ok = matchNode(*pattern_.root, at, &done);
+        const bool ok = matchNode(*pattern_.root, at, &done, /*backward=*/false);
         if (failed_) {
             error = error_;
             return ExecStatus::Error;
@@ -189,22 +204,30 @@ private:
                 endPos_ = pos;
                 return true;
             case Cont::Kind::Sequence:
-                return matchSequence(*k->terms, k->index, pos, k->next);
+                return matchSequence(*k->terms, k->index, pos, k->next, k->backward);
             case Cont::Kind::Repeat: {
                 // 22.2.2.5.1 step 2.a: a turn that consumed nothing, with the
                 // minimum already met, ends the loop rather than repeating for
-                // ever. This is what makes `/(a*)*/ ` terminate.
+                // ever. This is what makes `/(a*)*/ ` terminate. "Consumed
+                // nothing" is `pos == mark` whichever way the index was
+                // moving, so the guard needs no direction of its own.
                 if (k->min == 0 && pos == k->mark) return false;
                 const uint32_t min2 = k->min == 0 ? 0 : k->min - 1;
                 const uint32_t max2 = k->max == kUnbounded ? kUnbounded : k->max - 1;
-                return matchRepeat(*k->repeat, min2, max2, pos, k->next);
+                return matchRepeat(*k->repeat, min2, max2, pos, k->next, k->backward);
             }
             case Cont::Kind::Capture: {
                 const size_t slot = static_cast<size_t>(k->captureIndex) * 2;
                 const int64_t oldStart = captures_[slot];
                 const int64_t oldEnd = captures_[slot + 1];
-                captures_[slot] = static_cast<int64_t>(k->mark);
-                captures_[slot + 1] = static_cast<int64_t>(pos);
+                // 22.2.2.8: the group's range is (xe, ye) forward and (ye, xe)
+                // backward. `mark` is where the group was ENTERED, which is its
+                // END when the direction is backward, so the pair is ordered
+                // here rather than assigned in source order.
+                const size_t lo = k->mark < pos ? k->mark : pos;
+                const size_t hi = k->mark < pos ? pos : k->mark;
+                captures_[slot] = static_cast<int64_t>(lo);
+                captures_[slot + 1] = static_cast<int64_t>(hi);
                 if (runCont(k->next, pos)) return true;
                 captures_[slot] = oldStart;
                 captures_[slot + 1] = oldEnd;
@@ -214,15 +237,20 @@ private:
         return false;
     }
 
+    // 22.2.2.4: an Alternative's terms are matched in source order forward and
+    // in REVERSE order backward. `index` counts terms already matched either
+    // way, so the termination test is the same and only the pick changes.
     bool matchSequence(const std::vector<NodePtr>& terms, size_t index, size_t pos,
-                       const Cont* k) {
+                       const Cont* k, bool backward) {
         if (index == terms.size()) return runCont(k, pos);
         Cont next;
         next.kind = Cont::Kind::Sequence;
         next.terms = &terms;
         next.index = index + 1;
+        next.backward = backward;
         next.next = k;
-        return matchNode(*terms[index], pos, &next);
+        const size_t at = backward ? terms.size() - 1 - index : index;
+        return matchNode(*terms[at], pos, &next, backward);
     }
 
     // ---- the quantifier -----------------------------------------------------
@@ -257,24 +285,39 @@ private:
     // backtracking is a descending (or ascending, when lazy) walk over the
     // counts — no recursion per iteration, which is the difference between
     // `/.*/` working on a 100 kB string and overflowing the stack on it.
-    bool matchSimpleRepeat(const Node& node, size_t pos, const Cont* k) {
+    //
+    // Backward it is the same scan run the other way. Without that, `(?<=a*)`
+    // would be the one construct that reintroduced a frame per repetition —
+    // the regression the forward path exists to prevent.
+    bool matchSimpleRepeat(const Node& node, size_t pos, const Cont* k, bool backward) {
         const Node& atom = *node.children[0];
         size_t count = 0;
         size_t at = pos;
-        while ((node.max == kUnbounded || count < node.max) && at < input_.size() &&
-               singleUnitMatches(atom, input_[at])) {
-            ++at;
-            ++count;
+        if (backward) {
+            while ((node.max == kUnbounded || count < node.max) && at > 0 &&
+                   singleUnitMatches(atom, input_[at - 1])) {
+                --at;
+                ++count;
+            }
+        } else {
+            while ((node.max == kUnbounded || count < node.max) && at < input_.size() &&
+                   singleUnitMatches(atom, input_[at])) {
+                ++at;
+                ++count;
+            }
         }
         if (count < node.min) return false;
+        // Where `n` repetitions leave the index. `count` was bounded by the
+        // scan above, so neither form can run off an end of the input.
+        const auto after = [&](size_t n) { return backward ? pos - n : pos + n; };
         if (node.greedy) {
             for (size_t n = count;; --n) {
-                if (runCont(k, pos + n)) return true;
+                if (runCont(k, after(n))) return true;
                 if (failed_ || n == node.min) return false;
             }
         }
         for (size_t n = node.min; n <= count; ++n) {
-            if (runCont(k, pos + n)) return true;
+            if (runCont(k, after(n))) return true;
             if (failed_) return false;
         }
         return false;
@@ -284,7 +327,8 @@ private:
     // cleared — spelled as a save/clear/restore around the atom. The clearing
     // is what makes `/(?:(a)|b)*/.exec("ab")[1]` undefined: the second turn
     // round the loop must not inherit the first turn's capture.
-    bool matchRepeat(const Node& node, uint32_t min, uint32_t max, size_t pos, const Cont* k) {
+    bool matchRepeat(const Node& node, uint32_t min, uint32_t max, size_t pos, const Cont* k,
+                     bool backward) {
         if (max == 0) return runCont(k, pos);
 
         Cont again;
@@ -293,6 +337,7 @@ private:
         again.min = min;
         again.max = max;
         again.mark = pos;
+        again.backward = backward;
         again.next = k;
 
         const Node& atom = *node.children[0];
@@ -303,7 +348,7 @@ private:
         }
 
         if (min != 0) {
-            if (matchNode(atom, pos, &again)) return true;
+            if (matchNode(atom, pos, &again, backward)) return true;
             if (node.captureCount != 0) restoreRepeatCaptures(node, saved);
             return false;
         }
@@ -315,11 +360,11 @@ private:
             if (runCont(k, pos)) return true;
             if (failed_) return false;
             if (node.captureCount != 0) clearRepeatCaptures(node);
-            if (matchNode(atom, pos, &again)) return true;
+            if (matchNode(atom, pos, &again, backward)) return true;
             if (node.captureCount != 0) restoreRepeatCaptures(node, saved);
             return false;
         }
-        if (matchNode(atom, pos, &again)) return true;
+        if (matchNode(atom, pos, &again, backward)) return true;
         if (node.captureCount != 0) restoreRepeatCaptures(node, saved);
         if (failed_) return false;
         return runCont(k, pos);
@@ -327,7 +372,7 @@ private:
 
     // ---- the tree -----------------------------------------------------------
 
-    bool matchBackreference(const Node& node, size_t pos, const Cont* k) {
+    bool matchBackreference(const Node& node, size_t pos, const Cont* k, bool backward) {
         const size_t slot = static_cast<size_t>(node.backreference) * 2;
         const int64_t start = captures_[slot];
         const int64_t end = captures_[slot + 1];
@@ -336,35 +381,49 @@ private:
         // `/(a)?\1b/.test("b")` is true.
         if (start == MatchResult::kUnset || end == MatchResult::kUnset) return runCont(k, pos);
         const size_t length = static_cast<size_t>(end - start);
-        if (pos + length > input_.size()) return false;
+        // Backward the captured text ENDS at `pos`, so the comparison begins
+        // `length` units earlier and the continuation resumes there.
+        size_t from = pos;
+        if (backward) {
+            if (pos < length) return false;
+            from = pos - length;
+        } else if (pos + length > input_.size()) {
+            return false;
+        }
         for (size_t i = 0; i < length; ++i) {
             const uint16_t a = input_[static_cast<size_t>(start) + i];
-            const uint16_t b = input_[pos + i];
+            const uint16_t b = input_[from + i];
             if (a == b) continue;
             if (ignoreCase_ && (isUnknownCasedUnit(a) || isUnknownCasedUnit(b))) {
                 // Both sides of a backreference are INPUT, so neither passed
                 // the parser's case-table check. Answering "different" here
                 // would be a guess about a case pair bronze cannot see.
                 return giveUp("unsupported: a case-insensitive backreference compared "
-                              "characters bronze has no case table for (only ASCII and "
-                              "Latin-1 fold under the `i` flag)");
+                              "characters bronze has no case table for (only ASCII, "
+                              "Latin-1, Latin Extended-A, Greek, Cyrillic and Armenian "
+                              "fold under the `i` flag)");
             }
             if (canonicalize(a, ignoreCase_) != canonicalize(b, ignoreCase_)) return false;
         }
-        return runCont(k, pos + length);
+        return runCont(k, backward ? pos - length : pos + length);
     }
 
-    bool matchLookahead(const Node& node, size_t pos, const Cont* k) {
+    // 22.2.2.3 and 22.2.2.6: the two are one matcher because they differ only
+    // in the direction the body runs. Neither consumes anything, so the
+    // continuation resumes at exactly `pos` either way — and it resumes in the
+    // ENCLOSING direction, which the continuation already carries.
+    bool matchLookaround(const Node& node, size_t pos, const Cont* k) {
+        const bool bodyBackward = node.kind == NodeKind::Lookbehind;
         const std::vector<int64_t> saved = captures_;
         const size_t savedEnd = endPos_;
         Cont done;
         done.kind = Cont::Kind::Done;
-        const bool inner = matchNode(*node.children[0], pos, &done);
+        const bool inner = matchNode(*node.children[0], pos, &done, bodyBackward);
         endPos_ = savedEnd;
         if (failed_) return false;
 
-        if (node.lookaheadNegative) {
-            // 22.2.2.3: a negative lookahead discards whatever its body
+        if (node.lookaroundNegative) {
+            // 22.2.2.3: a negative lookaround discards whatever its body
             // captured, whether or not it matched.
             captures_ = saved;
             if (inner) return false;
@@ -382,7 +441,7 @@ private:
         return false;
     }
 
-    bool matchNode(const Node& node, size_t pos, const Cont* k) {
+    bool matchNode(const Node& node, size_t pos, const Cont* k, bool backward) {
         if (failed_) return false;
         if (++depth_ > kMaxDepth) {
             --depth_;
@@ -390,49 +449,63 @@ private:
                           std::to_string(kMaxDepth) +
                           " levels of backtracking state, which is bronze's limit");
         }
-        const bool result = matchNodeInner(node, pos, k);
+        const bool result = matchNodeInner(node, pos, k, backward);
         --depth_;
         return result;
     }
 
-    bool matchNodeInner(const Node& node, size_t pos, const Cont* k) {
+    // The one unit an atom consumes, on the side of `pos` the direction picks:
+    // forward reads input_[pos] and resumes at pos + 1, backward reads
+    // input_[pos - 1] and resumes at pos - 1. Char, Class and Dot differ only
+    // in the test, which `singleUnitMatches` already owns.
+    bool matchOneUnit(const Node& node, size_t pos, const Cont* k, bool backward) {
+        if (backward) {
+            if (pos == 0 || !singleUnitMatches(node, input_[pos - 1])) return false;
+            return runCont(k, pos - 1);
+        }
+        if (pos >= input_.size() || !singleUnitMatches(node, input_[pos])) return false;
+        return runCont(k, pos + 1);
+    }
+
+    bool matchNodeInner(const Node& node, size_t pos, const Cont* k, bool backward) {
         switch (node.kind) {
             case NodeKind::Alternation:
                 for (const NodePtr& alt : node.children) {
-                    if (matchSequence(alt->children, 0, pos, k)) return true;
+                    if (matchSequence(alt->children, 0, pos, k, backward)) return true;
                     if (failed_) return false;
                 }
                 return false;
             case NodeKind::Sequence:
-                return matchSequence(node.children, 0, pos, k);
+                return matchSequence(node.children, 0, pos, k, backward);
             case NodeKind::Char:
-                if (pos >= input_.size() || !charMatches(node.ch, input_[pos])) return false;
-                return runCont(k, pos + 1);
             case NodeKind::Class:
-                if (pos >= input_.size() || !classMatches(node, input_[pos])) return false;
-                return runCont(k, pos + 1);
             case NodeKind::Dot:
-                if (pos >= input_.size() || !dotMatches(input_[pos])) return false;
-                return runCont(k, pos + 1);
+                return matchOneUnit(node, pos, k, backward);
             case NodeKind::Assertion:
+                // An assertion consumes nothing whichever direction it ran, and
+                // `^`, `$` and `\b` all ask about the units either side of
+                // `pos` — so there is no backward form of one.
                 if (!assertionHolds(node, pos)) return false;
                 return runCont(k, pos);
             case NodeKind::Lookahead:
-                return matchLookahead(node, pos, k);
+            case NodeKind::Lookbehind:
+                return matchLookaround(node, pos, k);
             case NodeKind::Group: {
-                if (node.captureIndex == 0) return matchNode(*node.children[0], pos, k);
+                if (node.captureIndex == 0) {
+                    return matchNode(*node.children[0], pos, k, backward);
+                }
                 Cont close;
                 close.kind = Cont::Kind::Capture;
                 close.captureIndex = node.captureIndex;
                 close.mark = pos;
                 close.next = k;
-                return matchNode(*node.children[0], pos, &close);
+                return matchNode(*node.children[0], pos, &close, backward);
             }
             case NodeKind::Backreference:
-                return matchBackreference(node, pos, k);
+                return matchBackreference(node, pos, k, backward);
             case NodeKind::Repeat:
-                if (node.simpleAtom) return matchSimpleRepeat(node, pos, k);
-                return matchRepeat(node, node.min, node.max, pos, k);
+                if (node.simpleAtom) return matchSimpleRepeat(node, pos, k, backward);
+                return matchRepeat(node, node.min, node.max, pos, k, backward);
         }
         return false;
     }
