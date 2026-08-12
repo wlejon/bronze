@@ -13,6 +13,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     auto fn = std::make_unique<FunctionDecl>();
     fn->span.begin = kw.span.begin;
     fn->isExported = isExported;
+    const bool isGenerator = match(TokenKind::Star);
 
     if (!defaultName.empty() && !check(TokenKind::Identifier)) {
         // `export default function () {}` (ECMA-262 16.2.3.7): a hoisted
@@ -26,12 +27,32 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->name = std::string(name->text);
     }
 
+    // `function* g() {}` is the same desugaring a generator METHOD gets, and
+    // takes the same route to it: a FunctionExpr is filled in and its pieces
+    // moved across, because a declaration and an expression differ in where
+    // the value lands and in nothing about the body (docs/0026).
+    if (isGenerator) {
+        GeneratorScopeGuard guard(*this);
+        ast::FunctionExpr shell;
+        shell.span = fn->span;
+        shell.name = fn->name;
+        if (!parseGeneratorTail(shell)) return nullptr;
+        fn->params = std::move(shell.params);
+        fn->returnType = std::move(shell.returnType);
+        fn->body = std::move(shell.body);
+        fn->span.end = peek().span.begin;
+        return fn;
+    }
+
     if (!expect(TokenKind::LParen, "'(' after function name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
-    fn->body = parseBlock();
+    {
+        GeneratorScopeGuard guard(*this);
+        fn->body = parseBlock();
+    }
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -78,6 +99,9 @@ ExprPtr Parser::parseArrowFunction() {
     }
     if (!expect(TokenKind::Arrow, "'=>' after arrow parameters")) return nullptr;
 
+    // An arrow written inside a generator body is not itself a generator, so
+    // `yield` is an ordinary identifier in it and `return` an ordinary return.
+    GeneratorScopeGuard guard(*this);
     if (check(TokenKind::LBrace)) {
         fn->body = parseBlock();
     } else {
@@ -206,7 +230,10 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
         return nullptr;
     }
 
-    fn->body = parseBlock();
+    {
+        GeneratorScopeGuard guard(*this);
+        fn->body = parseBlock();
+    }
     if (diags_.hasErrors()) return nullptr;
     fn->span.end = peek().span.begin;
     return fn;
@@ -237,6 +264,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     const std::string savedClassSuper = currentClassSuper_;
     inClassMethod_ = false;
     currentClassSuper_.clear();
+    GeneratorScopeGuard guard(*this);
     fn->body = parseBlock();
     inClassMethod_ = savedInClassMethod;
     currentClassSuper_ = savedClassSuper;
@@ -298,12 +326,71 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             advance();
             member.isStatic = true;
         }
+        // `*m() {}` / `*[Symbol.iterator]() {}` — a generator method, which
+        // the parser desugars into an ordinary method returning an iterator
+        // object (docs/0026). The name is taken here because a generator's
+        // is spelled the two ways a method's is, and `[Symbol.iterator]` is
+        // the only computed one bronze reads.
         if (check(TokenKind::Star)) {
-            error("unsupported construct: generator method in a class body");
-            ok = false;
-            break;
+            const Token& star = advance();
+            if (!matchSymbolIteratorKey(member.name)) {
+                if (check(TokenKind::LBracket)) {
+                    error("unsupported construct: a computed generator name in a class body "
+                          "(only `*[Symbol.iterator]()` is read)");
+                    ok = false;
+                    break;
+                }
+                const Token* genName = expectPropertyName("generator method name");
+                if (!genName) {
+                    ok = false;
+                    break;
+                }
+                member.name = std::string(genName->text);
+            }
+            auto fn = std::make_unique<FunctionExpr>();
+            fn->span.begin = star.span.begin;
+            fn->name = cls->name + "." + member.name;
+            if (!parseGeneratorTail(*fn)) {
+                ok = false;
+                break;
+            }
+            member.fn = std::move(fn);
+            cls->methods.push_back(std::move(member));
+            continue;
         }
         if (check(TokenKind::LBracket)) {
+            // The same one computed key, without the `*`: an iterator written
+            // out by hand rather than as a generator. One rule for what a
+            // computed class member name may be, not a generator-only one.
+            const Span keySpan = peek().span;
+            if (matchSymbolIteratorKey(member.name)) {
+                if (!check(TokenKind::LParen)) {
+                    error("unsupported construct: a `[Symbol.iterator]` class field "
+                          "(only methods are supported)");
+                    ok = false;
+                    break;
+                }
+                // Parsed inline rather than through `parseMethodTail`, which
+                // clears the enclosing class's `super` binding because an
+                // object literal's home object is the literal. This IS a
+                // class method and its `super` is the class's.
+                auto fn = std::make_unique<FunctionExpr>();
+                fn->span.begin = keySpan.begin;
+                fn->name = cls->name + ".@@iterator";
+                advance();  // '('
+                if (!parseParams(fn->params)) return nullptr;
+                if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
+                if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+                {
+                    GeneratorScopeGuard guard(*this);
+                    fn->body = parseBlock();
+                }
+                if (diags_.hasErrors()) return nullptr;
+                fn->span.end = peek().span.begin;
+                member.fn = std::move(fn);
+                cls->methods.push_back(std::move(member));
+                continue;
+            }
             error("unsupported construct: computed method name in a class body");
             ok = false;
             break;
@@ -366,7 +453,10 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         if (!parseParams(fn->params)) return nullptr;
         if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
         if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
-        fn->body = parseBlock();
+        {
+            GeneratorScopeGuard guard(*this);
+            fn->body = parseBlock();
+        }
         if (diags_.hasErrors()) return nullptr;
         fn->span.end = peek().span.begin;
         member.fn = std::move(fn);
@@ -465,9 +555,16 @@ ExprPtr Parser::parseFunctionExpr() {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = kw.span.begin;
+    const bool isGenerator = match(TokenKind::Star);
 
     if (check(TokenKind::Identifier)) {
         fn->name = std::string(advance().text);
+    }
+
+    GeneratorScopeGuard guard(*this);
+    if (isGenerator) {
+        if (!parseGeneratorTail(*fn)) return nullptr;
+        return fn;
     }
 
     if (!expect(TokenKind::LParen, "'(' after function")) return nullptr;

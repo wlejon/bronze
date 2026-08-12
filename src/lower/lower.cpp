@@ -227,7 +227,13 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     for (const auto& varName : ast::getHoistedVarDeclarations(body)) addSlot(varName);
     // The receiver, when an arrow in this body reads it (docs/0011 decision
     // 6). It is not a declaration, so nothing above finds it.
-    addSlot("this");
+    //
+    // Never for an ARROW's own record, however deeply its body reads `this`:
+    // an arrow binds no receiver, so a slot here would be one nothing can
+    // fill — the entry copy below has no `__this` to take — and an arrow
+    // nested inside it would find that empty slot first and read `undefined`
+    // instead of walking on to the function that does bind one.
+    if (!currentFunctionIsArrow_) addSlot("this");
     if (slots.empty()) return;
 
     EnvScopeInfo info;

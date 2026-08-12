@@ -1,0 +1,10 @@
+log reaches stdout
+info reaches stdout
+debug reaches stdout
+LOG-CONTAINER { name: 'material', side: 2, layers: [ 1, 2 ] } [ 1, 'two', undefined ]
+undefined
+nested log argument
+undefined
+basic 0.5
+[ 'name', 'opacity' ]
+the last line on stdout

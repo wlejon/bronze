@@ -1,0 +1,15 @@
+{ value: 10, done: false }
+{ value: 11, done: false }
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+[ 'value', 'done' ]
+10 false
+function
+true
+10
+[ 11 ]
+[]
+[ 10, 11 ]
+[ 100, 101 ]
+10 10 11 11
+true true

@@ -119,6 +119,15 @@ struct Ident final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// Which stream a `console` method writes to. `console` is not a binding in
+// bronze — the parser folds `console.<m>` into ONE `Ident` spelling the whole
+// name, and lowering dispatches on it — so this table is the single place
+// that decides both which members exist and where each one's output goes.
+// Two copies of that would be a `console.warn` compiled to stdout, which is
+// exactly the failure the stderr split exists to prevent (docs/0026).
+enum class ConsoleStream { None, Out, Err };
+ConsoleStream consoleStreamOf(const std::string& identName);
+
 struct BoolLit final : Expr {
     bool value = false;
     void accept(Visitor& v) const override;

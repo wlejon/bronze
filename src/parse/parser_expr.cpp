@@ -359,10 +359,28 @@ bool Parser::parseMemberLink(ExprPtr& expr) {
         const Token* member = expectPropertyName("property name");
         if (!member) return false;
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
-        if (baseIdent && baseIdent->name == "console" && member->text == "log") {
+        // `console` is not a binding and has no object: the whole member
+        // expression folds to one name here, and `ast::consoleStreamOf` is
+        // the only place that says which names those are. A member it does
+        // not know is a hard error naming itself rather than the
+        // `undefined variable: console` a reader would have to decode
+        // (docs/0011 decision 3).
+        if (baseIdent && baseIdent->name == "console") {
+            const std::string folded = "console." + std::string(member->text);
+            if (ast::consoleStreamOf(folded) == ast::ConsoleStream::None) {
+                const std::string why =
+                    member->text == "trace"
+                        ? "unsupported: console.trace needs a stack trace, and bronze does not "
+                          "build one; console provides log, info, debug, warn and error"
+                        : "unsupported: console." + std::string(member->text) +
+                              " is not implemented (console provides log, info, debug, warn and "
+                              "error)";
+                diags_.error({expr->span.begin, member->span.end}, why);
+                return false;
+            }
             auto ident = std::make_unique<ast::Ident>();
             ident->span = {expr->span.begin, member->span.end};
-            ident->name = "console.log";
+            ident->name = folded;
             expr = std::move(ident);
         } else {
             auto mem = std::make_unique<MemberAccess>();
@@ -644,6 +662,14 @@ ExprPtr Parser::parsePrimary() {
             return self;
         }
         case TokenKind::Identifier: {
+            // `yield` is not a reserved word: it is an ordinary identifier
+            // everywhere except inside a generator body, where it is the
+            // operator. Reaching it HERE means it is in an expression
+            // position, and the straight-line subset admits it only as a
+            // whole statement — so this is always a refusal, and which one
+            // it is depends on where the statement above put us
+            // (docs/0026).
+            if (inGeneratorBody_ && t.text == "yield") return refuseYield();
             advance();
             auto ident = std::make_unique<Ident>();
             ident->span = t.span;

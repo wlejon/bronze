@@ -60,6 +60,20 @@ private:
     // difference — by the time the linker sees a statement list it cannot
     // tell a module body from a block.
     bool atModuleTopLevel_ = false;
+    // Generator state (docs/0026). `yield` is not a reserved word — it is
+    // contextual, and only inside a generator body — so these two decide
+    // whether the identifier spelled `yield` is a keyword here and, if it is,
+    // whether this POSITION is one bronze's straight-line subset admits.
+    // `yieldRefusal_` names the construct the yield would be inside of, and
+    // is what turns "not supported" into a message that says which of the
+    // things bronze refuses this is.
+    bool inGeneratorBody_ = false;
+    const char* yieldRefusal_ = nullptr;
+    // Ordinal of the next desugared generator, for the IL symbols its `next`
+    // and `@@iterator` compile to and for the step variable it declares.
+    // Same reasoning as `objectMethodOrdinal_`, including the file
+    // qualification: two files' first generators must not name one symbol.
+    size_t generatorOrdinal_ = 0;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -152,6 +166,41 @@ private:
     // class body (ECMA-262 15.4 MethodDefinition), so there is one copy;
     // what differs is what the caller does with the result.
     std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan);
+
+    // --- parser_generator.cpp: generators, desugared (docs/0026) -----------
+    // The parameter list and body of a generator, with the cursor on the '('
+    // and the `*` already consumed. `fn` comes back holding the DESUGARED
+    // body — an iterator object over a step index — so nothing downstream of
+    // the parser knows generators exist. False on a diagnosed error, which is
+    // every construct outside the straight-line subset.
+    bool parseGeneratorTail(ast::FunctionExpr& fn);
+    // `[ Symbol.iterator ]` as a class member name, the only computed key
+    // bronze reads, and the only one three.js's generators use. True with the
+    // cursor past the `]` and `outName` set to `"@@iterator"` (docs/0021
+    // decision 1); false with the cursor unmoved when the bracketed key is
+    // anything else.
+    bool matchSymbolIteratorKey(std::string& outName);
+    // Saves and restores the generator state across a nested function body:
+    // a `yield` inside a function written inside a generator belongs to that
+    // function, which is not a generator, so it is an ordinary identifier
+    // there and `return` is an ordinary return.
+    struct GeneratorScopeGuard {
+        Parser& p;
+        bool savedInBody;
+        const char* savedRefusal;
+        explicit GeneratorScopeGuard(Parser& parser)
+            : p(parser), savedInBody(parser.inGeneratorBody_), savedRefusal(parser.yieldRefusal_) {
+            p.inGeneratorBody_ = false;
+            p.yieldRefusal_ = nullptr;
+        }
+        ~GeneratorScopeGuard() {
+            p.inGeneratorBody_ = savedInBody;
+            p.yieldRefusal_ = savedRefusal;
+        }
+    };
+    // Diagnoses the `yield` under the cursor, which is only ever reached from
+    // a position the subset refuses. Always returns null.
+    ast::ExprPtr refuseYield();
 
     // --- parser_pattern.cpp: binding patterns (docs/0017) ----------------
     // A pattern where the grammar spells one: a declarator, a parameter, a

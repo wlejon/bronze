@@ -194,7 +194,11 @@ enum class Op : uint8_t {
     ModuleEnvGet,  // a: dynamic = module.env.get
     CreateArrayBuffer,  // a = create.arraybuffer len      (len dynamic)
     CreateFloat32Array, // a = create.f32array arg         (length or buffer, dynamic)
-    Print,      // print a
+    Print,      // print a, ...            (console.log / info / debug)
+    // Same formatter, other stream. Its own op rather than a flag on `Print`
+    // because the canonical dump is what a reader bisects with (docs/0003),
+    // and a stream carried in a field is a stream the dump can silently omit.
+    PrintErr,   // print.err a, ...        (console.warn / error)
 };
 const char* opName(Op op);
 bool isTerminator(Op op);

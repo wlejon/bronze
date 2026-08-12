@@ -114,3 +114,9 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   that fall out of stopping it at the argument list, `new Foo` without one,
   the shape class a bare name still buys, the renamer recursing into it, and
   the `Foo.prototype.constructor` back-pointer `new this.constructor()` needs)
+- 0026 generators and console streams (the straight-line subset desugared in
+  the parser into an iterator over a step index, every construct outside it
+  refused by its own name, `[Symbol.iterator]` matched syntactically, the
+  missing receiver of `o[k]()`, the receiver slot an arrow must not own, and
+  `warn`/`error` on stderr so the oracle's pinned stdout never protects
+  library chatter)

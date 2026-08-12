@@ -95,6 +95,7 @@ const char* opName(Op op) {
         case Op::CreateArrayBuffer: return "create.arraybuffer";
         case Op::CreateFloat32Array: return "create.f32array";
         case Op::Print: return "print";
+        case Op::PrintErr: return "print.err";
     }
     return "?";
 }
@@ -160,6 +161,7 @@ bool canThrow(const Instruction& inst) {
         // console.log never runs user code: inspect does not call a getter
         // (docs/0019 decision 4).
         case Op::Print:
+        case Op::PrintErr:
         case Op::ExcTake:
             return false;
         case Op::Add:
@@ -439,9 +441,10 @@ std::string print(const Module& module) {
                         out += "module.env.get";
                         break;
                     case Op::Print:
+                    case Op::PrintErr:
                         // Every argument, because console.log takes any number
                         // of them and the dump is what a reader bisects with.
-                        out += "print";
+                        out += opName(inst.op);
                         for (size_t i = 0; i < inst.operands.size(); ++i) {
                             out += (i == 0 ? " %" : ", %") + std::to_string(inst.operands[i]);
                         }

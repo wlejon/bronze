@@ -362,10 +362,15 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     // expression inside its brackets either (docs/0018 decision 4).
     if (idxAccess->optional) emitChainShortCircuit(objBoxed, ilFn);
 
-    const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess->index);
+    return emitIndexRead(*idxAccess, objBoxed, ilFn);
+}
+
+std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idxAccess,
+                                                    Value objBoxed, il::Function& ilFn) {
+    const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess.index);
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
-        auto indexVal = lowerExpr(*idxAccess->index, ilFn);
+        auto indexVal = lowerExpr(*idxAccess.index, ilFn);
         if (!indexVal) return std::nullopt;
         auto idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
         il::ValueId res = ilFn.valueCount++;
@@ -387,23 +392,24 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     inst.operands = {objBoxed.id};
     inst.keyIndex = *literalKey;
     inst.icIndex = icIdx;
-    inst.icMonomorphic = monomorphicPropSite(*idxAccess->object);
+    inst.icMonomorphic = monomorphicPropSite(*idxAccess.object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
                                                 bool onSpine) {
-    bool isConsoleLog = false;
+    // Which console method this is, if any. The parser folded the whole
+    // member expression into one `Ident`, so the name is the only thing to
+    // ask, and `consoleStreamOf` is the one table that answers.
+    auto consoleStream = ast::ConsoleStream::None;
+    std::string consoleName;
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-        if (calleeIdent->name == "console.log") isConsoleLog = true;
-    } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-        if (const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
-            if (baseIdent->name == "console" && mem->property == "log") isConsoleLog = true;
-        }
+        consoleStream = ast::consoleStreamOf(calleeIdent->name);
+        consoleName = calleeIdent->name;
     }
 
-    if (isConsoleLog) {
+    if (consoleStream != ast::ConsoleStream::None) {
         // Any number of arguments, including none: node formats each one as
         // it would a lone argument and joins them with a single space
         // (docs/0016 decision 6). The joining is the runtime's, so there is
@@ -415,7 +421,8 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             // spread's length is not known until it runs. Naming it beats
             // silently printing the array (docs/0017 decision 8).
             if (dynamic_cast<const ast::SpreadElement*>(argPtr.get())) {
-                diags_.error(argPtr->span, "unsupported construct: a spread argument to console.log");
+                diags_.error(argPtr->span,
+                             "unsupported construct: a spread argument to " + consoleName);
                 return std::nullopt;
             }
             auto argVal = lowerExpr(*argPtr, ilFn);
@@ -423,7 +430,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             args.push_back(boxValueIfNeeded(*argVal, ilFn).id);
         }
         il::Instruction inst;
-        inst.op = il::Op::Print;
+        // The ONLY difference between the two: `warn` and `error` write to
+        // stderr, which keeps a library's chatter out of the bytes the oracle
+        // pins (docs/0026 decision 5).
+        inst.op = consoleStream == ast::ConsoleStream::Err ? il::Op::PrintErr : il::Op::Print;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
         inst.operands = std::move(args);
@@ -621,6 +631,20 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         inst.icMonomorphic = monomorphicPropSite(*mem->object);
         emitInst(ilFn, inst);
         calleeVal = Value{getRes, il::Type::Dynamic};
+    } else if (const auto* idx = dynamic_cast<const ast::IndexAccess*>(call->callee.get())) {
+        // `o[k](...)` — the same rule as `o.m(...)`: 13.3.6.1 evaluates the
+        // MemberExpression once and passes its BASE as the this value. Read
+        // through `emitIndexRead` so the base is lowered once; reaching for
+        // `lowerIndexAccess` here would evaluate `o` twice, and passing no
+        // receiver at all (which is what this branch used to fall through to)
+        // made `v[Symbol.iterator]()` run with `this` undefined.
+        auto objVal = lowerChainBase(*idx->object, ilFn, onSpine);
+        if (!objVal) return std::nullopt;
+        thisArgVal = boxValueIfNeeded(*objVal, ilFn);
+        if (idx->optional) emitChainShortCircuit(thisArgVal, ilFn);
+        auto fnVal = emitIndexRead(*idx, thisArgVal, ilFn);
+        if (!fnVal) return std::nullopt;
+        calleeVal = boxValueIfNeeded(*fnVal, ilFn);
     } else {
         auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
         if (!cVal) return std::nullopt;

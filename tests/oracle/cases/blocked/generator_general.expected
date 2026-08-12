@@ -1,0 +1,11 @@
+[ 0, 1, 2, 3 ]
+[ 1, 'a', 'b', 2 ]
+{ value: 'ask', done: false }
+{ value: 'hi!', done: false }
+{ value: 'bye', done: true }
+[ 1 ]
+[ 1, 2 ]
+{ value: 'stopped', done: true }
+0
+{ value: 99, done: true }
+{ value: undefined, done: true }

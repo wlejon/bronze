@@ -337,6 +337,18 @@ ExprPtr Parser::parseObjectLit() {
 
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
         ObjectProp prop;
+        if (check(TokenKind::Star)) {
+            // A generator SHORTHAND in an object literal. Named rather than
+            // built: the desugaring is the class body's (docs/0026), but its
+            // home is the literal, and three.js's six generators are all
+            // class members — so this is surface with no evidence behind it,
+            // and an unpinned construct is how docs/0000's wrong answers got
+            // in. `{ [Symbol.iterator]: function () {...} }` is the spelling
+            // that works today.
+            error("unsupported construct: a generator method in an object literal "
+                  "(a generator is supported as a class member and as a `function*`)");
+            return nullptr;
+        }
         if (check(TokenKind::LBracket)) {
             // `{ [e]: v }`. The key is not known here: ToPropertyKey runs on
             // whatever `e` evaluates to, at run time, and BEFORE `v` is

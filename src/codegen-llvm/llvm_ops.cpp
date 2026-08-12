@@ -338,21 +338,25 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (inst.result != il::kNoValue) callWith(abi.bronze_module_env_get, {});
             return true;
 
-        case il::Op::Print: {
+        case il::Op::Print:
+        case il::Op::PrintErr: {
             // One argument keeps the direct call; several go through the
             // argv region of this function's root frame, exactly as a
             // dynamic call's arguments do, so every one of them stays rooted
             // across the helper.
+            const bool toStderr = inst.op == il::Op::PrintErr;
             if (inst.operands.size() == 1) {
                 if (!values_[inst.operands[0]]) return true;
-                builder_.CreateCall(abi.bronze_print_value, {values_[inst.operands[0]]});
+                builder_.CreateCall(toStderr ? abi.bronze_print_value_err : abi.bronze_print_value,
+                                    {values_[inst.operands[0]]});
                 return true;
             }
             const uint32_t argc = static_cast<uint32_t>(inst.operands.size());
             bool ok = false;
             llvm::Value* argv = emitArgv(inst, 0, argc, ok);
             if (!ok) return false;
-            builder_.CreateCall(abi.bronze_print_values, {builder_.getInt32(argc), argv});
+            builder_.CreateCall(toStderr ? abi.bronze_print_values_err : abi.bronze_print_values,
+                                {builder_.getInt32(argc), argv});
             return true;
         }
 

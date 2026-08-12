@@ -1,0 +1,17 @@
+[ 1, 2 ]
+x
+y
+created, nothing has run
+before the first yield
+{ value: 1, done: false }
+between the yields
+{ value: 2, done: false }
+after the last yield
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+1 3 2 4
+[ 5, 10, 15 ]
+[]
+{ value: undefined, done: true }
+[ undefined, 5 ]
+[ 'a', 'b' ]

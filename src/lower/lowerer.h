@@ -544,6 +544,14 @@ private:
                                            bool onSpine = false);
     std::optional<Value> lowerIndexAccess(const ast::IndexAccess* idxAccess, il::Function& ilFn,
                                           bool onSpine = false);
+    // The READ half of `o[k]`, with the base already lowered, boxed and
+    // short-circuited. Its own step because a CALL through `o[k]()` needs the
+    // base twice — once as the callee's object and once as the receiver — and
+    // lowering the base a second time would evaluate it twice (ECMA-262
+    // 13.3.6.1 evaluates the MemberExpression once and passes it as the this
+    // value).
+    std::optional<Value> emitIndexRead(const ast::IndexAccess& idxAccess, Value objBoxed,
+                                       il::Function& ilFn);
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,
                                    bool onSpine = false);
 };

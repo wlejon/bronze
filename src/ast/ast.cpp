@@ -11,6 +11,20 @@ void NullLit::accept(Visitor& v) const { v.visit(*this); }
 void UndefinedLit::accept(Visitor& v) const { v.visit(*this); }
 void ThisExpr::accept(Visitor& v) const { v.visit(*this); }
 void Ident::accept(Visitor& v) const { v.visit(*this); }
+
+// The five members of `console` bronze provides. `info` and `debug` are
+// `log`'s stream and `log`'s formatting — the WHATWG Console Standard defines
+// all three as Logger("...", args) and only the severity hint differs, and a
+// severity hint is something a terminal filter reads, not something bronze
+// emits. `warn` and `error` are the same formatter on stderr.
+ConsoleStream consoleStreamOf(const std::string& identName) {
+    if (identName == "console.log" || identName == "console.info" ||
+        identName == "console.debug") {
+        return ConsoleStream::Out;
+    }
+    if (identName == "console.warn" || identName == "console.error") return ConsoleStream::Err;
+    return ConsoleStream::None;
+}
 void Unary::accept(Visitor& v) const { v.visit(*this); }
 void Binary::accept(Visitor& v) const { v.visit(*this); }
 void Ternary::accept(Visitor& v) const { v.visit(*this); }
