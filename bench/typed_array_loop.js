@@ -1,4 +1,4 @@
-// The loop docs/0029 decision 4 is about: element access on a typed array,
+// The loop the indexed fast path is about: element access on a typed array,
 // which is what three.js's `BufferAttribute` inner loops are made of. Every
 // read and every write here is a `bronze_elem_get` / `bronze_elem_set` call
 // today; the fast path that deletes them is the work decision 4 costs.

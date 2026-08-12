@@ -1,8 +1,8 @@
-// A string literal denotes characters, not the source text between the
-// quotes. Every expectation is ECMA-262, derived by hand (docs/0003):
-// escapes resolve, an unrecognized escape denotes its own character, and a
-// literal's length is counted in UTF-16 code units, so an astral character
-// is 2 and a Latin-1 one is 1.
+// A string literal denotes characters, not the source text between the quotes.
+// Every expectation is ECMA-262, derived by hand: escapes resolve, an
+// unrecognized escape denotes its own character, and a literal's length is
+// counted in UTF-16 code units, so an astral character is 2 and a Latin-1 one
+// is 1.
 console.log("q\n".length);
 console.log("a\tb".length);
 console.log("\\".length);

@@ -9,9 +9,8 @@
 
 namespace bronze {
 
-// A RegExp object (docs/0024). Everything the collector must see is a Value in
-// the payload, so the generic payload scan forwards it and this file owns no
-// root source.
+// A RegExp object. Everything the collector must see is a Value in the payload,
+// so the generic payload scan forwards it and this file owns no root source.
 //
 // The compiled pattern is deliberately NOT here. It is a C++ object with a
 // tree of `unique_ptr`s in it, which the moving collector must never relocate

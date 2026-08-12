@@ -21,10 +21,9 @@ struct ModuleFile {
     std::string displayName;  // what a diagnostic calls it
     std::unique_ptr<ast::Module> ast;
     // The top-level import and export nodes, in source order, borrowed from
-    // `ast`. Source order is what makes the load deterministic: the DFS
-    // follows the specifiers in the order they were written (docs/0001
-    // decision 10 — a graph is a new place for an iteration order to reach an
-    // output path).
+    // `ast`. Source order is what makes the load deterministic: the DFS follows
+    // the specifiers in the order they were written (a graph is a new place for
+    // an iteration order to reach an output path).
     std::vector<const ast::ImportDecl*> imports;
     std::vector<const ast::ExportNamesDecl*> exports;
     // Specifier text as written -> the module it resolved to. An ordered map:
@@ -36,8 +35,8 @@ struct ModuleFile {
 struct Graph {
     std::vector<std::unique_ptr<ModuleFile>> modules;  // indexed by id
     // Post-order of the depth-first walk: a module's dependencies come before
-    // it, and the entry is last. Cycles are refused (docs/0023 decision 2),
-    // so this order is total and evaluating in it is ES semantics.
+    // it, and the entry is last. Cycles are refused, so this order is total and
+    // evaluating in it is ES semantics.
     std::vector<uint16_t> evaluationOrder;
 };
 
@@ -54,10 +53,10 @@ bool linkGraph(Graph& graph, SourceSet& sources, DiagnosticSink& diags, ast::Mod
 // Renames every reference that resolves to the file's MODULE scope, per
 // `renames`, and stamps `fileId` onto every span the walk reaches.
 //
-// `namespaceLocals` are the local names bound to an imported module
-// namespace; a property write through one is refused by name, because the
-// object bronze synthesizes for a namespace has getters and no setters and
-// would swallow the write (docs/0023 decision 4).
+// `namespaceLocals` are the local names bound to an imported module namespace;
+// a property write through one is refused by name, because the object bronze
+// synthesizes for a namespace has getters and no setters and would swallow the
+// write.
 //
 // A node kind the walk does not know is an internal error, not a subtree left
 // alone: leaving one alone is a reference that keeps a name the linker has

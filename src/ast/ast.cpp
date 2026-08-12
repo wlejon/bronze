@@ -70,7 +70,7 @@ const char* unaryOpName(UnaryOp op) {
         // differently, so the canonical dump has to separate them: printing
         // both as "++" made `d++` and `++d` indistinguishable in the one
         // artefact the parser's tests compare, which is exactly where the
-        // postfix line-break rule has to be read (docs/0014).
+        // postfix line-break rule has to be read.
         case UnaryOp::PreInc: return "++pre";
         case UnaryOp::PreDec: return "--pre";
         case UnaryOp::PostInc: return "++post";

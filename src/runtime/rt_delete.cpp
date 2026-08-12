@@ -31,9 +31,8 @@ namespace bronze::runtime {
 namespace {
 
 // The plain object a receiver keeps its NAMED properties in: itself, or a
-// function's side object of statics (docs/0012 decision 6). Null when the
-// receiver has nowhere for one to be, which makes the delete a no-op that
-// still answers true.
+// function's side object of statics. Null when the receiver has nowhere for one
+// to be, which makes the delete a no-op that still answers true.
 ObjectHeader* namedPropertyOwner(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();

@@ -51,7 +51,7 @@ namespace {
 
 // One LLVM function per IL function, in its typed form: inference's proven
 // types are the signature, so a direct call passes an f64 in a register rather
-// than boxing it (docs/0010).
+// than boxing it.
 bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
                     std::vector<llvm::Function*>& out, DiagnosticSink& diags) {
     out.reserve(module.functions.size());
@@ -84,14 +84,14 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
 // A function held as a VALUE is called through the uniform convention —
 // `bronze_fn_code`: (env, this, argc, argv) — which knows nothing of the typed
 // signature above. The wrapper is the adapter: it unpacks argv into the typed
-// parameters, calls the entry, and boxes the result.
-// A wrapper for a rest-parameter function ALLOCATES — it builds the rest
-// array — and it does so before the entry's prologue has rooted anything.
-// docs/0006's contract ("the callee roots its parameters before it can
-// allocate") therefore does not cover it, and `env` and `this` arrive here as
-// raw pointers in registers: a collection during that allocation moved the
-// instance and left `this` pointing into from-space, which crashed
-// `this.items = items` in a rest constructor under BRONZE_GC_STRESS.
+// parameters, calls the entry, and boxes the result. A wrapper for a
+// rest-parameter function ALLOCATES — it builds the rest array — and it does so
+// before the entry's prologue has rooted anything. The rooting contract ("the
+// callee roots its parameters before it can allocate") therefore does not cover
+// it, and `env` and `this` arrive here as raw pointers in registers: a
+// collection during that allocation moved the instance and left `this` pointing
+// into from-space, which crashed `this.items = items` in a rest constructor
+// under BRONZE_GC_STRESS.
 //
 // So the wrapper gets a root frame of its own for exactly those calls, and
 // every named parameter is read out of argv BEFORE the first of them and
@@ -110,11 +110,11 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
 //
 // `live` is what must survive: `env` and `this` always, plus anything an
 // EARLIER call here already built. A wrapper can make two of these — the rest
-// array and the `arguments` object (docs/0027 decision 3) — and the second
-// allocation moves the first. Rooting only env and this left the rest array
-// pointing at the arguments array that had been allocated over it, so
-// `rest.length` was the whole argument count. Only BRONZE_GC_STRESS=1 showed
-// it, which is the argument for that mode existing.
+// array and the `arguments` object — and the second allocation moves the first.
+// Rooting only env and this left the rest array pointing at the arguments array
+// that had been allocated over it, so `rest.length` was the whole argument
+// count. Only BRONZE_GC_STRESS=1 showed it, which is the argument for that mode
+// existing.
 llvm::Value* emitWrapperArrayCall(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
                                   const AbiGlobals& globals,
                                   const std::vector<llvm::Value**>& live,
@@ -169,15 +169,15 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         llvm::Value* env = argsIt++;
         llvm::Value* thisArg = argsIt++;
         // argc: the entry's arity is fixed, so short calls are padded by the
-        // caller — except for a REST parameter, which is the one thing that
-        // has to know how many arguments there really were (docs/0017
-        // decision 2). This wrapper is the only place that can see it.
+        // caller — except for a REST parameter, which is the one thing that has
+        // to know how many arguments there really were. This wrapper is the
+        // only place that can see it.
         llvm::Value* argc = argsIt++;
         llvm::Value* argv = argsIt;
 
         // Synthetic leading parameters come from the calling convention, not
-        // from argv: the environment from the closure (docs/0007), the
-        // receiver from the caller (docs/0008).
+        // from argv: the environment from the closure, the receiver from the
+        // caller.
         const size_t firstSourceParam = func.firstSourceParam();
         // Every named parameter is loaded out of argv HERE, before either
         // array is built, and then travels through the root frames below.
@@ -202,10 +202,10 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
             const uint32_t sourceIndex = static_cast<uint32_t>(n);
             // The unguarded load is correct because `FunctionHeader::call`
             // padded argv up to the declared arity before entering here. A
-            // function that owns an `arguments` object declares arity 0 so
-            // that padding does not happen — `f(1)` and `f(1, undefined)` must
+            // function that owns an `arguments` object declares arity 0 so that
+            // padding does not happen — `f(1)` and `f(1, undefined)` must
             // disagree about `arguments.length` — so its own reads are the one
-            // place that has to check (docs/0027 decision 3).
+            // place that has to check.
             if (func.needsArguments) {
                 loaded.push_back(builder.CreateCall(
                     abi.bronze_arg_at, {argc, argv, builder.getInt32(sourceIndex)}));
@@ -288,7 +288,7 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
 }
 
 // Host target machine → object file. Nothing bronze-specific happens here;
-// LLVM's default pipeline is the optimizer (docs/0001 decision 6).
+// LLVM's default pipeline is the optimizer.
 bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
                      DiagnosticSink& diags) {
     llvm::InitializeNativeTarget();
@@ -337,7 +337,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
 bool LLVMBackend::emitObject(const il::Module& module, const std::string& outputPath,
                              DiagnosticSink& diags) {
     // Indented one level under the CLI's own phase lines, because these four
-    // are the inside of its `codegen` (docs/0033).
+    // are the inside of its `codegen`.
     const bool timing = support::timingsEnabled();
     auto t0 = std::chrono::steady_clock::now();
     auto lap = [&t0, timing](const char* what) {
@@ -358,10 +358,10 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals);
 
     // The module's inline-cache table, one entry per property site lowering
-    // numbered (docs/0010 decision 7). It is data in THIS object file, which is
-    // what gives every site a stable address and lets the check be inlined; the
-    // IL verifier has already checked every icIndex against the count, so the
-    // table cannot be indexed out of range.
+    // numbered. It is data in THIS object file, which is what gives every site
+    // a stable address and lets the check be inlined; the IL verifier has
+    // already checked every icIndex against the count, so the table cannot be
+    // indexed out of range.
     llvm::GlobalVariable* icTable =
         codegen_llvm::createIcTable(*llvmModule, ctx, module.icSiteCount);
 

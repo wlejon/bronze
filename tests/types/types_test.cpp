@@ -53,8 +53,8 @@ TEST_CASE("join is Never-absorbing, idempotent, and Dynamic otherwise") {
     CHECK(join(Type::undefined(), Type::number()) == Type::dynamic());
     CHECK(join(Type::dynamic(), Type::never()) == Type::dynamic());
 
-    // Same kind, different identity: the kind survives, the identity does
-    // not. This is decision 4's "Object with no class".
+    // Same kind, different identity: the kind survives, the identity does not.
+    // This is an "Object with no class".
     CHECK(join(Type::object(0), Type::object(0)) == Type::object(0));
     CHECK(join(Type::object(0), Type::object(1)) == Type::object());
     CHECK(join(Type::object(0), Type::object(1)).shapeClass() == types::kNoShapeClass);
@@ -101,11 +101,10 @@ TEST_CASE("primitive literals and the operators that join them") {
 }
 
 TEST_CASE("a straight-line reassignment is flow-sensitive, not a collapse") {
-    // Decision 2 says `number | undefined` collapses to Dynamic because
-    // there are no unions; decision 3 says the narrow case of a binding
-    // written once before any use is the flow analysis's job, not the
-    // type's. Both are visible here: nothing collapses, because the two
-    // writes never reach the same program point.
+    // `number | undefined` collapses to Dynamic because there are no unions;
+    // the narrow case of a binding written once before any use is the flow
+    // analysis's job, not the type's. Both are visible here: nothing collapses,
+    // because the two writes never reach the same program point.
     const auto inferred = infer(
         "let x = 1;\n"
         "x = \"two\";\n"
@@ -138,7 +137,7 @@ TEST_CASE("a let written to two types on two paths collapses to Dynamic at the m
     CHECK(inferred.dump() ==
           "module test\n"
           "\n"
-          // The parameter comes from the one call site (decision 5).
+          // The parameter comes from the one call site.
           "func pick(flag: bool) -> dynamic direct-callable\n"
           "  #0 let  v: number\n"
           "  #1 if  v: dynamic\n"
@@ -300,8 +299,8 @@ TEST_CASE("structurally identical object literals share one shape class") {
           "shapes\n"
           "  #0 {x, y}\n"
           "  #1 {z}\n"
-          // Same property names as #0 and a different prototype, so a
-          // different class (docs/0008 decision 1).
+          // Same property names as #0 and a different prototype, so a different
+          // class.
           "  #2 Point{x, y}\n");
 }
 
@@ -481,10 +480,10 @@ TEST_CASE("a shadowing binding stops a name being direct-callable") {
 }
 
 TEST_CASE("an exported function is not direct-callable, however plain its call sites") {
-    // Decision 5 specializes on a join over *every* caller. An export has a
+    // A signature is specialized on a join over *every* caller. An export has a
     // caller outside this compilation, so the join is incomplete and the
-    // specialization would be a guess. `internal` shows the same body and
-    // the same call site do get specialized when nothing exports them.
+    // specialization would be a guess. `internal` shows the same body and the
+    // same call site do get specialized when nothing exports them.
     const auto inferred = infer(
         "export function shared(x) { return x * 2; }\n"
         "function internal(x) { return x * 2; }\n"
@@ -512,10 +511,10 @@ TEST_CASE("an exported function is not direct-callable, however plain its call s
 // ---- the type of a binding at a merge point ---------------------------------
 
 TEST_CASE("a binding's type at a loop is the join over every edge of the loop") {
-    // The query lowering needs to type a loop header's block parameters
-    // before it has lowered the back edge (docs/0005 decision 2). `v` is a
-    // number on the entry edge and a string on the back edge; answering
-    // "number" here is the miscompile that unboxes a string as a double.
+    // The query lowering needs to type a loop header's block parameters before
+    // it has lowered the back edge. `v` is a number on the entry edge and a
+    // string on the back edge; answering "number" here is the miscompile that
+    // unboxes a string as a double.
     const auto inferred = infer(
         "let v = 1;\n"
         "let i = 0;\n"
@@ -565,7 +564,7 @@ TEST_CASE("a binding's type at an if is the join of the two arms") {
     CHECK(r.typeOfBindingAt(branch, "n") == types::Type::number());
 }
 
-TEST_CASE("the operator results docs/0015 fixes are fixed regardless of operand type") {
+TEST_CASE("the operator result rules hold regardless of operand type") {
     // Inference must agree with lowering about these, or the with-inference
     // and `--no-infer` runs of the oracle suite would disagree: bitwise and
     // shift results are always numbers however dynamic the operands are.
@@ -600,12 +599,11 @@ TEST_CASE("the operator results docs/0015 fixes are fixed regardless of operand 
 }
 
 TEST_CASE("an unresolved name is dynamic, and does not poison what surrounds it") {
-    // docs/0027 decision 1 lets a name nothing declares reach inference. The
-    // only sound answer for it is `dynamic` — what the running environment
-    // holds is not a fact this compilation has — and, just as importantly, the
-    // code AROUND it stays analysable: a `typeof` guard is an ordinary
-    // condition, and a binding assigned from a literal in the same function is
-    // still proven a number.
+    // A name nothing declares reaches inference. The only sound answer for it
+    // is `dynamic` — what the running environment holds is not a fact this
+    // compilation has — and, just as importantly, the code AROUND it stays
+    // analysable: a `typeof` guard is an ordinary condition, and a binding
+    // assigned from a literal in the same function is still proven a number.
     const auto inferred = infer(
         "function probe() {\n"
         "  const found = __MISSING__;\n"

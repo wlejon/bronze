@@ -13,32 +13,32 @@
 
 namespace bronze {
 
-// The number of property ADDS that have happened anywhere in the program.
-// A depth > 0 inline-cache entry records it and re-checks it, because the
-// receiver's shape — the only thing the entry compares — cannot see a
-// property appear on an object BETWEEN the receiver and the holder, and such
-// a property shadows what the entry points at (docs/0032).
+// The number of property ADDS that have happened anywhere in the program. A
+// depth > 0 inline-cache entry records it and re-checks it, because the
+// receiver's shape — the only thing the entry compares — cannot see a property
+// appear on an object BETWEEN the receiver and the holder, and such a property
+// shadows what the entry points at.
 //
 // Counting every add rather than only the ones that land on a prototype is
-// deliberate and measured: identifying a prototype needs a per-object bit,
-// and the imprecise counter costs nothing on the workloads bronze has
-// (docs/0032 decision 2). It only ever causes a MISS, never a wrong answer.
+// deliberate and measured: identifying a prototype needs a per-object bit, and
+// the imprecise counter costs nothing on the workloads bronze has. It only ever
+// causes a MISS, never a wrong answer.
 uint64_t protoMutationEpoch() noexcept;
 void bumpProtoMutationEpoch() noexcept;
 
-// A monomorphic property cache: four plain words, none of which the
-// collector has to touch. `cached_depth` is how many prototype links to
-// follow from the receiver before reading `cached_slot` — 0 for an own
-// property, so this one form covers own hits and proto hits alike. The
-// holder is derived from the (non-moving) shape chain rather than cached,
-// which is what keeps the entry GC-free; see docs/0008 decision 2.
+// A monomorphic property cache: four plain words, none of which the collector
+// has to touch. `cached_depth` is how many prototype links to follow from the
+// receiver before reading `cached_slot` — 0 for an own property, so this one
+// form covers own hits and proto hits alike. The holder is derived from the
+// (non-moving) shape chain rather than cached, which is what keeps the entry
+// GC-free.
 //
 // An entry ALWAYS describes a data property in a shape-indexed slot, because
-// that is the only thing its consumers can do with one — generated code
-// inlines a load (docs/0010 decision 7) and cannot call a getter, and a
-// dictionary's slots are not shape-indexed. Accessors and dictionary
-// receivers are therefore never written here; docs/0019 decision 5 is the
-// full argument, including why a cached proto hit must re-check the holder.
+// that is the only thing its consumers can do with one — generated code inlines
+// a load and cannot call a getter, and a dictionary's slots are not
+// shape-indexed. Accessors and dictionary receivers are therefore never written
+// here. A cached proto hit must re-check the holder, because a delete reuses
+// freed slots for unrelated names.
 struct InlineCache {
     Shape* cached_shape{nullptr};
     uint32_t cached_slot{0};
@@ -49,12 +49,11 @@ struct InlineCache {
     uint64_t cached_epoch{0};
 
     // Is this entry still about the chain it was filled against? Both runtime
-    // hit paths — `bronze_prop_get`'s and `ObjectHeader::getProp`'s — ask
-    // here rather than restating the condition, because the last time this
-    // question had two copies (docs/0031 decision 4) they answered
-    // differently. It deliberately does NOT cover whether the walk to the
-    // holder is safe to take; `cachedProtoHolder` owns that, and a caller
-    // needs both.
+    // hit paths — `bronze_prop_get`'s and `ObjectHeader::getProp`'s — ask here
+    // rather than restating the condition, because the last time this question
+    // had two copies they answered differently. It deliberately does NOT cover
+    // whether the walk to the holder is safe to take; `cachedProtoHolder` owns
+    // that, and a caller needs both.
     bool describes(const Shape* receiverShape) const noexcept {
         return cached_shape == receiverShape &&
                (cached_depth == 0 || cached_epoch == protoMutationEpoch());
@@ -94,9 +93,9 @@ struct ObjectHeader {
     // chains are 1–3 links.
     static constexpr uint32_t kMaxPrototypeDepth = 1000;
 
-    // `shape` is required: it decides the object's prototype (docs/0008
-    // decision 1), and minting a fresh root shape per object would give
-    // every `{}` literal an unrelated hidden class.
+    // `shape` is required: it decides the object's prototype, and minting a
+    // fresh root shape per object would give every `{}` literal an unrelated
+    // hidden class.
     static ObjectHeader* create(Heap& heap, NonMovingArena& arena, Shape* shape);
 
     // The object `cached_depth` prototype links up from this one, or null
@@ -121,43 +120,41 @@ struct ObjectHeader {
     //
     // The third change — an ADD to an intermediate, which takes a shape
     // transition and leaves no dictionary behind — is NOT visible here and
-    // cannot be: this walk sees the chain as it is now, not as it was when
-    // the entry was filled. `cached_epoch` is what covers it (docs/0032), and
-    // the two mechanisms are kept separate because they answer different
-    // questions — "is this walk safe to take" and "is this entry still about
-    // the same chain".
+    // cannot be: this walk sees the chain as it is now, not as it was when the
+    // entry was filled. `cached_epoch` is what covers it, and the two
+    // mechanisms are kept separate because they answer different questions —
+    // "is this walk safe to take" and "is this entry still about the same
+    // chain".
     ObjectHeader* cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept;
 
-    // `Object.setPrototypeOf`. The prototype lives on the shape's ROOT
-    // (docs/0008 decision 1), which every object sharing that root shares —
-    // so a swap cannot write through it and must give this object a shape of
-    // its own. Dictionary mode is that shape, and it is not merely convenient:
-    // a dictionary is what `cachedProtoHolder` above refuses, so an entry that
-    // walks THROUGH this object stops hitting the moment the swap happens.
+    // `Object.setPrototypeOf`. The prototype lives on the shape's ROOT, which
+    // every object sharing that root shares — so a swap cannot write through it
+    // and must give this object a shape of its own. Dictionary mode is that
+    // shape, and it is not merely convenient: a dictionary is what
+    // `cachedProtoHolder` above refuses, so an entry that walks THROUGH this
+    // object stops hitting the moment the swap happens.
     static void setPrototype(NonMovingArena& arena, Rooted<Value>& self, class Shape* newRoot);
 
     // May allocate and may run USER CODE: a property whose own-or-inherited
-    // definition is an accessor calls its getter here (docs/0019 decision 3).
-    // So `this` must be reachable from a root at the call and must not be
-    // reused afterwards — the same contract setProp has always had.
+    // definition is an accessor calls its getter here. So `this` must be
+    // reachable from a root at the call and must not be reused afterwards — the
+    // same contract setProp has always had.
     //
-    // `receiver` is what `this` is bound to if the property turns out to be
-    // an accessor: the object itself for every ordinary read, which is why
-    // it defaults to null. A function's STATIC members live in a side object
-    // (docs/0012 decision 6), so that one caller passes the constructor down
-    // and a static getter sees the class rather than the box its properties
-    // are kept in.
+    // `receiver` is what `this` is bound to if the property turns out to be an
+    // accessor: the object itself for every ordinary read, which is why it
+    // defaults to null. A function's STATIC members live in a side object, so
+    // that one caller passes the constructor down and a static getter sees the
+    // class rather than the box its properties are kept in.
     Value getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic = nullptr,
                   const Value* receiver = nullptr);
     // May allocate (overflow growth), which can move this object; use the
     // returned pointer afterwards, not `this`. May also run user code, for
     // the same reason getProp can: an inherited setter.
     //
-    // `enumerable` decides the ATTRIBUTE a newly created property gets, and
-    // is therefore part of the shape transition it takes. It is false for
-    // exactly one caller — a class method definition (docs/0018 decision 2) —
-    // and an ordinary assignment never reaches it, because assignment always
-    // creates an enumerable property.
+    // `enumerable` decides the ATTRIBUTE a newly created property gets, and is
+    // therefore part of the shape transition it takes. It is false for exactly
+    // one caller — a class method definition — and an ordinary assignment never
+    // reaches it, because assignment always creates an enumerable property.
     //
     // `defineOwn` switches from Set (ECMA-262 10.1.9) to DefineOwnProperty
     // (10.1.6): a definition never runs an inherited setter. A class method
@@ -168,12 +165,12 @@ struct ObjectHeader {
                           bool enumerable = true, bool defineOwn = false,
                           const Value* receiver = nullptr);
 
-    // `delete o.k`, which removes an OWN property and answers true — also
-    // when the property was never there, and when only a prototype has it
-    // (ECMA-262 13.5.1 / 10.5.6). Removing from the middle of a transition
-    // chain is impossible, so the first successful delete moves the object
-    // to dictionary mode (docs/0019 decision 1). Allocates nothing on the
-    // heap; the dictionary and its shape live in the arena.
+    // `delete o.k`, which removes an OWN property and answers true — also when
+    // the property was never there, and when only a prototype has it (ECMA-262
+    // 13.5.1 / 10.5.6). Removing from the middle of a transition chain is
+    // impossible, so the first successful delete moves the object to dictionary
+    // mode. Allocates nothing on the heap; the dictionary and its shape live in
+    // the arena.
     bool deleteProperty(NonMovingArena& arena, StringHeader* name);
 
     // `get k() {}` / `set k(v) {}`. Defines ONE property with two halves: a
@@ -222,13 +219,13 @@ struct ObjectHeader {
     }
 };
 
-// These two layouts are part of the generated-code ABI (docs/0010 decision
-// 7): compiled code loads the shape word and the cache entry itself rather
-// than calling a helper to do it. The constants live in bronze_abi.h, which
-// is pure C and cannot see a C++ class, so this is where the two sides are
-// tied together — deliberately in the HEADER, so every translation unit
-// that can see the structs also checks them. Adding or reordering a field
-// breaks the build here instead of miscompiling every property read.
+// These two layouts are part of the generated-code ABI: compiled code loads the
+// shape word and the cache entry itself rather than calling a helper to do it.
+// The constants live in bronze_abi.h, which is pure C and cannot see a C++
+// class, so this is where the two sides are tied together — deliberately in the
+// HEADER, so every translation unit that can see the structs also checks them.
+// Adding or reordering a field breaks the build here instead of miscompiling
+// every property read.
 static_assert(sizeof(InlineCache) == BRONZE_ABI_IC_ENTRY_SIZE);
 static_assert(alignof(InlineCache) <= 8);
 static_assert(offsetof(InlineCache, cached_shape) == BRONZE_ABI_IC_SHAPE_OFFSET);

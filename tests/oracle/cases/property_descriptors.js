@@ -1,8 +1,8 @@
 // Property descriptors: the two attributes a bronze property gained in
-// docs/0021 decision 5, `writable` and `configurable`, and the `extensible`
-// bit `Object.freeze` sets. All three live in the DICTIONARY rather than in
-// the shape transition key, so an object with a non-default attribute has a
-// private shape no inline cache can ever match.
+// `writable` and `configurable`, and the `extensible` bit `Object.freeze` sets.
+// All three live in the DICTIONARY rather than in the shape transition key, so
+// an object with a non-default attribute has a private shape no inline cache
+// can ever match.
 //
 // Not pinned here, deliberately: redefining a non-configurable property, and
 // `defineProperty` on a frozen object, are both TypeErrors, and they belong
@@ -13,24 +13,22 @@
 // 20.1.2.10:
 //
 // 1. `defineProperty` can create a property that reads back normally but is
-//    invisible to `Object.keys` and to `for-in`, cannot be assigned over, and
-//    cannot be deleted — the four attributes, each observable on its own.
-// 2. An OMITTED attribute defaults to `false`, which is the trap that makes
-//    `defineProperty` different from assignment: `{ value: 5 }` produces a
-//    non-enumerable, non-writable, non-configurable property, where `o.a = 5`
-//    produces one that is all three.
-// 3. `getOwnPropertyDescriptor` reports those attributes as a fresh object
-//    with the field order 6.2.6.4 fixes — value, writable, enumerable,
-//    configurable for a data property; get, set, enumerable, configurable for
-//    an accessor — and answers `undefined` for a key that is not an own one.
-// 4. An accessor defined through `defineProperty` behaves exactly like one
-//    written as `get x()`: the getter runs with the receiver as `this`, and
-//    `delete` removes the pair (docs/0019 decisions 3 and 4). This is the
-//    line that proves descriptors reached the same machinery rather than a
-//    parallel one.
-// 5. `Object.freeze` is the everyday name for all of it: existing properties
-//    stop being writable and configurable, new ones stop being addable, and
-//    every one of those failures is silent outside strict mode.
+// invisible to `Object.keys` and to `for-in`, cannot be assigned over, and
+// cannot be deleted — the four attributes, each observable on its own. 2. An
+// OMITTED attribute defaults to `false`, which is the trap that makes
+// `defineProperty` different from assignment: `{ value: 5 }` produces a
+// non-enumerable, non-writable, non-configurable property, where `o.a = 5`
+// produces one that is all three. 3. `getOwnPropertyDescriptor` reports those
+// attributes as a fresh object with the field order 6.2.6.4 fixes — value,
+// writable, enumerable, configurable for a data property; get, set, enumerable,
+// configurable for an accessor — and answers `undefined` for a key that is not
+// an own one. 4. An accessor defined through `defineProperty` behaves exactly
+// like one written as `get x()`: the getter runs with the receiver as `this`,
+// and `delete` removes the pair. This is the line that proves descriptors
+// reached the same machinery rather than a parallel one. 5. `Object.freeze` is
+// the everyday name for all of it: existing properties stop being writable and
+// configurable, new ones stop being addable, and every one of those failures is
+// silent outside strict mode.
 const locked = {};
 Object.defineProperty(locked, "hidden", {
   value: 1,

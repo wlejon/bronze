@@ -22,7 +22,7 @@ set_tests_properties(oracle PROPERTIES LABELS oracle)
 # cases inherit the environment, so every allocation inside every case
 # moves the entire live set — a missing root in generated code becomes a
 # deterministic byte mismatch rather than a bug with a timer on it
-# (docs/0006 decision 5).
+# with it.
 add_test(NAME oracle-gc-stress COMMAND bronze_oracle_tests ${BRONZE_ORACLE_CASE_SUITES})
 set_tests_properties(oracle-gc-stress PROPERTIES
     LABELS oracle

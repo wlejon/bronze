@@ -1,13 +1,13 @@
 // The `Math` namespace: one object, built once, reachable because lowering
 // resolves the free identifier `Math` to bronze_global_get rather than
-// diagnosing it (docs/0011 decision 1).
+// diagnosing it.
 //
-// Every function here is an ordinary bronze function object over a native
-// code pointer, so `Math.min` can be read as a value, passed around and
-// called through the dynamic convention like any other. Where inference
-// proves the arguments are numbers, lowering does NOT come through here at
-// all — it emits the arithmetic inline (docs/0011 decision 2) — so the two
-// paths have to agree on every edge case, and the oracle case runs both.
+// Every function here is an ordinary bronze function object over a native code
+// pointer, so `Math.min` can be read as a value, passed around and called
+// through the dynamic convention like any other. Where inference proves the
+// arguments are numbers, lowering does NOT come through here at all — it emits
+// the arithmetic inline — so the two paths have to agree on every edge case,
+// and the oracle case runs both.
 
 #include <chrono>
 #include <cmath>
@@ -85,8 +85,8 @@ uint64_t mathHypot(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 }
 
 // JS rounds half UP (towards +Infinity), so Math.round(-2.5) is -2, while
-// std::round rounds half away from zero and answers -3. The whole reason
-// this is not one intrinsic in generated code either (docs/0011).
+// std::round rounds half away from zero and answers -3. The whole reason this
+// is not one intrinsic in generated code either.
 double jsRound(double x) {
     if (std::isnan(x) || std::isinf(x) || x == 0.0) return x;
     double f = std::floor(x);
@@ -142,10 +142,11 @@ uint64_t mathAtan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // ---- Math.random (21.3.2.27) ------------------------------------------------
 //
-// The generator is xoshiro256++ (Blackman & Vigna), seeded once from the OS.
-// docs/0030 decision 1 records why a COMPILED PROGRAM is allowed to be
-// nondeterministic where bronze's own output is not, and why a fixed seed
-// would have been the silent wrong answer rather than the safe choice.
+// The generator is xoshiro256++ (Blackman & Vigna), seeded once from the OS. A
+// COMPILED PROGRAM is allowed to be nondeterministic where bronze's own output
+// is not. A fixed seed would have been the silent wrong answer rather than the
+// safe choice: a program that asks for randomness and is handed a replayable
+// sequence has been lied to.
 //
 // Not `rand()`, for four reasons that compound: MSVC's `RAND_MAX` is 32767, so
 // it yields fifteen bits per call and a double built from it lands on a coarse

@@ -120,9 +120,9 @@ TEST_CASE("a switch parses its clauses, and only one may be `default`") {
     const auto out = parseAndDump("switch (x) { case 1: a(); default: b(); case 2: c(); }\n");
     CHECK(out.find("(switch") != std::string::npos);
     CHECK(out.find("(case") != std::string::npos);
-    // `default` in the MIDDLE is legal and keeps its position: ECMA-262
-    // 14.12.4 walks the case list for a match and only then falls back to the
-    // default clause, wherever it was written (docs/0018 decision 5).
+    // `default` in the MIDDLE is legal and keeps its position: ECMA-262 14.12.4
+    // walks the case list for a match and only then falls back to the default
+    // clause, wherever it was written.
     CHECK(out.find("(default") != std::string::npos);
 
     const auto two = parseAndDump("switch (x) { default: a(); default: b(); }\n");

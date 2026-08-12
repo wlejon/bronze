@@ -15,14 +15,13 @@
 namespace bronze::types {
 namespace {
 
-// The ordered property names a constructor installs on `this`, in source
-// order. Does not descend into nested functions: each one binds its own
-// receiver, so an inner `this.x =` says nothing about this constructor
-// (docs/0008 decision 3).
+// The ordered property names a constructor installs on `this`, in source order.
+// Does not descend into nested functions: each one binds its own receiver, so
+// an inner `this.x =` says nothing about this constructor.
 //
 // Conditional assignments are collected unconditionally, so this can name a
-// class the runtime never builds. That is deliberate and safe: decision 7
-// keeps the shape guard even on a proven site, because the proof is over
+// class the runtime never builds. That is deliberate and safe: the inline-cache
+// check keeps the shape guard even on a proven site, because the proof is over
 // this compilation's source and the shape word is the runtime's authority.
 class ThisPropertyWalker final : public Walker {
 public:
@@ -60,8 +59,8 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::NumberLit*>(&e)) return Type::number();
     if (dynamic_cast<const ast::StringLit*>(&e)) return Type::string();
     // A regular expression literal is an OBJECT, and inference has no shape
-    // class for one: a RegExp carries no shape at all (docs/0024 decision 4),
-    // so every read off it goes through the runtime's own branch.
+    // class for one: a RegExp carries no shape at all, so every read off it
+    // goes through the runtime's own branch.
     if (dynamic_cast<const ast::RegExpLit*>(&e)) return Type::dynamic();
     // A template is a string whatever its substitutions produce, since
     // every one of them goes through ToString. The substitutions are
@@ -74,9 +73,9 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::BoolLit*>(&e)) return Type::boolean();
     if (dynamic_cast<const ast::NullLit*>(&e)) return Type::null();
     if (dynamic_cast<const ast::UndefinedLit*>(&e)) return Type::undefined();
-    // `this` is the caller's receiver; nothing here proves anything about
-    // it. Sharpening it needs the prototype work of decision 4 applied to
-    // constructors, which is the property-access step.
+    // `this` is the caller's receiver; nothing here proves anything about it.
+    // Sharpening it needs the shape-class work applied to constructors, which
+    // is the property-access step.
     if (dynamic_cast<const ast::ThisExpr*>(&e)) return Type::dynamic();
     if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) return lookup(id->name);
     if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) return unary(*u);
@@ -93,8 +92,8 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
         expr(*m->object);
-        // v1 proves the receiver's shape class, never the property's
-        // type; that is what decision 7 consumes and all it needs.
+        // v1 proves the receiver's shape class, never the property's type; that
+        // is what the inline-cache check consumes and all it needs.
         return Type::dynamic();
     }
     if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(&e)) {
@@ -124,11 +123,11 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         expr(*sp->argument);
         return Type::dynamic();
     }
-    // Every name a destructuring assignment writes becomes dynamic: the
-    // pieces come out of an indexed or keyed read, and this pass tracks
-    // no element or property types to say anything narrower (docs/0017
-    // decision 9). Assigning rather than ignoring is the point — a name
-    // proven numeric before must not stay numeric across it.
+    // Every name a destructuring assignment writes becomes dynamic: the pieces
+    // come out of an indexed or keyed read, and this pass tracks no element or
+    // property types to say anything narrower. Assigning rather than ignoring
+    // is the point — a name proven numeric before must not stay numeric across
+    // it.
     if (const auto* da = dynamic_cast<const ast::DestructuringAssign*>(&e)) {
         const Type value = expr(*da->value);
         for (const auto& name : ast::patternBoundNames(*da->pattern)) {
@@ -270,12 +269,12 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
     // A computed key names its property only at run time, so this literal's
     // own-property set is not known here. A shape class interned over the
     // WRITTEN keys alone would be a claim about a layout the runtime never
-    // builds, and the inline caches rest on that claim being true
-    // (docs/0010 decision 4) — so a literal with any computed key is
-    // simply `dynamic`, and its sites stay polymorphic.
+    // builds, and the inline caches rest on that claim being true — so a
+    // literal with any computed key is simply `dynamic`, and its sites stay
+    // polymorphic.
     if (computedKey) return Type::dynamic();
-    // Empty constructor name: a plain literal's prototype is the one root
-    // shape every `{}` shares (docs/0008 decision 1).
+    // Empty constructor name: a plain literal's prototype is the one root shape
+    // every `{}` shares.
     const ShapeClassId cls = mod_.result->shapes.intern(std::string(), std::move(props));
     if (record_) mod_.result->siteShapes[&o] = cls;
     return Type::object(cls);
@@ -290,8 +289,8 @@ void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     borrowed.reserve(body.size());
     for (const auto& s : body) borrowed.push_back(s.get());
 
-    // A closure is never a direct-call target (docs/0007), so its
-    // parameters keep the uniform dynamic convention.
+    // A closure is never a direct-call target, so its parameters keep the
+    // uniform dynamic convention.
     const std::vector<Type> paramTypes(params.size(), Type::dynamic());
     analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
                     /*directCallable=*/false, params, paramTypes, borrowed, span, record_);

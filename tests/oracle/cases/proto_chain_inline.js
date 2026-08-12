@@ -1,7 +1,6 @@
 // proto_chain.js with the receivers arranged so every hot site is PROVEN
-// monomorphic and therefore takes the inlined cache path of docs/0010
-// decision 7. The point is the same one docs/0008 decision 2 makes and it
-// bites harder here, because the check that must not forget the depth is
+// monomorphic and therefore takes the inlined cache path. The point is the
+// same one the cached depth makes, and it bites harder here, because the check that must not forget the depth is
 // now open-coded in the object file instead of living in one helper.
 //
 // Three links, and every property below is at slot 0 of whatever object

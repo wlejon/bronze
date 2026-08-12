@@ -13,26 +13,26 @@ class Shape;
 // One own property of a dictionary-mode object: the three facts a shape node
 // carries, in a container something can be removed from the MIDDLE of.
 //
-// That is the whole reason dictionary mode exists (docs/0004 decision 2,
-// docs/0019 decision 1). A shape node's `slot_index` is implied by its
-// position in the transition chain, and shapes are immortal and shared, so
-// unlinking one would renumber every shape below it for every object that
-// ever took that path. An entry vector owned by ONE object renumbers nobody.
+// That is the whole reason dictionary mode exists. A shape node's `slot_index`
+// is implied by its position in the transition chain, and shapes are immortal
+// and shared, so unlinking one would renumber every shape below it for every
+// object that ever took that path. An entry vector owned by ONE object
+// renumbers nobody.
 struct DictEntry {
     StringHeader* name{nullptr};  // arena-interned, immortal, non-moving
     uint32_t slot{0};
     bool enumerable{true};
-    // The slot holds the getter and `slot + 1` the setter, either of which
-    // may be `undefined` (docs/0019 decision 4).
+    // The slot holds the getter and `slot + 1` the setter, either of which may
+    // be `undefined`.
     bool accessor{false};
-    // The other two attributes of 6.2.6.1, which live HERE and nowhere else
-    // (docs/0021 decision 5): a shape transition is matched on
-    // (name, enumerable, accessor), and adding two more bits to that key
-    // would fork the transition tree for every object that had reached the
-    // node a late `writable: false` was defined on. An object that wants a
-    // non-default attribute becomes a dictionary instead, which is the same
-    // escape `delete` already takes and is the reason the inline caches need
-    // no change: a dictionary's private shape is one no entry has ever seen.
+    // The other two attributes of 6.2.6.1, which live HERE and nowhere else: a
+    // shape transition is matched on (name, enumerable, accessor), and adding
+    // two more bits to that key would fork the transition tree for every object
+    // that had reached the node a late `writable: false` was defined on. An
+    // object that wants a non-default attribute becomes a dictionary instead,
+    // which is the same escape `delete` already takes and is the reason the
+    // inline caches need no change: a dictionary's private shape is one no
+    // entry has ever seen.
     bool writable{true};
     bool configurable{true};
 };
@@ -44,9 +44,9 @@ struct DictEntry {
 class Dictionary {
 public:
     // Insertion order, which is enumeration order for the string half of
-    // docs/0009 decision 1 — with the difference only a delete can make
-    // visible: a key re-added after a delete is a NEW insertion and goes to
-    // the end, because `erase` took its old position with it.
+    // own-enumerable order — with the difference only a delete can make
+    // visible: a key re-added after a delete is a NEW insertion and goes to the
+    // end, because `erase` took its old position with it.
     std::vector<DictEntry> entries;
 
     // Slots a delete released. Reused by a later single-slot property so

@@ -1,7 +1,7 @@
-// Math.random (docs/0030 decision 1).
+// Math.random.
 //
-// No oracle case can pin this and none ever should: docs/0003's harness greps
-// every case for the name and fails it, because a case's whole contract is
+// No oracle case can pin this and none ever should: the harness greps every
+// case for the name and fails it, because a case's whole contract is
 // byte-identical stdout. That is exactly why the behaviour is pinned HERE
 // instead of nowhere — the three things a broken implementation gets wrong are
 // the range (a shift by the wrong width, or a division by the wrong power of

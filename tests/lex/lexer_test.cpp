@@ -129,7 +129,7 @@ TEST_CASE("a single dot is still a dot") {
 
 TEST_CASE("a token records whether a line terminator precedes it") {
     // The only fact the lexer keeps about discarded trivia, and the only one
-    // automatic semicolon insertion needs (docs/0014).
+    // automatic semicolon insertion needs.
     auto lexed = lexAll("a b\nc");
     auto& tokens = lexed.tokens;
     REQUIRE(tokens.size() == 4);  // a, b, c, eof
@@ -165,8 +165,8 @@ TEST_CASE("end of input reports the line terminator before it") {
 }
 
 TEST_CASE("the bitwise punctuation is longest-match, single form included") {
-    // `&` and `|` used to exist only as the first half of `&&` and `||`, so
-    // `a & b` reported an unrecognized character (docs/0015).
+    // `&` and `|` used to exist only as the first half of `&&` and `||`, so `a
+    // & b` reported an unrecognized character.
     auto lexed = lexAll("a & b && c | d || e ^ f ~g");
     auto& t = lexed.tokens;
     CHECK(t[1].kind == TokenKind::Amp);
@@ -207,9 +207,9 @@ TEST_CASE("the operator keywords are keywords, not identifiers") {
     CHECK(t[11].kind == TokenKind::KwVoid);
 }
 
-// A numeric literal is ONE token however it is spelled, so a malformed one
-// can be diagnosed against its whole text (docs/0016 decision 5). The lexer
-// deliberately does not decide what the digits mean.
+// A numeric literal is ONE token however it is spelled, so a malformed one can
+// be diagnosed against its whole text. The lexer deliberately does not decide
+// what the digits mean.
 TEST_CASE("radix prefixes, separators and exponents lex as one number token") {
     for (const char* src : {"0xFF", "0X10", "0o17", "0b1010", "0B1111_0000",
                             "1_000_000", "1e3", "1E3", "1.5e-3", "1e+7", ".5",
@@ -252,7 +252,7 @@ TEST_CASE("a dot after a number is a member access unless a digit follows") {
     CHECK(spread.tokens[0].kind == TokenKind::Ellipsis);
 }
 
-// ---- the `/` ambiguity (docs/0024 decision 1) --------------------------------
+// ---- the `/` ambiguity --------------------------------
 //
 // `a / b` divides and `/ab/` is a literal, and only the PREVIOUS significant
 // token tells them apart. Every case below is one a wrong answer would

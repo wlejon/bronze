@@ -63,13 +63,12 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
         diags_.error(un.span, "invalid update operand: ++/-- needs a variable or a property");
         return std::nullopt;
     }
-    // An update expression is a read and a write of the same target,
-    // so it resolves the target exactly as assignment does: a binding
-    // of this function, or — failing that — a slot in an enclosing
-    // scope's environment record (docs/0007). Looking only in
-    // `activeVarMap_` made `() => ++n` report `undefined variable: n`
-    // for the very binding `n = n + 1` two lines away resolves
-    // through the environment.
+    // An update expression is a read and a write of the same target, so it
+    // resolves the target exactly as assignment does: a binding of this
+    // function, or — failing that — a slot in an enclosing scope's environment
+    // record. Looking only in `activeVarMap_` made `() => ++n` report
+    // `undefined variable: n` for the very binding `n = n + 1` two lines away
+    // resolves through the environment.
     auto it = activeVarMap_.find(ident->name);
     const bool isLocal = it != activeVarMap_.end();
     // An index rather than a reference, for the reason the assignment
@@ -105,8 +104,8 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
 }
 
 // `o.k++`. The base is lowered once and both the read and the write name the
-// same value, so an accessor pair sees the same receiver for its getter and
-// its setter (docs/0019 decision 4) and `f().k++` calls `f` once.
+// same value, so an accessor pair sees the same receiver for its getter and its
+// setter and `f().k++` calls `f` once.
 std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess& mem,
                                                          ast::UnaryOp op, il::Function& ilFn) {
     auto objVal = lowerExpr(*mem.object, ilFn);

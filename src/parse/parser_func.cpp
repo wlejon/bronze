@@ -29,8 +29,8 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
 
     // `function* g() {}` is the same desugaring a generator METHOD gets, and
     // takes the same route to it: a FunctionExpr is filled in and its pieces
-    // moved across, because a declaration and an expression differ in where
-    // the value lands and in nothing about the body (docs/0026).
+    // moved across, because a declaration and an expression differ in where the
+    // value lands and in nothing about the body.
     if (isGenerator) {
         GeneratorScopeGuard guard(*this);
         ast::FunctionExpr shell;
@@ -125,7 +125,7 @@ ExprPtr Parser::parseArrowFunction() {
 //
 // A parameter is a binding target (a name or a pattern), optionally with a
 // default; or a rest parameter, which takes what is left and so must be last
-// and can have neither a default nor a pattern (docs/0017).
+// and can have neither a default nor a pattern.
 bool Parser::parseParams(std::vector<ast::Param>& out) {
     while (!check(TokenKind::RParen)) {
         if (check(TokenKind::EndOfFile)) {
@@ -245,11 +245,11 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
 //
 // A method's `super` is resolved against its HOME OBJECT, and an object
 // literal's home object is the literal. bronze resolves `super` by the class
-// name the parser is inside (docs/0012 decision 5), so an object literal
-// method nested in a class method must not inherit that binding: `super.m()`
-// there would silently call the enclosing class's parent. The two fields are
-// therefore saved and cleared for the body, which turns that into the
-// existing "super outside a class method" error.
+// name the parser is inside, so an object literal method nested in a class
+// method must not inherit that binding: `super.m()` there would silently call
+// the enclosing class's parent. The two fields are therefore saved and cleared
+// for the body, which turns that into the existing "super outside a class
+// method" error.
 std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& name,
                                                            Span nameSpan) {
     auto fn = std::make_unique<FunctionExpr>();
@@ -276,9 +276,9 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
 
 // `class Name [extends Base] { members }`. A class introduces no runtime
 // concept - it is the constructor function plus its prototype, and lowering
-// desugars it into exactly that (docs/0012 decision 5). What the parser
-// owes is the shape: which member is the constructor, which are static, and
-// which class each `super` in a body belongs to.
+// desugars it into exactly that. What the parser owes is the shape: which
+// member is the constructor, which are static, and which class each `super` in
+// a body belongs to.
 //
 // Everything ES2015+ puts in a class body that bronze has not built -
 // fields, getters and setters, computed keys, generators - is diagnosed by
@@ -326,11 +326,11 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             advance();
             member.isStatic = true;
         }
-        // `*m() {}` / `*[Symbol.iterator]() {}` — a generator method, which
-        // the parser desugars into an ordinary method returning an iterator
-        // object (docs/0026). The name is taken here because a generator's
-        // is spelled the two ways a method's is, and `[Symbol.iterator]` is
-        // the only computed one bronze reads.
+        // `*m() {}` / `*[Symbol.iterator]() {}` — a generator method, which the
+        // parser desugars into an ordinary method returning an iterator object.
+        // The name is taken here because a generator's is spelled the two ways
+        // a method's is, and `[Symbol.iterator]` is the only computed one
+        // bronze reads.
         if (check(TokenKind::Star)) {
             const Token& star = advance();
             if (!matchSymbolIteratorKey(member.name)) {
@@ -476,7 +476,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     // `constructor(...args) { super(...args); }`, which is exactly a rest
     // parameter and a spread and nothing else: the forwarding has to be
     // arity-preserving, and before those existed it was a named error rather
-    // than a quietly truncated argument list (docs/0012 decision 5).
+    // than a quietly truncated argument list.
     bool hasCtor = false;
     for (const auto& m : cls->methods) hasCtor = hasCtor || m.isConstructor;
     if (!hasCtor) {

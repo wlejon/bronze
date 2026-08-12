@@ -1,7 +1,6 @@
-// The whole binding ladder, one line per rung (docs/0015 decision 10).
-// Each line is chosen so that getting the rung wrong prints something
-// DIFFERENT, not merely something equal by luck: a case that reads the same
-// under both groupings pins nothing.
+// The whole binding ladder, one line per rung. Each line is chosen so that
+// getting the rung wrong prints something DIFFERENT, not merely something equal
+// by luck: a case that reads the same under both groupings pins nothing.
 //
 // Lowest to highest: comma, assignment, conditional, ?? / || , &&, |, ^, &,
 // equality, relational (< > <= >= in instanceof), shift, additive,

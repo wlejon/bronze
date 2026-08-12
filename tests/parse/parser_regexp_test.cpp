@@ -1,9 +1,9 @@
-// Regular expression LITERALS (docs/0024), split from parser_test.cpp along
-// the seam parser_literal.cpp already names. What is pinned here is the two
-// things the parser decides about one: that its body is taken verbatim rather
-// than decoded like a string, and that its pattern is compiled where it is
-// written, so a malformed regular expression is a compile error and not a
-// surprise the first time the line runs.
+// Regular expression LITERALS, split from parser_test.cpp along the seam
+// parser_literal.cpp already names. What is pinned here is the two things the
+// parser decides about one: that its body is taken verbatim rather than decoded
+// like a string, and that its pattern is compiled where it is written, so a
+// malformed regular expression is a compile error and not a surprise the first
+// time the line runs.
 
 // The doctest main is parser_test.cpp's; every half links into one binary
 // under the `parse` label, so the module's test command does not change.

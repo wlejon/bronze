@@ -1,8 +1,7 @@
-// One property expression, several receiver LAYOUTS — the case docs/0019
-// decision 5 exists for. An inline cache entry says "this shape, this slot"
-// and generated code turns a hit into an indexed load with no call
-// (docs/0010 decision 7). Both features of this chunk break that assumption
-// if the entry is allowed to describe them:
+// One property expression, several receiver LAYOUTS — the case the decision 5
+// exists for. An inline cache entry says "this shape, this slot" and generated
+// code turns a hit into an indexed load with no call. Both features of this
+// chunk break that assumption if the entry is allowed to describe them:
 //
 //  - a DICTIONARY object's slots are not shape-indexed and its slot numbers
 //    are reused after a delete, so a stale entry reads an unrelated property;
@@ -73,10 +72,10 @@ console.log(read(churn));
 console.log(Object.keys(churn).join(","));
 
 // ---- the same, at a site inference proves monomorphic ----------------------
-// `o` has one known shape class, so this read is emitted as the INLINED
-// cache check rather than a helper call (docs/0010 decision 7). The delete
-// happens halfway through the loop, so the same inlined check sees the
-// transition shape twice and the private dictionary shape twice.
+// `o` has one known shape class, so this read is emitted as the INLINED cache
+// check rather than a helper call. The delete happens halfway through the loop,
+// so the same inlined check sees the transition shape twice and the private
+// dictionary shape twice.
 const o = { pad: 1, v: "before" };
 for (let i = 0; i < 4; i = i + 1) {
   if (i === 2) {

@@ -1,4 +1,4 @@
-// The `arguments` object, below the compiler (docs/0027 decision 3).
+// The `arguments` object, below the compiler.
 //
 // The oracle case pins what ECMA-262 fixes about it — the count, the indices,
 // the iteration, the unmapped write. What it deliberately does NOT pin is the
@@ -51,8 +51,9 @@ TEST_CASE("the arguments object IS an array — the recorded divergence") {
     // `flags == 1` is what `Array.isArray`, `JSON.stringify` and the spread
     // fast paths all test. A spec engine's arguments object is an ordinary
     // object with an @@iterator, so all three would see it differently.
-    // Changing this is a decision, not a fix: see docs/0027 decision 3 for
-    // what it would cost.
+    // Changing this is a decision, not a fix: an `arguments` that aliased its
+    // parameters would need a mapped object and would cost every call that has
+    // one.
     CHECK(args.get().asObject<HeapObjectHeader>()->flags == 1);
 }
 

@@ -1,5 +1,4 @@
-// Labels, and the one stack every `break` and `continue` searches
-// (docs/0018 decision 3).
+// Labels, and the one stack every `break` and `continue` searches.
 //
 // A label is not a binding and produces no value: it names a statement so
 // that a jump inside it can say which statement it means. So the whole of the

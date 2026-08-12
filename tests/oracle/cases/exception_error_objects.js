@@ -1,5 +1,5 @@
 // The `Error` family: what a constructed error carries, and how the three
-// classes relate (docs/0020 decision 7).
+// classes relate.
 //
 // ECMA-262 20.5.1.1 Error(message): "if NewTarget is undefined, let newTarget
 // be the active function object" — so `Error("x")` builds the same thing as
@@ -11,9 +11,9 @@
 // them and `instanceof RangeError` does not hold for a TypeError.
 //
 // DELIBERATE DIVERGENCE FROM NODE: `console.log(err)` prints `Name: message`
-// (the shape 20.5.3.4 Error.prototype.toString defines) and nothing else.
-// node appends a captured stack trace, which is neither specified nor
-// deterministic, and docs/0003 pins bytes.
+// (the shape 20.5.3.4 Error.prototype.toString defines) and nothing else. node
+// appends a captured stack trace, which is neither specified nor deterministic,
+// and the oracle suite pins bytes.
 
 var e = new Error("boom");
 console.log(e.name, e.message);

@@ -44,18 +44,16 @@ struct FunctionFacts {
     std::vector<std::string> paramNames;
     Signature signature;
     bool directCallable = false;
-    // Env-backed bindings (docs/0007 decision 1) and the single type joined
-    // over every write to each. They are deliberately not in the per-
-    // statement diffs below: a cell is one fact about the whole function,
-    // not a fact at a program point, because a closure can write it at any
-    // time (docs/0010 decision 3).
+    // Env-backed bindings and the single type joined over every write to each.
+    // They are deliberately not in the per- statement diffs below: a cell is
+    // one fact about the whole function, not a fact at a program point, because
+    // a closure can write it at any time.
     std::vector<BindingChange> cells;
     std::vector<StatementFacts> statements;
 };
 
 // The side table lowering reads. Inference never mutates the AST and never
-// rewrites IL (docs/0010 decision 1); everything it proved is queried from
-// here, keyed by AST node.
+// rewrites IL; everything it proved is queried from here, keyed by AST node.
 //
 // The queries are the contract. The data members exist because the analysis
 // has to fill them and the dump has to walk them; a consumer should not need
@@ -80,10 +78,10 @@ struct InferenceResult {
     // whole environments cheaply; nothing here reaches an output path.
     std::unordered_map<const ast::Stmt*, std::map<std::string, Type>> mergeBindings;
 
-    // Per closure: the type its `return` statements were observed to
-    // produce, keyed by the AST node that IS the closure — a `FunctionExpr`,
-    // or a nested `FunctionDecl`, which docs/0007 decision 4 desugars to one.
-    // See `closureReturnAt` for what this is and is not.
+    // Per closure: the type its `return` statements were observed to produce,
+    // keyed by the AST node that IS the closure — a `FunctionExpr`, or a nested
+    // `FunctionDecl`, which desugars to one. See `closureReturnAt` for what
+    // this is and is not.
     std::unordered_map<const ast::Node*, Type> closureReturns;
 
     std::map<std::string, uint32_t> moduleFunctionIndex;  // name -> index
@@ -94,8 +92,8 @@ struct InferenceResult {
     // ---- the query interface lowering consumes ------------------------------
 
     // The type proven at one use site. Any expression the analysis did not
-    // reach answers `Dynamic`, which is the designed sound fallback and never
-    // a diagnostic (docs/0010 decision 2).
+    // reach answers `Dynamic`, which is the designed sound fallback and never a
+    // diagnostic.
     Type typeAt(const ast::Expr* expr) const;
 
     // The shape class of an object-creating site (an `ObjectLit` or a
@@ -104,13 +102,12 @@ struct InferenceResult {
 
     // The type a binding is proven to hold at a control-flow MERGE POINT.
     //
-    // A merge point is not an expression, so `typeAt` cannot express it, and
-    // it is exactly what SSA joins need: a block parameter's type has to be
-    // an upper bound of every edge that reaches it, including edges that
-    // lowering has not built yet (docs/0005 decision 2 — the loop back edge
-    // is lowered after the header). `mergePoint` is therefore the *statement
-    // that owns the merge*, which is a node lowering holds in its hand when
-    // it creates the block:
+    // A merge point is not an expression, so `typeAt` cannot express it, and it
+    // is exactly what SSA joins need: a block parameter's type has to be an
+    // upper bound of every edge that reaches it, including edges that lowering
+    // has not built yet — the loop back edge is lowered after the header.
+    // `mergePoint` is therefore the *statement that owns the merge*, which is a
+    // node lowering holds in its hand when it creates the block:
     //
     //   - an `IfStmt`   — the join after the two arms;
     //   - a `WhileStmt` / `DoWhileStmt` / `ForStmt` — one answer covering
@@ -146,20 +143,19 @@ struct InferenceResult {
     // `signatureOf` cannot speak for one; this is keyed by the AST node
     // instead, which is what a consumer holds when it lowers the closure.
     //
-    // Deliberately the return only. A closure's PARAMETERS have no proof
-    // and cannot get one here: decision 5 infers a signature by joining
-    // over all call sites, which is sound only for a name whose callers
-    // this compilation can enumerate, and a closure is reached through a
-    // function value. So its parameters keep the uniform dynamic convention
-    // and this reports nothing about them — an absence by design, not a
-    // gap. Its return, by contrast, is a fact about the body alone: the
-    // analysis already walks it and joins every `return`.
+    // Deliberately the return only. A closure's PARAMETERS have no proof and
+    // cannot get one here: a signature is inferred by joining over all call
+    // sites, which is sound only for a name whose callers this compilation can
+    // enumerate, and a closure is reached through a function value. So its
+    // parameters keep the uniform dynamic convention and this reports nothing
+    // about them — an absence by design, not a gap. Its return, by contrast, is
+    // a fact about the body alone: the analysis already walks it and joins
+    // every `return`.
     //
-    // This never types anything. It exists so a consumer can tell a
-    // closure annotation that agrees with the body from one that does not
-    // (docs/0010 decision 6); the calling convention is dynamic either way.
-    // A closure the analysis did not reach answers `Dynamic`, the designed
-    // sound fallback.
+    // This never types anything. It exists so a consumer can tell a closure
+    // annotation that agrees with the body from one that does not; the calling
+    // convention is dynamic either way. A closure the analysis did not reach
+    // answers `Dynamic`, the designed sound fallback.
     Type closureReturnAt(const ast::Node* site) const;
 
     bool isDirectCallable(const std::string& name) const;

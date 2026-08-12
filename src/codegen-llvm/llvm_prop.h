@@ -1,7 +1,7 @@
 #pragma once
 
 // Property reads and writes in generated code, including the inlined
-// inline-cache check of docs/0010 decision 7.
+// inline-cache check generated code performs itself.
 
 #include <cstdint>
 
@@ -15,10 +15,10 @@ namespace bronze::codegen_llvm {
 
 // Emits a property read and returns its i64 (NaN-boxed) result.
 //
-// `monomorphic` is what inference proved about the site (docs/0010 decision
-// 4) and it selects the FORM, never the semantics: false emits the plain
-// helper call, true emits the guarded fast path with the same call as its
-// slow arm. Both compute the same thing.
+// `monomorphic` is what inference proved about the site and it selects the
+// FORM, never the semantics: false emits the plain helper call, true emits the
+// guarded fast path with the same call as its slow arm. Both compute the same
+// thing.
 //
 // IMPORTANT: when `monomorphic` is true this splits the current basic block,
 // so `builder.GetInsertBlock()` differs on return. A caller that remembers

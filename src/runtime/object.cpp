@@ -111,13 +111,12 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
 }
 
 // A cached hit whose holder is an ANCESTOR is only sound while every object
-// between the receiver and that holder is the one the entry was filled
-// against, with the slot numbering it had then. Adding a property to a
-// prototype never renumbers an existing slot, so the transition tree keeps
-// half of that promise for free — but a delete reuses freed slots for
-// unrelated names (docs/0019 decision 5) and a prototype swap replaces the
-// holder outright (docs/0022), and both leave a dictionary behind. One
-// pointer load per link rules both out, on the proto-hit path only.
+// between the receiver and that holder is the one the entry was filled against,
+// with the slot numbering it had then. Adding a property to a prototype never
+// renumbers an existing slot, so the transition tree keeps half of that promise
+// for free — but a delete reuses freed slots for unrelated names and a
+// prototype swap replaces the holder outright, and both leave a dictionary
+// behind. One pointer load per link rules both out, on the proto-hit path only.
 ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept {
     crossedDictionary = false;
     ObjectHeader* cur = this;
@@ -182,7 +181,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
             if (info.accessor) {
                 // Deliberately NOT cached: every consumer of an entry reads it
                 // as a slot index, including the load generated code inlines,
-                // and a getter is a call (docs/0019 decision 5).
+                // and a getter is a call.
                 Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
                 return callGetter(holder->getSlot(info.slot), self);
             }
@@ -240,14 +239,13 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             return live.get().asObject<ObjectHeader>();
         }
         // A non-writable own property discards the write in sloppy mode
-        // (10.1.9.2 -> 10.1.6.3 returns false, and 13.15.2 PutValue only
-        // throws for a STRICT reference — the same reading docs/0019
-        // decision 6 gives a getter-only property). Reachable only through
-        // `Object.defineProperty` or `Object.freeze`, both of which put the
-        // object in dictionary mode, so the IC fill below is already
-        // unreachable for it — but the guard is written here rather than
-        // inferred from that, because "the cache happens to miss" is not a
-        // reason a write is discarded.
+        // (10.1.9.2 -> 10.1.6.3 returns false, and 13.15.2 PutValue only throws
+        // for a STRICT reference — the same reading given to a getter-only
+        // property). Reachable only through `Object.defineProperty` or
+        // `Object.freeze`, both of which put the object in dictionary mode, so
+        // the IC fill below is already unreachable for it — but the guard is
+        // written here rather than inferred from that, because "the cache
+        // happens to miss" is not a reason a write is discarded.
         if (!own.writable) return this;
         if (ic && !shape->isDictionary()) ic->fill(shape, own.slot, /*depth=*/0);
         setSlot(own.slot, val.get());
@@ -280,12 +278,12 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (shape->isDictionary() && !shape->dict->extensible) return this;
 
     // A well-known symbol key is not an enumerable property. bronze spells
-    // `Symbol.iterator` as the string `"@@iterator"` (docs/0021 decision 1),
-    // and a real symbol key would never appear in `Object.keys`, `for-in`,
-    // object spread or console.log — so the string standing in for one must
-    // not either. The rule is on the KEY rather than on the call site
-    // because there are four call sites and one of them is `o[k] = v` with a
-    // computed key, where nothing but the key is known.
+    // `Symbol.iterator` as the string `"@@iterator"`, and a real symbol key
+    // would never appear in `Object.keys`, `for-in`, object spread or
+    // console.log — so the string standing in for one must not either. The rule
+    // is on the KEY rather than on the call site because there are four call
+    // sites and one of them is `o[k] = v` with a computed key, where nothing
+    // but the key is known.
     if (runtime::rtIsWellKnownSymbolKey(prop_name)) enumerable = false;
 
     // Create the own property: a shape transition, or an entry in the
@@ -300,10 +298,10 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     } else {
         // If this object is somebody's prototype, the property just created
         // shadows whatever the depth > 0 entries below it point at, and their
-        // receivers' shapes are untouched — so those entries have to miss
-        // (docs/0032). One load and a not-taken branch for every other add,
-        // which is what keeps `new Point(x, y)` in a loop from invalidating
-        // the whole program's proto caches.
+        // receivers' shapes are untouched — so those entries have to miss. One
+        // load and a not-taken branch for every other add, which is what keeps
+        // `new Point(x, y)` in a loop from invalidating the whole program's
+        // proto caches.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
         Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
         live = ensureSlots(heap, self, new_slot + 1);

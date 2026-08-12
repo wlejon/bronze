@@ -3,12 +3,11 @@
 // the program reads a real value out of a real slot, just not the one it
 // asked for.
 //
-// 1. THE RECEIVER'S OWN PROPERTY IS DELETED. The entry says {shape S, depth
-//    0, slot k}. A delete moves the object to dictionary mode, which gives
-//    it a private shape, so the shape word no longer equals S and the entry
-//    cannot hit — and the read falls through to the prototype's copy, which
-//    the own property was shadowing. Writing `undefined` over the property
-//    could never do that (docs/0019 decision 1).
+// 1. THE RECEIVER'S OWN PROPERTY IS DELETED. The entry says {shape S, depth 0,
+// slot k}. A delete moves the object to dictionary mode, which gives it a
+// private shape, so the shape word no longer equals S and the entry cannot hit
+// — and the read falls through to the prototype's copy, which the own property
+// was shadowing. Writing `undefined` over the property could never do that.
 //
 // 2. THE PROTOTYPE IS DELETED FROM. This is the sharp one. The entry says
 //    {shape S, depth 1, slot k}, and S is the RECEIVER'S shape — which does
@@ -16,7 +15,7 @@
 //    matches, and the cached slot is read off an object whose slot numbering
 //    a delete has since rearranged: the freed slot goes to the next property
 //    added, and the read returns THAT property's value under the old name.
-//    docs/0019 decision 5 re-checks the holder for exactly this.
+//    A cached proto hit re-checks the holder for exactly this.
 //
 // EVERY READ BELOW GOES THROUGH ONE FUNCTION, on purpose. Two `x.b`
 // expressions on two source lines are two sites with two cache entries, both

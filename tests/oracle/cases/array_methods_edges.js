@@ -1,8 +1,8 @@
 // The corners of Array.prototype that a naive implementation gets wrong:
 // negative relative indices, the empty array, SameValueZero vs === (NaN),
-// join's one exception to ToString, the callback's index/array arguments,
-// and the mutators that move elements rather than append them.
-// Every expectation is ECMA-262, derived by hand (docs/0003).
+// join's one exception to ToString, the callback's index/array arguments, and
+// the mutators that move elements rather than append them. Every expectation is
+// ECMA-262, derived by hand.
 const a = [1, 2, 3, 4, 5];
 console.log(a.slice(-2).join(","));
 console.log(a.slice(1, -1).join(","));

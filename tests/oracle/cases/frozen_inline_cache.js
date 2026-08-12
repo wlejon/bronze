@@ -1,8 +1,7 @@
 // A frozen object and a WARM inline cache. An entry says "this shape, this
-// slot" and generated code turns a hit into an indexed load (docs/0010
-// decision 7); `inline_cache_shape_changes.js` pins the two things an entry
-// could already be wrong about, and non-writable is the third
-// (docs/0021 decision 5).
+// slot" and generated code turns a hit into an indexed load;
+// `inline_cache_shape_changes.js` pins the two things an entry could already be
+// wrong about, and non-writable is the third.
 //
 // The answer is that `writable`, `configurable` and `extensible` live in the
 // DICTIONARY and nowhere else, so freezing an object gives it a private shape
@@ -22,7 +21,7 @@
 //    the harder half: the entry was filled from the object's own shape, and
 //    the freeze has to invalidate it.
 // 3. A frozen object takes no new properties, `delete` on it answers `false`
-//    (which docs/0019 said bronze could never answer), and the element form
+//    (which said bronze could never answer), and the element form
 //    `o["k"] = v` is discarded exactly as the named form is.
 
 function readV(p) {

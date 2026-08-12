@@ -10,10 +10,10 @@ namespace bronze {
 Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     Shape* root = arena.create<Shape>();
     root->prototype = proto;
-    // This is the ONE moment an object becomes a prototype — every route to
-    // one (a class, `Object.create`, `Object.setPrototypeOf`) ends in a root
-    // shape carrying it — so it is where the mark is applied rather than at
-    // each of those callers (docs/0032 decision 2).
+    // This is the ONE moment an object becomes a prototype — every route to one
+    // (a class, `Object.create`, `Object.setPrototypeOf`) ends in a root shape
+    // carrying it — so it is where the mark is applied rather than at each of
+    // those callers.
     //
     // Only a plain object is marked: `cachedProtoHolder` refuses to walk
     // through anything else, so an array or a function used as a prototype

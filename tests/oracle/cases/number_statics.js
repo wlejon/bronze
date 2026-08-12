@@ -1,22 +1,20 @@
-// The `Number` namespace (docs/0021 decision 7): the predicates and the
-// numeric constants, which are the everyday alternative to the global
-// coercions bronze deliberately does not provide.
+// The `Number` namespace: the predicates and the numeric constants, which are
+// the everyday alternative to the global coercions bronze deliberately does not
+// provide.
 //
 // From ECMA-262 21.1.2 (Number statics), 19.2.4 (parseFloat) and 19.2.5
 // (parseInt):
 //
 // 1. The three predicates do NOT coerce. `Number.isNaN("NaN")` is false and
-//    `Number.isInteger("5")` is false, which is the whole reason they exist
-//    beside the global functions of the same names.
-// 2. The constants are pinned as bytes, so this case is also a shortest
-//    round-trip test of the float formatter (docs/0013): `Number.EPSILON`
-//    and `Number.MIN_VALUE` have no shorter decimal form that reads back as
-//    the same double, and both go through std::to_chars.
-// 3. `parseInt` reads a PREFIX, skips leading whitespace, honours a `0x`
-//    prefix when no radix is given, takes an explicit radix, and answers NaN
-//    when no digits were consumed. `parseFloat` reads a prefix the same way
-//    and accepts "Infinity", which `Number("Infinity")` also does but
-//    `parseInt` does not.
+// `Number.isInteger("5")` is false, which is the whole reason they exist beside
+// the global functions of the same names. 2. The constants are pinned as bytes,
+// so this case is also a shortest round-trip test of the float formatter:
+// `Number.EPSILON` and `Number.MIN_VALUE` have no shorter decimal form that
+// reads back as the same double, and both go through std::to_chars. 3.
+// `parseInt` reads a PREFIX, skips leading whitespace, honours a `0x` prefix
+// when no radix is given, takes an explicit radix, and answers NaN when no
+// digits were consumed. `parseFloat` reads a prefix the same way and accepts
+// "Infinity", which `Number("Infinity")` also does but `parseInt` does not.
 //
 // `Number.prototype.toFixed` is NOT here: it belongs to the Number wrapper
 // rather than the namespace, and it is pinned in cases/blocked/.

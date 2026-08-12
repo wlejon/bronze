@@ -11,8 +11,7 @@ C++ implementation, own typed SSA IL, LLVM backend. Sibling of `bro`
 bronze exists because its predecessor (`broc`, TypeScript implementation,
 QuickJS object model everywhere) proved the pipeline discipline but landed
 ~50x slower than node on compiler workloads — the value representation was
-the wrong foundation. See `docs/0001-foundation.md` for the full rationale
-and the lessons carried over.
+the wrong foundation.
 
 ## Build
 
@@ -55,9 +54,8 @@ native type only where there is a proof. Everything else is `dynamic`, which
 is the designed sound fallback and never a diagnostic. `bronze types <file>`
 prints what was proven.
 
-A TS annotation is an **untrusted hint** (docs/0001 decision 4, docs/0010
-decision 6). Inference never reads one: if inference proves the
-same type, the native path is taken *because of the proof*; if it proves
+A TS annotation is an **untrusted hint**. Inference never reads one: if it
+proves the same type, the native path is taken *because of the proof*; if it proves
 something else or proves nothing, the annotation is discarded, the value
 stays `dynamic`, and you get a warning naming both. `function f(x: number)`
 reached with a string compiles and runs as JavaScript. Annotations are read
@@ -71,7 +69,7 @@ bronze build <file> -o <exe> [--no-infer]
 ```
 
 `<file>` is the entry of a module graph: `import` and `export` with relative
-specifiers pull in the rest, each file parsed and evaluated once (docs/0023).
+specifiers pull in the rest, each file parsed and evaluated once.
 
 `--no-infer` forces every inferred type to `dynamic` and lowers on the
 uniform dynamic convention. The annotation warnings go quiet with it —
@@ -86,25 +84,63 @@ requires the same pinned bytes from both: a case only inference gets right
 means the dynamic path is unsound, and a case only `--no-infer` gets right
 means inference is.
 
+## The pipeline
+
+```
+source.js
+   │  src/lex      — tokens (hand-written lexer, hard errors on unknown input)
+   ▼
+tokens
+   │  src/parse    — recursive descent, consumes ALL input or errors
+   ▼
+AST (src/ast)      — plain structs + visitor; canonical s-expr dump
+   │
+   ├─▶ src/types   — inference over the AST: flow-sensitive types per
+   │                 binding, shape classes per object site, and signatures
+   │                 joined over the call graph. Produces a SIDE TABLE
+   │                 (`types::InferenceResult`) keyed by AST node; mutates
+   │                 nothing. Canonical dump: `bronze types <file>`
+   │  src/lower    — AST + side table → IL. The only consumer of the table,
+   │                 and the only place that knows it can be absent, which
+   ▼                 is all `--no-infer` is
+IL  (src/il)       — typed SSA, canonical text form. Native types where
+   │                 inference PROVED them; `dynamic` everywhere else, which
+   │                 is the sound fallback, not a failure
+   ▼
+Backend (src/codegen interface)
+   │  src/codegen-llvm  — LLVM, gated by BRONZE_WITH_LLVM
+   ▼
+object file → system linker → exe
+```
+
+Dependency edges point downward only: support ← lex ← parse; `ast` is a peer
+of `lex`; `il` depends only on support; `types` depends on `ast` and support
+and **must never learn about the IL**; `lower` depends on `ast`, `il` and
+`types`. The CLI is the composition root, and where inference is run and its
+result handed to lowering.
+
+Every stage owns a canonical, deterministic text form, and tests compare
+bytes. That discipline is non-negotiable here — it is what catches the class
+of bug that silently changes meaning.
+
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and the LLVM backend both report through (docs/0033) |
+| `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and the LLVM backend both report through |
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |
-| `src/modules` | The module graph (docs/0023): specifier resolution, the depth-first load, the cycle refusal, and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
-| `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing (docs/0010) |
+| `src/modules` | The module graph: specifier resolution, the depth-first load, the cycle refusal, and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
+| `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing |
 | `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
 | `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_func`/`llvm_ops`/`llvm_arith` (one IL function's body), `llvm_backend` (module in, object file out) |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written |
-| `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments (docs/0004). The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_prop`, `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built) |
-| `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts (docs/0022) |
+| `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments. The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_prop`, `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built) |
+| `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
 | `src/rt` | The static library compiled output links against |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
-| `tests/oracle` | Differential cases with pinned `.expected` stdout (docs/0003). A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
-| `docs/` | Numbered decision/plan docs + architecture |
+| `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |

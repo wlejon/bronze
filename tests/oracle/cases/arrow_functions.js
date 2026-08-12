@@ -1,7 +1,6 @@
 // Arrow functions. The last two cases are the reason arrows are not just
-// shorter syntax: `this` is lexical, so an arrow inside a constructor sees
-// the instance, and one at the top level does not shadow anything
-// (docs/0012 decision 3).
+// shorter syntax: `this` is lexical, so an arrow inside a constructor sees the
+// instance, and one at the top level does not shadow anything.
 const double = (x) => x * 2;
 console.log(double(4));
 const add = (a, b) => { return a + b; };

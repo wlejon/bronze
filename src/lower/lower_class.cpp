@@ -1,10 +1,9 @@
-// Classes, desugared into what docs/0008 already built: a constructor
-// function, a prototype object holding the methods, and — for `extends` —
-// the two prototype links that make inheritance work. A class introduces no
-// runtime concept of its own (docs/0012 decision 5), so there is nothing
-// here that a program could not have written by hand with `function` and
-// `.prototype`; what it buys is that bronze can now read the source three.js
-// is actually written in.
+// Classes, desugared into what prototypes already provide: a constructor
+// function, a prototype object holding the methods, and — for `extends` — the
+// two prototype links that make inheritance work. A class introduces no runtime
+// concept of its own, so there is nothing here that a program could not have
+// written by hand with `function` and `.prototype`; what it buys is that bronze
+// can now read the source three.js is actually written in.
 
 #include <string>
 #include <vector>
@@ -58,7 +57,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     }
 
     // `extends` REPLACES the prototype object (the prototype lives on the
-    // shape, docs/0004), so it has to run before a single method is stored.
+    // shape), so it has to run before a single method is stored.
     if (!cls->superName.empty()) {
         ast::Ident baseIdent;
         baseIdent.name = cls->superName;
@@ -87,8 +86,8 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         const il::ValueId homeObject = m.isStatic ? ctorVal->id : protoVal.id;
 
         // A class accessor is NON-enumerable — ECMA-262 15.7.14 defines it
-        // exactly as it defines a method, and the two therefore share the
-        // rule that keeps them out of `for-in` (docs/0018 decision 2).
+        // exactly as it defines a method, and the two therefore share the rule
+        // that keeps them out of `for-in`.
         if (m.accessor != ast::AccessorKind::None) {
             if (!emitAccessorDef(Value{homeObject, il::Type::Dynamic}, m.name, m.accessor, *m.fn,
                                  /*enumerable=*/false, ilFn)) {
@@ -102,14 +101,14 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         if (!fnVal) return false;
 
         // An instance method belongs to the prototype, shared by every
-        // instance; a `static` one belongs to the constructor itself, which
-        // is an own property of the function object (docs/0012 decision 6).
+        // instance; a `static` one belongs to the constructor itself, which is
+        // an own property of the function object.
         //
-        // `method.def` rather than `prop.set`, because ECMA-262 15.7.14
-        // defines a method with `enumerable: false` and an assignment cannot
-        // say that. It is what keeps a method out of `Object.keys`, out of an
-        // object spread, and out of `for-in` — where it would otherwise show
-        // up on every instance of the class (docs/0018 decision 2).
+        // `method.def` rather than `prop.set`, because ECMA-262 15.7.14 defines
+        // a method with `enumerable: false` and an assignment cannot say that.
+        // It is what keeps a method out of `Object.keys`, out of an object
+        // spread, and out of `for-in` — where it would otherwise show up on
+        // every instance of the class.
         il::Instruction setInst;
         setInst.op = il::Op::MethodDef;
         setInst.type = il::Type::Void;
@@ -121,10 +120,10 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     return true;
 }
 
-// `super.m` — the lookup starts at the PARENT prototype, which is why it
-// cannot be written as `this.m`: inside an override, `this.m` would find the
-// override again and recurse forever. The parent is named at the site
-// (docs/0012 decision 5), so this is two ordinary property reads.
+// `super.m` — the lookup starts at the PARENT prototype, which is why it cannot
+// be written as `this.m`: inside an override, `this.m` would find the override
+// again and recurse forever. The parent is named at the site, so this is two
+// ordinary property reads.
 std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
                                                         il::Function& ilFn) {
     ast::Ident baseIdent;
@@ -135,9 +134,9 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* 
     auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
 
     // The receiver is `this`, not the prototype the lookup starts from
-    // (13.3.7.3). Indistinguishable from an ordinary read for a method and
-    // not at all for an accessor, which is why this stopped being a plain
-    // `prop.get` when accessors landed (docs/0019 decision 3).
+    // (13.3.7.3). Indistinguishable from an ordinary read for a method and not
+    // at all for an accessor, which is why this stopped being a plain
+    // `prop.get` when accessors landed.
     auto thisVal = lowerThisValue(sm->span, ilFn);
     if (!thisVal) return std::nullopt;
 
@@ -167,8 +166,7 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     if (!baseVal) return std::nullopt;
 
     // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards, so
-    // this path is not an edge case: it is the default one (docs/0017
-    // decision 7).
+    // this path is not an edge case: it is the default one.
     const bool spreadArgs = listHasSpread(sc->args);
     std::vector<il::ValueId> operands;
     operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);

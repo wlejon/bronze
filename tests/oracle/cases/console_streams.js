@@ -1,8 +1,8 @@
-// `console.warn` and `console.error` (docs/0026). three.js calls them 91 and
-// 62 times against 20 calls to `console.log`, from ordinary code paths —
-// `Material` and `Object3D` both do — so a build of anything three.js-shaped
-// produces library chatter, and where that chatter goes decides whether the
-// oracle can keep pinning stdout byte-for-byte at all (docs/0003).
+// `console.warn` and `console.error`. three.js calls them 91 and 62 times
+// against 20 calls to `console.log`, from ordinary code paths — `Material` and
+// `Object3D` both do — so a build of anything three.js-shaped produces library
+// chatter, and where that chatter goes decides whether the oracle can keep
+// pinning stdout byte-for-byte at all.
 //
 // So the load-bearing assertion of this case is a NEGATIVE one, and it is the
 // pinned file itself: every `console.warn` and `console.error` below writes
@@ -12,7 +12,7 @@
 // indistinguishable from working code.
 //
 // From the WHATWG Console Standard §2.1 and §2.2 (ECMA-262 does not define
-// `console`), and docs/0013 for the formatting:
+// `console`), and the inspect format for the formatting:
 //
 // 1. `log`, `info` and `debug` are one operation on stdout: §2.1 defines all
 //    three as Logger with a different severity hint, and a severity hint is
@@ -25,9 +25,9 @@
 // 4. Every one of them evaluates to `undefined`, like any call that returns
 //    nothing.
 //
-// DELIBERATE DIVERGENCE, docs/0026: `console.trace` and every other member is
-// a compile error naming itself rather than `undefined`, because a stack
-// trace is not something bronze can build. That refusal is pinned in
+// DELIBERATE DIVERGENCE: `console.trace` and every other member is a compile
+// error naming itself rather than `undefined`, because a stack trace is not
+// something bronze can build. That refusal is pinned in
 // tests/parse/parser_expr_test.cpp, where a compile error can be observed.
 
 // 1 — the stdout three.

@@ -1,17 +1,16 @@
 // BLOCKED: `unsupported: Symbol() (bronze has no symbol primitive;
-// Symbol.iterator is a well-known string key, docs/0021 decision 1)`.
+// Symbol.iterator is a well-known string key)`.
 //
-// docs/0021 shipped the iterator protocol WITHOUT a symbol primitive, and
-// this case is the receipt for that trade. `Symbol.iterator` is the string
-// "@@iterator", and the compensating rule — any own key beginning with `@@`
-// is created non-enumerable — buys back the one property of a symbol key
-// that the protocol depends on. It buys nothing else, and this case pins
-// what is still missing.
+// The iterator protocol shipped WITHOUT a symbol primitive, and this case is
+// the receipt for that trade. `Symbol.iterator` is the string "@@iterator", and
+// the compensating rule — any own key beginning with `@@` is created
+// non-enumerable — buys back the one property of a symbol key that the protocol
+// depends on. It buys nothing else, and this case pins what is still missing.
 //
 // The blocker is the value model, not the syntax. Tag 0xFFF8 is reserved for
-// Symbol and free (docs/0004), so there is room for the VALUE; the cost is
+// Symbol and free, so there is room for the VALUE; the cost is
 // everywhere a property KEY is handled. A shape's transition key is an
-// arena-interned `StringHeader*` compared by CONTENT (docs/0009), and that
+// arena-interned `StringHeader*` compared by CONTENT, and that
 // content comparison is what makes two objects with the same property names
 // share a shape. A symbol key is the opposite: it is compared by IDENTITY,
 // and two symbols with the same description are two different keys. So

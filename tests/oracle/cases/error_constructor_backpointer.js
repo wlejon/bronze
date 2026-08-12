@@ -1,28 +1,26 @@
 // `e.constructor` for the Error family — the 10.2.5 back-pointer that the
 // provided classes never got.
 //
-// docs/0008 installs `prototype.constructor` on every function the program
-// writes, which is what makes `new this.constructor()` work. The Error
-// classes are built by the runtime rather than by lowering (docs/0020
-// decision 7) and were built without it, so `e.constructor` was `undefined`
-// on every error bronze raised and every error a program constructed. That
-// is a silent wrong answer to the most idiomatic question there is about a
-// caught value, and `e.constructor.name` threw on it.
+// Lowering installs `prototype.constructor` on every function the program
+// writes, which is what makes `new this.constructor()` work. The Error classes
+// are built by the runtime rather than by lowering and were built without it,
+// so `e.constructor` was `undefined` on every error bronze raised and every
+// error a program constructed. That is a silent wrong answer to the most
+// idiomatic question there is about a caught value, and `e.constructor.name`
+// threw on it.
 //
 // What this pins, from ECMA-262 10.2.5 (MakeConstructor step 6), 20.5.3.1
 // (`Error.prototype.constructor`) and 20.5.6.3.1 (each NativeError's):
 //
 // 1. `e.constructor` is the class itself, for an error the runtime raised as
-//    much as for one the program built — a `catch` cannot tell them apart
-//    (docs/0020 decision 7), so this must not either.
-// 2. Each class gets its OWN, so `new TypeError(…).constructor` is
-//    `TypeError` and not the `Error` its prototype chains to. That is what
-//    makes the property useful for discriminating a caught error.
-// 3. It is a real constructor: `new (new Error("a").constructor)("b")` builds
-//    an Error with the message it was given.
-// 4. It is NOT enumerable — `Object.keys` of an instance and a `for-in` over
-//    one must both stay empty, exactly as `name` and `message` on the
-//    prototype already are.
+// much as for one the program built — a `catch` cannot tell them apart, so this
+// must not either. 2. Each class gets its OWN, so `new
+// TypeError(…).constructor` is `TypeError` and not the `Error` its prototype
+// chains to. That is what makes the property useful for discriminating a caught
+// error. 3. It is a real constructor: `new (new Error("a").constructor)("b")`
+// builds an Error with the message it was given. 4. It is NOT enumerable —
+// `Object.keys` of an instance and a `for-in` over one must both stay empty,
+// exactly as `name` and `message` on the prototype already are.
 
 try {
   null.x;

@@ -36,12 +36,11 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn) {
 // One bitwise or shift operator: ToInt32 both operands, apply, and read the
 // int32 result back as the JS number it denotes.
 //
-// The result is F64 and not I32 on purpose. `types` has no int32 element
-// (docs/0010 decision 2 keeps the lattice flat), so an I32-typed value
-// reaching a loop header or a call would meet a block parameter inference
-// typed `number` and fail to coerce — the two runs of docs/0010 decision 8
-// would disagree about a program's types. The int32 is an intermediate of
-// the operator and never escapes it.
+// The result is F64 and not I32 on purpose. `types` has no int32 element (keeps
+// the lattice flat), so an I32-typed value reaching a loop header or a call
+// would meet a block parameter inference typed `number` and fail to coerce —
+// the two runs of the oracle suite would disagree about a program's types. The
+// int32 is an intermediate of the operator and never escapes it.
 Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn) {
     Value l = emitToInt32(lhs, ilFn);
     Value r = emitToInt32(rhs, ilFn);

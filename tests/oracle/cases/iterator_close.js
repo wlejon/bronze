@@ -1,8 +1,8 @@
-// IteratorClose (ECMA-262 7.4.9), the half of the iterator protocol
-// docs/0020 could not have: a `for-of` abandoned before its iterator says
-// `done` must call the iterator's `return` method, and an exhausted one must
-// not. It becomes observable only now that an iterator can be a user object
-// (docs/0021 decision 3), which is why it is pinned in its own case.
+// IteratorClose (ECMA-262 7.4.9), the half of the iterator protocol the could
+// not have: a `for-of` abandoned before its iterator says `done` must call the
+// iterator's `return` method, and an exhausted one must not. It becomes
+// observable only now that an iterator can be a user object, which is why it is
+// pinned in its own case.
 //
 // The iterator below reports the cursor position it was closed AT, so "was
 // `return` called" and "when" are one observation. Nothing here is timing or

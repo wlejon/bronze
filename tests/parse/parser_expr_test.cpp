@@ -31,7 +31,7 @@ static std::string parseAndDump(std::string_view src) {
 
 TEST_CASE("the precedence ladder groups the new operators the way ECMA-262 does") {
     // One expression per rung, each written so a wrong grouping produces a
-    // visibly different tree (docs/0015 decision 6).
+    // visibly different tree.
     const auto shiftBindsTighterThanRelational = parseAndDump("const a = 1 << 2 < 8;");
     CHECK(shiftBindsTighterThanRelational.find(
               "(binary <\n"
@@ -93,8 +93,8 @@ TEST_CASE("`??` cannot be mixed with `&&` or `||` without parentheses") {
 }
 
 TEST_CASE("assignment is right-associative and sits above the conditional") {
-    // Both of these parsed the other way round before docs/0015 decision 8:
-    // `x = cond ? a : b` assigned the CONDITION.
+    // Both of these parsed the other way round before the precedence ladder was
+    // fixed: `x = cond ? a: b` assigned the CONDITION.
     const auto ternary = parseAndDump("x = c ? 1 : 2;");
     CHECK(ternary.find(
               "(binary =\n"
@@ -124,13 +124,13 @@ TEST_CASE("a comma in an argument list is a separator, not the comma operator") 
     CHECK(real.find("(binary ,") != std::string::npos);
 }
 
-// ---- declarations, the empty statement, literals (docs/0016) --------------
+// ---- declarations, the empty statement, literals --------------
 
 TEST_CASE("an optional chain is not an assignment or update target") {
     // ECMA-262 13.3.9: an OptionalExpression is never a valid AssignmentTarget,
     // because there is no reference to write through when the chain
     // short-circuits. Both spellings are early errors rather than a write that
-    // sometimes does nothing (docs/0018 decision 8).
+    // sometimes does nothing.
     const auto assign = parseAndDump("a?.b = 1;\n");
     CHECK(assign.substr(0, 7) == "ERRORS:");
     CHECK(assign.find("an optional chain is not a valid assignment target") != std::string::npos);

@@ -175,8 +175,8 @@ std::string Parser::decodeStringLiteral(std::string_view raw, Span span) {
 //  - a digit the radix does not have (`0b19`) is not a number; and
 //  - `017` is a LegacyOctalIntegerLiteral, which strict mode forbids
 //    outright. Reading it as decimal 17 or as octal 15 are both defensible
-//    and they differ, which is exactly the situation docs/0000 says to
-//    diagnose rather than choose.
+//    and they differ, which is exactly the situation to diagnose rather
+//    than choose.
 bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) {
     out = 0;
     if (raw.empty()) {
@@ -325,11 +325,11 @@ ExprPtr Parser::parseObjectLit() {
     // `functionIndices_` under this name, and a method called `next` that was
     // named `next` there would answer a free `next(...)` elsewhere in the
     // module — a method name is a property key, not a binding. The ordinal
-    // keeps two literals in one module from naming the same symbol.
-    // The ordinal is per parser, which is per FILE, so a graph needs the file
-    // in the name too or two files' first object methods collide on one IL
-    // symbol (docs/0023 decision 1). File 0 keeps the unqualified spelling,
-    // which is what every pinned single-file dump holds.
+    // keeps two literals in one module from naming the same symbol. The ordinal
+    // is per parser, which is per FILE, so a graph needs the file in the name
+    // too or two files' first object methods collide on one IL symbol. File 0
+    // keeps the unqualified spelling, which is what every pinned single-file
+    // dump holds.
     auto methodName = [this](const std::string& key) {
         std::string prefix = fileId_ == 0 ? "obj." : "obj." + std::to_string(fileId_) + ".";
         return prefix + std::to_string(objectMethodOrdinal_++) + "." + key;
@@ -339,12 +339,12 @@ ExprPtr Parser::parseObjectLit() {
         ObjectProp prop;
         if (check(TokenKind::Star)) {
             // A generator SHORTHAND in an object literal. Named rather than
-            // built: the desugaring is the class body's (docs/0026), but its
-            // home is the literal, and three.js's six generators are all
-            // class members — so this is surface with no evidence behind it,
-            // and an unpinned construct is how docs/0000's wrong answers got
-            // in. `{ [Symbol.iterator]: function () {...} }` is the spelling
-            // that works today.
+            // built: the desugaring is the class body's, but its home is the
+            // literal, and three.js's six generators are all class members — so
+            // this is surface with no evidence behind it, and an unpinned
+            // construct is how a predecessor's wrong answers got in.
+            // `{ [Symbol.iterator]: function () {...} }` is the spelling that
+            // works today.
             error("unsupported construct: a generator method in an object literal "
                   "(a generator is supported as a class member and as a `function*`)");
             return nullptr;
@@ -458,8 +458,8 @@ ExprPtr Parser::parseObjectLit() {
             }
         } else if (check(TokenKind::Ellipsis)) {
             // `{ ...src }` — a property definition with no key of its own: it
-            // contributes every own enumerable property of `src`, in the order
-            // docs/0009 pins, at the position it is written.
+            // contributes every own enumerable property of `src`, in own
+            // enumerable order, at the position it is written.
             const Token& dots = advance();
             auto spread = std::make_unique<SpreadElement>();
             spread->argument = parseAssign();

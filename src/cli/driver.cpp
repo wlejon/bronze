@@ -38,11 +38,10 @@ namespace {
 // Wall time per compilation phase, printed to stderr on `--timings`.
 //
 // This is the one thing bronze prints that cannot be deterministic, and the
-// house rule (docs/0001 decision 10) is about bronze's OWN output — so it is
-// opt-in, it goes to stderr, and nothing in the suite compares it. The
-// alternative was measuring from outside with a stopwatch, which gives one
-// number for a five-phase pipeline and cannot say which phase to attack
-// (docs/0033).
+// house rule is about bronze's OWN output — so it is opt-in, it goes to stderr,
+// and nothing in the suite compares it. The alternative was measuring from
+// outside with a stopwatch, which gives one number for a five-phase pipeline
+// and cannot say which phase to attack.
 class PhaseTimer {
 public:
     explicit PhaseTimer(bool enabled) : enabled_(enabled) {
@@ -92,17 +91,17 @@ constexpr const char* kUsage =
     "                                      with it and wrong without means inference\n"
     "                                      is at fault. The oracle suite runs every\n"
     "                                      case both ways and requires the same bytes\n"
-    "                                      from both (docs/0010 decision 8).\n"
+    "                                      from both.\n"
     "\n"
     "Options (build):\n"
     "  --timings                           Print per-phase wall time to stderr. The\n"
     "                                      one deliberately nondeterministic thing\n"
     "                                      bronze prints, which is why it is opt-in\n"
-    "                                      and on stderr: no pinned output can see it\n"
-    "                                      (docs/0033).\n"
+    "                                      and on stderr: no pinned output can\n"
+    "                                      see it.\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
-    "discarded with a warning and the value stays dynamic (docs/0010 decision 6).\n";
+    "discarded with a warning and the value stays dynamic.\n";
 
 int fail(const std::string& message) {
     std::fputs(message.c_str(), stderr);
@@ -112,9 +111,8 @@ int fail(const std::string& message) {
 // Diagnostics from a compilation that SUCCEEDED — warnings, since an error
 // would have taken an early return. They go to stderr because stdout is the
 // artefact (the IL dump, the type dump) and a caller pipes it. Rendering them
-// only on failure, as the error path does, drops every annotation warning
-// docs/0010 decision 6 emits — and a diagnostic nobody prints is not a
-// diagnostic.
+// only on failure, as the error path does, drops every annotation warning a
+// discarded hint emits — and a diagnostic nobody prints is not a diagnostic.
 void reportWarnings(const DiagnosticSink& diags, const SourceSet& sources) {
     if (diags.all().empty()) return;
     std::fputs(diags.render(sources).c_str(), stderr);
@@ -285,7 +283,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
     // The graph — resolution, loading, cycle detection, linking — is
     // `src/modules`' job; the CLI is a composition root and stays one. What
     // comes back is the single merged AST module every later stage already
-    // understands (docs/0023 decision 1).
+    // understands.
     SourceSet sources;
     DiagnosticSink diags;
     auto astModule = modules::loadProgram(sourcePath, sources, diags);
@@ -296,10 +294,10 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
         return 1;
     }
 
-    // The CLI runs inference and hands the side table to lowering (docs/0010
-    // decision 1). A null side table is the no-inference mode, not a failure
-    // mode — inference itself only ever fails on an internal impossibility,
-    // which is diagnosed and fatal.
+    // The CLI runs inference and hands the side table to lowering. A null side
+    // table is the no-inference mode, not a failure mode — inference itself
+    // only ever fails on an internal impossibility, which is diagnosed and
+    // fatal.
     std::optional<types::InferenceResult> inferred;
     if (infer) {
         inferred = types::inferModule(*astModule, diags);

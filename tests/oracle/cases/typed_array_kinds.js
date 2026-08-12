@@ -8,8 +8,8 @@
 // then modulo 2^N, then re-sign), 7.1.11 for Uint8Clamped (saturate, round
 // half to even), and a round-to-nearest narrowing for Float32.
 //
-// The print format is docs/0013 decision 1 extended by docs/0029: the
-// constructor's name, the length in parentheses, then the elements.
+// The print format is the inspect format extended for views: the constructor's
+// name, the length in parentheses, then the elements.
 console.log(new Int8Array(3));
 console.log(new Int8Array([1, -2, 3]));
 console.log(new Int8Array(new Float64Array([1.9, -2.9, 3.9])));

@@ -23,18 +23,18 @@
 
 namespace bronze::runtime {
 
-// Generated code roots its Dynamic values (docs/0006), so a collection is
-// survivable and the reservation does not have to postpone one. Sized so
-// ordinary programs DO collect rather than run to exit inside one semispace.
+// Generated code roots its Dynamic values, so a collection is survivable and
+// the reservation does not have to postpone one. Sized so ordinary programs DO
+// collect rather than run to exit inside one semispace.
 static Heap g_heap(64 * 1024 * 1024);
 static NonMovingArena g_arena;
 
 // Root shapes the runtime has created. Shapes are immortal but the prototype
 // objects they name are not, so the collector has to forward them; this table
-// is what the root source below walks (docs/0008 decision 1). It lives beside
-// g_arena and g_heap because that is where the three lifetimes match — a
-// global registry would outlive the per-test arenas unit tests create and
-// hand the collector dangling shapes.
+// is what the root source below walks. It lives beside g_arena and g_heap
+// because that is where the three lifetimes match — a global registry would
+// outlive the per-test arenas unit tests create and hand the collector dangling
+// shapes.
 static std::vector<Shape*> g_rootShapes;
 
 static const bool g_shapeRootsRegistered = [] {
@@ -87,8 +87,8 @@ Shape* rtPlainObjectShape() {
 // ---- ABI pins ---------------------------------------------------------------
 //
 // Generated code open-codes the boxing constants and the object test of the
-// inline property fast path (docs/0010 decision 7), so every constant it uses
-// is pinned against the value model here.
+// inline property fast path, so every constant it uses is pinned against the
+// value model here.
 
 static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
@@ -128,34 +128,33 @@ StringHeader* rtKeyHeader(uint32_t index) {
 
 // The one function object for a top-level function declaration. A declaration
 // is evaluated once, so every mention of its name must yield the SAME object —
-// otherwise `Foo.prototype.m = ...` would decorate one object and `new Foo()`
-// would read another (docs/0008). Keyed on the code pointer, which is 1:1 with
-// the declaration; closures never come here, since their identity is
-// per-evaluation and they carry an environment.
+// otherwise `Foo.prototype.m =...` would decorate one object and `new Foo()`
+// would read another. Keyed on the code pointer, which is 1:1 with the
+// declaration; closures never come here, since their identity is per-evaluation
+// and they carry an environment.
 static std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
 
-// The free identifiers lowering is allowed to resolve (docs/0011 decision 1),
-// cached per key index: every mention of `Math` in the source is one lookup,
-// including one inside a loop, so a string compare per reference is not a
-// thing to leave in a hot path.
+// The free identifiers lowering is allowed to resolve, cached per key index:
+// every mention of `Math` in the source is one lookup, including one inside a
+// loop, so a string compare per reference is not a thing to leave in a hot
+// path.
 static std::vector<Value> g_globalCache;
 
-// The module scope's environment record (docs/0016 decision 1). The top level
-// runs exactly once, so this scope has exactly one activation and its record
-// is a singleton — which is what lets a top-level function declaration reach
-// module-level `let`/`const` while staying a direct-call target, instead of
-// being handed the record through a calling convention it does not have.
+// The module scope's environment record. The top level runs exactly once, so
+// this scope has exactly one activation and its record is a singleton — which
+// is what lets a top-level function declaration reach module-level
+// `let`/`const` while staying a direct-call target, instead of being handed the
+// record through a calling convention it does not have.
 //
 // `main` publishes it before any statement runs; the module functions that
 // need it load it at entry.
 static Value g_moduleEnv = Value::fromUndefined();
 
 // All three hold heap Values, so all three are root SOURCES rather than fixed
-// slots: the objects live in the moving heap and cached raw bits would go
-// stale at the first collection. The module environment is the one whose
-// absence here would be invisible until a collection ran with a closure alive
-// over it, which is exactly what oracle-gc-stress forces at every allocation
-// (docs/0006 decision 5).
+// slots: the objects live in the moving heap and cached raw bits would go stale
+// at the first collection. The module environment is the one whose absence here
+// would be invisible until a collection ran with a closure alive over it, which
+// is exactly what oracle-gc-stress forces at every allocation.
 static const bool g_valueCachesRegistered = [] {
     g_heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
@@ -181,11 +180,11 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
     return g_functionSingletons.back().second.rawBits();
 }
 
-// An unknown name never reaches here. Lowering emits this instruction only
-// for a name on its closed provided-globals list; anything else becomes
-// `ref.error`, which raises the JS ReferenceError (docs/0027 decision 1). So
-// the miss below is a drift between lowering's list and this one — an
-// internal tripwire, not a program error.
+// An unknown name never reaches here. Lowering emits this instruction only for
+// a name on its closed provided-globals list; anything else becomes
+// `ref.error`, which raises the JS ReferenceError. So the miss below is a drift
+// between lowering's list and this one — an internal tripwire, not a program
+// error.
 uint64_t bronze_global_get(uint32_t keyIndex) {
     if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
         return g_globalCache[keyIndex].rawBits();

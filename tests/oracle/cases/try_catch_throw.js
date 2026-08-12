@@ -1,4 +1,4 @@
-// The shape of a non-local exit (docs/0020). What this case pins:
+// The shape of a non-local exit. What this case pins:
 //
 // 1. A throw crosses a call boundary: `risky(-1)` leaves `risky` and lands
 //    in the caller's `catch`, and the statements after it in the `try` do

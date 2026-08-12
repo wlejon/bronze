@@ -1,14 +1,14 @@
 // The rest of the `Object` namespace — `create`, `seal`, `isSealed`,
 // `preventExtensions`, `isExtensible`, `getPrototypeOf`, `setPrototypeOf`,
 // `getOwnPropertyNames` and `defineProperties` (ECMA-262 20.1.2), promoted by
-// docs/0022 from the named errors docs/0021 left them as.
+// from the named errors they used to be.
 //
 // Two of them are more than plumbing:
 //
 //  - `Object.create(null)` makes an object with NO prototype, which every walk
 //    over a prototype chain has to tolerate. It needs no special case in
 //    bronze because the prototype lives on the shape and a shape whose
-//    prototype is not an object already ends the walk (docs/0008 decision 1).
+// prototype is not an object already ends the walk.
 //  - `Object.setPrototypeOf` moves a link an inline cache may have walked
 //    THROUGH. An entry is `(shape, slot, depth)` and the receiver's shape is
 //    all it checks, so a swap two links up is invisible to it — which is the

@@ -1,10 +1,10 @@
-// A generator method as three.js writes one (docs/0026). Every generator in
-// three.js 0.160.0 — all six of them, across Vector2/3/4, Euler, Quaternion
-// and Color — has exactly the shape below: a `*[Symbol.iterator]()` whose
-// body is a straight line of `yield this.<field>;`. bronze desugars that into
-// an ordinary method returning an iterator object over a step index, so what
-// this case proves is that the desugaring satisfies the protocol docs/0021
-// already built rather than a second one beside it.
+// A generator method as three.js writes one. Every generator in three.js
+// 0.160.0 — all six of them, across Vector2/3/4, Euler, Quaternion and Color —
+// has exactly the shape below: a `*[Symbol.iterator]()` whose body is a
+// straight line of `yield this.<field>;`. bronze desugars that into an ordinary
+// method returning an iterator object over a step index, so what this case
+// proves is that the desugaring satisfies the protocol already built rather
+// than a second one beside it.
 //
 // From ECMA-262 27.5 (generator objects), 7.4.2 (GetIterator), 14.7.5.6
 // (ForIn/OfBodyEvaluation), 13.2.4.1 (array spread), 8.6.2 (array
@@ -23,13 +23,13 @@
 //    called on, which is what makes one method on the prototype serve every
 //    instance.
 // 5. The method is a class method, so 15.7.14 makes it non-enumerable — and
-//    docs/0021 decision 1 makes its name begin with `@@`, which the runtime
+//    its name begins with `@@`, which the runtime
 //    forces non-enumerable as well. Neither `Object.keys` nor `for-in` may
 //    report it.
 //
-// DELIBERATE DIVERGENCE, docs/0021 decision 1: `Symbol.iterator` is the
-// string "@@iterator", so `*[Symbol.iterator]()` is a method named
-// "@@iterator" and the key is matched syntactically at compile time.
+// DELIBERATE DIVERGENCE: `Symbol.iterator` is the string "@@iterator", so
+// `*[Symbol.iterator]()` is a method named "@@iterator" and the key is matched
+// syntactically at compile time.
 
 class Vector3 {
     constructor(x, y, z) {

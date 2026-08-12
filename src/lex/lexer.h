@@ -38,9 +38,9 @@ private:
     Token lexPunctuation();
 
     // Whether a `/` here begins a regular expression literal rather than a
-    // division. Nothing but the previous significant token decides it, which
-    // is the classic JavaScript ambiguity and the one place this lexer is not
-    // context-free (docs/0024 decision 1).
+    // division. Nothing but the previous significant token decides it, which is
+    // the classic JavaScript ambiguity and the one place this lexer is not
+    // context-free.
     static bool regexAllowedAfter(const std::vector<Token>& tokens);
 };
 

@@ -1,7 +1,7 @@
-// The inline cache lives in the generated object file now (docs/0010
-// decision 7): a site inference proves monomorphic loads the receiver's
-// shape word and the cached slot inline, and calls the helper only when
-// that guard fails. These are the cases the guard has to survive.
+// The inline cache lives in the generated object file now: a site inference
+// proves monomorphic loads the receiver's shape word and the cached slot
+// inline, and calls the helper only when that guard fails. These are the cases
+// the guard has to survive.
 
 // 1. A genuinely monomorphic site, hit until the CACHE rather than the
 //    first walk is what answers.
@@ -58,11 +58,11 @@ while (k < 100) {
 }
 console.log(alternating);
 
-// 4. A receiver that joins two DIFFERENT classes is `Object` with no
-//    class, so the site keeps the plain helper call: an unproven site is
-//    never given the inline form (docs/0010 decision 4). `on` sits at slot
-//    1 of a Toggle and slot 0 of a Flag, so a site that reused the other
-//    shape's slot would read the label string instead of the boolean.
+// 4. A receiver that joins two DIFFERENT classes is `Object` with no class, so
+// the site keeps the plain helper call: an unproven site is never given the
+// inline form. `on` sits at slot 1 of a Toggle and slot 0 of a Flag, so a site
+// that reused the other shape's slot would read the label string instead of the
+// boolean.
 function Toggle(on) {
   this.label = "toggle";
   this.on = on;

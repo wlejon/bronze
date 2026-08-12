@@ -4,7 +4,7 @@
 // accessors) with the home-object rule that comes with the last two.
 //
 // Regular expression literals are the same file's, and are in
-// parser_regexp_test.cpp because docs/0024 gave them a grammar of their own.
+// parser_regexp_test.cpp because they have a grammar of their own.
 
 // The doctest main is parser_test.cpp's; every file here links into one
 // binary under the `parse` label, so the module's test command does not
@@ -30,9 +30,9 @@ static std::string parseAndDump(std::string_view src) {
 }
 
 TEST_CASE("object shorthand is the key and the identifier, and computed keys dump apart") {
-    // Two constructs that lower differently must not dump identically
-    // (docs/0012 decision 3): a written key is a constant, a computed one is
-    // an expression evaluated before its value.
+    // Two constructs that lower differently must not dump identically: a
+    // written key is a constant, a computed one is an expression evaluated
+    // before its value.
     const auto out = parseAndDump("const o = { x, [k]: 1 };\n");
     CHECK(out ==
           "(module t\n"
@@ -86,8 +86,8 @@ TEST_CASE("a method's `super` belongs to its own home object, not the class arou
 
 TEST_CASE("an object literal accessor is one property with two halves") {
     // The two halves of one name dump under separate heads, because that is
-    // exactly what distinguishes them — `(prop x` twice would print `get x`
-    // and `set x` identically (docs/0019 decision 4).
+    // exactly what distinguishes them — `(prop x` twice would print `get x` and
+    // `set x` identically.
     const auto out =
         parseAndDump("const o = { get x() { return 1; }, set x(v) { this.q = v; } };\n");
     CHECK(out.substr(0, 7) != "ERRORS:");

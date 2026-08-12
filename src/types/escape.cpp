@@ -53,13 +53,13 @@ std::set<std::string> escapingNames(const ast::Module& module) {
         // not a reference to it — so its body and parameters are walked
         // directly, bypassing the override that would record the name.
         if (const auto* fn = dynamic_cast<const ast::FunctionDecl*>(stmt.get())) {
-            // Unless it is exported. Decision 5 specializes a signature by
-            // joining over every call site, and its licence to do so is
-            // "this function has no unknown callers". An exported symbol has
-            // one by definition: a caller outside this compilation, which
-            // contributed nothing to the join and is free to pass anything.
-            // So the name escapes here, in the analysis, rather than being
-            // re-tested by every consumer of the result.
+            // Unless it is exported. A signature is specialized by joining over
+            // every call site, and its licence to do so is "this function has
+            // no unknown callers". An exported symbol has one by definition: a
+            // caller outside this compilation, which contributed nothing to the
+            // join and is free to pass anything. So the name escapes here, in
+            // the analysis, rather than being re-tested by every consumer of
+            // the result.
             if (fn->isExported) w.escaping.insert(fn->name);
             for (const auto& p : fn->params) w.escaping.insert(p.name);
             w.walkList(fn->body);

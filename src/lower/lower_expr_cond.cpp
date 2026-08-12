@@ -1,6 +1,6 @@
-// Expressions that evaluate an operand on only some paths — ternary, &&,
-// ||, ?? — and the join machinery they share with the statement joins in
-// lower_control.cpp (docs/0005).
+// Expressions that evaluate an operand on only some paths — ternary, &&, ||, ??
+// — and the join machinery they share with the statement joins in
+// lower_control.cpp.
 
 #include <string>
 #include <vector>

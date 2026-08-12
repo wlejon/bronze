@@ -1,7 +1,7 @@
 // Object, array and function construction, the two class links, environment
 // records, and the dynamic call path. Property access itself is rt_prop.cpp;
-// typed arrays build themselves through ordinary constructor objects
-// (docs/0029 decision 2) and so need nothing here.
+// typed arrays build themselves through ordinary constructor objects and so
+// need nothing here.
 
 #include <algorithm>
 #include <charconv>
@@ -78,8 +78,8 @@ static void rtInstallPrototypeConstructor(Rooted<Value>& fnVal) {
 }
 
 // A function's `.prototype` serves both as a constructor's instance prototype
-// and as the target of `Foo.prototype.m = ...`, and those must be the same
-// object, so both go through here (docs/0008 decision 4).
+// and as the target of `Foo.prototype.m =...`, and those must be the same
+// object, so both go through here.
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
     if (fn->prototype.isObject() && fn->instance_shape) return;
@@ -105,9 +105,9 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
 // Spec order for a plain object's own ENUMERABLE string keys, in one place
 // because four callers need the same answer and a second copy of the
 // integer-first split would be a second chance to get `"10"` before `"2"`
-// wrong (docs/0009). Enumerable-only because every caller — `Object.keys`,
-// object spread, object rest and `for-in` — is defined over own enumerable
-// keys, and a class method is not one (docs/0018 decision 2).
+// wrong. Enumerable-only because every caller — `Object.keys`, object spread,
+// object rest and `for-in` — is defined over own enumerable keys, and a class
+// method is not one.
 std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
     // Shape keys are arena-interned and immortal, so collecting them up front
     // is safe across whatever the caller allocates while walking them.
@@ -173,14 +173,13 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint64_t en
 }
 
 // `class D extends B` — the two prototype links a class sets up, and the only
-// runtime concept classes add (docs/0012 decision 5). Instances: D.prototype's
-// proto is B.prototype, so an inherited method is found by the ordinary chain
-// walk. Statics: D's own-property object's proto is B's, so `D.staticOfB()`
-// resolves the same way.
+// runtime concept classes add. Instances: D.prototype's proto is B.prototype,
+// so an inherited method is found by the ordinary chain walk. Statics: D's
+// own-property object's proto is B's, so `D.staticOfB()` resolves the same way.
 //
 // D.prototype is REPLACED rather than mutated, because the prototype lives on
-// the shape (docs/0004) — which is also why this must run before any method is
-// stored on it.
+// the shape — which is also why this must run before any method is stored on
+// it.
 void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     Value derivedVal(derivedBits);
     Value baseVal(baseBits);
@@ -193,10 +192,9 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // A native intrinsic cannot be a base, and saying so is the point. The
     // derived constructor builds an ordinary plain object and forwards to the
     // base, but `Array`'s body ignores the receiver and returns an array of its
-    // own (docs/0030 decision 2) — so `new Sub()` would be a plain object that
-    // `Array.isArray` and `instanceof Array` both call false while the program
-    // believes it made an array. Refusing is loud where subclassing it is a
-    // silent wrong answer.
+    // own — so `new Sub()` would be a plain object that `Array.isArray` and
+    // `instanceof Array` both call false while the program believes it made an
+    // array. Refusing is loud where subclassing it is a silent wrong answer.
     if (const char* intrinsic = rtIntrinsicConstructorName(baseVal)) {
         fatal((std::string("extending the native constructor `") + intrinsic +
                "` is unsupported (its instances are built by the runtime, so a "
@@ -240,9 +238,9 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     // that silent in the worst way: the native returns a primitive, the rule
     // below discards any non-object return, and the program receives the empty
     // plain instance — `new String("ab").length` was `undefined`. Refusing by
-    // name is the same call docs/0030 decision 4 made for `Function`: a
-    // constructor that resolves and hands back something that is not what was
-    // asked for is worse than one that does not resolve.
+    // name is the same call made for `Function`: a constructor that resolves
+    // and hands back something that is not what was asked for is worse than one
+    // that does not resolve.
     if (const char* wrapper = rtPrimitiveWrapperConstructorName(fnVal)) {
         fatal((std::string("`new ") + wrapper +
                "(...)` is unsupported: bronze has no primitive wrapper objects. Call " +
@@ -260,12 +258,12 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     Rooted<Value> self{Value::fromObject(instance)};
     // This helper is the one place in the runtime that ALLOCATES before it
     // reads its argument block — `rtEnsureFunctionPrototype` and the instance
-    // above — so the block must already be rooted when it arrives, and
-    // "argv points into the caller's frame" is not the reason (docs/0032
-    // decision 6; docs/0031 decision 7 is why that reason is not enough).
-    // Two callers, and each satisfies it its own way: generated code puts the
-    // block in its GC root frame (docs/0006), and `bronze_construct_spread`
-    // builds a `RootedBlock`. A third caller has to do one or the other.
+    // above — so the block must already be rooted when it arrives, and "argv
+    // points into the caller's frame" is not the reason, and on its own it
+    // would not be enough. Two callers, and each satisfies it its own way:
+    // generated code puts the block in its GC root frame, and
+    // `bronze_construct_spread` builds a `RootedBlock`. A third caller has to
+    // do one or the other.
     fn = fnRoot.get().asObject<FunctionHeader>();
     Value result = fn->call(self.get(), argc,
                             const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
@@ -284,7 +282,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
 
     // An array's own keys are its indices, already in ascending order — the
     // ones it actually HAS: a hole left by `delete a[i]` is not an own
-    // property, so the result is shorter than `length` (docs/0019 dec. 2).
+ // property, so the result is shorter than `length`.
     if (hdr->flags == 1) {
         Rooted<Value> src{objVal};
         uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
@@ -300,8 +298,8 @@ uint64_t bronze_object_keys(uint64_t objBits) {
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         // Then the named ones — the indices come first because they are
-        // integer-like keys and docs/0009 decision 1 orders those ahead of the
-        // rest. Only a match array has any (docs/0024 decision 6).
+        // integer-like keys, and own-enumerable order puts those ahead of the
+        // rest. Only a match array has any.
         if (src.get().asObject<ArrayHeader>()->properties.isObject()) {
             Rooted<Value> props{src.get().asObject<ArrayHeader>()->properties};
             const std::vector<StringHeader*> named =
@@ -335,7 +333,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     return out.get().rawBits();
 }
 
-// ---- Environment records (docs/0007): `depth` parent hops, then `index` ----
+// ---- Environment records: `depth` parent hops, then `index` ----
 
 uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
     Rooted<Value> parent{Value(parentBits)};
@@ -378,9 +376,9 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
             .rawBits();
     }
     auto* fn = calleeVal.asObject<FunctionHeader>();
-    // argvBits already points into the caller's GC root frame (docs/0006), so
-    // it is rooted exactly as long as the call needs it — copying it into a
-    // vector would build an *unrooted* duplicate and cost a malloc per call.
+    // argvBits already points into the caller's GC root frame, so it is rooted
+    // exactly as long as the call needs it — copying it into a vector would
+    // build an *unrooted* duplicate and cost a malloc per call.
     Value* argv = reinterpret_cast<Value*>(const_cast<uint64_t*>(argvBits));
     return fn->call(Value(thisBits), argc, argv).rawBits();
 }

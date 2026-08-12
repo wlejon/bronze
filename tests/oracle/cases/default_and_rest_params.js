@@ -1,4 +1,4 @@
-// Default parameter values and rest parameters (docs/0017 decisions 1 and 2).
+// Default parameter values and rest parameters.
 //
 // What each line pins: a default fires on an OMITTED argument and only on an
 // omitted one; it is evaluated per call rather than once at definition, so

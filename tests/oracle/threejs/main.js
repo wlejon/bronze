@@ -9,12 +9,12 @@
 // EVERY line this prints is a boolean, an integer, or a decimal that IEEE-754
 // represents exactly. That is the rule the expectation is derived under: a
 // pinned float that came out of an accumulation would be a record of what
-// bronze printed, not of what is true, and docs/0003's ratchet forbids that.
-// Where a value genuinely is an accumulation — the rotated world matrix — the
-// case prints the INVARIANT instead (a rotation's determinant is 1, its rows
-// are orthonormal, its inverse composed with it is the identity), inside a
-// tolerance far wider than double rounding over ~20 flops and far tighter
-// than any real miscompilation.
+// bronze printed, not of what is true, and the ratchet forbids that. Where a
+// value genuinely is an accumulation — the rotated world matrix — the case
+// prints the INVARIANT instead (a rotation's determinant is 1, its rows are
+// orthonormal, its inverse composed with it is the identity), inside a
+// tolerance far wider than double rounding over ~20 flops and far tighter than
+// any real miscompilation.
 //
 // Derivations are on each line. Clause references are ECMA-262 (2024) where
 // the answer is a language question and three.js source lines where it is a
@@ -61,7 +61,7 @@ say('mesh.isObject3D', mesh.isObject3D);             // Object3D.js:34, via supe
 
 // --- 2. Prototype chains that cross module boundaries ----------------------
 // Mesh -> Object3D and PerspectiveCamera -> Camera -> Object3D are `extends`
-// links between separately compiled files (docs/0008, docs/0023).
+// links between separately compiled files.
 say('mesh instanceof Mesh', mesh instanceof Mesh);
 say('mesh instanceof Object3D', mesh instanceof Object3D);
 say('camera instanceof Object3D', camera instanceof Object3D);
@@ -96,11 +96,11 @@ say('position.itemSize', geometry.attributes.position.itemSize);   // 3
 say('uv.itemSize', geometry.attributes.uv.itemSize);               // 2
 say('groups.length', geometry.groups.length);                      // 6
 
-// --- 6. Typed arrays as real objects (docs/0029) ---------------------------
+// --- 6. Typed arrays as real objects ---------------------------
 // Float32BufferAttribute (BufferAttribute.js:615) is `new Float32Array(array)`;
 // setIndex (BufferGeometry.js) picks Uint16 because the largest index is 23,
 // which is below the Uint32 threshold. The `.constructor ===` identities are
-// docs/0029 decision 2 — the constructor is one interned object, not a name.
+// The constructor is one interned object, not a name.
 say('position.array.length', geometry.attributes.position.array.length);   // 24*3
 say('index.array.length', geometry.index.array.length);                    // 36
 say('position.array is Float32Array',
@@ -112,11 +112,10 @@ say('Uint16Array.BYTES_PER_ELEMENT', Uint16Array.BYTES_PER_ELEMENT);       // 2
 
 // --- 7. Math.random reached, without pinning a random number ---------------
 // Object3D.js:36 and BufferGeometry.js both call MathUtils.generateUUID(),
-// which is four Math.random() draws formatted through a 256-entry lookup
-// table: 16 two-character entries plus 4 hyphens = 36 characters. The VALUE
-// is nondeterministic by design (docs/0030) and is never printed; that two
-// independent 122-bit draws differ is what proves the generator is not a
-// constant.
+// which is four Math.random() draws formatted through a 256-entry lookup table:
+// 16 two-character entries plus 4 hyphens = 36 characters. The VALUE is
+// nondeterministic by design and is never printed; that two independent 122-bit
+// draws differ is what proves the generator is not a constant.
 say('typeof uuid', typeof mesh.uuid);                       // string
 say('uuid.length', mesh.uuid.length);                       // 36
 say('uuids differ', mesh.uuid !== geometry.uuid);           // true
@@ -199,10 +198,10 @@ const afterLoop = mesh.matrixWorld.elements.join(',');
 scene.updateMatrixWorld(true);
 say('post-loop idempotent', mesh.matrixWorld.elements.join(',') === afterLoop);
 
-// --- 10. Generators: Vector3's *[Symbol.iterator] (docs/0026) --------------
-// Vector3.js:711 is `*[ Symbol.iterator ]() { yield this.x; yield this.y;
-// yield this.z; }` — three straight-line yields, the exact subset bronze
-// desugars. for-of over it (14.7.5) visits them in order.
+// --- 10. Generators: Vector3's *[Symbol.iterator] --------------
+// Vector3.js:711 is `*[ Symbol.iterator ]() { yield this.x; yield this.y; yield
+// this.z; }` — three straight-line yields, the exact subset bronze desugars.
+// for-of over it (14.7.5) visits them in order.
 const parts = [];
 for (const component of new Vector3(7, 8, 9)) parts.push(component);
 say('vector iterator', parts.join(','));                 // 7,8,9

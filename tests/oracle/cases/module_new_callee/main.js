@@ -1,7 +1,7 @@
-// A `new` callee that is a MEMBER of an imported binding. The graph is one
-// flat scope (docs/0023 decision 1), so the base of the callee has to be
-// renamed to the exporting file's binding — and getting that wrong is a
-// silent wrong binding rather than a diagnostic, so it is pinned by VALUE.
+// A `new` callee that is a MEMBER of an imported binding. The graph is one flat
+// scope, so the base of the callee has to be renamed to the exporting file's
+// binding — and getting that wrong is a silent wrong binding rather than a
+// diagnostic, so it is pinned by VALUE.
 //
 // Derived from ECMA-262 16.2.1.6.4 (an import binding is an indirect
 // reference to the exporting module's binding), 13.3.5 (the callee is a

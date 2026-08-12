@@ -1,11 +1,11 @@
 // console.log with more than one argument.
 //
-// node's console.log formats each argument exactly as it would a single one
-// and joins the results with a SINGLE space, then writes one newline. So a
+// node's console.log formats each argument exactly as it would a single one and
+// joins the results with a SINGLE space, then writes one newline. So a
 // top-level string is still raw and a string inside a container is still
-// quoted, and `-0` is still `-0` — the inspect format of docs/0013 is not
-// re-decided per argument count, which is why there is one formatter and this
-// case shares every rule with `print_containers` and `print_primitives`.
+// quoted, and `-0` is still `-0` — the inspect format is not re-decided per
+// argument count, which is why there is one formatter and this case shares
+// every rule with `print_containers` and `print_primitives`.
 //
 // Zero arguments is a bare newline: there is nothing to join, and node still
 // terminates the line.

@@ -1,4 +1,4 @@
-// `&`, `|`, `^`, `~` and their compound assignments (docs/0015 decision 1).
+// `&`, `|`, `^`, `~` and their compound assignments.
 //
 // Every operand goes through ToInt32 (ECMA-262 7.1.6) before a single bit is
 // touched: the double is truncated toward zero, reduced modulo 2^32, and

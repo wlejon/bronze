@@ -1,7 +1,6 @@
-// `==` and `!=`: the abstract equality comparison of ECMA-262 7.2.14
-// (docs/0015 decision 9). Before this the three cases below were compile
-// errors that told the user to write `===` instead, which is not what the
-// language says the operator means.
+// `==` and `!=`: the abstract equality comparison of ECMA-262 7.2.14. Before
+// this the three cases below were compile errors that told the user to write
+// `===` instead, which is not what the language says the operator means.
 //
 // The algorithm in the order the spec states it: same type is strict
 // equality; null and undefined are equal to each other and to nothing else;

@@ -49,10 +49,10 @@ bool bodyFallsThrough(const std::vector<const ast::Stmt*>& body) {
 
 }  // namespace
 
-// A parameter's default is CODE, evaluated in this function's scope on
-// the calls that omit the argument. Skipping it would hide every call
-// site inside it from the pass that widens callee signatures — the exact
-// shape of an unsound proof (docs/0017 decision 9).
+// A parameter's default is CODE, evaluated in this function's scope on the
+// calls that omit the argument. Skipping it would hide every call site inside
+// it from the pass that widens callee signatures — the exact shape of an
+// unsound proof.
 void FlowAnalyzer::runParamDefaults(const std::vector<ast::Param>& params) {
     for (const auto& param : params) {
         if (param.defaultValue) expr(*param.defaultValue);
@@ -201,7 +201,7 @@ void FlowAnalyzer::fail(Span span, const std::string& what) {
 // it is not a statement of the list at all — it is skipped BEFORE the index is
 // taken, or the statement after it would be numbered as though something ran.
 // The linker deletes these before a real build reaches inference; a test that
-// parses and infers one file directly still meets them (docs/0023).
+// parses and infers one file directly still meets them.
 static bool isExportClause(const ast::Stmt& s) {
     return dynamic_cast<const ast::ExportNamesDecl*>(&s) != nullptr;
 }
@@ -233,18 +233,18 @@ void FlowAnalyzer::stmt(const ast::Stmt& s, uint32_t index, uint32_t depth) {
 
 void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
     if (const auto* v = dynamic_cast<const ast::VarDecl*>(&s)) {
-        // A `let` with no initialiser holds `undefined` at this point,
-        // not "number or undefined": the flow analysis is what turns a
-        // later single assignment into a precise type, which is why the
-        // lattice does not need a union (decision 2).
+        // A `let` with no initialiser holds `undefined` at this point, not
+        // "number or undefined": the flow analysis is what turns a later single
+        // assignment into a precise type, which is why the lattice does not
+        // need a union.
         //
-        // Annotations are deliberately not consulted. Seeding from one
-        // would let it widen what bronze believes, and decision 6 makes
-        // an annotation something that can only agree with a proof or be
-        // discarded. Landing that (with its warnings) is step 5.
-        // A destructuring declaration binds names whose values come out
-        // of a read this pass does not model, so each is dynamic; the
-        // initialiser is still walked, for its effects on call sites.
+        // Annotations are deliberately not consulted. Seeding from one would
+        // let it widen what bronze believes, and an untrusted hint makes an
+        // annotation something that can only agree with a proof or be
+        // discarded. Landing that (with its warnings) is step 5. A
+        // destructuring declaration binds names whose values come out of a read
+        // this pass does not model, so each is dynamic; the initialiser is
+        // still walked, for its effects on call sites.
         if (v->pattern) {
             expr(*v->init);
             declarePattern(*v->pattern);
@@ -337,9 +337,9 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         return;
     }
     if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(&s)) {
-        // A class is a constructor function value, and each of its
-        // methods is a closure (docs/0012 decision 5) — the same two
-        // facts the branch below states about a nested declaration.
+        // A class is a constructor function value, and each of its methods is a
+        // closure — the same two facts the branch below states about a nested
+        // declaration.
         declare(cd->name, Type::function());
         for (const auto& m : cd->methods) {
             analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span);
@@ -347,8 +347,8 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         return;
     }
     if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&s)) {
-        // A nested declaration is a closure value (docs/0007 decision 4),
-        // so it carries no module function index and no direct call.
+        // A nested declaration is a closure value, so it carries no module
+        // function index and no direct call.
         declare(fd->name, Type::function());
         analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span);
         return;
@@ -364,10 +364,10 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
 // proves nothing about — the element comes out of an indexed read and the
 // key out of an enumeration, and neither has a type here.
 //
-// Walking the BODY is not an optimization. A call written only inside one
-// of these loops was invisible to the widening pass, so a callee could be
-// proven `number` while a string reached it from the loop — an unsound
-// proof of exactly the shape docs/0017 decision 9 names.
+// Walking the BODY is not an optimization. A call written only inside one of
+// these loops was invisible to the widening pass, so a callee could be proven
+// `number` while a string reached it from the loop — an unsound proof of
+// exactly the shape a non-simple parameter list rules out.
 void FlowAnalyzer::keyedLoop(const ast::Stmt& s, const ast::Expr* source, const std::string& name,
                const ast::BindingPattern* pattern, const std::vector<ast::StmtPtr>& body,
                uint32_t depth) {
@@ -416,11 +416,10 @@ void FlowAnalyzer::switchStmt(const ast::SwitchStmt& sw, uint32_t depth) {
 // nothing the try block established survives into it, and nothing either
 // of them established survives the statement.
 //
-// Walking all three matters for more than precision: a call written only
-// inside a `try` has to be visible to the call-graph signature fixpoint,
-// and an invisible call site is an unsound proof (docs/0018's second
-// bug). Every binding these bodies assign is a CELL by decision 4 of
-// docs/0020, so the widening below is belt-and-braces over a set that is
+// Walking all three matters for more than precision: a call written only inside
+// a `try` has to be visible to the call-graph signature fixpoint, and an
+// invisible call site is an unsound proof. Every binding these bodies assign is
+// already a CELL, so the widening below is belt-and-braces over a set that is
 // normally empty.
 void FlowAnalyzer::tryStmt(const ast::TryStmt& t, uint32_t depth) {
     pushMarker("block", depth + 1);
@@ -545,7 +544,7 @@ void seedParams(Scope& scope, const std::vector<ast::Param>& params,
         const Type t = i < paramTypes.size() ? paramTypes[i] : Type::dynamic();
         // A pattern parameter has no name of its own, and nothing is known
         // about the names it does bind: they come out of a dynamic read of a
-        // value whose shape this pass does not track (docs/0017 decision 5).
+        // value whose shape this pass does not track.
         if (params[i].pattern) {
             for (const auto& bound : ast::patternBoundNames(*params[i].pattern)) {
                 seedOne(bound, Type::dynamic());
@@ -579,11 +578,11 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 bool record) {
     Scope scope;
     scope.parent = parent;
-    // The same union lowering builds (docs/0020 decision 4): a name assigned
-    // inside a `try` lives in an environment record, and `queries.h`'s rule
-    // is that inference must believe about a variable exactly what lowering
-    // decided about where it lives. Flow sensitivity on a cell would be
-    // unsound — a handler can observe any of the writes.
+    // The same union lowering builds: a name assigned inside a `try` lives in
+    // an environment record, and `queries.h`'s rule is that inference must
+    // believe about a variable exactly what lowering decided about where it
+    // lives. Flow sensitivity on a cell would be unsound — a handler can
+    // observe any of the writes.
     const auto captured = ast::getCapturedNames(body);
     scope.captured.insert(captured.begin(), captured.end());
     const auto tryAssigned = ast::getTryAssignedNames(body);
@@ -639,10 +638,10 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
 
     const Type returnType = recorder.inferredReturn(body);
     facts.signature.returnType = returnType;
-    // A closure's only queryable proof (docs/0010 decision 5 excludes it
-    // from signature specialization, so its parameters stay dynamic — but
-    // what its body returns is a fact about the body alone, and throwing it
-    // away is what made every annotation on a closure unprovable).
+    // A closure's only queryable proof (signature specialization excludes it,
+    // so its parameters stay dynamic — but what its body returns is a fact
+    // about the body alone, and throwing it away is what made every annotation
+    // on a closure unprovable).
     if (record && site != nullptr) mod.result->closureReturns[site] = returnType;
     // Ordered map in, sorted vector out.
     for (const auto& cell : scope.cells) {

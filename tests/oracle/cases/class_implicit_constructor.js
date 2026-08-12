@@ -1,4 +1,4 @@
-// A derived class with no constructor of its own (docs/0017 decision 7).
+// A derived class with no constructor of its own.
 //
 // ECMA-262 15.7.14 gives it `constructor(...args) { super(...args); }`, and
 // the forwarding has to be exact: `Mid` passes on however many arguments it
@@ -6,9 +6,9 @@
 // them. A chain of two implicit constructors forwards through both, and a
 // derived class WITH a constructor is unaffected.
 //
-// The receiver matters as much as the arguments: the parent constructor runs
-// on the instance being built, so the properties it installs and the methods
-// on its prototype are visible on a `Mid` (docs/0008).
+// The receiver matters as much as the arguments: the parent constructor runs on
+// the instance being built, so the properties it installs and the methods on
+// its prototype are visible on a `Mid`.
 class Base {
   constructor(a, b) {
     this.sum = a + b;

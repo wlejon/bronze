@@ -55,9 +55,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::ExcTake: {
             // The first instruction of every handler block. Reading and
             // CLEARING together is what lets a `finally` run its body with
-            // nothing pending and then decide whether to re-raise (docs/0020
-            // decision 5) — two instructions here, no helper call, because
-            // the cell is an ordinary global on both sides.
+            // nothing pending and then decide whether to re-raise — two
+            // instructions here, no helper call, because the cell is an
+            // ordinary global on both sides.
             if (inst.result == il::kNoValue) return true;
             values_[inst.result] =
                 builder_.CreateLoad(i64Ty_, shared_.globals.bronze_exception_cell);
@@ -280,10 +280,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 return false;
             }
             const auto& target = shared_.module.functions[inst.calleeIndex];
-            // The arity a call is ADAPTED to: the parameters a caller
-            // supplies. A rest parameter is not one of them — padding argv up
-            // to it would put an `undefined` in the rest array (docs/0017
-            // decision 2).
+            // The arity a call is ADAPTED to: the parameters a caller supplies.
+            // A rest parameter is not one of them — padding argv up to it would
+            // put an `undefined` in the rest array.
             uint32_t arity = target.adaptArity();
             callWith(abi.bronze_function_singleton,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity)});
@@ -357,8 +356,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!obj) return false;
             // A site inference proved monomorphic gets the guard inlined here;
             // an unproven one keeps the plain call, so the inline form never
-            // grows into a polymorphic guard chain in the object file
-            // (docs/0010 decisions 4, 7). This may SPLIT the current block.
+            // grows into a polymorphic guard chain in the object file. This may
+            // SPLIT the current block.
             values_[inst.result] = emitPropGet(builder_, abi, shared_.icTable, obj, inst.keyIndex,
                                                inst.icIndex, inst.icMonomorphic);
             return true;

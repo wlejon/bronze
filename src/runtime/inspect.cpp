@@ -1,8 +1,8 @@
-// console.log of a container — the format docs/0013 pins.
+// console.log of a container, in the pinned inspect format.
 //
-// Nothing here allocates a JS value, which is why every raw pointer below
-// stays valid for the whole walk: the collector cannot run while a string
-// is being built (docs/0006).
+// Nothing here allocates a JS value, which is why every raw pointer below stays
+// valid for the whole walk: the collector cannot run while a string is being
+// built.
 
 #include <algorithm>
 #include <cmath>
@@ -101,8 +101,8 @@ class Inspector {
 public:
     std::string run(Value v) {
         std::string body = format(v, 0);
-        // node numbers every circularly-referenced object; bronze marks one
-        // (docs/0013), so the prefix appears at most once.
+        // node numbers every circularly-referenced object; bronze marks one, so
+        // the prefix appears at most once.
         return sawCircular_ ? "<ref *1> " + body : body;
     }
 
@@ -129,10 +129,9 @@ private:
 
         // An Error prints as `Name: message`, which is what node shows on the
         // first line of its output — and the whole of bronze's, because there
-        // is no stack to print (docs/0020 decision 7). Tested by walking the
-        // prototype chain rather than by a header flag, so an error instance
-        // stays a plain object (flags == 0) and stays on the inline property
-        // fast path.
+        // is no stack to print. Tested by walking the prototype chain rather
+        // than by a header flag, so an error instance stays a plain object
+        // (flags == 0) and stays on the inline property fast path.
         if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
 
         auto* hdr = v.asObject<HeapObjectHeader>();
@@ -161,10 +160,10 @@ private:
             return "[Array]";
         }
         std::string out;
-        // A run of HOLES prints as node prints it: `<2 empty items>`, one
-        // entry for the whole run rather than one `undefined` each. The
-        // distinction is the point — a hole and a stored `undefined` read
-        // the same and enumerate differently (docs/0019 decision 2).
+        // A run of HOLES prints as node prints it: `<2 empty items>`, one entry
+        // for the whole run rather than one `undefined` each. The distinction
+        // is the point — a hole and a stored `undefined` read the same and
+        // enumerate differently.
         for (uint32_t i = 0; i < arr->length;) {
             if (!out.empty()) out += ", ";
             if (!arr->hasElem(i)) {
@@ -179,8 +178,8 @@ private:
         }
         // A match array's `index`, `input` and `groups` print after the
         // elements as `key: value`, which is node's format for an array that
-        // carries named properties (docs/0024 decision 6). Ordinary arrays
-        // have none and are unchanged.
+        // carries named properties. Ordinary arrays have none and are
+        // unchanged.
         if (arr->properties.isObject()) {
             auto* props = arr->properties.asObject<ObjectHeader>();
             const std::vector<StringHeader*> keys =
@@ -202,7 +201,7 @@ private:
     std::string typedArray(TypedArrayHeader* view, int depth) {
         // The constructor name and length are part of the format, so an empty
         // one still says what it is — and the name comes from the element kind,
-        // so all nine views print as themselves (docs/0013 decision 1).
+        // so all nine views print as themselves.
         std::string out = std::string(view->kindName()) + "(" + std::to_string(view->length) + ") ";
         if (view->length == 0) return out + "[]";
         if (depth > kMaxDepth) return out + "[Array]";
@@ -225,7 +224,7 @@ private:
         }
         std::string out;
         // Own keys in the language's order — the same order Object.keys
-        // reports (docs/0009), because they are the same question.
+        // reports, because they are the same question.
         std::vector<StringHeader*> keys =
             obj->shape ? obj->shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
         std::vector<std::pair<uint32_t, StringHeader*>> intKeys;

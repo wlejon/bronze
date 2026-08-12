@@ -212,10 +212,10 @@ TEST_CASE("IL Verifier catches errors") {
     }
 }
 
-// docs/0005 lists "argument count and types match target block parameters"
-// among the verifier's jobs. Block arguments are the SSA join, so a
-// malformed one becomes an LLVM phi incoming value; every shape below has
-// to be rejected before codegen ever sees it.
+// "Argument count and types match target block parameters" is one of the
+// verifier's jobs. Block arguments are the SSA join, so a malformed one becomes
+// an LLVM phi incoming value; every shape below has to be rejected before
+// codegen ever sees it.
 TEST_CASE("IL Verifier checks block arguments") {
     // b0: jump b1(<args>)   b1(<params>): ret
     auto twoBlockModule = [](std::vector<BlockParam> params, std::vector<ValueId> args,

@@ -1,5 +1,5 @@
-// Control-flow statements and the block-argument SSA joins they build:
-// if/else, the three loop forms, break and continue (docs/0005).
+// Control-flow statements and the block-argument SSA joins they build: if/else,
+// the three loop forms, break and continue.
 
 #include <algorithm>
 #include <string>
@@ -25,10 +25,9 @@ std::vector<il::ValueId> Lowerer::collectEdgeArgs(const std::vector<std::string>
     return args;
 }
 
-// The parameters a loop's header, exit, and update/condition blocks all
-// take: one per variable assigned anywhere in the loop, in declaration
-// order (docs/0005 decision 2), typed by what inference proved holds at the
-// loop's merges.
+// The parameters a loop's header, exit, and update/condition blocks all take:
+// one per variable assigned anywhere in the loop, in declaration order, typed
+// by what inference proved holds at the loop's merges.
 //
 // The type comes from the analysis and never from the value live at loop
 // entry. The entry value's type describes one edge; a block parameter has
@@ -43,11 +42,11 @@ std::vector<Lowerer::LoopParam> Lowerer::collectLoopParams(
     std::vector<LoopParam> params;
     for (const auto& name : getActiveVarsInDeclOrder()) {
         if (!assigned.contains(name)) continue;
-        // Becoming a loop parameter means being read on the entry edge, and
-        // an annotated `let x: number;` has no value to read there —
-        // undefined has no typed form (see lowerVarDecl). Diagnosed here by
-        // name, like every other read before initialization (docs/0005),
-        // rather than left to emit an edge argument that does not exist.
+        // Becoming a loop parameter means being read on the entry edge, and an
+        // annotated `let x: number;` has no value to read there — undefined has
+        // no typed form (see lowerVarDecl). Diagnosed here by name, like every
+        // other read before initialization, rather than left to emit an edge
+        // argument that does not exist.
         const VarBinding& b = varBindings_[activeVarMap_[name]];
         if (!b.isInitialized) {
             diags_.error(loopStmt.span, std::string("use of '") + (b.isConst ? "const" : "let") +
@@ -397,18 +396,18 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
 
 bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     const std::string label = takePendingLabel();
-    // A `for (let i = ...)` header binding is copied per iteration
-    // (14.7.4.9), so a closure over it must capture a fresh binding each time
-    // round. That needs the environment threaded across the back edge, which
-    // the block-scope rule does not give for free (docs/0007 decision 2) —
-    // diagnose it rather than silently sharing one binding.
+    // A `for (let i =...)` header binding is copied per iteration (14.7.4.9),
+    // so a closure over it must capture a fresh binding each time round. That
+    // needs the environment threaded across the back edge, which the
+    // block-scope rule does not give for free — diagnose it rather than
+    // silently sharing one binding.
     //
     // The test is whether a closure UNDER THIS LOOP reaches this binding, not
     // whether the enclosing function captures the name anywhere: `for (let i…)`
     // beside an unrelated `arr.map((i) => …)` shares nothing but a spelling,
-    // and rejecting it rejects a large fraction of ordinary JavaScript
-    // (docs/0028 decision 3). `var` is exempt outright — it declares ONE
-    // binding for the whole loop, so a closure over it is already correct.
+    // and rejecting it rejects a large fraction of ordinary JavaScript. `var`
+    // is exempt outright — it declares ONE binding for the whole loop, so a
+    // closure over it is already correct.
     for (const auto& initStmt : forStmt->init) {
         const auto* initDecl = dynamic_cast<const ast::VarDecl*>(initStmt.get());
         if (initDecl && !initDecl->isVar &&
@@ -528,9 +527,9 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
 }
 
 // A jump out of a `try` runs every `finally` it crosses, innermost first,
-// before it lands (docs/0020 decision 5). The target is re-read from the
-// index afterwards rather than held as a pointer: lowering a finally body
-// pushes and pops jump targets of its own, and `jumpStack_` can reallocate.
+// before it lands. The target is re-read from the index afterwards rather than
+// held as a pointer: lowering a finally body pushes and pops jump targets of
+// its own, and `jumpStack_` can reallocate.
 //
 // If one of those finallys completes abruptly — a `return` or a `throw` of
 // its own — the current block is already terminated and the jump is simply

@@ -1,22 +1,20 @@
-// The `Object` namespace beyond `keys` (docs/0021 decision 6). `Object.keys`
-// used to be recognised at the CALL SITE and nothing else on `Object`
-// existed; it is a real object now, and the fast path for `keys` calls the
-// same function the member does — so the two can never answer differently.
+// The `Object` namespace beyond `keys`. `Object.keys` used to be recognised at
+// the CALL SITE and nothing else on `Object` existed; it is a real object now,
+// and the fast path for `keys` calls the same function the member does — so the
+// two can never answer differently.
 //
 // From ECMA-262 20.1.2.1 (assign), 20.1.2.5 (entries), 20.1.2.24 (values) and
-// 20.1.2.7 (fromEntries), all of which are EnumerableOwnProperties over the
-// own-key order docs/0009 pins:
+// 20.1.2.7 (fromEntries), all of which are EnumerableOwnProperties over the the
+// own-key order the shape chain pins:
 //
 // 1. `keys`, `values` and `entries` walk the same order, which is insertion
-//    order and not sorted — `{ b, a, c }` reports b, a, c.
-// 2. All three see only ENUMERABLE own properties, so a `defineProperty`
-//    that omitted `enumerable` is invisible to every one of them, and to
-//    `assign`.
-// 3. `assign` MUTATES its first argument and returns it, later sources win,
-//    and it copies values rather than descriptors.
-// 4. `fromEntries` consumes an ITERABLE of pairs, so a Map goes through it
-//    directly (docs/0021 decision 2) and a repeated key keeps the last value.
-// 5. An array's own keys are its indices as strings, in index order.
+// order and not sorted — `{ b, a, c }` reports b, a, c. 2. All three see only
+// ENUMERABLE own properties, so a `defineProperty` that omitted `enumerable` is
+// invisible to every one of them, and to `assign`. 3. `assign` MUTATES its
+// first argument and returns it, later sources win, and it copies values rather
+// than descriptors. 4. `fromEntries` consumes an ITERABLE of pairs, so a Map
+// goes through it directly and a repeated key keeps the last value. 5. An
+// array's own keys are its indices as strings, in index order.
 
 const src = { b: 2, a: 1, c: 3 };
 console.log(Object.keys(src).join(","));

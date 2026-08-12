@@ -2,14 +2,14 @@
 // no Unicode case tables; only ASCII and Latin-1 fold under the `i` flag)`,
 // named at the literal by src/regex/parser.cpp.
 //
-// 22.2.2.9 Canonicalize is defined by toUppercase from the Unicode Default
-// Case Conversion table, and docs/0024 implements exactly the part of that
-// table it can state in code and check by hand: ASCII, and the Latin-1
-// supplement with its two escapes from it (U+00B5 and U+00FF uppercase OUT of
-// Latin-1, U+00DF's uppercase is two units so it stays put). Everything above
-// is refused rather than guessed, because a wrong fold is invisible: `/\u03a9/i`
-// silently not matching a lowercase omega is a wrong answer a test would only
-// catch if someone thought to write it.
+// 22.2.2.9 Canonicalize is defined by toUppercase from the Unicode Default Case
+// Conversion table, and bronze implements exactly the part of that table it can
+// state in code and check by hand: ASCII, and the Latin-1 supplement with its
+// two escapes from it (U+00B5 and U+00FF uppercase OUT of Latin-1, U+00DF's
+// uppercase is two units so it stays put). Everything above is refused rather
+// than guessed, because a wrong fold is invisible: `/\u03a9/i` silently not
+// matching a lowercase omega is a wrong answer a test would only catch if
+// someone thought to write it.
 //
 // The refusal is at COMPILE time and by code point, so it costs nothing to
 // programs that do not use `i` over cased scripts — a pattern of CJK or emoji

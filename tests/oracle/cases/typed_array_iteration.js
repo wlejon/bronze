@@ -4,9 +4,9 @@
 // destructuring (13.15.5.5) and a rest element.
 //
 // bronze's for-of does NOT build an iterator object for one: `rtOpenIterator`
-// recognises a typed array and steps a cursor (docs/0021 decision 2). The
-// point of this case is that the fast path and the object a program can pull
-// out by hand produce exactly the same values, in the same order.
+// recognises a typed array and steps a cursor. The point of this case is that
+// the fast path and the object a program can pull out by hand produce exactly
+// the same values, in the same order.
 const v = new Int16Array([10, 20, 30]);
 
 let total = 0;

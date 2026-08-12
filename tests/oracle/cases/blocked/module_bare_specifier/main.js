@@ -6,8 +6,8 @@
 // names neither a file nor a mapping. Every one of those steps can pick a
 // different file than the program meant, and picking wrong there is not a
 // compile error — it is a different program — so bronze names the specifier
-// rather than guessing (docs/0023 decision 3). The package this needs is
-// beside this file, already written, for the chunk that builds it.
+// rather than guessing. The package this needs is beside this file, already
+// written, for the chunk that builds it.
 import { helper } from 'lib';
 
 console.log(helper());

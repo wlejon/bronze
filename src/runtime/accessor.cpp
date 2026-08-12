@@ -44,16 +44,14 @@ void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value) {
     if (!asAccessorFunction(setter, "setter")) {
         // A get-only property written to. Non-strict Set discards the false
         // that [[Set]] returns, and this is the reading the pinned case
-        // derives (docs/0019 decision 6). `throw` exists since docs/0020 and
-        // this still does not use it: raising here is not a bug fix but a
-        // decision that bronze's source language is strict-mode JavaScript,
-        // which changes five other constructs and has its own case list
-        // (cases/blocked/strict_mode.js).
+        // derives. `throw` exists and this still does not use it: raising here
+        // is not a bug fix but a decision that bronze's source language is
+        // strict-mode JavaScript, which changes five other constructs and has
+        // its own case list (cases/blocked/strict_mode.js).
         return;
     }
     // The argument buffer is the ROOT's slot, so the value stays live across
-    // whatever the setter allocates before it copies its parameter out
-    // (docs/0006 decision 3).
+    // whatever the setter allocates before it copies its parameter out.
     fnRoot.get().asObject<FunctionHeader>()->call(receiver.get(), 1, value.slot_ptr());
 }
 
@@ -69,7 +67,7 @@ void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value) {
 //  - the name is an own DATA property: the transition tree cannot widen a
 //    one-slot property into a two-slot one without renumbering slots it
 //    shares with other objects, so this is exactly the case dictionary mode
-//    exists for (docs/0019 decision 4).
+// exists for.
 void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                   Rooted<Value>& key, Rooted<Value>& getter,
                                   Rooted<Value>& setter, bool enumerable) {
@@ -95,7 +93,7 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
     } else {
         // An add on a shape-chain object, exactly like `setProp`'s: if this
         // object is somebody's prototype, the pair just defined shadows what
-        // every depth > 0 entry below it points at (docs/0032).
+        // every depth > 0 entry below it points at.
         if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
         Shape* next = obj->shape->addProperty(arena, heap, key, slot, enumerable,
                                               /*is_accessor=*/true);

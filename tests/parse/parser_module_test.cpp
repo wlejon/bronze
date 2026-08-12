@@ -25,10 +25,10 @@ static std::string parseAndDump(std::string_view src) {
 }
 
 TEST_CASE("every import clause form parses to the bindings it introduces") {
-    // What `import` used to be — one hard error naming the whole construct —
-    // is now four binding forms that lower differently, so each dumps under
-    // its own head (docs/0023). The specifier is decoded like any string
-    // literal, and a side-effect import binds nothing at all.
+    // What `import` used to be — one hard error naming the whole construct — is
+    // now four binding forms that lower differently, so each dumps under its
+    // own head. The specifier is decoded like any string literal, and a
+    // side-effect import binds nothing at all.
     const auto out = parseAndDump(
         "import \"./s.js\";\n"
         "import d from \"./a.js\";\n"
@@ -57,8 +57,8 @@ TEST_CASE("every export form records the names it publishes") {
     CHECK(out.find("(export * from \"./g.js\"") != std::string::npos);
     CHECK(out.find("(export * as gg from \"./h.js\"") != std::string::npos);
     CHECK(out.find("(export from \"./e.js\"") != std::string::npos);
-    // `export default <expr>` binds a constant no source can name, so that
-    // an importer has something to be renamed onto (docs/0023 decision 1).
+    // `export default <expr>` binds a constant no source can name, so that an
+    // importer has something to be renamed onto.
     CHECK(out.find("(const default") != std::string::npos);
     CHECK(out.find("(name default as default)") != std::string::npos);
 }

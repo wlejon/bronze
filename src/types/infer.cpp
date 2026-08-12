@@ -71,9 +71,9 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
     return true;
 }
 
-// Folds the pass's observations into the signatures. Returns whether
-// anything moved; the join means a signature can only widen, so "nothing
-// moved" is a real fixpoint and recursion terminates (decision 5).
+// Folds the pass's observations into the signatures. Returns whether anything
+// moved; the join means a signature can only widen, so "nothing moved" is a
+// real fixpoint and recursion terminates.
 bool widenSignatures(ModuleContext& mod) {
     bool changed = false;
     for (auto& fn : mod.functions) {
@@ -118,18 +118,17 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         FunctionInfo fn;
         fn.decl = decl;
         fn.name = decl->name;
-        // Decision 5's whole test. `needsEnv` does not appear because it
-        // cannot fire here: a module-level declaration is a module symbol,
-        // not a closure, so lowering never gives it the synthetic `__env`
-        // parameter (docs/0007 decision 4). Only function *expressions* and
-        // nested declarations become closures, and those have no module
-        // function index to be direct-called through in the first place.
+        // The whole direct-callable test. `needsEnv` does not appear because it
+        // cannot fire here: a module-level declaration is a module symbol, not
+        // a closure, so lowering never gives it the synthetic `__env`
+        // parameter. Only function *expressions* and nested declarations become
+        // closures, and those have no module function index to be direct-called
+        // through in the first place.
         fn.directCallable = escaping.count(decl->name) == 0;
-        // A parameter with a default, a rest parameter, or a pattern breaks
-        // the one-argument-per-parameter correspondence that a typed
-        // signature IS: the value bound is not the value passed. Signatures
-        // are per source parameter, so there is nothing to widen against
-        // (docs/0017 decision 9).
+        // A parameter with a default, a rest parameter, or a pattern breaks the
+        // one-argument-per-parameter correspondence that a typed signature IS:
+        // the value bound is not the value passed. Signatures are per source
+        // parameter, so there is nothing to widen against.
         for (const auto& param : decl->params) {
             if (param.defaultValue || param.isRest || param.pattern) {
                 fn.directCallable = false;

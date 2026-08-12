@@ -1,7 +1,7 @@
-// Binding patterns and the parameter forms around them (docs/0017), named
-// for `src/parse/parser_pattern.cpp`. A pattern is what stands where a
-// binding name would — in a declaration, in a parameter, in a for-of head —
-// so it nests, and the dump is where the nesting is checked.
+// Binding patterns and the parameter forms around them, named for
+// `src/parse/parser_pattern.cpp`. A pattern is what stands where a binding name
+// would — in a declaration, in a parameter, in a for-of head — so it nests, and
+// the dump is where the nesting is checked.
 
 // The doctest main is parser_test.cpp's; every file here links into one
 // binary under the `parse` label, so the module's test command does not
@@ -27,10 +27,10 @@ static std::string parseAndDump(std::string_view src) {
 }
 
 TEST_CASE("ES2015 parameter and spread syntax parses into nodes of its own") {
-    // Each form must reach a DISTINCT node, because each lowers differently:
-    // a default is a branch, a rest is an array the convention builds, a
-    // spread is a walk over a container, a pattern is a read per element
-    // (docs/0017). Dumping any two of them alike would hide a wrong lowering.
+    // Each form must reach a DISTINCT node, because each lowers differently: a
+    // default is a branch, a rest is an array the convention builds, a spread
+    // is a walk over a container, a pattern is a read per element. Dumping any
+    // two of them alike would hide a wrong lowering.
     struct Case {
         const char* src;
         const char* expected;
@@ -95,8 +95,8 @@ TEST_CASE("a pattern nests, renames, defaults and rests, and dumps each apart") 
 
 TEST_CASE("the syntax around patterns that ECMA-262 forbids is named") {
     // Everything the grammar rules out, plus the two constructs bronze
-    // deliberately does not build (docs/0017 decision 8). A silent
-    // acceptance here is a wrong answer, not a missing feature.
+    // deliberately does not build. A silent acceptance here is a wrong answer,
+    // not a missing feature.
     struct Case {
         const char* src;
         const char* expected;

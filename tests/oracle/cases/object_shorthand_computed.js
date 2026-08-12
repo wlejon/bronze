@@ -9,9 +9,9 @@
 // right, so a later definition with the same key overwrites an earlier one,
 // and the key's evaluation is interleaved with the values' in source order.
 //
-// Own-key order is docs/0009's: integer-like keys ascending, then the rest in
-// insertion order — and a computed key that ToPropertyKey turns into "2" is
-// an integer-like key however it was written.
+// Own-key order: integer-like keys ascending, then the rest in insertion order
+// — and a computed key that ToPropertyKey turns into "2" is an integer-like key
+// however it was written.
 
 const x = 1;
 const y = 'two';

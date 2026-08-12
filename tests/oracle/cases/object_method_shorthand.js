@@ -3,10 +3,9 @@
 //
 // `{ m() {} }` defines exactly what `{ m: function () {} }` defines: an own,
 // enumerable, writable data property holding an ordinary function object. So
-// what this case pins is mostly that nothing about it is special — the
-// property appears in `Object.keys`, `this` is the receiver of the call, and
-// a reserved word is a legal method name because a method name is an
-// IdentifierName (docs/0021 decision 8).
+// what this case pins is mostly that nothing about it is special — the property
+// appears in `Object.keys`, `this` is the receiver of the call, and a reserved
+// word is a legal method name because a method name is an IdentifierName.
 //
 // The one thing that IS special is invisible from the language: lowering
 // registers every function it creates under a module-level symbol, so a method

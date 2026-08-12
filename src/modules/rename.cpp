@@ -1,4 +1,4 @@
-// The scope-aware renaming walk (docs/0023 decision 1).
+// The scope-aware renaming walk.
 //
 // A reference is renamed exactly when it resolves to its file's MODULE scope,
 // so the walk carries a stack of shadowing sets and consults it before every
@@ -154,7 +154,7 @@ private:
         } else if (auto* fs = dynamic_cast<ast::ForStmt*>(&s)) {
             // The header's bindings belong to the loop and are visible to the
             // condition, the update and the body — which is exactly why
-            // `ForStmt::init` is a list and not a block (docs/0016 dec. 6).
+ // `ForStmt::init` is a list and not a block.
             std::set<std::string> scope;
             for (const auto& name : ast::getScopeDeclarations(fs->init)) scope.insert(name);
             shadow_.push_back(std::move(scope));
@@ -335,10 +335,9 @@ private:
         }
     }
 
-    // A module namespace object is exotic and its properties are
-    // non-writable; bronze's stand-in is an object literal of getters, which
-    // would swallow a write instead of throwing. Where the write is visible
-    // the refusal is too (docs/0023 decision 4).
+    // A module namespace object is exotic and its properties are non-writable;
+    // bronze's stand-in is an object literal of getters, which would swallow a
+    // write instead of throwing. Where the write is visible the refusal is too.
     void refuseNamespaceWrite(const ast::Expr& target) {
         const ast::Ident* base = nullptr;
         std::string key;

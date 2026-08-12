@@ -258,10 +258,10 @@ ExprPtr Parser::parseUnaryPrefix() {
         return ne;
     }
     if (check(TokenKind::KwDelete)) {
-        // A *UnaryExpression* operand, like every other prefix operator —
-        // but one whose value is never taken: `delete o.k` reads no
-        // property. Lowering dispatches on the operand's node kind
-        // (docs/0019 decision 2), so the parser's only job is to build it.
+        // A *UnaryExpression* operand, like every other prefix operator — but
+        // one whose value is never taken: `delete o.k` reads no property.
+        // Lowering dispatches on the operand's node kind, so the parser's only
+        // job is to build it.
         const Token& kw = advance();
         auto operand = parseUnaryPrefix();
         if (!operand) return nullptr;
@@ -360,11 +360,10 @@ bool Parser::parseMemberLink(ExprPtr& expr) {
         if (!member) return false;
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
         // `console` is not a binding and has no object: the whole member
-        // expression folds to one name here, and `ast::consoleStreamOf` is
-        // the only place that says which names those are. A member it does
-        // not know is a hard error naming itself rather than the
-        // `undefined variable: console` a reader would have to decode
-        // (docs/0011 decision 3).
+        // expression folds to one name here, and `ast::consoleStreamOf` is the
+        // only place that says which names those are. A member it does not know
+        // is a hard error naming itself rather than the `undefined variable:
+        // console` a reader would have to decode.
         if (baseIdent && baseIdent->name == "console") {
             const std::string folded = "console." + std::string(member->text);
             if (ast::consoleStreamOf(folded) == ast::ConsoleStream::None) {
@@ -415,7 +414,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // `?.[i]` and `?.(args)` — so which link follows is decided here
             // and not by a second `.`/`[`/`(` branch below. The node it builds
             // is the ordinary one with `optional` set: what differs is when the
-            // link runs, not what it computes (docs/0018 decision 4).
+            // link runs, not what it computes.
             advance();
             if (check(TokenKind::LBracket)) {
                 advance();
@@ -467,11 +466,10 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             call->span.end = peek().span.begin;
             expr = std::move(call);
         } else if (check(TokenKind::TemplateWhole) || check(TokenKind::TemplateHead)) {
-            // `tag`...`` — a template in suffix position is a TAGGED
-            // template, which is not the cooked-pieces path of docs/0012
-            // decision 1: the tag receives the raw strings and the
-            // substitutions as arguments. Named here so it does not read as
-            // a missing semicolon.
+            // `tag`...`` — a template in suffix position is a TAGGED template,
+            // which is not the cooked-pieces path: the tag receives the raw
+            // strings and the substitutions as arguments. Named here so it does
+            // not read as a missing semicolon.
             error("unsupported construct: tagged template literal");
             return nullptr;
         } else if ((check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) &&
@@ -486,7 +484,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // before the operator ends the statement, and the `++` belongs to
             // the next one as a PREFIX operator. `let e = d\n++d` leaves e at
             // d's old value and increments d — folding the two lines together
-            // would be a silent wrong answer (docs/0014).
+            // would be a silent wrong answer.
             break;
         } else if (match(TokenKind::PlusPlus)) {
             auto u = std::make_unique<Unary>();
@@ -512,8 +510,8 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
 bool Parser::parseArgumentList(std::vector<ExprPtr>& args) {
     while (!check(TokenKind::RParen)) {
         // An *AssignmentExpression*, not an Expression: the commas here
-        // separate arguments, and a comma OPERATOR would silently turn
-        // `f(a, b)` into a one-argument call (docs/0015 decision 7).
+        // separate arguments, and a comma OPERATOR would silently turn `f(a,
+        // b)` into a one-argument call.
         //
         // A `...` argument contributes as many arguments as its source has,
         // which is a fact about the LIST and not about the expression, so the
@@ -664,11 +662,10 @@ ExprPtr Parser::parsePrimary() {
         case TokenKind::Identifier: {
             // `yield` is not a reserved word: it is an ordinary identifier
             // everywhere except inside a generator body, where it is the
-            // operator. Reaching it HERE means it is in an expression
-            // position, and the straight-line subset admits it only as a
-            // whole statement — so this is always a refusal, and which one
-            // it is depends on where the statement above put us
-            // (docs/0026).
+            // operator. Reaching it HERE means it is in an expression position,
+            // and the straight-line subset admits it only as a whole statement
+            // — so this is always a refusal, and which one it is depends on
+            // where the statement above put us.
             if (inGeneratorBody_ && t.text == "yield") return refuseYield();
             advance();
             auto ident = std::make_unique<Ident>();
@@ -694,11 +691,10 @@ ExprPtr Parser::parsePrimary() {
             return parseArrayLit();
         case TokenKind::KwFunction:
             return parseFunctionExpr();
-        // The two `import` forms that are EXPRESSIONS rather than
-        // declarations (ECMA-262 13.3.10 and 13.3.12). Neither reaches the
-        // statement production, so naming them there is not enough — an
-        // `import(...)` in an initializer landed on "expected expression",
-        // which names nothing (docs/0023).
+        // The two `import` forms that are EXPRESSIONS rather than declarations
+        // (ECMA-262 13.3.10 and 13.3.12). Neither reaches the statement
+        // production, so naming them there is not enough — an `import(...)` in
+        // an initializer landed on "expected expression", which names nothing.
         case TokenKind::KwImport:
             if (peek(1).kind == TokenKind::LParen) {
                 error("unsupported construct: dynamic import() (bronze has no promises)");
@@ -710,10 +706,10 @@ ExprPtr Parser::parsePrimary() {
             return nullptr;
         // `super` is a keyword, so reaching the default arm means it was
         // written somewhere the call/member production does not look — inside a
-        // `new` callee (`new super.x()`), which docs/0025 turned into a full
-        // expression. "expected expression" points the reader at the wrong
-        // thing: `super` IS the expression, it is just not one that may appear
-        // here (ECMA-262 13.3.7 restricts it to a method's [[HomeObject]]).
+        // `new` callee (`new super.x()`), which is now a full expression.
+        // "expected expression" points the reader at the wrong thing: `super`
+        // IS the expression, it is just not one that may appear here (ECMA-262
+        // 13.3.7 restricts it to a method's [[HomeObject]]).
         case TokenKind::KwSuper:
             error("unsupported construct: `super` is only supported as `super.x` or "
                   "`super(...)` directly inside a class method");

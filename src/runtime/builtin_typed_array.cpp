@@ -1,17 +1,16 @@
-// The JS surface of `ArrayBuffer` and the nine views: the constructor
-// objects, the four construction paths of 23.2.5.1, and the members an
-// instance answers (docs/0029). The METHODS live next door in
-// builtin_typed_array_methods.cpp; the representation lives in
-// typed_array.{h,cpp}.
+// The JS surface of `ArrayBuffer` and the nine views: the constructor objects,
+// the four construction paths of 23.2.5.1, and the members an instance answers.
+// The METHODS live next door in builtin_typed_array_methods.cpp; the
+// representation lives in typed_array.{h,cpp}.
 //
-// The seam that shapes this file is docs/0029 decision 2: a typed array
-// constructor is an ordinary bronze function object, interned by code
-// pointer, so `Float32Array` read as a bare name and `v.constructor` read off
-// an instance are the SAME object and `===` between them holds. That is what
-// three.js's `switch (array.constructor)` needs, and it is why the nine
-// constructors are nine instantiations of one template rather than one
-// function taking a kind — nine distinct code pointers is exactly what
-// `bronze_function_singleton` interns on.
+// The seam that shapes this file: a typed array constructor is an ordinary
+// bronze function object, interned by code pointer, so `Float32Array` read as a
+// bare name and `v.constructor` read off an instance are the SAME object and
+// `===` between them holds. That is what three.js's `switch
+// (array.constructor)` needs, and it is why the nine constructors are nine
+// instantiations of one template rather than one function taking a kind — nine
+// distinct code pointers is exactly what `bronze_function_singleton` interns
+// on.
 
 #include <cmath>
 #include <cstring>
@@ -72,9 +71,9 @@ bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_t& out)
 }
 
 // A buffer that a collection would have to COPY has to fit in a semispace,
-// which is the concrete form docs/0029 decision 1's "the buffer moves" takes.
-// Diagnosed here, by name, rather than left to `std::bad_alloc` unwinding out
-// of a helper that generated code called.
+// which is the concrete form "the buffer moves" takes. Diagnosed here, by name,
+// rather than left to `std::bad_alloc` unwinding out of a helper that generated
+// code called.
 bool checkAllocatable(uint32_t byteLength) {
     const size_t semispace = rtHeap().reserved_size() / 2;
     if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
@@ -148,7 +147,7 @@ Value fromTypedArray(ElementKind kind, Rooted<Value>& source) {
     for (uint32_t i = 0; i < length; ++i) {
         // Both pointers are re-derived every step. Nothing in the loop
         // allocates today, but the rule that keeps this correct is that a raw
-        // view pointer never outlives a statement (docs/0029 decision 1).
+        // view pointer never outlives a statement.
         const double v = source.get().asObject<TypedArrayHeader>()->get(i);
         out.get().asObject<TypedArrayHeader>()->set(i, v);
     }
@@ -279,7 +278,7 @@ Value rtTypedArrayConstructor(const std::string& name) {
         if (name == elementKindInfo(entry.kind).name) {
             // Arity 0: a variadic native must not be padded, or
             // `new Float32Array(buf)` would arrive with two extra undefined
-            // arguments and take the three-argument branch (docs/0011 dec. 2).
+ // arguments and take the three-argument branch.
             return Value(bronze_function_singleton(entry.code, 0));
         }
     }
@@ -331,7 +330,7 @@ Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     if (key == "BYTES_PER_ELEMENT") return Value::fromDouble(view->bytesPerElement());
     // The 10.2.5 back-pointer, as a real one: the same object the bare name
     // resolves to, so `x.constructor === Float32Array` and the `switch` over
-    // constructors in three.js's MathUtils both work (docs/0029 decision 2).
+    // constructors in three.js's MathUtils both work.
     if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());
 
     // Everything below can allocate a function object, so `view` — and

@@ -1,8 +1,7 @@
-// The iterator a generator returns, driven BY HAND rather than by a loop
-// (docs/0026). `for-of` hides every observable of the protocol behind one
-// syntax; this case calls `next()` itself, so the shape of each result — and
-// what happens on the call after the last one — is pinned rather than
-// implied.
+// The iterator a generator returns, driven BY HAND rather than by a loop.
+// `for-of` hides every observable of the protocol behind one syntax; this case
+// calls `next()` itself, so the shape of each result — and what happens on the
+// call after the last one — is pinned rather than implied.
 //
 // From ECMA-262 7.4.1 (IteratorResult: an ordinary object with `value` and
 // `done`), 27.5.1.2 (`Generator.prototype[@@iterator]` returns the generator
@@ -12,7 +11,7 @@
 //
 // 1. Each `next()` before the end answers `{ value: <yielded>, done: false }`
 //    — in that property order, because that is the order 7.4.1 builds it in
-//    and docs/0009 prints own keys in creation order.
+//    and own keys print in creation order.
 // 2. The call that runs off the end answers `{ value: undefined, done: true }`,
 //    and so does every call after it: a completed iterator stays completed
 //    rather than restarting.
@@ -24,12 +23,11 @@
 //    passes its base as the this value), which is what makes `this.base`
 //    inside the body mean this instance.
 //
-// DELIBERATE DIVERGENCE, docs/0021 decision 1: `Symbol.iterator` is the
-// string "@@iterator", so `r[Symbol.iterator]` is an ordinary property read.
-// DELIBERATE DIVERGENCE, docs/0026: bronze's generator object is a plain
-// object literal, so it has no `%GeneratorPrototype%`, no `return` and no
-// `throw` method, and `typeof` its `next` is the only thing about its
-// identity this case may pin.
+// DELIBERATE DIVERGENCE: `Symbol.iterator` is the string "@@iterator", so
+// `r[Symbol.iterator]` is an ordinary property read. DELIBERATE DIVERGENCE:
+// bronze's generator object is a plain object literal, so it has no
+// `%GeneratorPrototype%`, no `return` and no `throw` method, and `typeof` its
+// `next` is the only thing about its identity this case may pin.
 
 class Pair {
     constructor(base) {

@@ -1,13 +1,13 @@
-// `typeof` (docs/0015 decision 4). Six strings and no more: "undefined",
-// "object" (which includes null, ECMA-262's oldest bug and one every engine
-// reproduces), "boolean", "number", "string" and "function".
+// `typeof`. Six strings and no more: "undefined", "object" (which includes
+// null, ECMA-262's oldest bug and one every engine reproduces), "boolean",
+// "number", "string" and "function".
 //
 // bronze deliberately DIVERGES on one form: `typeof undeclaredName` is
-// "undefined" in JavaScript, because typeof is the one operator that does
-// not evaluate its operand as a reference. bronze resolves free identifiers
-// at compile time against a closed set (docs/0011 decision 1), so an unknown
-// name is a compile error there and cannot reach this operator - see
-// docs/0015 decision 4 for why that is kept rather than special-cased.
+// "undefined" in JavaScript, because typeof is the one operator that does not
+// evaluate its operand as a reference. bronze resolves free identifiers at
+// compile time against a closed set, so an unknown name is a compile error
+// there and cannot reach this operator - see the typeof rule for why that is
+// kept rather than special-cased.
 console.log(typeof undefined);
 console.log(typeof null);
 console.log(typeof 0);

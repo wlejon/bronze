@@ -1,6 +1,6 @@
 // `%TypedArray%.prototype` — the members ECMA-262 23.2.3 defines that bronze
-// has built. A member it has not built is still a named hard error rather
-// than `undefined` (docs/0011 decision 3).
+// has built. A member it has not built is still a named hard error rather than
+// `undefined`.
 //
 // The pair this case exists for is `subarray` (23.2.3.30) against `slice`
 // (23.2.3.27): the first makes a view over the SAME buffer and the second
@@ -54,8 +54,8 @@ const nums = new Float64Array([1, 0 / 0, 3]);
 console.log(nums.indexOf(3), nums.indexOf(77), nums.indexOf(0 / 0));
 console.log(nums.includes(3), nums.includes(77), nums.includes(0 / 0));
 
-// 23.2.3.18 join. Every element is a number, so its text is ToString(Number)
-// — which prints a stored -0 as "0", unlike console.log (docs/0013).
+// 23.2.3.18 join. Every element is a number, so its text is ToString(Number) —
+// which prints a stored -0 as "0", unlike console.log.
 console.log(new Int8Array([1, -2, 3]).join("-"));
 console.log(new Int8Array([1, -2, 3]).join());
 console.log(new Float64Array(1).join(""));

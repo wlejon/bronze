@@ -1,14 +1,14 @@
-// `DataView` (ECMA-262 25.3), which docs/0029 did NOT build. It is the one
-// view that reads a buffer at an arbitrary byte offset with an explicitly
-// named byte order, which is exactly what makes it a separate object rather
-// than a tenth element kind: `getFloat32(1, true)` has no alignment
-// requirement and no fixed endianness, so it cannot share the
-// offset-times-width addressing every %TypedArray% element access is.
+// `DataView` (ECMA-262 25.3), which was NOT built. It is the one view that
+// reads a buffer at an arbitrary byte offset with an explicitly named byte
+// order, which is exactly what makes it a separate object rather than a tenth
+// element kind: `getFloat32(1, true)` has no alignment requirement and no fixed
+// endianness, so it cannot share the offset-times-width addressing every
+// %TypedArray% element access is.
 //
 // Today `DataView` is not on lowering's provided-globals list, so the name is
 // an unresolved one: a compile-time warning and a `ReferenceError` where it is
-// evaluated (docs/0027 decision 1). That is a named diagnosis and not a silent
-// wrong answer, which is why this is a blocked case and not a bug.
+// evaluated. That is a named diagnosis and not a silent wrong answer, which is
+// why this is a blocked case and not a bug.
 //
 // Every number below comes from 25.3.1.1..25.3.1.5 (GetViewValue and
 // SetViewValue over RawBytesToNumeric / NumericToRawBytes) and the IEEE-754

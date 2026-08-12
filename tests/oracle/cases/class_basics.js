@@ -1,7 +1,6 @@
-// Classes. A class is the constructor function plus its prototype
-// (docs/0008), desugared in lowering (docs/0012 decision 5), so
-// what has to work is: methods shared by every instance, `new`, a static
-// member on the constructor itself, extends wiring the prototype chain,
+// Classes. A class is the constructor function plus its prototype, desugared in
+// lowering, so what has to work is: methods shared by every instance, `new`, a
+// static member on the constructor itself, extends wiring the prototype chain,
 // super(...) running the parent constructor on the same instance, and
 // super.method() reaching past an override.
 class Point {

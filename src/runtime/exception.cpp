@@ -1,6 +1,6 @@
-// The pending-exception cell, the raise helpers, and the `Error` family
-// (docs/0020). The cell is an ABI global because generated code tests it
-// inline; everything else here is C++ the runtime calls on its own behalf.
+// The pending-exception cell, the raise helpers, and the `Error` family. The
+// cell is an ABI global because generated code tests it inline; everything else
+// here is C++ the runtime calls on its own behalf.
 
 #include "runtime/exception.h"
 
@@ -168,11 +168,10 @@ void ensureErrorClasses() {
 
     for (ErrorClass& cls : g_errorClasses) {
         Rooted<Value> ctor{Value(bronze_function_singleton(cls.code, 1))};
-        // `Error.prototype` and `TypeError.prototype` must be distinct
-        // objects with the second's prototype pointing at the first, which is
-        // exactly what `class TypeError extends Error` would build — so it is
-        // built the same way, with a root shape naming the parent
-        // (docs/0008 decision 1).
+        // `Error.prototype` and `TypeError.prototype` must be distinct objects
+        // with the second's prototype pointing at the first, which is exactly
+        // what `class TypeError extends Error` would build — so it is built the
+        // same way, with a root shape naming the parent.
         Value parentProto =
             (&cls == &g_errorClasses[0]) ? Value::fromUndefined() : g_errorClasses[0].prototype;
         Rooted<Value> parent{parentProto};
@@ -338,17 +337,15 @@ std::string rtUncaughtText(Value thrown) {
 
 extern "C" {
 
-// An unresolvable reference, EVALUATED (docs/0027 decision 1). ECMA-262
-// 6.2.5.5 GetValue step 2: a Reference Record whose base is unresolvable
-// throws a ReferenceError — at the moment of use, which is why lowering emits
-// an instruction here instead of refusing the program. The key index is the
-// module's interned name, so the message can name the identifier without the
-// backend carrying a string.
+// An unresolvable reference, EVALUATED. ECMA-262 6.2.5.5 GetValue step 2: a
+// Reference Record whose base is unresolvable throws a ReferenceError — at the
+// moment of use, which is why lowering emits an instruction here instead of
+// refusing the program. The key index is the module's interned name, so the
+// message can name the identifier without the backend carrying a string.
 //
 // Returns `undefined` for the reason every other raise helper does: the value
 // lands in a caller's GC root slot before the pending cell is tested, so
-// anything the collector cannot parse would put a bad word in a live root
-// (docs/0020 decision 2).
+// anything the collector cannot parse would put a bad word in a live root.
 uint64_t bronze_reference_error(uint32_t keyIndex) {
     return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
 }

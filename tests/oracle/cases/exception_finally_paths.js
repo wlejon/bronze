@@ -1,5 +1,5 @@
 // `finally` runs on EVERY path out of the protected region, and a completion
-// from inside it replaces the one that was leaving (docs/0020 decision 5).
+// from inside it replaces the one that was leaving.
 //
 // Every expectation below is read off ECMA-262 14.15.3 (Runtime Semantics:
 // Evaluation of `try Block Finally` / `try Block Catch Finally`): B is

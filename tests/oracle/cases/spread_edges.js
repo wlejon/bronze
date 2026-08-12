@@ -1,8 +1,8 @@
-// The parts of spread whose answers are not obvious (docs/0017 decision 3).
+// The parts of spread whose answers are not obvious.
 //
-// A string spreads by CODE POINT, not by UTF-16 code unit: the emoji below
-// is one element of the spread and two units of `.length`, and 3 != 4 is the
-// whole claim. It is the same walk for-of does (docs/0012 decision 2).
+// A string spreads by CODE POINT, not by UTF-16 code unit: the emoji below is
+// one element of the spread and two units of `.length`, and 3 != 4 is the whole
+// claim. It is the same walk for-of does.
 //
 // An empty spread contributes nothing and is not a hole — `[0, ...[], 1]`
 // has length 2 and no undefined in it. Evaluation is strictly left to right

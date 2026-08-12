@@ -10,17 +10,16 @@
 // is not, and the three ways a deeper chain can move are covered by three
 // different mechanisms — which is why they are pinned together here:
 //
-// 1. An ADD to an intermediate prototype takes a shape transition and leaves
-//    no dictionary behind, so nothing on the walk looks different. The fill
-//    epoch is what catches it (docs/0032): any property add anywhere bumps a
-//    global counter, and a depth > 0 entry that does not match the current
-//    one is refused. `read(leaf)` must move from `top` to `mid`.
-// 2. A DELETE renumbers slots, and a `setPrototypeOf` replaces the holder.
-//    Both put the object they touch into dictionary mode, and a dictionary
-//    anywhere on the cached walk is what `ObjectHeader::cachedProtoHolder`
-//    refuses (docs/0019 decision 5, widened by docs/0022).
-// 3. An OWN add or delete changes the receiver's own shape word, which is
-//    the case the cache was designed for.
+// 1. An ADD to an intermediate prototype takes a shape transition and leaves no
+// dictionary behind, so nothing on the walk looks different. The fill epoch is
+// what catches it: any property add anywhere bumps a global counter, and a
+// depth > 0 entry that does not match the current one is refused. `read(leaf)`
+// must move from `top` to `mid`. 2. A DELETE renumbers slots, and a
+// `setPrototypeOf` replaces the holder. Both put the object they touch into
+// dictionary mode, and a dictionary anywhere on the cached walk is what
+// `ObjectHeader::cachedProtoHolder` refuses. 3. An OWN add or delete changes
+// the receiver's own shape word,
+// which is the case the cache was designed for.
 //
 // Line ordering is load-bearing. Shadowing at the NEAREST prototype (line 5
 // of the output) once passed only because the delete before it had left a

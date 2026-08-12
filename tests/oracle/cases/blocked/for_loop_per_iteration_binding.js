@@ -8,17 +8,16 @@
 // created inside the body therefore captures THAT iteration's binding, and
 // the three closures below see 0, 1 and 2 — not three views of one cell.
 //
-// bronze carries a loop variable as a block parameter across the back edge
-// (docs/0005), which is one binding by construction, and its environment
-// records are created on scope ENTRY (docs/0007 decision 2) — the loop header
-// scope is entered once, above the header block, so a record made there is
-// one record for the whole loop too. Making this work needs the environment
-// created per iteration and threaded across the back edge, which is a change
-// to the loop's shape and not to this diagnostic.
+// bronze carries a loop variable as a block parameter across the back edge,
+// which is one binding by construction, and its environment records are created
+// on scope ENTRY — the loop header scope is entered once, above the header
+// block, so a record made there is one record for the whole loop too. Making
+// this work needs the environment created per iteration and threaded across the
+// back edge, which is a change to the loop's shape and not to this diagnostic.
 //
 // It is named rather than miscompiled because the wrong answer is silent:
-// every closure would return 3 and nothing would say so. docs/0028 decision 3
-// narrowed WHEN it fires — a closure with an `i` of its own no longer counts,
+// every closure would return 3 and nothing would say so. The rule was later
+// narrowed to say WHEN it fires — a closure with an `i` of its own no longer counts,
 // pinned by `for_loop_binding_shadowing` — but a closure that really does
 // reach the loop's binding must still be refused, which is what this pins.
 //

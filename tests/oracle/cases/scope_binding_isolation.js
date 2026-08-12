@@ -15,7 +15,7 @@
 //    value id, which in `main` names an unrelated instruction — a plausible
 //    number invented out of another function's arithmetic. That half is
 //    pinned in tests/lower, where the observable is that the name does not
-//    RESOLVE: since docs/0027 decision 1 it lowers to `ref.error` and a
+//    RESOLVE: it lowers to `ref.error` and a
 //    warning rather than to a compile error.
 //
 // The names below are deliberately the ordinary ones — `i`, `acc`, `result`,

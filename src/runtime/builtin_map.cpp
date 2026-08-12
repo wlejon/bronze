@@ -1,5 +1,5 @@
 // `Map` and `Set` — the constructors, the methods, and the iterator objects
-// `keys()` / `values()` / `entries()` hand back (docs/0021 decision 4).
+// `keys()` / `values()` / `entries()` hand back.
 //
 // The table itself is map.{h,cpp}; what is here is the JS surface over it.
 // The seam is that a Map's METHODS are ordinary bronze function objects
@@ -51,7 +51,7 @@ StringHeader* internKey(const char* text) {
 }
 
 // The iterator object's private state. Spelled with the `@@` prefix so the
-// enumerability rule of docs/0021 decision 1 hides it: an iterator prints as
+// enumerability rule for well-known symbol keys hides it: an iterator prints as
 // `{}` and `Object.keys` of one is empty, which is what a real internal slot
 // would do.
 StringHeader* keyTarget() {
@@ -240,7 +240,7 @@ uint64_t mapForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
         Value block[3] = {set ? map->keyAt(at) : map->valueAt(at), map->keyAt(at), self.get()};
         cb.get().asObject<FunctionHeader>()->call(thisArg.get(), 3, block);
         // A callback that threw stops the walk, for the reason every callback
-        // loop in builtin_array.cpp does (docs/0020 decision 6).
+        // loop in builtin_array.cpp does.
         if (rtExceptionPending()) break;
     }
     return Value::fromUndefined().rawBits();

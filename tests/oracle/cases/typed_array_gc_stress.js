@@ -1,15 +1,13 @@
-// A view's bytes live in an ArrayBuffer the collector MOVES (docs/0029
-// decision 1), and a view holds that buffer as a Value plus a byte offset —
-// never a cached data pointer. This case is the proof: it allocates
-// thousands of views and buffers while holding older ones live, then reads
-// every one of them back.
+// A view's bytes live in an ArrayBuffer the collector MOVES, and a view holds
+// that buffer as a Value plus a byte offset — never a cached data pointer. This
+// case is the proof: it allocates thousands of views and buffers while holding
+// older ones live, then reads every one of them back.
 //
 // Under the `oracle-gc-stress` run every single allocation below moves the
-// entire live set (docs/0006 decision 5), so a view whose buffer was not
-// forwarded, or a runtime method that cached a raw pointer across an
-// allocation, does not merely risk being wrong — it reads relocated memory on
-// the very first churn iteration. Chunks 10 and 13 each shipped a rooting bug
-// that only this suite caught.
+// entire live set, so a view whose buffer was not forwarded, or a runtime
+// method that cached a raw pointer across an allocation, does not merely risk
+// being wrong — it reads relocated memory on the very first churn iteration.
+// Chunks 10 and 13 each shipped a rooting bug that only this suite caught.
 const held = new Float32Array(4);
 held[0] = 0.5;
 held[3] = 2.25;

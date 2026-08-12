@@ -68,10 +68,10 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
 
-    //    Objects move, shapes do not (docs/0004 decisions 2 and 3), so the
-    //    shape word is a stable identity to compare and the cached one needs
-    //    no GC fixup. Nothing between this load and the slot load below can
-    //    allocate, so there is no window for the object to move underneath.
+    // Objects move, shapes do not, so the shape word is a stable identity to
+    // compare and the cached one needs no GC fixup. Nothing between this load
+    // and the slot load below can allocate, so there is no window for the
+    // object to move underneath.
     llvm::Value* shapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                               BRONZE_ABI_OBJ_SHAPE_OFFSET);
     llvm::Value* shape = builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), "ic.shape");
@@ -79,16 +79,15 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateAlignedLoad(ptrTy, entry, llvm::Align(8), "ic.cached");
     llvm::Value* shapeOk = builder.CreateICmpEQ(shape, cachedShape);
 
-    //    `cached_slot` and `cached_depth` are adjacent u32s, so this one
-    //    word is (depth << 32) | slot and `< kInlineSlots` means BOTH
-    //    "depth 0, an own property" and "slot is inline". Depth is not
-    //    ignored here, it is half of the compare: a cache that remembered
-    //    the slot and forgot the depth would read an ancestor's slot off the
-    //    receiver and return a real string from the wrong object, which is
-    //    the bug docs/0008 decision 2 is written against and which
-    //    tests/oracle/cases/proto_chain.js and proto_chain_inline.js exist
-    //    to catch. Depth > 0 and overflow slots both fall to the helper,
-    //    which handles them exactly as it always has.
+    // `cached_slot` and `cached_depth` are adjacent u32s, so this one word is
+    // (depth << 32) | slot and `< kInlineSlots` means BOTH "depth 0, an own
+    // property" and "slot is inline". Depth is not ignored here, it is half of
+    // the compare: a cache that remembered the slot and forgot the depth would
+    // read an ancestor's slot off the receiver and return a real string from
+    // the wrong object, which is the bug the cached depth is written against
+    // and which tests/oracle/cases/proto_chain.js and proto_chain_inline.js
+    // exist to catch. Depth > 0 and overflow slots both fall to the helper,
+    // which handles them exactly as it always has.
     llvm::Value* slotWordPtr = builder.CreateConstInBoundsGEP1_32(
         i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_SLOTWORD_OFFSET / sizeof(uint64_t)));
     llvm::Value* slotWord =

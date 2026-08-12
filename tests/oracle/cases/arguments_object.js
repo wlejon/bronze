@@ -1,4 +1,4 @@
-// The `arguments` object (docs/0027 decision 3).
+// The `arguments` object.
 //
 // From ECMA-262 10.2.11 (FunctionDeclarationInstantiation), 10.4.4
 // (arguments exotic objects) and 15.3 (arrow functions):
@@ -20,11 +20,11 @@
 //    bound: a parameter of that name wins and no object exists.
 //
 // The writes below are pinned against CreateUnmappedArgumentsObject, the
-// UNMAPPED object: writing `arguments[0]` does not write the parameter.
-// bronze builds that object always, where a spec engine builds the mapped one
-// (10.2.11 step 21) for a non-strict function with a simple parameter list.
-// That is a deliberate, recorded divergence — argued in docs/0027 decision 3 —
-// and this file pins the unmapped answer the spec defines for it.
+// UNMAPPED object: writing `arguments[0]` does not write the parameter. bronze
+// builds that object always, where a spec engine builds the mapped one (10.2.11
+// step 21) for a non-strict function with a simple parameter list. That is a
+// deliberate divergence — and this file pins the unmapped answer the spec
+// defines for it.
 
 function count() {
   return arguments.length;

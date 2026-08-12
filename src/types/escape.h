@@ -7,8 +7,8 @@
 
 namespace bronze::types {
 
-// Decision 5's escape test: the set of names that appear anywhere in the
-// module in a position other than "callee of a call".
+// The escape test: the set of names that appear anywhere in the module in a
+// position other than "callee of a call".
 //
 // A module-level function whose name is not in this set has no unknown
 // callers, so joining the types seen at its call sites is a proof about

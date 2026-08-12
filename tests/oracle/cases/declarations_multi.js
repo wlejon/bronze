@@ -1,13 +1,13 @@
 // Several declarators in one declaration.
 //
 // Derived from ECMA-262 14.3.1: a LexicalDeclaration is `LetOrConst
-// BindingList`, and a BindingList is a comma-separated list of
-// LexicalBindings evaluated LEFT TO RIGHT. Each binding is its own binding —
-// they share only the keyword — so a later initializer sees an earlier
-// binding's value, and a `let` declarator with no Initializer is initialized
-// to undefined (14.3.1.2 step 2). `var` (14.3.2) and the `for` header
-// (14.7.4) take the same list; the header's semicolons are punctuation of the
-// `for` production, not statement terminators (docs/0014 decision 4).
+// BindingList`, and a BindingList is a comma-separated list of LexicalBindings
+// evaluated LEFT TO RIGHT. Each binding is its own binding — they share only
+// the keyword — so a later initializer sees an earlier binding's value, and a
+// `let` declarator with no Initializer is initialized to undefined (14.3.1.2
+// step 2). `var` (14.3.2) and the `for` header (14.7.4) take the same list; the
+// header's semicolons are punctuation of the `for` production, not statement
+// terminators.
 
 let a = 1, b = 2, c;
 console.log(a);

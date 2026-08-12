@@ -1,11 +1,11 @@
-// The RegExp object's own surface: the members a program reads off one, and
-// the array `exec` builds (docs/0024).
+// The RegExp object's own surface: the members a program reads off one, and the
+// array `exec` builds.
 //
-// Expectations derived from ECMA-262 22.2.6.5 (`flags`, and the order it
-// spells them in), 22.2.6.10 (`source` is the pattern text as written),
-// 22.2.6.9 (`lastIndex`), 22.2.7.2 (RegExpBuiltinExec: the match array, its
-// `index`, `input` and `groups`, and when `lastIndex` moves), 22.2.6.13
-// (`toString`), and docs/0013 for console.log's container format.
+// Expectations derived from ECMA-262 22.2.6.5 (`flags`, and the order it spells
+// them in), 22.2.6.10 (`source` is the pattern text as written), 22.2.6.9
+// (`lastIndex`), 22.2.7.2 (RegExpBuiltinExec: the match array, its `index`,
+// `input` and `groups`, and when `lastIndex` moves), 22.2.6.13 (`toString`),
+// and the inspect format for console.log's containers.
 const re = /ab+c/;
 console.log(re.source);
 console.log("[" + re.flags + "]");

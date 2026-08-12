@@ -10,9 +10,9 @@
 
 namespace bronze {
 
-// One live iteration (docs/0021 decision 2). Every construct that walks a
-// value — `for-of`, array spread, a rest element, array destructuring —
-// opens one of these, steps it, and closes it if it stops early.
+// One live iteration. Every construct that walks a value — `for-of`, array
+// spread, a rest element, array destructuring — opens one of these, steps it,
+// and closes it if it stops early.
 //
 // The record is a heap object rather than a C++ struct on the stack because
 // generated code holds it in a GC root slot across the loop body, and because
@@ -71,9 +71,9 @@ Value rtOpenIterator(Value source);
 // one never sees either.
 std::string rtIterableKindName(Value v);
 
-// The property key `Symbol.iterator` evaluates to (docs/0021 decision 1):
-// bronze has no symbol primitive, so the well-known symbol is the string
-// `"@@iterator"`, arena-interned so the property path allocates nothing.
+// The property key `Symbol.iterator` evaluates to: bronze has no symbol
+// primitive, so the well-known symbol is the string `"@@iterator"`,
+// arena-interned so the property path allocates nothing.
 StringHeader* rtIteratorKey();
 
 // Is this an own key that stands for a well-known symbol? Such a key is

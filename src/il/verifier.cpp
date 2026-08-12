@@ -68,12 +68,12 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             return false;
         }
 
-        // A handler is a real edge the backend materializes, and it is
-        // entered from the middle of a block — so it can carry no arguments,
-        // and there is therefore nowhere for a parameter's incoming value to
-        // come from (docs/0020 decision 3). Both halves are checked here
-        // because lowering is the only producer and a violation would surface
-        // as an LLVM phi with a missing incoming, which names nothing.
+        // A handler is a real edge the backend materializes, and it is entered
+        // from the middle of a block — so it can carry no arguments, and there
+        // is therefore nowhere for a parameter's incoming value to come from.
+        // Both halves are checked here because lowering is the only producer
+        // and a violation would surface as an LLVM phi with a missing incoming,
+        // which names nothing.
         if (block.handler != kNoBlock) {
             if (block.handler >= fn.blocks.size()) {
                 diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
@@ -94,9 +94,9 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             const auto& param = block.params[pIdx];
             // A block parameter is an SSA definition, so it needs a real type
             // for the incoming arguments to be checked against. `Void` is the
-            // default-constructed state and means the producer never filled
-            // it in — every argument would then have to be Void too, which
-            // no instruction produces (docs/0005 decision 1).
+            // default-constructed state and means the producer never filled it
+            // in — every argument would then have to be Void too, which no
+            // instruction produces.
             if (param.type == Type::Void) {
                 diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
                                         " parameter " + std::to_string(pIdx) + " has type void");
@@ -132,11 +132,11 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         return true;
     };
 
-    // Block arguments are the SSA join (docs/0005 decision 1), so they carry
-    // the same obligations as any other use: one argument per target block
-    // parameter, each a value defined somewhere, each of the parameter's
-    // type. An argument list that satisfies none of that becomes an LLVM phi
-    // incoming value, which is why this is a hard error rather than a lint.
+    // Block arguments are the SSA join, so they carry the same obligations as
+    // any other use: one argument per target block parameter, each a value
+    // defined somewhere, each of the parameter's type. An argument list that
+    // satisfies none of that becomes an LLVM phi incoming value, which is why
+    // this is a hard error rather than a lint.
     auto checkTarget = [&](const BlockTarget& target, size_t useBlockIdx, size_t useInstIdx) -> bool {
         if (target.block >= fn.blocks.size()) {
             diags.error(Span{}, "Function " + fn.name + ": branch target b" +
@@ -252,11 +252,10 @@ bool verify(const Module& module, DiagnosticSink& diags) {
     }
 
     // A closure's environment reaches it through the dynamic calling
-    // convention, which a direct `call` does not use — so a direct call to
-    // a function that needs an environment would enter it with garbage in
-    // the environment parameter (docs/0007 decision 3). Lowering routes
-    // every call to a closure through call.dynamic; this checks that rather
-    // than trusting it.
+    // convention, which a direct `call` does not use — so a direct call to a
+    // function that needs an environment would enter it with garbage in the
+    // environment parameter. Lowering routes every call to a closure through
+    // call.dynamic; this checks that rather than trusting it.
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
@@ -280,10 +279,10 @@ bool verify(const Module& module, DiagnosticSink& diags) {
         }
     }
 
-    // The IC table is a fixed-size global array in the generated object
-    // file (docs/0010 decision 7), so an icIndex past the module's site
-    // count is an out-of-bounds store into the object file's data, not a
-    // missed optimization. Named here rather than clamped in the backend.
+    // The IC table is a fixed-size global array in the generated object file,
+    // so an icIndex past the module's site count is an out-of-bounds store into
+    // the object file's data, not a missed optimization. Named here rather than
+    // clamped in the backend.
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {

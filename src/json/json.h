@@ -24,9 +24,9 @@
 namespace bronze::json {
 
 // The input is a sequence of UTF-16 CODE UNITS, because that is what a
-// JavaScript string is (docs/0004) and because `𝄞` is defined per
-// code unit: a lone surrogate is a legal JSON string element and re-encoding
-// through UTF-8 on the way in would either lose it or invent a replacement.
+// JavaScript string is and because `𝄞` is defined per code unit: a lone
+// surrogate is a legal JSON string element and re-encoding through UTF-8 on the
+// way in would either lose it or invent a replacement.
 using Units = std::u16string;
 using UnitsView = std::u16string_view;
 

@@ -1,4 +1,4 @@
-// `instanceof` and `in` (docs/0015 decisions 5 and 6).
+// `instanceof` and `in`.
 //
 // `instanceof` walks the LEFT operand's prototype chain and compares each
 // link against the right operand's `.prototype` (ECMA-262 7.3.22, with no

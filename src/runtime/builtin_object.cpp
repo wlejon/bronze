@@ -1,20 +1,19 @@
 // The `Object` namespace: property descriptors, freezing, and the four
-// whole-object copies (docs/0021 decisions 5 and 6).
+// whole-object copies.
 //
-// `Object` was not a value in bronze before this: docs/0009 decision 2
-// recognized `Object.keys(...)` at the CALL and made every other member a
-// compile error. That was the right answer while `keys` was the only member;
-// it does not survive a second one, because `Object.assign` and
-// `Object.defineProperty` would each need their own IL op and their own
-// arity check in lowering. So `Object` joins `Math` as an ordinary namespace
-// object resolved by name (docs/0011 decision 1), and `Object.keys` keeps its
-// instruction as a fast path over the SAME C++ function — one implementation,
-// so the two spellings cannot drift.
+// `Object` was not a value in bronze before this: `Object.keys(...)` was
+// recognized at the CALL and made every other member a compile error. That was
+// the right answer while `keys` was the only member; it does not survive a
+// second one, because `Object.assign` and `Object.defineProperty` would each
+// need their own IL op and their own arity check in lowering. So `Object` joins
+// `Math` as an ordinary namespace object resolved by name, and `Object.keys`
+// keeps its instruction as a fast path over the SAME C++ function — one
+// implementation, so the two spellings cannot drift.
 //
-// The descriptors themselves are decision 5: `writable` and `configurable`
-// live in the dictionary entry and nowhere else, so asking for either moves
-// the object out of its shape chain. That is what keeps the inline caches
-// out of this file entirely.
+// The descriptors themselves: `writable` and `configurable` live in the
+// dictionary entry and nowhere else, so asking for either moves the object out
+// of its shape chain. That is what keeps the inline caches out of this file
+// entirely.
 
 #include <string>
 #include <vector>
@@ -46,7 +45,7 @@ bool isCallable(Value v) {
 
 // The arena-interned name a descriptor field or a property key reaches the
 // dictionary under. Interning is not an optimization here: a DictEntry
-// outlives every collection, so a heap key would dangle (docs/0019 dec. 1).
+// outlives every collection, so a heap key would dangle.
 StringHeader* internOf(Value keyVal) {
     Rooted<Value> str{rtValueToString(keyVal)};
     return StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>());
@@ -470,7 +469,7 @@ uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // 20.1.2.7 Object.fromEntries — the inverse of `entries`, and the reason it
 // takes an ITERABLE rather than an array: `Object.fromEntries(map)` is how a
-// Map becomes a record, and that walk is the protocol (docs/0021 decision 2).
+// Map becomes a record, and that walk is the protocol.
 uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> out{Value(bronze_create_object())};
@@ -520,11 +519,10 @@ const NamespaceFn kObjectFunctions[] = {
     {"getOwnPropertyNames", objectGetOwnPropertyNames, 1},
 };
 
-// Real members of `Object` that bronze has not built (docs/0011 decision 3).
-// `prototype` is the load-bearing one: bronze has no `Object.prototype`
-// object, which is why `Object.getPrototypeOf({})` is a named error rather
-// than a `null` that would be indistinguishable from `Object.create(null)`'s
-// honest answer (docs/0022).
+// Real members of `Object` that bronze has not built. `prototype` is the
+// load-bearing one: bronze has no `Object.prototype` object, which is why
+// `Object.getPrototypeOf({})` is a named error rather than a `null` that would
+// be indistinguishable from `Object.create(null)`'s honest answer.
 const char* const kObjectUnimplemented[] = {
     "getOwnPropertyDescriptors",
     "getOwnPropertySymbols",

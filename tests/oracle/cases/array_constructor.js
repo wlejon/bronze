@@ -1,5 +1,5 @@
 // The global `Array` as a VALUE: the bare name denotes one object, and
-// everything below is a member of it or a fact about it (docs/0030 decision 2).
+// everything below is a member of it or a fact about it.
 //
 // From ECMA-262:
 //

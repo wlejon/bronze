@@ -34,8 +34,9 @@ struct LoopParts {
 };
 
 // Walks one function body in source order carrying `name -> Type`
-// (decision 3). Constructed fresh per pass; the `Scope` it works on outlives
-// it, because the env-backed cells have to survive the flow fixpoint.
+// flow-sensitively, per binding. Constructed fresh per pass; the `Scope` it
+// works on outlives it, because the env-backed cells have to survive the flow
+// fixpoint.
 class FlowAnalyzer final {
 public:
     FlowAnalyzer(ModuleContext& mod, Scope& scope, FunctionFacts& facts,
@@ -48,10 +49,10 @@ public:
 
     void runBody(const std::vector<const ast::Stmt*>& body) { stmtList(body, 0); }
 
-    // A parameter's default is CODE, evaluated in this function's scope on
-    // the calls that omit the argument. Skipping it would hide every call
-    // site inside it from the pass that widens callee signatures — the exact
-    // shape of an unsound proof (docs/0017 decision 9).
+    // A parameter's default is CODE, evaluated in this function's scope on the
+    // calls that omit the argument. Skipping it would hide every call site
+    // inside it from the pass that widens callee signatures — the exact shape
+    // of an unsound proof.
     void runParamDefaults(const std::vector<ast::Param>& params);
 
     Type inferredReturn(const std::vector<const ast::Stmt*>& body) const;
@@ -73,8 +74,7 @@ private:
     void patternDefaults(const ast::BindingPattern& pattern);
 
     // The names a pattern binds, all dynamic: they come out of an indexed or
-    // keyed read, and this pass proves nothing about element or property
-    // types (docs/0017 decision 9).
+    // keyed read, and this pass proves nothing about element or property types.
     void declarePattern(const ast::BindingPattern& pattern);
 
     // What a block-scoped statement list shadowed, so it can be put back.

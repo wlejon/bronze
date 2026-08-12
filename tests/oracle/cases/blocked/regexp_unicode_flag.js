@@ -2,14 +2,14 @@
 // matches per UTF-16 code unit)` and, behind it, `unsupported: unicode
 // property escapes `\p{...}` are not implemented`.
 //
-// Both are named at the literal by src/regex/parser.cpp, and they are one
-// piece of work rather than two. docs/0024 decided the matcher's alphabet is
-// the UTF-16 code unit, which is what 22.2.1 specifies WITHOUT `u`; the `u`
-// flag changes the alphabet to the code point, and with it: `.` and a
-// character class consume a surrogate PAIR as one character, AdvanceStringIndex
-// (22.2.7.3) steps by two units across one, `\u{...}` becomes spellable, a
-// range may span above U+FFFF, and the Annex B leniencies switch off so that
-// `{` and a lone `]` become syntax errors instead of literal characters.
+// Both are named at the literal by src/regex/parser.cpp, and they are one piece
+// of work rather than two. The matcher's alphabet is the UTF-16 code unit,
+// which is what 22.2.1 specifies WITHOUT `u`; the `u` flag changes the alphabet
+// to the code point, and with it: `.` and a character class consume a surrogate
+// PAIR as one character, AdvanceStringIndex (22.2.7.3) steps by two units
+// across one, `\u{...}` becomes spellable, a range may span above U+FFFF, and
+// the Annex B leniencies switch off so that `{` and a lone `]` become syntax
+// errors instead of literal characters.
 //
 // `\p{...}` is refused separately but lands with it: property escapes are only
 // legal in UnicodeMode, and each one needs a real table of Unicode General

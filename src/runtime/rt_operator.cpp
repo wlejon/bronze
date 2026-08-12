@@ -1,6 +1,6 @@
 // The operators whose meaning is an ALGORITHM rather than a machine
 // instruction: ToInt32, exponentiation, abstract (loose) equality, `typeof`,
-// `instanceof` and `in` (docs/0015).
+// `instanceof` and `in`.
 //
 // Each of these is a numbered sequence of steps in ECMA-262 that no single
 // target instruction implements. ToInt32 is the clearest case — `fptosi` is
@@ -142,20 +142,20 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     // Both operands are rooted before anything below allocates, and every
     // header is derived from a root AFTER the last allocation: the collector
     // moves objects, so a raw HeapObjectHeader* held across a call that can
-    // allocate points into dead from-space (docs/0006).
+    // allocate points into dead from-space.
     Rooted<Value> objRoot{Value(objBits)};
     Rooted<Value> ctorRoot{Value(ctorBits)};
     if (!isCallable(ctorRoot.get())) {
         rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
         return false;
     }
-    // `x instanceof Array` is IsArray(x), answered here rather than by the
-    // walk below (docs/0030 decision 5). The walk cannot answer it at all: an
-    // array carries no shape and therefore no prototype chain, so it would
-    // report false for every array, on one of the most common guards written
-    // in JS. The shortcut is EXACT and not an approximation, because bronze
-    // refuses `class X extends Array` (bronze_class_extends) — so there is no
-    // array in a bronze program whose chain would have made the two differ.
+    // `x instanceof Array` is IsArray(x), answered here rather than by the walk
+    // below. The walk cannot answer it at all: an array carries no shape and
+    // therefore no prototype chain, so it would report false for every array,
+    // on one of the most common guards written in JS. The shortcut is EXACT and
+    // not an approximation, because bronze refuses `class X extends Array`
+    // (bronze_class_extends) — so there is no array in a bronze program whose
+    // chain would have made the two differ.
     if (rtIsArrayConstructor(ctorRoot.get())) {
         return objRoot.get().isObject() &&
                objRoot.get().asObject<HeapObjectHeader>()->flags == 1;
@@ -202,10 +202,10 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     if (hdr->flags == 1) {  // Array
         auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (key == "length") return true;
-        // An index within the length is a key; one past the end is not,
-        // which is the whole reason `in` exists on an array. A HOLE is not
-        // one either — `delete a[1]` takes index 1 out of the own keys
-        // without moving `length` (docs/0019 decision 2).
+        // An index within the length is a key; one past the end is not, which
+        // is the whole reason `in` exists on an array. A HOLE is not one either
+        // — `delete a[1]` takes index 1 out of the own keys without moving
+        // `length`.
         return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
@@ -270,10 +270,10 @@ bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     if (aNum && b.isString()) return rtToNumber(a) == rtToNumber(b);
     if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
 
-    // What is left is an object against a primitive, which the language
-    // settles with ToPrimitive — valueOf then toString, neither of which
-    // bronze has an Object.prototype to find (docs/0008). Named rather than
-    // guessed at, on the same rule as ToString of an object.
+    // What is left is an object against a primitive, which the language settles
+    // with ToPrimitive — valueOf then toString, neither of which bronze has an
+    // Object.prototype to find. Named rather than guessed at, on the same rule
+    // as ToString of an object.
     fatal("'==' between an object and a primitive needs ToPrimitive, which is unsupported");
 }
 

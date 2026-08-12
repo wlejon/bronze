@@ -3,12 +3,12 @@
 namespace bronze::ast {
 namespace {
 
-// Both queries below are the same walk. `onlyInsideTry` is what separates
-// them: the sizing question ("what does this loop write?") wants every name,
-// and the memory question of docs/0020 decision 4 ("what cannot live in SSA?")
-// wants only the ones a handler could be entered in the middle of. One
-// traversal, because two copies of "which expression forms write a name"
-// would eventually disagree, and a disagreement is a missing join parameter.
+// Both queries below are the same walk. `onlyInsideTry` is what separates them:
+// the sizing question ("what does this loop write?") wants every name, and the
+// memory question ("what cannot live in SSA?") wants only the ones a handler
+// could be entered in the middle of. One traversal, because two copies of
+// "which expression forms write a name" would eventually disagree, and a
+// disagreement is a missing join parameter.
 class AssignedVisitor final : public Visitor {
 public:
     explicit AssignedVisitor(bool onlyInsideTry = false) : onlyInsideTry_(onlyInsideTry) {}

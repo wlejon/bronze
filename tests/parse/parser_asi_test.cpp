@@ -1,8 +1,8 @@
-// Automatic semicolon insertion (docs/0014) — the rule that decides where a
-// statement ends when the program did not say. The restricted productions are
-// the reason it cannot be "insert one wherever the parse would otherwise
-// fail": `return` followed by a line terminator returns undefined, and the
-// value on the next line becomes dead code.
+// Automatic semicolon insertion — the rule that decides where a statement ends
+// when the program did not say. The restricted productions are the reason it
+// cannot be "insert one wherever the parse would otherwise fail": `return`
+// followed by a line terminator returns undefined, and the value on the next
+// line becomes dead code.
 
 // The doctest main is parser_test.cpp's; every file here links into one
 // binary under the `parse` label, so the module's test command does not
@@ -28,8 +28,8 @@ static std::string parseAndDump(std::string_view src) {
 }
 
 TEST_CASE("automatic semicolon insertion supplies the terminators ECMA-262 does") {
-    // Insertion happens at a token on a later line, at a `}`, and at the end
-    // of input — and nowhere else (docs/0014).
+    // Insertion happens at a token on a later line, at a `}`, and at the end of
+    // input — and nowhere else.
     const auto newline = parseAndDump("let a = 1\nlet b = 2\n");
     CHECK(newline.substr(0, 7) != "ERRORS:");
     CHECK(newline.find("(let a") != std::string::npos);

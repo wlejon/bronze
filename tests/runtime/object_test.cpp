@@ -102,11 +102,11 @@ TEST_CASE("properties beyond the inline slots spill to the overflow block") {
     }
 }
 
-// docs/0032: the receiver's shape cannot see a property added to an object
-// BETWEEN the receiver and the holder, so a depth > 1 entry needs the epoch.
-// The oracle case pins the behaviour end to end; this pins the mechanism, so
-// that a change which quietly stops bumping fails in the module that owns it
-// rather than 300 s later in the three.js run.
+// The receiver's shape cannot see a property added to an object BETWEEN the
+// receiver and the holder, so a depth > 1 entry needs the epoch. The oracle
+// case pins the behaviour end to end; this pins the mechanism, so that a change
+// which quietly stops bumping fails in the module that owns it rather than 300
+// s later in the three.js run.
 TEST_CASE("an inline cache entry above depth 1 is invalidated by a prototype add") {
     NonMovingArena arena;
     Heap heap;
@@ -147,9 +147,8 @@ TEST_CASE("an inline cache entry above depth 1 is invalidated by a prototype add
 }
 
 // The other half of the same decision: an add to an object that is NOT a
-// prototype must not bump, or every proto cache in the program dies whenever
-// a loop constructs anything (docs/0032 decision 2 measured 40% on exactly
-// that shape).
+// prototype must not bump, or every proto cache in the program dies whenever a
+// loop constructs anything (measured at 40% on exactly that shape).
 TEST_CASE("an ordinary object's property add does not disturb proto caches") {
     NonMovingArena arena;
     Heap heap;

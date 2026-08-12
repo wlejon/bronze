@@ -1,9 +1,9 @@
-// docs/0010 decision 5: a module-level function whose name is only ever the
-// callee of a call has no unknown callers, so its parameter and return
-// types are joined over every call site and its calls become direct TYPED
-// calls. `fib` is the shape that motivated it — every site passes a number,
-// so the parameter, the return and the recursive call are all unboxed f64
-// with no box/unbox pair anywhere on the path.
+// A module-level function whose name is only ever the callee of a call has no
+// unknown callers, so its parameter and return types are joined over every call
+// site and its calls become direct TYPED calls. `fib` is the shape that
+// motivated it — every site passes a number, so the parameter, the return and
+// the recursive call are all unboxed f64 with no box/unbox pair anywhere on the
+// path.
 //
 // This case pins the behaviour by output rather than by IL: a typed call
 // that got the convention wrong would read the wrong register, and a `Never`

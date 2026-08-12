@@ -44,10 +44,10 @@ TEST_CASE("function with typed params, if/else, calls") {
           "      )\n"
           "    )\n"
           "  )\n"
-          // `export function f` records an export entry beside the
-          // declaration, because that is the one shape every export form
-          // reduces to — `export { a as b }` and `export ... from` cannot be
-          // spelled as a flag on a declaration (docs/0023).
+          // `export function f` records an export entry beside the declaration,
+          // because that is the one shape every export form reduces to —
+          // `export { a as b }` and `export... from` cannot be spelled as a
+          // flag on a declaration.
           "  (export\n"
           "    (name max as max)\n"
           "  )\n"
@@ -252,9 +252,9 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     const auto field = parseAndDump("class C { x = 1; }");
     CHECK(field.find("unsupported construct: class field") != std::string::npos);
 
-    // A class accessor is BUILT (docs/0019), so what is pinned here is that
-    // it parses as one member with an accessor head rather than as a method
-    // named `get`, and that the forms around it stay named.
+    // A class accessor is BUILT, so what is pinned here is that it parses as
+    // one member with an accessor head rather than as a method named `get`, and
+    // that the forms around it stay named.
     const auto getter = parseAndDump("class C { get x() { return 1; } }");
     CHECK(getter.substr(0, 7) != "ERRORS:");
     CHECK(getter.find("(get x") != std::string::npos);
@@ -281,10 +281,10 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     const auto computed = parseAndDump("class C { [k]() { return 1; } }");
     CHECK(computed.find("unsupported construct: computed method name") != std::string::npos);
 
-    // A generator method is BUILT for the straight-line subset (docs/0026),
-    // so what was pinned here as a refusal is now pinned as the desugaring:
-    // an ordinary method whose body returns an iterator object over a step
-    // index. No `yield` node reaches the AST.
+    // A generator method is BUILT for the straight-line subset, so what was
+    // pinned here as a refusal is now pinned as the desugaring: an ordinary
+    // method whose body returns an iterator object over a step index. No
+    // `yield` node reaches the AST.
     const auto gen = parseAndDump("class C { *each() { yield 1; } }");
     CHECK(gen.substr(0, 7) != "ERRORS:");
     CHECK(gen.find("(method each") != std::string::npos);
@@ -292,8 +292,8 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     CHECK(gen.find("(arrow-expr gen.0.next") != std::string::npos);
     CHECK(gen.find("(prop @@iterator") != std::string::npos);
 
-    // `*[Symbol.iterator]()` is the one computed member name bronze reads,
-    // and it names the property docs/0021 decision 1 made the protocol's.
+    // `*[Symbol.iterator]()` is the one computed member name bronze reads, and
+    // it names the string the protocol uses.
     const auto symbolIter = parseAndDump("class C { *[Symbol.iterator]() { yield this.x; } }");
     CHECK(symbolIter.substr(0, 7) != "ERRORS:");
     CHECK(symbolIter.find("(method @@iterator") != std::string::npos);

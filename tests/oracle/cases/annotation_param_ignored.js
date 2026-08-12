@@ -1,8 +1,7 @@
-// The live unsoundness docs/0010 named: `function f(x: number)` reached with
-// a string used to map straight onto an f64 parameter, so the call unboxed a
-// string as a double. An annotation is a hint (docs/0001 decision 4), and a
-// hint no proof backs is discarded — the program below is wild JS and must
-// run as wild JS.
+// The live unsoundness: `function f(x: number)` reached with a string used to
+// map straight onto an f64 parameter, so the call unboxed a string as a double.
+// An annotation is a hint, and a hint no proof backs is discarded — the program
+// below is wild JS and must run as wild JS.
 //
 // Two shapes of "no proof":
 //   add1 is direct-callable, but its call sites join Number with String, so

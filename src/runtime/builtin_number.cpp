@@ -1,4 +1,4 @@
-// The `Number` namespace (docs/0021 decision 7).
+// The `Number` namespace.
 //
 // Statics only. `Number.prototype.toFixed` and the rest of the wrapper
 // methods are NOT here: reaching them means a primitive number answering a
@@ -200,10 +200,10 @@ const char* const kNumberUnimplemented[] = {
 };
 
 // 19.2's function properties of the global object, by the name a free
-// identifier spells (docs/0011 decision 1). `parseInt` and `parseFloat` share
-// their code pointers with the `Number` statics, and `bronze_function_singleton`
-// interns by code pointer, so the two names denote ONE object — 21.1.2.12 and
-// 21.1.2.13 say exactly that ("the same function object").
+// identifier spells. `parseInt` and `parseFloat` share their code pointers with
+// the `Number` statics, and `bronze_function_singleton` interns by code
+// pointer, so the two names denote ONE object — 21.1.2.12 and 21.1.2.13 say
+// exactly that ("the same function object").
 const NamespaceFn kGlobalFunctions[] = {
     {"isNaN", globalIsNaN, 1},
     {"isFinite", globalIsFinite, 1},

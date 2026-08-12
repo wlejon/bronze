@@ -4,7 +4,7 @@
 //
 // ToString and ToNumber of an OBJECT are hard errors: both need ToPrimitive
 // (valueOf, then toString) and bronze has no Object.prototype to find either
-// on (docs/0008). Naming that beats guessing a number.
+// on. Naming that beats guessing a number.
 
 #include <charconv>
 #include <cmath>
@@ -190,8 +190,7 @@ double rtToNumber(Value v) {
 }
 
 // A canonical array index: the decimal form must round-trip, so "0" and "42"
-// qualify while "01", "1.0", "-1" and " 1" are ordinary string keys
-// (docs/0009 decision 1).
+// qualify while "01", "1.0", "-1" and " 1" are ordinary string keys.
 bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out) {
     if (key.empty() || key.size() > 10) return false;
     if (key.size() > 1 && key[0] == '0') return false;

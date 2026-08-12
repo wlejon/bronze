@@ -9,7 +9,7 @@
 namespace bronze::types {
 
 // Runs inference over a parsed module and returns the side table lowering
-// reads (docs/0010 decision 1). The AST is not mutated.
+// reads. The AST is not mutated.
 //
 // Failing to prove something is never a failure: it is a fallback to
 // `Dynamic`, which is the designed answer. `std::nullopt` means an internal

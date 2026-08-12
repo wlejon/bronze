@@ -1,6 +1,5 @@
 // Linking: what each file exports, what each file's imported names actually
-// name, and the one flat namespace all of it is renamed into (docs/0023
-// decision 1).
+// name, and the one flat namespace all of it is renamed into.
 //
 // The central claim this file has to make true is that an import binding is a
 // LIVE VIEW and not a copy. It makes it true by not creating a binding at
@@ -88,8 +87,8 @@ private:
     bool resolveExport(uint16_t moduleId, const std::string& name, Span span,
                        DiagnosticSink* report, uint16_t& outModule, std::string& outLocal);
     bool addExport(ModuleFile& file, const std::string& exported, ExportEntry entry);
-    // `const <ns> = { get "a"() { return <canonical a>; }, ... };` built by
-    // generating source and parsing it (docs/0023 decision 4).
+    // `const <ns> = { get "a"() { return <canonical a>; },... };` built by
+    // generating source and parsing it.
     ast::StmtPtr synthesizeNamespace(uint16_t owner, const std::string& local, uint16_t target);
 
     Graph& graph_;
@@ -396,11 +395,11 @@ bool Linker::run(ast::Module& out) {
         }
     }
 
-    // The merge. Evaluation order is the post-order of the load, so a
-    // module's statements run after everything it imports — which is ES
-    // semantics for module bodies, and graph-wide function hoisting comes
-    // free, because `lower()` lifts every top-level FunctionDecl out of the
-    // statement list before it lowers any body (docs/0016 decision 1).
+    // The merge. Evaluation order is the post-order of the load, so a module's
+    // statements run after everything it imports — which is ES semantics for
+    // module bodies, and graph-wide function hoisting comes free, because
+    // `lower()` lifts every top-level FunctionDecl out of the statement list
+    // before it lowers any body.
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         for (const auto& ns : info_[id].namespaceLocals) {

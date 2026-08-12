@@ -1,6 +1,6 @@
 // Array.prototype. Every entry is an ordinary function object over a native
-// code pointer (docs/0011 decision 2), handed out by the property path in
-// rt_helpers.cpp before it consults the unimplemented-member table.
+// code pointer, handed out by the property path in rt_helpers.cpp before it
+// consults the unimplemented-member table.
 //
 // Two rules govern everything here:
 //
@@ -41,8 +41,8 @@ bool isArray(Value v) {
 
 // True when the method may proceed. ECMA-262 defines every Array.prototype
 // method over an array-like via ToObject, so a non-array receiver is a
-// TypeError — catchable since docs/0020, which is why this reports a verdict
-// instead of ending the process.
+// TypeError — catchable, which is why this reports a verdict instead of ending
+// the process.
 bool requireArray(Value v, const char* method) {
     if (isArray(v)) return true;
     rtThrowTypeError(std::string("Array.prototype.") + method +
@@ -110,13 +110,12 @@ bool requireCallable(Value v, const char* method) {
     return false;
 }
 
-// Whether index `i` is an OWN property of the receiver. `delete a[i]` leaves
-// a HOLE (docs/0019 decision 2), and every method ECMA-262 defines in terms
-// of HasProperty must skip one rather than visit it as `undefined` — the
-// difference between `[1, , 3].forEach(f)` calling `f` twice and calling it
-// three times. Deliberately not every method: `find`, `includes`, `join` and
-// `at` are defined with Get, so for them a hole IS `undefined` and the loops
-// below stay as they are.
+// Whether index `i` is an OWN property of the receiver. `delete a[i]` leaves a
+// HOLE, and every method ECMA-262 defines in terms of HasProperty must skip one
+// rather than visit it as `undefined` — the difference between `[1,,
+// 3].forEach(f)` calling `f` twice and calling it three times. Deliberately not
+// every method: `find`, `includes`, `join` and `at` are defined with Get, so
+// for them a hole IS `undefined` and the loops below stay as they are.
 bool hasIndex(Value self, uint32_t i) {
     return !isArray(self) || self.asObject<ArrayHeader>()->hasElem(i);
 }
@@ -366,7 +365,7 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         callBack(fn, thisArg, elem, i, self);
         // The callback is user code and may have thrown. No generated check
         // runs inside this loop, so visiting the next element would be the
-        // runtime carrying on past an exception (docs/0020 decision 6).
+        // runtime carrying on past an exception.
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return Value::fromUndefined().rawBits();
@@ -528,10 +527,10 @@ struct ArrayMethod {
     uint32_t arity;
 };
 
-// Arity is the count a short call is PADDED to with undefined, so the
-// variadic entries declare 0 to see their real argc (docs/0011 decision 2).
-// It is not the ECMA-262 `length` of these functions, which bronze does not
-// expose — `Function.prototype.length` is a diagnosed unimplemented member.
+// Arity is the count a short call is PADDED to with undefined, so the variadic
+// entries declare 0 to see their real argc. It is not the ECMA-262 `length` of
+// these functions, which bronze does not expose — `Function.prototype.length`
+// is a diagnosed unimplemented member.
 const ArrayMethod kArrayMethods[] = {
     {"at", arrayAt, 1},
     {"concat", arrayConcat, 0},

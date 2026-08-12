@@ -1,14 +1,13 @@
-// console.log of a container, in the format docs/0013 pins: node's
-// util.inspect, on one line. Strings are quoted INSIDE a container and raw
-// at the top level; keys come out in the language's order (docs/0009);
-// nesting past depth 2 collapses to [Array] / [Object]; a cycle is marked
-// rather than followed, which is the difference between this output and a
-// hang.
+// console.log of a container, in the pinned inspect format: node's
+// util.inspect, on one line. Strings are quoted INSIDE a container and raw at
+// the top level; keys come out in the language's order; nesting past depth 2
+// collapses to [Array] / [Object]; a cycle is marked rather than followed,
+// which is the difference between this output and a hang.
 //
-// The last three lines pin a documented DIVERGENCE from node (docs/0013
-// decision 3): nothing in the runtime carries a name, so a function prints
-// `[Function]` and an instance prints its properties without its class
-// name. When names land, this file's expectation gains them.
+// The last three lines pin a documented DIVERGENCE from node: nothing in the
+// runtime carries a name, so a function prints `[Function]` and an instance
+// prints its properties without its class name. When names land, this file's
+// expectation gains them.
 console.log([1, 2, 3]);
 console.log([]);
 console.log({});

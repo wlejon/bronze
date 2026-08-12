@@ -1,7 +1,7 @@
 // A two-link chain: `d.kind` is not on the instance and not on
-// Derived.prototype either — it is one more link up, on Base.prototype.
-// The IC caches the depth it walked, so the second lookup is a shape
-// compare plus two pointer chases (docs/0008 decision 2).
+// Derived.prototype either — it is one more link up, on Base.prototype. The IC
+// caches the depth it walked, so the second lookup is a shape compare plus two
+// pointer chases.
 function Base() {}
 Base.prototype.kind = "base";
 Base.prototype.describe = function () {

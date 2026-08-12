@@ -247,7 +247,7 @@ void Heap::forward_value(Value& val) {
     // hashes an object by its address is wrong from this line onward, and
     // putting the increment at the end of `collect()` instead would make that
     // invalidation depend on a cycle completing rather than on an object
-    // actually moving (docs/0022).
+    // actually moving.
     ++relocations_;
     auto* new_hdr = reinterpret_cast<HeapObjectHeader*>(new_mem);
 
@@ -289,8 +289,8 @@ void Heap::collect() {
         }
     }
 
-    // Generated code's root frames (docs/0006): contiguous slot arrays in
-    // compiled functions' own stack frames, linked inline by compiled code.
+    // Generated code's root frames: contiguous slot arrays in compiled
+    // functions' own stack frames, linked inline by compiled code.
     for (bronze_gc_frame* frame = bronze_gc_frame_top; frame != nullptr; frame = frame->prev) {
         Value* slots = reinterpret_cast<Value*>(frame->slots);
         for (uint64_t i = 0; i < frame->count; ++i) {

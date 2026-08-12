@@ -1,4 +1,4 @@
-// `for-in`, as a snapshot of the keys it will visit (docs/0018 decision 1).
+// `for-in`, as a snapshot of the keys it will visit.
 //
 // The list is built ONCE, before the first iteration, and the loop then walks
 // it like any other array. That is what makes the loop itself nothing more
@@ -9,8 +9,8 @@
 //
 // What the walk collects is own AND INHERITED enumerable string keys, level by
 // level from the receiver up its prototype chain, each key visited once even
-// where several levels define it. Per level the order is docs/0009's: integer
-// -like keys ascending, then the rest in insertion order.
+// where several levels define it. Per level the order is own-enumerable order:
+// integer -like keys ascending, then the rest in insertion order.
 
 #include <charconv>
 #include <string>
@@ -66,9 +66,9 @@ bool indexedLength(Value v, uint32_t& outLength) {
 }
 
 // The plain object a receiver's named properties live on: itself, or — for a
-// function — its own-property object, which is where a static member is
-// stored and whose prototype `extends` linked to the base's (docs/0012
-// decision 6). Null when the receiver keeps no named properties at all.
+// function — its own-property object, which is where a static member is stored
+// and whose prototype `extends` linked to the base's. Null when the receiver
+// keeps no named properties at all.
 ObjectHeader* namedPropertyHolder(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
@@ -106,11 +106,11 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         // invalidate it; the source is rooted anyway, because the array of
         // digit strings is built one allocation at a time.
         Rooted<Value> src{v};
-        // An array index that a `delete` turned into a HOLE is no longer an
-        // own property, so the enumeration skips it — 14.7.5.6 visits own
-        // keys, and a hole is not one (docs/0019 decision 2). The result is
-        // therefore not simply `0..indexCount-1`, which is why the length is
-        // left to the writes below rather than set up front.
+        // An array index that a `delete` turned into a HOLE is no longer an own
+        // property, so the enumeration skips it — 14.7.5.6 visits own keys, and
+        // a hole is not one. The result is therefore not simply
+        // `0..indexCount-1`, which is why the length is left to the writes
+        // below rather than set up front.
         //
         // Asked BEFORE the allocation below, and of the ROOT: a plain `v`
         // read afterwards is a pointer into dead from-space, which under
@@ -138,10 +138,9 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     ObjectHeader* holder = namedPropertyHolder(v);
     if (!holder) return emptyKeyArray();
 
-    // Phase one collects only arena-interned shape keys, which are immortal
-    // and non-moving (docs/0004 decision 2). That is what lets the whole chain
-    // be walked before a single allocation happens: no raw object pointer here
-    // has to survive one.
+    // Phase one collects only arena-interned shape keys, which are immortal and
+    // non-moving. That is what lets the whole chain be walked before a single
+    // allocation happens: no raw object pointer here has to survive one.
     std::vector<StringHeader*> keys;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
         for (StringHeader* key : rtOwnKeysOrdered(holder)) {

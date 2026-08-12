@@ -1,5 +1,4 @@
-// Patterns that contain patterns, and patterns in a for-of head (docs/0017
-// decisions 4 and 6).
+// Patterns that contain patterns, and patterns in a for-of head.
 //
 // A nested pattern is destructured from the value the enclosing element
 // produced, defaults included — so in `{ q: { w = 1 } = {} }` the missing
@@ -12,8 +11,7 @@
 // fires only for the record that omits the key.
 //
 // The object rest at the end also pins enumeration order — `{ b: 2, c: 3 }`
-// keeps insertion order (docs/0009 decision 1), and `a` is excluded because
-// the pattern named it.
+// keeps insertion order, and `a` is excluded because the pattern named it.
 const { a: { b: [c, { d = 4 }] } } = { a: { b: [3, {}] } };
 console.log(c + ":" + d);
 const [[x1, y1], [x2, y2]] = [[1, 2], [3, 4]];

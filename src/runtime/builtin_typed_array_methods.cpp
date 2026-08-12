@@ -1,16 +1,16 @@
 // `%TypedArray%.prototype` — the methods three.js actually calls, plus the
-// `Array.prototype`-shaped ones a program needs to walk a view (docs/0029
-// decision 4). One implementation each, over any element kind: every read and
-// write goes through `TypedArrayHeader::get`/`set`, so the nine views share
-// these bodies exactly as they share their header.
+// `Array.prototype`-shaped ones a program needs to walk a view. One
+// implementation each, over any element kind: every read and write goes through
+// `TypedArrayHeader::get`/`set`, so the nine views share these bodies exactly
+// as they share their header.
 //
-// The rule that governs every function here is docs/0029 decision 1's: the
-// bytes of a view live in a buffer the collector MOVES, so a raw `uint8_t*`
-// or a `TypedArrayHeader*` is valid only until the next allocation. Every
-// loop below that can allocate — the two that call back into user code — re-
-// derives its pointers from a root on each step. The ones that cannot are
-// marked as such, because "this one is safe" is a claim that needs saying out
-// loud next to code that looks identical to the ones that are not.
+// The rule that governs every function here: the bytes of a view live in a
+// buffer the collector MOVES, so a raw `uint8_t*` or a `TypedArrayHeader*` is
+// valid only until the next allocation. Every loop below that can allocate —
+// the two that call back into user code — re- derives its pointers from a root
+// on each step. The ones that cannot are marked as such, because "this one is
+// safe" is a claim that needs saying out loud next to code that looks identical
+// to the ones that are not.
 
 #include <algorithm>
 #include <cmath>
@@ -89,7 +89,7 @@ void relativeArg(Value v, uint32_t len, uint32_t& out, uint32_t fallback) {
 // A fresh view of the same element kind and a length of its own — what
 // TypedArraySpeciesCreate produces for `slice` and `map` once the species
 // machinery is stripped out (bronze has no `Symbol.species`, which is a named
-// divergence in docs/0029 rather than something these methods paper over).
+// deliberate divergence rather than something these methods paper over).
 Value newViewLike(Value model, uint32_t length) {
     return Value::fromObject(TypedArrayHeader::create(rtHeap(), kindOf(model), length));
 }
@@ -249,10 +249,10 @@ uint64_t taCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     return self.get().rawBits();
 }
 
-// 23.2.3.15 forEach and 23.2.3.21 map. These two are the only methods here
-// that call back into user code, so they are the only ones whose loops can
-// collect — hence the re-derivation on every step, and the pending-exception
-// test that stops the walk at the first throw (docs/0020 decision 6).
+// 23.2.3.15 forEach and 23.2.3.21 map. These two are the only methods here that
+// call back into user code, so they are the only ones whose loops can collect —
+// hence the re-derivation on every step, and the pending-exception test that
+// stops the walk at the first throw.
 uint64_t taForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
@@ -361,18 +361,18 @@ uint64_t taJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
 // ---- the iterator object (23.2.3.34 / 23.2.5.4) -----------------------------
 //
 // `for-of` and spread never reach this: `rtOpenIterator` recognises a typed
-// array and walks it with a cursor, no iterator object at all (docs/0021
-// decision 2). What this exists for is a program that reads
-// `v[Symbol.iterator]` and drives it by hand, which must get the same values.
+// array and walks it with a cursor, no iterator object at all. What this exists
+// for is a program that reads `v[Symbol.iterator]` and drives it by hand, which
+// must get the same values.
 
 StringHeader* internKey(const char* text) {
     StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
     return StringHeader::internToArena(rtArena(), tmp);
 }
 
-// `@@`-prefixed so the enumerability rule of docs/0021 decision 1 hides them:
-// an iterator prints as `{}` and `Object.keys` of one is empty, which is what
-// a real internal slot would do.
+// `@@`-prefixed so the enumerability rule for well-known symbol keys hides
+// them: an iterator prints as `{}` and `Object.keys` of one is empty, which is
+// what a real internal slot would do.
 StringHeader* keyTarget() {
     static StringHeader* k = internKey("@@taTarget");
     return k;

@@ -3,29 +3,27 @@
 // Derived from ECMA-262 13.3.9 (Optional Chains) and 13.3.1 (the Member
 // Access grammar):
 //
-// 1. An OptionalExpression evaluates its base once. If the base is undefined
-//    or null, the ENTIRE OptionalChain to its right is skipped and the result
-//    is undefined — the chain is one syntactic unit, not a sequence of
-//    independent tests. So `nn?.b.c.d` is undefined; the `.c` and `.d` links
-//    never run and never see the undefined that `nn?.b` would have produced.
-// 2. Skipping is skipping, not evaluating-and-discarding: the arguments of a
-//    skipped call and the key expression of a skipped `?.[k]` are never
-//    evaluated. `evals` below is the witness.
-// 3. Short-circuiting is on NULLISH, not on falsy. `""` is not nullish, so
-//    `empty?.length` reads and gives 0, where `nn?.length` gives undefined.
-//    The two answers differ, which is what makes the distinction observable.
-//    (`0?.x` is likewise a real read, but Number.prototype has no `x`, so it
-//    also lands on undefined and pins nothing extra.)
-// 4. Parentheses end a chain: `(o?.a).b` is a NEW MemberExpression whose base
-//    happens to be a parenthesized optional expression, so `.b` is an
-//    ordinary access that does not inherit the short circuit. With a
-//    non-nullish `o` that is invisible, which is what this case pins. With a
-//    nullish one the spec says `.b` throws a TypeError — bronze diagnoses it
-//    as a hard runtime error, and it stays unpinned here because there is no
-//    `try` yet to catch it (docs/0018 decision 9).
-// 5. `a.b?.()` is still a method call: 13.3.9.1 evaluates the base as a
-//    Reference and passes its base value as the `this` argument, so the
-//    optional link does not silently turn a method into a bare function.
+// 1. An OptionalExpression evaluates its base once. If the base is undefined or
+// null, the ENTIRE OptionalChain to its right is skipped and the result is
+// undefined — the chain is one syntactic unit, not a sequence of independent
+// tests. So `nn?.b.c.d` is undefined; the `.c` and `.d` links never run and
+// never see the undefined that `nn?.b` would have produced. 2. Skipping is
+// skipping, not evaluating-and-discarding: the arguments of a skipped call and
+// the key expression of a skipped `?.[k]` are never evaluated. `evals` below is
+// the witness. 3. Short-circuiting is on NULLISH, not on falsy. `""` is not
+// nullish, so `empty?.length` reads and gives 0, where `nn?.length` gives
+// undefined. The two answers differ, which is what makes the distinction
+// observable. (`0?.x` is likewise a real read, but Number.prototype has no `x`,
+// so it also lands on undefined and pins nothing extra.) 4. Parentheses end a
+// chain: `(o?.a).b` is a NEW MemberExpression whose base happens to be a
+// parenthesized optional expression, so `.b` is an ordinary access that does
+// not inherit the short circuit. With a non-nullish `o` that is invisible,
+// which is what this case pins. With a nullish one the spec says `.b` throws a
+// TypeError — bronze diagnoses it as a hard runtime error, and it stays
+// unpinned here because there is no `try` yet to catch it. 5. `a.b?.()` is
+// still a method call: 13.3.9.1 evaluates the base as a Reference and passes
+// its base value as the `this` argument, so the optional link does not silently
+// turn a method into a bare function.
 const obj = { a: { b: { c: 7 } }, n: null, f: function () { return "called"; } };
 console.log(obj?.a?.b?.c);
 console.log(obj.n?.b);

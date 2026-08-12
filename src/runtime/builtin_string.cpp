@@ -3,13 +3,13 @@
 // it consults the unimplemented-member table, and every one of them opens
 // with the RootedArgs prologue (rt_internal.h).
 //
-// Strings are immutable (docs/0004), so every member here allocates a fresh
-// string and none of them can work in place. They are also stored in one of
-// two representations — Latin-1 or UTF-16 — so the shared currency below is
-// a vector of UTF-16 code units, rebuilt into whichever representation fits
-// the result. That is a copy per operation, and it is the honest starting
-// point: a representation-specialized fast path is worth writing when a
-// benchmark asks for one, not before.
+// Strings are immutable, so every member here allocates a fresh string and none
+// of them can work in place. They are also stored in one of two representations
+// — Latin-1 or UTF-16 — so the shared currency below is a vector of UTF-16 code
+// units, rebuilt into whichever representation fits the result. That is a copy
+// per operation, and it is the honest starting point: a
+// representation-specialized fast path is worth writing when a benchmark asks
+// for one, not before.
 //
 // Where a correct answer needs Unicode tables bronze does not carry (case
 // mapping past ASCII) the call is a hard error naming itself, never a
@@ -45,10 +45,10 @@ Value stringFromUnits(const Units& units) { return rtStringFromUnits(units); }
 Units thisUnits(Value self, const char* method) {
     if (!self.isString()) {
         // 22.1.3's RequireObjectCoercible plus ToString: a String.prototype
-        // method reached with a non-string `this` is a TypeError, and since
-        // docs/0020 a catchable one. The empty unit sequence is what the
-        // caller then computes over, and its result is discarded — the cell
-        // is already set, so its caller's test fires before the value is read.
+        // method reached with a non-string `this` is a TypeError, and since a
+        // catchable one. The empty unit sequence is what the caller then
+        // computes over, and its result is discarded — the cell is already set,
+        // so its caller's test fires before the value is read.
         rtThrowTypeError(std::string("String.prototype.") + method +
                          " called on a value that is not a string");
         return Units{};
@@ -87,9 +87,8 @@ uint32_t clampIndex(double v, size_t len) {
     return static_cast<uint32_t>(v);
 }
 
-// ECMA-262 WhiteSpace + LineTerminator, which is what trim strips — a
-// wider set than isspace(), and one that must not depend on a locale
-// (docs/0001 decision 10).
+// ECMA-262 WhiteSpace + LineTerminator, which is what trim strips — a wider set
+// than isspace(), and one that must not depend on a locale.
 bool isTrimmable(uint16_t u) {
     switch (u) {
         case 0x0009: case 0x000A: case 0x000B: case 0x000C: case 0x000D:
@@ -466,9 +465,9 @@ Value rtStringMethod(const std::string& key) {
     for (const StringMethod& m : kStringMethods) {
         if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
     }
-    // The members that take a PATTERN live in their own translation unit
-    // (docs/0024), and this is the one table a property read consults, so the
-    // split between the two files is invisible to a program.
+    // The members that take a PATTERN live in their own translation unit, and
+    // this is the one table a property read consults, so the split between the
+    // two files is invisible to a program.
     return rtStringPatternMethod(key);
 }
 

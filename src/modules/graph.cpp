@@ -1,7 +1,7 @@
 // Reading the graph: one file at a time, each parsed exactly once, following
 // specifiers depth-first in source order. What comes out is a post-order —
-// dependencies before dependents, entry last — which is the ES evaluation
-// order once cycles are out of the picture (docs/0023 decision 2).
+// dependencies before dependents, entry last — which is the ES evaluation order
+// once cycles are out of the picture.
 
 #include <fstream>
 #include <sstream>

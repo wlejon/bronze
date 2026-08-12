@@ -8,11 +8,11 @@ namespace {
 
 // The shortest text that round-trips to this double, which is what the IL
 // printer already uses. `ostringstream <<` was neither: its default precision
-// is six significant digits, so `1000000` dumped as `1e+06` and `123.4567`
-// as `123.457` — two different literals could dump identically, in the one
+// is six significant digits, so `1000000` dumped as `1e+06` and `123.4567` as
+// `123.457` — two different literals could dump identically, in the one
 // artefact the parser's tests compare. It also reads the stream's locale for
-// the decimal point, which the determinism rule (docs/0001) forbids outright
-// on an output path, and `bronze parse` prints this to stdout.
+// the decimal point, which the determinism rule forbids outright on an output
+// path, and `bronze parse` prints this to stdout.
 std::string formatNumber(double v) {
     char buf[32];
     const auto res = std::to_chars(buf, buf + sizeof(buf), v);
@@ -65,11 +65,10 @@ public:
     }
     void visit(const NewExpr& n) override {
         // A bare NAME prints on the head line, the way a member access prints
-        // its property: it is the form whose constructor identity inference
-        // can still recover (docs/0025 decision 3), and seeing that at a
-        // glance is the point of the dump. Any other callee prints as the
-        // first child, so a mis-grouped `new a.b().c` cannot look like a
-        // correctly grouped `new a.b.c()`.
+        // its property: it is the form whose constructor identity inference can
+        // still recover, and seeing that at a glance is the point of the dump.
+        // Any other callee prints as the first child, so a mis-grouped `new
+        // a.b().c` cannot look like a correctly grouped `new a.b.c()`.
         const auto* ident = dynamic_cast<const Ident*>(n.callee.get());
         emit(ident != nullptr ? "(new " + ident->name : "(new");
         indented([&] {
@@ -84,11 +83,10 @@ public:
             for (const auto& p : n.props) {
                 // A computed key is a runtime ToPropertyKey of an evaluated
                 // expression and a written one is a compile-time constant, so
-                // the two must not dump the same (docs/0012 decision 3).
-                // A CoverInitializedName is only ever a pattern; it dumps
-                // under its own head so it is not mistaken for the object
-                // literal `{ x: x = 1 }`, which is a legal program that
-                // means something else entirely.
+                // the two must not dump the same. A CoverInitializedName is
+                // only ever a pattern; it dumps under its own head so it is not
+                // mistaken for the object literal `{ x: x = 1 }`, which is a
+                // legal program that means something else entirely.
                 const bool spread =
                     dynamic_cast<const SpreadElement*>(p.value.get()) != nullptr;
                 // An accessor half dumps under its own head: `get x` and

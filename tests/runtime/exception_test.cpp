@@ -1,5 +1,4 @@
-// The pending-exception cell and the `Error` family, below the compiler
-// (docs/0020).
+// The pending-exception cell and the `Error` family, below the compiler.
 //
 // The oracle cases pin only what ECMA-262 fixes — which constructor, which
 // order, which value — because an oracle expectation is supposed to be
@@ -47,10 +46,10 @@ std::string textOf(Value v) {
 }  // namespace
 
 TEST_CASE("the empty cell is the Hole singleton, and generated code agrees") {
-    // Generated code compares the cell against this constant inline, so the
-    // two spellings of "nothing pending" have to be one value. A Hole is
-    // never user-visible (docs/0004 decision 1), which is what makes it
-    // usable as the sentinel: no program can throw one.
+    // Generated code compares the cell against this constant inline, so the two
+    // spellings of "nothing pending" have to be one value. A Hole is never
+    // user-visible, which is what makes it usable as the sentinel: no program
+    // can throw one.
     CHECK(Value::fromHole().rawBits() == BRONZE_ABI_NO_EXCEPTION_BITS);
     CHECK(bronze_exception_cell == BRONZE_ABI_NO_EXCEPTION_BITS);
     CHECK_FALSE(rtExceptionPending());
@@ -60,9 +59,9 @@ TEST_CASE("a raise sets the cell and returns undefined") {
     ShadowStackFrame frame;
     ClearCell guard;
 
-    // Every raise helper returns `undefined` rather than anything else,
-    // because the caller stores the result into a GC root slot before it
-    // tests the cell (docs/0020 decision 2).
+    // Every raise helper returns `undefined` rather than anything else, because
+    // the caller stores the result into a GC root slot before it tests the
+    // cell.
     const Value returned = rtThrowTypeError("boom");
     CHECK(returned.isUndefined());
     CHECK(rtExceptionPending());
@@ -93,9 +92,9 @@ TEST_CASE("the error classes are distinct objects with a shared root") {
     CHECK(error.get().rawBits() != rangeError.get().rawBits());
     CHECK(typeError.get().rawBits() != rangeError.get().rawBits());
 
-    // `ReferenceError` was NOT a class here until docs/0027 decision 1 gave
-    // bronze something to raise one for: an unresolvable name, evaluated. It
-    // needs its own code pointer for the same reason the others do.
+    // `ReferenceError` was NOT a class here until bronze had something to raise
+    // one for: an unresolvable name, evaluated. It needs its own code pointer
+    // for the same reason the others do.
     CHECK(referenceError.get().rawBits() != error.get().rawBits());
     CHECK(referenceError.get().rawBits() != typeError.get().rawBits());
     CHECK(referenceError.get().rawBits() != rangeError.get().rawBits());

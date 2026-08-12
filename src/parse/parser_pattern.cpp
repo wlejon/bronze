@@ -1,6 +1,6 @@
-// Binding patterns (docs/0017): the `[a, b]` and `{ x, y: z }` forms wherever
-// the grammar spells a binding, and the cover-grammar refinement that turns an
-// array or object LITERAL into the pattern a destructuring assignment meant.
+// Binding patterns: the `[a, b]` and `{ x, y: z }` forms wherever the grammar
+// spells a binding, and the cover-grammar refinement that turns an array or
+// object LITERAL into the pattern a destructuring assignment meant.
 //
 // A pattern is written the same way in every position, so there is one parser
 // for it and not four; what differs between the positions is only what the

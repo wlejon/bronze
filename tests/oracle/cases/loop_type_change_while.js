@@ -1,7 +1,6 @@
-// A `while` loop whose back edge changes a binding's type. The loop
-// header's binding for `x` is a number on the entry edge and a string on
-// the back edge, so neither edge's type describes the merge (docs/0005
-// decision 2, docs/0010 decision 3).
+// A `while` loop whose back edge changes a binding's type. The loop header's
+// binding for `x` is a number on the entry edge and a string on the back edge,
+// so neither edge's type describes the merge.
 let x = 1;
 let more = true;
 while (more) {

@@ -11,15 +11,15 @@ namespace bronze::types {
 // second, independent implementation: lowering decides the same question when
 // it picks an IL op and a block-parameter type, and the two answers have to
 // agree exactly or the inferred run and the `--no-infer` run disagree about a
-// join (docs/0010 decision 8). A rule that lives in one named place can be
-// read against lowering; a rule spread through a walker cannot.
+// join. A rule that lives in one named place can be read against lowering; a
+// rule spread through a walker cannot.
 //
 // Nothing here evaluates anything: the operands' effects are the walker's
 // business, and every function below is total on the lattice.
 
-// ⊥ in, ⊥ out: an operand no value has reached yet cannot produce one. This
-// is what lets a recursive function read its own not-yet-known return type
-// without the estimate jumping straight to `Dynamic` (docs/0010 decision 5).
+// ⊥ in, ⊥ out: an operand no value has reached yet cannot produce one. This is
+// what lets a recursive function read its own not-yet-known return type without
+// the estimate jumping straight to `Dynamic`.
 Type withBottom(Type operand, Type result);
 Type withBottom(Type a, Type b, Type result);
 

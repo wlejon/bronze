@@ -1,11 +1,11 @@
 // Enumeration order once a delete has taken the shape chain away from it
-// (docs/0019 decision 1, completing docs/0009 decision 1).
+// (completing).
 //
-// docs/0009 recovers own-key order from the shape transition chain, which is
-// already a list of the properties in insertion order and costs nothing to
-// walk. A delete cannot remove a node from that chain — shapes are shared —
-// so the object moves to a table it owns, and the table has to reproduce
-// every rule the chain gave for free:
+// Own-key order is recovered from the shape transition chain, which is already
+// a list of the properties in insertion order and costs nothing to walk. A
+// delete cannot remove a node from that chain — shapes are shared — so the
+// object moves to a table it owns, and the table has to reproduce every rule
+// the chain gave for free:
 //
 // 1. THE KEYS THAT REMAIN KEEP THEIR RELATIVE ORDER. A delete from the
 //    middle closes up; it does not reshuffle.
@@ -21,8 +21,8 @@
 //    (`rtOwnKeysOrdered`), so a dictionary that answered only the first would
 //    be caught here by the other three.
 // 5. A NON-ENUMERABLE PROPERTY STAYS NON-ENUMERABLE ACROSS THE MOVE. A class
-//    method is defined with `enumerable: false` (15.7.14, docs/0018 decision
-//    2), and the attribute is carried into the table with the key.
+//    method is defined with `enumerable: false` (15.7.14), and the attribute
+//    is carried into the table with the key.
 
 // ---- the delete/re-add distinction ----------------------------------------
 const o = { a: 1, b: 2, c: 3, d: 4 };

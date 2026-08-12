@@ -6,12 +6,12 @@
 // answers "what does the identifier `Array` denote?". Keeping them apart is
 // what stops one file from having to explain both.
 //
-// The mechanism is docs/0029 decision 2's, unchanged and deliberately not
+// The interning mechanism is the typed arrays', unchanged and deliberately not
 // re-invented: lowering's closed provided-globals list resolves the name to
 // `global.get "<name>"`, `bronze_global_get` asks `rtGlobalConstructor` for it,
 // and the answer is a `bronze_function_singleton` INTERNED ON THE CODE POINTER
 // — so the bare name and `x.constructor` are the same object and `===` holds
-// between them (`Array.isArray(x) ? ... : x.constructor === Array` is ordinary
+// between them (`Array.isArray(x) ?...: x.constructor === Array` is ordinary
 // JS, and three.js writes both spellings).
 //
 // One distinct C function per constructor is therefore load-bearing: two
@@ -62,14 +62,14 @@ void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
 // ---- Array (23.1) -----------------------------------------------------------
 
 // `new Array(n)` — n HOLES, not n undefineds. The difference is observable:
-// `new Array(3).forEach(f)` calls `f` zero times, and console.log prints
-// `[ <3 empty items> ]` (docs/0019 decision 2). Building it as a dense run of
-// `undefined` would be the plausible-but-wrong answer.
+// `new Array(3).forEach(f)` calls `f` zero times, and console.log prints `[ <3
+// empty items> ]`. Building it as a dense run of `undefined` would be the
+// plausible-but-wrong answer.
 Value arrayOfLength(uint32_t n) {
     // A dense array costs eight bytes per element, so a length the spec allows
     // is not thereby a length this heap can hold. Refused BEFORE the
     // allocation, so `std::bad_alloc` never unwinds out of a helper generated
-    // code called — the same rule docs/0029 decision 1 set for a byte store.
+    // code called — the same rule a byte store follows.
     const size_t bytes = static_cast<size_t>(n) * sizeof(Value);
     if (bytes + 64 >= rtHeap().reserved_size() / 2) {
         rtThrowRangeError("Array allocation failed: " + std::to_string(n) +
@@ -129,10 +129,10 @@ uint64_t arrayOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // Does 23.1.2.1 step 3's GetMethod(items, @@iterator) find something? The fast
 // kinds answer yes without a property read at all — `rtOpenIterator` steps an
-// array, a string, a typed array, a Map and a Set from a cursor (docs/0021
-// decision 2) — and anything else is asked for the well-known key, because the
-// answer decides between the iterator path and the array-like one and getting
-// it wrong turns `Array.from(userIterable)` into an empty array.
+// array, a string, a typed array, a Map and a Set from a cursor — and anything
+// else is asked for the well-known key, because the answer decides between the
+// iterator path and the array-like one and getting it wrong turns
+// `Array.from(userIterable)` into an empty array.
 bool hasIterator(Rooted<Value>& src) {
     if (src.get().isString()) return true;
     if (!src.get().isObject()) return false;
@@ -195,7 +195,7 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
                 item.set(callMapper(mapFn, thisArg, item, i));
                 // The mapper is user code. Step 6.e.viii closes the iterator
                 // when it throws, and carrying on would be the runtime
-                // continuing past an exception (docs/0020 decision 6).
+                // continuing past an exception.
                 if (rtExceptionPending()) {
                     bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
                     return out.get().rawBits();
@@ -225,10 +225,10 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // 22.1.1.1 as a CONVERSION. Called with `new`, the specification builds a
 // String exotic OBJECT; bronze hands back the primitive, because a native
-// constructor cannot see NewTarget through the uniform calling convention
-// (docs/0004) — the same divergence docs/0029 decision 2 records for the typed
-// arrays, in the other direction. `String(x)` — which is what programs actually
-// write, and what three.js writes — is exact.
+// constructor cannot see NewTarget through the uniform calling convention — the
+// same divergence the typed array constructors have, in the other direction.
+// `String(x)` — which is what programs actually write, and what three.js writes
+// — is exact.
 uint64_t stringConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     // Step 1: no argument at all is the empty string, which is NOT the same as
@@ -279,10 +279,10 @@ struct StaticFn {
     uint32_t arity;
 };
 
-// Arity 0 everywhere a builtin is variadic, for docs/0011 decision 2's reason:
-// `FunctionHeader::arity` is the count a short call is PADDED to, so a variadic
-// native declaring 2 would see `Array.of(1)` as `(1, undefined)` and produce a
-// two-element array.
+// Arity 0 everywhere a builtin is variadic, for the reason a builtin is an
+// ordinary function object: `FunctionHeader::arity` is the count a short call
+// is PADDED to, so a variadic native declaring 2 would see `Array.of(1)` as
+// `(1, undefined)` and produce a two-element array.
 const StaticFn kArrayStatics[] = {
     {"from", arrayFrom, 0},
     {"isArray", arrayIsArray, 1},
@@ -321,7 +321,7 @@ struct CtorEntry {
     // 23.1.1.1 is ONE operation that reads NewTarget only to pick a prototype,
     // so `Array(x)` and `new Array(x)` build the same array. `String` and
     // `Boolean` do not: with `new` the specification builds a String or Boolean
-    // exotic OBJECT, and bronze has no such thing (decision 6).
+    // exotic OBJECT, and bronze has no such thing.
     bool constructible;
 };
 

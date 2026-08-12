@@ -1,12 +1,12 @@
-// The GC-stress case for unwinding (docs/0020 decision 2).
+// The GC-stress case for unwinding.
 //
 // A throw crosses eight call frames, each of which holds freshly allocated
 // objects, arrays and strings in locals AND runs a `finally` on the way out
 // that reads them back. Under `BRONZE_GC_STRESS=1` a collection happens at
-// every allocation, so each of those reads is a check that the frame's GC
-// root slots (docs/0006) are still linked, still describe live values, and
-// have been popped in the right order — a frame left on the chain shows up
-// here as a crash or as a scrambled value, not as a missing line.
+// every allocation, so each of those reads is a check that the frame's GC root
+// slots are still linked, still describe live values, and have been popped in
+// the right order — a frame left on the chain shows up here as a crash or as a
+// scrambled value, not as a missing line.
 //
 // Nothing here is about ECMA-262 beyond 14.15.3 (the finallys run, innermost
 // first) and 14.14 (the thrown object is the same object at the catch).

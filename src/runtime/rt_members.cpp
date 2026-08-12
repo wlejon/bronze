@@ -41,9 +41,9 @@ const char* const kStringMembers[] = {
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in
-// builtin_typed_array.cpp, beside the members that answer, because that file
-// is where a name leaves the list when it lands and the two halves must be
-// read together (docs/0029 decision 3).
+// builtin_typed_array.cpp, beside the members that answer, because that file is
+// where a name leaves the list when it lands and the two halves must be read
+// together.
 
 // Function.prototype, minus `prototype`, which is real.
 const char* const kFunctionMembers[] = {

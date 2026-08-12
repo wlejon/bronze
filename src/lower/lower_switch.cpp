@@ -1,4 +1,4 @@
-// `switch`, as selection followed by fallthrough (docs/0018 decision 2).
+// `switch`, as selection followed by fallthrough.
 //
 // The shape is two chains, not a tree. One chain of TEST blocks runs the case
 // expressions in source order, each branching to its own body block or on to
@@ -61,14 +61,14 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
         const char* what = "let";
         if (const ast::Stmt* decl = lexicalDeclarationIn(clause, what)) {
             // Named rather than lowered, because bronze cannot enforce what
-            // makes it safe. A case jump can enter a clause below the one
-            // that initializes the binding, and ECMA-262 answers that with a
-            // temporal-dead-zone ReferenceError. `throw` exists now
-            // (docs/0020); what does not is the uninitialized binding STATE
-            // that decides when to raise one, so this stays a named error —
-            // see cases/blocked/temporal_dead_zone.js. Wrapping the clause in
-            // a block gives the declaration a scope of its own and is what
-            // most JavaScript writes anyway.
+            // makes it safe. A case jump can enter a clause below the one that
+            // initializes the binding, and ECMA-262 answers that with a
+            // temporal-dead-zone ReferenceError. `throw` exists now; what does
+            // not is the uninitialized binding STATE that decides when to raise
+            // one, so this stays a named error — see
+            // cases/blocked/temporal_dead_zone.js. Wrapping the clause in a
+            // block gives the declaration a scope of its own and is what most
+            // JavaScript writes anyway.
             diags_.error(decl->span,
                          std::string("unsupported construct: a '") + what +
                              "' declaration directly in a switch case (the switch body is one "

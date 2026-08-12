@@ -2,14 +2,14 @@
 // `unsupported: Object.getPrototypeOf of a plain object needs Object.prototype,
 // which bronze does not provide`.
 //
-// docs/0022 landed most of the `Object` namespace and stopped at the members
-// that need an INTRINSIC PROTOTYPE OBJECT to exist. bronze has none: a plain
-// `{}` has no prototype at all, an array's methods are handed out by the
-// property path rather than found on an `Array.prototype` a program can hold,
-// and the same is true of strings, numbers and functions. That is a value-model
-// decision (docs/0011 decision 2 made a builtin a bare function object, not a
-// member of a prototype a program can reach), so `Object.getPrototypeOf({})` is
-// a named error rather than the `null` that would be indistinguishable from
+// Most of the `Object` namespace landed, stopping at the members that need an
+// INTRINSIC PROTOTYPE OBJECT to exist. bronze has none: a plain `{}` has no
+// prototype at all, an array's methods are handed out by the property path
+// rather than found on an `Array.prototype` a program can hold, and the same is
+// true of strings, numbers and functions. That is a value-model decision
+// (a builtin is a bare function object, not a member of a prototype a program
+// can reach), so `Object.getPrototypeOf({})` is a named
+// error rather than the `null` that would be indistinguishable from
 // `Object.create(null)`'s honest answer.
 //
 // Building it means: real `Object.prototype` / `Array.prototype` /
@@ -22,8 +22,8 @@
 //
 // `hasOwn`, `is` and `getOwnPropertyDescriptors` are here rather than built
 // because they belong with that work: two of them are one-liners, and an
-// unpinned builtin is how docs/0000's "plausible but wrong" bugs got in — they
-// land with the case that can test them next to their neighbours.
+// unpinned builtin is how a predecessor's "plausible but wrong" bugs got in —
+// they land with the case that can test them next to their neighbours.
 //
 // What this case pins when it lands, from ECMA-262 20.1.2.12
 // (getPrototypeOf), 20.1.2.13 (hasOwn), 20.1.2.14 (is), 20.1.2.9

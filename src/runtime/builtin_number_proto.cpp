@@ -1,17 +1,16 @@
 // `Number.prototype` — the four formatting methods (ECMA-262 21.1.3).
 //
-// Split from builtin_number.cpp along the line ECMA-262 itself draws: that
-// file is the `Number` NAMESPACE, whose members are statics reached through
-// an object a program holds, and this one is the WRAPPER's methods, reached
-// through a property read on a primitive. bronze has no Number wrapper
-// object, so the property path hands these out directly the way it already
-// does for `String.prototype` (docs/0011 decision 2).
+// Split from builtin_number.cpp along the line ECMA-262 itself draws: that file
+// is the `Number` NAMESPACE, whose members are statics reached through an
+// object a program holds, and this one is the WRAPPER's methods, reached
+// through a property read on a primitive. bronze has no Number wrapper object,
+// so the property path hands these out directly the way it already does for
+// `String.prototype`.
 //
 // All four are defined on the exact real number the double denotes, which is
-// why every digit below comes from `exact_decimal.h` and none from printf or
-// a to_chars round-trip. docs/0022 has the argument; the short version is
-// that `(1.005).toFixed(2)` is "1.00" and any implementation that answers
-// "1.01" is wrong in exactly the code that calls toFixed.
+// why every digit below comes from `exact_decimal.h` and none from printf or a
+// to_chars round-trip: `(1.005).toFixed(2)` is "1.00" and any implementation
+// that answers "1.01" is wrong in exactly the code that calls toFixed.
 
 #include <cmath>
 #include <string>
@@ -274,9 +273,9 @@ const NumberMethod kNumberMethods[] = {
 
 // Number.prototype members ECMA-262 defines and bronze has not built.
 // `toLocaleString` is here for the reason `Math.random` is on Math's list:
-// bronze has no locale data and deterministic output is a house rule
-// (docs/0001), so a locale-formatted number needs a decision before it can
-// have an implementation.
+// bronze has no locale data and deterministic output is a house rule, so a
+// locale-formatted number needs a decision before it can have an
+// implementation.
 const char* const kNumberProtoMembers[] = {
     "constructor",
     "toLocaleString",

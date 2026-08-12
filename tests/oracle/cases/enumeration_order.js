@@ -1,6 +1,6 @@
-// Own-key order is spec'd JS order, recovered from the shape transition
-// chain (docs/0009): integer-like keys ascending numerically FIRST, then
-// every other string key in insertion order.
+// Own-key order is spec'd JS order, recovered from the shape transition chain:
+// integer-like keys ascending numerically FIRST, then every other string key in
+// insertion order.
 //
 // `printKeys` walks the result rather than printing the array, because an
 // array's console.log format is not pinned yet — the order is what is

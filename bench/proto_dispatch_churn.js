@@ -1,7 +1,7 @@
 // The same depth-3 inherited read as proto_dispatch.js, interleaved with an
-// object construction. Every `this.x = x` is a property ADD, and an add is
-// what invalidates a depth > 0 inline-cache entry (docs/0032) — so this
-// benchmark exists to prove that an add to an ORDINARY object does not.
+// object construction. Every `this.x = x` is a property ADD, and an add is what
+// invalidates a depth > 0 inline-cache entry — so this benchmark exists to
+// prove that an add to an ORDINARY object does not.
 //
 // It is the control that a coarser invalidation rule fails: counting every
 // add rather than only the ones landing on a prototype measured 2739ms here

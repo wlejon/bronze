@@ -1,6 +1,5 @@
-// The two loops that walk a container: `for-of` over an ITERATOR (docs/0021
-// decision 2), and `for-in` over the key snapshot the runtime builds for it
-// (docs/0018 decision 1).
+// The two loops that walk a container: `for-of` over an ITERATOR, and `for-in`
+// over the key snapshot the runtime builds for it.
 //
 // They share one lowering, which is the point of snapshotting the keys: once
 // `for-in`'s subject is an array of strings, the two statements differ in
@@ -18,7 +17,7 @@ namespace bronze::lower {
 
 // The same four-block shape as `for`, with two differences.
 //
-// The cursor is not a block parameter. docs/0012 decision 2 threaded an index
+// The cursor is not a block parameter. The first for-of threaded an index
 // through every block and every edge, because the walk WAS an index; the
 // iteration record holds it now, so the loop carries nothing but its source
 // bindings and `continue` has nothing extra to hand over.
@@ -26,13 +25,13 @@ namespace bronze::lower {
 // The head binding is per-iteration BY DEFINITION. It is declared inside the
 // body's scope, which is entered once per iteration, so a closure over it
 // captures that iteration's value. `for (let i = ...)` needs the same thing
-// and does not get it (docs/0007 decision 2 diagnoses it); here it is free,
+// and does not get it (diagnoses it); here it is free,
 // because there is no binding outside the body to share.
 //
 // The fifth block is the one this doc's chunk adds: a handler that closes the
 // iterator when the body throws. It costs a block per loop in the IL and
 // nothing at run time — the cell test after each call in the body is the one
-// docs/0020 decision 2 already emits, pointed at this block instead of at the
+// the unwind path already emits, pointed at this block instead of at the
 // function's unwind block.
 bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 const std::string& headName,
@@ -128,7 +127,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     // slot there when a closure captures it — one per iteration, which is the
     // whole of the language's rule for it. A destructuring head binds every
     // name its pattern spells, and all of them belong to this scope for the
-    // same per-iteration reason (docs/0017 decision 6).
+    // same per-iteration reason.
     const std::vector<std::string> headNames =
         headPattern ? ast::patternBoundNames(*headPattern) : std::vector<std::string>{headName};
     enterScope(body, ilFn, headNames);
@@ -177,10 +176,10 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     emitInst(ilFn, backJmp);
 
     // The throw path (ECMA-262 7.4.9 with a throw completion). It takes the
-    // pending value, closes the iterator with errors from `return` SUPPRESSED
-    // — step 6 keeps the original completion — and re-raises. It reads no
+    // pending value, closes the iterator with errors from `return` SUPPRESSED —
+    // step 6 keeps the original completion — and re-raises. It reads no
     // binding, which is what lets it take no parameters even though it is
-    // entered from an arbitrary point in the body (docs/0020 decision 3).
+    // entered from an arbitrary point in the body.
     currentHandler_ = outerHandler;
     setCurrentBlock(bClose);
     il::ValueId pending = ilFn.valueCount++;
@@ -219,7 +218,7 @@ bool Lowerer::lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn) {
 
 // The whole of for-in that is not for-of: the subject of the walk is not the
 // object but the ARRAY OF KEYS the runtime builds from it, own and inherited,
-// enumerable only, each key once (docs/0018 decision 1).
+// enumerable only, each key once.
 //
 // That one instruction is also where `for (const k in null)` becomes a no-op
 // rather than an error: ECMA-262 14.7.5.5 returns an empty completion for

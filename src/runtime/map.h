@@ -8,10 +8,10 @@
 
 namespace bronze {
 
-// `Map` and `Set` (docs/0021 decision 4). The first bronze structure whose
-// KEY is a value rather than a property name, so none of the machinery under
-// `o.k` applies: no shape, no interned name, no slot index. What a Map has
-// instead is an insertion-ordered entry table plus a hash index over it.
+// `Map` and `Set`. The first bronze structure whose KEY is a value rather than
+// a property name, so none of the machinery under `o.k` applies: no shape, no
+// interned name, no slot index. What a Map has instead is an insertion-ordered
+// entry table plus a hash index over it.
 //
 // The two share one layout, because a Set is a Map whose values are its keys
 // (24.2.1.1 defines it that way and every method below reads the same table);
@@ -26,10 +26,10 @@ struct MapHeader {
     HeapObjectHeader header;
     // Object-tagged block of Values, two per entry slot: key then value, in
     // INSERTION order. A removed entry's key is the Hole singleton, which is
-    // internal by construction (docs/0004 decision 1) and therefore cannot
-    // collide with a key a program can hold. Erasing from the middle would
-    // move every later entry and break the iteration order a live iterator is
-    // holding a cursor into, so a delete tombstones instead.
+    // internal by construction and therefore cannot collide with a key a
+    // program can hold. Erasing from the middle would move every later entry
+    // and break the iteration order a live iterator is holding a cursor into,
+    // so a delete tombstones instead.
     Value entries;
     // RawBytes block of uint32 buckets, open-addressed with linear probing.
     // 0 means empty; anything else is an entry slot index plus one.

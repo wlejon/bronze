@@ -1,6 +1,5 @@
-// The three rules about a default value that are easy to get wrong, each
-// pinned by a line that would print differently under the wrong one
-// (docs/0017 decision 1).
+// The three rules about a default value that are easy to get wrong, each pinned
+// by a line that would print differently under the wrong one.
 //
 // 1. `undefined` and NOTHING ELSE fires a default. ECMA-262 10.2.11 binds a
 //    formal to its default only when the argument is undefined, so `null`,

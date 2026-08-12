@@ -1,7 +1,6 @@
 // `for (let i = …)` beside a closure that has an `i` of its own — the shapes
 // that share a SPELLING with the per-iteration binding problem and nothing
-// else (ECMA-262 14.7.4.9 CreatePerIterationEnvironment, docs/0028
-// decision 3).
+// else (ECMA-262 14.7.4.9 CreatePerIterationEnvironment).
 //
 // A `let` loop binding is copied per iteration, so a closure that reaches it
 // must capture that iteration's copy; bronze does not thread an environment

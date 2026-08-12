@@ -1,7 +1,7 @@
-// The global `String` as a CONVERSION function and as a value (docs/0030
-// decision 4). `String.prototype` as a real object a program can hold is a
-// separate value-model chunk (cases/blocked/object_intrinsic_prototypes), and
-// nothing here depends on one.
+// The global `String` as a CONVERSION function and as a value.
+// `String.prototype` as a real object a program can hold is a separate
+// value-model chunk (cases/blocked/object_intrinsic_prototypes), and nothing
+// here depends on one.
 //
 // From ECMA-262:
 //
@@ -9,7 +9,7 @@
 //    string, which is not the same as `String(undefined)` — that one is
 //    ToString(undefined), the six characters "undefined".
 // 2. ToString of a number is 6.1.6.1.20 Number::toString: -0 is "0" (the sign
-//    is not carried, unlike console.log's inspect spelling, docs/0013), 1e21 is
+//    is not carried, unlike console.log's inspect spelling), 1e21 is
 //    "1e+21" because 21 is where the fixed notation stops, and 0.1 + 0.2 is the
 //    seventeen-digit "0.30000000000000004" that shortest-round-trip requires.
 // 3. 22.1.2.1 (String.fromCharCode): each argument is ToUint16 (7.1.7), which

@@ -1,17 +1,17 @@
 // `JSON.stringify` — ECMA-262 25.5.2.
 //
-// The format is NOT console.log's. docs/0013 chose an inspect format with
-// deliberate divergences from node, because its output is for a human reading
-// a terminal; this output is data another program parses, so it has no
-// divergences available to it. The two therefore share no code, and the
-// differences are the point rather than an oversight: quoted keys, no space
-// unless `space` asked for one, `"a"` where inspect writes `'a'`, `null` for
-// NaN and both infinities, and `undefined` omitted from an object but written
-// as `null` in an array.
+// The format is NOT console.log's, which is an inspect format with deliberate
+// divergences from node, because its output is for a human reading a terminal;
+// this output is data another program parses, so it has no divergences
+// available to it. The two therefore share no code, and the differences are the
+// point rather than an oversight: quoted keys, no space unless `space` asked
+// for one, `"a"` where inspect writes `'a'`, `null` for NaN and both
+// infinities, and `undefined` omitted from an object but written as `null` in
+// an array.
 //
-// The order of an object's members is own-enumerable order, which docs/0009
-// already fixes and `bronze_object_keys` already answers — this file never
-// sorts and never re-derives it.
+// The order of an object's members is own-enumerable order, which already fixes
+// and `bronze_object_keys` already answers — this file never sorts and never
+// re-derives it.
 
 #include <cmath>
 #include <string>

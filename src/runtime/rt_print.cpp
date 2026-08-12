@@ -1,7 +1,6 @@
-// console.log / console.warn / console.error. Primitives print their own
-// text; a container's format is docs/0013's decision and lives in
-// inspect.cpp, which is a recursive walk with its own rules and none of them
-// this file's business.
+// console.log / console.warn / console.error. Primitives print their own text;
+// a container's format is the inspect format's and lives in inspect.cpp, which
+// is a recursive walk with its own rules and none of them this file's business.
 //
 // The destination is a parameter threaded through every writer rather than a
 // module-level `FILE*` the entry points swap: `console.warn` and
@@ -82,15 +81,15 @@ void writeNumber(double num, std::FILE* out) {
 // formatter, and the only one: `console.log(a)` and `console.log(a, b)` must
 // format `a` identically, so a second spelling of these rules for the
 // multi-argument case would be a drift waiting to happen — the same argument
-// that put `**` and `Math.pow` on one `rtExponentiate` (docs/0015 decision 3).
+// that put `**` and `Math.pow` on one `rtExponentiate`.
 void writeValue(uint64_t valBits, std::FILE* out) {
     Value v(valBits);
     if (v.isNumber()) {
         writeNumber(v.asNumber(), out);
     } else if (v.isInt32()) {
-        // Lowering never boxes an Int32 today (docs/0004 decision 1), but an
-        // int32 IS a JS number, so it prints as one rather than reaching the
-        // object branch if the fast path ever lands.
+        // Lowering never boxes an Int32 today, but an int32 IS a JS number, so
+        // it prints as one rather than reaching the object branch if the fast
+        // path ever lands.
         writeNumber(static_cast<double>(static_cast<int32_t>(v.payload())), out);
     } else if (v.isString()) {
         writeString(v.asString<StringHeader>(), out);
@@ -104,8 +103,8 @@ void writeValue(uint64_t valBits, std::FILE* out) {
         const std::string text = rtInspect(v);
         std::fwrite(text.data(), 1, text.size(), out);
     } else if (v.isHole()) {
-        // docs/0004: the hole is internal and never user-visible. Printing it
-        // as anything would hide the bug that let it escape.
+        // the hole is internal and never user-visible. Printing it as anything
+        // would hide the bug that let it escape.
         fatal("internal: the hole sentinel reached console.log");
     } else if (v.isSymbol()) {
         fatal("printing a symbol is unsupported (bronze has no symbols)");
@@ -143,8 +142,8 @@ void bronze_print_values(uint32_t argc, const uint64_t* argv) {
 // `console.warn` and `console.error`, which differ from `console.log` in the
 // destination and in nothing else: same formatter, same joining, same
 // terminator. stderr is not a detail — the oracle harness pins stdout
-// byte-for-byte (docs/0003), so a library's warnings landing there would make
-// every case built over that library pin the chatter as expected output.
+// byte-for-byte, so a library's warnings landing there would make every case
+// built over that library pin the chatter as expected output.
 void bronze_print_value_err(uint64_t valBits) {
     writeValue(valBits, stderr);
     std::fputc('\n', stderr);

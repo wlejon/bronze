@@ -3,8 +3,8 @@
 // The grammar half is `src/json`, a module with no idea bronze's value model
 // exists: it turns code units into a tree and rejects everything JavaScript
 // allows and JSON does not. That split is a module-isolation decision and not
-// a detail (docs/0021's "what this chunk stopped short of"): JSON's grammar is
-// not JavaScript's, so it cannot borrow `src/parse`, and a parser that can be
+// an afterthought: JSON's grammar is not JavaScript's, so it cannot borrow
+// `src/parse`, and a parser that can be
 // driven without a heap is a parser whose rejections can be pinned directly in
 // `tests/json`.
 //
@@ -136,10 +136,10 @@ uint64_t jsonParse(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     std::string error;
     json::ValuePtr tree = json::parse(source, error);
     if (!tree) {
-        // A malformed JSON text is a SyntaxError the language defines, so it
-        // is a catchable throw and not a process death (docs/0020 decision 6).
-        // bronze has no SyntaxError constructor of its own yet, so it is
-        // raised as an Error carrying the parser's message.
+        // A malformed JSON text is a SyntaxError the language defines, so it is
+        // a catchable throw and not a process death. bronze has no SyntaxError
+        // constructor of its own yet, so it is raised as an Error carrying the
+        // parser's message.
         return rtThrowError(ErrorKind::Error, "SyntaxError: " + error).rawBits();
     }
 
@@ -172,8 +172,8 @@ const NamespaceFn kJsonFunctions[] = {
 };
 
 // `JSON` has exactly two function members in ECMA-262, so the only real name
-// left is the `Symbol.toStringTag` bronze has no symbols for (docs/0021
-// decision 1). It is listed so that reading it says so.
+// left is the `Symbol.toStringTag` bronze has no symbols for. It is listed so
+// that reading it says so.
 const char* const kJsonUnimplemented[] = {
     "rawJSON",
     "isRawJSON",

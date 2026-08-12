@@ -1,6 +1,6 @@
-// `function* g() {}` — the generator DECLARATION and expression forms, and
-// the timing that makes a generator a generator rather than a function that
-// returns an array (docs/0026).
+// `function* g() {}` — the generator DECLARATION and expression forms, and the
+// timing that makes a generator a generator rather than a function that returns
+// an array.
 //
 // From ECMA-262 27.5.3.2 (GeneratorResume), 15.5.3 (a generator function's
 // body does not run when it is called; calling it creates the generator

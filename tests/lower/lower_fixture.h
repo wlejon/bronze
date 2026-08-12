@@ -2,9 +2,9 @@
 
 // The pipeline in the two shapes every lowering test needs it: with the
 // inference side table and without it. Shared by the lower_*_test.cpp units
-// rather than copied into each, because a copy that drifts would let two
-// files disagree about what "the --no-infer path" is — which is the one
-// distinction docs/0010 decision 8 asks these tests to hold.
+// rather than copied into each, because a copy that drifts would let two files
+// disagree about what "the --no-infer path" is — which is the one distinction
+// these tests exist to hold.
 
 #include <memory>
 #include <optional>
@@ -28,9 +28,9 @@ inline std::unique_ptr<ast::Module> parseOnly(std::string_view src, DiagnosticSi
     return Parser(std::move(tokens), diags).parseModule("test");
 }
 
-// Lowering with NO inference result — the `--no-infer` path of docs/0010
-// decision 8. Everything is the uniform dynamic convention, and an
-// annotation buys nothing, because nothing is proven for it to agree with.
+// Lowering with NO inference result — the `--no-infer` path. Everything is the
+// uniform dynamic convention, and an annotation buys nothing, because nothing
+// is proven for it to agree with.
 inline std::optional<il::Module> parseAndLower(std::string_view src, DiagnosticSink& diags,
                                                SourceBuffer& buf) {
     auto astMod = parseOnly(src, diags, buf);
@@ -38,8 +38,7 @@ inline std::optional<il::Module> parseAndLower(std::string_view src, DiagnosticS
     return lower::lowerModule(*astMod, diags);
 }
 
-// The real pipeline: inference runs first and lowering consumes the side
-// table (docs/0010 decision 1).
+// The real pipeline: inference runs first and lowering consumes the side table.
 inline std::optional<il::Module> inferAndLower(std::string_view src, DiagnosticSink& diags,
                                                SourceBuffer& buf) {
     auto astMod = parseOnly(src, diags, buf);

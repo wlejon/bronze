@@ -32,7 +32,7 @@ bool isIdentifierPart(uint16_t c) { return isIdentifierStart(c) || isDecimalDigi
 
 // A group name is written back out in diagnostics and used as a property key,
 // so it is carried as UTF-8. Names are restricted to ASCII identifiers
-// (bronze's own identifier rule, docs/0012), which is narrower than the
+// (bronze's own identifier rule), which is narrower than the
 // specification's IdentifierName and is refused by name rather than silently.
 std::string asciiOf(UnitsView units) {
     std::string out;
@@ -106,9 +106,9 @@ public:
             error = error_;
             return nullptr;
         }
-        // Every parser consumes all its input or says so (docs/0001 decision
-        // 9). The only way to be left here is a `)` with no `(`, which the
-        // group parser cannot see from the inside.
+        // Every parser consumes all its input or says so. The only way to be
+        // left here is a `)` with no `(`, which the group parser cannot see
+        // from the inside.
         if (pos_ < src_.size()) {
             error = describe("unmatched ')'");
             return nullptr;

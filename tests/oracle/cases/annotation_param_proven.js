@@ -1,8 +1,8 @@
-// docs/0010 decision 6: an annotation that inference independently proves is
-// free information. `scale` is direct-callable — its name is only ever the
-// callee of a call — and every call site passes a number, so the parameters
-// really are f64 and the multiply is a native one. The `: number` on them is
-// not why; it agrees with the proof and is otherwise ignored.
+// An annotation that inference independently proves is free information.
+// `scale` is direct-callable — its name is only ever the callee of a call — and
+// every call site passes a number, so the parameters really are f64 and the
+// multiply is a native one. The `: number` on them is not why; it agrees with
+// the proof and is otherwise ignored.
 //
 // The values below are IEEE-754 doubles either way, which is what makes this
 // case worth running: if the typed path ever stopped being ordinary double

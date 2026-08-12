@@ -4,10 +4,10 @@
 // is what three.js's `extras/DataUtils.js` uses to read a float's bit pattern.
 //
 // The byte ORDER is the platform's: 10.4.5.5 stores an element with
-// SetValueInBuffer(..., isLittleEndian = the implementation's choice), and
-// only `DataView` lets a program name it. Every target bronze builds for is
-// little-endian, so that is what the numbers below assume — a divergence
-// recorded in docs/0029 rather than one this case discovers.
+// SetValueInBuffer(..., isLittleEndian = the implementation's choice), and only
+// `DataView` lets a program name it. Every target bronze builds for is
+// little-endian, so that is what the numbers below assume — a divergence a
+// deliberate one rather than one this case discovers.
 const buf = new ArrayBuffer(8);
 console.log(buf.byteLength);
 

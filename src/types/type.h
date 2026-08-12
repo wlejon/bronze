@@ -5,9 +5,9 @@
 
 namespace bronze::types {
 
-// A compile-time object identity (docs/0010 decision 4). Interned by
-// ShapeClassTable; `kNoShapeClass` means "an object, but which one is not
-// proven" — the rung the join drops to when two classes meet.
+// A compile-time object identity. Interned by ShapeClassTable; `kNoShapeClass`
+// means "an object, but which one is not proven" — the rung the join drops to
+// when two classes meet.
 using ShapeClassId = uint32_t;
 inline constexpr ShapeClassId kNoShapeClass = 0xFFFFFFFFu;
 
@@ -29,11 +29,11 @@ enum class TypeKind : uint8_t {
 
 const char* typeKindName(TypeKind kind);
 
-// The lattice of docs/0010 decision 2. Deliberately flat between Never and
-// Dynamic: there are no union types, so `number | undefined` is `Dynamic`.
-// Modelling unions would grow a case analysis in every consumer for an
-// unmeasured win; the narrow case it would buy (a `let` assigned once before
-// any use) is handled by flow sensitivity instead.
+// The inference lattice. Deliberately flat between Never and Dynamic: there are
+// no union types, so `number | undefined` is `Dynamic`. Modelling unions would
+// grow a case analysis in every consumer for an unmeasured win; the narrow case
+// it would buy (a `let` assigned once before any use) is handled by flow
+// sensitivity instead.
 class Type {
 public:
     constexpr Type() = default;  // Never
@@ -83,8 +83,8 @@ private:
 };
 
 // `Never ⊔ t = t`; `t ⊔ t = t`; anything else is `Dynamic` — except that two
-// values of the same kind with different identities keep the kind and lose
-// the identity, which is what "Object with no class" means in decision 4.
+// values of the same kind with different identities keep the kind and lose the
+// identity, which is what "Object with no class" means.
 Type join(Type a, Type b);
 
 }  // namespace bronze::types

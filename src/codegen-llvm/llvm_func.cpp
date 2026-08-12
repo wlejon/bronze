@@ -57,7 +57,7 @@ void FunctionEmitter::reload(il::ValueId id) {
     values_[id] = builder_.CreateLoad(i64Ty_, slotAddr(slot));
 }
 
-// ---- GC root frame (docs/0006) ---------------------------------------------
+// ---- GC root frame ---------------------------------------------
 //
 // Every Dynamic-typed value gets a slot in one contiguous array the collector
 // walks: defs store into it, uses load out of it. The load is the point — a
@@ -69,8 +69,8 @@ void FunctionEmitter::reload(il::ValueId id) {
 // frame proportional to how many values are live at once rather than to how
 // many the function ever computes. Without it a 2000-statement function got
 // 6002 slots — a 48 KB alloca, 6002 unrolled initialising stores, and 6002
-// stack locations for the register allocator to colour — and that, not
-// anything bronze does, was 93% of a three.js compile (docs/0033).
+// stack locations for the register allocator to colour — and that, not anything
+// bronze does, was 93% of a three.js compile.
 //
 // A slot may be reused only where nothing can read the old value again, so
 // the eligibility rule is deliberately narrow:
@@ -294,7 +294,7 @@ bool FunctionEmitter::emit() {
     return true;
 }
 
-// ---- exceptions (docs/0020) -------------------------------------------------
+// ---- exceptions -------------------------------------------------
 //
 // Propagation is a `ret`, so there is no unwind ABI: after any instruction
 // that can throw, generated code loads the pending cell, compares it against
@@ -381,8 +381,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         }
 
         // AFTER the result store, not after the call: the slot must hold a
-        // value the collector can parse before anything branches away from
-        // it (docs/0020 decision 2).
+        // value the collector can parse before anything branches away from it.
         if (il::canThrow(inst)) emitExceptionCheck(blockIndex);
     }
     return true;

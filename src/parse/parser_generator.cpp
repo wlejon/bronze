@@ -1,8 +1,8 @@
 // Generators, and the desugaring that is the whole of bronze's support for
-// them (docs/0026). A generator whose body is a straight-line sequence of
-// `yield <expr>;` statements is rewritten HERE, in the parser, into an
-// iterator object over a step index — so no node for `yield` reaches the AST,
-// and inference, lowering and the backend never learn that generators exist.
+// them. A generator whose body is a straight-line sequence of `yield <expr>;`
+// statements is rewritten HERE, in the parser, into an iterator object over a
+// step index — so no node for `yield` reaches the AST, and inference, lowering
+// and the backend never learn that generators exist.
 //
 //     *[Symbol.iterator]() { yield this.x; yield this.y; }
 //
@@ -20,11 +20,11 @@
 //         };
 //     }
 //
-// `next` is an ARROW so that `this` in a yielded expression is the receiver
-// the generator method was called on, which is the whole reason the three.js
+// `next` is an ARROW so that `this` in a yielded expression is the receiver the
+// generator method was called on, which is the whole reason the three.js
 // generators exist. The step variable lives in the enclosing invocation's
 // environment record, so two calls to the method walk independently and a
-// second walk starts fresh (docs/0007).
+// second walk starts fresh.
 //
 // Everything outside that subset is refused BY NAME rather than approximated,
 // because the approximation would be a silent wrong answer: an index switch
@@ -160,7 +160,7 @@ constexpr const char* kValueUsedRefusal = "an expression whose value is used";
 constexpr const char* kSubsetNote =
     "bronze implements the straight-line subset only: a generator body is a "
     "sequence of `yield <expr>;` statements, desugared into an iterator over a "
-    "step index (docs/0026)";
+    "step index";
 
 }  // namespace
 
@@ -181,11 +181,10 @@ ExprPtr Parser::refuseYield() {
 
 // `[ Symbol.iterator ]`, the one computed member name bronze reads. It is
 // matched SYNTACTICALLY, on the two identifiers, rather than evaluated:
-// docs/0021 decision 1 makes `Symbol.iterator` the string `"@@iterator"` at
-// compile time, and a class body has no place to run an expression for a key.
-// The divergence is that a program which rebinds `Symbol` still gets
-// `@@iterator` here; that is the same bet docs/0011 decision 1 makes for every
-// provided global, and `Symbol` is on that list.
+// `Symbol.iterator` is the string `"@@iterator"` at compile time, and a class
+// body has no place to run an expression for a key. The divergence is that a
+// program which rebinds `Symbol` still gets `@@iterator` here; that is the same
+// bet made for every provided global, and `Symbol` is on that list.
 bool Parser::matchSymbolIteratorKey(std::string& outName) {
     if (!check(TokenKind::LBracket)) return false;
     if (!(peek(1).kind == TokenKind::Identifier && peek(1).text == "Symbol")) return false;
@@ -298,7 +297,7 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
                              "unsupported construct: a declaration at the top level of a "
                              "generator body (nothing bronze declares there can survive a "
                              "`yield`); the straight-line subset is a sequence of "
-                             "`yield <expr>;` statements (docs/0026)");
+                             "`yield <expr>;` statements");
             }
             ok = false;
             break;
@@ -312,11 +311,11 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
             error(peek(1).kind == TokenKind::Semicolon || peek(1).newlineBefore
                       ? "unsupported construct: `return;` in a generator (it would end the walk "
                         "early, and bronze's step index only counts forwards); the straight-line "
-                        "subset is a sequence of `yield <expr>;` statements (docs/0026)"
+                        "subset is a sequence of `yield <expr>;` statements"
                       : "unsupported construct: `return <expr>;` in a generator (its value is the "
                         "`value` of the final `{ done: true }` result, which bronze does not "
                         "carry); the straight-line subset is a sequence of `yield <expr>;` "
-                        "statements (docs/0026)");
+                        "statements");
             ok = false;
             break;
         }

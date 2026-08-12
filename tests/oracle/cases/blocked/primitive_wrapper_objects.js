@@ -2,13 +2,12 @@
 // objects. Call String(x) for the conversion, which is exact." — and the same
 // message for `new Boolean(...)`.
 //
-// docs/0030 decisions 4 and 6 landed `String` and `Boolean` as CONVERSION
-// functions and refused their `new` forms by name. What is missing is the
-// String and Boolean exotic OBJECT (ECMA-262 10.4.3 and 20.3): a heap object
-// with a `[[BooleanData]]` or `[[StringData]]` internal slot, `typeof`
-// "object", a prototype chain, and — for a String object — index properties
-// and a non-writable `length` that 10.4.3.4 StringGetOwnProperty synthesises
-// from the wrapped characters.
+// `String` and `Boolean` landed as CONVERSION functions and refused their `new`
+// forms by name. What is missing is the String and Boolean exotic OBJECT
+// (ECMA-262 10.4.3 and 20.3): a heap object with a `[[BooleanData]]` or
+// `[[StringData]]` internal slot, `typeof` "object", a prototype chain, and —
+// for a String object — index properties and a non-writable `length` that
+// 10.4.3.4 StringGetOwnProperty synthesises from the wrapped characters.
 //
 // Refused rather than approximated because the shape of `bronze_construct`
 // makes the approximation SILENT: a native constructor returns a primitive,

@@ -1,14 +1,13 @@
-// A long straight-line block full of short-lived dynamic temporaries, which
-// is the shape GC root slot reuse (docs/0033 decision 5) is built for: each
-// intermediate dies almost immediately and its frame slot is handed to the
-// next one.
+// A long straight-line block full of short-lived dynamic temporaries, which is
+// the shape GC root slot reuse is built for: each intermediate dies almost
+// immediately and its frame slot is handed to the next one.
 //
 // What must hold is that a value is still readable everywhere it is read. A
 // slot released one instruction too early gives its next occupant's bytes to
 // whoever reads the old value — and under `BRONZE_GC_STRESS=1`, which the
-// oracle suite runs every case under, a value whose slot was reused before
-// its last use reads as a forwarded header rather than as an object, which is
-// the silent-wrong-answer half of docs/0031 decision 7.
+// oracle suite runs every case under, a value whose slot was reused before its
+// last use reads as a forwarded header rather than as an object, which is the
+// silent-wrong-answer half of an unrooted argument block.
 //
 // So every line below reads something built several allocations earlier, and
 // the answers are all derivable from the source by hand.
@@ -56,8 +55,8 @@ for (let i = 0; i < 20; i = i + 1) {
 }
 console.log(carried.n, carried.s);
 
-// Block arguments are uses too (docs/0033 decision 5): `picked` reaches the
-// join through the branch, not through an operand list.
+// Block arguments are uses too: `picked` reaches the join through the branch,
+// not through an operand list.
 function pick(flag) {
   const left = mk(100);
   const right = mk(200);

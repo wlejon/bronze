@@ -3,12 +3,11 @@
 // evaluated first, its value is read (GetValue) SECOND, and only then is
 // the right-hand side evaluated. The store (PutValue) is last.
 //
-// Every case below has a right-hand side that writes the target, so the
-// two orders give different answers. Lowering evaluated the right-hand
-// side first for an identifier target, which is invisible while the read
-// emits no instruction and observable the moment it does — a captured
-// binding is memory (docs/0007), so its read is an `env.get` that moved
-// with the code.
+// Every case below has a right-hand side that writes the target, so the two
+// orders give different answers. Lowering evaluated the right-hand side first
+// for an identifier target, which is invisible while the read emits no
+// instruction and observable the moment it does — a captured binding is memory,
+// so its read is an `env.get` that moved with the code.
 
 let x = 1;
 const bumpX = function () {

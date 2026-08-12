@@ -40,9 +40,8 @@ console.log(1e1_0);
 console.log(.5);
 console.log(.25e2);
 
-// The forms compose with the operators, and a hex literal is a Number like
-// any other: `|` is ToInt32 of it (docs/0015 decision 1), so the sign bit of
-// 0x80000000 is observable.
+// The forms compose with the operators, and a hex literal is a Number like any
+// other: `|` is ToInt32 of it, so the sign bit of 0x80000000 is observable.
 console.log(0xFF + 1);
 console.log(0b1 << 4);
 console.log(0x7FFFFFFF);

@@ -30,9 +30,10 @@ public:
 
     // None of a try statement's three parts is a function boundary, so every
     // analysis that walks a body has to reach into all three. Leaving them
-    // opaque here is the shape of docs/0018's second bug — a call written
-    // only inside a for-of body was invisible to the call-graph fixpoint, and
-    // an invisible call site is an UNSOUND proof, not a missed optimization.
+    // opaque here is the shape of a bug this pass has already had once — a call
+    // written only inside a for-of body was invisible to the call-graph
+    // fixpoint, and an invisible call site is an UNSOUND proof, not a missed
+    // optimization.
     void visit(const ast::TryStmt& n) override {
         for (const auto& s : n.body) s->accept(*this);
         walkPattern(n.catchPattern.get());
@@ -141,10 +142,10 @@ public:
     void visit(const ast::SwitchStmt& n) override {
         if (n.discriminant) n.discriminant->accept(*this);
         for (const auto& c : n.cases) {
-            // A `case` expression is an arbitrary expression that runs when
-            // the switch does, so it is code this scope contains — leaving it
-            // out hid its call sites from the widening pass, which is not a
-            // missed optimization but an unsound proof (docs/0017 decision 9).
+            // A `case` expression is an arbitrary expression that runs when the
+            // switch does, so it is code this scope contains — leaving it out
+            // hid its call sites from the widening pass, which is not a missed
+            // optimization but an unsound proof.
             if (c.test) c.test->accept(*this);
             for (const auto& s : c.body) s->accept(*this);
         }

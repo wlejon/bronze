@@ -1,6 +1,6 @@
-// Scopes, bindings and environment records: where a declaration lives, how
-// a captured one is read and written, and how a closure value is produced
-// over the environment innermost at its creation site (docs/0007).
+// Scopes, bindings and environment records: where a declaration lives, how a
+// captured one is read and written, and how a closure value is produced over
+// the environment innermost at its creation site.
 
 #include <string>
 #include <utility>
@@ -59,7 +59,7 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
     return true;
 }
 
-// --- environment emission (docs/0007) --------------------------------
+// --- environment emission --------------------------------
 il::ValueId Lowerer::emitConstUndefined(il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
@@ -84,9 +84,8 @@ il::ValueId Lowerer::emitEnvCreate(uint32_t slotCount, il::Function& ilFn) {
     return res;
 }
 
-// The module scope's record, reached through the runtime rather than through
-// a parameter (docs/0016 decision 1). `main` publishes it once; anything that
-// needs it loads it.
+// The module scope's record, reached through the runtime rather than through a
+// parameter. `main` publishes it once; anything that needs it loads it.
 il::ValueId Lowerer::emitModuleEnvGet(il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
@@ -179,11 +178,11 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
                          const std::vector<std::string>& extraDeclarations) {
     currentScopeDepth_++;
     std::vector<std::string> slots;
-    // for-of's loop variable is declared by the loop HEAD but belongs to
-    // the body's scope, so it is not in the statement list and has to be
-    // named here. Without it a closure over the loop variable would find no
-    // slot and read SSA that the next iteration overwrites (docs/0011
-    // decision 5). A destructuring head names several.
+    // for-of's loop variable is declared by the loop HEAD but belongs to the
+    // body's scope, so it is not in the statement list and has to be named
+    // here. Without it a closure over the loop variable would find no slot and
+    // read SSA that the next iteration overwrites. A destructuring head names
+    // several.
     for (const auto& name : extraDeclarations) {
         if (!name.empty() && memoryNames_.contains(name)) slots.push_back(name);
     }
@@ -232,9 +231,8 @@ void Lowerer::exitScope() {
     currentScopeDepth_--;
 }
 
-// Shared by function expressions and nested function declarations:
-// both produce a closure value over the environment that is innermost
-// at the creation site (docs/0007 decision 4).
+// Shared by function expressions and nested function declarations: both produce
+// a closure value over the environment that is innermost at the creation site.
 std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::string& declaredName,
                                                     const std::vector<ast::Param>& params,
@@ -248,35 +246,34 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     il::Function newFn;
     newFn.name = fnName;
     newFn.returnType = il::Type::Dynamic;
-    // Every function expression is a closure: it gets the synthetic
-    // environment parameter whether or not it turns out to capture
-    // anything (docs/0007). An unused one costs a parameter.
+    // Every function expression is a closure: it gets the synthetic environment
+    // parameter whether or not it turns out to capture anything. An unused one
+    // costs a parameter.
     newFn.needsEnv = true;
     newFn.params.push_back({"__env", il::Type::Dynamic});
-    // An arrow deliberately does NOT take a receiver parameter, however it
-    // is called: its `this` is the enclosing function's, read from the
-    // environment (docs/0012 decision 3). Giving it one would be a second,
-    // contradictory answer to the same question.
+    // An arrow deliberately does NOT take a receiver parameter, however it is
+    // called: its `this` is the enclosing function's, read from the
+    // environment. Giving it one would be a second, contradictory answer to the
+    // same question.
     if (!isArrow && ast::usesThis(body)) {
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }
     // An arrow has no `arguments` either, and for the same reason: it sees the
-    // enclosing function's through the environment (docs/0027 decision 3).
+    // enclosing function's through the environment.
     if (!isArrow && ast::usesArguments(params, body)) {
         newFn.needsArguments = true;
         newFn.params.push_back({"__arguments", il::Type::Dynamic});
     }
     // A closure's parameters and return are always the uniform dynamic
-    // convention, and an annotation cannot change that (docs/0010 decision
-    // 6).
+    // convention, and an annotation cannot change that.
     //
     // A closure PARAMETER has no proof and cannot have one: a signature is
-    // inferred by joining over every call site, which is sound only for a
-    // name whose callers this compilation can enumerate, and a closure is
-    // reached through a function value — decision 5 excludes it by
-    // construction. So the proof handed to the check is `dynamic`, which is
-    // the honest report of "nothing was observed here", and every parameter
+    // inferred by joining over every call site, which is sound only for a name
+    // whose callers this compilation can enumerate, and a closure is reached
+    // through a function value — signature specialization excludes it by
+    // construction. So the proof handed to the check is `dynamic`, which is the
+    // honest report of "nothing was observed here", and every parameter
     // annotation on a closure is discarded with a warning saying so.
     for (const auto& param : params) {
         newFn.params.push_back(

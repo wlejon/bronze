@@ -1,4 +1,4 @@
-// Binding patterns, parameter defaults and spread (docs/0017).
+// Binding patterns, parameter defaults and spread.
 //
 // One seam, because the three are one mechanism seen from three sides: a
 // default is a branch on `undefined`, a rest element is "everything left" of
@@ -96,7 +96,7 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
 
 // The source, checked once before any element is read. It is what lets every
 // read below assume a walkable value, and what lets the diagnostic name the
-// construct that asked rather than for-of (docs/0017 decision 4).
+// construct that asked rather than for-of.
 Lowerer::Value Lowerer::emitPatternCheck(Value source, bool isObject, il::Function& ilFn) {
     Value boxed = boxValueIfNeeded(source, ilFn);
     il::ValueId res = ilFn.valueCount++;
@@ -124,10 +124,10 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
         }
         return true;
     }
-    // An assignment target resolves exactly as `x = v` does: a binding of
-    // this function, or a slot in an enclosing scope's environment record.
-    // Two resolutions of the same name by different means is how the update
-    // path and the assignment path once disagreed (docs/0016 decision 3).
+    // An assignment target resolves exactly as `x = v` does: a binding of this
+    // function, or a slot in an enclosing scope's environment record. Two
+    // resolutions of the same name by different means is how the update path
+    // and the assignment path once disagreed.
     auto it = activeVarMap_.find(name);
     if (it != activeVarMap_.end()) {
         writeBinding(varBindings_[it->second], boxed, ilFn);
@@ -142,8 +142,7 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
     if (!resolvesName(name)) {
         // A destructuring ASSIGNMENT target that names nothing. The source has
         // already been evaluated and destructured, which is the order 13.15.2
-        // gives: every PutValue happens after, and this one throws (docs/0027
-        // decision 1).
+        // gives: every PutValue happens after, and this one throws.
         emitReferenceError(name, span, ilFn);
         return true;
     }
@@ -158,12 +157,12 @@ bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
                             : lowerArrayPattern(pattern, checked, target, ilFn);
 }
 
-// `[a, b = 1, [c], ...rest]` — 8.6.2 ArrayBindingPattern, which is defined
-// over an ITERATOR (docs/0021 decision 2) and not over indices. That is what
-// makes `const [first] = mySet` work, and it is why the reads below are a
-// straight-line chain of `iter.step` / `iter.value` rather than a cursor
-// threaded through an advance: the record holds the cursor, and a string's
-// code-point step lives inside it where it belongs.
+// `[a, b = 1, [c],...rest]` — 8.6.2 ArrayBindingPattern, which is defined over
+// an ITERATOR and not over indices. That is what makes `const [first] = mySet`
+// work, and it is why the reads below are a straight-line chain of `iter.step`
+// / `iter.value` rather than a cursor threaded through an advance: the record
+// holds the cursor, and a string's code-point step lives inside it where it
+// belongs.
 //
 // `iter.step`'s boolean result is deliberately unused: an exhausted record
 // answers `undefined`, which is exactly what an element past the end of the
@@ -230,10 +229,9 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
     return true;
 }
 
-// `{ x, y: renamed, z = 5, [k]: c, ...others }`. Read by key, so each element
-// is an ordinary property read — the same PropGet a `.x` would emit, computed
-// keys taking the element path exactly as they do in an object literal
-// (docs/0016 decision 9).
+// `{ x, y: renamed, z = 5, [k]: c,...others }`. Read by key, so each element is
+// an ordinary property read — the same PropGet a `.x` would emit, computed keys
+// taking the element path exactly as they do in an object literal.
 bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value source,
                                  const PatternTarget& target, il::Function& ilFn) {
     bool hasRest = false;
@@ -401,8 +399,8 @@ bool Lowerer::lowerParamBindings(const std::vector<ast::Param>& params, uint32_t
         const il::ValueId argId = i + paramBase;
         Value value{argId, ilFn.params[argId].type};
 
-        // A rest parameter never takes a default and never omits: it arrives
-        // as an array the calling convention built (docs/0017 decision 2).
+        // A rest parameter never takes a default and never omits: it arrives as
+        // an array the calling convention built.
         if (param.defaultValue) {
             auto withDefault = emitDefaultIfUndefined(value, *param.defaultValue, ilFn);
             if (!withDefault) return false;

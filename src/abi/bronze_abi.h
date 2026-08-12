@@ -26,7 +26,7 @@ extern "C" {
 
 /* The one function-pointer shape generated code is entered through
  * (function objects' code pointers). Primitives only, by construction.
- * `env_bits` carries the closure's environment record (docs/0007);
+ * `env_bits` carries the closure's environment record;
  * `undefined` for a function that captures nothing. */
 typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                                    const uint64_t* argv_bits);
@@ -38,10 +38,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_NULL_BITS      0xFFF5000000000000ull
 
 /* The Hole singleton, which is what `bronze_exception_cell` holds when no
- * exception is pending (docs/0020 decision 1). The Hole is internal by
- * construction — docs/0004 decision 1 forbids it from ever being a
- * user-visible value — so it can mean "empty" without colliding with
- * anything throwable, and its payload is 0, so "is something pending?" is one
+ * exception is pending. The Hole is internal by construction — the value model
+ * forbids it from ever being a user-visible value — so it can mean "empty"
+ * without colliding with anything throwable, and its payload is 0, so "is
+ * something pending?" is one
  * 64-bit compare against this constant rather than a mask and a shift. A
  * separate boolean flag was rejected for the reason two words always are:
  * they can disagree. */
@@ -133,7 +133,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_exception_cell, BRONZE_ABI_U64)
 
 /*
- * ---- the inline property cache contract (docs/0010 decision 7) ----------
+ * ---- the inline property cache contract ---------------------------------
  *
  * The IC table is a zero-initialized global array in the GENERATED object
  * file, one BRONZE_ABI_IC_ENTRY_SIZE-byte entry per property site, and the
@@ -149,16 +149,16 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * is a compile error rather than a silent miscompile.
  *
  * The entry is four plain words the collector never touches: shapes are
- * immortal and non-moving (docs/0004 decision 2), and the holder is derived
- * from `cached_depth` rather than cached (docs/0008 decision 2).
+ * immortal and non-moving, and the holder is derived from `cached_depth`
+ * rather than cached.
  *
  * The fourth word is the prototype-mutation epoch the entry was filled at,
  * and it is what makes a depth > 0 entry sound: the receiver's shape cannot
  * notice a property added to an object BETWEEN the receiver and the holder,
- * because that add changes only the intermediate's shape (docs/0032). The
- * inline fast path never reads it — that path is depth 0 only, where the
- * receiver's own shape is the whole answer — so this word costs generated
- * code the table stride and nothing else.
+ * because that add changes only the intermediate's shape. The inline fast
+ * path never reads it — that path is depth 0 only, where the receiver's own
+ * shape is the whole answer — so this word costs generated code the table
+ * stride and nothing else.
  */
 #define BRONZE_ABI_IC_ENTRY_SIZE     24 /* sizeof(InlineCache) */
 #define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
@@ -170,7 +170,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * therefore ONE compare meaning "own property, in an inline slot" — the
  * exact envelope the inline fast path covers. Reading only the low half
  * would forget the depth and return an ancestor's slot off the receiver,
- * which is the bug docs/0008 decision 2 exists to prevent. */
+ * which is the bug the cached depth exists to prevent. */
 #define BRONZE_ABI_IC_SLOTWORD_OFFSET BRONZE_ABI_IC_SLOT_OFFSET
 
 /* Value: NaN-boxed, tag in the top 16 bits (runtime/value.h). */
@@ -199,7 +199,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_OBJ_MIN_PAYLOAD       8
 
 /*
- * A generated function's GC root frame (docs/0006): allocated in the
+ * A generated function's GC root frame: allocated in the
  * function's own stack frame, linked onto bronze_gc_frame_top on entry and
  * unlinked before every return, so the collector can find every Dynamic
  * value compiled code is holding. Generated code links and unlinks inline
@@ -215,7 +215,7 @@ typedef struct bronze_gc_frame {
 } bronze_gc_frame;
 
 /*
- * The pending exception (docs/0020 decision 1). `bronze_exception_cell` holds
+ * The pending exception. `bronze_exception_cell` holds
  * the thrown value, or BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending.
  * Generated code, after every instruction that can throw, loads it, compares
  * it against that constant and branches — no helper call, for the same reason

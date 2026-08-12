@@ -1,9 +1,9 @@
-// The statements that move control somewhere other than the next one, and
-// the expression that declines to: `switch`, labelled `break`/`continue`,
-// `for-in`, and the optional chain. Grouped here rather than in
-// lower_test.cpp because they share one question — what the IL edge out of
-// this construct is, and which early errors keep an edge from being built
-// that no `throw` could rescue (docs/0018).
+// The statements that move control somewhere other than the next one, and the
+// expression that declines to: `switch`, labelled `break`/`continue`, `for-in`,
+// and the optional chain. Grouped here rather than in lower_test.cpp because
+// they share one question — what the IL edge out of this construct is, and
+// which early errors keep an edge from being built that no `throw` could
+// rescue.
 
 #include <doctest/doctest.h>
 
@@ -55,9 +55,9 @@ std::string printOf(std::string_view src) {
 }  // namespace
 
 TEST_CASE("for-in snapshots the key list before walking it") {
-    // docs/0018 decision 1: the keys are materialized once, into an array,
-    // and the loop is then the same iterator walk `for-of` uses. A `forin.keys`
-    // inside the loop body would mean the snapshot is being retaken.
+    // The keys are materialized once, into an array, and the loop is then the
+    // same iterator walk `for-of` uses. A `forin.keys` inside the loop body
+    // would mean the snapshot is being retaken.
     const std::string printed = printOf("const o = { a: 1 };\nfor (const k in o) { console.log(k); }\n");
     CHECK(printed.find("forin.keys") != std::string::npos);
     CHECK(printed.find("iter.open") != std::string::npos);
@@ -66,15 +66,14 @@ TEST_CASE("for-in snapshots the key list before walking it") {
 TEST_CASE("a class method is defined non-enumerably, not assigned") {
     // ECMA-262 15.7.14 gives a method `enumerable: false`, and an assignment
     // cannot say that — so a `prop.set` here would silently put every method
-    // into `Object.keys` and `for-in` on every instance (docs/0018 decision 2).
+    // into `Object.keys` and `for-in` on every instance.
     const std::string printed = printOf("class C { m() { return 1; } }\nconst c = new C();\n");
     CHECK(printed.find("method.def") != std::string::npos);
 }
 
 TEST_CASE("an optional link branches on nullish") {
-    // The short circuit is a real edge, not a runtime check inside the
-    // property helper: the whole point is that the rest of the chain is not
-    // executed (docs/0018 decision 7).
+    // The short circuit is a real edge, not a runtime check inside the property
+    // helper: the whole point is that the rest of the chain is not executed.
     const std::string printed = printOf("const o = { a: 1 };\nconsole.log(o?.a);\n");
     CHECK(printed.find("is.nullish") != std::string::npos);
     CHECK(printed.find("br %") != std::string::npos);

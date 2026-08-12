@@ -17,9 +17,9 @@ int main() {
     // Before anything can fail: a hard error must reach stderr and exit,
     // never block on a modal dialog (see fatal.h).
     bronze::disableCrashDialogs();
-    // Root frame for the whole program: Rooted<> handles inside runtime
-    // helpers register here. Generated code registers its own contiguous
-    // slot frames separately (docs/0006).
+    // Root frame for the whole program: Rooted<> handles inside runtime helpers
+    // register here. Generated code registers its own contiguous slot frames
+    // separately.
     bronze::ShadowStackFrame root_frame;
     bronze_main();
     return 0;

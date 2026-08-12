@@ -1,10 +1,10 @@
-// What lowering is allowed to believe (docs/0010 decisions 3 and 5).
+// What lowering is allowed to believe.
 //
-// Every question about a proven type is asked here, and here is the only
-// place that knows `inference_` can be null. A null result answers
-// "unproven" to everything, which reproduces the pre-inference lowering
-// byte-for-byte — that is the `--no-infer` seam of decision 8, and the
-// reason no other unit contains an `if (inference_)`.
+// Every question about a proven type is asked here, and here is the only place
+// that knows `inference_` can be null. A null result answers "unproven" to
+// everything, which reproduces the pre-inference lowering byte-for-byte — that
+// is the `--no-infer` seam, and the reason no other unit contains an `if
+// (inference_)`.
 //
 // Nothing in this file ever *widens* what lowering does: an unproven answer
 // is the uniform dynamic convention, which is always sound. A proven answer
@@ -19,9 +19,8 @@
 namespace bronze::lower {
 namespace {
 
-// The lattice element an annotation names — the ONLY meaning an annotation
-// has (docs/0010 decision 6). A claim to be checked against a proof, never an
-// IL type on its own.
+// The lattice element an annotation names — the ONLY meaning an annotation has.
+// A claim to be checked against a proof, never an IL type on its own.
 //
 // Both TypeScript's spellings and bronze's own IL names are accepted: a
 // policy whose premise is "annotations are untrusted TS hints" cannot reject
@@ -54,9 +53,9 @@ constexpr const char* kReadableAnnotations =
 
 // The IL type a proven `types::Type` licenses.
 //
-// Only `Number` buys anything today: it is the one lattice element with
-// unboxed IL ops behind it (docs/0010 decision 3). Everything else stays
-// `Dynamic`, the designed sound fallback.
+// Only `Number` buys anything today: it is the one lattice element with unboxed
+// IL ops behind it. Everything else stays `Dynamic`, the designed sound
+// fallback.
 //
 // `Never` lands here deliberately and is NOT an error. It means a
 // direct-callable function no call site reaches, so no value ever arrives at
@@ -77,37 +76,37 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
     return inferredType(expr).is(types::TypeKind::Number);
 }
 
-// Whether a property site's receiver is proven to have ONE compile-time
-// object identity, which is what licenses the inlined inline-cache check in
-// the backend (docs/0010 decisions 4 and 7).
+// Whether a property site's receiver is proven to have ONE compile-time object
+// identity, which is what licenses the inlined inline-cache check in the
+// backend.
 //
 // The test is on the RECEIVER, not on where the property is found. A shape
 // class is a claim about the object's layout, and a monomorphic receiver is
 // exactly the condition an inline cache is built for: one shape reaches the
-// site, so one cached entry serves it. Whether the hit is own (depth 0) or
-// up the prototype chain is a fact the runtime discovers and records in the
-// entry, not one the class can answer — docs/0008 puts `Foo.prototype.m`
-// on a different object with a different shape entirely, so demanding the
-// property be at a known index in the receiver's class would exclude every
-// method call, which is the case three.js is made of.
+// site, so one cached entry serves it. Whether the hit is own (depth 0) or up
+// the prototype chain is a fact the runtime discovers and records in the entry,
+// not one the class can answer — `Foo.prototype.m` sits on a different object
+// with a different shape entirely, so demanding the property be at a known
+// index in the receiver's class would exclude every method call, which is the
+// case three.js is made of.
 //
-// A receiver that joins two classes answers `Object` with no class and gets
-// the plain call, so the inline form never becomes a polymorphic guard
-// chain in generated code — the named non-goal of decision 4.
+// A receiver that joins two classes answers `Object` with no class and gets the
+// plain call, so the inline form never becomes a polymorphic guard chain in
+// generated code, which is a named non-goal of inference.
 //
-// This never removes the guard. The proof is over THIS compilation's
-// source, and a shape class collects `this.x = ...` assignments
-// unconditionally, including ones inside branches, so a class can name a
-// layout the runtime never actually builds. The emitted sequence is sound
-// only because the shape word is still compared at run time; deleting the
-// compare needs escape analysis, which docs/0010 places outside this phase.
+// This never removes the guard. The proof is over THIS compilation's source,
+// and a shape class collects `this.x =...` assignments unconditionally,
+// including ones inside branches, so a class can name a layout the runtime
+// never actually builds. The emitted sequence is sound only because the shape
+// word is still compared at run time; deleting the compare needs escape
+// analysis, which is outside this phase.
 bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
     const types::Type t = inferredType(receiver);
     return t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass;
 }
 
-// The IL type of a block parameter at a control-flow merge (docs/0005
-// decision 2): an if/else join, a loop header, a loop exit.
+// The IL type of a block parameter at a control-flow merge: an if/else join, a
+// loop header, a loop exit.
 //
 // A parameter's type has to be an upper bound of EVERY edge into its block,
 // and lowering does not have those edges in hand — a loop header is typed
@@ -137,9 +136,9 @@ il::Type Lowerer::mergeParamType(const ast::Stmt& mergePoint, const std::string&
 // The signature of a module-level function whose calling convention
 // inference actually proved, or null when it proved nothing about it.
 //
-// One thing has to hold: the function is direct-callable (docs/0010
-// decision 5), i.e. its name is never read as a value, so every caller is a
-// call site this compilation saw and joined into the signature.
+// One thing has to hold: the function is direct-callable, i.e. its name is
+// never read as a value, so every caller is a call site this compilation saw
+// and joined into the signature.
 //
 // `export` is deliberately NOT re-tested here. An exported function has a
 // caller outside this compilation and must never be specialized, but that
@@ -173,20 +172,18 @@ types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
 //
 // This is the whole of a closure's proof surface, and deliberately so. Its
 // PARAMETERS have no proof and cannot get one: a signature is inferred by
-// joining over all call sites (docs/0010 decision 5), which is sound only
-// where this compilation can enumerate the callers, and a closure is reached
-// through a function value. Its return is a different kind of fact — one
-// about the body alone, which the analysis already computes — so an
-// annotation on it can be told apart from one that merely was not checkable.
-// Nothing here changes the calling convention: a closure's return stays
-// `dynamic` whatever this answers.
+// joining over all call sites, which is sound only where this compilation can
+// enumerate the callers, and a closure is reached through a function value. Its
+// return is a different kind of fact — one about the body alone, which the
+// analysis already computes — so an annotation on it can be told apart from one
+// that merely was not checkable. Nothing here changes the calling convention: a
+// closure's return stays `dynamic` whatever this answers.
 types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
     if (inference_ == nullptr) return types::Type::dynamic();
     return inference_->closureReturnAt(&site);
 }
 
-// docs/0010 decision 6, and with it docs/0001 decision 4: a TS annotation is
-// an untrusted optimization hint.
+// A TS annotation is an untrusted optimization hint.
 //
 // Note what it does NOT do: it does not return a type. The caller has already
 // chosen its IL type from what inference proved; this only decides whether to
@@ -198,22 +195,20 @@ types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
 //   - nothing was proven    -> "is not provable; ignoring".
 //   - something else proven -> "contradicts inferred".
 //
-// Both of the latter leave the value on the uniform dynamic convention. That
-// is what closes the live unsoundness docs/0010 named: believing the
-// annotation maps `f(x: number)` reached with a string onto an f64 parameter
-// and unboxes the string — a coercion the source never wrote, where JS says
-// `"a" + 1` is `"a1"`.
+// Both of the latter leave the value on the uniform dynamic convention. That is
+// what closes the live unsoundness: believing the annotation maps `f(x:
+// number)` reached with a string onto an f64 parameter and unboxes the string —
+// a coercion the source never wrote, where JS says `"a" + 1` is `"a1"`.
 //
-// Warnings, never errors: wild JS with wrong annotations must still compile
-// (docs/0001 decision 4). A `--strict-hints` that promotes them is named as
-// future work in docs/0010 and deliberately not here.
+// Warnings, never errors: wild JS with wrong annotations must still compile. A
+// `--strict-hints` that promotes them is future work and deliberately not here.
 //
-// With `--no-infer` nothing is provable, so every annotation would warn and
-// say only which switch is on. Those warnings are suppressed by exactly the
+// With `--no-infer` nothing is provable, so every annotation would warn and say
+// only which switch is on. Those warnings are suppressed by exactly the
 // `inference_ == nullptr` test that *defines* the mode, so the suppression
 // cannot reach the normal one. The hard error below is NOT suppressed:
-// unreadable text is a fact about the source, and a bisection seam
-// (docs/0010 decision 8) must not accept a file the normal mode rejects.
+// unreadable text is a fact about the source, and a bisection seam must not
+// accept a file the normal mode rejects.
 bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::string& name,
                               types::Type proven) {
     if (ann.empty()) return true;
@@ -258,8 +253,8 @@ bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::stri
 }
 
 // Give a module-level function's IL skeleton the parameter and return types
-// inference proved for it, so its call sites become direct *typed* calls
-// (docs/0010 decision 5). Returns false only on an internal impossibility.
+// inference proved for it, so its call sites become direct *typed* calls.
+// Returns false only on an internal impossibility.
 //
 // This runs before any body is lowered, which is what makes recursion work:
 // a self-call reads a signature that is already final rather than the
@@ -287,7 +282,7 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
 
     // The proof, and nothing else, types the parameters. An annotation never
     // reaches this loop — `checkAnnotation` compares it to the same proof
-    // afterwards and either says nothing or warns (docs/0010 decision 6).
+    // afterwards and either says nothing or warns.
     const size_t base = fn.firstSourceParam();
     for (size_t i = 0; i < sig->params.size(); ++i) {
         fn.params[i + base].type = ilTypeOf(sig->params[i]);

@@ -23,13 +23,13 @@
 
 namespace bronze::regex {
 
-// UTF-16 CODE UNITS, because that is what a JavaScript string is (docs/0004)
-// and because every position a match reports is a code unit index.
+// UTF-16 CODE UNITS, because that is what a JavaScript string is and because
+// every position a match reports is a code unit index.
 using Units = std::u16string;
 using UnitsView = std::u16string_view;
 
 // `g i m s y`, and nothing else — `u`, `v` and `d` are refused by name at
-// compile time (docs/0024).
+// compile time.
 struct Flags {
     bool global = false;
     bool ignoreCase = false;

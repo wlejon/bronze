@@ -1,7 +1,7 @@
 // BLOCKED: `unsupported: lookbehind assertions `(?<=` and `(?<!` are not
 // implemented`, named at the literal by src/regex/parser.cpp.
 //
-// docs/0024 built the pattern grammar of ECMA-262 22.2.1 except for this one
+// The pattern grammar of ECMA-262 22.2.1 is built except for this one
 // production. The reason is not the grammar — `(?<=` and `(?<!` parse like the
 // lookaheads beside them — but 22.2.2.6, which matches a lookbehind's
 // Disjunction with `direction` = backward: the terms of an Alternative are
@@ -15,7 +15,7 @@
 //
 // It is named rather than silently dropped because a lookbehind that did
 // nothing would make `/(?<=\$)\d+/` match every number in the string — the
-// exact shape of silent wrong answer docs/0000 exists to prevent.
+// exact shape of silent wrong answer the hard-error rule exists to prevent.
 //
 // What this case pins when it lands, from 22.2.1 (Assertion :: `(?<=`
 // Disjunction `)` and `(?<!` Disjunction `)`) and 22.2.2.6 (the backward

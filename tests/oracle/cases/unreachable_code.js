@@ -13,10 +13,10 @@ function early() {
 }
 console.log(early());
 
-// What a dead region still contributes is hoisting: a function declared
-// below the `return` is bound before any statement runs, so the call above
-// it resolves (docs/0007 decision 4). Skipping the dead statements must not
-// skip that, which is why the two are separate passes.
+// What a dead region still contributes is hoisting: a function declared below
+// the `return` is bound before any statement runs, so the call above it
+// resolves. Skipping the dead statements must not skip that, which is why the
+// two are separate passes.
 function hoistsFromDeadRegion() {
   return helper();
   function helper() { return "hoisted"; }

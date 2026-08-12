@@ -3,12 +3,11 @@
 // and it is ToNumber addition only when neither side is a string. The other
 // compound operators are ToNumber on both operands unconditionally.
 //
-// Lowering used to take the numeric path for EVERY compound assignment
-// whose target was a plain identifier, so `s += "b"` unboxed a string
-// pointer as a double. It now takes it only where inference proves the
-// result is a Number (docs/0010 decision 3); the member/index targets
-// always went through the dynamic add and are pinned by
-// compound_member_assign.js.
+// Lowering used to take the numeric path for EVERY compound assignment whose
+// target was a plain identifier, so `s += "b"` unboxed a string pointer as a
+// double. It now takes it only where inference proves the result is a Number;
+// the member/index targets always went through the dynamic add and are pinned
+// by compound_member_assign.js.
 
 let s = "a";
 s += "b";
@@ -41,8 +40,8 @@ v += 1;
 console.log(v);
 
 // The same two rules through an environment record. A captured binding is
-// memory, not SSA (docs/0007), so it takes the other of lowering's two
-// identifier paths — the one that had the identical defect.
+// memory, not SSA, so it takes the other of lowering's two identifier paths —
+// the one that had the identical defect.
 function joiner() {
   let acc = "a";
   const add = function (t) { acc += t; };

@@ -55,8 +55,8 @@ private:
         size_t scopeDepth = 0;
         il::ValueId valueId = il::kNoValue;
         // Captured by some nested function, so it lives in an environment
-        // record instead of in SSA (docs/0007). Reads become env.get and
-        // writes env.set, and it takes no part in SSA joins.
+        // record instead of in SSA. Reads become env.get and writes env.set,
+        // and it takes no part in SSA joins.
         bool inEnv = false;
         size_t envScopeIndex = 0;
         uint32_t envSlot = 0;
@@ -133,9 +133,9 @@ private:
     // exactly as `labelStack_` is: a `return` inside a nested function runs
     // that function's cleanups and none of the enclosing ones.
     enum class CleanupKind {
-        // docs/0020 decision 5: the `finally` body, lowered again here.
+        // The `finally` body, lowered again here, once per exit path.
         Finally,
-        // docs/0021 decision 3: IteratorClose on a for-of left early.
+        // IteratorClose on a for-of left early.
         IteratorClose,
     };
 
@@ -159,11 +159,11 @@ private:
     std::string pendingLabel_;
     size_t currentBlockIdx_ = 0;
 
-    // --- environments (docs/0007) ---------------------------------------
-    // One entry per open scope that declares a captured variable, innermost
-    // last. The stack spans function boundaries: that is exactly how a
-    // nested function resolves a free variable to a (depth, index) pair
-    // relative to the environment it is handed at entry.
+    // --- environments --------------------------------------- One entry per
+    // open scope that declares a captured variable, innermost last. The stack
+    // spans function boundaries: that is exactly how a nested function resolves
+    // a free variable to a (depth, index) pair relative to the environment it
+    // is handed at entry.
     struct EnvScopeInfo {
         std::unordered_map<std::string, uint32_t> slotOf;
         il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
@@ -172,20 +172,19 @@ private:
     std::vector<il::ValueId> savedEnvValues_;
     std::vector<bool> scopeHasEnv_;
     il::ValueId currentEnvValue_ = il::kNoValue;
-    // The `__this` parameter of the function being lowered, or kNoValue
-    // where there is no receiver to speak of (docs/0008 decision 3).
+    // The `__this` parameter of the function being lowered, or kNoValue where
+    // there is no receiver to speak of.
     il::ValueId currentThisValue_ = il::kNoValue;
     // Lowering an arrow body, where `this` resolves through the environment
-    // rather than to a parameter (docs/0012 decision 3).
+    // rather than to a parameter.
     bool currentFunctionIsArrow_ = false;
     std::unordered_set<std::string> capturedNames_;
-    // Every binding of this function that may not live in SSA:
-    // `capturedNames_` (a closure can read it after the declaring scope's SSA
-    // values are gone, docs/0007) plus every name assigned inside a `try` (a
-    // handler is entered from a point no join can enumerate, docs/0020
-    // decision 4). One set, because `enterScope` and `enterFunctionEnv` ask
-    // one question — "does this name need an environment slot?" — and the two
-    // reasons have the same answer.
+    // Every binding of this function that may not live in SSA: `capturedNames_`
+    // (a closure can read it after the declaring scope's SSA values are gone)
+    // plus every name assigned inside a `try` (a handler is entered from a
+    // point no join can enumerate). One set, because `enterScope` and
+    // `enterFunctionEnv` ask one question — "does this name need an environment
+    // slot?" — and the two reasons have the same answer.
     //
     // Deliberately NOT the set `lowerForStmt`'s per-iteration-binding
     // diagnostic reads: that is a hard error about closures, and widening it
@@ -194,13 +193,12 @@ private:
     std::unordered_set<std::string> memoryNames_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
-    // The module scope (docs/0016 decision 1). Its slot layout is decided
-    // before ANY body is lowered, because a top-level function declaration
-    // resolves module-level names against it and is lowered long before
-    // `main` exists to create the record. It sits at the bottom of
-    // `envScopes_` for the whole compilation and is never popped, so every
-    // (depth, index) pair anywhere in the module counts hops to the same
-    // place.
+    // The module scope. Its slot layout is decided before ANY body is lowered,
+    // because a top-level function declaration resolves module-level names
+    // against it and is lowered long before `main` exists to create the record.
+    // It sits at the bottom of `envScopes_` for the whole compilation and is
+    // never popped, so every (depth, index) pair anywhere in the module counts
+    // hops to the same place.
     std::vector<std::string> moduleEnvSlots_;
     size_t moduleEnvScope_ = SIZE_MAX;
 
@@ -221,10 +219,10 @@ private:
         std::unordered_map<std::string, il::Type> paramType;
     };
 
-    // --- lower_infer.cpp: what inference proved (docs/0010) --------------
-    // The single place "there is no inference result" is answered, so no
-    // other unit tests inference_ and --no-infer stays one null pointer
-    // rather than a flag threaded through every site.
+    // --- lower_infer.cpp: what inference proved -------------- The single
+    // place "there is no inference result" is answered, so no other unit tests
+    // inference_ and --no-infer stays one null pointer rather than a flag
+    // threaded through every site.
     static il::Type ilTypeOf(types::Type t);
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
@@ -236,9 +234,9 @@ private:
     types::Type provenClosureReturn(const ast::Node& site) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
-    // The annotation policy (docs/0010 decision 6). Returns false only for
-    // annotation text bronze cannot read, which is a hard error; a hint that
-    // no proof backs is a warning and compilation continues.
+    // The annotation policy. Returns false only for annotation text bronze
+    // cannot read, which is a hard error; a hint that no proof backs is a
+    // warning and compilation continues.
     bool checkAnnotation(const std::string& ann, Span span, const std::string& name,
                          types::Type proven);
 
@@ -260,7 +258,7 @@ private:
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
-    // --- lower_unresolved.cpp: names that resolve to nothing (docs/0027) ---
+    // --- lower_unresolved.cpp: names that resolve to nothing ---
     bool resolvesName(const std::string& name) const;
     void warnUnresolved(const std::string& name, Span span);
     Value emitReferenceError(const std::string& name, Span span, il::Function& ilFn);
@@ -278,8 +276,8 @@ private:
     // gives a slot only to the ones written at the top level, and the rest
     // would otherwise fall off the resolution ladder and be reported as
     // unresolvable globals — a compiler gap wearing a language error's costume,
-    // which is precisely the line docs/0027 decision 1 draws (bronze can PROVE
-    // the name is declared, so it must refuse now).
+    // which is precisely where the provable/unprovable line falls (bronze can
+    // PROVE the name is declared, so it must refuse now).
     std::vector<std::string> functionVarNames_;
     // Which unresolved names have already been warned about. Per module, so
     // one `document` warning covers every mention of it.
@@ -304,7 +302,7 @@ private:
     Value lowerCondition(const ast::Expr& expr, il::Function& ilFn);
     Value lowerConditionFromVal(Value val, il::Function& ilFn);
 
-    // --- lower_scope.cpp: scopes, environments, closures (docs/0007) -----
+    // --- lower_scope.cpp: scopes, environments, closures -----
     bool declareVariable(const std::string& name, il::Type type, bool isConst, bool isLet,
                          bool isVar, bool isInitialized, il::ValueId valId, Span span);
     il::ValueId emitConstUndefined(il::Function& ilFn);
@@ -318,28 +316,27 @@ private:
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
     void enterScope();
-    // `extraDeclarations` names bindings the scope owns that its statement
-    // list does not spell — a for-of head's, which is written outside the
-    // body but belongs to it. A LIST because a destructuring head binds
-    // several (docs/0017 decision 6).
+    // `extraDeclarations` names bindings the scope owns that its statement list
+    // does not spell — a for-of head's, which is written outside the body but
+    // belongs to it. A LIST because a destructuring head binds several.
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
                     const std::vector<std::string>& extraDeclarations = {});
     void exitScope();
-    // `site` is the AST node that IS the closure (a `FunctionExpr`, or a
-    // nested `FunctionDecl` — docs/0007 decision 4 makes them one path). It
-    // is how inference is asked about a function with no module index.
-    // `isArrow` decides one thing only: where `this` inside the body comes
-    // from (docs/0012 decision 3).
+    // `site` is the AST node that IS the closure (a `FunctionExpr`, or a nested
+    // `FunctionDecl` — a nested declaration desugars to a closure, so they are
+    // one path). It is how inference is asked about a function with no module
+    // index. `isArrow` decides one thing only: where `this` inside the body
+    // comes from.
     std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
                                       const std::vector<ast::Param>& params,
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
                                       il::Function& ilFn, bool isArrow = false);
 
-    // --- lower_pattern.cpp: binding patterns, defaults, spread (docs/0017) --
-    // How a pattern's names reach their bindings. A declaration MAKES them
-    // and an assignment writes ones that already exist, which is the only
-    // difference between the two forms once the pattern itself is walked.
+    // --- lower_pattern.cpp: binding patterns, defaults, spread -- How a
+    // pattern's names reach their bindings. A declaration MAKES them and an
+    // assignment writes ones that already exist, which is the only difference
+    // between the two forms once the pattern itself is walked.
     struct PatternTarget {
         bool declare = true;
         bool isConst = false;
@@ -354,10 +351,9 @@ private:
                             const PatternTarget& target, il::Function& ilFn);
     bool bindPatternName(const std::string& name, Value value, const PatternTarget& target,
                          Span span, il::Function& ilFn);
-    // `current === undefined ? <default> : current`, as a real branch rather
-    // than a select: the default's side effects must happen only when it
-    // fires, and only `undefined` fires it — `null` does not (docs/0017
-    // decision 1).
+    // `current === undefined ? <default>: current`, as a real branch rather
+    // than a select: the default's side effects must happen only when it fires,
+    // and only `undefined` fires it — `null` does not.
     std::optional<Value> emitDefaultIfUndefined(Value current, const ast::Expr& defaultExpr,
                                                 il::Function& ilFn);
     Value emitPatternCheck(Value source, bool isObject, il::Function& ilFn);
@@ -374,7 +370,7 @@ private:
     static void applyParamShape(const std::vector<ast::Param>& params, il::Function& fn);
     static bool listHasSpread(const std::vector<ast::ExprPtr>& list);
     // Every element of `list` as one array, spreads expanded — the argument
-    // vector of a call whose length is a runtime fact (docs/0017 decision 3).
+    // vector of a call whose length is a runtime fact.
     std::optional<Value> lowerListToArray(const std::vector<ast::ExprPtr>& list,
                                           il::Function& ilFn);
     void emitContainerOp(il::Op op, Value container, Value value, il::Function& ilFn);
@@ -384,22 +380,22 @@ private:
     bool lowerStmt(const ast::Stmt& stmt, il::Function& ilFn);
     bool lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn);
 
-    // --- lower_class.cpp: classes, desugared (docs/0012 decision 5) -------
+    // --- lower_class.cpp: classes, desugared -------
     bool lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
     std::optional<Value> lowerSuperMember(const ast::SuperMember* sm, il::Function& ilFn);
     std::optional<Value> lowerSuperCall(const ast::SuperCall* sc, il::Function& ilFn);
-    // The receiver of the function being lowered, wherever it comes from:
-    // a parameter for an ordinary function, the environment for an arrow
-    // (docs/0012 decision 3). `this`, `super(...)` and `super.m()` all need
-    // the same answer, so they ask in the same place.
+    // The receiver of the function being lowered, wherever it comes from: a
+    // parameter for an ordinary function, the environment for an arrow. `this`,
+    // `super(...)` and `super.m()` all need the same answer, so they ask in the
+    // same place.
     std::optional<Value> lowerThisValue(Span span, il::Function& ilFn);
     bool lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn);
 
-    // --- lower_control.cpp: control flow, block-argument SSA (docs/0005) -
-    // One loop variable and the type every block parameter standing for it
-    // takes — header, exit, and the update/condition join alike, because
-    // the analysis proves one type covering all of them.
+    // --- lower_control.cpp: control flow, block-argument SSA - One loop
+    // variable and the type every block parameter standing for it takes —
+    // header, exit, and the update/condition join alike, because the analysis
+    // proves one type covering all of them.
     struct LoopParam {
         std::string name;
         il::Type type = il::Type::Dynamic;
@@ -418,8 +414,8 @@ private:
     bool lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function& ilFn);
     bool lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn);
     bool lowerBreakStmt(const ast::BreakStmt* breakStmt, il::Function& ilFn);
-    // `break`/`continue` to `jumpStack_[targetIndex]`, running every
-    // `finally` between here and there first (docs/0020 decision 5).
+    // `break`/`continue` to `jumpStack_[targetIndex]`, running every `finally`
+    // between here and there first.
     bool emitJumpCrossingFinallys(size_t targetIndex, bool toExit, il::Function& ilFn);
     bool lowerContinueStmt(const ast::ContinueStmt* continueStmt, il::Function& ilFn);
     // The label the statement now being lowered was written under, taken so
@@ -438,10 +434,9 @@ private:
                           const std::vector<il::ValueId>& extraArgs, il::Function& ilFn);
 
     // --- lower_iter_loop.cpp: the two loops that walk a container ----------
-    // for-of over the iterator (docs/0021 decision 2), and for-in over the KEY
-    // SNAPSHOT the runtime builds (docs/0018 decision 1). One walk, because
-    // once the keys are an array the two loops differ in nothing but what they
-    // open an iterator over.
+    // for-of over the iterator, and for-in over the KEY SNAPSHOT the runtime
+    // builds. One walk, because once the keys are an array the two loops differ
+    // in nothing but what they open an iterator over.
     bool lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn);
     bool lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn);
     bool lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
@@ -449,10 +444,10 @@ private:
                            bool isVar, const std::vector<ast::StmtPtr>& body,
                            il::Function& ilFn);
 
-    // --- lower_switch.cpp: selection and fallthrough (docs/0018) -----------
+    // --- lower_switch.cpp: selection and fallthrough -----------
     bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);
 
-    // --- lower_try.cpp: try/catch/finally and throw (docs/0020) ------------
+    // --- lower_try.cpp: try/catch/finally and throw ------------
     bool lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn);
     // `try { ... } catch (e) { ... }` with no finally, which is also the
     // protected region of a try/catch/finally: 14.15.3 defines the three-part
@@ -476,16 +471,16 @@ private:
     // `iter.close %record, <suppress>`, the one instruction an
     // IteratorClose cleanup emits.
     void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn);
-    // One copy of a finally body, in its own scope. Lowered from the AST
-    // rather than cloned: a re-lowering is fresh blocks and fresh SSA values,
-    // and nothing in lowering is stateful across it (docs/0020 decision 5).
+    // One copy of a finally body, in its own scope. Lowered from the AST rather
+    // than cloned: a re-lowering is fresh blocks and fresh SSA values, and
+    // nothing in lowering is stateful across it.
     bool lowerFinallyBody(const ast::TryStmt& stmt, il::Function& ilFn);
     // Jumps into a fresh block stamped with `handler` and continues there.
     // What every copy of a finally body needs, and the reason a copy is not
     // simply emitted into whatever block lowering happens to be in.
     void openBlockUnderHandler(il::BlockId handler, il::Function& ilFn);
 
-    // --- lower_expr_cond.cpp: conditional-expression joins (docs/0005) ---
+    // --- lower_expr_cond.cpp: conditional-expression joins ---
     VarStateMap snapshotVarStates() const;
     void restoreVarStates(const VarStateMap& snap);
     ExprJoin makeExprJoin(const VarStateMap& a, const VarStateMap& b, il::BlockId joinBlock,
@@ -497,26 +492,25 @@ private:
     std::optional<Value> lowerLogical(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerNullish(const ast::Binary* bin, il::Function& ilFn);
 
-    // --- lower_expr_chain.cpp: optional chains (docs/0018 decision 4) ------
-    // One short-circuit edge out of a chain: where it leaves from, and what
-    // every binding held there. The chain's join takes a parameter for the
-    // result and one per binding the edges disagree about, so the edges have
-    // to be COLLECTED before the join's parameters can be sized — which is
-    // why the jumps are emitted at the end rather than as each link is
-    // lowered.
+    // --- lower_expr_chain.cpp: optional chains ------ One short-circuit edge
+    // out of a chain: where it leaves from, and what every binding held there.
+    // The chain's join takes a parameter for the result and one per binding the
+    // edges disagree about, so the edges have to be COLLECTED before the join's
+    // parameters can be sized — which is why the jumps are emitted at the end
+    // rather than as each link is lowered.
     struct ChainExit {
         size_t blockIdx = 0;
         il::ValueId result = il::kNoValue;  // kNoValue: this edge yields undefined
         VarStateMap state;
     };
-    // What a SHORT-CIRCUITED chain produces. `undefined` for a read, which
-    // is 13.3.9's answer — and `true` for `delete`, because 13.5.1.2 asks
-    // whether the operand produced a Reference Record and a chain that
-    // stopped early produced none (docs/0019 decision 2).
+    // What a SHORT-CIRCUITED chain produces. `undefined` for a read, which is
+    // 13.3.9's answer — and `true` for `delete`, because 13.5.1.2 asks whether
+    // the operand produced a Reference Record and a chain that stopped early
+    // produced none.
     enum class ChainMiss { Undefined, True };
     std::optional<Value> lowerOptionalChain(const ast::Expr& expr, il::Function& ilFn);
-    // The n-way join of docs/0018 decision 7 around whatever `body` lowers.
-    // Two callers, differing only in `miss`.
+    // The optional chain's n-way join around whatever `body` lowers. Two
+    // callers, differing only in `miss`.
     std::optional<Value> lowerChainJoin(const std::function<std::optional<Value>()>& body,
                                         ChainMiss miss, il::Function& ilFn);
     // Lowers the base of a link, keeping it on the current chain's spine.
@@ -535,7 +529,7 @@ private:
     std::optional<Value> lowerExpr(const ast::Expr& expr, il::Function& ilFn);
     std::optional<Value> lowerAssignment(const ast::Binary* bin, il::Function& ilFn);
 
-    // --- lower_update.cpp: `++`/`--` on each reference kind (docs/0028) -----
+    // --- lower_update.cpp: `++`/`--` on each reference kind -----
     std::optional<Value> lowerUpdate(const ast::Unary& un, il::Function& ilFn);
     std::optional<Value> lowerMemberUpdate(const ast::MemberAccess& mem, ast::UnaryOp op,
                                            il::Function& ilFn);
@@ -545,7 +539,7 @@ private:
     // disagree about what ToNumeric produced.
     Value emitUpdateStep(Value oldNumeric, ast::UnaryOp op, il::Function& ilFn);
 
-    // --- lower_expr_binary.cpp: the binary operator families (docs/0015) ---
+    // --- lower_expr_binary.cpp: the binary operator families ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
                                        il::Function& ilFn);
@@ -559,11 +553,10 @@ private:
     Value emitLogicalNot(Value boolVal, il::Function& ilFn);
     static std::optional<il::Op> bitwiseOpFor(ast::BinaryOp op);
 
-    // --- lower_object.cpp: objects, property access, new, calls (docs/0008)
+    // --- lower_object.cpp: objects, property access, new, calls
     std::optional<Value> lowerObjectLit(const ast::ObjectLit* objLit, il::Function& ilFn);
     // `delete <unary>`. Dispatches on the OPERAND's node kind rather than
-    // lowering it, because delete never reads the property it names
-    // (docs/0019 decision 2).
+    // lowering it, because delete never reads the property it names.
     std::optional<Value> lowerDelete(const ast::Unary& del, il::Function& ilFn);
     std::optional<Value> lowerDeleteReference(const ast::Unary& del, il::Function& ilFn);
     // `get k() {}` / `set k(v) {}` on `target`, from an object literal or a
@@ -574,7 +567,7 @@ private:
     std::optional<Value> lowerNewExpr(const ast::NewExpr* newExpr, il::Function& ilFn);
     // `onSpine` says this node is a link of an optional chain already being
     // lowered, which decides one thing only: whether its BASE continues the
-    // same chain (docs/0018 decision 4).
+    // same chain.
     std::optional<Value> lowerMemberAccess(const ast::MemberAccess* mem, il::Function& ilFn,
                                            bool onSpine = false);
     std::optional<Value> lowerIndexAccess(const ast::IndexAccess* idxAccess, il::Function& ilFn,

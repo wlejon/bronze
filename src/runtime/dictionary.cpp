@@ -1,6 +1,6 @@
-// Dictionary mode: what an object becomes the first time a property is
-// deleted from it (docs/0019 decision 1). The entry table and the transition
-// it replaces live here; the property paths that read them are object.cpp's.
+// Dictionary mode: what an object becomes the first time a property is deleted
+// from it. The entry table and the transition it replaces live here; the
+// property paths that read them are object.cpp's.
 
 #include "runtime/dictionary.h"
 
@@ -51,12 +51,11 @@ uint32_t Dictionary::allocateSlots(uint32_t width) {
 
 // A dictionary object's shape is PRIVATE to that object: minted fresh here,
 // never a transition target, never shared. Two consequences the rest of the
-// system leans on. It can never collide with an inline cache entry, because
-// no entry is ever filled with one (docs/0019 decision 5). And its `root` is
-// the shape it came from, so `prototypeValue()` still reads a prototype slot
-// the collector already walks (rt_state.cpp's root source) — a fresh root
-// would need registering, which the arena's owner, not this function, knows
-// how to do.
+// system leans on. It can never collide with an inline cache entry, because no
+// entry is ever filled with one. And its `root` is the shape it came from, so
+// `prototypeValue()` still reads a prototype slot the collector already walks
+// (rt_state.cpp's root source) — a fresh root would need registering, which the
+// arena's owner, not this function, knows how to do.
 static Shape* createDictionaryShape(NonMovingArena& arena, Shape* from) {
     Shape* dict = arena.create<Shape>();
     dict->root = from->root;
@@ -96,11 +95,10 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, StringHeader* name) {
     // `delete o.missing` from demoting a record to a dictionary.
     if (!shape->lookupProperty(name, info)) return true;
 
-    // 13.5.1.2 -> 10.1.10.1: a non-configurable property refuses, and in
-    // sloppy mode the operator simply answers false. This is the ONLY way
-    // `delete` in bronze can answer false, and it is why docs/0019's
-    // "delete never answers false" line is retired rather than merely
-    // qualified.
+    // 13.5.1.2 -> 10.1.10.1: a non-configurable property refuses, and in sloppy
+    // mode the operator simply answers false. This is the ONLY way `delete` in
+    // bronze can answer false, and it is why the "delete never answers false"
+    // line is retired rather than merely qualified.
     if (!info.configurable) return false;
 
     if (!shape->isDictionary()) {
@@ -146,10 +144,10 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         out_slot = d.allocateSlots(accessor ? 2u : 1u);
         d.entries.push_back(DictEntry{interned, out_slot, enumerable, accessor});
         // A depth > 0 entry can never be walking THROUGH this object — a
-        // dictionary anywhere on the path is what `cachedProtoHolder` refuses
-        // — so this bump is redundant with that refusal. It is written anyway:
+        // dictionary anywhere on the path is what `cachedProtoHolder` refuses —
+        // so this bump is redundant with that refusal. It is written anyway:
         // "the other mechanism happens to cover it" is how the add-to-an-
-        // intermediate hole survived docs/0019 in the first place.
+        // intermediate hole survives at all.
         bumpProtoMutationEpoch();
     }
 

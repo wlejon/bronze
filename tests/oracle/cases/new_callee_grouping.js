@@ -88,7 +88,7 @@ console.log(order.join(","));
 
 // The callee is a value, so "is this a constructor" is a run-time question
 // and a non-constructor is a TypeError rather than a compile error
-// (docs/0008 decision 4 step 1).
+// (step 1).
 const notCallable = { nope: 5 };
 try {
   new notCallable.nope();

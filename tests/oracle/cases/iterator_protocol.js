@@ -1,7 +1,6 @@
-// The iterator protocol (docs/0021 decision 2). `for-of` was an INDEX WALK
-// over a `length` (docs/0012 decision 3), which is a correct answer only for
-// an array and a string; every value below has no length at all and is
-// iterated by calling `next()` until it says `done`.
+// The iterator protocol. `for-of` was an INDEX WALK over a `length`, which is a
+// correct answer only for an array and a string; every value below has no
+// length at all and is iterated by calling `next()` until it says `done`.
 //
 // From ECMA-262 7.4.2 (GetIterator), 7.4.6 (IteratorStep), 27.1.2
 // (%IteratorPrototype%) and 14.7.5.6 (ForIn/OfBodyEvaluation):
@@ -21,13 +20,12 @@
 // 4. An exception from `next` propagates unchanged — 7.4.6 leaves the
 //    iterator alone, and `return` is NOT called on it.
 //
-// DELIBERATE DIVERGENCE, docs/0021 decision 1: bronze has no symbol
-// primitive, so `Symbol.iterator` is the well-known STRING key "@@iterator"
-// and `typeof Symbol.iterator` answers "string" where node answers "symbol".
-// The compensating rule is pinned below: a key that begins with `@@` is
-// created non-enumerable, so it stays out of `Object.keys` and `for-in`
-// exactly as a real symbol key would. `cases/blocked/symbols.js` is the case
-// for the primitive itself.
+// DELIBERATE DIVERGENCE: bronze has no symbol primitive, so `Symbol.iterator`
+// is the well-known STRING key "@@iterator" and `typeof Symbol.iterator`
+// answers "string" where node answers "symbol". The compensating rule is pinned
+// below: a key that begins with `@@` is created non-enumerable, so it stays out
+// of `Object.keys` and `for-in` exactly as a real symbol key would.
+// `cases/blocked/symbols.js` is the case for the primitive itself.
 
 const range = {
   from: 1,

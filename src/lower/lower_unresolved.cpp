@@ -1,4 +1,4 @@
-// Names that resolve to nothing (docs/0027 decision 1).
+// Names that resolve to nothing.
 //
 // bronze has no global object, so identifier resolution is a closed ladder:
 // this function's bindings, the enclosing environments, the module's function
@@ -62,11 +62,11 @@ void Lowerer::warnUnresolved(const std::string& name, Span span) {
 Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
                                            il::Function& ilFn) {
     // A name that IS declared and that bronze fails to bind is not an
-    // unresolvable reference — it is bronze's own gap, and decision 1's rule
-    // ("unprovable gets the spec's runtime behaviour") does not cover it.
-    // Letting `const f = function rec(n) { return rec(n - 1) }` compile to a
-    // throw would hide a compiler limitation behind a language error the
-    // program could even catch.
+    // unresolvable reference — it is bronze's own gap, and the
+    // provable/unprovable rule ("unprovable gets the spec's runtime behaviour")
+    // does not cover it. Letting `const f = function rec(n) { return rec(n - 1)
+    // }` compile to a throw would hide a compiler limitation behind a language
+    // error the program could even catch.
     if (std::find(namedFunctionExprs_.begin(), namedFunctionExprs_.end(), name) !=
         namedFunctionExprs_.end()) {
         diags_.error(span, "unsupported construct: a named function expression cannot refer "

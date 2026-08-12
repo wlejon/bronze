@@ -1,8 +1,8 @@
 // Arrays, typed arrays, ArrayBuffers, functions and strings all reach the
-// property helper and are told apart by `flags` (or, for a string, by the
-// value tag). The inlined fast path of docs/0010 decision 7 has to make the
-// same distinctions before it believes a shape word, because on any of
-// these the word at that offset is a length or a code pointer.
+// property helper and are told apart by `flags` (or, for a string, by the value
+// tag). The inlined fast path has to make the same distinctions before it
+// believes a shape word, because on any of these the word at that offset is a
+// length or a code pointer.
 //
 // Getting a non-plain-object through a site inference marked monomorphic
 // takes a constructor that returns one: ECMA-262 9.2.2 says [[Construct]]

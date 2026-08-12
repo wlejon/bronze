@@ -1,4 +1,4 @@
-// The global `Boolean` as a CONVERSION function (docs/0030 decision 4).
+// The global `Boolean` as a CONVERSION function.
 //
 // From ECMA-262 20.3.1.1 (Boolean): the result is ToBoolean(value), and 7.1.2
 // gives ToBoolean exactly six false results — undefined, null, +0, -0, NaN and

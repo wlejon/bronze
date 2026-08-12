@@ -1,8 +1,8 @@
-// The module skeleton and the expression and statement forms that do not
-// have a seam of their own yet: literals, property access and calls,
-// if/switch, for-of, classes and `super`, binding patterns, and the
-// operator families of docs/0015. The units named for one seam each —
-// inference, resolution, scopes, jumps, try — live in their own files.
+// The module skeleton and the expression and statement forms that do not have a
+// seam of their own yet: literals, property access and calls, if/switch,
+// for-of, classes and `super`, binding patterns, and the operator families. The
+// units named for one seam each — inference, resolution, scopes, jumps, try —
+// live in their own files.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -144,18 +144,16 @@ TEST_CASE("switch lowers to a strict-equality test chain") {
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
     // ECMA-262 14.12.10 matches with IsStrictlyEqual, never with the loose
-    // rules, so a `cmp.eq` here would be a wrong answer and not a style
-    // choice (docs/0018 decision 4).
+    // rules, so a `cmp.eq` here would be a wrong answer and not a style choice.
     CHECK(printed.find("strict.eq") != std::string::npos);
     CHECK(printed.find("br %") != std::string::npos);
 }
 
 TEST_CASE("for-of opens an iterator and closes it when the body throws") {
-    // docs/0021 decision 2: the loop is a cursor, not an index and a length
-    // — an iterator is opened once, stepped, and read. And decision 3: the
-    // body runs under a handler whose only job is to close the iterator and
-    // re-raise, so a `throw` from inside the loop still reaches the
-    // iterator's `return` method.
+    // The loop is a cursor, not an index and a length — an iterator is opened
+    // once, stepped, and read. And the body runs under a handler whose only job
+    // is to close the iterator and re-raise, so a `throw` from inside the loop
+    // still reaches the iterator's `return` method.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -182,7 +180,7 @@ TEST_CASE("for-of opens an iterator and closes it when the body throws") {
 TEST_CASE("a class lowers to a constructor, a prototype and property writes") {
     // No new runtime concept: the class IS the constructor function, its
     // methods are stored on `.prototype`, and a static is stored on the
-    // function itself (docs/0012 decisions 5 and 6).
+    // function itself.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -243,9 +241,9 @@ TEST_CASE("a method with no `this` in it still gets a receiver when it uses supe
 }
 
 TEST_CASE("a destructuring assignment reads the whole right side before writing") {
-    // `[a, b] = [b, a]` is a swap only if this holds. The array is built
-    // first, and every `iter.at` reads THAT array — so no target write can be
-    // seen by a later read (docs/0017 decision 4).
+    // `[a, b] = [b, a]` is a swap only if this holds. The array is built first,
+    // and every `iter.at` reads THAT array — so no target write can be seen by
+    // a later read.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower("let a = 1;\nlet b = 2;\n[a, b] = [b, a];\n", diags, buf);
@@ -277,8 +275,8 @@ TEST_CASE("a default parameter is a branch, and only undefined takes it") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    // A strict comparison against undefined, not a truthiness test: `null`,
-    // `0` and `""` are arguments that were passed (docs/0017 decision 1).
+    // A strict comparison against undefined, not a truthiness test: `null`, `0`
+    // and `""` are arguments that were passed.
     CHECK(printed.find("const.undefined") != std::string::npos);
     CHECK(printed.find("strict.eq") != std::string::npos);
     // A BRANCH, not a select — the default's own code runs only when it
@@ -298,9 +296,9 @@ TEST_CASE("a rest parameter is not an argument the caller passes") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    // Two IL parameters, because the rest one is still a value the body
-    // reads — but the call site builds it rather than passing three
-    // arguments, which is what keeps the arity fixed (docs/0017 decision 2).
+    // Two IL parameters, because the rest one is still a value the body reads —
+    // but the call site builds it rather than passing three arguments, which is
+    // what keeps the arity fixed.
     CHECK(printed.find("func count(%0: dynamic, %1: dynamic)") != std::string::npos);
     // The leftovers are appended into an array that starts EMPTY: `create.array
     // n` makes n undefined elements, so a non-zero length here would leave the
@@ -333,8 +331,8 @@ TEST_CASE("a bitwise operator is int32 inside and f64 outside") {
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
     // Each operand converts once, and the RESULT is the JS number the int32
-    // denotes — an i32 escaping the operator would be a type inference has
-    // no element for (docs/0015 decision 1).
+    // denotes — an i32 escaping the operator would be a type inference has no
+    // element for.
     CHECK(printed.find(": i32 = to.int32") != std::string::npos);
     CHECK(printed.find(": f64 = and") != std::string::npos);
 }
@@ -352,9 +350,8 @@ TEST_CASE("`~x` is a xor against -1, not an op of its own") {
 }
 
 TEST_CASE("numeric truthiness is num.truthy, not cmp.ne against zero") {
-    // The two differ at exactly one value: `if (NaN)` is false while
-    // `NaN !== NaN` is true, so one op cannot answer both (docs/0015
-    // decision 9).
+    // The two differ at exactly one value: `if (NaN)` is false while `NaN !==
+    // NaN` is true, so one op cannot answer both.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = inferAndLower(

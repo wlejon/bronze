@@ -190,8 +190,7 @@ std::vector<StmtPtr> Parser::parseBlock() {
 //
 // The declarators are evaluated left to right, and each initializer is an
 // *AssignmentExpression*, so a comma ends the initializer rather than
-// continuing it — the same rule that keeps `f(a, b)` a two-argument call
-// (docs/0015 decision 6).
+// continuing it — the same rule that keeps `f(a, b)` a two-argument call.
 bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
     const Token& kw = advance();  // const | let | var
     const bool isConst = kw.kind == TokenKind::KwConst;
@@ -245,19 +244,18 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
 
 StmtPtr Parser::parseReturn() {
     const Token& kw = advance();
-    // A `return` in a generator body is not this function's return: it ends
-    // the WALK, and its value becomes the `value` of the final result object.
-    // bronze's step index only counts forwards and its `done` result carries
-    // no value, so both are refused by name wherever they are written — here
-    // for the ones nested inside a statement, and in `parseGeneratorTail` for
-    // the ones at the top level, where the message can also say which of the
-    // two forms it is (docs/0026).
+    // A `return` in a generator body is not this function's return: it ends the
+    // WALK, and its value becomes the `value` of the final result object.
+    // bronze's step index only counts forwards and its `done` result carries no
+    // value, so both are refused by name wherever they are written — here for
+    // the ones nested inside a statement, and in `parseGeneratorTail` for the
+    // ones at the top level, where the message can also say which of the two
+    // forms it is.
     if (inGeneratorBody_) {
         diags_.error(kw.span,
                      "unsupported construct: `return` inside a generator body (it ends the walk "
                      "and supplies the final result's value); bronze implements the "
-                     "straight-line subset only: a sequence of `yield <expr>;` statements "
-                     "(docs/0026)");
+                     "straight-line subset only: a sequence of `yield <expr>;` statements");
         return nullptr;
     }
     auto ret = std::make_unique<ReturnStmt>();
@@ -551,12 +549,12 @@ StmtPtr Parser::parseTry() {
             stmt->hasCatchParam = true;
             if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
                 // 14.15.1's CatchParameter is a BindingIdentifier or a
-                // BindingPattern, so everything docs/0017 built applies
-                // unchanged — including an element default and a rest
+                // BindingPattern, so everything binding patterns support
+                // applies unchanged — including an element default and a rest
                 // element, both of which a BindingPattern admits wherever it
-                // appears. Only a default on the parameter ITSELF is
-                // excluded, and the grammar excludes it: there is no `=` to
-                // reach after the pattern closes.
+                // appears. Only a default on the parameter ITSELF is excluded,
+                // and the grammar excludes it: there is no `=` to reach after
+                // the pattern closes.
                 stmt->catchPattern = parsePattern();
                 if (!stmt->catchPattern) return nullptr;
             } else {

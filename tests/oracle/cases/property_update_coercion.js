@@ -11,22 +11,19 @@
 //
 // What this pins:
 //
-// 1. ToNumeric on each primitive the property may hold: a numeric string
-//    parses (7.1.4.1), a non-numeric one is NaN, `undefined` is NaN, `true`
-//    is 1 and `null` is +0. The value left behind is a Number in every case,
-//    which `typeof` confirms.
-// 2. The base expression, the computed key expression, and the index of
-//    `a[i]++` are each evaluated exactly ONCE. `a[i++]++` is the shape that
-//    catches a second evaluation: `i` would otherwise advance twice.
-// 3. An accessor pair is read through the getter and written through the
-//    setter, both with the RECEIVER as `this` (docs/0019 decision 4) — so a
-//    setter that transforms its argument is visible in the next read, and an
-//    accessor inherited from a prototype updates the instance it ran on and
-//    not the prototype.
-// 4. A dictionary-mode object (one a `delete` has taken out of the shape
-//    chain, docs/0019 decision 1) updates like any other.
-// 5. An element of an array is a reference like any other, and `a.length`
-//    does not move when an existing one is updated.
+// 1. ToNumeric on each primitive the property may hold: a numeric string parses
+// (7.1.4.1), a non-numeric one is NaN, `undefined` is NaN, `true` is 1 and
+// `null` is +0. The value left behind is a Number in every case, which `typeof`
+// confirms. 2. The base expression, the computed key expression, and the index
+// of `a[i]++` are each evaluated exactly ONCE. `a[i++]++` is the shape that
+// catches a second evaluation: `i` would otherwise advance twice. 3. An
+// accessor pair is read through the getter and written through the setter, both
+// with the RECEIVER as `this` — so a setter that transforms its argument is
+// visible in the next read, and an accessor inherited from a prototype updates
+// the instance it ran on and not the prototype. 4. A dictionary-mode object
+// (one a `delete` has taken out of the shape chain)
+// updates like any other. 5. An element of an array is a reference like any
+// other, and `a.length` does not move when an existing one is updated.
 
 const o = { s: "5", u: undefined, n: NaN, bad: "xyz", t: true, z: null };
 console.log(o.s++, o.s);

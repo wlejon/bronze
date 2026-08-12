@@ -10,7 +10,7 @@
 //
 // Every one of them drives the matcher through `rtRegExpExec` or through the
 // same `lastIndex` protocol it implements, so there is exactly one answer to
-// "where does the next match start" (docs/0024 decision 5).
+// "where does the next match start".
 
 #include <algorithm>
 #include <cmath>
@@ -191,7 +191,8 @@ MatchPieces piecesOf(const regex::Pattern& pattern, const Units& input,
 }
 
 // The matcher, run without the exception machinery: a failure here is bronze
-// not knowing the answer, which docs/0020 decision 6 keeps a hard error.
+// not knowing the answer, which stays a hard error rather than becoming a
+// catchable throw.
 regex::ExecStatus runMatch(const regex::Pattern& pattern, const regex::Units& input, size_t from,
                            bool sticky, regex::MatchResult& match) {
     std::string error;
@@ -293,9 +294,9 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 }
 
 // The iterator `matchAll` hands back. A plain object with `next` and
-// `@@iterator`, exactly as a Map's iterators are (docs/0021 decision 1) — the
-// state is three internal slots whose `@@` names keep them out of
-// `Object.keys` and out of `console.log`.
+// `@@iterator`, exactly as a Map's iterators are — the state is three internal
+// slots whose `@@` names keep them out of `Object.keys` and out of
+// `console.log`.
 StringHeader* internKey(const char* text) {
     StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
     return StringHeader::internToArena(rtArena(), tmp);

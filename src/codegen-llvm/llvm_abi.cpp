@@ -15,10 +15,10 @@ namespace bronze::codegen_llvm {
 // layout the ABI already pins.
 //
 // Generated code reads words 0 and 1 and never word 2 — the inline path is
-// depth 0 only, and the epoch that word 2 holds is what makes a DEPTH > 0
-// entry sound (docs/0032), which is the helper's business. The stride is
-// derived from the ABI constant rather than written as a literal, so growing
-// the entry again stays one edit in one file.
+// depth 0 only, and the epoch that word 2 holds is what makes a DEPTH > 0 entry
+// sound, which is the helper's business. The stride is derived from the ABI
+// constant rather than written as a literal, so growing the entry again stays
+// one edit in one file.
 static constexpr unsigned kIcEntryWords = BRONZE_ABI_IC_ENTRY_SIZE / sizeof(uint64_t);
 static_assert(BRONZE_ABI_IC_ENTRY_SIZE % sizeof(uint64_t) == 0,
               "the IC table is emitted as i64 words, so an entry must be a whole number of them");

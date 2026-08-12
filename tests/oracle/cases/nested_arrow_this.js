@@ -10,8 +10,8 @@
 // first and stopped there. One arrow worked; two did not.
 //
 // It matters here beyond its own sake: a generator's yielded expressions are
-// desugared into an arrow (docs/0026 decision 1), so a `yield` of anything
-// containing an arrow that reads `this` sits at depth two by construction.
+// desugared into an arrow, so a `yield` of anything containing an arrow that
+// reads `this` sits at depth two by construction.
 //
 // What is pinned:
 //

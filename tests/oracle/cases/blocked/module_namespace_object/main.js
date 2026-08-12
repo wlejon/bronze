@@ -3,8 +3,7 @@
 // order bronze does not produce.
 //
 // A module namespace is an exotic object (ECMA-262 10.4.6). Three facts about
-// it that bronze's stand-in (an object literal of getters, docs/0023 decision
-// 4) does not have:
+// it that bronze's stand-in — an object literal of getters — does not have:
 //
 //   - 10.4.6.2 OwnPropertyKeys returns the export names SORTED by code unit,
 //     so `z` declared first still comes back after `a`;

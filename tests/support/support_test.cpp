@@ -26,7 +26,7 @@ TEST_CASE("DiagnosticSink renders and reports errors") {
 TEST_CASE("a span names the buffer it indexes, so a graph renders per file") {
     // The same byte offset in two files is two different line/column pairs
     // and two different names. Rendering both against one buffer produced a
-    // real-looking location pointing at unrelated code (docs/0023 dec. 1).
+ // real-looking location pointing at unrelated code.
     SourceSet sources;
     sources.add("entry.js", "let x = 1;\n");
     sources.add("lib.js", "\n\nlet y = 2;\n");

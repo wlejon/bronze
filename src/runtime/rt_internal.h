@@ -40,9 +40,8 @@ Shape* rtNewRootShape(Value proto);
 Shape* rtRootShapeForPrototype(Value proto);
 
 // The one root shape every plain `{}` literal starts from. Per-literal root
-// shapes would give two identical literals unrelated hidden classes, so a
-// site seeing both would miss its inline cache every time (docs/0008
-// decision 1).
+// shapes would give two identical literals unrelated hidden classes, so a site
+// seeing both would miss its inline cache every time.
 Shape* rtPlainObjectShape();
 
 // A property key by the index lowering assigned it. The string form is for
@@ -53,10 +52,10 @@ const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 
 // A plain object's own string keys in ECMA-262 order — integer-like keys
-// ascending, then the rest in insertion order (docs/0009 decision 1). The
-// pointers are arena-interned shape keys, so they are immortal and non-moving
-// and stay valid across the allocations a caller makes while walking them.
-// `Object.keys`, object spread and object rest all ask this one question.
+// ascending, then the rest in insertion order. The pointers are arena-interned
+// shape keys, so they are immortal and non-moving and stay valid across the
+// allocations a caller makes while walking them. `Object.keys`, object spread
+// and object rest all ask this one question.
 std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj,
                                             bool enumerableOnly = true);
 
@@ -67,13 +66,13 @@ std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj,
 // name outside Latin-1.
 Value rtCopyKeyToHeap(const StringHeader* key);
 
-// Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it
-// (docs/0009) and so does console.log of an object, which reports the same
-// order — one test, so the two answers cannot drift.
+// Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it and
+// so does console.log of an object, which reports the same order — one test, so
+// the two answers cannot drift.
 bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 
-// console.log of a container, in the format docs/0013 pins. Returns the
-// text; the caller writes it.
+// console.log of a container, in the pinned inspect format. Returns the text;
+// the caller writes it.
 std::string rtInspect(Value v);
 
 // A heap string from UTF-8 bytes, and JS ToString / ToNumber. ToString on
@@ -124,27 +123,26 @@ void rtCheckStringMember(const std::string& key);
 void rtCheckFunctionMember(const std::string& key);
 // The typed-array table takes the RECEIVER's constructor name, so the message
 // says `Uint8Array.prototype.sort` and not `%TypedArray%.prototype.sort`: nine
-// views share one implementation (docs/0029 decision 3), and a diagnostic that
-// forgot which one the program was holding would be a worse message for the
-// sake of the implementation's convenience.
+// views share one implementation, and a diagnostic that forgot which one the
+// program was holding would be a worse message for the sake of the
+// implementation's convenience.
 void rtCheckTypedArrayMember(const char* kindName, const std::string& key);
 
 // A function's `.prototype` and its own-property object, created on first
 // demand: a function that is never used as a constructor and never given a
-// static member pays for neither (docs/0008 decision 4, docs/0012 decision
-// 6). Both allocate, so both take the function through a root and the
-// caller must re-derive any raw pointer afterwards.
+// static member pays for neither. Both allocate, so both take the function
+// through a root and the caller must re-derive any raw pointer afterwards.
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal);
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal);
 
-// A native builtin's prologue. bronze_dynamic_call hands a builtin an
-// argument block that is rooted only as long as the CALLER's frame is —
-// generated code's block lives in its GC root frame (docs/0006), but
-// FunctionHeader::call's arity-adaptation vector and the blocks builtins
-// build for callbacks are plain stack memory. The contract that makes both
-// safe is that the callee copies its parameters into roots of its own
-// before it allocates, and this is that copy, made explicit: after
-// constructing one, read arguments from HERE and never from `argv` again.
+// A native builtin's prologue. bronze_dynamic_call hands a builtin an argument
+// block that is rooted only as long as the CALLER's frame is — generated code's
+// block lives in its GC root frame, but FunctionHeader::call's arity-adaptation
+// vector and the blocks builtins build for callbacks are plain stack memory.
+// The contract that makes both safe is that the callee copies its parameters
+// into roots of its own before it allocates, and this is that copy, made
+// explicit: after constructing one, read arguments from HERE and never from
+// `argv` again.
 //
 // The std::vector allocation is C++'s, not the bronze heap's, so no
 // collection can happen between the copy and the rooting.
@@ -260,8 +258,8 @@ void rtJsonCheckMissingMember(Value obj, const std::string& key);
 
 // 25.5.2 SerializeJSONProperty over the root, which is what `JSON.stringify`
 // is. Separate from the namespace object because it is a pinned BYTE FORMAT
-// with its own file, and deliberately not the one `console.log` uses
-// (docs/0013). `undefined` for a root the algorithm omits.
+// with its own file, and deliberately not the one `console.log` uses.
+// `undefined` for a root the algorithm omits.
 Value rtJsonStringify(Value value, Value replacer, Value space);
 
 // `Map` / `Set`, by the name lowering resolved. `undefined` for anything else.
@@ -280,12 +278,12 @@ void rtCheckMapMember(bool isSetReceiver, const std::string& key);
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
 Value rtMapDefaultIterator(bool isSetReceiver);
 
-// ---- typed arrays (docs/0029) ----------------------------------------------
+// ---- typed arrays ----------------------------------------------
 
-// `ArrayBuffer` and the nine views, by the name lowering resolved;
-// `undefined` for anything else. One function object per name, interned by
-// code pointer, so the bare name and `v.constructor` are the SAME object
-// (decision 2) — which is what `switch (array.constructor)` needs.
+// `ArrayBuffer` and the nine views, by the name lowering resolved; `undefined`
+// for anything else. One function object per name, interned by code pointer, so
+// the bare name and `v.constructor` are the SAME object — which is what `switch
+// (array.constructor)` needs.
 Value rtTypedArrayConstructor(const std::string& name);
 Value rtTypedArrayConstructorFor(ElementKind kind);
 // The name of the view (or `"ArrayBuffer"`) this function object constructs,
@@ -308,7 +306,7 @@ Value rtArrayBufferMember(Value buffer, const std::string& key);
 // path can fall through to the unimplemented-member table.
 Value rtTypedArrayMethod(const std::string& key);
 
-// ---- regular expressions (docs/0024) ---------------------------------------
+// ---- regular expressions ---------------------------------------
 
 bool rtIsRegExp(Value v);
 // `RegExp`, for the provided-global path; `undefined` for any other name.
@@ -361,7 +359,7 @@ uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_
 Value rtArrayMethod(const std::string& key);
 Value rtStringMethod(const std::string& key);
 
-// ---- the global constructor objects (docs/0030) -----------------------------
+// ---- the global constructor objects -----------------------------
 
 // `Array`, `String` and `Boolean`, by the name lowering resolved; `undefined`
 // for anything else. Interned by code pointer, exactly as the typed-array

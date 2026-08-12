@@ -1,4 +1,4 @@
-// `<<`, `>>`, `>>>` and their compound assignments (docs/0015 decision 2).
+// `<<`, `>>`, `>>>` and their compound assignments.
 //
 // The left operand is ToInt32'd like any other bitwise operand; the shift
 // COUNT is ToUint32'd and masked to its low five bits, so a count of 32 is a

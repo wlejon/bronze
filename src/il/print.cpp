@@ -103,11 +103,11 @@ bool isTerminator(Op op) {
     return op == Op::Ret || op == Op::Jump || op == Op::Branch || op == Op::Throw;
 }
 
-// Can this instruction leave an exception pending (docs/0020 decision 1)?
-// The backend emits one cell test after every instruction that answers yes,
-// so the list is written the safe way round: the cases below are the ones
-// that provably cannot, and everything else does. An op added tomorrow gets
-// a redundant branch rather than a missed unwind.
+// Can this instruction leave an exception pending? The backend emits one cell
+// test after every instruction that answers yes, so the list is written the
+// safe way round: the cases below are the ones that provably cannot, and
+// everything else does. An op added tomorrow gets a redundant branch rather
+// than a missed unwind.
 //
 // It is a property of the INSTRUCTION and not of the op because `add` is two
 // operations: f64 arithmetic, which cannot throw, and `bronze_dynamic_add`,
@@ -157,8 +157,7 @@ bool canThrow(const Instruction& inst) {
         case Op::ModuleEnvSet:
         case Op::ModuleEnvGet:
         case Op::GlobalGet:
-        // console.log never runs user code: inspect does not call a getter
-        // (docs/0019 decision 4).
+        // console.log never runs user code: inspect does not call a getter.
         case Op::Print:
         case Op::PrintErr:
         case Op::ExcTake:

@@ -1,14 +1,13 @@
-// The iterator protocol (docs/0021 decisions 1 and 2), and the well-known
-// key that stands in for `Symbol.iterator` until bronze has a symbol
-// primitive.
+// The iterator protocol, and the well-known key that stands in for
+// `Symbol.iterator` until bronze has a symbol primitive.
 //
 // Two walks live here and they are deliberately not two mechanisms. The FAST
 // kinds — an array, a string, a typed array, a Map, a Set — step a cursor the
 // runtime owns: no iterator object, no result object, no call into user code
-// per element, which is what docs/0012 decision 2's index walk bought and what
-// this must not give back. The PROTOCOL kind is the general answer: read
-// `@@iterator`, call it, call `next` until `done`, and call `return` if the
-// loop is abandoned. A user-defined iterable is the whole reason it exists.
+// per element, which is what the index walk bought and what this must not give
+// back. The PROTOCOL kind is the general answer: read `@@iterator`, call it,
+// call `next` until `done`, and call `return` if the loop is abandoned. A
+// user-defined iterable is the whole reason it exists.
 //
 // Which one a value gets is decided ONCE, at open time, and recorded in the
 // record — so the loop's step is a switch on an integer rather than a
@@ -136,8 +135,8 @@ bool stepFast(IterRecordHeader* rec) {
         case IterRecordHeader::Array: {
             auto* arr = rec->target.asObject<ArrayHeader>();
             if (i >= arr->length) return false;
-            // 23.1.5.1 reads with Get, so a HOLE iterates as `undefined`
-            // rather than being skipped (docs/0019 decision 2).
+            // 23.1.5.1 reads with Get, so a HOLE iterates as `undefined` rather
+            // than being skipped.
             rec->current = arr->getElem(i);
             rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
             return true;
@@ -239,7 +238,7 @@ bool bronze_iter_step(uint64_t recBits) {
 
     // A string steps by CODE POINT: a surrogate pair is one iteration
     // yielding a two-unit string, which is why the cursor is not an `i + 1`
-    // anywhere (docs/0012 decision 2, kept).
+    // anywhere (kept).
     if (kind == IterRecordHeader::String) {
         StringHeader* str = rec->target.asString<StringHeader>();
         const uint32_t i = rec->cursorOf();
@@ -358,10 +357,10 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
     if (suppress && rtExceptionPending()) rtClearException();
 }
 
-// A rest element's value: everything the cursor has left, as a fresh array
-// (docs/0017 decision 2). Drains the same record the elements before it were
-// stepped from, which is what makes `const [a, ...rest] = someSet` see the
-// elements after `a` rather than restarting the iteration.
+// A rest element's value: everything the cursor has left, as a fresh array.
+// Drains the same record the elements before it were stepped from, which is
+// what makes `const [a,...rest] = someSet` see the elements after `a` rather
+// than restarting the iteration.
 uint64_t bronze_iter_rest(uint64_t recBits) {
     Rooted<Value> recRoot{Value(recBits)};
     Rooted<Value> out{Value(bronze_create_array(0))};
@@ -386,7 +385,7 @@ namespace {
 
 uint64_t symbolCall(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     fatal("unsupported: Symbol() (bronze has no symbol primitive; Symbol.iterator "
-          "is a well-known string key, docs/0021 decision 1)");
+          "is a well-known string key)");
 }
 
 // Real members of `Symbol` that bronze has not built. Same rule as every

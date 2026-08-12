@@ -1,6 +1,6 @@
-// Values held by generated code must survive collections that move them
-// (docs/0006). Every live value below spans thousands of allocations; under
-// the gc-stress run every one of those allocations moves the whole live set.
+// Values held by generated code must survive collections that move them. Every
+// live value below spans thousands of allocations; under the gc-stress run
+// every one of those allocations moves the whole live set.
 const obj = {a: 1, b: 2, c: 3};
 const arr = [10, 20, 30];
 const view = new Float32Array(4);

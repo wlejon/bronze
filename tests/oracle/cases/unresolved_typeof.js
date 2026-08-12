@@ -1,4 +1,4 @@
-// `typeof` on a name nothing in the program declares (docs/0027 decision 1).
+// `typeof` on a name nothing in the program declares.
 //
 // From ECMA-262 13.5.3 (the typeof operator):
 //

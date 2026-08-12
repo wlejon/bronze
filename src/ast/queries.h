@@ -19,20 +19,20 @@ namespace bronze::ast {
 // Iteration order of the returned `unordered_set` must never reach an output
 // path; sort at the boundary if it would.
 
-// Every name referenced inside a function nested anywhere within `stmts`.
-// A variable in this set must live in an environment record rather than in
-// SSA, because a closure may read or write it after the declaring scope's
-// SSA values are gone (docs/0007 decision 1).
+// Every name referenced inside a function nested anywhere within `stmts`. A
+// variable in this set must live in an environment record rather than in SSA,
+// because a closure may read or write it after the declaring scope's SSA values
+// are gone.
 //
-// For the same reason, inference must treat such a variable as ONE cell
-// joined across every write in the function rather than as a per-program-
-// point fact: a closure can write it at any time, so flow sensitivity on it
-// would be unsound (docs/0010 decision 3).
+// For the same reason, inference must treat such a variable as ONE cell joined
+// across every write in the function rather than as a per-program- point fact:
+// a closure can write it at any time, so flow sensitivity on it would be
+// unsound.
 //
-// Deliberately an over-approximation: it includes the nested functions'
-// own locals and parameters, so an unrelated same-named variable in the
-// enclosing scope is env-backed too. That costs a little speed and no
-// correctness; narrowing it is escape analysis's job (docs/0004).
+// Deliberately an over-approximation: it includes the nested functions' own
+// locals and parameters, so an unrelated same-named variable in the enclosing
+// scope is env-backed too. That costs a little speed and no correctness;
+// narrowing it is escape analysis's job.
 std::unordered_set<std::string> getCapturedNames(const std::vector<StmtPtr>& stmts);
 std::unordered_set<std::string> getCapturedNames(const std::vector<const Stmt*>& stmts);
 
@@ -42,16 +42,15 @@ std::unordered_set<std::string> getCapturedNames(const std::vector<const Stmt*>&
 // anything written inside it, need to reach that name?".
 //
 // Lowering asks it of a top-level function declaration to decide whether the
-// function must load the module environment record at entry (docs/0016
-// decision 1). An over-approximation is the safe direction — it costs one
-// load in a function that turns out not to need it, where an
-// under-approximation would be an unresolved name.
+// function must load the module environment record at entry. An
+// over-approximation is the safe direction — it costs one load in a function
+// that turns out not to need it, where an under-approximation would be an
+// unresolved name.
 std::unordered_set<std::string> getReferencedNames(const std::vector<StmtPtr>& stmts);
 
-// The same question asked of a PARAMETER LIST. A default value and a
-// pattern's computed key are code that runs in the function and appears
-// nowhere in its body, so a caller that scans only the body misses them
-// (docs/0017 decision 9).
+// The same question asked of a PARAMETER LIST. A default value and a pattern's
+// computed key are code that runs in the function and appears nowhere in its
+// body, so a caller that scans only the body misses them.
 std::unordered_set<std::string> getParamReferencedNames(const std::vector<Param>& params);
 
 // Names declared directly by `stmts` — let/const and function declarations
@@ -75,27 +74,26 @@ std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*
 // its own — never touches the loop's, and `for (let i…)` beside a callback
 // taking `i` is ubiquitous, so the two must not be confused.
 //
-// Answers "yes" whenever it cannot tell (docs/0028 decision 3): a false yes
-// is a diagnostic, a false no is a closure silently sharing one binding
-// across every iteration.
+// Answers "yes" whenever it cannot tell: a false yes is a diagnostic, a false
+// no is a closure silently sharing one binding across every iteration.
 bool closureCapturesLoopBinding(const ForStmt& forStmt, const std::string& name);
 
-// Does this function body mention `this`? Deliberately does NOT descend
-// into nested functions: each one binds its own receiver, so an inner
-// `this` says nothing about the outer function (docs/0008 decision 3).
-// Decides whether the function gets the synthetic `__this` parameter,
-// which is why it is a body property rather than a scope one.
+// Does this function body mention `this`? Deliberately does NOT descend into
+// nested functions: each one binds its own receiver, so an inner `this` says
+// nothing about the outer function. Decides whether the function gets the
+// synthetic `__this` parameter, which is why it is a body property rather than
+// a scope one.
 bool usesThis(const std::vector<StmtPtr>& stmts);
 bool usesThis(const std::vector<const Stmt*>& stmts);
 
 // Does this function need an `arguments` object, and may it have one?
 //
-// Two questions in one answer, because they have one consumer. It descends
-// into ARROWS and no further — an arrow has no `arguments` of its own and sees
-// the enclosing function's, exactly as it does for `this` (docs/0012 decision
-// 3) — and it answers false outright when the name is BOUND by a parameter or
-// by a declaration in the body, because then the binding is what `arguments`
-// means and no object exists.
+// Two questions in one answer, because they have one consumer. It descends into
+// ARROWS and no further — an arrow has no `arguments` of its own and sees the
+// enclosing function's, exactly as it does for `this` — and it answers false
+// outright when the name is BOUND by a parameter or by a declaration in the
+// body, because then the binding is what `arguments` means and no object
+// exists.
 //
 // Parameter defaults are scanned too: they are code that runs in the function
 // and appears nowhere in its body.

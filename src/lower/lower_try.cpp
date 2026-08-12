@@ -1,25 +1,25 @@
-// `try` / `catch` / `finally` and `throw` (docs/0020).
+// `try` / `catch` / `finally` and `throw`.
 //
 // Three ideas, in the order they depend on each other.
 //
-// The handler is a property of the BLOCK (decision 3): `createBlock` stamps
+// The handler is a property of the BLOCK: `createBlock` stamps
 // `currentHandler_` onto everything made inside a `try`, the backend derives
-// its cell tests from that, and nothing here emits one. So a `try` body needs
-// a block of its own — lowering cannot simply carry on in the block the
-// statement was reached in, or the first `throw` in the body would take the
-// ENCLOSING handler's edge.
+// its cell tests from that, and nothing here emits one. So a `try` body needs a
+// block of its own — lowering cannot simply carry on in the block the statement
+// was reached in, or the first `throw` in the body would take the ENCLOSING
+// handler's edge.
 //
-// A handler block takes no parameters, because it is entered from an
-// arbitrary point in the protected region (decision 4). Every binding a
-// handler could disagree about is in an environment record before lowering
-// gets here, which is why the joins below are all parameterless.
+// A handler block takes no parameters, because it is entered from an arbitrary
+// point in the protected region. Every binding a handler could disagree about
+// is in an environment record before lowering gets here, which is why the joins
+// below are all parameterless.
 //
-// `finally` is duplicated per exit path (decision 5). There is one copy for
-// normal completion, one for the exception path, and one in front of each
-// `return` / `break` / `continue` that crosses it. Nothing dispatches on a
-// completion record, so `try { return 1 } finally { return 2 }` falls out:
-// the inline copy's own `ret` terminates the block, and the outer one is
-// unreachable code that docs/0014's statement-list rule already drops.
+// `finally` is duplicated per exit path. There is one copy for normal
+// completion, one for the exception path, and one in front of each `return` /
+// `break` / `continue` that crosses it. Nothing dispatches on a completion
+// record, so `try { return 1 } finally { return 2 }` falls out: the inline
+// copy's own `ret` terminates the block, and the outer one is unreachable code
+// that the statement-list rule already drops.
 
 #include <string>
 #include <vector>
@@ -255,8 +255,8 @@ bool Lowerer::lowerTryCatch(const ast::TryStmt* tryStmt, il::Function& ilFn) {
         Value thrown{caught, il::Type::Dynamic};
         if (tryStmt->catchPattern) {
             // A CatchParameter is a BindingPattern like any other, so
-            // docs/0017's destructuring applies unchanged — including a
-            // default and a rest element inside it.
+            // destructuring applies unchanged — including a default and a rest
+            // element inside it.
             PatternTarget target{.declare = true, .isConst = false, .isLet = true, .isVar = false};
             bindOk = lowerPattern(*tryStmt->catchPattern, thrown, target, ilFn);
         } else {

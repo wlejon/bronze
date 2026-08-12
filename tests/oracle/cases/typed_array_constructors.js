@@ -1,8 +1,7 @@
-// A typed array constructor is a VALUE (docs/0029 decision 2), not just a
-// spelling `new` recognises. ECMA-262 10.2.5 puts a `constructor`
-// back-pointer on every instance, and 23.2.6.2 puts `BYTES_PER_ELEMENT` on
-// the constructor itself, so all of the following have to be the same object
-// and `===` has to say so.
+// A typed array constructor is a VALUE, not just a spelling `new` recognises.
+// ECMA-262 10.2.5 puts a `constructor` back-pointer on every instance, and
+// 23.2.6.2 puts `BYTES_PER_ELEMENT` on the constructor itself, so all of the
+// following have to be the same object and `===` has to say so.
 //
 // This is the shape three.js's `math/MathUtils.js` `denormalize` is written
 // in: a `switch` whose cases are constructors, matched against

@@ -1,6 +1,6 @@
 // Constructor + method on the prototype: the shape of `p` records
 // Point.prototype, so `p.dist2` misses on the own properties and finds the
-// method one link up (docs/0008).
+// method one link up.
 function Point(x, y) {
   this.x = x;
   this.y = y;

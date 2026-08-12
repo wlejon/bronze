@@ -1,6 +1,6 @@
 // The `RegExp` object: the constructor, the members a program reads off one,
 // and `exec` — which every other regular-expression operation in bronze is
-// built from (docs/0024 decision 5).
+// built from.
 //
 // The pattern grammar and the matcher are `src/regex` and know nothing about
 // values; what is here is the JavaScript surface over them. Three things it
@@ -15,10 +15,10 @@
 //  - the MATCH ARRAY: an array of captures that also carries `index`, `input`
 //    and `groups`, which is why arrays grew a named-property object.
 //
-// A RegExp has no prototype object, for the reason a Map has none (docs/0021
-// decision 4): it carries no shape, so there is nothing to hang one on. Its
-// methods are handed out by the property path, and `re instanceof RegExp` is
-// false — a divergence recorded in docs/0024.
+// A RegExp has no prototype object, for the reason a Map has none: it carries
+// no shape, so there is nothing to hang one on. Its methods are handed out by
+// the property path, and `re instanceof RegExp` is false, which is a deliberate
+// divergence from node.
 
 #include <cmath>
 #include <map>
@@ -266,8 +266,7 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
     if (status == regex::ExecStatus::Error) {
         // The matcher gave up rather than answering: a case fold bronze has no
         // table for, or a backtracking budget. Both are hard errors and not
-        // catchable throws, because both mean bronze does not know the answer
-        // (docs/0020 decision 6).
+        // catchable throws, because both mean bronze does not know the answer.
         fatal(error.c_str());
     }
     if (status != regex::ExecStatus::Match) {
@@ -367,8 +366,8 @@ const RegExpMethod kRegExpMethods[] = {
 };
 
 // RegExp.prototype, minus everything above and minus the flag accessors, which
-// are real. A member ECMA-262 defines and bronze has not built is a named
-// error rather than `undefined` (docs/0011 decision 3).
+// are real. A member ECMA-262 defines and bronze has not built is a named error
+// rather than `undefined`.
 const char* const kRegExpMembers[] = {
     "compile", "constructor", "hasIndices", "unicode", "unicodeSets",
     "@@match", "@@matchAll", "@@replace", "@@search", "@@split",

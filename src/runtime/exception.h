@@ -4,7 +4,7 @@
 
 #include "runtime/value.h"
 
-// The pending-exception cell and the `Error` family (docs/0020).
+// The pending-exception cell and the `Error` family.
 //
 // The cell itself is an ABI global (`bronze_exception_cell` in
 // bronze_abi.h) because generated code loads and compares it inline. What is
@@ -12,12 +12,11 @@
 // error, how a helper that calls back into JS notices one, and the three
 // constructors a program can reach by name.
 //
-// The line this file draws is decision 6's, and it is the reason `fatal` is
-// still the right answer for most of the runtime's hard errors: a TypeError
-// ECMA-262 defines becomes a catchable throw, and an unimplemented construct
-// or a broken internal invariant does not. Letting a program `catch` "bronze
-// has not built this" would turn the loud boundary of docs/0001 decision 8
-// into a silent fallback with extra steps.
+// The line this file draws is the reason `fatal` is still the right answer for
+// most of the runtime's hard errors: a TypeError ECMA-262 defines becomes a
+// catchable throw, and an unimplemented construct or a broken internal
+// invariant does not. Letting a program `catch` "bronze has not built this"
+// would turn a loud boundary into a silent fallback with extra steps.
 
 namespace bronze::runtime {
 
@@ -30,15 +29,15 @@ bool rtExceptionPending() noexcept;
 // Discard whatever is pending. Exactly one caller, and it is ECMA-262 7.4.9
 // step 6: closing an iterator while a throw is already in flight discards an
 // error the iterator's `return` method raises, because the completion already
-// on its way out is the one the program is entitled to see (docs/0021
-// decision 3). Anywhere else this would be a silent swallow.
+// on its way out is the one the program is entitled to see. Anywhere else this
+// would be a silent swallow.
 void rtClearException() noexcept;
 
-// The three ways to raise, all of which RETURN `undefined` so that a helper
-// can `return rtThrowTypeError(...)`. That is not a convenience: the caller
-// stores the returned value into a GC root slot before it tests the cell, so
-// a helper that returned anything the collector cannot parse would put a bad
-// word in a live root (docs/0020 decision 2).
+// The three ways to raise, all of which RETURN `undefined` so that a helper can
+// `return rtThrowTypeError(...)`. That is not a convenience: the caller stores
+// the returned value into a GC root slot before it tests the cell, so a helper
+// that returned anything the collector cannot parse would put a bad word in a
+// live root.
 enum class ErrorKind { Error, TypeError, RangeError, SyntaxError, ReferenceError };
 
 Value rtThrow(Value thrown) noexcept;
@@ -47,29 +46,28 @@ Value rtThrowTypeError(const std::string& message);
 Value rtThrowRangeError(const std::string& message);
 // 22.2.3.1 step 4: a pattern that does not parse is a SyntaxError, and it is
 // the one such error a running program can produce — a literal's pattern was
-// compiled where it was written (docs/0024 decision 3), so only a pattern
-// built at run time can reach here.
+// compiled where it was written, so only a pattern built at run time can reach
+// here.
 Value rtThrowSyntaxError(const std::string& message);
 // 13.5.3 / 6.2.5.5: an unresolvable reference that is EVALUATED. Raised from
 // `bronze_reference_error`, the one instruction lowering emits for a name it
-// could not resolve (docs/0027 decision 1) — never from the runtime's own
-// internals, which have no names to fail to resolve.
+// could not resolve — never from the runtime's own internals, which have no
+// names to fail to resolve.
 Value rtThrowReferenceError(const std::string& message);
 
-// The constructor objects, by name, for the provided-global path
-// (docs/0011 decision 1). `undefined` for a name that is not one of them.
+// The constructor objects, by name, for the provided-global path. `undefined`
+// for a name that is not one of them.
 Value rtErrorConstructor(const std::string& name);
 
-// Is this value an Error instance — that is, does `Error.prototype` sit on
-// its prototype chain? Asked by `console.log`, which prints an error as
-// `Name: message` rather than as a plain object (docs/0020 decision 7).
-// Walking the chain rather than reading a header flag keeps error instances
-// on the inline property fast path, which only believes flags == 0.
+// Is this value an Error instance — that is, does `Error.prototype` sit on its
+// prototype chain? Asked by `console.log`, which prints an error as `Name:
+// message` rather than as a plain object. Walking the chain rather than reading
+// a header flag keeps error instances on the inline property fast path, which
+// only believes flags == 0.
 bool rtIsErrorInstance(Value v);
 
-// `Name: message` into `out`, or just `Name` when the message is empty.
-// bronze has no stack to print, which is the deliberate divergence from node
-// recorded in docs/0020 decision 7.
+// `Name: message` into `out`, or just `Name` when the message is empty. bronze
+// has no stack to print, which is a deliberate divergence from node.
 //
 // Answers false — leaving `out` alone — when the value cannot be rendered
 // this way WITHOUT ALLOCATING: an accessor `name`, a non-string `message`, a

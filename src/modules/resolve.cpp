@@ -1,9 +1,9 @@
-// A module specifier to a file on disk. The whole algorithm is "join it to
-// the importing file's directory", and everything it deliberately does NOT do
-// is the point (docs/0023 decision 3): no `node_modules` walk, no `exports`
-// map, no conditions, and no extension guessing. Each of those is a place to
-// pick a different file than the one the program meant, and picking wrong
-// there is not a compile error — it is a different program.
+// A module specifier to a file on disk. The whole algorithm is "join it to the
+// importing file's directory", and everything it deliberately does NOT do is
+// the point: no `node_modules` walk, no `exports` map, no conditions, and no
+// extension guessing. Each of those is a place to pick a different file than
+// the one the program meant, and picking wrong there is not a compile error —
+// it is a different program.
 
 #include "modules/modules.h"
 

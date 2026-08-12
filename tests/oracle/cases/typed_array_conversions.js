@@ -12,8 +12,8 @@
 // at both ends and rounds .5 to EVEN, the one place JS does not round half
 // away from zero.
 //
-// The constructors are used as VALUES here, which they are (docs/0029
-// decision 2), so the table below is a loop rather than seven copies.
+// The constructors are used as VALUES here, which they are, so the table below
+// is a loop rather than seven copies.
 const integerKinds = [
   Int8Array, Uint8Array, Uint8ClampedArray,
   Int16Array, Uint16Array, Int32Array, Uint32Array,
@@ -28,7 +28,7 @@ for (const K of integerKinds) {
 
 // The float kinds narrow instead of wrapping: Float32 rounds to the nearest
 // representable single and overflows to Infinity, Float64 stores what it was
-// given. A stored -0 keeps its sign, and inspect reports it (docs/0013).
+// given. A stored -0 keeps its sign, and inspect reports it.
 const f32 = new Float32Array(inputs.length);
 const f64 = new Float64Array(inputs.length);
 for (let i = 0; i < inputs.length; i++) {

@@ -72,11 +72,10 @@ public:
     // caller error, not something this checks for.
     void add_permanent_root(Value* slot) { permanent_roots_.push_back(slot); }
 
-    // A root *source*: a callback invoked at collection time that yields
-    // every slot in a runtime-owned table. add_permanent_root pins one
-    // fixed address, which cannot describe a table that grows (and so
-    // reallocates) during the run — the shape registry's prototype slots
-    // (docs/0008) are the first such table.
+    // A root *source*: a callback invoked at collection time that yields every
+    // slot in a runtime-owned table. add_permanent_root pins one fixed address,
+    // which cannot describe a table that grows (and so reallocates) during the
+    // run — the shape registry's prototype slots are the first such table.
     using RootVisitor = std::function<void(Value&)>;
     using RootSource = std::function<void(const RootVisitor&)>;
     void add_root_source(RootSource src) { root_sources_.push_back(std::move(src)); }
@@ -85,20 +84,20 @@ public:
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
     // How many objects this collector has RELOCATED. A hash table keyed on
-    // VALUES rather than on property names (a Map, docs/0021 decision 4)
+    // VALUES rather than on property names (a Map)
     // hashes an object key by its address, so every such table records this
     // number when it builds its index and rebuilds when the number has moved
     // on. Nothing else can tell it that every object-key hash it holds is now
     // wrong.
     //
     // It counts RELOCATIONS and not collections, and the difference is the
-    // whole point (docs/0022): a "collections completed" counter lives at the
-    // end of `collect()`, so a second collection entry point — a nursery
-    // sweep, a compaction, anything that moves objects without finishing a
-    // full cycle — would move objects while leaving the count alone, and every
-    // Map index in the program would silently answer "not found" for a live
-    // key. This counter is incremented by the copy itself, so the only way to
-    // move an object past it is to write a second object-copy routine.
+    // whole point: a "collections completed" counter lives at the end of
+    // `collect()`, so a second collection entry point — a nursery sweep, a
+    // compaction, anything that moves objects without finishing a full cycle —
+    // would move objects while leaving the count alone, and every Map index in
+    // the program would silently answer "not found" for a live key. This
+    // counter is incremented by the copy itself, so the only way to move an
+    // object past it is to write a second object-copy routine.
     uint64_t relocation_epoch() const noexcept { return relocations_; }
 
     // How many collections have completed. Statistics; nothing about

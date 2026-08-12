@@ -26,9 +26,9 @@ using Env = std::map<std::string, Type>;
 struct FunctionInfo {
     const ast::FunctionDecl* decl = nullptr;
     std::string name;
-    // The current estimate of the calling convention. Starts at `Never` for
-    // a direct-callable function and only widens, which is what makes
-    // recursion converge (decision 5); all-`Dynamic` and frozen otherwise.
+    // The current estimate of the calling convention. Starts at `Never` for a
+    // direct-callable function and only widens, which is what makes recursion
+    // converge; all-`Dynamic` and frozen otherwise.
     Signature signature;
     bool directCallable = false;
     // Joined over the call sites seen in the pass now running, then folded
@@ -40,9 +40,8 @@ struct FunctionInfo {
 // One function's binding state, chained through `parent` for closures.
 //
 // A closure resolves outer names against the enclosing scope's `cells` and
-// never against its `env`: a name a nested function mentions is env-backed
-// by construction (docs/0007 decision 1), so anything still in `env` is
-// genuinely not visible from here.
+// never against its `env`: a name a nested function mentions is env-backed by
+// construction, so anything still in `env` is genuinely not visible from here.
 struct Scope {
     Scope* parent = nullptr;
     Env env;                        // flow-sensitive, per program point

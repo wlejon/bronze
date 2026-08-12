@@ -23,27 +23,25 @@ std::optional<il::Module> Lowerer::lower() {
             il::Function fn;
             fn.name = fnDecl->name;
             fn.isExported = fnDecl->isExported;
-            // A body that mentions `this` gets the synthetic receiver
-            // parameter ahead of its source parameters; every call
-            // site supplies it, direct ones included, so this costs
-            // nothing to functions that do not use it (docs/0008).
+            // A body that mentions `this` gets the synthetic receiver parameter
+            // ahead of its source parameters; every call site supplies it,
+            // direct ones included, so this costs nothing to functions that do
+            // not use it.
             if (ast::usesThis(fnDecl->body)) {
                 fn.needsThis = true;
                 fn.params.push_back({"__this", il::Type::Dynamic});
             }
             // `arguments` is the caller's real argument list, which only the
             // call wrapper can see — so it arrives as a synthetic parameter
-            // too, and the function stops being a direct-call target
-            // (docs/0027 decision 3).
+            // too, and the function stops being a direct-call target.
             if (ast::usesArguments(fnDecl->params, fnDecl->body)) {
                 fn.needsArguments = true;
                 fn.params.push_back({"__arguments", il::Type::Dynamic});
             }
-            // Every source parameter starts on the uniform dynamic
-            // convention and stays there unless a PROOF moves it. An
-            // annotation is not a proof (docs/0010 decision 6): it is
-            // checked below, after the proof is in hand, and it never
-            // appears on the left of an assignment to a type.
+            // Every source parameter starts on the uniform dynamic convention
+            // and stays there unless a PROOF moves it. An annotation is not a
+            // proof: it is checked below, after the proof is in hand, and it
+            // never appears on the left of an assignment to a type.
             for (const auto& param : fnDecl->params) {
                 // A pattern parameter binds names but has none of its own; the
                 // IL still needs one slot, and naming it for its position is
@@ -131,10 +129,10 @@ std::optional<il::Module> Lowerer::lower() {
     if (!topLevelStmts.empty()) {
         il::Function mainFn;
         mainFn.name = "main";
-        // Nothing above `main` can catch, so its unwind path reports and
-        // exits rather than returning (docs/0020 decision 2). No handler
-        // BLOCK, and so no IL at all in a program that never throws — which
-        // is what keeps every pinned dump of one byte-identical.
+        // Nothing above `main` can catch, so its unwind path reports and exits
+        // rather than returning. No handler BLOCK, and so no IL at all in a
+        // program that never throws — which is what keeps every pinned dump of
+        // one byte-identical.
         mainFn.isEntryPoint = true;
         mainFn.returnType = il::Type::Void;
         mainFn.valueCount = 0;
@@ -145,9 +143,9 @@ std::optional<il::Module> Lowerer::lower() {
         // function body starts from an empty scope. This reset is not
         // housekeeping: without it the top level inherited the LAST module
         // function's bindings, so a top-level `let` whose name matched one of
-        // that function's locals was rejected as a redeclaration, and a read
-        // of such a name resolved to a binding whose SSA value id names an
-        // unrelated instruction in `main` (docs/0016 decision 3).
+        // that function's locals was rejected as a redeclaration, and a read of
+        // such a name resolved to a binding whose SSA value id names an
+        // unrelated instruction in `main`.
         varBindings_.clear();
         activeVarMap_.clear();
         currentScopeDepth_ = 0;
@@ -180,20 +178,19 @@ std::optional<il::Module> Lowerer::lower() {
     for (const auto& entry : keyConstants_) {
         ilModule_.keyConstants[entry.second] = entry.first;
     }
-    // The site counter is now the size of a real allocation: the backend
-    // emits exactly this many IC entries as a global array in the object
-    // file (docs/0010 decision 7).
+    // The site counter is now the size of a real allocation: the backend emits
+    // exactly this many IC entries as a global array in the object file.
     ilModule_.icSiteCount = icSiteCounter_;
     return ilModule_;
 }
 
 // One function's environment record: the slots for every name the function
-// declares that some nested function references, in a fixed source order
-// (docs/0007 decisions 1 and 2). The module top level takes exactly the same
-// rule with no parameters, which is why this is one function and not two —
-// two copies of "captured names intersected with this scope's declarations,
-// then the hoisted vars" is two copies that can drift, and a drift between
-// them is a closure reading a slot the declaring scope never allocated.
+// declares that some nested function references, in a fixed source order. The
+// module top level takes exactly the same rule with no parameters, which is why
+// this is one function and not two — two copies of "captured names intersected
+// with this scope's declarations, then the hoisted vars" is two copies that can
+// drift, and a drift between them is a closure reading a slot the declaring
+// scope never allocated.
 //
 // Must run after `currentEnvValue_` names the environment this one chains
 // to: `emitEnvCreate` reads it as the parent link.
@@ -203,10 +200,9 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
     capturedNames_ = ast::getCapturedNames(body);
-    // The second reason a binding cannot be in SSA (docs/0020 decision 4).
-    // Unioned here and nowhere else, so `capturedNames_` keeps meaning
-    // exactly "a closure can reach it" for the one consumer that needs that
-    // narrower question.
+    // The second reason a binding cannot be in SSA. Unioned here and nowhere
+    // else, so `capturedNames_` keeps meaning exactly "a closure can reach it"
+    // for the one consumer that needs that narrower question.
     memoryNames_ = capturedNames_;
     for (auto& name : ast::getTryAssignedNames(body)) memoryNames_.insert(std::move(name));
     functionEnvBase_ = envScopes_.size();
@@ -220,10 +216,9 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     };
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped
-    // wherever they are written, so they belong to this record and not to
-    // the block that spells them).
-    // A pattern parameter has no name of its own; the names it binds are the
-    // ones a closure can capture (docs/0017 decision 5).
+    // wherever they are written, so they belong to this record and not to the
+    // block that spells them). A pattern parameter has no name of its own; the
+    // names it binds are the ones a closure can capture.
     for (const auto& p : params) {
         if (p.pattern) {
             for (const auto& bound : ast::patternBoundNames(*p.pattern)) addSlot(bound);
@@ -233,8 +228,8 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     }
     for (const auto& declName : ast::getScopeDeclarations(body)) addSlot(declName);
     for (const auto& varName : ast::getHoistedVarDeclarations(body)) addSlot(varName);
-    // The receiver, when an arrow in this body reads it (docs/0011 decision
-    // 6). It is not a declaration, so nothing above finds it.
+    // The receiver, when an arrow in this body reads it. It is not a
+    // declaration, so nothing above finds it.
     //
     // Never for an ARROW's own record, however deeply its body reads `this`:
     // an arrow binds no receiver, so a slot here would be one nothing can
@@ -260,10 +255,10 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     functionEnvScope_ = envScopes_.size() - 1;
 }
 
-// The module scope's slot layout (docs/0016 decision 1), fixed here so that
-// every consumer agrees on it: the module functions, which are lowered next
-// and read it through the runtime, and `main`, which is lowered last and
-// creates the record it describes.
+// The module scope's slot layout, fixed here so that every consumer agrees on
+// it: the module functions, which are lowered next and read it through the
+// runtime, and `main`, which is lowered last and creates the record it
+// describes.
 //
 // The capture scan covers the WHOLE module body, top-level function
 // declarations included — that is the fix. `lower()` splits those
@@ -278,8 +273,8 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     //   - this one asks what the module scope's record must hold, so it must
     //     see the top-level function declarations' bodies;
     //   - `capturedNames_` asks which of the scope's BLOCK-level bindings a
-    //     closure can reach, and it drives the for-header capture diagnostic
-    //     (docs/0007 decision 2), which is a hard error.
+    //     closure can reach, and it drives the for-header capture diagnostic,
+    //     which is a hard error.
     //
     // Widening `capturedNames_` to this set makes a top-level
     // `for (let i = 0; ...)` illegal because some unrelated function's body
@@ -380,15 +375,14 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());
     if (ilFn.needsEnv) {
-        // A closure: its environment arrives as the first parameter
-        // (docs/0007 decision 3), and the chain from there already reaches
-        // every enclosing scope including the module's.
+        // A closure: its environment arrives as the first parameter, and the
+        // chain from there already reaches every enclosing scope including the
+        // module's.
         currentEnvValue_ = 0;
     } else {
-        // A module function. It has no environment parameter and never will
-        // — that is what keeps it a direct-call target — so the one scope it
-        // can still need, the module's, is loaded from the runtime
-        // (docs/0016 decision 1).
+        // A module function. It has no environment parameter and never will —
+        // that is what keeps it a direct-call target — so the one scope it can
+        // still need, the module's, is loaded from the runtime.
         currentEnvValue_ =
             referencesModuleEnv(params, body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
     }
@@ -507,10 +501,10 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     return true;
 }
 
-// The return annotation is deliberately not passed down: it is a hint, and
-// the callers apply it — `lower()` and `lowerClosure` both check it against
-// the proof BEFORE the body is lowered, because the IL return type is part
-// of the calling convention (docs/0010 decision 6).
+// The return annotation is deliberately not passed down: it is a hint, and the
+// callers apply it — `lower()` and `lowerClosure` both check it against the
+// proof BEFORE the body is lowered, because the IL return type is part of the
+// calling convention.
 bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
     return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn);
 }

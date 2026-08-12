@@ -30,11 +30,10 @@
 
 namespace bronze::runtime {
 
-// The IC table is a zero-initialized global array in the GENERATED object
-// file, one entry per property site, and these helpers take the entry pointer
-// (docs/0010 decision 7). That is what lets compiled code hold a stable
-// address per site and inline the shape check, which a std::vector — which
-// reallocates — could never offer.
+// The IC table is a zero-initialized global array in the GENERATED object file,
+// one entry per property site, and these helpers take the entry pointer. That
+// is what lets compiled code hold a stable address per site and inline the
+// shape check, which a std::vector — which reallocates — could never offer.
 //
 // `entry` is null only when a caller has no site to cache against (the
 // runtime's own property paths); ObjectHeader::getProp already treats a null
@@ -46,10 +45,10 @@ static InlineCache* asCache(uint64_t* entry) noexcept {
 
 // Whether a key names an ELEMENT rather than a named property, for the
 // receivers that store their elements by index. This is `rtIsIntegerLikeKey`
-// and nothing else: the canonical-array-index test of docs/0009 decision 1,
-// the same one enumeration order and `Object.keys` ask, so the two answers
-// cannot drift. A leading-digits parse would send `a["1x"]` and `a["01"]` to
-// element 1, which the language calls named properties (`index_keys`).
+// and nothing else: the canonical-array-index test, the same one enumeration
+// order and `Object.keys` ask, so the two answers cannot drift. A
+// leading-digits parse would send `a["1x"]` and `a["01"]` to element 1, which
+// the language calls named properties (`index_keys`).
 static bool keyAsIndex(const std::string& key, uint32_t& out) {
     return rtIsIntegerLikeKey(key, out);
 }
@@ -80,10 +79,10 @@ static bool valueToElementIndex(Value idxVal, uint32_t& out) {
 }
 
 // ToPropertyKey (ECMA-262 7.1.19) as a heap string: every property name is a
-// string, so `o[2]` and `o["2"]` name the same property and `{ [2]: v }` and
-// `{ 2: v }` write the same one. ToString(Number) is `formatJsNumber` and not
+// string, so `o[2]` and `o["2"]` name the same property and `{ [2]: v }` and `{
+// 2: v }` write the same one. ToString(Number) is `formatJsNumber` and not
 // console.log's inspect spelling — ToString(-0) is "0", where inspect says
-// "-0" (docs/0013 decision 1).
+// "-0".
 //
 // ALLOCATES, so the caller must have the receiver rooted before it calls.
 static Value elemKeyAsString(Value idxVal) {
@@ -102,9 +101,8 @@ static Value elemKeyAsString(Value idxVal) {
         len = 4;
         std::memcpy(buf, "null", len);
     } else {
-        // An object key would need ToPrimitive, which docs/0015 decision 7
-        // names as the same missing piece behind `String(obj)` and `==`
-        // between an object and a primitive.
+        // An object key would need ToPrimitive, the same missing piece behind
+        // `String(obj)` and `==` between an object and a primitive.
         fatal("a computed property key that is an object needs ToPrimitive, "
               "which is unsupported");
     }
@@ -146,30 +144,29 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     Value objVal(objBits);
     InlineCache* ic = asCache(icEntry);
 
-    // IC-hit fast path first: a shape match needs no key at all. Generated
-    // code inlines the depth-0/inline-slot corner of exactly this check
-    // (docs/0010 decision 7) and only calls in when that misses, so what
-    // remains hot here is the proto-hit and overflow-slot case.
+    // IC-hit fast path first: a shape match needs no key at all. Generated code
+    // inlines the depth-0/inline-slot corner of exactly this check and only
+    // calls in when that misses, so what remains hot here is the proto-hit and
+    // overflow-slot case.
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
         if (fastHdr->flags == 0 && ic && ic->cached_shape) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             if (ic->describes(fastObj->shape)) {
-                // Depth 0 is an own property — the common case, straight to
-                // the slot. Anything else was found up the prototype chain, so
-                // the cached slot belongs to an ancestor and reading it off the
-                // receiver would return an unrelated property (docs/0008
-                // decision 2).
+                // Depth 0 is an own property — the common case, straight to the
+                // slot. Anything else was found up the prototype chain, so the
+                // cached slot belongs to an ancestor and reading it off the
+                // receiver would return an unrelated property.
                 if (ic->cached_depth == 0) {
                     return fastObj->getSlot(ic->cached_slot).rawBits();
                 }
                 // An ancestor's slot numbering is stable while every link on
-                // the way to it is a transition-tree shape, and not once one
-                // of them is a dictionary — which is what a delete and a
-                // prototype swap both leave behind, and neither of which the
-                // receiver's shape, all this entry checks, notices (docs/0019
-                // decision 5, docs/0022). `describes` above has already ruled
-                // out the third change, an add to an intermediate (docs/0032).
+                // the way to it is a transition-tree shape, and not once one of
+                // them is a dictionary — which is what a delete and a prototype
+                // swap both leave behind, and neither of which the receiver's
+                // shape, all this entry checks, notices. `describes` above has
+                // already ruled out the third change, an add to an
+                // intermediate.
                 bool crossedDictionary = false;
                 if (ObjectHeader* holder =
                         fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
@@ -204,9 +201,9 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
         }
         // The 10.2.5 back-pointer, as the same object the bare name `String`
-        // resolves to (docs/0030 decision 2). A primitive has no prototype
-        // chain here to find it on, so it is a branch in the property path —
-        // which is where docs/0029 decision 2 put a typed array's.
+        // resolves to. A primitive has no prototype chain here to find it on,
+        // so it is a branch in the property path, which is where a typed
+        // array's went too.
         if (keyStr == "constructor") return rtStringConstructorObject().rawBits();
         // An INDEX on a string. bronze has no String exotic object, so there
         // are no index properties for 10.4.3.5 to find and the search below
@@ -226,13 +223,13 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         return Value::fromUndefined().rawBits();
     }
 
-    // Reading a property of null or undefined is a TypeError in ECMA-262
-    // 7.3.2 (GetV -> ToObject), and answering `undefined` for it is the
+    // Reading a property of null or undefined is a TypeError in ECMA-262 7.3.2
+    // (GetV -> ToObject), and answering `undefined` for it is the
     // silent-wrong-answer shape CLAUDE.md forbids: `a.b.c` where `a.b` is
     // missing would report nothing and carry an undefined onward. It is also
-    // what makes `(a?.b).c` differ observably from `a?.b.c` (docs/0018
-    // decision 4). Catchable since docs/0020: the spec names it, so it is a
-    // thrown TypeError rather than the process death it used to be.
+    // what makes `(a?.b).c` differ observably from `a?.b.c`. Catchable since
+    // The spec names it, so it is a thrown TypeError rather than the process
+    // death it used to be.
     if (objVal.isNull() || objVal.isUndefined()) {
         return rtThrowTypeError("Cannot read properties of " +
                                 std::string(objVal.isNull() ? "null" : "undefined") +
@@ -244,7 +241,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // member that exists), so the method is handed out directly — the same
     // shape the string branch above has. Answering `undefined` here is what
     // made `(1.5).toFixed(2)` die as "undefined is not a function" instead of
-    // naming the member, which is the silent fallback docs/0011 decision 3
+    // naming the member, which is the silent fallback the loud-member rule
     // exists to prevent.
     if (objVal.isNumber()) {
         Value method = rtNumberMethod(keyStr);
@@ -256,7 +253,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // above exists: without one it fell through to the "not an object" answer
     // below, so `true.constructor` was `undefined` where `(5).constructor` was
     // a named error — two answers to one question, and the silent one was the
-    // boolean's (docs/0030 decision 6).
+    // boolean's.
     if (objVal.isBool()) return rtBooleanMember(keyStr).rawBits();
     // Everything with a branch above is handled; what is left is a tag no
     // program can name — a symbol, or a hole sentinel that escaped an array.
@@ -275,10 +272,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (keyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
-        // A named property, which only a match array has (docs/0024 decision
-        // 6). Read BEFORE the prototype methods, because an own property
-        // shadows an inherited one — and `m.index` must not answer with
-        // `Array.prototype.index` if one is ever added.
+        // A named property, which only a match array has. Read BEFORE the
+        // prototype methods, because an own property shadows an inherited one —
+        // and `m.index` must not answer with `Array.prototype.index` if one is
+        // ever added.
         if (Value props = arr->properties; props.isObject()) {
             Rooted<Value> propsRoot{props};
             Rooted<Value> key(Value::fromString(keyHeader));
@@ -324,19 +321,19 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     }
     if (hdr->flags == 2) {  // Function
         // A GLOBAL CONSTRUCTOR's statics come first, ahead of the `prototype`
-        // slot below (docs/0030 decision 3). That order is the whole point: a
-        // FunctionHeader answers `prototype` from a slot it creates on demand,
-        // so `Array.prototype` would read as an empty object — a silent lie
-        // about an intrinsic bronze does not have, and one a program could
-        // install a method on that nothing would ever find.
+        // slot below. That order is the whole point: a FunctionHeader answers
+        // `prototype` from a slot it creates on demand, so `Array.prototype`
+        // would read as an empty object — a silent lie about an intrinsic
+        // bronze does not have, and one a program could install a method on
+        // that nothing would ever find.
         if (Value ctorMember; rtGlobalConstructorMember(objVal, keyStr, ctorMember)) {
             return ctorMember.rawBits();
         }
         // `prototype` lives in its own slot; every other own property lives in
         // the function's property object and is found through ITS prototype
-        // chain, which `extends` linked to the base class's (docs/0012
-        // decision 6). Reading `prototype` first is what keeps `call`, `bind`
-        // and `name` diagnosed rather than answered as undefined.
+        // chain, which `extends` linked to the base class's. Reading
+        // `prototype` first is what keeps `call`, `bind` and `name` diagnosed
+        // rather than answered as undefined.
         if (keyStr == "prototype") {
             // The guard above only covers `kCtors`. Map, Set, ArrayBuffer and
             // the nine views are interned function singletons of their own, so
@@ -371,12 +368,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             if (!found.isUndefined()) return found.rawBits();
         }
         // `Symbol` is a function object so that `Symbol("tag")` names bronze
-        // rather than reporting that an object is not callable, which means
-        // its unimplemented members reach the FUNCTION miss path rather than
-        // a namespace object's (docs/0021 decision 1).
-        // 23.2.6.2's own data property, before the Function.prototype table:
-        // a typed-array constructor really carries it, so answering
-        // `undefined` would be a silent lie about a name ECMA-262 defines.
+        // rather than reporting that an object is not callable, which means its
+        // unimplemented members reach the FUNCTION miss path rather than a
+        // namespace object's. 23.2.6.2's own data property, before the
+        // Function.prototype table: a typed-array constructor really carries
+        // it, so answering `undefined` would be a silent lie about a name
+        // ECMA-262 defines.
         if (Value stat; rtTypedArrayStatic(objVal, keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(objVal, keyStr);
         rtCheckFunctionMember(keyStr);
@@ -385,15 +382,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
 
     // Interned arena key: no allocation on the property path.
     //
-    // The RECEIVER is rooted because a read can now run user code: a getter
-    // is a call, so this load is a collection point like any other helper
-    // call (docs/0006 decision 4), and the raw bits this helper was handed
-    // are dead the moment one runs.
+    // The RECEIVER is rooted because a read can now run user code: a getter is
+    // a call, so this load is a collection point like any other helper call,
+    // and the raw bits this helper was handed are dead the moment one runs.
     // Every kind with a branch above returned; anything else reaching the
-    // plain-object tail would be read through an ObjectHeader it is not, so
-    // the cast is guarded rather than trusted. `bronze_elem_get` used to hold
-    // this guarantee for the computed path and lost it when that path was
-    // folded into this one.
+    // plain-object tail would be read through an ObjectHeader it is not, so the
+    // cast is guarded rather than trusted. `bronze_elem_get` used to hold this
+    // guarantee for the computed path and lost it when that path was folded
+    // into this one.
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         fatal("internal: a property read on an unknown object kind");
     }
@@ -470,7 +466,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // rooting (nothing below can allocate). Writes are NOT inlined into
     // generated code: a write can transition the shape and grow the overflow
     // block, so the interesting half of the work is the miss, and the miss is
-    // a call either way (docs/0010 decision 7 inlines the read).
+    // a call either way (inlines the read).
     if (hdr->flags == 0 && ic && ic->cached_shape) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
@@ -503,8 +499,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // ToNumber BEFORE the bounds test, because 10.4.5.5
         // IntegerIndexedElementSet performs it whether or not the index is in
         // range. `hdr` survives the call only because rtToNumber cannot
-        // allocate — it is a hard error on an object rather than ToPrimitive
-        // (docs/0015 decision 7) — so nothing here can move the view.
+        // allocate — it is a hard error on an object rather than ToPrimitive —
+        // so nothing here can move the view.
         const double num = rtToNumber(Value(valBits));
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (idx < view->length) view->set(idx, num);
@@ -536,8 +532,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
     if (hdr->flags == 2) {  // Function
         if (keyStr != "prototype") {
-            // A static member: an own property of the function object itself
-            // (docs/0012 decision 6).
+            // A static member: an own property of the function object itself.
             Rooted<Value> fnRoot{objVal};
             Rooted<Value> val{valVal};
             rtEnsureFunctionProperties(fnRoot);

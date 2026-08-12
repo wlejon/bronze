@@ -1,8 +1,8 @@
-// The corners of String.prototype: slice's negative indices against
-// substring's swap, charAt's "" against at's undefined for an out-of-range
-// index, the empty needle, split with no separator against split with an
-// empty one, and padding with a multi-character filler.
-// Every expectation is ECMA-262, derived by hand (docs/0003).
+// The corners of String.prototype: slice's negative indices against substring's
+// swap, charAt's "" against at's undefined for an out-of-range index, the empty
+// needle, split with no separator against split with an empty one, and padding
+// with a multi-character filler. Every expectation is ECMA-262, derived by
+// hand.
 const s = "Hello, World";
 console.log(s.slice(-5));
 console.log(s.substring(5, 0));

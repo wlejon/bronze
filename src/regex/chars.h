@@ -13,9 +13,9 @@
 
 namespace bronze::regex {
 
-// An inclusive range of UTF-16 CODE UNITS. bronze has no `u` flag
-// (docs/0024), so a pattern never speaks about code points above 0xFFFF and
-// a surrogate is an ordinary unit here, matched on its own.
+// An inclusive range of UTF-16 CODE UNITS. bronze has no `u` flag, so a pattern
+// never speaks about code points above 0xFFFF and a surrogate is an ordinary
+// unit here, matched on its own.
 struct Range {
     uint32_t lo = 0;
     uint32_t hi = 0;

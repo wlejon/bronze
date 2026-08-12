@@ -29,7 +29,7 @@ struct Expr : Node {
 };
 using ExprPtr = std::unique_ptr<Expr>;
 
-// ---- Binding patterns (docs/0017) ------------------------------------------
+// ---- Binding patterns ------------------------------------------
 //
 // A pattern is what stands where a binding name would: in a declaration, in a
 // parameter, in a for-of head, and — after the cover-grammar refinement at the
@@ -52,7 +52,7 @@ struct PatternElement {
     ExprPtr keyExpr;
     // `= expr`. Evaluated only when the read produced `undefined` — not on
     // `null`, and not at all otherwise, so its side effects are observable
-    // evidence of whether it fired (docs/0017 decision 1).
+    // evidence of whether it fired.
     ExprPtr defaultValue;
     // `...rest`, which is always last and always binds a fresh container:
     // an array for an array pattern, an object for an object one.
@@ -76,11 +76,11 @@ struct NumberLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
-// `...expr` in an argument list, an array literal or an object literal. Its
-// own node rather than a flag on the list, because it is not an expression
-// that produces one value: it contributes zero or more of them to the list it
-// sits in, so every position that lowers a list has to decide what to do with
-// it and none may treat it as an operand (docs/0017 decision 3).
+// `...expr` in an argument list, an array literal or an object literal. Its own
+// node rather than a flag on the list, because it is not an expression that
+// produces one value: it contributes zero or more of them to the list it sits
+// in, so every position that lowers a list has to decide what to do with it and
+// none may treat it as an operand.
 struct SpreadElement final : Expr {
     ExprPtr argument;
     void accept(Visitor& v) const override;
@@ -101,9 +101,9 @@ struct TemplateLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
-// `/ab+/gi`. The pattern is held VERBATIM — a regular expression literal's
-// body is not a string literal and its escapes are the pattern grammar's, so
-// `\d` here is two characters and stays two (docs/0024 decision 2).
+// `/ab+/gi`. The pattern is held VERBATIM — a regular expression literal's body
+// is not a string literal and its escapes are the pattern grammar's, so `\d`
+// here is two characters and stays two.
 //
 // It is a literal in the grammar and an object at run time: every evaluation
 // produces a fresh RegExp with its own `lastIndex`, which is why lowering
@@ -121,10 +121,10 @@ struct Ident final : Expr {
 
 // Which stream a `console` method writes to. `console` is not a binding in
 // bronze — the parser folds `console.<m>` into ONE `Ident` spelling the whole
-// name, and lowering dispatches on it — so this table is the single place
-// that decides both which members exist and where each one's output goes.
-// Two copies of that would be a `console.warn` compiled to stdout, which is
-// exactly the failure the stderr split exists to prevent (docs/0026).
+// name, and lowering dispatches on it — so this table is the single place that
+// decides both which members exist and where each one's output goes. Two copies
+// of that would be a `console.warn` compiled to stdout, which is exactly the
+// failure the stderr split exists to prevent.
 enum class ConsoleStream { None, Out, Err };
 ConsoleStream consoleStreamOf(const std::string& identName);
 
@@ -141,8 +141,8 @@ struct UndefinedLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
-// `this`. Not an identifier: it resolves to the receiver the caller passed
-// (docs/0008 decision 3), never to a binding in scope.
+// `this`. Not an identifier: it resolves to the receiver the caller passed,
+// never to a binding in scope.
 struct ThisExpr final : Expr {
     void accept(Visitor& v) const override;
 };
@@ -153,11 +153,11 @@ enum class AccessorKind { None, Getter, Setter };
 enum class UnaryOp {
     Not, Negate, Posate, PreInc, PreDec, PostInc, PostDec,
     // `~` is ToInt32 then a one's complement; `typeof` yields one of six
-    // strings; `void` evaluates its operand and yields undefined (docs/0015).
+    // strings; `void` evaluates its operand and yields undefined.
     BitNot, TypeOf, Void,
-    // `delete o.k` — a *reference* operator: its operand is not evaluated
-    // as a value, so lowering dispatches on the operand's own node kind
-    // rather than lowering it first (docs/0019 decision 2).
+    // `delete o.k` — a *reference* operator: its operand is not evaluated as a
+    // value, so lowering dispatches on the operand's own node kind rather than
+    // lowering it first.
     Delete
 };
 const char* unaryOpName(UnaryOp op);
@@ -172,10 +172,10 @@ enum class BinaryOp {
     Add, Sub, Mul, Div, Mod, Less, Greater, LessEqual, GreaterEqual,
     Eq, StrictEq, Ne, StrictNe, Assign, PlusAssign, MinusAssign,
     StarAssign, SlashAssign, PercentAssign, LogicalAnd, LogicalOr, NullishCoalescing,
-    // docs/0015. The bitwise and shift operators are int32 operations on
-    // ToInt32'd operands; `Exp` is the one right-associative binary operator;
-    // `In` and `InstanceOf` are relational; `Comma` evaluates its left
-    // operand for effect and yields its right.
+    // The bitwise and shift operators are int32 operations on ToInt32'd
+    // operands; `Exp` is the one right-associative binary operator; `In` and
+    // `InstanceOf` are relational; `Comma` evaluates its left operand for
+    // effect and yields its right.
     BitAnd, BitOr, BitXor, Shl, Shr, UShr, Exp, In, InstanceOf, Comma,
     AmpAssign, PipeAssign, CaretAssign, ShlAssign, ShrAssign, UShrAssign, ExpAssign
 };
@@ -206,11 +206,10 @@ struct Ternary final : Expr {
     void accept(Visitor& v) const override;
 };
 
-// `?.` on the three link forms. The flag says this LINK is optional; whether
-// a link is part of a longer chain that its short circuit must skip is a
-// question about the tree, answered by `optionalChainRoot` below, because
-// ECMA-262 13.3.9 short-circuits the whole OptionalChain and not one link
-// (docs/0018 decision 4).
+// `?.` on the three link forms. The flag says this LINK is optional; whether a
+// link is part of a longer chain that its short circuit must skip is a question
+// about the tree, answered by `optionalChainRoot` below, because ECMA-262
+// 13.3.9 short-circuits the whole OptionalChain and not one link.
 struct MemberAccess final : Expr {
     ExprPtr object;
     std::string property;
@@ -256,12 +255,12 @@ struct NewExpr final : Expr {
 };
 
 // `super(...)` — the parent constructor run on the current receiver, and
-// `super.m` — a lookup that starts at the parent prototype but is called
-// with the current receiver. Both carry the parent class's NAME, resolved
-// by the parser from the enclosing class: the home object is a compile-time
-// constant per method, not a runtime lookup (docs/0012 decision 5). Carrying
-// the name is also what makes the parent visible to capture analysis, which
-// otherwise sees a method body that mentions no such variable.
+// `super.m` — a lookup that starts at the parent prototype but is called with
+// the current receiver. Both carry the parent class's NAME, resolved by the
+// parser from the enclosing class: the home object is a compile-time constant
+// per method, not a runtime lookup. Carrying the name is also what makes the
+// parent visible to capture analysis, which otherwise sees a method body that
+// mentions no such variable.
 struct SuperCall final : Expr {
     std::string baseName;
     std::vector<ExprPtr> args;
@@ -276,9 +275,9 @@ struct SuperMember final : Expr {
 
 // `[a, b] = pair` — a destructuring ASSIGNMENT, which writes bindings that
 // already exist rather than making new ones. Its own node because it lowers
-// nothing like `Binary{Assign}`: there is no single target to evaluate, and
-// the whole right side is read before any target is written, which is what
-// makes `[a, b] = [b, a]` a swap (docs/0017 decision 5).
+// nothing like `Binary{Assign}`: there is no single target to evaluate, and the
+// whole right side is read before any target is written, which is what makes
+// `[a, b] = [b, a]` a swap.
 struct DestructuringAssign final : Expr {
     PatternPtr pattern;
     ExprPtr value;
@@ -307,13 +306,11 @@ struct ObjectProp {
     // `{ x = 1 }`, a CoverInitializedName: legal only once the literal is
     // refined into a destructuring pattern, and never as a literal in its own
     // right. `value` is then the `x = 1` assignment the cover grammar parsed,
-    // which is exactly what the refinement needs and what lowering must
-    // refuse (docs/0017 decision 5).
+    // which is exactly what the refinement needs and what lowering must refuse.
     bool coverInitialized = false;
     // `get k() {}` / `set k(v) {}`. The property is then an ACCESSOR whose
-    // `value` is the getter or the setter function; the two halves of one
-    // name are one property, which is a fact only the runtime can enforce
-    // (docs/0019 decision 4).
+    // `value` is the getter or the setter function; the two halves of one name
+    // are one property, which is a fact only the runtime can enforce.
     AccessorKind accessor = AccessorKind::None;
     bool computed() const { return keyExpr != nullptr; }
 };
@@ -335,7 +332,7 @@ struct Param {
     std::string name;
     std::string typeAnnotation;
     // `= expr`, evaluated at CALL time on every call that omits the argument,
-    // with the parameters to its left already bound (docs/0017 decision 1).
+    // with the parameters to its left already bound.
     ExprPtr defaultValue;
     PatternPtr pattern;
     // `...rest` — always the last parameter, and always a real array.
@@ -348,12 +345,11 @@ struct FunctionExpr final : Expr {
     std::vector<Param> params;
     std::string returnType;
     std::vector<StmtPtr> body;
-    // An arrow function. The same node because it is the same thing —
-    // a closure value — with one semantic difference that matters:
-    // `this` inside it is the ENCLOSING function's receiver, captured
-    // like any other free variable, rather than one the caller supplies
-    // (docs/0012 decision 3). An expression body is stored as a single
-    // synthesized `return`.
+    // An arrow function. The same node because it is the same thing — a closure
+    // value — with one semantic difference that matters: `this` inside it is
+    // the ENCLOSING function's receiver, captured like any other free variable,
+    // rather than one the caller supplies. An expression body is stored as a
+    // single synthesized `return`.
     bool isArrow = false;
     void accept(Visitor& v) const override;
 };
@@ -438,11 +434,11 @@ struct SwitchStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
-// `for (const k in object) body`. The same head shape as ForOfStmt, and for
-// the same reason: the binding is per-iteration, so a closure made in the
-// body captures that iteration's key. What differs is entirely in what is
-// walked — the enumerable string keys of the object AND of its prototypes,
-// snapshotted before the first iteration (docs/0018 decision 1).
+// `for (const k in object) body`. The same head shape as ForOfStmt, and for the
+// same reason: the binding is per-iteration, so a closure made in the body
+// captures that iteration's key. What differs is entirely in what is walked —
+// the enumerable string keys of the object AND of its prototypes, snapshotted
+// before the first iteration.
 struct ForInStmt final : Stmt {
     std::string name;  // empty when the head destructures
     PatternPtr pattern;
@@ -464,10 +460,10 @@ struct LabeledStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
-// `for (const x of iterable) body`. The binding is per-iteration by
-// definition — there is no "the loop variable" to share, so a closure made
-// in the body captures that iteration's value (contrast ForStmt, whose
-// header binding docs/0007 decision 2 diagnoses).
+// `for (const x of iterable) body`. The binding is per-iteration by definition
+// — there is no "the loop variable" to share, so a closure made in the body
+// captures that iteration's value (contrast ForStmt, whose header binding that
+// a per-scope environment record diagnoses).
 struct ForOfStmt final : Stmt {
     std::string name;  // empty when the head destructures
     // `for (const [k, v] of pairs)`. Bound afresh per iteration like the
@@ -519,14 +515,13 @@ struct ClassMethod {
     bool isConstructor = false;
     // A class accessor, which differs from an object literal's in exactly
     // one attribute: ECMA-262 15.7.14 defines it non-enumerable, the same
-    // rule that already keeps a method out of `for-in` (docs/0018 dec. 2).
+ // rule that already keeps a method out of `for-in`.
     AccessorKind accessor = AccessorKind::None;
     std::unique_ptr<FunctionExpr> fn;
 };
 
-// A class is the constructor function plus its prototype (docs/0008); this
-// node holds what lowering needs to build that, and introduces no runtime
-// concept of its own (docs/0012 decision 5).
+// A class is the constructor function plus its prototype; this node holds what
+// lowering needs to build that, and introduces no runtime concept of its own.
 struct ClassDecl final : Stmt {
     std::string name;
     std::string superName;  // empty when the class has no `extends`
@@ -543,7 +538,7 @@ struct FunctionDecl final : Stmt {
     void accept(Visitor& v) const override;
 };
 
-// ---- Modules (docs/0023) ----------------------------------------------------
+// ---- Modules ----------------------------------------------------
 //
 // Both of these are erased by the linker: it reads them, resolves the graph,
 // and builds a merged module in which no import or export node survives. They
@@ -655,11 +650,11 @@ public:
     virtual void visit(const ClassDecl&) = 0;
     virtual void visit(const FunctionDecl&) = 0;
     // Not pure, and deliberately empty. The linker erases both nodes before
-    // inference or lowering runs (docs/0023 decision 1), so a visitor written
-    // for a merged module can never be handed one; requiring every existing
-    // visitor to write an override for a node it cannot meet would be a lot
-    // of code saying nothing. `ast::dump` overrides them, because
-    // `bronze parse` runs on ONE file and must show what it parsed.
+    // inference or lowering runs, so a visitor written for a merged module can
+    // never be handed one; requiring every existing visitor to write an
+    // override for a node it cannot meet would be a lot of code saying nothing.
+    // `ast::dump` overrides them, because `bronze parse` runs on ONE file and
+    // must show what it parsed.
     virtual void visit(const ImportDecl&) {}
     virtual void visit(const ExportNamesDecl&) {}
     virtual void visit(const Module&) = 0;

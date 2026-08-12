@@ -1,21 +1,20 @@
-// Differential oracle harness (docs/0003). Each cases/<name>.js has a
-// pinned cases/<name>.expected holding the exact stdout bytes of a correct
-// run (JS semantics, console.log lines). bronze compiles the case and the
-// produced executable's stdout must match byte-for-byte. Compiled cases run
-// under a hard timeout and are killed on expiry, so a miscompiled loop can
-// never hang the suite.
+// Differential oracle harness. Each cases/<name>.js has a pinned
+// cases/<name>.expected holding the exact stdout bytes of a correct run (JS
+// semantics, console.log lines). bronze compiles the case and the produced
+// executable's stdout must match byte-for-byte. Compiled cases run under a hard
+// timeout and are killed on expiry, so a miscompiled loop can never hang the
+// suite.
 //
-// A case that needs SEVERAL files is a directory: `cases/<name>/main.js` is
-// the entry, its neighbours are what it imports, and the expectation is
+// A case that needs SEVERAL files is a directory: `cases/<name>/main.js` is the
+// entry, its neighbours are what it imports, and the expectation is
 // `cases/<name>/main.expected` — the same "entry path with the extension
-// replaced" rule, one level deeper (docs/0023 decision 5). Everything below
-// this point treats the two kinds identically.
+// replaced" rule, one level deeper. Everything below this point treats the two
+// kinds identically.
 //
 // Ratchet rules: expectations are never edited to match bronze; a
-// cases/blocked/ entry that builds and matches must be promoted to cases/;
-// and every case is compiled and run BOTH with inference and with
-// `--no-infer`, both of which must produce the pinned bytes (docs/0010
-// decision 8).
+// cases/blocked/ entry that builds and matches must be promoted to cases/; and
+// every case is compiled and run BOTH with inference and with `--no-infer`,
+// both of which must produce the pinned bytes.
 
 #include <algorithm>
 #include <cstdio>
@@ -122,9 +121,9 @@ RunResult runWithTimeout(const std::string& exePath) {
 #endif
 
 // Compiled cases inherit this process's environment, which is how ctest's
-// `ENVIRONMENT BRONZE_GC_STRESS=1` reaches them (docs/0006 decision 5). A case
-// too expensive to build twice sets it for itself around a second run of the
-// executable it already has.
+// `ENVIRONMENT BRONZE_GC_STRESS=1` reaches them. A case too expensive to build
+// twice sets it for itself around a second run of the executable it already
+// has.
 void setGcStress(bool on) {
 #ifdef _WIN32
     _putenv_s("BRONZE_GC_STRESS", on ? "1" : "");
@@ -185,12 +184,11 @@ struct OracleCase {
 };
 
 // A case is EITHER `cases/<name>.js`, as every case was before modules, OR a
-// directory `cases/<name>/` whose entry is `main.js` and whose other files
-// are what it imports (docs/0023 decision 5). Nothing about the first kind
-// changes: it is found the same way, paired with `<name>.expected` by the
-// same rule, and compared the same way. The second kind reuses that rule one
-// level deeper — `cases/<name>/main.expected` — so there is one pairing rule
-// and not two.
+// directory `cases/<name>/` whose entry is `main.js` and whose other files are
+// what it imports. Nothing about the first kind changes: it is found the same
+// way, paired with `<name>.expected` by the same rule, and compared the same
+// way. The second kind reuses that rule one level deeper —
+// `cases/<name>/main.expected` — so there is one pairing rule and not two.
 std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
     std::vector<OracleCase> cases;
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
@@ -240,12 +238,11 @@ TEST_CASE("Oracle differential test suite") {
             REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
                             ("Missing pinned expectation " + expectedPath.string()).c_str());
 
-            // Every case runs twice: with inference and with it switched
-            // off. Both must produce the same pinned bytes, which is what
-            // makes `--no-infer` a ratchet rather than a comfort blanket
-            // (docs/0010 decision 8) — a case only inference gets right
-            // means the no-inference path is unsound, and a case only
-            // `--no-infer` gets right means inference is.
+            // Every case runs twice: with inference and with it switched off.
+            // Both must produce the same pinned bytes, which is what makes
+            // `--no-infer` a ratchet rather than a comfort blanket — a case
+            // only inference gets right means the no-inference path is unsound,
+            // and a case only `--no-infer` gets right means inference is.
             for (const bool infer : {true, false}) {
                 const std::string mode = infer ? " (inference on)" : " (--no-infer)";
                 std::filesystem::path exePath =

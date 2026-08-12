@@ -1,7 +1,6 @@
-// String.prototype beyond `length` and `charCodeAt`. Strings are immutable
-// (docs/0004), so every one of these returns a fresh string and none of
-// them can be done in place; a member that is not implemented stays a named
-// hard error (docs/0011 decision 3).
+// String.prototype beyond `length` and `charCodeAt`. Strings are immutable, so
+// every one of these returns a fresh string and none of them can be done in
+// place; a member that is not implemented stays a named hard error.
 const s = "Hello, World";
 console.log(s.length);
 console.log(s.toUpperCase());

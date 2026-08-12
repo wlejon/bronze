@@ -1,6 +1,6 @@
-// A character outside the BMP is TWO UTF-16 code units, and every
-// unit-indexed operation says so: `length` counts units, and charCodeAt
-// yields the high and low surrogate separately (docs/0004).
+// A character outside the BMP is TWO UTF-16 code units, and every unit-indexed
+// operation says so: `length` counts units, and charCodeAt yields the high and
+// low surrogate separately.
 
 const emoji = "🌍";
 const greeting = "Hello " + emoji;

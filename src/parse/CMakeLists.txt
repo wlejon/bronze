@@ -12,7 +12,7 @@ bronze_add_module(parse
     # `regex` is a dependency of the PARSER and not of lowering, because a
     # regular expression literal's body is compiled where it is written: the
     # pattern grammar is what decides whether the literal is well formed
-    # (docs/0024 decision 3).
+    # itself.
     DEPS lex ast support regex
     # One binary under the `parse` label; each file is named for the grammar
     # region it covers, matching the SOURCES above.

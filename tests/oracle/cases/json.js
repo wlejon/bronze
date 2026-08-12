@@ -1,11 +1,10 @@
-// `JSON.stringify` and `JSON.parse` (ECMA-262 25.5), and the pinned bytes of
-// a format that is deliberately NOT console.log's (docs/0013).
+// `JSON.stringify` and `JSON.parse` (ECMA-262 25.5), and the pinned bytes of a
+// format that is deliberately NOT console.log's.
 //
-// docs/0022 is the chunk this promoted. The two halves are two files and one
-// module boundary: `src/json` turns code units into a tree and rejects
-// everything JavaScript allows and JSON does not, and it can be driven with no
-// heap at all (`tests/json`), while `src/runtime/json_stringify.cpp` owns the
-// output bytes.
+// The two halves are two files and one module boundary: `src/json` turns code
+// units into a tree and rejects everything JavaScript allows and JSON does not,
+// and it can be driven with no heap at all (`tests/json`), while
+// `src/runtime/json_stringify.cpp` owns the output bytes.
 //
 // What this case pins, from ECMA-262 25.5.2 (stringify) and 25.5.1 (parse):
 //

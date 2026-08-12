@@ -1,8 +1,7 @@
 // Math is not a variable: it is a compile-time-known namespace resolved by
-// name (docs/0011 decision 1), the same shape of problem `Object.keys`
-// solved in docs/0009 decision 2. Every expectation here is ECMA-262, and
-// the irrational ones are pinned at full shortest-round-trip precision so a
-// float-vs-double implementation cannot pass by rounding.
+// name, the same shape of problem `Object.keys` solved. Every expectation here
+// is ECMA-262, and the irrational ones are pinned at full shortest-round-trip
+// precision so a float-vs-double implementation cannot pass by rounding.
 console.log(Math.abs(-5));
 console.log(Math.max(1, 7, 3));
 console.log(Math.min(1, 7, 3));

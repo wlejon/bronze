@@ -1,6 +1,6 @@
-// The RegExp OBJECT — the half of docs/0024 that lives above the matcher:
-// `lastIndex` and the `g`/`y` protocol around it, the shape of the match
-// array, and the compiled-pattern table's identity rule.
+// The RegExp OBJECT — the half that lives above the matcher: `lastIndex` and
+// the `g`/`y` protocol around it, the shape of the match array, and the
+// compiled-pattern table's identity rule.
 //
 // The pattern grammar and the matcher are proved in tests/regex, without a
 // heap; what is pinned here is everything those cannot reach because it is

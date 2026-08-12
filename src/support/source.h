@@ -16,9 +16,9 @@ public:
 
     std::string_view name() const { return name_; }
     std::string_view text() const { return text_; }
-    // Which file of the program this is. The lexer stamps it onto every
-    // token span so that a diagnostic about a byte offset knows which text
-    // to count lines in (docs/0023 decision 1).
+    // Which file of the program this is. The lexer stamps it onto every token
+    // span so that a diagnostic about a byte offset knows which text to count
+    // lines in.
     uint16_t fileId() const { return fileId_; }
 
     struct LineCol {

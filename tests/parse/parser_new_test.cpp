@@ -227,10 +227,10 @@ TEST_CASE("a class field is still diagnosed as a field") {
     CHECK(out.find("unsupported construct: class field") != std::string::npos);
 }
 
-// `new super.x()` reaches parsePrimary because docs/0025 made a `new` callee a
-// full expression, and `super` had no arm there. "expected expression" points
-// at the wrong thing: `super` is the expression, it is just not one 13.3.7
-// permits outside a method's [[HomeObject]].
+// `new super.x()` reaches parsePrimary because a `new` callee is a full
+// expression, and `super` had no arm there. "expected expression" points at the
+// wrong thing: `super` is the expression, it is just not one 13.3.7 permits
+// outside a method's [[HomeObject]].
 TEST_CASE("`super` outside its production is named, not `expected expression`") {
     const auto out = parseAndDump("class A { m() { return 1; } }\n"
                                   "class B extends A { m() { return new super.m(); } }");

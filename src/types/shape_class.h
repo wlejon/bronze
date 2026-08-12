@@ -8,15 +8,15 @@
 
 namespace bronze::types {
 
-// One compile-time object identity: the ordered property names a site
-// installs, plus the prototype source. Two sites agreeing on both share a
-// class, mirroring the runtime's transition tree (docs/0004 decision 2) —
-// the same reasoning that gave every `{}` literal one root shape in
-// docs/0008 decision 1, so a literal written twice is one class, not two.
+// One compile-time object identity: the ordered property names a site installs,
+// plus the prototype source. Two sites agreeing on both share a class,
+// mirroring the runtime's transition tree — the same reasoning that gave every
+// `{}` literal one root shape, so a literal written twice is one class, not
+// two.
 struct ShapeClass {
-    // Empty for an object literal (prototype `undefined`, one root shape);
-    // the constructor's name for `new F()`, since docs/0008 decision 1 makes
-    // the prototype part of shape identity.
+    // Empty for an object literal (prototype `undefined`, one root shape); the
+    // constructor's name for `new F()`, since the prototype is part of shape
+    // identity.
     std::string constructorName;
     std::vector<std::string> properties;  // insertion order, deduplicated
 };

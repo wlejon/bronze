@@ -1,4 +1,4 @@
-// A name nothing declares, EVALUATED (docs/0027 decision 1).
+// A name nothing declares, EVALUATED.
 //
 // From ECMA-262 6.2.5.5 (GetValue), 13.15.2 (assignment) and 20.5.7
 // (NativeError objects):

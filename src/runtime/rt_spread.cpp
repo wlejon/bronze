@@ -1,4 +1,4 @@
-// Spread, rest and the destructuring source check (docs/0017).
+// Spread, rest and the destructuring source check.
 //
 // What these have in common is a LENGTH that is not known where the code was
 // generated: `[0, ...a, 4]` has as many elements as `a` had at that moment,
@@ -6,9 +6,9 @@
 // were left. Compiled code therefore builds a container and hands it here
 // rather than emitting an indexed store per element.
 //
-// The iterable walk is the one docs/0012 decision 2 built for for-of — index
-// based, code points for a string — so a spread and a for-of over the same
-// value visit exactly the same elements.
+// The iterable walk is the one for-of uses — index based, code points for a
+// string — so a spread and a for-of over the same value visit exactly the same
+// elements.
 
 #include <cstdio>
 #include <string>
@@ -52,11 +52,11 @@ bool isPlainObject(Value v) {
 
 bool isArray(Value v) { return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 1; }
 
-// Every element of `src`, appended to `out`, through the iterator protocol
-// (docs/0021 decision 2) — so `[...someSet]` and `f(...someMap)` walk the
-// same way `for-of` does, which is the whole reason spread stopped being an
-// index walk. A value with no @@iterator method raises the TypeError 7.4.2
-// defines rather than producing an empty result.
+// Every element of `src`, appended to `out`, through the iterator protocol — so
+// `[...someSet]` and `f(...someMap)` walk the same way `for-of` does, which is
+// the whole reason spread stopped being an index walk. A value with no
+// @@iterator method raises the TypeError 7.4.2 defines rather than producing an
+// empty result.
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
     if (rtExceptionPending()) return;
@@ -89,9 +89,8 @@ extern "C" {
 // `const [a] = 5` would report a for-of error.
 //
 // The value is returned unchanged on the raising path too. Generated code
-// stores this result into a GC root slot before it tests the pending cell,
-// and the slot has to hold something the collector can parse (docs/0020
-// decision 2).
+// stores this result into a GC root slot before it tests the pending cell, and
+// the slot has to hold something the collector can parse.
 uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
     Value v(vBits);
     if (v.isUndefined() || v.isNull()) {
@@ -110,9 +109,9 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
     return vBits;
 }
 
-// `function f(a, ...rest)` — the arguments past the fixed ones, as an array.
-// Called from the generated call wrapper, which is the only place that can
-// see the caller's real argument count (docs/0017 decision 2).
+// `function f(a,...rest)` — the arguments past the fixed ones, as an array.
+// Called from the generated call wrapper, which is the only place that can see
+// the caller's real argument count.
 uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     // The copy comes FIRST, before `newArray` — this is RootedArgs' contract
     // ("read arguments from HERE and never from `argv` again"), and allocating
@@ -135,13 +134,12 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
 }
 
 // The `arguments` object of one call: every argument the caller actually
-// passed, in order (docs/0027 decision 3). Built by the call wrapper for the
-// same reason the rest array is — it is the only code that can see the real
-// argument count.
+// passed, in order. Built by the call wrapper for the same reason the rest
+// array is — it is the only code that can see the real argument count.
 //
 // UNMAPPED, and an ordinary array: writing `arguments[0]` does not write the
 // parameter, and `Array.isArray(arguments)` answers true where a spec engine
-// answers false. Both are recorded divergences, argued in docs/0027.
+// answers false. Both are deliberate divergences.
 uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
     return bronze_rest_args(argc, argv, 0);
 }
@@ -150,8 +148,8 @@ uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
 // function's wrapper reads argv unguarded, because `FunctionHeader::call` has
 // already padded it up to the declared arity — and a function that owns an
 // `arguments` object declares arity 0 precisely so that padding does NOT
-// happen, since `f(1)` and `f(1, undefined)` must give `arguments.length` 1
-// and 2. Guarding the read is what that costs (docs/0027 decision 3).
+// happen, since `f(1)` and `f(1, undefined)` must give `arguments.length` 1 and
+// 2. Guarding the read is what that costs.
 uint64_t bronze_arg_at(uint32_t argc, const uint64_t* argv, uint32_t index) {
     if (index >= argc) return BRONZE_ABI_UNDEFINED_BITS;
     return argv[index];
@@ -169,10 +167,10 @@ void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
     appendIterable(arr, src);
 }
 
-// `{ ...src }` — CopyDataProperties (ECMA-262 7.3.25) over own ENUMERABLE
-// string keys, in the order docs/0009 pins, at the position the spread was
-// written. Later keys overwrite earlier ones because this is an ordinary
-// property write into the object being built.
+// `{...src }` — CopyDataProperties (ECMA-262 7.3.25) over own ENUMERABLE string
+// keys, in own enumerable order, at the position the spread was written. Later
+// keys overwrite earlier ones because this is an ordinary property write into
+// the object being built.
 //
 // `null` and `undefined` contribute nothing, which the spec says and which
 // `{ ...maybeOptions }` relies on. Every other non-object source is a named
@@ -189,9 +187,9 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     if (isArray(srcVal)) {
         // An array's own enumerable keys are its indices; `length` is not
         // enumerable and is deliberately not copied. A HOLE is not an own key
-        // either (docs/0019 decision 2), so `{ ...a }` after `delete a[1]`
-        // has no `'1'` at all — the same set `Object.keys`, `for-in` and `in`
-        // report, which is the whole point of asking one question in one way.
+        // either, so `{...a }` after `delete a[1]` has no `'1'` at all — the
+        // same set `Object.keys`, `for-in` and `in` report, which is the whole
+        // point of asking one question in one way.
         const uint32_t length = srcVal.asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < length; ++i) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
@@ -208,9 +206,8 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     for (StringHeader* name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         copyProperty(target, src, name);
         // `copyProperty` reads with Get, so a source property that is an
-        // accessor runs user code (docs/0019 decision 3). Copying the next
-        // one after that threw would be the runtime continuing past an
-        // exception (docs/0020 decision 6).
+        // accessor runs user code. Copying the next one after that threw would
+        // be the runtime continuing past an exception.
         if (rtExceptionPending()) return;
     }
 }
@@ -275,8 +272,8 @@ uint64_t bronze_construct_spread(uint64_t calleeBits, uint64_t argsBits) {
     auto* args = argsVal.asObject<ArrayHeader>();
     // Rooted, unlike every other block the runtime builds, because
     // `bronze_construct` allocates the instance BEFORE it reads this — see
-    // RootedBlock. A plain vector here segfaulted under `BRONZE_GC_STRESS=1`
-    // on `new Pair(...[{n:1},{n:2}])` (docs/0032 decision 6).
+    // RootedBlock. A plain vector here segfaulted under `BRONZE_GC_STRESS=1` on
+    // `new Pair(...[{n:1},{n:2}])`.
     RootedBlock block(args->length);
     for (uint32_t i = 0; i < args->length; ++i) block.set(i, args->getElem(i));
     return bronze_construct(calleeBits, block.count(), block.data());

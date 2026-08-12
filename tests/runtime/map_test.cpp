@@ -1,10 +1,10 @@
-// The Map/Set table (docs/0021 decision 4). Two things are pinned here that
-// an oracle case cannot reach: SameValueZero on the edges the language cares
-// about, and the hash index agreeing with a linear scan over hundreds of
-// mixed-kind keys — including across collections, which is the whole reason
-// the index carries an epoch. A wrong bucket answers "not found", which is a
-// silent wrong answer, so it is proved against an independent oracle rather
-// than against a handful of examples.
+// The Map/Set table. Two things are pinned here that an oracle case cannot
+// reach: SameValueZero on the edges the language cares about, and the hash
+// index agreeing with a linear scan over hundreds of mixed-kind keys —
+// including across collections, which is the whole reason the index carries an
+// epoch. A wrong bucket answers "not found", which is a silent wrong answer, so
+// it is proved against an independent oracle rather than against a handful of
+// examples.
 
 #include <doctest/doctest.h>
 
@@ -171,12 +171,12 @@ TEST_CASE("the hash index agrees with a linear scan across collections") {
     checkAll();
 }
 
-// The counter the index hangs off is the one thing in this file that cannot
-// be proved by comparing against a linear scan: the scan drives collections
+// The counter the index hangs off is the one thing in this file that cannot be
+// proved by comparing against a linear scan: the scan drives collections
 // through `collect()` too, so a counter that only `collect()` maintains would
 // look correct here and be wrong for any future collector with a second entry
 // point. So the property is pinned directly — the epoch is a count of
-// RELOCATIONS, moved by the copy itself (docs/0022).
+// RELOCATIONS, moved by the copy itself.
 TEST_CASE("the relocation epoch counts objects moved, not cycles finished") {
     Heap heap;
     NonMovingArena arena;

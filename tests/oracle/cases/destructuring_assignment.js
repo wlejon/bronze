@@ -1,5 +1,5 @@
-// Destructuring as an ASSIGNMENT rather than a declaration (docs/0017
-// decision 5): the same patterns, writing bindings that already exist.
+// Destructuring as an ASSIGNMENT rather than a declaration: the same patterns,
+// writing bindings that already exist.
 //
 // The swaps are the point. `[a, b] = [b, a]` is a swap only if the whole
 // right side is evaluated before any target is written (ECMA-262 13.15.5

@@ -4,11 +4,11 @@
 // `bronze_construct` allocates twice — the function's prototype and the
 // instance — before it reads its argument block, and it is the only helper in
 // the runtime that reads a block after allocating. So a block that is not
-// rooted holds pre-collection addresses by the time the constructor is
-// entered. `bronze_construct_spread` built one in a plain `std::vector`, and
-// this program segfaulted under `BRONZE_GC_STRESS=1` (docs/0032 decision 6);
-// the sibling `bronze_dynamic_call_spread` did not, only because a plain call
-// reaches the callee without allocating.
+// rooted holds pre-collection addresses by the time the constructor is entered.
+// `bronze_construct_spread` built one in a plain `std::vector`, and this
+// program segfaulted under `BRONZE_GC_STRESS=1`; the sibling
+// `bronze_dynamic_call_spread` did not, only because a plain call reaches the
+// callee without allocating.
 //
 // It is in the default suite rather than beside it because `oracle-gc-stress`
 // runs every case here, and a rooting bug is an intermittent wrong answer

@@ -3,9 +3,8 @@
 // One IL function's body, emitted into one LLVM function.
 //
 // The state below is shared by every instruction of that body — the GC root
-// frame (docs/0006), the block phis of the block-argument SSA (docs/0005),
-// and the SSA-value table — so it is held together rather than threaded
-// through a dozen parameters.
+// frame, the block phis of the block-argument SSA, and the SSA-value table — so
+// it is held together rather than threaded through a dozen parameters.
 
 #include <cstdint>
 #include <vector>
@@ -35,7 +34,7 @@ public:
         const AbiGlobals& globals;
         llvm::GlobalVariable* icTable;
         // Indexed by IL function index: the typed entry point, and the
-        // uniform-convention wrapper that adapts to it (docs/0007).
+        // uniform-convention wrapper that adapts to it.
         const std::vector<llvm::Function*>& entries;
         const std::vector<llvm::Function*>& wrappers;
         DiagnosticSink& diags;
@@ -69,7 +68,7 @@ private:
     // of the first argument operand.
     llvm::Value* emitArgv(const il::Instruction& inst, size_t first, uint32_t argc, bool& ok);
 
-    // The cell test of docs/0020 decision 1, emitted after any instruction
+    // The pending-exception cell test, emitted after any instruction
     // `il::canThrow` admits: load the cell, compare it against "nothing
     // pending", and branch to this block's handler or out of the function.
     // Splits the current LLVM block, so everything after it in the same IL
@@ -79,8 +78,8 @@ private:
     // names, or the function's single unwind block, created on first demand.
     llvm::BasicBlock* unwindTargetFor(size_t blockIndex);
     // Pops the GC root frame and returns — byte-for-byte what `emitTerminator`
-    // does before an ordinary `ret`, which is the property that makes the
-    // whole mechanism sound with respect to docs/0006.
+    // does before an ordinary `ret`, which is the property that makes the whole
+    // mechanism sound with respect to rooting.
     llvm::BasicBlock* functionUnwindBlock();
     void popRootFrame();
 

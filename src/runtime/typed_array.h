@@ -8,10 +8,10 @@
 
 namespace bronze {
 
-// Typed arrays (docs/0029). The byte store and the nine views over it are one
-// header each, not ten: an element kind is DATA in the view, so every path
-// below — construction, the conversion on store, printing, iteration — is
-// written once and reads a table.
+// Typed arrays. The byte store and the nine views over it are one header each,
+// not ten: an element kind is DATA in the view, so every path below —
+// construction, the conversion on store, printing, iteration — is written once
+// and reads a table.
 
 // ECMA-262 table 71's element types, in the order the specification lists
 // them. The order is pinned: `kind` is a stored field and the runtime tests
@@ -73,10 +73,10 @@ struct ArrayBufferHeader {
 };
 
 // A view over an ArrayBufferHeader (flags == kFlags). The buffer is held as a
-// Value so the generic GC payload scan keeps it alive AND forwards it; the
-// data address is recomputed from that Value on every access, never cached
-// across anything that can allocate. That is the whole of the GC design
-// (docs/0029 decision 1) and the one rule every method here must keep.
+// Value so the generic GC payload scan keeps it alive AND forwards it; the data
+// address is recomputed from that Value on every access, never cached across
+// anything that can allocate. That is the whole of the GC design and the one
+// rule every method here must keep.
 struct TypedArrayHeader {
     HeapObjectHeader header;
     Value buffer;

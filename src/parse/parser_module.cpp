@@ -1,7 +1,7 @@
 // `import` and `export` (ECMA-262 16.2.2 and 16.2.3). Both productions are
-// module-level only and both reduce to a list of (local name, other name)
-// pairs plus, sometimes, a specifier — which is all `src/modules` needs to
-// build the graph and resolve the bindings (docs/0023).
+// module-level only and both reduce to a list of (local name, other name) pairs
+// plus, sometimes, a specifier — which is all `src/modules` needs to build the
+// graph and resolve the bindings.
 //
 // The declaration an `export` fronts is left in the statement list as an
 // ordinary declaration, with the export recorded beside it. Nothing after the

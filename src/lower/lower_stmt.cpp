@@ -10,10 +10,9 @@
 namespace bronze::lower {
 
 bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn) {
-    // Function declarations hoist: every one in this list is bound
-    // before any statement runs, so code above a declaration can call
-    // it (docs/0007 decision 4). A nested declaration IS a closure —
-    // there is no second code path for it.
+    // Function declarations hoist: every one in this list is bound before any
+    // statement runs, so code above a declaration can call it. A nested
+    // declaration IS a closure — there is no second code path for it.
     for (const auto* stmt : stmts) {
         const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt);
         if (!fnDecl) continue;
@@ -151,9 +150,9 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
 
     // A destructuring declaration binds several names from one value, so none
     // of the single-name machinery below applies: no annotation (there is no
-    // one name to annotate), no proven-number unboxing (the pieces come out
-    // of a dynamic read), and an initialiser the parser has already made
-    // mandatory (docs/0017 decision 4).
+    // one name to annotate), no proven-number unboxing (the pieces come out of
+    // a dynamic read), and an initialiser the parser has already made
+    // mandatory.
     if (varDecl->pattern) {
         auto initVal = lowerExpr(*varDecl->init, ilFn);
         if (!initVal) return false;
@@ -169,23 +168,21 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         if (!initVal) return false;
         declType = initVal->type;
 
-        // A binding inference proved numeric holds an unboxed f64
-        // (docs/0010 decision 3), so the arithmetic over it needs no
-        // unbox per use, the SSA joins it takes part in stay f64, and it
-        // carries no GC obligation at all — an f64 gets no shadow-stack
-        // slot (docs/0006 decision 1). The unbox here cannot fail: the
-        // proof says every value that reaches this initialiser is a
-        // number.
+        // A binding inference proved numeric holds an unboxed f64, so the
+        // arithmetic over it needs no unbox per use, the SSA joins it takes
+        // part in stay f64, and it carries no GC obligation at all — an f64
+        // gets no shadow-stack slot. The unbox here cannot fail: the proof says
+        // every value that reaches this initialiser is a number.
         if (initVal->type == il::Type::Dynamic && provenNumber(*varDecl->init)) {
             initVal = unboxValueIfNeeded(*initVal, il::Type::F64, ilFn);
             declType = il::Type::F64;
         }
 
         // The binding's type comes from the initialiser and the proof above;
-        // the annotation does not get to overrule either (docs/0010 decision
-        // 6). Believing it makes `let s: number = "abc"` an `unbox.f64` of a
-        // boxed string. The claim is compared against what inference proved
-        // reaches this initialiser, and disagreement is a warning, not a cast.
+        // the annotation does not get to overrule either. Believing it makes
+        // `let s: number = "abc"` an `unbox.f64` of a boxed string. The claim
+        // is compared against what inference proved reaches this initialiser,
+        // and disagreement is a warning, not a cast.
         if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
                              inferredType(*varDecl->init))) {
             return false;
@@ -195,14 +192,13 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
 
     bool isInitialized = varDecl->init != nullptr;
     if (!varDecl->init) {
-        // `let x: number;` binds `undefined` at the declaration and may hold
-        // a number later, which is `number | undefined` — the exact case
-        // docs/0010 decision 2 says collapses to `Dynamic` because there are
-        // no union types. So nothing is proven here, and the annotation is
-        // reported as unprovable rather than as contradicted by the
-        // `undefined` the declaration happens to bind: bronze did not look
-        // at the later writes at all, and saying "contradicts" would claim
-        // more than it knows.
+        // `let x: number;` binds `undefined` at the declaration and may hold a
+        // number later, which is `number | undefined` — the exact case
+        // collapses to `Dynamic` because the lattice has no union types. So
+        // nothing is proven here, and the annotation is reported as unprovable
+        // rather than as contradicted by the `undefined` the declaration
+        // happens to bind: bronze did not look at the later writes at all, and
+        // saying "contradicts" would claim more than it knows.
         if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
                              types::Type::dynamic())) {
             return false;
@@ -256,11 +252,10 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         }
 
         // 14.15.3: the try's completion is [return, V] and the finally runs
-        // AFTER V is computed — so the expression is lowered above, then
-        // every enclosing `finally` runs, then the value leaves. A `return`
-        // inside one of them terminates the block first and wins, which is
-        // the whole of "a completion from inside finally overrides the
-        // pending one" (docs/0020 decision 5).
+        // AFTER V is computed — so the expression is lowered above, then every
+        // enclosing `finally` runs, then the value leaves. A `return` inside
+        // one of them terminates the block first and wins, which is the whole
+        // of "a completion from inside finally overrides the pending one".
         if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
 

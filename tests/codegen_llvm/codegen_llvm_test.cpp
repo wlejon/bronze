@@ -120,9 +120,8 @@ TEST_CASE("LLVM backend emits object file for dynamic IL module with Box, Unbox,
     il::Module module;
     module.name = "test_dynamic_ops";
     // Both property sites below name IC site 0, which the module has to
-    // declare: the backend emits exactly icSiteCount entries as a global
-    // array, so this is an allocation size, not a hint (docs/0010
-    // decision 7).
+    // declare: the backend emits exactly icSiteCount entries as a global array,
+    // so this is an allocation size, not a hint.
     module.icSiteCount = 1;
 
     il::Function dynFunc;
@@ -171,13 +170,13 @@ TEST_CASE("LLVM backend emits object file for dynamic IL module with Box, Unbox,
     std::filesystem::remove(outPath);
 }
 
-// A monomorphic property site (docs/0010 decisions 4 and 7) emits a guarded
-// fast path instead of a plain call, which SPLITS the basic block. The IL
-// block therefore ends in a different LLVM block than it started in, and a
-// terminator carrying block arguments has to name that one as the phi's
-// predecessor — get it wrong and llvm::verifyModule rejects the module for
-// a phi whose entries do not match its predecessors, which is what this
-// pins. It also exercises the IC table global itself.
+// A monomorphic property site emits a guarded fast path instead of a plain
+// call, which SPLITS the basic block. The IL block therefore ends in a
+// different LLVM block than it started in, and a terminator carrying block
+// arguments has to name that one as the phi's predecessor — get it wrong and
+// llvm::verifyModule rejects the module for a phi whose entries do not match
+// its predecessors, which is what this pins. It also exercises the IC table
+// global itself.
 TEST_CASE("LLVM backend emits the inlined cache guard and keeps block-argument phis honest") {
     il::Module module;
     module.name = "test_inline_ic";
@@ -241,10 +240,9 @@ TEST_CASE("LLVM backend emits the inlined cache guard and keeps block-argument p
     std::filesystem::remove(outPath);
 }
 
-// The IC table is a fixed-size global array in the object file, so a site
-// index past the module's count would be an out-of-bounds store into the
-// object file's own data. The verifier names it rather than the backend
-// clamping it (docs/0010 decision 7).
+// The IC table is a fixed-size global array in the object file, so a site index
+// past the module's count would be an out-of-bounds store into the object
+// file's own data. The verifier names it rather than the backend clamping it.
 TEST_CASE("IL verification rejects a property site past the module's IC site count") {
     il::Module module;
     module.name = "test_ic_overrun";

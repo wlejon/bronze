@@ -31,9 +31,9 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
                           reinterpret_cast<const uint64_t*>(argv)));
     }
 
-    // Arity adaptation: extend args with undefined up to arity. Unrooted,
-    // and safe only because the callee's prologue stores its parameters
-    // into its own root frame before it can allocate (docs/0006).
+    // Arity adaptation: extend args with undefined up to arity. Unrooted, and
+    // safe only because the callee's prologue stores its parameters into its
+    // own root frame before it can allocate.
     std::vector<Value> args(arity, Value::fromUndefined());
     for (uint32_t i = 0; i < argc; ++i) {
         args[i] = argv[i];

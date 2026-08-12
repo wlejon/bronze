@@ -7,9 +7,8 @@
 // impossible, which is the whole point of the registry (see that header for
 // the sret-shift crash that made it a hard rule).
 //
-// The inline-cache table lives here too, because it is the one piece of
-// *data* the generated object file owns on the ABI's behalf (docs/0010
-// decision 7).
+// The inline-cache table lives here too, because it is the one piece of *data*
+// the generated object file owns on the ABI's behalf.
 
 #include <cstdint>
 

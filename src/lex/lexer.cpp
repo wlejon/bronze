@@ -128,8 +128,7 @@ bool Lexer::atEnd() const { return pos_ >= buffer_.text().size(); }
 
 // Every token span carries the id of the buffer it indexes. This is the one
 // place a span is built from raw offsets, so stamping it here is what makes a
-// diagnostic about a file other than the entry render against that file's
-// text (docs/0023 decision 1).
+// diagnostic about a file other than the entry render against that file's text.
 Token Lexer::make(TokenKind kind, uint32_t begin) const {
     return Token{kind,
                  {begin, pos_, buffer_.fileId()},

@@ -4,10 +4,9 @@
 // unit (NUL), so returning it for a missing position is indistinguishable
 // from finding one.
 //
-// charCodeAt reads UNITS, not code points: an astral character answers with
-// its high and low surrogate separately, which is exactly the distinction
-// for-of does not make (docs/0012 decision 2).
-// Every expectation is ECMA-262, derived by hand (docs/0003).
+// charCodeAt reads UNITS, not code points: an astral character answers with its
+// high and low surrogate separately, which is exactly the distinction for-of
+// does not make. Every expectation is ECMA-262, derived by hand.
 const s = "abc";
 console.log(s.charCodeAt(0));
 console.log(s.charCodeAt(2));

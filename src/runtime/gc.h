@@ -34,14 +34,13 @@ private:
     static thread_local ShadowStackFrame* top_frame_;
 };
 
-// The generated-code half of the shadow stack (docs/0006) is the
-// bronze_gc_frame linked list declared in the ABI registry: compiled
-// functions allocate a frame in their own stack frame and link it onto
-// bronze_gc_frame_top inline, with no helper call. The collector walks
-// that list alongside the ShadowStackFrame chain above. Contiguous slots
-// rather than a vector of slot pointers because generated code cannot
-// build a vector — and does not need to: its slot count is a compile-time
-// constant.
+// The generated-code half of the shadow stack is the bronze_gc_frame linked
+// list declared in the ABI registry: compiled functions allocate a frame in
+// their own stack frame and link it onto bronze_gc_frame_top inline, with no
+// helper call. The collector walks that list alongside the ShadowStackFrame
+// chain above. Contiguous slots rather than a vector of slot pointers because
+// generated code cannot build a vector — and does not need to: its slot count
+// is a compile-time constant.
 
 template <typename T = Value>
 class Rooted {

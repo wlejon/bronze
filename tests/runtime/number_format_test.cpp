@@ -12,9 +12,9 @@ static std::string fmt(double x) {
     return std::string(buf, formatJsNumber(x, buf));
 }
 
-// Expectations verified against node: each value below prints exactly this
-// via String(x) / console.log(x). Pinned per docs/0003 — number formatting
-// is the first oracle battleground.
+// Expectations verified against node: each value below prints exactly this via
+// String(x) / console.log(x). Pinned in the oracle suite too — number
+// formatting was its first battleground.
 TEST_CASE("formatJsNumber matches JS ToString(Number)") {
     CHECK(fmt(42.0) == "42");
     CHECK(fmt(-42.0) == "-42");

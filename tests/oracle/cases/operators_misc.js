@@ -1,4 +1,4 @@
-// `void`, the comma operator, and `**` (docs/0015 decisions 3, 7 and 8).
+// `void`, the comma operator, and `**`.
 //
 // `void x` evaluates x for its effects and yields undefined - the whole of
 // the operator. The comma operator evaluates its left operand for effects

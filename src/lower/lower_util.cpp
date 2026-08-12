@@ -1,6 +1,6 @@
 // Small shared helpers every other lowering unit leans on: the interned key
-// table, block creation and instruction emission, the box/unbox coercions,
-// and JS truthiness (docs/0005).
+// table, block creation and instruction emission, the box/unbox coercions, and
+// JS truthiness.
 
 #include <string>
 #include <vector>
@@ -10,25 +10,22 @@
 namespace bronze::lower {
 
 // The globals bronze provides, resolved by name because there is no global
-// object to look them up in (docs/0009 decision 2 made the same call for
-// `Object`). The list is closed: a free identifier that is not on it stays
-// a compile error, so adding a global is a deliberate act here and never a
-// program silently reading `undefined` at runtime.
+// object to look them up in. The list is closed: a free identifier that is not
+// on it stays a compile error, so adding a global is a deliberate act here and
+// never a program silently reading `undefined` at runtime.
 bool Lowerer::isProvidedGlobal(const std::string& name) const {
-    // The Error constructors are globals for the same reason `Math` is
-    // (docs/0011 decision 1): a free identifier lowering can resolve, rather
-    // than a diagnosed unknown name. They are also what the runtime raises
-    // its own spec'd TypeErrors with, so a `catch` cannot tell a
-    // bronze-raised error from a hand-written one (docs/0020 decision 7).
-    // `Object` joined the list with docs/0021: `Object.keys` was recognized
-    // at the CALL (docs/0009 decision 2), which is an answer that does not
-    // survive a second member — `assign`, `defineProperty` and the rest would
-    // each need their own IL op and arity check here. The `Object.keys`
-    // recognition stays as a fast path over the same runtime function.
-    // `ReferenceError` is on the list because docs/0027 decision 1 made
-    // bronze RAISE one: a program that catches what an unresolvable name
-    // throws must be able to name its class, exactly as it can for the
-    // TypeErrors the runtime raises (docs/0020 decision 7).
+    // The Error constructors are globals for the same reason `Math` is: a free
+    // identifier lowering can resolve, rather than a diagnosed unknown name.
+    // They are also what the runtime raises its own spec'd TypeErrors with, so
+    // a `catch` cannot tell a bronze-raised error from a hand-written one.
+    // `Object` joined the list once it had more than one member: `Object.keys`
+    // was recognized at the CALL, which is an answer that does not survive a
+    // second member — `assign`, `defineProperty` and the rest would each need
+    // their own IL op and arity check here. The `Object.keys` recognition stays
+    // as a fast path over the same runtime function. `ReferenceError` is on the
+    // list because bronze RAISES one: a program that catches what an
+    // unresolvable name throws must be able to name its class, exactly as it
+    // can for the TypeErrors the runtime raises.
     //
     // The four global function properties of 19.2 are here rather than
     // recognized at the call, for the reason `Math` was: `arr.map(parseFloat)`
@@ -36,16 +33,16 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // interned by code pointer, so `parseInt === Number.parseInt` — which is
     // what 21.1.2.13's "same function object" says.
     //
-    // `ArrayBuffer` and the nine views joined with docs/0029. They were
-    // reachable before only through a `new` that lowering recognised by name,
-    // which is not the same thing as a value: `switch (array.constructor)` and
-    // `{ Float32Array: Float32Array }` both need the constructor OBJECT, and
-    // `new source.array.constructor(...)` needs it reached through a member
-    // expression that no name recognition can see. Putting them here deletes
-    // the special case rather than adding to it.
+    // `ArrayBuffer` and the nine views joined when typed arrays landed. They
+    // were reachable before only through a `new` that lowering recognised by
+    // name, which is not the same thing as a value: `switch
+    // (array.constructor)` and `{ Float32Array: Float32Array }` both need the
+    // constructor OBJECT, and `new source.array.constructor(...)` needs it
+    // reached through a member expression that no name recognition can see.
+    // Putting them here deletes the special case rather than adding to it.
     //
-    // `Array`, `String` and `Boolean` joined with docs/0030, through exactly
-    // the mechanism the line above describes — the list, an interned function
+    // `Array`, `String` and `Boolean` joined later, through exactly the
+    // mechanism the line above describes — the list, an interned function
     // object, and no special case anywhere. `Function` is deliberately NOT
     // here: `new Function(src)` compiles source at run time, which an AOT
     // compiler cannot do, so the name stays an unresolved one that says so
@@ -72,11 +69,10 @@ uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
 
 il::BlockId Lowerer::createBlock(il::Function& ilFn) {
     il::BlockId id = static_cast<il::BlockId>(ilFn.blocks.size());
-    // Every block made inside a `try` names that try's handler, and the
-    // backend derives its cell tests from that (docs/0020 decision 3). It is
-    // stamped here, at creation, rather than set by each construct: a handler
-    // that had to be assigned by hand would be forgotten by exactly the
-    // construct that most needs it.
+    // Every block made inside a `try` names that try's handler, and the backend
+    // derives its cell tests from that. It is stamped here, at creation, rather
+    // than set by each construct: a handler that had to be assigned by hand
+    // would be forgotten by exactly the construct that most needs it.
     ilFn.blocks.push_back(il::Block{.id = id, .handler = currentHandler_});
     return id;
 }
@@ -132,14 +128,13 @@ Lowerer::Value Lowerer::unboxValueIfNeeded(Value val, il::Type targetType, il::F
     return val;
 }
 
-// Combine the pre-read target value with the rhs of a compound
-// assignment. `-=`, `*=`, `/=` and `%=` are ToNumber on both operands
-// whatever came in, so they are always numeric. `+=` is not: JS `+`
-// concatenates as soon as either side is a string, so it routes through
-// the dynamic add unless inference *proved* the result is a Number
-// (docs/0010 decision 3). Unproven is the dynamic path, never the
-// numeric one — unboxing a string pointer as a double is a miscompile,
-// not a pessimisation.
+// Combine the pre-read target value with the rhs of a compound assignment.
+// `-=`, `*=`, `/=` and `%=` are ToNumber on both operands whatever came in, so
+// they are always numeric. `+=` is not: JS `+` concatenates as soon as either
+// side is a string, so it routes through the dynamic add unless inference
+// *proved* the result is a Number. Unproven is the dynamic path, never the
+// numeric one — unboxing a string pointer as a double is a miscompile, not a
+// pessimisation.
 Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp,
                                             bool provenNumeric, il::Function& ilFn) {
     if (binOp == ast::BinaryOp::PlusAssign && !provenNumeric) {

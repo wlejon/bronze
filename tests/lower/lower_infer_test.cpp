@@ -1,7 +1,7 @@
 // What inference proved, and what an annotation may do with it: the seam
-// `src/lower/lower_infer.cpp` implements (docs/0010). Every case here is
-// about a TYPE in the IL — where it came from, and which of the two sources
-// (a proof, a hint) is allowed to have put it there.
+// `src/lower/lower_infer.cpp` implements. Every case here is about a TYPE in
+// the IL — where it came from, and which of the two sources (a proof, a hint)
+// is allowed to have put it there.
 
 #include <doctest/doctest.h>
 
@@ -12,10 +12,9 @@ using namespace bronze;
 using bronze::lower_test::inferAndLower;
 using bronze::lower_test::parseAndLower;
 
-// The same source in both tests below. `a` and `b` carry the SAME
-// annotation and get different IL types, which is the whole of docs/0010
-// decision 6 in one function: the type comes from the proof, never from the
-// annotation.
+// The same source in both tests below. `a` and `b` carry the SAME annotation
+// and get different IL types, which is the whole of the untrusted-hint rule in
+// one function: the type comes from the proof, never from the annotation.
 static constexpr const char* kAnnotatedArithmetic =
     "function add(a: number, b: number): number {\n"
     "  return a + b;\n"
@@ -124,9 +123,9 @@ TEST_CASE("--no-infer suppresses annotation warnings but not the annotation erro
 }
 
 TEST_CASE("an annotation contradicted by the initialiser is a warning, not a cast") {
-    // `let s: number = "abc"` used to emit `unbox.f64` of a boxed string —
-    // a coercion the source never wrote, and the live unsoundness docs/0010
-    // named. The annotation is now discarded and the binding stays a string.
+    // `let s: number = "abc"` used to emit `unbox.f64` of a boxed string — a
+    // coercion the source never wrote, and a live unsoundness. The annotation
+    // is now discarded and the binding stays a string.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = inferAndLower("let s: number = \"abc\";\nconsole.log(s);\n", diags, buf);
@@ -141,10 +140,10 @@ TEST_CASE("an annotation contradicted by the initialiser is a warning, not a cas
 }
 
 TEST_CASE("a closure's parameter annotations are never provable") {
-    // A closure is reached through a function value, so its callers are not
-    // a set this compilation can close over (docs/0010 decision 5 excludes
-    // it from signature specialization). A PARAMETER of one therefore has no
-    // proof at all, and cannot acquire one here.
+    // A closure is reached through a function value, so its callers are not a
+    // set this compilation can close over (signature specialization excludes
+    // it). A PARAMETER of one therefore has no proof at all, and cannot acquire
+    // one here.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = inferAndLower(
@@ -160,11 +159,10 @@ TEST_CASE("a closure's parameter annotations are never provable") {
 }
 
 TEST_CASE("a closure's RETURN annotation is checked against the body") {
-    // The proof surface docs/0010 recorded as missing. What a closure
-    // returns is a fact about its body, which the analysis already computes;
-    // only its parameters are beyond reach. So a correct return annotation
-    // on a closure is silent, and a wrong one is a contradiction rather than
-    // "not provable".
+    // A proof surface that was missing. What a closure returns is a fact about
+    // its body, which the analysis already computes; only its parameters are
+    // beyond reach. So a correct return annotation on a closure is silent, and
+    // a wrong one is a contradiction rather than "not provable".
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = inferAndLower(
@@ -226,13 +224,12 @@ TEST_CASE("annotation text bronze cannot read is a hard error, not a silent skip
 
 TEST_CASE("loop-carried bindings are dynamic when nothing proves otherwise") {
     // These tests lower with no inference result, which is exactly the
-    // `--no-infer` path (docs/0010 decision 8). A loop header's block
-    // parameters have to be an upper bound of every edge into the header,
-    // and the back edge is not lowered yet — so with nothing proven the
-    // only sound parameter type is `dynamic`. Taking the type of whatever
-    // value was live at loop *entry* instead is a claim that the loop
-    // cannot change the binding's type, and this loop does: it compiled
-    // into an unbox of a string as a double.
+    // `--no-infer` path. A loop header's block parameters have to be an upper
+    // bound of every edge into the header, and the back edge is not lowered yet
+    // — so with nothing proven the only sound parameter type is `dynamic`.
+    // Taking the type of whatever value was live at loop *entry* instead is a
+    // claim that the loop cannot change the binding's type, and this loop does:
+    // it compiled into an unbox of a string as a double.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(

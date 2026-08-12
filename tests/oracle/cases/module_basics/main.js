@@ -1,7 +1,6 @@
-// The import and export forms, and the order they make things happen in
-// (docs/0023). A module's dependencies are evaluated before its own body, in
-// the order its import declarations are written, so 'side effect' precedes
-// everything below.
+// The import and export forms, and the order they make things happen in. A
+// module's dependencies are evaluated before its own body, in the order its
+// import declarations are written, so 'side effect' precedes everything below.
 import './side.js';
 import theDefault, { label, twice, describe, secret as hidden } from './util.js';
 

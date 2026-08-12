@@ -1,6 +1,6 @@
 // Generators: the straight-line subset bronze desugars, and the constructs
-// outside it (docs/0026). Named for `src/parse/parser_generator.cpp`, which
-// is where every assertion here is decided.
+// outside it. Named for `src/parse/parser_generator.cpp`, which is where every
+// assertion here is decided.
 //
 // Whether the desugaring also RUNS correctly is tests/oracle/cases/generator_*,
 // because a tree assertion passes just as happily when the parser is
@@ -32,8 +32,8 @@ static std::string parseAndDump(std::string_view src) {
 }
 
 TEST_CASE("a generator outside the straight-line subset is refused by name") {
-    // Each construct gets its OWN message: someone who hits one has to be
-    // able to learn from it what bronze does support (docs/0026).
+    // Each construct gets its OWN message: someone who hits one has to be able
+    // to learn from it what bronze does support.
     const auto inLoop = parseAndDump("class C { *g() { for (;;) { yield 1; } } }");
     CHECK(inLoop.find("a `yield` inside a loop") != std::string::npos);
 

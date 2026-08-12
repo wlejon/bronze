@@ -17,7 +17,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     // The flag is consumed here and re-set only for the base position of the
     // three link forms, so a `?.` written anywhere else — inside an argument,
     // inside an index — starts a chain of its own rather than short-circuiting
-    // the enclosing one (docs/0018 decision 4).
+    // the enclosing one.
     const bool onSpine = spinePos_;
     spinePos_ = false;
     if (!onSpine && ast::containsOptionalLink(expr)) {
@@ -229,18 +229,18 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
-            // A free variable of a nested function: resolved against
-            // the environments of the enclosing scopes (docs/0007).
+            // A free variable of a nested function: resolved against the
+            // environments of the enclosing scopes.
             uint32_t depth = 0;
             uint32_t index = 0;
             if (currentEnvValue_ != il::kNoValue &&
                 findEnclosingEnvVar(ident->name, depth, index)) {
                 return emitEnvGet(depth, index, ilFn);
             }
-            // A top-level function declaration used as a value rather
-            // than called: `new Point(...)`, `Point.prototype`, passing
-            // it around. One object per declaration, so decorating it
-            // in one place is visible in every other (docs/0008).
+            // A top-level function declaration used as a value rather than
+            // called: `new Point(...)`, `Point.prototype`, passing it around.
+            // One object per declaration, so decorating it in one place is
+            // visible in every other.
             auto fnIt = functionIndices_.find(ident->name);
             if (fnIt != functionIndices_.end()) {
                 il::ValueId res = ilFn.valueCount++;
@@ -252,10 +252,10 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
-            // A global bronze provides. The set is closed and checked
-            // HERE, at compile time, so an unknown free identifier is a
-            // compile error rather than a runtime miss a program could
-            // feature-test its way around (docs/0011 decision 1).
+            // A global bronze provides. The set is closed and checked HERE, at
+            // compile time, so an unknown free identifier is a compile error
+            // rather than a runtime miss a program could feature-test its way
+            // around.
             if (isProvidedGlobal(ident->name)) {
                 il::ValueId res = ilFn.valueCount++;
                 il::Instruction inst;
@@ -266,9 +266,8 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
-            // Nothing in the ladder claims this name, and nothing here can
-            // know whether the running environment does. 6.2.5.5 GetValue
-            // step 2 (docs/0027 decision 1).
+            // Nothing in the ladder claims this name, and nothing here can know
+            // whether the running environment does. 6.2.5.5 GetValue step 2.
             return emitReferenceError(ident->name, ident->span, ilFn);
         }
         const auto& b = varBindings_[it->second];
@@ -307,10 +306,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             auto valOpt = lowerExpr(*un->operand, ilFn);
             if (!valOpt) return std::nullopt;
             Value val = unboxValueIfNeeded(*valOpt, il::Type::F64, ilFn);
-            // Negation, not `0 - x`: IEEE-754 makes 0 - 0 positive zero, so
-            // the subtraction spelling printed `-0` as `0` — the sign of
-            // zero is observable (docs/0013), and `Object.is(-0, 0)` is
-            // false in the language.
+            // Negation, not `0 - x`: IEEE-754 makes 0 - 0 positive zero, so the
+            // subtraction spelling printed `-0` as `0` — the sign of zero is
+            // observable, and `Object.is(-0, 0)` is false in the language.
             il::ValueId res = ilFn.valueCount++;
             il::Instruction negInst;
             negInst.op = il::Op::Neg;
@@ -347,7 +345,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             // universal feature-detection idiom, and it is the one position in
             // the language where a free name is not a question about the
             // environment — so it gets no warning either. Bare form only:
-            // `typeof x.y` still evaluates `x` and throws (docs/0027).
+            // `typeof x.y` still evaluates `x` and throws.
             if (const auto* operandIdent = dynamic_cast<const ast::Ident*>(un->operand.get());
                 operandIdent && !resolvesName(operandIdent->name)) {
                 il::ValueId res = ilFn.valueCount++;
@@ -538,19 +536,18 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         // and read here, above `lowerExpr(*bin->rhs)`, exactly as the member
         // and index targets above already do it.
         //
-        // Lowering the rhs first is observably wrong whenever the rhs can
-        // write the target: `x += f()` where `f` assigns `x` read the
-        // post-call value through `env.get` (docs/0007 makes a captured
-        // binding memory, so the read is a real instruction that moved with
-        // the code), and `x += (x = 3)` folded the inner assignment's value
-        // into both operands even for an SSA-backed binding.
+        // Lowering the rhs first is observably wrong whenever the rhs can write
+        // the target: `x += f()` where `f` assigns `x` read the post-call value
+        // through `env.get` (a captured binding is memory, so the read is a
+        // real instruction that moved with the code), and `x += (x = 3)` folded
+        // the inner assignment's value into both operands even for an
+        // SSA-backed binding.
         auto it = activeVarMap_.find(ident->name);
         const bool isLocal = it != activeVarMap_.end();
         // An index, not a reference: lowering the rhs can lower a closure,
-        // which saves and restores `varBindings_` wholesale (docs/0007), so
-        // any reference taken now would be into a replaced vector. The index
-        // survives because the restore is of a snapshot taken after this
-        // lookup.
+        // which saves and restores `varBindings_` wholesale, so any reference
+        // taken now would be into a replaced vector. The index survives because
+        // the restore is of a snapshot taken after this lookup.
         const size_t bindingIdx = isLocal ? it->second : 0;
         uint32_t depth = 0;
         uint32_t index = 0;
@@ -589,9 +586,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (!rhsVal) return std::nullopt;
 
         // The combine decides numeric-vs-dynamic, and `+=` is numeric only
-        // where inference proved it (docs/0010 decision 3). Before that proof
-        // existed this path unboxed both sides to f64 unconditionally, so
-        // `s += "a"` on a local read a string pointer as a double.
+        // where inference proved it. Before that proof existed this path
+        // unboxed both sides to f64 unconditionally, so `s += "a"` on a local
+        // read a string pointer as a double.
         Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
                                                       provenNumber(*bin), ilFn)
                                 : *rhsVal;
@@ -603,18 +600,16 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return stored;
     }
     // An array or object literal on the left never arrives here: the parser
-    // refines it into a `DestructuringAssign` the moment it sees the `=`
-    // (docs/0017 decision 5), which is a node of its own and not an
-    // assignment with a strange target.
+    // refines it into a `DestructuringAssign` the moment it sees the `=`, which
+    // is a node of its own and not an assignment with a strange target.
     diags_.error(bin->span, "invalid assignment target");
     return std::nullopt;
 }
 
-// Where `this` comes from in the function being lowered. An ordinary
-// function receives it as the synthetic leading parameter; an arrow has no
-// receiver of its own and reads the enclosing function's out of the
-// environment chain, under the name no source binding can spell
-// (docs/0012 decision 3).
+// Where `this` comes from in the function being lowered. An ordinary function
+// receives it as the synthetic leading parameter; an arrow has no receiver of
+// its own and reads the enclosing function's out of the environment chain,
+// under the name no source binding can spell.
 std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span span, il::Function& ilFn) {
     if (currentFunctionIsArrow_) {
         uint32_t depth = 0;
@@ -627,8 +622,8 @@ std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span span, il::Function& i
     }
     if (currentThisValue_ == il::kNoValue) {
         // usesThis() decided the parameter, so reaching here means `this` at
-        // module top level, where its value is a module system question
-        // bronze has not answered yet (docs/0008).
+        // module top level, where its value is a module system question bronze
+        // has not answered yet.
         diags_.error(span, "`this` outside a function is unsupported");
         return std::nullopt;
     }

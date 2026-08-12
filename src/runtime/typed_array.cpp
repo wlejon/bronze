@@ -1,7 +1,7 @@
-// The byte store, the nine views, and the conversion each element kind
-// performs on a store (docs/0029). The JS surface — constructors, members and
-// methods — is builtin_typed_array*.cpp; what is here is the representation
-// and nothing else.
+// The byte store, the nine views, and the conversion each element kind performs
+// on a store. The JS surface — constructors, members and methods — is
+// builtin_typed_array*.cpp; what is here is the representation and nothing
+// else.
 
 #include "runtime/typed_array.h"
 
@@ -32,9 +32,9 @@ static_assert(std::size(kElementKinds) == static_cast<size_t>(ElementKind::Count
 // `1e40` narrows to.
 //
 // Step 2 answers +0 for NaN and both infinities. Step 3 truncates the
-// MATHEMATICAL value, which is why -0.4 must come out as +0 and not as -0:
-// a -0 stored here would read back as -0 and print as `-0` (docs/0013
-// decision 1), announcing a sign that ToInt8 does not produce.
+// MATHEMATICAL value, which is why -0.4 must come out as +0 and not as -0: a -0
+// stored here would read back as -0 and print as `-0`, announcing a sign that
+// ToInt8 does not produce.
 double toIntegerModulo(double number, int bits, bool isSigned) noexcept {
     if (!std::isfinite(number)) return 0.0;
     const double modulus = std::ldexp(1.0, bits);  // 2^bits, exactly

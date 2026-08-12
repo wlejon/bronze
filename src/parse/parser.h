@@ -15,12 +15,12 @@ namespace bronze {
 // sink; partial ASTs are never returned).
 class Parser {
 public:
-    // `fileId` is the module graph's numbering of this file (docs/0023). It
-    // is used for one thing: qualifying the IL symbol the parser invents for
-    // an object-literal method, whose ordinal is per parser and therefore per
-    // file, so two files each holding `{ next() {} }` would otherwise agree
-    // on `obj.0.next`. File 0 — a single-file build's only file, and a
-    // graph's entry — is spelled exactly as it was before modules existed.
+    // `fileId` is the module graph's numbering of this file. It is used for one
+    // thing: qualifying the IL symbol the parser invents for an object-literal
+    // method, whose ordinal is per parser and therefore per file, so two files
+    // each holding `{ next() {} }` would otherwise agree on `obj.0.next`. File
+    // 0 — a single-file build's only file, and a graph's entry — is spelled
+    // exactly as it was before modules existed.
     Parser(std::vector<Token> tokens, DiagnosticSink& diags, uint16_t fileId = 0)
         : tokens_(std::move(tokens)), diags_(diags), fileId_(fileId) {}
 
@@ -34,10 +34,9 @@ private:
     DiagnosticSink& diags_;
     uint16_t fileId_ = 0;
     size_t pos_ = 0;
-    // Which class a `super` in the body being parsed belongs to, and
-    // whether there is one at all. A class body is the only place `super`
-    // is legal, and the parent it names is known here and nowhere later
-    // (docs/0012 decision 5).
+    // Which class a `super` in the body being parsed belongs to, and whether
+    // there is one at all. A class body is the only place `super` is legal, and
+    // the parent it names is known here and nowhere later.
     std::string currentClassSuper_;
     bool inClassMethod_ = false;
     // Whether the operand `parseUnaryPrefix` just produced is an
@@ -60,13 +59,12 @@ private:
     // difference — by the time the linker sees a statement list it cannot
     // tell a module body from a block.
     bool atModuleTopLevel_ = false;
-    // Generator state (docs/0026). `yield` is not a reserved word — it is
-    // contextual, and only inside a generator body — so these two decide
-    // whether the identifier spelled `yield` is a keyword here and, if it is,
-    // whether this POSITION is one bronze's straight-line subset admits.
-    // `yieldRefusal_` names the construct the yield would be inside of, and
-    // is what turns "not supported" into a message that says which of the
-    // things bronze refuses this is.
+    // Generator state. `yield` is not a reserved word — it is contextual, and
+    // only inside a generator body — so these two decide whether the identifier
+    // spelled `yield` is a keyword here and, if it is, whether this POSITION is
+    // one bronze's straight-line subset admits. `yieldRefusal_` names the
+    // construct the yield would be inside of, and is what turns "not supported"
+    // into a message that says which of the things bronze refuses this is.
     bool inGeneratorBody_ = false;
     const char* yieldRefusal_ = nullptr;
     // Ordinal of the next desugared generator, for the IL symbols its `next`
@@ -90,9 +88,9 @@ private:
     static bool isIdentifierName(TokenKind kind);
     void error(const char* message);
     // Consumes a statement's terminating semicolon, or inserts one where
-    // ECMA-262 12.10 says the program means one (docs/0014). Every statement
-    // terminator goes through here; the semicolons that are punctuation of a
-    // production — the two in a `for` header — go through expect() instead.
+    // ECMA-262 12.10 says the program means one. Every statement terminator
+    // goes through here; the semicolons that are punctuation of a production —
+    // the two in a `for` header — go through expect() instead.
     bool consumeSemicolon(const char* what);
     // Whether a line terminator precedes the next token. The restricted
     // productions (`return`, `throw`, `break`, `continue`, postfix `++`/`--`)
@@ -109,10 +107,10 @@ private:
     // one production in which a DECLARATION may be anonymous. Everything
     // downstream identifies a function by its name, so it gets one.
     ast::StmtPtr parseFunctionDecl(bool isExported, const std::string& defaultName = "");
-    // --- parser_module.cpp: `import` and `export` (docs/0023) -------------
-    // Both append rather than return: `export const a = 1, b = 2` is two
-    // declarations plus the record of what they export, and a side-effect
-    // `import` is one node with no bindings at all.
+    // --- parser_module.cpp: `import` and `export` ------------- Both append
+    // rather than return: `export const a = 1, b = 2` is two declarations plus
+    // the record of what they export, and a side-effect `import` is one node
+    // with no bindings at all.
     bool parseImportDecl(std::vector<ast::StmtPtr>& out);
     bool parseExportDecl(std::vector<ast::StmtPtr>& out);
     // The `from "spec"` tail, with the cursor on `from`. False on a
@@ -124,7 +122,7 @@ private:
     // One `VarDecl` per declarator of the BindingList (ECMA-262 14.3.1),
     // appended in source order. `isStatement` is false inside a `for` header,
     // where the declaration is followed by the header's own semicolon and ASI
-    // must not apply (docs/0014 decision 4).
+    // must not apply.
     bool parseVarDecl(std::vector<ast::StmtPtr>& out, bool isStatement = true);
     ast::StmtPtr parseReturn();
     ast::StmtPtr parseIf();
@@ -154,11 +152,11 @@ private:
     ast::StmtPtr parseClass(const std::string& defaultName = "");
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
-    // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed.
-    // One copy for object literals and class bodies, because the only thing
-    // that differs between them is the enumerability the RUNTIME gives the
-    // result (docs/0019 decision 4) — the syntax is identical, including the
-    // arity rules ECMA-262 15.4.1 puts on each half. Null on error.
+    // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed. One
+    // copy for object literals and class bodies, because the only thing that
+    // differs between them is the enumerability the RUNTIME gives the result —
+    // the syntax is identical, including the arity rules ECMA-262 15.4.1 puts
+    // on each half. Null on error.
     std::unique_ptr<ast::FunctionExpr> parseAccessorMember(ast::AccessorKind kind,
                                                            std::string& outName);
     // `m(params) { body }`, with the NAME already consumed and the cursor on
@@ -167,18 +165,17 @@ private:
     // what differs is what the caller does with the result.
     std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan);
 
-    // --- parser_generator.cpp: generators, desugared (docs/0026) -----------
-    // The parameter list and body of a generator, with the cursor on the '('
-    // and the `*` already consumed. `fn` comes back holding the DESUGARED
-    // body — an iterator object over a step index — so nothing downstream of
-    // the parser knows generators exist. False on a diagnosed error, which is
-    // every construct outside the straight-line subset.
+    // --- parser_generator.cpp: generators, desugared ----------- The parameter
+    // list and body of a generator, with the cursor on the '(' and the `*`
+    // already consumed. `fn` comes back holding the DESUGARED body — an
+    // iterator object over a step index — so nothing downstream of the parser
+    // knows generators exist. False on a diagnosed error, which is every
+    // construct outside the straight-line subset.
     bool parseGeneratorTail(ast::FunctionExpr& fn);
     // `[ Symbol.iterator ]` as a class member name, the only computed key
     // bronze reads, and the only one three.js's generators use. True with the
-    // cursor past the `]` and `outName` set to `"@@iterator"` (docs/0021
-    // decision 1); false with the cursor unmoved when the bracketed key is
-    // anything else.
+    // cursor past the `]` and `outName` set to `"@@iterator"`; false with the
+    // cursor unmoved when the bracketed key is anything else.
     bool matchSymbolIteratorKey(std::string& outName);
     // Saves and restores the generator state across a nested function body:
     // a `yield` inside a function written inside a generator belongs to that
@@ -202,9 +199,9 @@ private:
     // a position the subset refuses. Always returns null.
     ast::ExprPtr refuseYield();
 
-    // --- parser_pattern.cpp: binding patterns (docs/0017) ----------------
-    // A pattern where the grammar spells one: a declarator, a parameter, a
-    // for-of head. Null on a diagnosed error.
+    // --- parser_pattern.cpp: binding patterns ---------------- A pattern where
+    // the grammar spells one: a declarator, a parameter, a for-of head. Null on
+    // a diagnosed error.
     ast::PatternPtr parsePattern();
     ast::PatternPtr parseArrayPattern();
     ast::PatternPtr parseObjectPattern();
@@ -236,18 +233,17 @@ private:
     // `/ab+/gi`. Splits the one token into its pattern and its flags and
     // COMPILES the pattern, so a malformed regular expression is a compile
     // error at the position it was written rather than a hard error the first
-    // time the line runs (docs/0024 decision 3).
+    // time the line runs.
     ast::ExprPtr parseRegExpLiteral();
     bool looksLikeArrow() const;
     ast::ExprPtr parseArrowFunction();
 
     // The expression grammar, loosest production first. `parseExpr` is
-    // ECMA-262's *Expression* and admits the comma operator; `parseAssign`
-    // is *AssignmentExpression* and does not. Every position the spec spells
-    // AssignmentExpression — an argument, an array element, a property
-    // value, a declarator initializer, a ternary arm, the right side of an
-    // assignment — calls the latter, which is what keeps `f(a, b)` a
-    // two-argument call (docs/0015 decision 7).
+    // ECMA-262's *Expression* and admits the comma operator; `parseAssign` is
+    // *AssignmentExpression* and does not. Every position the spec spells
+    // AssignmentExpression — an argument, an array element, a property value, a
+    // declarator initializer, a ternary arm, the right side of an assignment —
+    // calls the latter, which is what keeps `f(a, b)` a two-argument call.
     ast::ExprPtr parseExpr();
     ast::ExprPtr parseAssign();
     ast::ExprPtr parseConditional();

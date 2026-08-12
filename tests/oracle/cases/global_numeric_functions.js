@@ -1,6 +1,5 @@
-// The four function properties of the global object that ECMA-262 19.2
-// defines over numbers (docs/0027 decision 4). `Ray.js` and `Color.js` in the
-// three.js closure both call them.
+// The four function properties of the global object that ECMA-262 19.2 defines
+// over numbers. `Ray.js` and `Color.js` in the three.js closure both call them.
 //
 // From 19.2.2 (isFinite), 19.2.3 (isNaN), 19.2.4 (parseFloat), 19.2.5
 // (parseInt) and 21.1.2.12/13:
@@ -55,8 +54,8 @@ console.log(parseInt === Number.parseInt, parseFloat === Number.parseFloat);
 console.log(isNaN("NaN"), Number.isNaN("NaN"));
 console.log(isFinite("1"), Number.isFinite("1"));
 
-// The globals are shadowable like every other provided name (docs/0011
-// decision 1): a local declaration wins with no special case.
+// The globals are shadowable like every other provided name: a local
+// declaration wins with no special case.
 {
   const parseInt = function () {
     return "shadowed";

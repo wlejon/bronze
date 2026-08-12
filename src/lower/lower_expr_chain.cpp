@@ -1,5 +1,5 @@
-// Optional chains — `a?.b`, `a?.[k]`, `a?.()` — and the short circuit that
-// is the whole of the feature (docs/0018 decision 4).
+// Optional chains — `a?.b`, `a?.[k]`, `a?.()` — and the short circuit that is
+// the whole of the feature.
 //
 // The subtle part is not the `?.` itself but its REACH. ECMA-262 13.3.9
 // short-circuits the OptionalChain, not the link: when the base of `a?.b` is
@@ -105,9 +105,9 @@ std::optional<Lowerer::Value> Lowerer::lowerChainJoin(
     il::ValueId resParam = ilFn.valueCount++;
     ilFn.blocks[bJoin].params.push_back({resParam, il::Type::Dynamic});
 
-    // A binding needs a join parameter when the edges do not all carry the
-    // same value for it. Declaration order, like every other join (docs/0005
-    // decision 2): map iteration order is not deterministic output.
+    // A binding needs a join parameter when the edges do not all carry the same
+    // value for it. Declaration order, like every other join: map iteration
+    // order is not deterministic output.
     std::vector<std::string> joinVars;
     for (const auto& name : getActiveVarsInDeclOrder()) {
         const il::ValueId here = success.state.at(name).valueId;

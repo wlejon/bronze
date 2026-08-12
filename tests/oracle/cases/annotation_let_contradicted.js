@@ -1,6 +1,6 @@
-// An annotation on a declaration is a hint about the binding, not a cast of
-// the initialiser (docs/0010 decision 6). `let tag: number = "seven"` used to
-// emit an unbox of a boxed string; the binding is a string, and stays one.
+// An annotation on a declaration is a hint about the binding, not a cast of the
+// initialiser. `let tag: number = "seven"` used to emit an unbox of a boxed
+// string; the binding is a string, and stays one.
 let tag: number = "seven";
 console.log(tag);
 console.log(tag + 1);

@@ -1,6 +1,5 @@
-// A HOLE — the state `delete a[1]` leaves an array index in (docs/0019
-// decision 2) — and the two different questions the rest of the language
-// asks about one.
+// A HOLE — the state `delete a[1]` leaves an array index in — and the two
+// different questions the rest of the language asks about one.
 //
 // Before this chunk a hole was unreachable: the only way to make one was a
 // sparse write, which is a named hard error, so every array bronze could
@@ -37,8 +36,8 @@
 // 6. `reduce` with no initial value seeds from the first PRESENT element, not
 //    from index 0.
 // 7. `console.log` prints a run of holes as one `<n empty items>` entry, and
-//    the singular form for a run of one — docs/0013's format, first reachable
-//    here.
+//    the singular form for a run of one — the inspect format, first
+//    reachable here.
 const a = [1, 2, 3, 4, 5];
 delete a[1];
 delete a[3];

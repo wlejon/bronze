@@ -13,7 +13,7 @@
 using namespace bronze;
 using bronze::runtime::rtInspect;
 
-// The format docs/0013 pins, exercised below the compiler: the oracle case
+// The pinned inspect format, exercised below the compiler: the oracle case
 // covers the whole program, these cover the rules one at a time.
 
 TEST_CASE("primitives inspect as node prints them inside a container") {

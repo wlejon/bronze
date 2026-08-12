@@ -1,11 +1,10 @@
-// BLOCKED: `unsupported construct: a `yield` inside a loop; bronze
-// implements the straight-line subset only ... (docs/0026)`.
+// BLOCKED: `unsupported construct: a `yield` inside a loop; bronze implements
+// the straight-line subset only...`.
 //
-// docs/0026 shipped generators as a DESUGARING rather than as a coroutine:
-// a body that is a straight line of `yield <expr>;` statements becomes an
-// iterator object whose `next` switches on a step index. This case is the
-// receipt for that trade — everything a real generator can do that an index
-// switch cannot.
+// Generators shipped as a DESUGARING rather than as a coroutine: a body that is
+// a straight line of `yield <expr>;` statements becomes an iterator object
+// whose `next` switches on a step index. This case is the receipt for that
+// trade — everything a real generator can do that an index switch cannot.
 //
 // The blocker is the shape of the transform, not the syntax. An index switch
 // re-enters the body FROM THE TOP on every `next`, so:

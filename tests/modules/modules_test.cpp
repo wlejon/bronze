@@ -1,6 +1,6 @@
-// The module graph: resolution, the graph's shape and order, the export
-// tables, and — the one that matters most — that an import binding is renamed
-// to the exporting file's binding rather than copied (docs/0023 decision 1).
+// The module graph: resolution, the graph's shape and order, the export tables,
+// and — the one that matters most — that an import binding is renamed to the
+// exporting file's binding rather than copied.
 //
 // These drive `loadProgram` and read the merged AST dump, which is the
 // artefact that shows the renaming. What the merged module MEANS at run time
@@ -214,8 +214,8 @@ TEST_CASE("default and namespace imports resolve") {
     Loaded r = load(entry);
     REQUIRE_MESSAGE(r.ok, r.errors);
     CHECK(contains(r.dump, "mod1.default"));
-    // The namespace is an object literal of getters over the target's
-    // bindings, in the target's export order (docs/0023 decision 4).
+    // The namespace is an object literal of getters over the target's bindings,
+    // in the target's export order.
     CHECK(contains(r.dump, "(const ns"));
     CHECK(contains(r.dump, "(ident mod1.k)"));
 }
@@ -254,12 +254,12 @@ TEST_CASE("an import outside the module top level is a syntax error") {
     CHECK(contains(r.errors, "top level of a module"));
 }
 
-// The renamer walks `new`'s callee as an EXPRESSION now that the grammar
-// admits one (docs/0025). Getting this wrong is the worst failure this walk
-// has: an unrenamed base binds to whatever the importing file happens to call
-// `registry`, which is a silent wrong binding and not a diagnostic. Both
-// halves are pinned — the base is renamed, and the property name beside it,
-// which is a key and never a binding, is not.
+// The renamer walks `new`'s callee as an EXPRESSION now that the grammar admits
+// one. Getting this wrong is the worst failure this walk has: an unrenamed base
+// binds to whatever the importing file happens to call `registry`, which is a
+// silent wrong binding and not a diagnostic. Both halves are pinned — the base
+// is renamed, and the property name beside it, which is a key and never a
+// binding, is not.
 TEST_CASE("a new callee that is a member of an imported binding is renamed") {
     Sandbox box("newcallee");
     box.write("registry.js", "export function Ctor() { this.k = 1; }\nexport const table = { Ctor };\n");

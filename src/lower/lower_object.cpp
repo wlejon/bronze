@@ -1,6 +1,6 @@
-// Object and array literals, property and element access, `new`, and the
-// call forms — the expressions that go through the runtime's shapes,
-// prototypes and inline caches (docs/0008).
+// Object and array literals, property and element access, `new`, and the call
+// forms — the expressions that go through the runtime's shapes, prototypes and
+// inline caches.
 
 #include <cmath>
 #include <optional>
@@ -30,9 +30,9 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
                          "destructuring pattern");
             return std::nullopt;
         }
-        // `{ ...src }` copies src's own enumerable properties in here, in
+        // `{...src }` copies src's own enumerable properties in here, in
         // enumeration order, so a later key overwrites an earlier one exactly
-        // as a spelled-out property would (docs/0017 decision 3).
+        // as a spelled-out property would.
         if (const auto* spread = dynamic_cast<const ast::SpreadElement*>(prop.value.get())) {
             auto srcOpt = lowerExpr(*spread->argument, ilFn);
             if (!srcOpt) return std::nullopt;
@@ -43,7 +43,7 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         // `get k() {}` / `set k(v) {}`. ENUMERABLE, unlike a class's: 13.2.5.5
         // defines an object literal's accessor with `enumerable: true`, so it
         // appears in `Object.keys` and its getter runs when the key is read
-        // back (docs/0019 decision 4).
+        // back.
         if (prop.accessor != ast::AccessorKind::None) {
             const auto* fn = dynamic_cast<const ast::FunctionExpr*>(prop.value.get());
             if (!fn) {
@@ -197,10 +197,10 @@ std::optional<Lowerer::Value> Lowerer::lowerDeleteReference(const ast::Unary& de
 
 std::optional<Lowerer::Value> Lowerer::lowerDelete(const ast::Unary& del, il::Function& ilFn) {
     // `delete a?.b` with a nullish `a` is `true`, not `undefined`: the chain
-    // short-circuited, so there was no Reference, and 13.5.1.2's step 2
-    // answers true for that. The generic chain join produces `undefined` on
-    // its short-circuit edges, so this is the one place that asks for the
-    // other value (docs/0019 decision 2).
+    // short-circuited, so there was no Reference, and 13.5.1.2's step 2 answers
+    // true for that. The generic chain join produces `undefined` on its
+    // short-circuit edges, so this is the one place that asks for the other
+    // value.
     if (ast::containsOptionalLink(*del.operand)) {
         return lowerChainJoin([&] { return lowerDeleteReference(del, ilFn); }, ChainMiss::True,
                               ilFn);
@@ -244,14 +244,13 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
 
 std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
                                                     il::Function& ilFn) {
-    // Every callee is an ordinary value: the whole ceremony
-    // (prototype, instance shape, receiver, result rule) lives in
-    // one runtime helper rather than in codegen — docs/0008
-    // decision 4. "Is this a constructor" is therefore a check the helper
+    // Every callee is an ordinary value: the whole ceremony (prototype,
+    // instance shape, receiver, result rule) lives in one runtime helper rather
+    // than in codegen. "Is this a constructor" is therefore a check the helper
     // makes on the VALUE, which is what lets the callee be an arbitrary
-    // expression at no cost to `new Foo()`: both reach the same
-    // `Op::Construct` over one operand, and the only difference is which
-    // instructions produced it.
+    // expression at no cost to `new Foo()`: both reach the same `Op::Construct`
+    // over one operand, and the only difference is which instructions produced
+    // it.
     //
     // Lowered before the arguments, which is the order ECMA-262 13.3.5.1
     // evaluates them in and therefore the order their side effects run.
@@ -332,7 +331,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
     // Before the INDEX is evaluated: a skipped chain does not run the
-    // expression inside its brackets either (docs/0018 decision 4).
+    // expression inside its brackets either.
     if (idxAccess->optional) emitChainShortCircuit(objBoxed, ilFn);
 
     return emitIndexRead(*idxAccess, objBoxed, ilFn);
@@ -383,16 +382,15 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     }
 
     if (consoleStream != ast::ConsoleStream::None) {
-        // Any number of arguments, including none: node formats each one as
-        // it would a lone argument and joins them with a single space
-        // (docs/0016 decision 6). The joining is the runtime's, so there is
-        // one inspect formatter and not two.
+        // Any number of arguments, including none: node formats each one as it
+        // would a lone argument and joins them with a single space. The joining
+        // is the runtime's, so there is one inspect formatter and not two.
         std::vector<il::ValueId> args;
         args.reserve(call->args.size());
         for (const auto& argPtr : call->args) {
             // `print` takes its arguments as operands, one per value, and a
             // spread's length is not known until it runs. Naming it beats
-            // silently printing the array (docs/0017 decision 8).
+            // silently printing the array.
             if (dynamic_cast<const ast::SpreadElement*>(argPtr.get())) {
                 diags_.error(argPtr->span,
                              "unsupported construct: a spread argument to " + consoleName);
@@ -405,26 +403,26 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         il::Instruction inst;
         // The ONLY difference between the two: `warn` and `error` write to
         // stderr, which keeps a library's chatter out of the bytes the oracle
-        // pins (docs/0026 decision 5).
+        // pins.
         inst.op = consoleStream == ast::ConsoleStream::Err ? il::Op::PrintErr : il::Op::Print;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
         inst.operands = std::move(args);
         emitInst(ilFn, inst);
-        // `console.log(...)` evaluates to undefined, like any call that
-        // returns nothing (docs/0014 decision 6).
+        // `console.log(...)` evaluates to undefined, like any call that returns
+        // nothing.
         return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
     }
 
-    // `Object` is recognized here rather than looked up: bronze has
-    // no global object for it to live on (docs/0009 decision 2).
+    // `Object` is recognized here rather than looked up: bronze has no global
+    // object for it to live on.
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get());
         // `Object.keys(x)` keeps its own instruction — every other member of
         // `Object` now resolves through the namespace object like a member of
-        // `Math` does (docs/0021 decision 6), so this is a fast path rather
-        // than the only path, and it falls through to the general call
-        // lowering for anything it does not recognize.
+        // `Math` does, so this is a fast path rather than the only path, and it
+        // falls through to the general call lowering for anything it does not
+        // recognize.
         if (baseIdent && baseIdent->name == "Object" && mem->property == "keys" &&
             call->args.size() == 1 &&
             !dynamic_cast<const ast::SpreadElement*>(call->args[0].get()) &&
@@ -447,7 +445,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // A spread argument means the argument count is not known here, and a
     // direct call's operand list is exactly its parameter list. So a spread
     // call always takes the uniform path, where the argument vector is a real
-    // array the runtime unpacks (docs/0017 decision 3).
+    // array the runtime unpacks.
     const bool spreadArgs = listHasSpread(call->args);
 
     // An OPTIONAL call never takes the direct path: the point of `f?.()` is
@@ -455,12 +453,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // function that cannot be.
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get());
         calleeIdent && !spreadArgs && !call->optional) {
-        // A local binding shadows a module-level function, and so
-        // does an enclosing scope's environment slot: a nested
-        // function declaration registers in functionIndices_ under
-        // its source name, but every reference to it — including a
-        // sibling closure's — has to go through the environment
-        // chain, not a direct call (docs/0007 decision 3).
+        // A local binding shadows a module-level function, and so does an
+        // enclosing scope's environment slot: a nested function declaration
+        // registers in functionIndices_ under its source name, but every
+        // reference to it — including a sibling closure's — has to go through
+        // the environment chain, not a direct call.
         uint32_t shadowDepth = 0;
         uint32_t shadowIndex = 0;
         auto envIt = activeVarMap_.find(calleeIdent->name);
@@ -468,9 +465,9 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             !findEnclosingEnvVar(calleeIdent->name, shadowDepth, shadowIndex)) {
             auto it = functionIndices_.find(calleeIdent->name);
             // A callee that needs an `arguments` object is not a direct-call
-            // target: the object is built from the caller's REAL argument
-            // list, which only the uniform path's wrapper can see (docs/0027
-            // decision 3). The same exclusion `needsEnv` carries.
+            // target: the object is built from the caller's REAL argument list,
+            // which only the uniform path's wrapper can see. The same exclusion
+            // `needsEnv` carries.
             if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments) {
                 uint32_t calleeIdx = it->second;
                 const auto& calleeFn = ilModule_.functions[calleeIdx];
@@ -491,11 +488,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 }
 
                 std::vector<il::ValueId> argVals;
-                // A plain `f()` has no receiver, so a direct call
-                // supplies undefined for `__this` (docs/0008
-                // decision 3). `__env` cannot be supplied this way,
-                // which is why the verifier forbids direct calls to
-                // closures outright.
+                // A plain `f()` has no receiver, so a direct call supplies
+                // undefined for `__this`. `__env` cannot be supplied this way,
+                // which is why the verifier forbids direct calls to closures
+                // outright.
                 if (calleeFn.needsThis) {
                     argVals.push_back(emitConstUndefined(ilFn));
                 }
@@ -575,8 +571,8 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     Value calleeVal;
     Value thisArgVal;
     // `super.m(...)` is the one call whose callee and receiver come from
-    // different objects: the function is found on the PARENT prototype, and
-    // it runs on the current receiver (docs/0012 decision 5).
+    // different objects: the function is found on the PARENT prototype, and it
+    // runs on the current receiver.
     if (const auto* superMem = dynamic_cast<const ast::SuperMember*>(call->callee.get())) {
         auto fnVal = lowerSuperMember(superMem, ilFn);
         if (!fnVal) return std::nullopt;

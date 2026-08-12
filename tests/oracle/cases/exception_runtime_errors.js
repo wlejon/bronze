@@ -1,6 +1,6 @@
 // The errors the RUNTIME raises are ordinary catchable exceptions, not
-// process-fatal diagnostics (docs/0020 decision 6). Before this they killed
-// the process, which made every one of them unobservable from JS.
+// process-fatal diagnostics. Before this they killed the process, which made
+// every one of them unobservable from JS.
 //
 // Only the CLASS of each error is pinned, never its message: ECMA-262 fixes
 // which constructor is used and says nothing about the text, so the text is

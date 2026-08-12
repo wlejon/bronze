@@ -202,9 +202,8 @@ public:
     std::unordered_set<std::string> captured;
 
     // A nested function reaches this scope through its body AND through its
-    // parameter defaults, which are code that runs on every call that omits
-    // the argument and can name anything in scope where the function was
-    // written (docs/0017 decision 1).
+    // parameter defaults, which are code that runs on every call that omits the
+    // argument and can name anything in scope where the function was written.
     void addFunctionBody(const std::vector<StmtPtr>& body,
                          const std::vector<Param>* params = nullptr) {
         IdentVisitor idents;
@@ -260,8 +259,8 @@ public:
         d.value->accept(*this);
     }
     // Every method of a class is a closure over this scope, so what its body
-    // mentions is a candidate capture - including the parent class name that
-    // a `super` inside it resolves against (docs/0012 decision 5).
+    // mentions is a candidate capture - including the parent class name that a
+    // `super` inside it resolves against.
     void visit(const ClassDecl& c) override {
         for (const auto& m : c.methods) addFunctionBody(m.fn->body, &m.fn->params);
     }
@@ -277,9 +276,8 @@ public:
     void visit(const FunctionExpr& f) override {
         addFunctionBody(f.body, &f.params);
         // An arrow's `this` is the enclosing function's receiver, so it is
-        // captured like a free variable — under the one name no source
-        // binding can collide with, because `this` is a keyword
-        // (docs/0012 decision 3).
+        // captured like a free variable — under the one name no source binding
+        // can collide with, because `this` is a keyword.
         if (f.isArrow && usesThis(f.body)) captured.insert("this");
     }
     void visit(const FunctionDecl& f) override { addFunctionBody(f.body, &f.params); }
@@ -350,20 +348,19 @@ public:
     }
 };
 
-// Finds `this` in a function body, stopping at any nested function: each
-// binds its own receiver. Reuses CaptureVisitor's traversal shape, which
-// already stops at function boundaries — it just records something else.
-// Does this body need a receiver? An ordinary nested function has its own
-// `this` and is not descended into; an ARROW does not, so its `this` is
-// this body's and has to be found (docs/0012 decision 3).
+// Finds `this` in a function body, stopping at any nested function: each binds
+// its own receiver. Reuses CaptureVisitor's traversal shape, which already
+// stops at function boundaries — it just records something else. Does this body
+// need a receiver? An ordinary nested function has its own `this` and is not
+// descended into; an ARROW does not, so its `this` is this body's and has to be
+// found.
 class ThisVisitor final : public CaptureVisitor {
 public:
     bool found = false;
     void visit(const ThisExpr&) override { found = true; }
     // `super(...)` and `super.m()` both RUN on the current receiver, so a
-    // method whose body never writes `this` still needs one (docs/0012
-    // decision 5). Missing this made `super.describe()` in an override
-    // report `this` outside a function.
+    // method whose body never writes `this` still needs one. Missing this made
+    // `super.describe()` in an override report `this` outside a function.
     void visit(const SuperCall& c) override {
         found = true;
         for (const auto& arg : c.args) arg->accept(*this);
@@ -379,11 +376,10 @@ public:
     void visit(const ClassDecl&) override {}
 };
 
-// Finds `arguments` in a function body, descending into ARROWS and stopping
-// at every other function — the same boundary `ThisVisitor` walks, because it
-// is the same rule: an arrow has no `arguments` of its own and sees the
-// enclosing function's, exactly as it does for `this` (docs/0012 decision 3,
-// applied by docs/0027 decision 3).
+// Finds `arguments` in a function body, descending into ARROWS and stopping at
+// every other function — the same boundary `ThisVisitor` walks, because it is
+// the same rule: an arrow has no `arguments` of its own and sees the enclosing
+// function's, exactly as it does for `this`.
 //
 // `arguments` is an ordinary Identifier, not a keyword, so the name can be
 // bound — and where it is, the binding wins and no arguments object exists.
@@ -471,8 +467,7 @@ public:
         if (functionFreelyReferences(f.params, f.body, name_)) found = true;
     }
     // `super` in a method resolves against the class's BASE, so a method body
-    // reaches the base name without ever spelling it as an identifier
-    // (docs/0012 decision 5).
+    // reaches the base name without ever spelling it as an identifier.
     void visit(const ClassDecl& c) override {
         if (c.superName == name_) found = true;
         for (const auto& m : c.methods) {
@@ -733,7 +728,7 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
     ArgumentsVisitor v;
     // A parameter DEFAULT runs inside the function and appears nowhere in its
     // body, so it is scanned here for the reason `getParamReferencedNames`
-    // exists (docs/0017 decision 9).
+    // exists.
     visitParamExprs(params, v);
     for (const auto& s : body) {
         if (s) s->accept(v);

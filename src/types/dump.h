@@ -6,8 +6,8 @@
 
 namespace bronze::types {
 
-// The canonical text form of docs/0010 decision 8, printed by
-// `bronze types <file>` and pinned byte-for-byte by the unit tests.
+// The canonical text form of what inference proved, printed by `bronze types
+// <file>` and pinned byte-for-byte by the unit tests.
 //
 // Per function: the signature, whether it is direct-callable, then, per
 // statement in source order, the bindings whose type that statement changed.

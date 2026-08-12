@@ -1,8 +1,8 @@
 // Where a binding lives and who can reach it: the seam
-// `src/lower/lower_scope.cpp` implements (docs/0007, docs/0016). Scopes that
-// shadow and uncover, the module record a top-level function reads through,
-// the environment an arrow reaches `this` and `arguments` through, and the
-// synthetic parameters that carry them in.
+// `src/lower/lower_scope.cpp` implements. Scopes that shadow and uncover, the
+// module record a top-level function reads through, the environment an arrow
+// reaches `this` and `arguments` through, and the synthetic parameters that
+// carry them in.
 
 #include <doctest/doctest.h>
 
@@ -14,10 +14,10 @@ using bronze::lower_test::inferAndLower;
 using bronze::lower_test::parseAndLower;
 
 TEST_CASE("an ordinary function that uses `arguments` takes it as a parameter") {
-    // The arguments object is built from the caller's REAL argument list, so
-    // it arrives the way the rest array does — from the call wrapper, as a
-    // synthetic leading parameter — and the function stops being a
-    // direct-call target (docs/0027 decision 3).
+    // The arguments object is built from the caller's REAL argument list, so it
+    // arrives the way the rest array does — from the call wrapper, as a
+    // synthetic leading parameter — and the function stops being a direct-call
+    // target.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -43,7 +43,7 @@ TEST_CASE("an ordinary function that uses `arguments` takes it as a parameter") 
 TEST_CASE("a parameter named `arguments` wins, and no object is built") {
     // 10.2.11: the arguments object exists only where the name is not already
     // bound. A synthetic binding here would be a redeclaration of the
-    // parameter (docs/0027 decision 3).
+    // parameter.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -59,11 +59,10 @@ TEST_CASE("a parameter named `arguments` wins, and no object is built") {
 }
 
 TEST_CASE("an arrow reaches `this` through the environment, not a parameter") {
-    // Lexical `this` (docs/0012 decision 3) is capture, not an extra
-    // argument: the enclosing function writes its own `this` into slot 0 of
-    // its environment record, and the arrow reads it back from there. So
-    // the arrow gets no `__this` parameter at all and cannot be rebound by
-    // the call site.
+    // Lexical `this` is capture, not an extra argument: the enclosing function
+    // writes its own `this` into slot 0 of its environment record, and the
+    // arrow reads it back from there. So the arrow gets no `__this` parameter
+    // at all and cannot be rebound by the call site.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -80,12 +79,12 @@ TEST_CASE("an arrow reaches `this` through the environment, not a parameter") {
 }
 
 TEST_CASE("a module function's locals do not leak into the module top level") {
-    // The top level is a function body like any other and starts from an
-    // empty scope (docs/0016 decision 3). Before this, lowering carried the
-    // LAST module function's bindings into `main`, and the two faces of that
-    // are both checked here. This one is the dangerous face: the read
-    // resolved to a binding whose SSA value id names an unrelated
-    // instruction in `main`, so it compiled and printed a plausible number.
+    // The top level is a function body like any other and starts from an empty
+    // scope. Before this, lowering carried the LAST module function's bindings
+    // into `main`, and the two faces of that are both checked here. This one is
+    // the dangerous face: the read resolved to a binding whose SSA value id
+    // names an unrelated instruction in `main`, so it compiled and printed a
+    // plausible number.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -94,10 +93,10 @@ TEST_CASE("a module function's locals do not leak into the module top level") {
         "console.log(secret);\n",
         diags, buf);
 
-    // The observable moved with docs/0027 decision 1 and the test's point did
-    // not: `secret` must not RESOLVE here. A leak would give an `env.get` or a
-    // read of an SSA value in `main`; what it gets instead is the
-    // unresolved-name instruction and the warning that names it.
+    // The observable moved when an unresolvable name became a runtime error,
+    // and the test's point did not: `secret` must not RESOLVE here. A leak
+    // would give an `env.get` or a read of an SSA value in `main`; what it gets
+    // instead is the unresolved-name instruction and the warning that names it.
     REQUIRE(optMod.has_value());
     CHECK_FALSE(diags.hasErrors());
     CHECK(diags.render(buf).find("unresolved name 'secret'") != std::string::npos);
@@ -140,9 +139,9 @@ TEST_CASE("a block declaration shadows an enclosing one and then uncovers it") {
 }
 
 TEST_CASE("a top-level function declaration reaches a module-level binding") {
-    // docs/0016 decision 1. The module scope is a singleton, so its record is
-    // published by `main` and loaded by the module functions that need it —
-    // which is what lets them stay direct-call targets.
+    // The module scope is a singleton, so its record is published by `main` and
+    // loaded by the module functions that need it — which is what lets them
+    // stay direct-call targets.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -159,7 +158,7 @@ TEST_CASE("a top-level function declaration reaches a module-level binding") {
     CHECK(text.find("module.env.set") != std::string::npos);
     CHECK(text.find("module.env.get") != std::string::npos);
     // Still a direct call: the whole point of not desugaring these into
-    // closures (docs/0016 decision 1).
+    // closures.
     CHECK(text.find("call @read") != std::string::npos);
 }
 

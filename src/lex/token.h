@@ -25,10 +25,10 @@ enum class TokenKind {
     TemplateMiddle,
     TemplateTail,
     // A regular expression literal, delimiters and flags included, as ONE
-    // token: `/ab+/gi`. Its body is a second grammar (docs/0024) and none of
-    // its characters mean here what they mean in JavaScript, so the lexer's
-    // only job is to find where it ends. Whether a `/` starts one at all is
-    // decided by the PREVIOUS token — see `Lexer::regexAllowedAfter`.
+    // token: `/ab+/gi`. Its body is a second grammar and none of its characters
+    // mean here what they mean in JavaScript, so the lexer's only job is to
+    // find where it ends. Whether a `/` starts one at all is decided by the
+    // PREVIOUS token — see `Lexer::regexAllowedAfter`.
     RegExpLiteral,
 
     // Keywords (kept alphabetical).
@@ -109,9 +109,9 @@ enum class TokenKind {
     StarAssign,   // *=
     SlashAssign,  // /=
     PercentAssign,// %=
-    // Bitwise and shifts. `&` and `|` were previously lexed only as the
-    // second character of `&&` and `||`, so `a & b` reported an unrecognized
-    // character and named nothing (docs/0015).
+    // Bitwise and shifts. `&` and `|` were previously lexed only as the second
+    // character of `&&` and `||`, so `a & b` reported an unrecognized character
+    // and named nothing.
     Amp,          // &
     Pipe,         // |
     Caret,        // ^
@@ -137,8 +137,8 @@ struct Token {
     std::string_view text;  // view into the SourceBuffer
     // Whether a line terminator separates this token from the one before it.
     // Trivia is discarded here, so the lexer is the only place that can still
-    // see it, and automatic semicolon insertion is the only thing that needs
-    // it — the grammar is otherwise whitespace-insensitive (docs/0014).
+    // see it, and automatic semicolon insertion is the only thing that needs it
+    // — the grammar is otherwise whitespace-insensitive.
     bool newlineBefore = false;
 };
 

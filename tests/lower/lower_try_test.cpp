@@ -1,4 +1,4 @@
-// The IL shape of `try` / `catch` / `finally` / `throw` (docs/0020).
+// The IL shape of `try` / `catch` / `finally` / `throw`.
 //
 // The oracle cases pin what a program PRINTS. These pin the structure that
 // makes those answers true, because two of the three bugs found while
@@ -104,10 +104,10 @@ std::string jumpTargetOf(const Block& b) {
 }  // namespace
 
 TEST_CASE("a protected region's blocks name the catch as their handler") {
-    // Decision 3: the handler is a property of the BLOCK, not an operand of
-    // each instruction, so `try` needs a block of its own — carrying on in
-    // the block the statement was reached in would put the enclosing
-    // handler's edge on the first thing the body does.
+    // The handler is a property of the BLOCK, not an operand of each
+    // instruction, so `try` needs a block of its own — carrying on in the block
+    // the statement was reached in would put the enclosing handler's edge on
+    // the first thing the body does.
     const std::string printed = printOf("function f(g) { try { g(); } catch (e) { g(e); } }");
 
     // Exactly one block is annotated, and it is the protected one: the
@@ -127,8 +127,8 @@ TEST_CASE("a protected region's blocks name the catch as their handler") {
     REQUIRE(handler != nullptr);
     CHECK(bodyHas(*handler, "exc.take"));
     // A handler block takes no parameters: it is entered from an arbitrary
-    // point in the protected region, so there is no edge to pass them on
-    // (decision 4).
+    // point in the protected region, so there is no edge to pass them on at an
+    // arbitrary point in the protected region.
     CHECK(handler->name.find('(') == std::string::npos);
 }
 
@@ -152,9 +152,9 @@ TEST_CASE("main gets no handler block when nothing in it can throw") {
 }
 
 TEST_CASE("a finally is duplicated per exit path, under the OUTER handler") {
-    // Decision 5: no completion record and no dispatch, so each way out of
-    // the protected region gets its own copy. Two exits here — normal
-    // completion and the exception path — so the body appears twice.
+    // No completion record and no dispatch, so each way out of the protected
+    // region gets its own copy. Two exits here — normal completion and the
+    // exception path — so the body appears twice.
     const std::string printed = printOf("function f(g) { try { g(1); } finally { g(2); } }");
     CHECK(countOf(printed, "const.f64 2") == 2);
 
@@ -220,11 +220,10 @@ TEST_CASE("a break crossing a finally runs it before leaving the loop") {
 }
 
 TEST_CASE("a binding a try assigns lives in an environment record") {
-    // Decision 4: the handler block is entered from an arbitrary point in the
-    // protected region, so no block-argument join can carry a value the body
+    // The handler block is entered from an arbitrary point in the protected
+    // region, so no block-argument join can carry a value the body
     // half-updated. Assignments a `try` makes go through the environment
-    // instead, which is what makes both the handler and the join
-    // parameterless.
+    // instead, which is what makes both the handler and the join parameterless.
     const std::string printed = printOf(
         "function f(g) { let x = 1; try { x = g(); } catch (e) { x = 2; } return x; }");
     CHECK(printed.find("env.set") != std::string::npos);
@@ -235,9 +234,9 @@ TEST_CASE("a binding a try assigns lives in an environment record") {
     }
 
     // A binding a try does NOT assign stays a plain SSA value: making every
-    // local a cell would undo docs/0007's narrowing. `y` below is read after
-    // the statement and never written inside it, so it reaches the join as an
-    // SSA value rather than through memory.
+    // local a cell would undo the closure analysis's narrowing. `y` below is
+    // read after the statement and never written inside it, so it reaches the
+    // join as an SSA value rather than through memory.
     const std::string untouched =
         printOf("function f(g) { let y = 1; try { g(); } catch (e) { g(e); } return y; }");
     const std::vector<Block> blocks = blocksOf(untouched, "f");

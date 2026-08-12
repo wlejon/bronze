@@ -4,9 +4,9 @@
 // Reference, takes ToNumeric(GetValue(ref)) as the old value, and PutValue's
 // old +/- 1. The prefix form yields the NEW value, the postfix form the old
 // one. Nothing in that is special to an SSA-backed binding, so a binding that
-// lives in an environment record (docs/0007) must be read and written through
-// the record exactly as `n = n + 1` already is — the update path had its own
-// lookup that only ever consulted the current function's variables.
+// lives in an environment record must be read and written through the record
+// exactly as `n = n + 1` already is — the update path had its own lookup that
+// only ever consulted the current function's variables.
 //
 // Pinned here: prefix and postfix, increment and decrement, on a binding
 // captured from an enclosing function, from two levels down, and at module

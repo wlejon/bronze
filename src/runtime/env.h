@@ -8,9 +8,9 @@
 
 namespace bronze {
 
-// A scope's captured variables (docs/0007). Everything in the payload is a
-// Value, so the collector's generic scan forwards the parent link and every
-// slot with no special case.
+// A scope's captured variables. Everything in the payload is a Value, so the
+// collector's generic scan forwards the parent link and every slot with no
+// special case.
 struct EnvHeader {
     HeapObjectHeader header;
     Value parent;  // undefined at the outermost environment

@@ -21,7 +21,7 @@ enum class Type : uint8_t {
     Bool,
     I32,
     F64,
-    Str,      // native string (representation decided in docs/0004)
+    Str,      // native string (representation decided in)
     Dynamic,  // boundary-only boxed value; using it is an explicit opt-in
 };
 const char* typeName(Type t);
@@ -45,12 +45,12 @@ enum class Op : uint8_t {
     // with an infinite exponent yield NaN. Its own op so the one algorithm
     // serves `**` and `Math.pow` alike.
     Pow,        // a: f64 = pow b, c
-    // The bitwise family (docs/0015). Operands are i32 — lowering puts a
-    // `to.int32` in front of every one of them — and the RESULT is the JS
-    // number that int32 denotes, so these read `%n: f64 = and %i32, %i32`.
-    // Keeping the result an i32 would leak a type inference has no element
-    // for into block joins and calling conventions; the int32 is an
-    // intermediate of the operator and never escapes it.
+    // The bitwise family. Operands are i32 — lowering puts a `to.int32` in
+    // front of every one of them — and the RESULT is the JS number that int32
+    // denotes, so these read `%n: f64 = and %i32, %i32`. Keeping the result an
+    // i32 would leak a type inference has no element for into block joins and
+    // calling conventions; the int32 is an intermediate of the operator and
+    // never escapes it.
     ToInt32,    // a: i32 = to.int32 b        (b: f64, bool or dynamic)
     BitAnd,     // a: f64 = and b, c
     BitOr,
@@ -79,14 +79,14 @@ enum class Op : uint8_t {
     IsNullish,  // a: bool = is.nullish b
     Ret,        // ret [a]
     // `throw v`: stores v into the pending-exception cell and goes to this
-    // block's handler (docs/0020 decision 3). A terminator, because it is a
-    // way OUT of the block like a jump — the edge it takes is just written on
-    // the block rather than on the instruction.
+    // block's handler. A terminator, because it is a way OUT of the block like
+    // a jump — the edge it takes is just written on the block rather than on
+    // the instruction.
     Throw,      // throw a
     // The pending value, taken and cleared. The first instruction of every
     // handler block, and the only way to read the cell: clearing it here is
     // what lets a `finally` run its body with nothing pending and then decide
-    // whether to re-raise (docs/0020 decision 5).
+    // whether to re-raise.
     ExcTake,    // a: dynamic = exc.take
     Jump,       // jump bN(args...)
     Branch,     // br %cond, bThen(args...), bElse(args...)
@@ -94,61 +94,59 @@ enum class Op : uint8_t {
     Box,        // a = box.<type> b
     Unbox,      // a = unbox.<type> b
     PropGet,    // a = prop.get b, <key_const_index>, <ic_site_index>
-    // `super.k`: a read of the PARENT prototype's property with `this` as
-    // the receiver. Identical to prop.get for a method — the value is the
-    // same function either way — and not identical at all for an accessor,
-    // whose getter would otherwise run with the prototype as its receiver
-    // (docs/0019 decision 3). No inline cache: the receiver and the holder
-    // are different objects, and an entry describes one shape.
+    // `super.k`: a read of the PARENT prototype's property with `this` as the
+    // receiver. Identical to prop.get for a method — the value is the same
+    // function either way — and not identical at all for an accessor, whose
+    // getter would otherwise run with the prototype as its receiver. No inline
+    // cache: the receiver and the holder are different objects, and an entry
+    // describes one shape.
     SuperGet,   // a = super.get proto, <key_const_index>, thisArg
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
     ElemSet,    // elem.set obj, idx, val       (all dynamic)
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
-    Construct,  // a = new callee, args...              (docs/0008)
+    Construct,  // a = new callee, args...
     CreateObject, // a = create.object
-    ObjectKeys, // a = object.keys b                  (docs/0009)
+    ObjectKeys, // a = object.keys b
     // The keys a `for-in` will visit, as one array built before the first
-    // iteration: own AND inherited enumerable string keys, each once
-    // (docs/0018 decision 1). Snapshotting is what lets the loop itself be
-    // for-of's index walk over the result, and it is a legal answer to the
-    // spec's open question about mutation during enumeration.
+    // iteration: own AND inherited enumerable string keys, each once.
+    // Snapshotting is what lets the loop itself be for-of's index walk over the
+    // result, and it is a legal answer to the spec's open question about
+    // mutation during enumeration.
     ForInKeys,  // a = forin.keys b
     // A class method: a property write with `enumerable: false`, which an
     // ordinary `prop.set` cannot express and which is what keeps a method out
-    // of `Object.keys` and `for-in` (docs/0018 decision 2). No IC index — a
-    // class body runs once.
+    // of `Object.keys` and `for-in`. No IC index — a class body runs once.
     MethodDef,  // method.def obj, <key_const_index>, v
-    // An accessor property: one property with two halves, either of which
-    // may be `undefined` here because the source wrote only one of them
-    // (docs/0019 decision 4). `immI32` is the enumerable attribute — 1 for
-    // an object literal's accessor, 0 for a class's, the same split methods
-    // already have. No IC index, for the reason `method.def` has none.
+    // An accessor property: one property with two halves, either of which may
+    // be `undefined` here because the source wrote only one of them. `immI32`
+    // is the enumerable attribute — 1 for an object literal's accessor, 0 for a
+    // class's, the same split methods already have. No IC index, for the reason
+    // `method.def` has none.
     AccessorDef,  // accessor.def obj, <key_const_index>, getter, setter, <enumerable>
     // `delete o.k` and `delete o[i]`. A reference operation, not a read:
     // the operand's property is never loaded, and the result is the boolean
     // ECMA-262 13.5.1 defines rather than the property's value.
     PropDelete,  // a: bool = prop.delete obj, <key_const_index>
     ElemDelete,  // a: bool = elem.delete obj, idx
-    GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
+    GlobalGet,  // a = global.get <key_const_index>
     // A name lowering could not resolve to anything, EVALUATED. Raises
     // ReferenceError at run time rather than refusing the program at compile
     // time, because what a free name denotes is a fact only the running
-    // environment holds (docs/0027 decision 1). Not a terminator: it is a
-    // helper call like any other, and the block's handler is what the
-    // backend's exception test after it branches to.
+    // environment holds. Not a terminator: it is a helper call like any other,
+    // and the block's handler is what the backend's exception test after it
+    // branches to.
     RefError,   // a: dynamic = ref.error <key_const_index>
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
-    // be made together, before any method is stored (docs/0012 dec. 5).
+ // be made together, before any method is stored.
     ClassExtend, // class.extend derived, base
-    // The iterator protocol (docs/0021 decision 2). One iteration is a
-    // CURSOR — opened once, stepped, read, and closed if it is abandoned —
-    // rather than an index and a length, because a Map, a Set and a
-    // user-defined iterable have no length to compare against and no index
-    // to read at. The array/string/typed-array walk survives as a kind
-    // INSIDE the record, so the common case still costs no allocation and
-    // no call into user code.
+    // The iterator protocol. One iteration is a CURSOR — opened once, stepped,
+    // read, and closed if it is abandoned — rather than an index and a length,
+    // because a Map, a Set and a user-defined iterable have no length to
+    // compare against and no index to read at. The array/string/typed-array
+    // walk survives as a kind INSIDE the record, so the common case still costs
+    // no allocation and no call into user code.
     IterOpen,    // a: dynamic = iter.open b        (GetIterator, 7.4.2)
     // Advances the cursor, stashes what it produced in the record, and
     // answers whether there was anything. Two ops rather than one because
@@ -161,18 +159,17 @@ enum class Op : uint8_t {
     // `return` method raises rather than letting it replace the original.
     IterClose,   // iter.close %record, <suppress>
     // Everything the cursor has left, as a fresh array — a rest element's
-    // value (docs/0017 decision 2). Drains the same record the elements
-    // before it were stepped from.
+    // value. Drains the same record the elements before it were stepped from.
     IterRest,    // a = iter.rest %record
-    // The source of a destructuring, checked once before any element is read
-    // (docs/0017 decision 4). `immI32` names which pattern asked, so the
-    // diagnostic can say `array destructuring` rather than `for-of`, and the
-    // check is what lets every element read below it assume a walkable value.
+    // The source of a destructuring, checked once before any element is read.
+    // `immI32` names which pattern asked, so the diagnostic can say `array
+    // destructuring` rather than `for-of`, and the check is what lets every
+    // element read below it assume a walkable value.
     PatternCheck,  // a = pattern.check b, <kind>
-    // The three container-building ops a spread needs: one element, then all
-    // of an iterable's, then all of an object's own enumerable properties
-    // (docs/0017 decision 3). Appending rather than indexing is the point —
-    // a literal with a spread in it has no length until it is built.
+    // The three container-building ops a spread needs: one element, then all of
+    // an iterable's, then all of an object's own enumerable properties.
+    // Appending rather than indexing is the point — a literal with a spread in
+    // it has no length until it is built.
     ArrayAppend,  // array.append arr, v
     ArraySpread,  // array.spread arr, iterable
     ObjectSpread, // object.spread obj, source
@@ -187,22 +184,21 @@ enum class Op : uint8_t {
     ConstructSpread,    // a = new.spread callee, args
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env
-    FunctionRef,   // a = func.ref <funcIndex>          (docs/0008)
-    EnvCreate,  // a = env.create parent, <slots>     (docs/0007)
+    FunctionRef,   // a = func.ref <funcIndex>
+    EnvCreate,  // a = env.create parent, <slots>
     EnvGet,     // a = env.get env, <depth>, <index>
     EnvSet,     // env.set env, <depth>, <index>, v
     // The MODULE scope's environment record, which is a singleton: the top
-    // level runs exactly once, so there is exactly one activation of that
-    // scope and no reason to thread it through every calling convention
-    // (docs/0016 decision 1). `main` publishes it; a module function that
-    // needs a module-level binding loads it at entry and chains its own
-    // record to it.
+    // level runs exactly once, so there is exactly one activation of that scope
+    // and no reason to thread it through every calling convention. `main`
+    // publishes it; a module function that needs a module-level binding loads
+    // it at entry and chains its own record to it.
     ModuleEnvSet,  // module.env.set %env
     ModuleEnvGet,  // a: dynamic = module.env.get
     Print,      // print a, ...            (console.log / info / debug)
     // Same formatter, other stream. Its own op rather than a flag on `Print`
-    // because the canonical dump is what a reader bisects with (docs/0003),
-    // and a stream carried in a field is a stream the dump can silently omit.
+    // because the canonical dump is what a reader bisects with, and a stream
+    // carried in a field is a stream the dump can silently omit.
     PrintErr,   // print.err a, ...        (console.warn / error)
 };
 const char* opName(Op op);
@@ -235,15 +231,15 @@ struct Instruction {
     Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
-    // PropGet: inference proved this site's receiver has ONE shape class
-    // (docs/0010 decision 4), so the backend may inline the cache check
-    // instead of calling the helper. False is always sound — it is the
-    // plain call — and an unproven site keeps it, so the inline form can
-    // never degenerate into a polymorphic guard chain in generated code.
-    // It licenses the inline sequence; it does not remove the guard. The
-    // shape word is the runtime's authority and a shape class can name a
-    // layout the runtime never builds (`this.x = ...` inside a branch), so
-    // the guard is what makes the proof sound, not a redundancy on top.
+    // PropGet: inference proved this site's receiver has ONE shape class, so
+    // the backend may inline the cache check instead of calling the helper.
+    // False is always sound — it is the plain call — and an unproven site keeps
+    // it, so the inline form can never degenerate into a polymorphic guard
+    // chain in generated code. It licenses the inline sequence; it does not
+    // remove the guard. The shape word is the runtime's authority and a shape
+    // class can name a layout the runtime never builds (`this.x =...` inside a
+    // branch), so the guard is what makes the proof sound, not a redundancy on
+    // top.
     bool icMonomorphic = false;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
@@ -253,24 +249,23 @@ struct Instruction {
 };
 
 // Whether this instruction can leave an exception pending, and so needs the
-// backend's cell test after it (docs/0020 decision 1). Defined in print.cpp,
-// beside `isTerminator`, because both are one-line facts about the op table.
+// backend's cell test after it. Defined in print.cpp, beside `isTerminator`,
+// because both are one-line facts about the op table.
 bool canThrow(const Instruction& inst);
 
 struct Block {
     BlockId id = 0;
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
-    // Where control goes if an exception becomes pending inside this block:
-    // the innermost enclosing handler, or `kNoBlock` for "leave the function"
-    // (docs/0020 decision 3). It sits on the block rather than on each call
-    // so that lowering emits no test at all — the backend derives them from
-    // `canThrow`, and the block is never split in the IL, so no join here
-    // grows a parameter.
+    // Where control goes if an exception becomes pending inside this block: the
+    // innermost enclosing handler, or `kNoBlock` for "leave the function". It
+    // sits on the block rather than on each call so that lowering emits no test
+    // at all — the backend derives them from `canThrow`, and the block is never
+    // split in the IL, so no join here grows a parameter.
     //
     // A handler block therefore takes NO parameters: it is entered from an
     // arbitrary point in the protected region, and nothing here knows what a
-    // binding held there. Decision 4 is what makes that possible.
+    // binding held there, which is what an environment record makes possible.
     BlockId handler = kNoBlock;
 };
 
@@ -281,35 +276,32 @@ struct Param {
 
 struct Function {
     std::string name;
-    // Synthetic leading parameters come first, in this order:
-    //   [__env if needsEnv] [__this if needsThis]
-    //   [__arguments if needsArguments] source parameters...
-    // __env can only come from the closure, so a needsEnv function is
-    // never a direct-call target (docs/0007); __this is supplied by every
-    // caller, including direct ones, so needsThis carries no such
-    // restriction (docs/0008 decision 3).
+    // Synthetic leading parameters come first, in this order: [__env if
+    // needsEnv] [__this if needsThis] [__arguments if needsArguments] source
+    // parameters... __env can only come from the closure, so a needsEnv
+    // function is never a direct-call target; __this is supplied by every
+    // caller, including direct ones, so needsThis carries no such restriction.
     std::vector<Param> params;
     Type returnType = Type::Void;
     bool isExported = false;
-    // The module's entry point. Everything else about a function is the
-    // same, and one thing is not: it has no caller to propagate an exception
-    // to, so its unwind path reports the value and exits instead of returning
-    // (docs/0020 decision 2). A flag rather than a name comparison in the
-    // backend, because "which function is `main`" is a fact lowering knows
-    // and codegen should not have to spell.
+    // The module's entry point. Everything else about a function is the same,
+    // and one thing is not: it has no caller to propagate an exception to, so
+    // its unwind path reports the value and exits instead of returning. A flag
+    // rather than a name comparison in the backend, because "which function is
+    // `main`" is a fact lowering knows and codegen should not have to spell.
     bool isEntryPoint = false;
     bool needsEnv = false;
     bool needsThis = false;
-    // `arguments`: every argument the caller really passed, as one array
-    // (docs/0027 decision 3). Like the rest array it can only be built where
-    // the true argument count is visible, which is the call WRAPPER — so a
-    // function that needs one is never a direct-call target, the same
-    // restriction `needsEnv` carries and for a related reason.
+    // `arguments`: every argument the caller really passed, as one array. Like
+    // the rest array it can only be built where the true argument count is
+    // visible, which is the call WRAPPER — so a function that needs one is
+    // never a direct-call target, the same restriction `needsEnv` carries and
+    // for a related reason.
     bool needsArguments = false;
     // `...rest`: the LAST source parameter, and the one no caller supplies a
-    // value for. It arrives as an array built from whatever arguments were
-    // left over — by the call wrapper on the uniform path, by the call site
-    // on a direct one (docs/0017 decision 2).
+    // value for. It arrives as an array built from whatever arguments were left
+    // over — by the call wrapper on the uniform path, by the call site on a
+    // direct one.
     bool hasRestParam = false;
     // How many source arguments a call must supply: the parameters before the
     // first one with a default. Fewer is a diagnosed arity error; anything
@@ -331,8 +323,8 @@ struct Function {
     // pad", which is what a function owning an `arguments` object needs: the
     // object is built from the argument count the wrapper sees, and padding
     // would make `f(1)` indistinguishable from `f(1, undefined)` where the
-    // language says `arguments.length` is 1 and 2 (docs/0027 decision 3). Its
-    // wrapper reads argv through `bronze_arg_at` instead.
+    // language says `arguments.length` is 1 and 2. Its wrapper reads argv
+    // through `bronze_arg_at` instead.
     uint32_t adaptArity() const {
         return needsArguments ? 0u : static_cast<uint32_t>(callerParamCount());
     }
@@ -343,11 +335,10 @@ struct Function {
 struct Module {
     std::string name;
     std::vector<std::string> keyConstants;
-    // How many inline-cache sites lowering handed out across the whole
-    // module. The backend emits exactly this many entries as a global array
-    // in the object file (docs/0010 decision 7), so it is the size of a
-    // real allocation, not a hint: the verifier checks every icIndex
-    // against it.
+    // How many inline-cache sites lowering handed out across the whole module.
+    // The backend emits exactly this many entries as a global array in the
+    // object file, so it is the size of a real allocation, not a hint: the
+    // verifier checks every icIndex against it.
     uint32_t icSiteCount = 0;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a

@@ -1,9 +1,9 @@
 // A Map whose keys are OBJECTS, run hard enough that the collector moves them
-// under it. This is the case docs/0021 decision 4's index epoch exists for:
-// a Map key is a value, not a property name, so an object key can only be
-// hashed by its ADDRESS — and a semispace collector (docs/0004 decision 4)
-// changes every address it copies. The table records the collection count it
-// was indexed at and rebuilds when that count has moved on.
+// under it. This is the case the Map index's epoch exists for: a Map key is a
+// value, not a property name, so an object key can only be hashed by its
+// ADDRESS — and a semispace collector changes every address it copies. The
+// table records the collection count it was indexed at and rebuilds when that
+// count has moved on.
 //
 // It matters that this case ALLOCATES between lookups (the `junk` object in
 // the probe loop, the pair arrays the Map iterator hands out), because under

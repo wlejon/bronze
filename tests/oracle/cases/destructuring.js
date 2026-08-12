@@ -1,5 +1,5 @@
-// Destructuring in declarations, parameters and assignments (docs/0017
-// decisions 4 to 6).
+// Destructuring in declarations, parameters and assignments ( decisions 4 to
+// 6).
 //
 // What each line pins: an array pattern reads by position and an object
 // pattern by key; a rest element collects the tail as a fresh array; a
@@ -9,9 +9,8 @@
 // is fully evaluated before any target is written; and patterns nest.
 //
 // Results are printed as scalars or joined strings on purpose: a container's
-// inspect format is pinned by the printing cases (docs/0013), and mixing the
-// two questions into one expectation would make a change to either move this
-// file.
+// inspect format is pinned by the printing cases, and mixing the two questions
+// into one expectation would make a change to either move this file.
 const [a, b] = [1, 2];
 console.log(a + b);
 const { x, y } = { x: 10, y: 20 };

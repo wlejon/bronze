@@ -1,5 +1,5 @@
 // `Number.prototype.toFixed`, `toExponential`, `toPrecision` and
-// `toString(radix)` (ECMA-262 21.1.3), promoted by docs/0022.
+// `toString(radix)` (ECMA-262 21.1.3).
 //
 // All four are defined on the EXACT real number the double denotes, not on the
 // shortest decimal that round-trips to it, so every digit here comes from

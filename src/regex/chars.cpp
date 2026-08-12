@@ -54,8 +54,8 @@ RangeList makeWords(bool ignoreCase) {
 
 // Blocks whose members carry case mappings bronze has no table for. Being
 // generous here costs a hard error on a pattern that would have worked; being
-// stingy costs a silent wrong answer, which is the trade docs/0001 decision 8
-// already settled.
+// stingy costs a silent wrong answer, which is the trade
+// hard-errors-over-silent-fallbacks already settled.
 constexpr Range kUnknownCasedBlocks[] = {
     {0x0100, 0x02FF},  // Latin Extended-A/B, IPA Extensions
     {0x0300, 0x052F},  // combining marks with case, Greek, Cyrillic
