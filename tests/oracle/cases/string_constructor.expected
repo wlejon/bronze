@@ -1,0 +1,12 @@
+5 0 true null undefined
+true 0 already
+NaN Infinity -Infinity
+1e+21 0.30000000000000004 -7.5
+ABC
+true 0
+A A
+true
+true
+€ 1
+true true
+true function string

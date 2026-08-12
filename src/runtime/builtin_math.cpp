@@ -9,8 +9,11 @@
 // all — it emits the arithmetic inline (docs/0011 decision 2) — so the two
 // paths have to agree on every edge case, and the oracle case runs both.
 
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <random>
 #include <string>
 
 #include "runtime/fatal.h"
@@ -137,6 +140,85 @@ uint64_t mathAtan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return Value::fromDouble(std::atan2(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
 }
 
+// ---- Math.random (21.3.2.27) ------------------------------------------------
+//
+// The generator is xoshiro256++ (Blackman & Vigna), seeded once from the OS.
+// docs/0030 decision 1 records why a COMPILED PROGRAM is allowed to be
+// nondeterministic where bronze's own output is not, and why a fixed seed
+// would have been the silent wrong answer rather than the safe choice.
+//
+// Not `rand()`, for four reasons that compound: MSVC's `RAND_MAX` is 32767, so
+// it yields fifteen bits per call and a double built from it lands on a coarse
+// lattice; it is a Lehmer LCG whose low-order bits have a short period; its
+// state is a single global shared with any C library code in the process, so a
+// third party calling `srand` changes a JS program's sequence; and `srand`
+// takes 32 bits, which is fewer distinct streams than a long-running program
+// can exhaust. xoshiro256++ is four 64-bit words, one non-linear output mix, a
+// period of 2^256-1, and it passes BigCrush.
+struct Xoshiro256pp {
+    uint64_t s[4];
+
+    Xoshiro256pp() {
+        // SplitMix64, the seeding companion the xoshiro authors specify: it
+        // turns any 64-bit value into a full-entropy stream, so a source that
+        // hands back correlated or mostly-zero words cannot leave the state
+        // near all-zeros — the one state xoshiro escapes only slowly.
+        //
+        // `std::random_device` is the OS entropy source (RtlGenRandom on
+        // Windows, getrandom on Linux). The clock and a stack address are
+        // mixed in as well so that a platform whose `random_device` is a
+        // deterministic fallback still differs from run to run rather than
+        // silently repeating one sequence forever.
+        std::random_device rd;
+        uint64_t seed = 0x9E3779B97F4A7C15ULL;
+        for (int i = 0; i < 8; ++i) {
+            seed = seed * 0x100000001B3ULL + rd();
+        }
+        seed ^= static_cast<uint64_t>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count());
+        seed ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&seed));
+        for (uint64_t& word : s) {
+            seed += 0x9E3779B97F4A7C15ULL;
+            uint64_t z = seed;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            word = z ^ (z >> 31);
+        }
+    }
+
+    static uint64_t rotl(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+
+    uint64_t next() {
+        const uint64_t result = rotl(s[0] + s[3], 23) + s[0];
+        const uint64_t t = s[1] << 17;
+        s[2] ^= s[0];
+        s[3] ^= s[1];
+        s[1] ^= s[2];
+        s[0] ^= s[3];
+        s[2] ^= t;
+        s[3] = rotl(s[3], 45);
+        return result;
+    }
+};
+
+// Constructed on first use, so a program that never calls `Math.random` never
+// touches the OS entropy source.
+Xoshiro256pp& prng() {
+    static Xoshiro256pp g;
+    return g;
+}
+
+uint64_t mathRandom(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    // 53 bits — a double's whole mantissa — over 2^53, which is every
+    // representable double in [0, 1) with equal spacing and no rounding step
+    // that could produce exactly 1.0. The bits taken are the HIGH ones: this
+    // generator's output is uniform in every bit, but taking the top is what
+    // keeps the conversion correct if the generator is ever replaced by one
+    // whose low bits are weaker.
+    const double x = static_cast<double>(prng().next() >> 11) / 9007199254740992.0;
+    return Value::fromDouble(x).rawBits();
+}
+
 struct MathFn {
     const char* name;
     bronze_fn_code code;
@@ -166,7 +248,7 @@ const MathFn kMathFunctions[] = {
     // variadic ones; the rest declare their real parameter count so a short
     // call reaches them as the language says, with undefined.
     {"min", mathMin, 0},                 {"max", mathMax, 0},
-    {"hypot", mathHypot, 0},
+    {"hypot", mathHypot, 0},             {"random", mathRandom, 0},
 };
 
 const MathConst kMathConstants[] = {
@@ -177,17 +259,13 @@ const MathConst kMathConstants[] = {
 };
 
 // Real members of the Math namespace that bronze has NOT built. Reading one
-// must not be `undefined`: a program that feature-tests `Math.random` and
-// finds it missing takes a branch no JS engine would take. Same rule as the
-// prototype tables in rt_helpers.cpp — membership here is ECMA-262's "does
-// this exist?", never "have we got round to it?".
-//
-// `random` is on this list on purpose and not for want of a call to a PRNG:
-// bronze has no decision about a seed, and a nondeterministic global would
-// need one before it can be defended (docs/0001 decision 10).
+// must not be `undefined`: a program that feature-tests a member and finds it
+// missing takes a branch no JS engine would take. Same rule as the prototype
+// tables in rt_helpers.cpp — membership here is ECMA-262's "does this exist?",
+// never "have we got round to it?".
 const char* const kMathUnimplemented[] = {
     "acosh", "asinh", "atanh", "clz32", "cosh", "expm1", "f16round", "fround",
-    "imul",  "log1p", "random", "sinh",  "sumPrecise", "tanh",
+    "imul",  "log1p", "sinh",  "sumPrecise", "tanh",
 };
 
 Value g_mathObject = Value::fromUndefined();

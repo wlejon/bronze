@@ -309,4 +309,40 @@ uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_
 Value rtArrayMethod(const std::string& key);
 Value rtStringMethod(const std::string& key);
 
+// ---- the global constructor objects (docs/0030) -----------------------------
+
+// `Array`, `String` and `Boolean`, by the name lowering resolved; `undefined`
+// for anything else. Interned by code pointer, exactly as the typed-array
+// constructors are, so the bare name and the `constructor` back-pointer below
+// are one object.
+Value rtGlobalConstructor(const std::string& name);
+Value rtArrayConstructorObject();
+Value rtStringConstructorObject();
+Value rtBooleanConstructorObject();
+
+// A member read on a primitive BOOLEAN: `constructor`, or one of the two real
+// `Boolean.prototype` members bronze has not built, which is diagnosed by name
+// rather than read as `undefined` — the boolean branch of the property path had
+// no end of its own before this and fell into the "not an object" answer.
+Value rtBooleanMember(const std::string& key);
+
+// A member read on one of those constructor objects. True — with `out` set —
+// only when it was answered; a name ECMA-262 defines and bronze has not built
+// is diagnosed here and never returns, and everything else falls through to the
+// ordinary function-member path so `Array.call` keeps its own diagnosis.
+bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
+
+// The name of the intrinsic this function object IS, or null for any other
+// function. Two operations need to recognise one: `instanceof`, which cannot
+// walk a prototype chain an array does not have, and `extends`, which must
+// refuse a base whose instances it cannot actually produce.
+const char* rtIntrinsicConstructorName(Value fn);
+bool rtIsArrayConstructor(Value fn);
+
+// The name of an intrinsic whose `new` form would have to build a primitive
+// WRAPPER object, or null. `bronze_construct` refuses those by name: the native
+// returns a primitive, which 13.3.5.1 discards in favour of the plain instance,
+// so the program would receive `{}` where it asked for a String.
+const char* rtPrimitiveWrapperConstructorName(Value fn);
+
 }  // namespace bronze::runtime

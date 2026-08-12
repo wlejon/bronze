@@ -59,9 +59,12 @@ so its misses need the same treatment, and `Math` gets its own table
 (`Math.random`, `Math.fround`, `Math.imul`, the hyperbolics, …). The check
 runs only on the miss, so the hit path is untouched.
 
-`Math.random` is on that list deliberately and not for want of a call to a
-PRNG: bronze has no decision about seeding, and a nondeterministic global
-wants one before it can be defended (docs/0001 decision 10).
+`Math.random` was on that list deliberately and not for want of a call to a
+PRNG: bronze had no decision about seeding, and a nondeterministic global wants
+one before it can be defended (docs/0001 decision 10). **Superseded by docs/0030
+decision 1**, which makes that decision — real randomness, seeded once per
+process from the OS — and takes the name off the list. The rule this decision
+states is untouched: what left the table left it because it landed.
 
 As a member lands, its name leaves the table. Membership is always the
 ECMA-262 question "does this exist?", never "have we got round to it?".

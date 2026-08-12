@@ -21,18 +21,18 @@ namespace bronze::runtime {
 
 namespace {
 
-// Array.prototype (plus `constructor`), minus `length`, which is real.
+// Array.prototype, minus `length` and `constructor`, which are real.
 const char* const kArrayMembers[] = {
-    "at", "concat", "constructor", "copyWithin", "entries", "every", "fill", "filter",
+    "at", "concat", "copyWithin", "entries", "every", "fill", "filter",
     "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach",
     "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce",
     "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toLocaleString",
     "toReversed", "toSorted", "toSpliced", "toString", "unshift", "values", "with",
 };
 
-// String.prototype, minus `length`, which is real.
+// String.prototype, minus `length` and `constructor`, which are real.
 const char* const kStringMembers[] = {
-    "at", "charAt", "charCodeAt", "codePointAt", "concat", "constructor", "endsWith",
+    "at", "charAt", "charCodeAt", "codePointAt", "concat", "endsWith",
     "includes", "indexOf", "isWellFormed", "lastIndexOf", "localeCompare",
     "normalize", "padEnd", "padStart", "repeat",
     "slice", "startsWith", "substr", "substring", "toLocaleLowerCase",

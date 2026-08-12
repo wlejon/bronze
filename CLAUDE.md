@@ -139,3 +139,10 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   object interned by code pointer so `x.constructor === Float32Array` holds
   and two IL opcodes could be deleted, the ECMA-262 narrowing conversions
   written once, and the indexed fast path examined, costed and deferred)
+- 0030 randomness and the global constructors (why a COMPILED PROGRAM may be
+  nondeterministic where bronze's own output may not, xoshiro256++ seeded from
+  the OS and why not `rand()`, `Array`/`String`/`Boolean` through docs/0029's
+  interning mechanism, `Array.prototype` kept out of the empty-object hole,
+  `new Array(n)` as holes, `instanceof Array` made exact by refusing to
+  subclass it, and the primitive wrapper refused in both directions so
+  `new String(x)` stops being `{}` and `true.constructor` stops being silent)

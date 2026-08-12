@@ -20,6 +20,7 @@ bronze_add_module(runtime
         builtin_math.cpp
         builtin_array.cpp
         builtin_string.cpp
+        builtin_constructors.cpp
         inspect.cpp
         rt_state.cpp
         rt_convert.cpp
@@ -62,6 +63,7 @@ bronze_add_module(runtime
         ../../tests/runtime/exact_decimal_test.cpp
         ../../tests/runtime/regexp_test.cpp
         ../../tests/runtime/arguments_test.cpp
+        ../../tests/runtime/math_random_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

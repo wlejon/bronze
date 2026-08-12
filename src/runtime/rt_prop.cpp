@@ -191,6 +191,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         if (keyStr == "length") {
             return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
         }
+        // The 10.2.5 back-pointer, as the same object the bare name `String`
+        // resolves to (docs/0030 decision 2). A primitive has no prototype
+        // chain here to find it on, so it is a branch in the property path —
+        // which is where docs/0029 decision 2 put a typed array's.
+        if (keyStr == "constructor") return rtStringConstructorObject().rawBits();
         Value method = rtStringMethod(keyStr);
         if (!method.isUndefined()) return method.rawBits();
         rtCheckStringMember(keyStr);
@@ -223,6 +228,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         rtCheckNumberProtoMember(keyStr);
         return Value::fromUndefined().rawBits();
     }
+    // A property read on a primitive BOOLEAN, for the reason the number branch
+    // above exists: without one it fell through to the "not an object" answer
+    // below, so `true.constructor` was `undefined` where `(5).constructor` was
+    // a named error — two answers to one question, and the silent one was the
+    // boolean's (docs/0030 decision 6).
+    if (objVal.isBool()) return rtBooleanMember(keyStr).rawBits();
     if (!objVal.isObject()) return Value::fromUndefined().rawBits();
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -242,6 +253,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
             if (!found.isUndefined()) return found.rawBits();
         }
+        if (keyStr == "constructor") return rtArrayConstructorObject().rawBits();
         Value method = rtArrayMethod(keyStr);
         if (!method.isUndefined()) return method.rawBits();
         rtCheckArrayMember(keyStr);
@@ -279,6 +291,15 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         fatal("internal: a property read on an iteration record");
     }
     if (hdr->flags == 2) {  // Function
+        // A GLOBAL CONSTRUCTOR's statics come first, ahead of the `prototype`
+        // slot below (docs/0030 decision 3). That order is the whole point: a
+        // FunctionHeader answers `prototype` from a slot it creates on demand,
+        // so `Array.prototype` would read as an empty object — a silent lie
+        // about an intrinsic bronze does not have, and one a program could
+        // install a method on that nothing would ever find.
+        if (Value ctorMember; rtGlobalConstructorMember(objVal, keyStr, ctorMember)) {
+            return ctorMember.rawBits();
+        }
         // `prototype` lives in its own slot; every other own property lives in
         // the function's property object and is found through ITS prototype
         // chain, which `extends` linked to the base class's (docs/0012

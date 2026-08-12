@@ -43,7 +43,15 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // `new source.array.constructor(...)` needs it reached through a member
     // expression that no name recognition can see. Putting them here deletes
     // the special case rather than adding to it.
+    //
+    // `Array`, `String` and `Boolean` joined with docs/0030, through exactly
+    // the mechanism the line above describes — the list, an interned function
+    // object, and no special case anywhere. `Function` is deliberately NOT
+    // here: `new Function(src)` compiles source at run time, which an AOT
+    // compiler cannot do, so the name stays an unresolved one that says so
+    // where it is used rather than a value that lies about being callable.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
+           name == "Array" || name == "String" || name == "Boolean" ||
            name == "Symbol" || name == "RegExp" ||
            name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||

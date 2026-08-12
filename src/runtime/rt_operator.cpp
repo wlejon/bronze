@@ -149,6 +149,17 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
         return false;
     }
+    // `x instanceof Array` is IsArray(x), answered here rather than by the
+    // walk below (docs/0030 decision 5). The walk cannot answer it at all: an
+    // array carries no shape and therefore no prototype chain, so it would
+    // report false for every array, on one of the most common guards written
+    // in JS. The shortcut is EXACT and not an approximation, because bronze
+    // refuses `class X extends Array` (bronze_class_extends) — so there is no
+    // array in a bronze program whose chain would have made the two differ.
+    if (rtIsArrayConstructor(ctorRoot.get())) {
+        return objRoot.get().isObject() &&
+               objRoot.get().asObject<HeapObjectHeader>()->flags == 1;
+    }
     // A primitive left operand has no prototype chain, so the answer is
     // false — not an error, which is what makes `x instanceof C` a safe
     // guard on an unknown value.

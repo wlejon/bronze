@@ -1,0 +1,26 @@
+true true
+false false false
+false false
+3 [ <3 empty items> ]
+false undefined
+2 [ 'x', <1 empty item> ] true false
+[ 1, 2, 3 ] 1 [ '3' ]
+0 4 [ 'a', 'b' ]
+RangeError: Invalid array length
+RangeError: Invalid array length
+[ 3 ] 1 3
+[] [ 1, 'a', true ]
+[ 1, 2, 3 ]
+[ 'a', 'b', 'c' ]
+[ 10, 21, 32 ]
+[ 7, 8 ]
+[ 1, 2 ]
+[ [ 'a', 1 ] ]
+[ 'p', 'q' ]
+[] 0
+true true
+true function
+true true
+true true
+false false false
+false

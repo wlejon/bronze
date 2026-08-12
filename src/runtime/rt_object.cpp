@@ -190,6 +190,19 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != 2) {
         fatal("a class can only extend another class or a constructor function");
     }
+    // A native intrinsic cannot be a base, and saying so is the point. The
+    // derived constructor builds an ordinary plain object and forwards to the
+    // base, but `Array`'s body ignores the receiver and returns an array of its
+    // own (docs/0030 decision 2) — so `new Sub()` would be a plain object that
+    // `Array.isArray` and `instanceof Array` both call false while the program
+    // believes it made an array. Refusing is loud where subclassing it is a
+    // silent wrong answer.
+    if (const char* intrinsic = rtIntrinsicConstructorName(baseVal)) {
+        fatal((std::string("extending the native constructor `") + intrinsic +
+               "` is unsupported (its instances are built by the runtime, so a "
+               "subclass would not be one)")
+                  .c_str());
+    }
 
     Rooted<Value> derived{derivedVal};
     Rooted<Value> base{baseVal};
@@ -220,6 +233,21 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != 2) {
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
+    }
+
+    // `new String(x)` and `new Boolean(x)` want a primitive WRAPPER object,
+    // which bronze does not have. Left alone, the shape of this function makes
+    // that silent in the worst way: the native returns a primitive, the rule
+    // below discards any non-object return, and the program receives the empty
+    // plain instance — `new String("ab").length` was `undefined`. Refusing by
+    // name is the same call docs/0030 decision 4 made for `Function`: a
+    // constructor that resolves and hands back something that is not what was
+    // asked for is worse than one that does not resolve.
+    if (const char* wrapper = rtPrimitiveWrapperConstructorName(fnVal)) {
+        fatal((std::string("`new ") + wrapper +
+               "(...)` is unsupported: bronze has no primitive wrapper objects. Call " +
+               wrapper + "(x) for the conversion, which is exact.")
+                  .c_str());
     }
 
     Rooted<Value> fnRoot{fnVal};

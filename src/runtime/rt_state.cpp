@@ -208,6 +208,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = collection;
     } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
         resolved = typed;
+    } else if (Value global = rtGlobalConstructor(keyStr); global.isObject()) {
+        resolved = global;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
         resolved = ctor;
     } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
