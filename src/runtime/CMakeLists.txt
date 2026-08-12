@@ -24,6 +24,7 @@ bronze_add_module(runtime
         builtin_string.cpp
         builtin_function.cpp
         builtin_constructors.cpp
+        builtin_wrappers.cpp
         inspect.cpp
         rt_state.cpp
         rt_convert.cpp
@@ -31,6 +32,7 @@ bronze_add_module(runtime
         rt_object.cpp
         rt_operator.cpp
         rt_prop.cpp
+        rt_prop_primitive.cpp
         rt_delete.cpp
         iterator.cpp
         map.cpp

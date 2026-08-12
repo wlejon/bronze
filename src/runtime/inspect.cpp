@@ -149,6 +149,19 @@ private:
         // (flags == 0) and stays on the inline property fast path.
         if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
 
+        // A primitive wrapper prints as node prints one — `[String: 'ab']`,
+        // `[Boolean: false]` — and not as the `{}` an object with no own
+        // properties would otherwise show. The whole content of one of these is
+        // an internal slot, so `{}` would be a lie about the value rather than
+        // a terse rendering of it. Tested by the brand, which reads two words
+        // and allocates nothing, like everything else in this walk.
+        if (Value data; rtStringWrapperData(v, data)) {
+            return "[String: " + quoted(utf8Of(data.asString<StringHeader>())) + "]";
+        }
+        if (Value data; rtBooleanWrapperData(v, data)) {
+            return std::string("[Boolean: ") + (data.asBool() ? "true" : "false") + "]";
+        }
+
         auto* hdr = v.asObject<HeapObjectHeader>();
         switch (hdr->flags) {
             case 1: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);

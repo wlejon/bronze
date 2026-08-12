@@ -8,6 +8,12 @@
 // succeed; what is missing is the algorithm around it — the ordered pair of
 // calls, the "is the result a primitive" test between them, and the TypeError
 // when neither answers one. Naming that beats guessing a number.
+//
+// Two objects are converted anyway, and neither is an exception to that: a
+// RegExp and a primitive WRAPPER have an answer that is a pure function of what
+// they hold, so it can be given without running the algorithm — and it is
+// refused by name the moment a program replaces the `valueOf` the algorithm
+// would have called (builtin_wrappers.cpp).
 
 #include <charconv>
 #include <cmath>
@@ -68,6 +74,13 @@ static Value valueToString(Value v) {
         // so `"" + /a/g` is "/a/g" rather than a named error. Every other
         // object still goes through ToPrimitive and is still refused.
         return rtMakeString(rtRegExpText(v));
+    } else if (Value prim; rtWrapperPrimitive(v, prim)) {
+        // A primitive WRAPPER, which is the other object whose ToPrimitive
+        // answer bronze can give without the algorithm: OrdinaryToPrimitive
+        // would call `valueOf`, and for a pristine wrapper that is the internal
+        // slot. So `String(new String("ab"))` and `new String("ab") + "!"` are
+        // the characters rather than a named error.
+        return valueToString(prim);
     } else {
         fatal("ToString on an object is unsupported");
     }
@@ -216,6 +229,12 @@ double rtToNumber(Value v) {
     if (v.isNull()) return 0.0;
     if (v.isUndefined()) return std::numeric_limits<double>::quiet_NaN();
     if (v.isString()) return stringToNumber(v.asString<StringHeader>());
+    // A primitive wrapper, unwrapped from its internal slot rather than through
+    // ToPrimitive. This function ALLOCATES NOTHING — two typed-array writes in
+    // rt_prop.cpp hold a raw view pointer across a call to it — and the unwrap
+    // keeps that promise: reading a slot allocates nothing, and neither does
+    // the string or boolean conversion it hands back to.
+    if (Value prim; rtWrapperPrimitive(v, prim)) return rtToNumber(prim);
     fatal("ToNumber on an object is unsupported");
 }
 

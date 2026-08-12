@@ -117,6 +117,15 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
 // added, and this is where 6.1.7.1's grouping is applied. Nothing here consults
 // a hash table, so the order is a function of the program and not of an address.
 std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
+    // A String exotic object's own keys begin with the index properties
+    // 10.4.3.4 synthesised from the wrapped characters, and bronze answers
+    // those on the property path only. Minting a key for one here would have to
+    // allocate — an arena key is interned from a heap string — in the middle of
+    // a walk whose whole contract is that it does not, and this function is
+    // handed a RAW header that an allocation would move. So it is refused by
+    // name; reporting a String object as having no indices is the wrong answer
+    // rather than the missing one.
+    rtCheckStringExoticOwnKeys(Value::fromObject(obj), "enumerating");
     // Shape keys are arena-interned and immortal, so collecting them up front
     // is safe across whatever the caller allocates while walking them.
     Shape* shape = obj->shape;
@@ -268,19 +277,16 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
             .rawBits();
     }
 
-    // `new String(x)` and `new Boolean(x)` want a primitive WRAPPER object,
-    // which bronze does not have. Left alone, the shape of this function makes
-    // that silent in the worst way: the native returns a primitive, the rule
-    // below discards any non-object return, and the program receives the empty
-    // plain instance — `new String("ab").length` was `undefined`. Refusing by
-    // name is the same call made for `Function`: a constructor that resolves
-    // and hands back something that is not what was asked for is worse than one
-    // that does not resolve.
-    if (const char* wrapper = rtPrimitiveWrapperConstructorName(fnVal)) {
-        fatal((std::string("`new ") + wrapper +
-               "(...)` is unsupported: bronze has no primitive wrapper objects. Call " +
-               wrapper + "(x) for the conversion, which is exact.")
-                  .c_str());
+    // `new String(x)` and `new Boolean(x)` build the wrapper INSTEAD of the
+    // ordinary instance, and cannot be left to run their bodies below: a native
+    // constructor cannot see NewTarget through the uniform calling convention,
+    // so its body returns the primitive, and the rule at the foot of this
+    // function discards any non-object return in favour of the plain instance.
+    // The program would receive `{}` — `new String("ab").length` read
+    // `undefined` — which is why this was a named refusal before there was an
+    // exotic object to hand back.
+    if (Value wrapper; rtConstructPrimitiveWrapper(fnVal, argc, argvBits, wrapper)) {
+        return wrapper.rawBits();
     }
 
     Rooted<Value> fnRoot{fnVal};

@@ -1,7 +1,10 @@
-// String.prototype. Same shape as builtin_array.cpp: ordinary function
-// objects over native code pointers, handed out by the property path before
-// it consults the unimplemented-member table, and every one of them opens
-// with the RootedArgs prologue (rt_internal.h).
+// String.prototype's plain members: ordinary function objects over native code
+// pointers, every one of them opening with the RootedArgs prologue
+// (rt_internal.h). The table at the foot of the file is installed as
+// non-enumerable own properties of the `String.prototype` OBJECT that
+// builtin_wrappers.cpp builds — a program can hold them, compare them and pass
+// them to `.call`, where an array's members are still answered beside the value
+// by the property path.
 //
 // Strings are immutable, so every member here allocates a fresh string and none
 // of them can work in place. They are also stored in one of two representations
@@ -18,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -43,17 +47,22 @@ Units unitsOf(const StringHeader* s) { return rtStringUnits(s); }
 Value stringFromUnits(const Units& units) { return rtStringFromUnits(units); }
 
 Units thisUnits(Value self, const char* method) {
-    if (!self.isString()) {
+    // 22.1.3.35 thisStringValue: a primitive string, or a String OBJECT's
+    // [[StringData]] — `String.prototype.indexOf.call(new String("ab"), "b")`
+    // searches the characters the wrapper wraps, which is the whole reason the
+    // wrapper is worth having a slot for.
+    Value str;
+    if (!rtThisStringValue(self, str)) {
         // 22.1.3's RequireObjectCoercible plus ToString: a String.prototype
-        // method reached with a non-string `this` is a TypeError, and since a
-        // catchable one. The empty unit sequence is what the caller then
-        // computes over, and its result is discarded — the cell is already set,
-        // so its caller's test fires before the value is read.
+        // method reached with a `this` that is neither is a TypeError, and
+        // since a catchable one. The empty unit sequence is what the caller
+        // then computes over, and its result is discarded — the cell is already
+        // set, so its caller's test fires before the value is read.
         rtThrowTypeError(std::string("String.prototype.") + method +
                          " called on a value that is not a string");
         return Units{};
     }
-    return unitsOf(self.asString<StringHeader>());
+    return unitsOf(str.asString<StringHeader>());
 }
 
 // ToString of an argument, as units. Every search/replace member coerces its
@@ -146,8 +155,8 @@ uint64_t stringAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
 // would pay per iteration.
 uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value self(thisBits);
-    if (!self.isString()) {
+    Value self;
+    if (!rtThisStringValue(Value(thisBits), self)) {
         return rtThrowTypeError(
                    "String.prototype.charCodeAt called on a value that is not a string")
             .rawBits();
@@ -173,8 +182,8 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
 // pair, which is what makes this the member that walks a string by code point.
 uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value self(thisBits);
-    if (!self.isString()) {
+    Value self;
+    if (!rtThisStringValue(Value(thisBits), self)) {
         return rtThrowTypeError(
                    "String.prototype.codePointAt called on a value that is not a string")
             .rawBits();
@@ -414,9 +423,14 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     return out.get().rawBits();
 }
 
+// 22.1.3.28 toString and 22.1.3.35 valueOf are the SAME operation —
+// thisStringValue — which is why one function answers both names. For a String
+// object that is the [[StringData]] slot, and it is the step that makes
+// `String(new String("ab"))` and `new String("ab") + ""` the characters rather
+// than a named ToPrimitive error.
 uint64_t stringItself(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
-    Value self(thisBits);
-    if (!self.isString()) {
+    Value self;
+    if (!rtThisStringValue(Value(thisBits), self)) {
         return rtThrowTypeError(
                    "String.prototype.toString called on a value that is not a string")
             .rawBits();
@@ -424,13 +438,7 @@ uint64_t stringItself(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return self.rawBits();
 }
 
-struct StringMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
-
-const StringMethod kStringMethods[] = {
+const NativeMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
     {"charCodeAt", stringCharCodeAt, 1},
@@ -495,14 +503,12 @@ Value rtStringFromUnits(const std::vector<uint16_t>& units) {
         StringHeader::createUTF16(rtHeap(), units.data(), static_cast<uint32_t>(units.size())));
 }
 
-Value rtStringMethod(const std::string& key) {
-    for (const StringMethod& m : kStringMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
-    }
-    // The members that take a PATTERN live in their own translation unit, and
-    // this is the one table a property read consults, so the split between the
-    // two files is invisible to a program.
-    return rtStringPatternMethod(key);
+// The members above, onto the `String.prototype` object builtin_wrappers.cpp
+// builds. The members that take a PATTERN install themselves from their own
+// translation unit, so the split between the two files is invisible to a
+// program: both halves land on one object.
+void rtInstallStringMethods(Rooted<Value>& proto) {
+    rtDefineMethods(proto, kStringMethods, std::size(kStringMethods));
 }
 
 }  // namespace bronze::runtime

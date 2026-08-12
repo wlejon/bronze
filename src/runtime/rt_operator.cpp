@@ -243,6 +243,12 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     const bool isFunction = hdr->flags == 2;
     if (isFunction && key == "prototype") return true;
 
+    // A String exotic object's index properties are own properties that live
+    // nowhere the walk below can see them — 10.4.3.4 synthesises them from the
+    // wrapped characters and bronze answers them on the property path alone —
+    // so `"0" in new String("ab")` would read false. Refused by name instead
+    // (rt_object.cpp carries the reasoning).
+    rtCheckStringExoticOwnKeys(objRoot.get(), "testing");
     // The last allocation; everything the walk touches is re-derived below it.
     Rooted<Value> keyStr{rtMakeString(key)};
     ObjectHeader* holder = nullptr;
@@ -301,11 +307,22 @@ bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     if (aNum && b.isString()) return rtToNumber(a) == rtToNumber(b);
     if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
 
-    // What is left is an object against a primitive, which the language settles
-    // with ToPrimitive — valueOf then toString — and ToPrimitive is not built.
-    // Named rather than guessed at, on the same rule as ToString of an object,
-    // and for the same reason: the members are reachable now, the algorithm
-    // that orders them is not.
+    // What is left is an object against a primitive, which 7.2.14 steps 11-12
+    // settle by ToPrimitive'ing the object and restarting the comparison. A
+    // primitive WRAPPER is the one object bronze can take that step for — its
+    // internal slot is what OrdinaryToPrimitive's `valueOf` call would answer —
+    // and it is the step that makes `new String("ab") == "ab"` true where
+    // `===` is false, which is the whole observable difference between a
+    // wrapper and the primitive it wraps.
+    if (Value prim; rtWrapperPrimitive(a, prim)) {
+        return bronze_loose_eq(prim.rawBits(), bBits);
+    }
+    if (Value prim; rtWrapperPrimitive(b, prim)) {
+        return bronze_loose_eq(aBits, prim.rawBits());
+    }
+    // Every other object still needs the algorithm — valueOf then toString,
+    // with the primitive test between them — and it is not built. Named rather
+    // than guessed at, on the same rule as ToString of an object.
     fatal("'==' between an object and a primitive needs ToPrimitive, which is unsupported");
 }
 

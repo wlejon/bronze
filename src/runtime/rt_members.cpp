@@ -29,17 +29,24 @@ const char* const kArrayMembers[] = {
     "toLocaleString", "toReversed", "toSorted", "toSpliced", "toString", "values", "with",
 };
 
-// String.prototype, on the same rule — and the answering side is TWO tables,
-// the plain members in builtin_string.cpp and the pattern-taking ones
-// (`match`, `replace`, `search`, …) in builtin_string_regexp.cpp.
+// String.prototype, on the same rule — and the answering side is the
+// `String.prototype` OBJECT, filled from two tables: the plain members in
+// builtin_string.cpp and the pattern-taking ones (`match`, `replace`,
+// `search`, …) in builtin_string_regexp.cpp. This list is what a full-chain
+// miss is checked against, so it is consulted after the object and after
+// `Object.prototype` above it have both failed to answer.
 //
-// The four locale members are here as unimplemented rather than aliased to
+// The five locale members are here as unimplemented rather than aliased to
 // their non-locale twins: the deterministic-output rule forbids a locale
 // function, and answering with `toLowerCase` would be right for most inputs
 // and silently wrong for the ones the member exists to get right.
+// `toLocaleString` (22.1.3.27) is one of them, and it is on this list rather
+// than left to `Object.prototype`'s: it is a NEARER member of a different
+// prototype, and a diagnostic that named the wrong holder would send a reader
+// to the wrong file.
 const char* const kStringMembers[] = {
     "isWellFormed", "localeCompare", "normalize", "substr",
-    "toLocaleLowerCase", "toLocaleUpperCase", "toWellFormed",
+    "toLocaleLowerCase", "toLocaleString", "toLocaleUpperCase", "toWellFormed",
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in

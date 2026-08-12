@@ -224,12 +224,11 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // ---- String (22.1) ----------------------------------------------------------
 
-// 22.1.1.1 as a CONVERSION. Called with `new`, the specification builds a
-// String exotic OBJECT; bronze hands back the primitive, because a native
-// constructor cannot see NewTarget through the uniform calling convention — the
-// same divergence the typed array constructors have, in the other direction.
-// `String(x)` — which is what programs actually write, and what three.js writes
-// — is exact.
+// 22.1.1.1 as a CONVERSION, which is the whole of this body. A native
+// constructor cannot see NewTarget through the uniform calling convention, so
+// the `new` form is not a branch here at all: `bronze_construct` recognises
+// this function object and builds the String exotic object instead of ever
+// entering it (builtin_wrappers.cpp).
 uint64_t stringConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     // Step 1: no argument at all is the empty string, which is NOT the same as
@@ -269,10 +268,10 @@ uint64_t stringFromCharCode(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
 
 // ---- Boolean (20.3) ---------------------------------------------------------
 
-// 20.3.1.1 as a conversion, for the same reason `String` is one: with `new` the
-// specification builds a wrapper object and bronze hands back the primitive.
-// `Boolean(x)` is exactly ToBoolean, which is the only use a program that is
-// not testing wrapper identity ever has for it.
+// 20.3.1.1 as a conversion, for the same reason `String` is one: the `new` form
+// is intercepted before this body runs. `Boolean(x)` is exactly ToBoolean, which
+// is the only use a program that is not testing wrapper identity ever has for
+// it.
 uint64_t booleanConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     return Value::fromBool(bronze_truthy(args[0].rawBits())).rawBits();
@@ -300,22 +299,15 @@ const StaticFn kStringStatics[] = {
     {"fromCharCode", stringFromCharCode, 0},
 };
 
-// Real static members of each constructor that bronze has not built. `prototype`
-// is on every one of them deliberately: bronze has no `Array.prototype` OBJECT
-// (the methods are handed out by the property path beside the value, not found
-// on a prototype a program can hold — the value-model chunk
-// `cases/blocked/object_intrinsic_prototypes` describes), and the empty object
-// a FunctionHeader would otherwise answer with is worse than an error, because
-// a method installed on it would be found by nothing.
+// Real static members of each constructor that bronze has not built.
+// `prototype` is on `Array` alone, and the asymmetry is the point: an array's
+// members are still handed out by the property path BESIDE the value, so there
+// is no object to hand over, and the empty one a FunctionHeader would otherwise
+// answer with is worse than an error — a method installed on it would be found
+// by nothing. `String.prototype` and `Boolean.prototype` are real objects and
+// are answered from the constructor's own prototype slot.
 const char* const kArrayCtorUnimplemented[] = {"fromAsync", "prototype"};
-const char* const kStringCtorUnimplemented[] = {"fromCodePoint", "prototype", "raw"};
-const char* const kBooleanCtorUnimplemented[] = {"prototype"};
-
-// Real members of `Boolean.prototype` (20.3.3), minus `constructor`, which is
-// answered. The whole prototype is these three names, so this table is the
-// complete remainder rather than a selection — which is what lets the boolean
-// branch of the property path stop falling off its end into `undefined`.
-const char* const kBooleanProtoUnimplemented[] = {"toString", "valueOf"};
+const char* const kStringCtorUnimplemented[] = {"fromCodePoint", "raw"};
 
 struct CtorEntry {
     const char* name;
@@ -324,29 +316,49 @@ struct CtorEntry {
     size_t staticCount;
     const char* const* unimplemented;
     size_t unimplementedCount;
-    // Whether `new` on it produces what the program asked for. `Array` does:
-    // 23.1.1.1 is ONE operation that reads NewTarget only to pick a prototype,
-    // so `Array(x)` and `new Array(x)` build the same array. `String` and
-    // `Boolean` do not: with `new` the specification builds a String or Boolean
-    // exotic OBJECT, and bronze has no such thing.
-    bool constructible;
+    // The intrinsic prototype this constructor's instances have, or null when
+    // its instances have no prototype OBJECT at all — which is what separates
+    // the two kinds of constructor in this file. `Array` builds a value whose
+    // members are answered beside it, so `new` can simply run the body: 23.1.1.1
+    // reads NewTarget only to pick a prototype, which is why `Array(x)` and
+    // `new Array(x)` agree. `String` and `Boolean` build a WRAPPER, which the
+    // body cannot return at all (13.3.5.1 discards a primitive return in favour
+    // of the plain instance), so `bronze_construct` builds it from this rather
+    // than entering the body.
+    Value (*prototype)();
 };
 
 const CtorEntry kCtors[] = {
     {"Array", arrayConstructor, kArrayStatics, std::size(kArrayStatics),
-     kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), true},
+     kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), nullptr},
     {"String", stringConstructor, kStringStatics, std::size(kStringStatics),
-     kStringCtorUnimplemented, std::size(kStringCtorUnimplemented), false},
-    {"Boolean", booleanConstructor, nullptr, 0, kBooleanCtorUnimplemented,
-     std::size(kBooleanCtorUnimplemented), false},
+     kStringCtorUnimplemented, std::size(kStringCtorUnimplemented), rtStringPrototype},
+    {"Boolean", booleanConstructor, nullptr, 0, nullptr, 0, rtBooleanPrototype},
 };
 
 // Arity 0 for the constructors too, and here it decides an answer rather than
 // an optimisation: `new Array(3)` padded to any fixed arity would arrive as
 // `(3, undefined)`, take 23.1.1.1's element-list branch and produce `[3,
 // undefined]` where the language says three holes.
+//
+// The `prototype` slot is filled in on first demand rather than left to
+// `rtEnsureFunctionPrototype`, which mints a FRESH empty object for a function
+// that has none — and that object is what `String.prototype` would read and
+// what `instanceof` would compare against, so a wrapper would not be an
+// `instanceof String`. Filling it here makes those one answer.
 Value ctorObject(const CtorEntry& entry) {
-    return Value(bronze_function_singleton(entry.code, 0));
+    Rooted<Value> fn{Value(bronze_function_singleton(entry.code, 0))};
+    if (entry.prototype && !fn.get().asObject<FunctionHeader>()->prototype.isObject()) {
+        Rooted<Value> proto{entry.prototype()};
+        FunctionHeader* live = fn.get().asObject<FunctionHeader>();
+        live->prototype = proto.get();
+        // Memoized on the prototype's identity, so repeating this read cannot
+        // leak a shape per call. Nothing ever builds an object from it —
+        // `bronze_construct` does not reach the ordinary instance path for
+        // these two.
+        live->instance_shape = rtRootShapeForPrototype(proto.get());
+    }
+    return fn.get();
 }
 
 }  // namespace
@@ -364,23 +376,11 @@ Value rtStringConstructorObject() { return ctorObject(kCtors[1]); }
 
 Value rtBooleanConstructorObject() { return ctorObject(kCtors[2]); }
 
-Value rtBooleanMember(const std::string& key) {
-    // The 10.2.5 back-pointer on a PRIMITIVE, the same branch a string's and a
-    // number's live in: 7.3.2 GetV would box, and the box is unobservable for
-    // every member that exists, so the member is handed out directly.
-    if (key == "constructor") return rtBooleanConstructorObject();
-    rtCheckUnimplementedMember("Boolean.prototype", kBooleanProtoUnimplemented,
-                               std::size(kBooleanProtoUnimplemented), key);
-    // A name Boolean.prototype does not define really is absent, and `undefined`
-    // is the language's own answer for that.
-    return Value::fromUndefined();
-}
-
 const char* rtPrimitiveWrapperConstructorName(Value fn) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
-        if (entry.code == code && !entry.constructible) return entry.name;
+        if (entry.code == code && entry.prototype) return entry.name;
     }
     return nullptr;
 }
@@ -404,6 +404,15 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
+        // 22.1.2.3 / 20.3.2.1, ahead of the statics and of the function's own
+        // prototype slot further down the property path. The slot holds the
+        // same object, so this is about where the answer is WRITTEN rather than
+        // what it is: one line here keeps `Array.prototype`'s named refusal
+        // legible beside the two that now answer.
+        if (entry.prototype && key == "prototype") {
+            out = entry.prototype();
+            return true;
+        }
         for (size_t i = 0; i < entry.staticCount; ++i) {
             if (key == entry.statics[i].name) {
                 out = Value(bronze_function_singleton(entry.statics[i].code,

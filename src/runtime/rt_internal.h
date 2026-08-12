@@ -267,6 +267,91 @@ Value rtFunctionMethod(const std::string& key);
 // the same name is found first and never reaches here.
 void rtObjectProtoCheckMissingMember(const std::string& key);
 
+// A property read on a PRIMITIVE receiver (rt_prop_primitive.cpp): a string
+// reaches `String.prototype` and a boolean `Boolean.prototype` by the ordinary
+// prototype walk, while a number's and a symbol's members are still handed out
+// beside the value. The one branch of the property path that is not about the
+// receiver's own storage, which is why it is not in rt_prop.cpp.
+Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+                        struct InlineCache* ic);
+
+// ---- the primitive wrappers (builtin_wrappers.cpp) --------------------------
+
+// A native method installed on an intrinsic PROTOTYPE object. The tables stay
+// beside the members they name — `String.prototype`'s plain members in
+// builtin_string.cpp, its pattern-taking ones in builtin_string_regexp.cpp — so
+// a member that lands or leaves changes the file it is written in and not a
+// registry somewhere else.
+struct NativeMethod {
+    const char* name;
+    bronze_fn_code code;
+    uint32_t arity;
+};
+
+// Define each as a NON-ENUMERABLE own property. That attribute is not tidiness:
+// `for-in` walks the prototype chain, so one enumerable member on
+// `String.prototype` would appear in every for-in over every string in the
+// program (22.1.3, 20.3.3).
+void rtDefineMethods(Rooted<Value>& proto, const NativeMethod* methods, size_t count);
+void rtInstallStringMethods(Rooted<Value>& proto);
+void rtInstallStringPatternMethods(Rooted<Value>& proto);
+
+// `String.prototype` and `Boolean.prototype`: real objects on the real chain,
+// which a primitive reaches by the ordinary prototype walk rather than through
+// a table consulted beside it. A program can hold either, compare it, add to it
+// and pass its methods to `.call` — where an array's and a function's members
+// are still handed out BESIDE the value.
+Value rtStringPrototype();
+Value rtBooleanPrototype();
+
+// The String (10.4.3) and Boolean (20.3) exotic objects: a plain object with
+// one internal slot holding the wrapped primitive, and the matching intrinsic
+// on its chain.
+Value rtMakeStringWrapper(Rooted<Value>& str);
+Value rtMakeBooleanWrapper(bool value);
+
+// The [[StringData]] / [[BooleanData]] of a wrapper; false for every other
+// value. The brand is the internal-slot count paired with the slot's type —
+// builtin_wrappers.cpp says why it is not the (prototype, count) pair an
+// iterator object uses.
+bool rtStringWrapperData(Value v, Value& out);
+bool rtBooleanWrapperData(Value v, Value& out);
+
+// 22.1.3.35 thisStringValue / 20.3.3.3 thisBooleanValue: the primitive itself,
+// or a wrapper's slot. False for anything else, which the caller reports as the
+// TypeError those clauses name.
+bool rtThisStringValue(Value self, Value& out);
+bool rtThisBooleanValue(Value self, Value& out);
+
+// One code unit of a string, as a String of length 1 — 10.4.3.5's answer, and
+// the value `s[i]` is. `undefined` past the end. ALLOCATES.
+Value rtStringCharAsString(Value str, uint32_t index);
+
+// ToPrimitive of a primitive WRAPPER, which is the one object kind bronze can
+// take 7.1.1's step for: OrdinaryToPrimitive would call `valueOf`, and for a
+// pristine wrapper that call answers exactly the internal slot. False for every
+// other object, so the caller's named error for the general algorithm stands.
+// Allocation-free, which two typed-array writes in rt_prop.cpp depend on.
+bool rtWrapperPrimitive(Value v, Value& out);
+
+// 10.4.3.5 StringGetOwnProperty, plus the `length` 10.4.3.4 defines: true —
+// with `out` set — for a canonical index below the length and for `length`
+// itself. False means "not an own property of this exotic object", which is the
+// fall-through to the ordinary lookup that 10.4.3 requires. ALLOCATES.
+bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out);
+
+// Refuse `operation` by name when `v` is a String object with characters in it.
+// 10.4.3.3 OwnPropertyKeys puts index properties ahead of the ordinary own
+// keys, and bronze answers those on the property path only — so every
+// own-key operation would report an object with no indices, which is a wrong
+// answer rather than a missing one (cases/blocked/string_object_own_keys.js).
+void rtCheckStringExoticOwnKeys(Value v, const char* operation);
+
+// `new String(x)` / `new Boolean(x)`. True — with `out` set — when `fn` is one
+// of the two; `bronze_construct` has nothing else to do for them, since the
+// wrapper IS the instance rather than something a body fills in.
+bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, Value& out);
+
 Value rtNumberNamespace();
 void rtNumberCheckMissingMember(Value obj, const std::string& key);
 
@@ -374,12 +459,6 @@ double rtRegExpLastIndex(Value re);
 // `String.prototype.matchAll` needs to make its own `g` copy of a pattern.
 Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText);
 
-// `String.prototype`'s members that take a PATTERN: `match`, `matchAll`,
-// `replace`, `replaceAll`, `search` and `split`. Their own translation unit
-// because they are the only string members that know what a RegExp is, and
-// because `$`-substitution and the function replacer are a shared algorithm
-// with nothing to do with the rest of `String.prototype`.
-Value rtStringPatternMethod(const std::string& key);
 // `String.prototype.split` with a RegExp separator, which is 22.2.6.14's
 // SplitMatcher and not the string search `split` otherwise does. It stays a
 // call from builtin_string.cpp rather than a second `split` in the method
@@ -389,9 +468,10 @@ uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_
 
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the
-// language's own answer for a property that does not exist.
+// language's own answer for a property that does not exist. An array's members
+// are still answered BESIDE the value this way; a string's moved onto
+// `String.prototype` and are found by the ordinary prototype walk.
 Value rtArrayMethod(const std::string& key);
-Value rtStringMethod(const std::string& key);
 
 // ---- the global constructor objects -----------------------------
 
@@ -403,12 +483,6 @@ Value rtGlobalConstructor(const std::string& name);
 Value rtArrayConstructorObject();
 Value rtStringConstructorObject();
 Value rtBooleanConstructorObject();
-
-// A member read on a primitive BOOLEAN: `constructor`, or one of the two real
-// `Boolean.prototype` members bronze has not built, which is diagnosed by name
-// rather than read as `undefined` — the boolean branch of the property path had
-// no end of its own before this and fell into the "not an object" answer.
-Value rtBooleanMember(const std::string& key);
 
 // A member read on one of those constructor objects. True — with `out` set —
 // only when it was answered; a name ECMA-262 defines and bronze has not built
@@ -423,10 +497,12 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
 const char* rtIntrinsicConstructorName(Value fn);
 bool rtIsArrayConstructor(Value fn);
 
-// The name of an intrinsic whose `new` form would have to build a primitive
-// WRAPPER object, or null. `bronze_construct` refuses those by name: the native
-// returns a primitive, which 13.3.5.1 discards in favour of the plain instance,
-// so the program would receive `{}` where it asked for a String.
+// The name of the intrinsic whose `new` form builds a primitive WRAPPER
+// object, or null. `bronze_construct` dispatches on it rather than running the
+// function body: a native constructor cannot see NewTarget through the uniform
+// calling convention, so its body returns the primitive — which 13.3.5.1 then
+// discards in favour of the plain instance. The wrapper has to be built instead
+// of the instance, not after it.
 const char* rtPrimitiveWrapperConstructorName(Value fn);
 
 }  // namespace bronze::runtime

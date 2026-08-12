@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -50,13 +51,10 @@ Units slice(const Units& units, size_t from, size_t to) {
 }
 
 // The receiver as a string, or a TypeError. Every member here is defined on
-// `String.prototype`, so a non-string `this` is 22.1.3's RequireObjectCoercible
-// failure and not something to compute over.
+// `String.prototype`, so a `this` that is neither a string nor a String object
+// is 22.1.3's RequireObjectCoercible failure and not something to compute over.
 bool requireString(Value self, const char* method, Value& out) {
-    if (self.isString()) {
-        out = self;
-        return true;
-    }
+    if (rtThisStringValue(self, out)) return true;
     rtThrowTypeError(std::string("String.prototype.") + method +
                      " called on a value that is not a string");
     return false;
@@ -629,13 +627,7 @@ uint64_t stringSplitPattern(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     return out.get().rawBits();
 }
 
-struct PatternMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
-
-const PatternMethod kPatternMethods[] = {
+const NativeMethod kPatternMethods[] = {
     {"match", stringMatch, 1},
     {"matchAll", stringMatchAll, 1},
     {"replace", stringReplacePattern<false>, 2},
@@ -645,11 +637,8 @@ const PatternMethod kPatternMethods[] = {
 
 }  // namespace
 
-Value rtStringPatternMethod(const std::string& key) {
-    for (const PatternMethod& m : kPatternMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
-    }
-    return Value::fromUndefined();
+void rtInstallStringPatternMethods(Rooted<Value>& proto) {
+    rtDefineMethods(proto, kPatternMethods, std::size(kPatternMethods));
 }
 
 uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_t* argv) {

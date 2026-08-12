@@ -6,6 +6,10 @@
 // its shape and slots. A name the receiver's prototype really defines and
 // bronze has not built is diagnosed by rt_members.cpp rather than read as
 // `undefined`.
+//
+// A PRIMITIVE receiver is the one kind that is not here, and the seam is that
+// same sentence read backwards: it stores nothing, so its answer comes from an
+// intrinsic prototype rather than from the value. rt_prop_primitive.cpp owns it.
 
 #include <cmath>
 #include <cstring>
@@ -248,32 +252,6 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // its registration is checked once at the top rather than where it is
     // first read.
     if (!keyHeader) fatal("property access with an unregistered key index");
-    if (objVal.isString()) {
-        if (keyStr == "length") {
-            return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
-        }
-        // The 10.2.5 back-pointer, as the same object the bare name `String`
-        // resolves to. A primitive has no prototype chain here to find it on,
-        // so it is a branch in the property path, which is where a typed
-        // array's went too.
-        if (keyStr == "constructor") return rtStringConstructorObject().rawBits();
-        // An INDEX on a string. bronze has no String exotic object, so there
-        // are no index properties for 10.4.3.5 to find and the search below
-        // walks off its end into `undefined` — a silent wrong answer for
-        // `"abc"[0]`, and a particularly bad one because its own sibling
-        // `"abc"[i]` with a variable index is already a hard error further
-        // down this file. Refused by name until the exotic object exists,
-        // because the two spellings must not give two answers.
-        uint32_t strIdx = 0;
-        if (keyAsIndex(keyStr, strIdx)) {
-            fatal("unsupported: indexing a string is not implemented (bronze has no String "
-                  "exotic object; use s.charAt(i) or s.codePointAt(i))");
-        }
-        Value method = rtStringMethod(keyStr);
-        if (!method.isUndefined()) return method.rawBits();
-        rtCheckStringMember(keyStr);
-        return Value::fromUndefined().rawBits();
-    }
 
     // Reading a property of null or undefined is a TypeError in ECMA-262 7.3.2
     // (GetV -> ToObject), and answering `undefined` for it is the
@@ -288,37 +266,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
                                 " (reading '" + keyStr + "')")
             .rawBits();
     }
-    // A property read on a primitive NUMBER. bronze has no wrapper object to
-    // create (7.3.2 GetV would box, and the box is unobservable for every
-    // member that exists), so the method is handed out directly — the same
-    // shape the string branch above has. Answering `undefined` here is what
-    // made `(1.5).toFixed(2)` die as "undefined is not a function" instead of
-    // naming the member, which is the silent fallback the loud-member rule
-    // exists to prevent.
-    if (objVal.isNumber()) {
-        Value method = rtNumberMethod(keyStr);
-        if (!method.isUndefined()) return method.rawBits();
-        rtCheckNumberProtoMember(keyStr);
-        return Value::fromUndefined().rawBits();
-    }
-    // A property read on a primitive BOOLEAN, for the reason the number branch
-    // above exists: without one it fell through to the "not an object" answer
-    // below, so `true.constructor` was `undefined` where `(5).constructor` was
-    // a named error — two answers to one question, and the silent one was the
-    // boolean's.
-    if (objVal.isBool()) return rtBooleanMember(keyStr).rawBits();
-    // A property read on a primitive SYMBOL — `sym.toString()`,
-    // `sym.description`. Answered beside the value like a number's and a
-    // string's, since bronze builds no wrapper object for one to be found on.
-    if (objVal.isSymbol()) return rtSymbolMember(objVal, keyStr).rawBits();
-    // Everything with a branch above is handled; what is left is a tag no
-    // program can name — a hole sentinel that escaped an array. That is not "a
-    // property that happens to be absent", so it may not answer `undefined`:
-    // this catch-all is the shape that let `true.foo` read as undefined until
-    // the boolean branch above was written for it.
+    // Every other PRIMITIVE receiver, whose answer comes from an intrinsic
+    // rather than from the value — rt_prop_primitive.cpp owns that whole
+    // question, including the index properties 10.4.3.5 synthesises for a
+    // string.
     if (!objVal.isObject()) {
-        fatal("unsupported: a property read on this value kind is not implemented "
-              "(an array hole is not a value)");
+        return rtPrimitiveMember(objVal, keyStr, keyHeader, ic).rawBits();
     }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -456,6 +409,16 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         fatal("internal: a property read on an unknown object kind");
     }
     Rooted<Value> objRoot{objVal};
+    // 10.4.3.5 StringGetOwnProperty, ahead of the ordinary lookup for a String
+    // exotic object. The order is 10.4.3's and not an optimisation: the index
+    // properties and the `length` 10.4.3.4 synthesises are non-writable and
+    // non-configurable, so no own property a program can define shadows them.
+    // A key this does not claim falls through to the ordinary walk, which is
+    // the half `new String("ab").indexOf` needs and the half bronze had no
+    // holder for before `String.prototype` became an object.
+    if (Value exotic; rtStringExoticOwnProperty(objRoot.get(), keyStr, exotic)) {
+        return exotic.rawBits();
+    }
     Rooted<Value> key(Value::fromString(keyHeader));
     Value result = objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic);
     // A namespace object is an ordinary object, so a member it does not carry
@@ -566,8 +529,9 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // ToNumber BEFORE the bounds test, because 10.4.5.5
         // IntegerIndexedElementSet performs it whether or not the index is in
         // range. `hdr` survives the call only because rtToNumber cannot
-        // allocate — it is a hard error on an object rather than ToPrimitive —
-        // so nothing here can move the view.
+        // allocate: an object is either a named error or a primitive wrapper,
+        // and unwrapping one reads an internal slot rather than running
+        // ToPrimitive. So nothing here can move the view.
         const double num = rtToNumber(Value(valBits));
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (idx < view->length) view->set(idx, num);
@@ -796,23 +760,22 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
             ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
             .rawBits();
     }
-    if (!objVal.isObject()) {
-        fatal("computed index access on a non-object value is unsupported");
-    }
-    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    uint32_t idx = 0;
     // The two receivers that have ELEMENTS get an index fast path, and only
     // those two: `a[i]` and `v[i]` are the whole reason this helper is not
     // just `bronze_prop_get`, and neither may walk a member table on the way
     // to a slot.
-    if (hdr->flags == 1 && valueToElementIndex(Value(idxBits), idx)) {
-        return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
-    }
-    if (hdr->flags == TypedArrayHeader::kFlags && valueToElementIndex(Value(idxBits), idx)) {
-        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-        // Out of range is `undefined`, not an error — 10.4.5.4 again.
-        if (idx >= view->length) return Value::fromUndefined().rawBits();
-        return Value::fromDouble(view->get(idx)).rawBits();
+    uint32_t idx = 0;
+    if (objVal.isObject()) {
+        HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+        if (hdr->flags == 1 && valueToElementIndex(Value(idxBits), idx)) {
+            return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
+        }
+        if (hdr->flags == TypedArrayHeader::kFlags && valueToElementIndex(Value(idxBits), idx)) {
+            auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+            // Out of range is `undefined`, not an error — 10.4.5.4 again.
+            if (idx >= view->length) return Value::fromUndefined().rawBits();
+            return Value::fromDouble(view->get(idx)).rawBits();
+        }
     }
     // Everything that is not an index NAMES something, and what a name means
     // cannot depend on whether the compiler knew it: `o.k` and `const s = "k";
@@ -822,6 +785,11 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     // "constructor" answered `undefined` where `arr.push` answered the method,
     // and `Math[s]` missed the namespace check that makes `Math.cbrt` a named
     // error. Delegating is what keeps them one question with one answer.
+    //
+    // A PRIMITIVE receiver reaches it too, which it did not before: `"abc"[i]`
+    // died here as "computed index access on a non-object value" while
+    // `"abc"[0]` took the name path — one operation with two answers, and the
+    // reason `cases/string_index` pins both spellings.
     Rooted<Value> objRoot{objVal};
     Rooted<Value> key{elemKeyAsString(Value(idxBits))};
     StringHeader* keyHeader = key.get().asString<StringHeader>();

@@ -95,6 +95,11 @@ void putField(Rooted<Value>& obj, Rooted<Value>& key, Rooted<Value>& val) {
 // The key is interned BEFORE the object is read: `internOf` runs ToString,
 // which allocates, so an ObjectHeader* taken across it would be stale.
 bool hasOwnPropertyNamed(Rooted<Value>& self, Value key) {
+    // A String exotic object's own keys are not all in its shape: 10.4.3.4
+    // synthesises index properties from the wrapped characters, and bronze
+    // answers those on the property path only. Refused by name rather than
+    // reported absent (rt_object.cpp says why they are not materialised).
+    rtCheckStringExoticOwnKeys(self.get(), "testing");
     PropertyKey name = internOf(key);
     auto* obj = self.get().asObject<ObjectHeader>();
     uint32_t slot = 0;
@@ -185,6 +190,7 @@ uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             .rawBits();
     }
     Rooted<Value> self{args[0]};
+    rtCheckStringExoticOwnKeys(self.get(), "describing");
     PropertyKey name = internOf(args[1]);
 
     PropertyInfo info;
@@ -723,6 +729,7 @@ uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t a
     if (!requireProtoReceiver(self.get(), "propertyIsEnumerable")) {
         return Value::fromUndefined().rawBits();
     }
+    rtCheckStringExoticOwnKeys(self.get(), "testing");
     PropertyKey name = internOf(args[0]);
     auto* obj = self.get().asObject<ObjectHeader>();
     PropertyInfo info;
