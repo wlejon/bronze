@@ -11,10 +11,12 @@
 // What it needs is the String exotic object (10.4.3): a receiver whose
 // [[GetOwnProperty]] consults StringGetOwnProperty first, so that a canonical
 // numeric string below the length is a single-code-unit String value and
-// anything else falls through to the ordinary lookup. That is the same missing
-// piece as `cases/blocked/object_intrinsic_prototypes` — bronze hands string
-// methods out beside the value instead of finding them on a prototype — so the
-// two land together or not at all.
+// anything else falls through to the ordinary lookup. "Falls through to" is
+// the part bronze does not have: string methods are handed out BESIDE the value
+// by the property path, so there is no ordinary lookup to fall through to.
+// `cases/object_intrinsic_prototypes` is that same change made for `Object`,
+// and it is the shape this one wants — a real prototype object on a real chain
+// — one level down, where the receiver is a primitive rather than an object.
 //
 // What this pins when it lands, from 10.4.3.5 (StringGetOwnProperty) and
 // 6.1.4 (a String value is a sequence of UTF-16 code units):

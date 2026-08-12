@@ -376,6 +376,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // ECMA-262 defines.
         if (Value stat; rtTypedArrayStatic(objVal, keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(objVal, keyStr);
+        // After the own properties above, because a static named `call` shadows
+        // the inherited one — which is the ordinary rule, and the reason this
+        // is not read first even though it is the cheaper lookup.
+        if (Value method = rtFunctionMethod(keyStr); !method.isUndefined()) {
+            return method.rawBits();
+        }
         rtCheckFunctionMember(keyStr);
         return Value::fromUndefined().rawBits();
     }
@@ -405,6 +411,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         rtObjectCheckMissingMember(objRoot.get(), keyStr);
         rtNumberCheckMissingMember(objRoot.get(), keyStr);
         rtJsonCheckMissingMember(objRoot.get(), keyStr);
+        // And the chain's own end: a 20.1.3 member of `Object.prototype` that
+        // bronze has not built. Applied to every plain object because every
+        // plain object inherits from it — an own or nearer property of the same
+        // name was found above and never reaches here.
+        rtObjectProtoCheckMissingMember(keyStr);
     }
     return result.rawBits();
 }

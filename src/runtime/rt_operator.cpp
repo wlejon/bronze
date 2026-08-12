@@ -271,9 +271,10 @@ bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
 
     // What is left is an object against a primitive, which the language settles
-    // with ToPrimitive — valueOf then toString, neither of which bronze has an
-    // Object.prototype to find. Named rather than guessed at, on the same rule
-    // as ToString of an object.
+    // with ToPrimitive — valueOf then toString — and ToPrimitive is not built.
+    // Named rather than guessed at, on the same rule as ToString of an object,
+    // and for the same reason: the members are reachable now, the algorithm
+    // that orders them is not.
     fatal("'==' between an object and a primitive needs ToPrimitive, which is unsupported");
 }
 

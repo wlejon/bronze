@@ -79,8 +79,17 @@ Shape* rtRootShapeForPrototype(Value proto) {
 }
 
 Shape* rtPlainObjectShape() {
-    // Prototype undefined until there is an Object.prototype to point at.
-    static Shape* shape = rtNewRootShape(Value::fromUndefined());
+    // The edge that makes `Object.prototype` the value model rather than a
+    // builtin: every `{}` literal, every class prototype and every object the
+    // runtime builds for a program starts from this root, so naming the
+    // intrinsic here is what puts it on all of their chains at once. Nothing on
+    // the property path needed changing for it — the walk that already found a
+    // class's methods finds these.
+    //
+    // Built on FIRST USE, and `rtObjectPrototype()` allocates: it must not be
+    // reached before the heap is usable, which the lazy static guarantees since
+    // the first plain object in a program is the earliest anything can ask.
+    static Shape* shape = rtNewRootShape(rtObjectPrototype());
     return shape;
 }
 

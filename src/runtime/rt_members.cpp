@@ -47,9 +47,10 @@ const char* const kStringMembers[] = {
 // where a name leaves the list when it lands and the two halves must be read
 // together.
 
-// Function.prototype, minus `prototype`, which is real.
+// Function.prototype, minus `prototype`, which is real, and minus `call` and
+// `apply`, which builtin_function.cpp answers.
 const char* const kFunctionMembers[] = {
-    "apply", "bind", "call", "constructor", "length", "name", "toString",
+    "bind", "constructor", "length", "name", "toString",
 };
 
 }  // namespace

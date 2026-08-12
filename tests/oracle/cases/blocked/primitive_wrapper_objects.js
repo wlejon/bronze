@@ -15,13 +15,15 @@
 // the program receives `{}`. `new String("ab").length` read `undefined` before
 // the refusal, which is a value lying about what it is.
 //
-// This belongs with the same value-model work as
-// cases/blocked/object_intrinsic_prototypes: a wrapper is only useful once
-// there is a real `String.prototype` for it to inherit from, and both need the
-// property path to find members THROUGH a prototype instead of beside the
-// value. `Number` needs the identical treatment and is not written here,
-// because `Number` is a namespace object in bronze and not a constructor at
-// all — that is its own gap, not this case's.
+// This is the same value-model work as `cases/object_intrinsic_prototypes`,
+// which has landed for `Object` and only for `Object`: a plain object's chain
+// now ends at a real `Object.prototype` a program can hold. A wrapper needs the
+// same thing one level down — a real `String.prototype` for the exotic object
+// to inherit from — and bronze still hands string members out BESIDE the value
+// from the property path, where there is no holder to inherit from. `Number`
+// needs the identical treatment and is not written here, because `Number` is a
+// namespace object in bronze and not a constructor at all — that is its own
+// gap, not this case's.
 //
 // What this case pins when it lands, from ECMA-262 22.1.1.1 (String as a
 // constructor), 10.4.3 (String exotic objects), 20.3.1.1 (Boolean), 7.2.15

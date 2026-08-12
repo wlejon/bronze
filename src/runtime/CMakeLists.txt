@@ -20,6 +20,7 @@ bronze_add_module(runtime
         builtin_math.cpp
         builtin_array.cpp
         builtin_string.cpp
+        builtin_function.cpp
         builtin_constructors.cpp
         inspect.cpp
         rt_state.cpp

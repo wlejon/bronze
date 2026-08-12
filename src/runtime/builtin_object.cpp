@@ -16,6 +16,7 @@
 // of its shape chain. That is what keeps the inline caches out of this file
 // entirely.
 
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,26 @@ Value readField(Rooted<Value>& desc, const char* name, bool& present) {
 void putField(Rooted<Value>& obj, const char* name, Rooted<Value>& val) {
     Rooted<Value> key{rtMakeString(name)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+}
+
+// The same, for a key that is already a value — a descriptor map's keys are
+// the target's own property names, which have no C string to go back to.
+void putField(Rooted<Value>& obj, Rooted<Value>& key, Rooted<Value>& val) {
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+}
+
+// Own-property existence, shared by `Object.prototype.hasOwnProperty` and
+// `Object.hasOwn` — 20.1.3.2 and 20.1.2.13 are the same operation with the
+// receiver in a different position, and writing it twice is how the two would
+// come to disagree about a dictionary-mode object.
+//
+// The key is interned BEFORE the object is read: `internOf` runs ToString,
+// which allocates, so an ObjectHeader* taken across it would be stale.
+bool hasOwnPropertyNamed(Rooted<Value>& self, Value key) {
+    StringHeader* name = internOf(key);
+    auto* obj = self.get().asObject<ObjectHeader>();
+    uint32_t slot = 0;
+    return obj->shape && obj->shape->lookupProperty(name, slot);
 }
 
 // The entry `name` names, after the object has been moved to dictionary mode.
@@ -259,13 +280,15 @@ uint64_t objectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
 
 // 20.1.2.12 Object.getPrototypeOf.
 //
-// bronze has no `Object.prototype`, so a plain `{}` has NO prototype at all —
-// where the language says its prototype is that object. Answering `null` for
-// it would be a wrong answer that reads exactly like the right one for
-// `Object.create(null)`, so the two are kept apart: an explicit null prototype
-// answers null, and the absence of a builtin prototype is a named error rather
-// than a lie. The same is true of an array and a function, whose prototypes
-// are the two other intrinsics bronze does not have.
+// A plain object answers from its shape, and `Object.prototype` is what the
+// chain of a `{}` ends at — so `null` here means what the language means by it:
+// `Object.create(null)`, and `Object.prototype` itself. The two used to be
+// indistinguishable, which is why this was a named error.
+//
+// An array and a function still are: their members are answered by the
+// property path rather than found on a prototype object, so there is no
+// `Array.prototype` to return and `null` would be a lie about a chain that
+// really does have methods on it.
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     if (!isPlainObject(args[0])) {
@@ -280,8 +303,83 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     Shape* shape = args[0].asObject<ObjectHeader>()->shape;
     const Value proto = shape ? shape->prototypeValue() : Value::fromUndefined();
     if (proto.isObject() || proto.isNull()) return proto.rawBits();
-    fatal("unsupported: Object.getPrototypeOf of a plain object needs Object.prototype, "
-          "which bronze does not provide");
+    // A plain object whose root shape carries `undefined` rather than a
+    // prototype: every route to one now names either an object or null, so this
+    // is a bronze bug and not a program's doing.
+    fatal("internal: a plain object whose root shape names no prototype");
+}
+
+// 20.1.2.13 Object.hasOwn(O, P) — `hasOwnProperty` with the receiver moved into
+// the argument list, and the reason the method form is not the idiom: the
+// method can be shadowed by an own property of the object being asked about.
+uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) {
+        return rtThrowTypeError("Object.hasOwn called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> self{args[0]};
+    return Value::fromBool(hasOwnPropertyNamed(self, args[1])).rawBits();
+}
+
+// 20.1.2.14 Object.is — SameValue (7.2.11), which differs from `===` in exactly
+// two places and exists for them: NaN is the same value as itself, and +0 is
+// not the same value as -0.
+uint64_t objectIs(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    const Value a = args[0];
+    const Value b = args[1];
+    if (a.isNumber() && b.isNumber()) {
+        const double x = a.asNumber();
+        const double y = b.asNumber();
+        if (x != x && y != y) return Value::fromBool(true).rawBits();  // both NaN
+        // Zeroes differ by sign only, which compares equal as doubles; the bit
+        // patterns are what SameValue distinguishes, so they are what is
+        // compared. Not a raw rawBits() compare for every pair of numbers,
+        // because a NaN has many encodings and two of them are the same value.
+        if (x == 0.0 && y == 0.0) {
+            return Value::fromBool(std::signbit(x) == std::signbit(y)).rawBits();
+        }
+        return Value::fromBool(x == y).rawBits();
+    }
+    // Every other kind: SameValue is SameValueNonNumber (7.2.12), which agrees
+    // with strict equality everywhere it is defined — the two clauses differ
+    // only over numbers, which the branch above has already taken.
+    return Value::fromBool(bronze_strict_eq(a.rawBits(), b.rawBits())).rawBits();
+}
+
+// Defined below, and called here: 20.1.2.9 is a loop over the own keys
+// `getOwnPropertyNames` collects.
+uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+
+// 20.1.2.9 Object.getOwnPropertyDescriptors: one entry per own property, each
+// the object `getOwnPropertyDescriptor` builds. Defined in terms of it (step 4
+// calls it per key), so it calls it, rather than growing a second copy of the
+// descriptor shape that could drift from the first.
+uint64_t objectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
+                                         const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!isPlainObject(args[0])) {
+        return rtThrowTypeError(
+                   "Object.getOwnPropertyDescriptors called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> self{args[0]};
+    Rooted<Value> out{Value(bronze_create_object())};
+    // ALL own keys, not just the enumerable ones (20.1.2.9 step 2 is
+    // OwnPropertyKeys), which is where this differs from `Object.keys`.
+    const uint64_t ownCall[1] = {self.get().rawBits()};
+    Rooted<Value> names{Value(objectGetOwnPropertyNames(0, 0, 1, ownCall))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const uint32_t count = names.get().asObject<ArrayHeader>()->length;
+    for (uint32_t i = 0; i < count; ++i) {
+        Rooted<Value> key{names.get().asObject<ArrayHeader>()->getElem(i)};
+        const uint64_t call[2] = {self.get().rawBits(), key.get().rawBits()};
+        Rooted<Value> desc{Value(objectGetOwnPropertyDescriptor(0, 0, 2, call))};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        putField(out, key, desc);
+    }
+    return out.get().rawBits();
 }
 
 // 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
@@ -499,6 +597,123 @@ struct NamespaceFn {
     uint32_t arity;
 };
 
+// ---- Object.prototype -------------------------------------------------------
+//
+// The intrinsic every plain object inherits from. It is a real object on the
+// real chain, found by the ordinary prototype walk — not a table consulted
+// beside it, which is what every other builtin receiver in bronze still is. The
+// difference is the whole point: a method here can be held, compared, passed to
+// `.call`, and replaced, and `Object.getPrototypeOf({})` has something true to
+// answer.
+//
+// Every member is defined NON-ENUMERABLE, per 20.1.3. That is not tidiness:
+// `for-in` walks the prototype chain, so an enumerable member here would appear
+// in every for-in over every object in the program. `Object.keys`, spread and
+// `JSON.stringify` ask for own enumerable keys and so cannot see it either,
+// which is why this object can be introduced under a suite of pinned
+// expectations without moving one of them.
+
+// The receiver of an Object.prototype method, which reaches one only through an
+// ordinary call on a plain object or through `.call`. Three answers, and the
+// third is the house rule: a receiver bronze cannot answer for is refused BY
+// NAME rather than told that it has no own properties.
+bool requireProtoReceiver(Value self, const char* method) {
+    if (self.isNull() || self.isUndefined()) {
+        rtThrowTypeError(std::string("Object.prototype.") + method +
+                         " called on null or undefined");
+        return false;
+    }
+    if (isPlainObject(self)) return true;
+    fatal((std::string("unsupported: Object.prototype.") + method +
+           " on a receiver that is not a plain object (an array, a function, a Map or a "
+           "primitive reaches its members through the property path rather than through a "
+           "prototype object, so bronze has no chain here to answer about)")
+              .c_str());
+}
+
+uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
+                                   const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireProtoReceiver(self.get(), "hasOwnProperty")) {
+        return Value::fromUndefined().rawBits();
+    }
+    return Value::fromBool(hasOwnPropertyNamed(self, args[0])).rawBits();
+}
+
+// 20.1.3.4. Own AND enumerable — a name that is only inherited answers false
+// here where `in` answers true, and a class method (15.7.14 defines it
+// non-enumerable) answers false where `hasOwnProperty` answers true.
+uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t argc,
+                                         const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireProtoReceiver(self.get(), "propertyIsEnumerable")) {
+        return Value::fromUndefined().rawBits();
+    }
+    StringHeader* name = internOf(args[0]);
+    auto* obj = self.get().asObject<ObjectHeader>();
+    PropertyInfo info;
+    if (!obj->shape || !obj->shape->lookupProperty(name, info)) {
+        return Value::fromBool(false).rawBits();
+    }
+    return Value::fromBool(info.enumerable).rawBits();
+}
+
+// 20.1.3.3. Walks the ARGUMENT's chain looking for the receiver, so it answers
+// about ancestry rather than about identity: an object is not its own
+// prototype, and the walk starts one link up for that reason.
+uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
+                                  const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireProtoReceiver(self.get(), "isPrototypeOf")) {
+        return Value::fromUndefined().rawBits();
+    }
+    if (!isPlainObject(args[0])) return Value::fromBool(false).rawBits();
+    // No allocation in the loop, so the raw pointers stay valid throughout.
+    ObjectHeader* walker = args[0].asObject<ObjectHeader>();
+    ObjectHeader* target = self.get().asObject<ObjectHeader>();
+    for (uint32_t depth = 0; depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        walker = walker->protoAncestor(1);
+        if (!walker) return Value::fromBool(false).rawBits();
+        if (walker == target) return Value::fromBool(true).rawBits();
+    }
+    fatal("prototype chain too deep (a cycle?)");
+}
+
+// 20.1.3.7 ToObject(this), which for an object is the object. It exists so that
+// the name is not a hole in the chain; it is NOT what makes `{} + 1` work,
+// because ToPrimitive is what calls valueOf and ToPrimitive is still unbuilt
+// (rt_convert.cpp names it).
+uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self(thisBits);
+    if (!requireProtoReceiver(self, "valueOf")) return Value::fromUndefined().rawBits();
+    return self.rawBits();
+}
+
+const NamespaceFn kObjectProtoFunctions[] = {
+    {"hasOwnProperty", objectProtoHasOwnProperty, 1},
+    {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
+    {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1},
+    {"valueOf", objectProtoValueOf, 0},
+};
+
+// 20.1.3 members bronze has not built, diagnosed by name on a plain object's
+// full-chain miss.
+//
+// `toString` is deliberately here rather than answered with "[object Object]".
+// 20.1.3.6 is a tag lookup — Array, Function, Error, Arguments, each of the
+// wrapper kinds — and bronze cannot ask the question for all of them: an error
+// object here is an ordinary plain object with no [[ErrorData]] to find, so a
+// toString written today would answer "[object Object]" for one and be
+// confidently wrong at exactly the place `Object.prototype.toString.call(x)` is
+// used. `toLocaleString` is 20.1.3.5, which calls toString.
+const char* const kObjectProtoUnimplemented[] = {
+    "toLocaleString",
+    "toString",
+};
+
 const NamespaceFn kObjectFunctions[] = {
     {"keys", objectKeys, 1},
     {"values", objectValues, 1},
@@ -518,40 +733,101 @@ const NamespaceFn kObjectFunctions[] = {
     {"getPrototypeOf", objectGetPrototypeOf, 1},
     {"setPrototypeOf", objectSetPrototypeOf, 2},
     {"getOwnPropertyNames", objectGetOwnPropertyNames, 1},
+    {"getOwnPropertyDescriptors", objectGetOwnPropertyDescriptors, 1},
+    {"hasOwn", objectHasOwn, 2},
+    {"is", objectIs, 2},
 };
 
-// Real members of `Object` that bronze has not built. `prototype` is the
-// load-bearing one: bronze has no `Object.prototype` object, which is why
-// `Object.getPrototypeOf({})` is a named error rather than a `null` that would
-// be indistinguishable from `Object.create(null)`'s honest answer.
+// Real members of `Object` that bronze has not built.
 const char* const kObjectUnimplemented[] = {
-    "getOwnPropertyDescriptors",
     "getOwnPropertySymbols",
     "groupBy",
-    "hasOwn",
-    "is",
-    "prototype",
 };
 
 Value g_objectNamespace = Value::fromUndefined();
+Value g_objectPrototype = Value::fromUndefined();
+
+// Both intrinsics, built together.
+//
+// They reference each other — `Object.prototype` is a property of the namespace
+// and `Object.prototype.constructor` is the namespace — so neither can be built
+// by an accessor that lazily builds the other: whichever ran first would
+// re-enter the second, which would re-enter the first, and the recursion guard
+// would hand out a half-built object. Building both here and publishing them at
+// the end makes the cycle a pair of ordinary assignments.
+//
+// `constructor` matters more than it looks. Without it `({}).constructor` is
+// `undefined`, which is a silent wrong answer, and one that would appear or
+// disappear depending on whether the program had mentioned `Object` anywhere.
+void ensureObjectIntrinsics() {
+    if (g_objectPrototype.isObject()) return;
+
+    // Object.prototype's own prototype is NULL, and it is the one object in the
+    // program for which that is true by definition rather than by request
+    // (20.1.3: "the value of [[Prototype]] is null"). It must not come from
+    // `rtPlainObjectShape`, which is about to name THIS object as its
+    // prototype — that would be the chain closing on itself.
+    Rooted<Value> proto{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromNull())))};
+    proto.get().asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+
+    // Its own root shape, for the reason `Math` has one: a site reading
+    // `Object.keys` must not share a transition tree with `{}` literals.
+    Rooted<Value> ns{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
+    ns.get().asObject<ObjectHeader>()->header.flags = 0;
+
+    for (const NamespaceFn& fn : kObjectFunctions) {
+        Rooted<Value> key{rtMakeString(fn.name)};
+        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
+        ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    }
+    // Non-enumerable, and `defineOwn` because this is DefineOwnProperty and not
+    // an assignment — 20.1.3 defines every one of these with
+    // `enumerable: false`, and an enumerable member here would surface in every
+    // `for-in` in the program, which walks the prototype chain.
+    for (const NamespaceFn& fn : kObjectProtoFunctions) {
+        Rooted<Value> key{rtMakeString(fn.name)};
+        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+
+    // The two cross-references, on the same non-enumerable terms (20.1.2.1
+    // makes `Object.prototype` non-writable and non-enumerable; 20.1.3.1 makes
+    // `constructor` non-enumerable).
+    {
+        Rooted<Value> key{rtMakeString("prototype")};
+        ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, proto, nullptr,
+                                                  /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ns, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+
+    g_objectNamespace = ns.get();
+    g_objectPrototype = proto.get();
+    rtHeap().add_permanent_root(&g_objectNamespace);
+    rtHeap().add_permanent_root(&g_objectPrototype);
+}
 
 }  // namespace
 
 Value rtObjectNamespace() {
-    if (g_objectNamespace.isObject()) return g_objectNamespace;
-    // Its own root shape, for the reason `Math` has one: a site reading
-    // `Object.keys` must not share a transition tree with `{}` literals.
-    Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    obj.get().asObject<ObjectHeader>()->header.flags = 0;
-    for (const NamespaceFn& fn : kObjectFunctions) {
-        Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
-    }
-    g_objectNamespace = obj.get();
-    rtHeap().add_permanent_root(&g_objectNamespace);
+    ensureObjectIntrinsics();
     return g_objectNamespace;
+}
+
+Value rtObjectPrototype() {
+    ensureObjectIntrinsics();
+    return g_objectPrototype;
+}
+
+void rtObjectProtoCheckMissingMember(const std::string& key) {
+    rtCheckUnimplementedMember("Object.prototype", kObjectProtoUnimplemented,
+                               std::size(kObjectProtoUnimplemented), key);
 }
 
 void rtObjectCheckMissingMember(Value obj, const std::string& key) {

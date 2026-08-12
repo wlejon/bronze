@@ -236,6 +236,28 @@ void rtMathCheckMissingMember(Value obj, const std::string& key);
 Value rtObjectNamespace();
 void rtObjectCheckMissingMember(Value obj, const std::string& key);
 
+// `Object.prototype`: the intrinsic every plain object's chain ends at, and a
+// real object rather than a table consulted beside the chain — so a program can
+// hold it, compare it, and add to it. `rtPlainObjectShape` names it as the
+// prototype of every `{}`, which is the one edge that makes it the value model
+// rather than a builtin.
+//
+// Reentrancy: this and `rtObjectNamespace` above reference each other
+// (`Object.prototype.constructor` and `Object.prototype`), so both are built by
+// one initializer and either accessor triggers it.
+Value rtObjectPrototype();
+
+// `Function.prototype.call` / `.apply`, answered beside a function rather than
+// found on a prototype object — a FunctionHeader has no shape for a walk to
+// follow. `undefined` for every other name, which leaves `bind`, `name` and
+// `length` to the unimplemented table in rt_members.cpp.
+Value rtFunctionMethod(const std::string& key);
+// The miss check for a plain object's prototype chain: a name 20.1.3 defines
+// and bronze has not built. Reached only after the whole chain misses, which is
+// why it is safe to apply to every plain object — a program's own property of
+// the same name is found first and never reaches here.
+void rtObjectProtoCheckMissingMember(const std::string& key);
+
 Value rtNumberNamespace();
 void rtNumberCheckMissingMember(Value obj, const std::string& key);
 

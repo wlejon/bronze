@@ -3,8 +3,11 @@
 // that sit on top of them.
 //
 // ToString and ToNumber of an OBJECT are hard errors: both need ToPrimitive
-// (valueOf, then toString) and bronze has no Object.prototype to find either
-// on. Naming that beats guessing a number.
+// (7.1.1 OrdinaryToPrimitive — valueOf, then toString), which is not built.
+// `Object.prototype` now exists and carries `valueOf`, so the LOOKUP would
+// succeed; what is missing is the algorithm around it — the ordered pair of
+// calls, the "is the result a primitive" test between them, and the TypeError
+// when neither answers one. Naming that beats guessing a number.
 
 #include <charconv>
 #include <cmath>
@@ -47,7 +50,7 @@ static Value valueToString(Value v) {
         // The one object bronze can convert without ToPrimitive: a RegExp's
         // `toString` is a pure function of its source and flags (22.2.6.13),
         // so `"" + /a/g` is "/a/g" rather than a named error. Every other
-        // object still needs valueOf/toString and is still refused.
+        // object still goes through ToPrimitive and is still refused.
         return rtMakeString(rtRegExpText(v));
     } else {
         fatal("ToString on an object is unsupported");
