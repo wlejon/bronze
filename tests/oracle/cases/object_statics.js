@@ -4,7 +4,7 @@
 // two can never answer differently.
 //
 // From ECMA-262 20.1.2.1 (assign), 20.1.2.5 (entries), 20.1.2.24 (values) and
-// 20.1.2.7 (fromEntries), all of which are EnumerableOwnProperties over the the
+// 20.1.2.7 (fromEntries), all of which are EnumerableOwnProperties over the
 // own-key order the shape chain pins:
 //
 // 1. `keys`, `values` and `entries` walk the same order, which is insertion

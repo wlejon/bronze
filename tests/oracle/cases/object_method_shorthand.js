@@ -41,7 +41,7 @@ console.log(next(), namedNext.next());
 const reserved = { delete() { return "d"; }, return() { return "r"; }, if() { return "i"; } };
 console.log(reserved.delete(), reserved.return(), reserved.if());
 
-// The reason the shorthand had to land before the rest of this chunk: an
+// The shorthand is what makes the iterator protocol writable at all: an
 // iterator is written this way and nothing else.
 const range = {
   from: 1,

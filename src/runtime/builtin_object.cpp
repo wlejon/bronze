@@ -1,8 +1,9 @@
 // The `Object` namespace: property descriptors, freezing, and the four
 // whole-object copies.
 //
-// `Object` was not a value in bronze before this: `Object.keys(...)` was
-// recognized at the CALL and made every other member a compile error. That was
+// `Object` is a value here, rather than a name the compiler recognises at a
+// call. Recognising `Object.keys(...)` at the CALL made every other member a
+// compile error, which was
 // the right answer while `keys` was the only member; it does not survive a
 // second one, because `Object.assign` and `Object.defineProperty` would each
 // need their own IL op and their own arity check in lowering. So `Object` joins

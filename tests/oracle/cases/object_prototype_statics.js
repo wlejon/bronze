@@ -1,6 +1,6 @@
 // The rest of the `Object` namespace — `create`, `seal`, `isSealed`,
 // `preventExtensions`, `isExtensible`, `getPrototypeOf`, `setPrototypeOf`,
-// `getOwnPropertyNames` and `defineProperties` (ECMA-262 20.1.2), promoted by
+// `getOwnPropertyNames` and `defineProperties` (ECMA-262 20.1.2), promoted
 // from the named errors they used to be.
 //
 // Two of them are more than plumbing:

@@ -1,9 +1,9 @@
 // A HOLE — the state `delete a[1]` leaves an array index in — and the two
 // different questions the rest of the language asks about one.
 //
-// Before this chunk a hole was unreachable: the only way to make one was a
-// sparse write, which is a named hard error, so every array bronze could
-// build was dense from 0 to `length`. `delete` on an element changes that,
+// A hole is only reachable through `delete`: the other way to make one is a
+// sparse write, which is a named hard error, so every array bronze builds is
+// otherwise dense from 0 to `length`. Deleting an element changes that,
 // and the change is not local to the element read: a hole is NOT AN OWN
 // PROPERTY, and every operation defined over own keys has to agree about it,
 // while every operation defined over `Get` has to keep reading it as

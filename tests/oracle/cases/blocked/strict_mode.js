@@ -8,8 +8,8 @@
 // a script or function body determined by its Directive Prologue, and every
 // construct below has two spec'd behaviours selected by it. That is a parser
 // and scope-tracking change — a flag threaded from the prologue through every
-// function body — not an exceptions change, which is why it is its own piece of
-// work rather than part of this chunk.
+// function body — not an exceptions change, which is why it is its own piece
+// of work.
 //
 // The sloppy no-op was chosen for a getter-only write, and said it becomes a
 // TypeError when `throw` lands. That was half right: the TypeError is 10.1.9.2

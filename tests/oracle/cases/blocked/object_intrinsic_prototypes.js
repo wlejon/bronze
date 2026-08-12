@@ -16,9 +16,9 @@
 // `Function.prototype` / `String.prototype` / `Number.prototype` objects, every
 // object's root shape pointing at the right one, the property path finding
 // methods THROUGH them instead of beside them, and `Object.keys` and `for-in`
-// staying unaffected because everything on them is non-enumerable. It is the
-// chunk that makes monkey-patching work, and it is not a corner of a builtins
-// chunk.
+// staying unaffected because everything on them is non-enumerable. It is what
+// makes monkey-patching work, and it is a value-model change rather than a
+// corner of the builtins.
 //
 // `hasOwn`, `is` and `getOwnPropertyDescriptors` are here rather than built
 // because they belong with that work: two of them are one-liners, and an
