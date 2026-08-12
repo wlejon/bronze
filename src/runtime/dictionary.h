@@ -41,6 +41,22 @@ struct DictEntry {
     bool configurable{true};
 };
 
+// What SetIntegrityLevel (ECMA-262 7.3.14) last stamped on the own properties a
+// Dictionary does NOT list — an array's ELEMENTS, which live in the element
+// block, and a function's `prototype`, which lives in a slot of its own.
+//
+// One level rather than a bit per property, because nothing in bronze can give
+// one element different attributes from its neighbour: `Object.defineProperty`
+// takes a plain object only, so `freeze`, `seal` and `preventExtensions` are the
+// only operations that reach these, they apply to all of them at once, and they
+// only ever move one way. The three states below are therefore the only three
+// such storage ever reaches.
+enum class IntegrityLevel : uint8_t {
+    Open,    // writable and configurable: an ordinary array's elements
+    Sealed,  // non-configurable — `delete a[i]` refuses, a write still lands
+    Frozen,  // and non-writable, which also takes `length` / `prototype` writes
+};
+
 // The own-property table of one object, hung off that object's own private
 // Shape. It lives in the non-moving arena beside the shape, so nothing here
 // is a GC root: `name` points into the arena and the VALUES stay in the
@@ -68,6 +84,12 @@ public:
     // header would have to be somewhere the generated fast path's flags word
     // already is.
     bool extensible{true};
+
+    // The level for the storage `entries` cannot describe. `Open` on a plain
+    // object's table always — a plain object has no such storage — and the
+    // whole of an array's or a function's answer for the parts of it that are
+    // not named properties (integrity.h says why the level is kept HERE).
+    IntegrityLevel level{IntegrityLevel::Open};
 
     const DictEntry* find(PropertyKey name) const noexcept;
     DictEntry* find(PropertyKey name) noexcept;

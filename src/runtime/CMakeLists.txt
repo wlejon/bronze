@@ -12,6 +12,7 @@ bronze_add_module(runtime
         shape.cpp
         dictionary.cpp
         accessor.cpp
+        integrity.cpp
         exception.cpp
         object.cpp
         array.cpp
@@ -70,6 +71,7 @@ bronze_add_module(runtime
         ../../tests/runtime/exact_decimal_test.cpp
         ../../tests/runtime/regexp_test.cpp
         ../../tests/runtime/arguments_test.cpp
+        ../../tests/runtime/integrity_test.cpp
         ../../tests/runtime/math_random_test.cpp
 )
 

@@ -22,6 +22,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/number_format.h"
@@ -544,6 +545,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             fatal("named property writes on an array are unsupported "
                   "(arrays carry no shape for named properties yet)");
         }
+        // A frozen or non-extensible array refuses the write on exactly the
+        // terms a plain object's property does, so it reports through the same
+        // enum and the same strict-mode translation (integrity.h).
+        const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
+        if (refusal != SetRefusal::None) {
+            rtReportSetRefusal(refusal, strict, keyStr);
+            return;
+        }
         Rooted<Value> val(valVal);
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
         return;
@@ -602,6 +611,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                 rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
                 /*defineOwn=*/false, fnRoot.slot_ptr(), &refusal);
             rtReportSetRefusal(refusal, strict, keyStr);
+            return;
+        }
+        // `prototype` is a real own property of the function (10.2.4), so a
+        // frozen function refuses a write to it — and it lives in a slot rather
+        // than in the statics table, so nothing that table records can answer
+        // for it.
+        if (!rtFunctionPrototypeWritable(objVal)) {
+            rtReportSetRefusal(SetRefusal::NotWritable, strict, keyStr);
             return;
         }
         if (!valVal.isObject()) {
@@ -899,6 +916,11 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     if (hdr->flags == HeapKind::Array) {
         if (!valueToElementIndex(Value(idxBits), idx)) {
             fatal("non-integer array index write is unsupported");
+        }
+        const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
+        if (refusal != SetRefusal::None) {
+            rtReportSetRefusal(refusal, strict, std::to_string(idx));
+            return;
         }
         Rooted<Value> val{Value(valBits)};
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);

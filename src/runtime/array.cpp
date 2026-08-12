@@ -56,10 +56,20 @@ ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
     if (self.get().asObject<ArrayHeader>()->properties.isObject()) {
         return self.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
     }
-    // The plain-object root shape, so a match array's `index`/`input`/`groups`
-    // share a transition tree with every other three-property object rather
-    // than minting a hidden class per match.
-    ObjectHeader* props = ObjectHeader::create(heap, arena, runtime::rtPlainObjectShape());
+    // A root shape with NO prototype, memoized so that every array's bucket
+    // shares one transition tree rather than minting a hidden class per match.
+    //
+    // Not `rtPlainObjectShape`, whose prototype is `Object.prototype`: this
+    // object is storage and not a link in the array's chain, and the property
+    // path reads it BEFORE the array's own members (rt_prop.cpp). With
+    // `Object.prototype` behind it the bucket answered every name that object
+    // carries, so a match array's `.constructor` was the `Object` namespace
+    // instead of `Array`, and `.valueOf` shadowed the array's own answer. An
+    // array reaches `Object.prototype` through `Array.prototype`, which is a
+    // separate gap; borrowing it here put the intrinsic in the wrong position
+    // rather than filling that gap.
+    ObjectHeader* props =
+        ObjectHeader::create(heap, arena, runtime::rtRootShapeForPrototype(Value::fromNull()));
     props->header.flags = HeapKind::Plain;
     self.get().asObject<ArrayHeader>()->properties = Value::fromObject(props);
     return props;

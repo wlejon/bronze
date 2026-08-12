@@ -18,6 +18,14 @@
 //    for `this`. A nested ORDINARY function does bind its own, and shadows.
 // 5. 10.2.11 step 22 builds the object only when `arguments` is not already
 //    bound: a parameter of that name wins and no object exists.
+// 6. `callee` is an own property of the arguments object (10.2.11 step 6 puts
+//    it there, as the accessor pair whose halves are %ThrowTypeError%) and of
+//    nothing else — so an ordinary array has none, and reading it off one is
+//    the plain `undefined` any absent property gives. That is worth pinning
+//    because bronze's `arguments` IS an array, which makes the property the
+//    only thing that can tell the two receivers apart; reading `callee` off a
+//    real arguments object is a hard error naming the gap
+//    (`cases/blocked/arguments_callee`).
 //
 // The writes below are pinned against CreateUnmappedArgumentsObject, the
 // UNMAPPED object: writing `arguments[0]` does not write the parameter. bronze
@@ -122,3 +130,5 @@ function shadowedByParam(arguments) {
   return arguments;
 }
 console.log(shadowedByParam("the parameter"));
+
+console.log([].callee, [1, 2].callee);

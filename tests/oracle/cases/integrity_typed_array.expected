@@ -1,0 +1,6 @@
+true false false
+freeze: true TypeError
+seal: true TypeError
+true false false
+9 2 3 3
+0 true false

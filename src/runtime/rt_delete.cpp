@@ -24,6 +24,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -50,11 +51,19 @@ ObjectHeader* namedPropertyOwner(Value v) {
 
 // `delete a[i]` on an array leaves a HOLE: `length` is a separate own
 // property and 10.4.2.1 only intercepts writes to it, so it does not move.
-bool deleteElementByIndex(Value objVal, Value idxVal) {
+//
+// It answers false on exactly one condition — a SEALED array, whose elements
+// 7.3.14 made non-configurable — which is the same false a plain object's
+// non-configurable property gives, and travels to the same TypeError through
+// the same `reportRefusedDelete`. `outIndex` is the index it resolved, which is
+// what that message quotes: ToString of a canonical array index is its digits,
+// so the number and the string spellings of `delete a[1]` name it the same way.
+bool deleteElementByIndex(Value objVal, Value idxVal, uint32_t& outIndex) {
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Array) return true;
 
-    uint32_t idx = 0;
+    uint32_t& idx = outIndex;
+    idx = 0;
     if (idxVal.isNumber()) {
         double d = idxVal.asNumber();
         if (!(d >= 0.0) || d != static_cast<double>(static_cast<uint32_t>(d)) ||
@@ -71,7 +80,13 @@ bool deleteElementByIndex(Value objVal, Value idxVal) {
     } else {
         return true;
     }
-    reinterpret_cast<ArrayHeader*>(hdr)->deleteElem(idx);
+    // An index that is not an own property — past the end, or already a hole —
+    // is in the state delete wants whatever the integrity level says, so a
+    // sealed array still answers true for one (10.5.6 step 3).
+    auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
+    if (!arr->hasElem(idx)) return true;
+    if (!rtArrayElementsConfigurable(objVal)) return false;
+    arr->deleteElem(idx);
     return true;
 }
 
@@ -105,7 +120,10 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
     // A key that names an ARRAY ELEMENT reaches the elements, not a shape:
     // `delete a["1"]` and `delete a[1]` are the same property (7.1.19).
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        return deleteElementByIndex(objVal, Value::fromString(keyHeader));
+        uint32_t idx = 0;
+        return reportRefusedDelete(
+            deleteElementByIndex(objVal, Value::fromString(keyHeader), idx), strict,
+            rtKeyString(keyIndex));
     }
 
     ObjectHeader* owner = namedPropertyOwner(objVal);
@@ -125,7 +143,9 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     if (!objVal.isObject()) return true;
 
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        return deleteElementByIndex(objVal, idxVal);
+        uint32_t idx = 0;
+        return reportRefusedDelete(deleteElementByIndex(objVal, idxVal, idx), strict,
+                                   std::to_string(idx));
     }
 
     ObjectHeader* owner = namedPropertyOwner(objVal);

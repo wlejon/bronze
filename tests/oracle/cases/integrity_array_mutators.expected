@@ -1,0 +1,26 @@
+push frozen: true TypeError
+push sealed: true TypeError
+push closed: true TypeError
+push nothing: 3
+pop closed: 3
+pop sealed: true TypeError
+pop frozen: true TypeError
+pop frozen empty: undefined
+shift closed: 1
+shift sealed: true TypeError
+unshift closed: true TypeError
+unshift nothing: 3
+reverse frozen: true TypeError
+reverse sealed: 3,2,1
+reverse frozen one: 1
+fill frozen: true TypeError
+fill sealed: 0,0,0
+fill empty range: 1,2,3
+push threw true
+2 1,2
+3
+2 1,2
+3 1,2,3 1 true
+2,4,6 false
+2,4,6,8
+0,1,2

@@ -50,6 +50,55 @@ bool isPlainObject(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN;
 }
 
+// %ThrowTypeError% (ECMA-262 10.2.4), as far as bronze can honestly go.
+//
+// A read of `arguments.callee` wants the function object of the RUNNING
+// invocation. bronze's calling convention does not pass one: a compiled body is
+// entered through its code pointer with `(env, this, arguments, ...params)`,
+// and the FunctionHeader that wraps it is not among them — a direct typed call
+// does not construct one at all. So 10.4.4's sloppy answer, which IS that
+// function, cannot be produced without a new channel on every call in the
+// program.
+//
+// Strict code's answer is a TypeError and bronze could give that exactly — but
+// only by knowing which mode the function was written in, and strictness is a
+// per-instruction fact in lowering that no IL function carries down to here. So
+// one loud answer covers both modes and names the gap, which is the house rule
+// applied to the alternative: a silent `undefined`, which is what a program
+// feature-detecting `callee` used to read.
+[[noreturn]] uint64_t argumentsCalleePill(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    fatal("unsupported: `arguments.callee` — the running function object is not passed to a "
+          "compiled body, so sloppy code cannot be handed the function (10.4.4) and strict "
+          "code cannot be told apart to be handed the TypeError (10.2.4)");
+}
+
+// The arena-interned `callee` key. Interned once because every call that owns
+// an `arguments` object defines this property, and a heap string per call would
+// be an allocation the property never keeps.
+StringHeader* calleeKey() {
+    static StringHeader* key = nullptr;
+    if (!key) {
+        Rooted<Value> name{rtMakeString("callee")};
+        key = StringHeader::internToArena(rtArena(), name.get().asString<StringHeader>());
+    }
+    return key;
+}
+
+// 10.2.11 step 6, on the array that stands in for the arguments object. The
+// pair is non-enumerable, which is both what the specification says and what
+// keeps every existing walk over an arguments object unchanged: `for-in`,
+// `Object.keys`, spread and `JSON.stringify` all ask for own enumerable keys,
+// and console.log's array format skips accessors outright.
+void installArgumentsCallee(Rooted<Value>& args) {
+    ArrayHeader::ensureProperties(rtHeap(), rtArena(), args);
+    Rooted<Value> props{args.get().asObject<ArrayHeader>()->properties};
+    Rooted<Value> key{Value::fromString(calleeKey())};
+    Rooted<Value> pill{Value(bronze_function_singleton(
+        reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0))};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
+                                 /*enumerable=*/false);
+}
+
 bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
@@ -142,8 +191,18 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
 // UNMAPPED, and an ordinary array: writing `arguments[0]` does not write the
 // parameter, and `Array.isArray(arguments)` answers true where a spec engine
 // answers false. Both are deliberate divergences.
+//
+// `callee` is the one own property the array is given, and it is what tells an
+// arguments object apart from every other array — which is why the answer is a
+// PROPERTY here rather than a name recognised on the array read path: `[].callee`
+// is `undefined` and must stay `undefined`, and nothing else could distinguish
+// the two receivers. 10.2.11 step 6 defines it on the unmapped object as an
+// accessor pair whose halves are %ThrowTypeError%, so the shape of what is
+// installed is the specification's; only the pill's contents differ.
 uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
-    return bronze_rest_args(argc, argv, 0);
+    Rooted<Value> args{Value(bronze_rest_args(argc, argv, 0))};
+    installArgumentsCallee(args);
+    return args.get().rawBits();
 }
 
 // One argument, or `undefined` when the caller passed fewer. Every other

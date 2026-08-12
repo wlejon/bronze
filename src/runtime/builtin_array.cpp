@@ -26,6 +26,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/integrity.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -120,6 +121,50 @@ bool hasIndex(Value self, uint32_t i) {
     return !isArray(self) || self.asObject<ArrayHeader>()->hasElem(i);
 }
 
+// ---- integrity ------------------------------------------------------------
+//
+// Every mutator below is defined with `Set(O, k, v, true)` or
+// `DeletePropertyOrThrow` (ECMA-262 23.1.3), and the `true` is the whole
+// difference from `a[i] = v`: a refused write inside one of these methods is a
+// TypeError from the METHOD, whatever the strictness of the code that called
+// it. So these guards throw where rt_prop's element write merely reports.
+//
+// Each method asks for exactly the capability its algorithm uses, which is why
+// there are three questions and not one — `pop` on a merely non-extensible
+// array works, and `push` on a sealed one does not.
+
+// The capability to CREATE an index: `push`, and `unshift` with arguments.
+// Which index it would have been is left out on purpose — `push` creates
+// `length` and `unshift` creates the top of the shifted range, and a message
+// that named one of them would be wrong for the other.
+bool requireExtensible(Value self, const char* method) {
+    if (rtIsExtensible(self)) return true;
+    rtThrowTypeError(std::string("Cannot add elements to an array that is not extensible "
+                                 "(Array.prototype.") +
+                     method + ")");
+    return false;
+}
+
+// The capability to REMOVE one: `pop` and `shift`, whose last step is a
+// DeletePropertyOrThrow of the index that falls off the end.
+bool requireConfigurableElements(Value self, const char* method) {
+    if (rtArrayElementsConfigurable(self)) return true;
+    rtThrowTypeError(std::string("Cannot delete property ") +
+                     std::to_string(self.asObject<ArrayHeader>()->length - 1) +
+                     " of a sealed array (Array.prototype." + method + ")");
+    return false;
+}
+
+// The capability to overwrite one: `reverse` and `fill`, which only ever Set
+// indices that are already there.
+bool requireWritableElements(Value self, const char* method) {
+    if (rtIntegrityLevel(self) != IntegrityLevel::Frozen) return true;
+    rtThrowTypeError(std::string("Cannot assign to read only element of a frozen array "
+                                 "(Array.prototype.") +
+                     method + ")");
+    return false;
+}
+
 // Appends a hole, so a producer that skipped an element still lines its
 // output's indices up with its input's — `slice` and `concat` copy the
 // absence rather than densifying it.
@@ -136,6 +181,13 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireArray(self.get(), "push")) return Value::fromUndefined().rawBits();
+    // With no arguments push writes only `length`, to the value it already has,
+    // which 10.4.2.4 step 10 accepts even when `length` is non-writable — so an
+    // argument-less push on a frozen array answers its length rather than
+    // throwing.
+    if (args.count() > 0 && !requireExtensible(self.get(), "push")) {
+        return Value::fromUndefined().rawBits();
+    }
     for (uint32_t i = 0; i < args.count(); ++i) {
         Rooted<Value> val{args[i]};
         appendTo(self, val);
@@ -147,7 +199,10 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireArray(self, "pop")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
+    // An empty array deletes nothing and sets `length` to the 0 it already
+    // holds, so even a frozen one answers `undefined` rather than throwing.
     if (arr->length == 0) return Value::fromUndefined().rawBits();
+    if (!requireConfigurableElements(self, "pop")) return Value::fromUndefined().rawBits();
     Value last = arr->getElem(arr->length - 1);
     arr->length -= 1;
     return last.rawBits();
@@ -158,6 +213,11 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (!requireArray(self, "shift")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
     if (arr->length == 0) return Value::fromUndefined().rawBits();
+    // The last index is deleted after the shift down, so `shift` needs the
+    // configurability `pop` needs — and the writability too, which a sealed
+    // array still has and a frozen one does not. One test covers both because
+    // `Frozen` implies `Sealed` (dictionary.h).
+    if (!requireConfigurableElements(self, "shift")) return Value::fromUndefined().rawBits();
     Value first = arr->getElem(0);
     Value* data = arr->elementsData();
     for (uint32_t i = 1; i < arr->length; ++i) data[i - 1] = data[i];
@@ -171,6 +231,8 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (!requireArray(self.get(), "unshift")) return Value::fromUndefined().rawBits();
     const uint32_t n = args.count();
     if (n == 0) return Value::fromDouble(lengthOf(self.get())).rawBits();
+    // Every element moves up by `n`, so the top `n` indices are CREATED.
+    if (!requireExtensible(self.get(), "unshift")) return Value::fromUndefined().rawBits();
 
     // Every slot the shift needs is made to exist FIRST, one append at a
     // time, so the move below is straight-line code with no allocation in
@@ -192,6 +254,11 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireArray(self, "reverse")) return Value::fromUndefined().rawBits();
     ArrayHeader* arr = self.asObject<ArrayHeader>();
+    // Fewer than two elements is a loop that never runs, and 23.1.3.26 writes
+    // nothing then — so a frozen one-element array reverses to itself.
+    if (arr->length > 1 && !requireWritableElements(self, "reverse")) {
+        return Value::fromUndefined().rawBits();
+    }
     Value* data = arr->elementsData();
     for (uint32_t i = 0, j = arr->length; i + 1 < j; ++i, --j) {
         std::swap(data[i], data[j - 1]);
@@ -210,6 +277,11 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     uint32_t end = args.count() > 2 && !args[2].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                        : len;
+    // An empty range writes nothing, so it is not refused (23.1.3.7 step 8's
+    // loop, again).
+    if (start < end && !requireWritableElements(self, "fill")) {
+        return Value::fromUndefined().rawBits();
+    }
     Value* data = arr->elementsData();
     for (uint32_t i = start; i < end; ++i) data[i] = fillVal;
     return self.rawBits();

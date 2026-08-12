@@ -26,6 +26,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -219,86 +220,12 @@ uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
     return out.get().rawBits();
 }
 
-// 20.1.2.6 SetIntegrityLevel(O, frozen). Every own property loses `writable`
-// and `configurable`, and the object loses `[[Extensible]]`. An ACCESSOR
-// keeps its halves — there is no `writable` on one — and only stops being
-// configurable, which is 10.1.6.3 read literally rather than "make everything
-// read-only".
-uint64_t objectFreeze(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    // 20.1.2.6 step 1 returns a non-object unchanged rather than throwing.
-    if (!isPlainObject(args[0])) return args[0].rawBits();
-    Rooted<Value> self{args[0]};
-    ObjectHeader::toDictionary(rtArena(), self);
-    Dictionary& d = *self.get().asObject<ObjectHeader>()->shape->dict;
-    for (DictEntry& e : d.entries) {
-        if (!e.accessor) e.writable = false;
-        e.configurable = false;
-    }
-    d.extensible = false;
-    return self.get().rawBits();
-}
-
-uint64_t objectIsFrozen(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    // 7.3.15: a non-object is frozen, vacuously.
-    if (!isPlainObject(args[0])) return Value::fromBool(true).rawBits();
-    auto* obj = args[0].asObject<ObjectHeader>();
-    if (!obj->shape || !obj->shape->isDictionary()) return Value::fromBool(false).rawBits();
-    const Dictionary& d = *obj->shape->dict;
-    if (d.extensible) return Value::fromBool(false).rawBits();
-    for (const DictEntry& e : d.entries) {
-        if (e.configurable) return Value::fromBool(false).rawBits();
-        if (!e.accessor && e.writable) return Value::fromBool(false).rawBits();
-    }
-    return Value::fromBool(true).rawBits();
-}
-
-// 20.1.2.20 Object.seal, which is 20.1.2.6 SetIntegrityLevel(O, sealed):
-// `freeze` minus the writable half, so a sealed object's properties can still
-// be WRITTEN and cannot be added, removed or redefined.
-uint64_t objectSeal(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) return args[0].rawBits();
-    Rooted<Value> self{args[0]};
-    ObjectHeader::toDictionary(rtArena(), self);
-    Dictionary& d = *self.get().asObject<ObjectHeader>()->shape->dict;
-    for (DictEntry& e : d.entries) e.configurable = false;
-    d.extensible = false;
-    return self.get().rawBits();
-}
-
-uint64_t objectIsSealed(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) return Value::fromBool(true).rawBits();
-    auto* obj = args[0].asObject<ObjectHeader>();
-    if (!obj->shape || !obj->shape->isDictionary()) return Value::fromBool(false).rawBits();
-    const Dictionary& d = *obj->shape->dict;
-    if (d.extensible) return Value::fromBool(false).rawBits();
-    for (const DictEntry& e : d.entries) {
-        if (e.configurable) return Value::fromBool(false).rawBits();
-    }
-    return Value::fromBool(true).rawBits();
-}
-
-// 20.1.2.19 / 20.1.2.16. `extensible` is a field of the dictionary, so
-// clearing it is what moves the object there; asking about it does not.
-uint64_t objectPreventExtensions(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) return args[0].rawBits();
-    Rooted<Value> self{args[0]};
-    ObjectHeader::toDictionary(rtArena(), self);
-    self.get().asObject<ObjectHeader>()->shape->dict->extensible = false;
-    return self.get().rawBits();
-}
-
-uint64_t objectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) return Value::fromBool(false).rawBits();
-    auto* obj = args[0].asObject<ObjectHeader>();
-    if (!obj->shape || !obj->shape->isDictionary()) return Value::fromBool(true).rawBits();
-    return Value::fromBool(obj->shape->dict->extensible).rawBits();
-}
+// The six integrity-level members — `freeze`, `seal`, `preventExtensions` and
+// their predicates — are in integrity.cpp. They left this file when they
+// stopped being about plain objects: what each of them DOES is decide where the
+// receiver keeps [[Extensible]], and that question belongs beside every path
+// that reads the answer back (an array's element write, a function's
+// `prototype`), not beside `Object.keys`.
 
 // 20.1.2.12 Object.getPrototypeOf.
 //
@@ -562,10 +489,14 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     // question in rt_prop.cpp asked from the other side: a plain object keeps
     // them itself and a function keeps them in the side object its statics use.
     //
-    // An array, a Map, a Set, a typed array and a RegExp carry no shape, so
-    // they have nowhere to put one — and a symbol-keyed WRITE to any of them is
-    // a named hard error, so the empty answer here is COMPLETE rather than a
-    // gap dressed up as a result. That is the whole difference from
+    // An array, a Map, a Set, a typed array and a RegExp answer none. The
+    // reason is the WRITE side and not the storage: a symbol-keyed write to any
+    // of them is a named hard error (rt_prop.cpp's `symbolKeyHolder` admits
+    // only a plain object and a function), so no symbol can ever have reached
+    // one and the empty answer is COMPLETE rather than a gap dressed up as a
+    // result. An array's side object of named properties is deliberately not
+    // consulted: nothing can put a symbol there. That is the whole difference
+    // from
     // `getOwnPropertyNames`, which refuses those receivers: an array really has
     // an own `length`, so the string answer would be short by one.
     Rooted<Value> self{args[0]};
@@ -819,12 +750,12 @@ const NamespaceFn kObjectFunctions[] = {
     {"defineProperty", objectDefineProperty, 3},
     {"getOwnPropertyDescriptor", objectGetOwnPropertyDescriptor, 2},
     {"defineProperties", objectDefineProperties, 2},
-    {"freeze", objectFreeze, 1},
-    {"isFrozen", objectIsFrozen, 1},
-    {"seal", objectSeal, 1},
-    {"isSealed", objectIsSealed, 1},
-    {"preventExtensions", objectPreventExtensions, 1},
-    {"isExtensible", objectIsExtensible, 1},
+    {"freeze", rtObjectFreeze, 1},
+    {"isFrozen", rtObjectIsFrozen, 1},
+    {"seal", rtObjectSeal, 1},
+    {"isSealed", rtObjectIsSealed, 1},
+    {"preventExtensions", rtObjectPreventExtensions, 1},
+    {"isExtensible", rtObjectIsExtensible, 1},
     {"create", objectCreate, 2},
     {"getPrototypeOf", objectGetPrototypeOf, 1},
     {"setPrototypeOf", objectSetPrototypeOf, 2},
