@@ -156,18 +156,57 @@ TEST_CASE("a missing file is a named error naming the path") {
     CHECK(contains(r.errors, "nope.js"));
 }
 
-TEST_CASE("a cycle is refused and the message names the loop") {
+TEST_CASE("a cycle links, and its back edge names the same binding as its forward edge") {
+    // The back edge b.js -> a.js closes the loop and resolves to a.js's own
+    // binding, exactly as main.js's forward edge does. One slot, reached by two
+    // paths, which is what "an import is a live view" means when the graph is
+    // not a tree. What makes it SAFE rather than merely possible is the
+    // temporal dead zone: `a` holds the uninitialized marker until a.js's own
+    // declaration runs (tests/oracle/cases/module_cycle*).
     Sandbox box("cycle");
+    box.write("a.js", "import { b } from './b.js';\nexport const a = 1;\n");
+    box.write("b.js", "import { a } from './a.js';\nexport const b = 2;\nexport const seen = a;\n");
+    const std::string entry = box.write("main.js", "import { a } from './a.js';\nconsole.log(a);\n");
+
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "const mod1.a"));
+    CHECK(contains(r.dump, "const mod2.b"));
+    // b.js's reference to the imported `a` is a.js's binding, not a copy.
+    CHECK(contains(r.dump, "mod1.a"));
+}
+
+TEST_CASE("a cycle evaluates its deepest member first") {
+    // The post-order of the walk is the evaluation order, cycle or not: b.js is
+    // the end the walk leaves first, so its statements are merged ahead of
+    // a.js's. That order is what decides which crossing read lands in a dead
+    // zone, so it is pinned here rather than left to the merge.
+    Sandbox box("cycleorder");
     box.write("a.js", "import { b } from './b.js';\nexport const a = 1;\n");
     box.write("b.js", "import { a } from './a.js';\nexport const b = 2;\n");
     const std::string entry = box.write("main.js", "import { a } from './a.js';\nconsole.log(a);\n");
 
     Loaded r = load(entry);
-    CHECK_FALSE(r.ok);
-    CHECK(contains(r.errors, "cyclic module dependency"));
-    CHECK(contains(r.errors, "a.js -> "));
-    CHECK(contains(r.errors, "b.js -> "));
-    CHECK(contains(r.errors, "temporal dead zone"));
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    const size_t bAt = r.dump.find("const mod2.b");
+    const size_t aAt = r.dump.find("const mod1.a");
+    REQUIRE(bAt != std::string::npos);
+    REQUIRE(aAt != std::string::npos);
+    CHECK(bAt < aAt);
+}
+
+TEST_CASE("a self-import is a cycle of one and links") {
+    // The tightest cycle there is, and the one that would hang a loader that
+    // followed the back edge. The alias is not decoration: `import { a }` into
+    // a file that also declares `a` is a duplicate declaration whatever the
+    // graph looks like.
+    Sandbox box("selfcycle");
+    const std::string entry = box.write(
+        "main.js",
+        "import { a as self } from './main.js';\nexport const a = 1;\nconsole.log(self);\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "const a"));
 }
 
 TEST_CASE("a missing export is a named error") {

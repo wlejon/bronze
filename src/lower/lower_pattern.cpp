@@ -136,7 +136,7 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
     uint32_t depth = 0;
     uint32_t index = 0;
     if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar(name, depth, index)) {
-        emitEnvSet(depth, index, boxed, ilFn);
+        emitEnvSet(depth, index, boxed, ilFn, /*assigning=*/true);
         return true;
     }
     if (!resolvesName(name)) {

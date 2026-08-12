@@ -17,6 +17,14 @@
 // file's module-level bindings renamed into a single namespace — so inference,
 // lowering, the IL and the backend see the single-file program they saw before
 // this existed.
+//
+// A CYCLE survives that flattening because the flattening keeps the two things
+// that make one well defined: every module's function declarations are hoisted
+// before any body runs (`lower()` lifts them all out of the statement list),
+// and every module's lexical bindings hold the uninitialized marker until
+// their own declaration is reached. So a cycle crossed by function
+// declarations works and a cycle that reads a `let` too early is 9.1.1.1.6's
+// ReferenceError — which is what ECMA-262 says about each.
 namespace bronze::modules {
 
 // Reads, parses and links the graph rooted at `entryPath`. Every file read is

@@ -306,6 +306,27 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                           builder_.getInt32(inst.envIndex)});
             return true;
         }
+        case il::Op::EnvGetTdz: {
+            if (!needs(1, true, "Invalid operands for EnvGetTdz")) return false;
+            llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGetTdz");
+            if (!env) return false;
+            callWith(abi.bronze_env_get_tdz,
+                     {env, builder_.getInt32(inst.envDepth), builder_.getInt32(inst.envIndex),
+                      builder_.getInt32(inst.keyIndex)});
+            return true;
+        }
+        // The marker goes in as a plain constant: it has no helper of its own,
+        // because no value generated code holds may ever be it. Only a slot can.
+        case il::Op::EnvInitTdz: {
+            if (!needs(1, false, "Invalid operands for EnvInitTdz")) return false;
+            llvm::Value* env = operand(inst, 0, "Undefined environment in EnvInitTdz");
+            if (!env) return false;
+            builder_.CreateCall(abi.bronze_env_set,
+                                {env, builder_.getInt32(inst.envDepth),
+                                 builder_.getInt32(inst.envIndex),
+                                 builder_.getInt64(BRONZE_ABI_UNINITIALIZED_BITS)});
+            return true;
+        }
         case il::Op::EnvSet: {
             if (!needs(2, false, "Invalid operands for EnvSet")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined operand in EnvSet");

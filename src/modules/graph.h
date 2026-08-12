@@ -35,13 +35,16 @@ struct ModuleFile {
 struct Graph {
     std::vector<std::unique_ptr<ModuleFile>> modules;  // indexed by id
     // Post-order of the depth-first walk: a module's dependencies come before
-    // it, and the entry is last. Cycles are refused, so this order is total and
-    // evaluating in it is ES semantics.
+    // it, and the entry is last. A CYCLE has no such order — that is what a
+    // cycle is — and the post-order is the answer 16.2.1.5.3 gives anyway: the
+    // member of the cycle the walk left first runs first, and a binding a
+    // later member has not initialized yet is in its temporal dead zone rather
+    // than absent.
     std::vector<uint16_t> evaluationOrder;
 };
 
 // Reads, lexes and parses the entry and everything it reaches. False on a
-// diagnosed error, which includes an unresolvable specifier and a cycle.
+// diagnosed error, which includes an unresolvable specifier.
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
                Graph& out);
 

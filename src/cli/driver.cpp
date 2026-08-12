@@ -280,10 +280,9 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
 }
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
-    // The graph — resolution, loading, cycle detection, linking — is
-    // `src/modules`' job; the CLI is a composition root and stays one. What
-    // comes back is the single merged AST module every later stage already
-    // understands.
+    // The graph — resolution, loading, linking — is `src/modules`' job; the
+    // CLI is a composition root and stays one. What comes back is the single
+    // merged AST module every later stage already understands.
     SourceSet sources;
     DiagnosticSink diags;
     auto astModule = modules::loadProgram(sourcePath, sources, diags);

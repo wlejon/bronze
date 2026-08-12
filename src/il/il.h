@@ -189,6 +189,22 @@ enum class Op : uint8_t {
     EnvCreate,  // a = env.create parent, <slots>
     EnvGet,     // a = env.get env, <depth>, <index>
     EnvSet,     // env.set env, <depth>, <index>, v
+    // The temporal dead zone, in two instructions. A scope entry writes the
+    // uninitialized-binding marker into the slot of every `let`, `const` and
+    // `class` it declares, and every READ of such a slot goes through the
+    // checked form, which is 9.1.1.1.6 GetBindingValue's ReferenceError.
+    //
+    // Two ops rather than a flag on env.get/env.set, for the reason `print.err`
+    // is not a flag on `print`: the canonical dump is what a reader bisects
+    // with, and whether a read can throw is exactly the kind of fact a field
+    // can silently omit. `env.get.tdz` also carries the NAME, because which
+    // binding was read too early is the whole content of the diagnostic.
+    //
+    // A `var`, a parameter, a hoisted `function` and the synthetic `this` and
+    // `arguments` slots never take these: none of them is ever uninitialized,
+    // and giving them a check would be a dead zone the language does not have.
+    EnvInitTdz, // env.init.tdz env, <depth>, <index>
+    EnvGetTdz,  // a = env.get.tdz env, <depth>, <index>, <key_const_index>
     // The MODULE scope's environment record, which is a singleton: the top
     // level runs exactly once, so there is exactly one activation of that scope
     // and no reason to thread it through every calling convention. `main`

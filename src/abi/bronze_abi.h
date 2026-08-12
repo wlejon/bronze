@@ -47,6 +47,15 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * they can disagree. */
 #define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
 
+/* The uninitialized-binding singleton (runtime/value.h Tag::Uninitialized):
+ * what an environment slot holds for a `let`, `const` or `class` binding
+ * between the moment its scope is entered and the moment its declaration is
+ * evaluated. Generated code materializes it directly — `env.init.tdz` is a
+ * plain `bronze_env_set` of this constant — so no helper exists to produce
+ * it, and no helper ever returns it. Pinned against the runtime's Value
+ * constructor by a static_assert in rt_object.cpp. */
+#define BRONZE_ABI_UNINITIALIZED_BITS 0xFFFA000000000000ull
+
 /*
  * X(name, RET, PARAMS)
  *   RET    — one BRONZE_ABI_* type token (BRONZE_ABI_VOID for none)
@@ -88,6 +97,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_create_function,     BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_env_create,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
+    X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_set,             BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_module_env_set,      BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_module_env_get,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \

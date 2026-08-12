@@ -81,7 +81,9 @@ private:
     bool collectLocals(ModuleFile& file);
     bool collectImports(ModuleFile& file);
     bool collectExports(ModuleFile& file);
-    bool expandStarExports(ModuleFile& file);
+    // `changed` is set when a name is added, which is what lets the caller run
+    // this to a fixpoint — see `run`.
+    bool expandStarExports(ModuleFile& file, bool& changed);
     bool buildRenames(ModuleFile& file);
     // Follows indirect entries to the module that DECLARES the binding.
     bool resolveExport(uint16_t moduleId, const std::string& name, Span span,
@@ -212,15 +214,20 @@ bool Linker::collectExports(ModuleFile& file) {
     return true;
 }
 
-bool Linker::expandStarExports(ModuleFile& file) {
+bool Linker::expandStarExports(ModuleFile& file, bool& changed) {
     ModuleInfo& mi = info_[file.id];
     for (const auto* exp : file.exports) {
         if (!exp->isStar || !exp->starAlias.empty()) continue;
         const uint16_t target = file.deps.at(exp->fromSpecifier);
         // 16.2.3.7: `export *` does not re-export `default`. The target's
-        // table is complete — cycles are refused, so a dependency is always
-        // linked before its dependent.
-        for (const auto& name : info_[target].exportOrder) {
+        // table may still be GROWING — a cycle can put a star edge between two
+        // modules that each star from the other — so the caller runs this to a
+        // fixpoint and a pass that copies a name into place is enough.
+        //
+        // Iterating `exportOrder` by index: expanding into a module that stars
+        // back can append to the very vector being walked.
+        for (size_t i = 0; i < info_[target].exportOrder.size(); ++i) {
+            const std::string name = info_[target].exportOrder[i];
             if (name == "default") continue;
             auto existing = mi.exports.find(name);
             if (existing != mi.exports.end()) {
@@ -246,6 +253,7 @@ bool Linker::expandStarExports(ModuleFile& file) {
             entry.fromStar = true;
             entry.span = exp->span;
             if (!addExport(file, name, std::move(entry))) return false;
+            changed = true;
         }
     }
     return true;
@@ -359,8 +367,15 @@ bool Linker::run(ast::Module& out) {
         if (!collectImports(file)) return false;
         if (!collectExports(file)) return false;
     }
-    for (const uint16_t id : graph_.evaluationOrder) {
-        if (!expandStarExports(*graph_.modules[id])) return false;
+    // To a fixpoint rather than once. `export * from` copies one module's table
+    // into another's, and in a cycle both tables are still growing while it
+    // does — so a single pass in evaluation order can leave a name behind. The
+    // tables only ever grow and the graph is finite, so this terminates.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const uint16_t id : graph_.evaluationOrder) {
+            if (!expandStarExports(*graph_.modules[id], changed)) return false;
+        }
     }
     for (const uint16_t id : graph_.evaluationOrder) {
         if (!buildRenames(*graph_.modules[id])) return false;

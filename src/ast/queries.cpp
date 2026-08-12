@@ -610,6 +610,125 @@ void collectHoistedVars(const std::vector<StmtPtr>& stmts, std::vector<std::stri
     }
 }
 
+// ---- the temporal dead zone --------------------------------------------
+
+// What one statement contributes to its scope's LEXICAL declarations. A
+// `function` declaration is not one of them, which is the whole difference
+// between this and `getScopeDeclarations`.
+void appendLexicalNames(const Stmt& s, std::vector<std::string>& out) {
+    if (const auto* v = dynamic_cast<const VarDecl*>(&s)) {
+        if (!v->isVar) appendDeclaredNames(*v, out);
+    } else if (const auto* c = dynamic_cast<const ClassDecl*>(&s)) {
+        out.push_back(c->name);
+    }
+}
+
+// `let x = x`, and the pattern and `class C extends C` spellings of it. 14.3.1
+// creates the binding before its initializer is evaluated, so the
+// initializer's own mention of the name is a read inside the dead zone — the
+// one case where a declaration is exposed by nothing above it.
+bool initializerReads(const Stmt& s, const std::string& name) {
+    // `class C extends C`, which 15.7.14 makes the same shape: the heritage
+    // is evaluated at step 5 and the class binding initialized at step 17.
+    if (const auto* c = dynamic_cast<const ClassDecl*>(&s)) return c->superName == name;
+    const auto* v = dynamic_cast<const VarDecl*>(&s);
+    if (!v || v->isVar) return false;
+    IdentVisitor init;
+    if (v->init) v->init->accept(init);
+    visitPatternExprs(v->pattern.get(), init);
+    return init.names.contains(name);
+}
+
+// The exposure scan. One statement LIST at a time, because "before" is a
+// question about a list and about nothing else: a scope's activation runs its
+// statements in order, and a nested list is a scope of its own whose first
+// statement is a fresh beginning.
+class TdzScan {
+public:
+    std::unordered_set<std::string> exposed;
+
+    void list(const std::vector<StmtPtr>& stmts) {
+        std::vector<const Stmt*> borrowed;
+        borrowed.reserve(stmts.size());
+        for (const auto& s : stmts) borrowed.push_back(s.get());
+        list(borrowed);
+    }
+
+    void list(const std::vector<const Stmt*>& stmts) {
+        // Every name the statements SO FAR have mentioned, nested functions
+        // included — a function written above a declaration can be called
+        // above it too.
+        IdentVisitor seen;
+        for (const auto* s : stmts) {
+            if (!s) continue;
+            std::vector<std::string> declared;
+            appendLexicalNames(*s, declared);
+            // Checked BEFORE this statement is folded into `seen`: an
+            // `IdentVisitor` counts a declaration's own name as a mention, so
+            // testing afterwards would report every `const` written in a
+            // straight line as reading itself, and put the whole function's
+            // locals in an environment record.
+            for (const auto& name : declared) {
+                if (seen.names.contains(name) || initializerReads(*s, name)) {
+                    exposed.insert(name);
+                }
+            }
+            s->accept(seen);
+        }
+        for (const auto* s : stmts) {
+            if (s) nested(*s);
+        }
+    }
+
+private:
+    // The statement lists written INSIDE one statement, each its own scope.
+    // Nested functions are deliberately not among them: a function body asks
+    // this question for itself, against its own environment records.
+    void nested(const Stmt& s) {
+        if (const auto* b = dynamic_cast<const BlockStmt*>(&s)) {
+            list(b->stmts);
+        } else if (const auto* i = dynamic_cast<const IfStmt*>(&s)) {
+            list(i->thenBody);
+            list(i->elseBody);
+        } else if (const auto* w = dynamic_cast<const WhileStmt*>(&s)) {
+            list(w->body);
+        } else if (const auto* d = dynamic_cast<const DoWhileStmt*>(&s)) {
+            list(d->body);
+        } else if (const auto* f = dynamic_cast<const ForStmt*>(&s)) {
+            list(f->init);
+            list(f->body);
+        } else if (const auto* fi = dynamic_cast<const ForInStmt*>(&s)) {
+            list(fi->body);
+        } else if (const auto* fo = dynamic_cast<const ForOfStmt*>(&s)) {
+            list(fo->body);
+        } else if (const auto* l = dynamic_cast<const LabeledStmt*>(&s)) {
+            if (l->body) nested(*l->body);
+        } else if (const auto* t = dynamic_cast<const TryStmt*>(&s)) {
+            list(t->body);
+            list(t->catchBody);
+            list(t->finallyBody);
+        } else if (const auto* sw = dynamic_cast<const SwitchStmt*>(&s)) {
+            switchBody(*sw);
+        }
+    }
+
+    // 14.12.2: one scope, and one entry point per clause. A `case` jump can
+    // enter above the clause that initializes a binding or below it, so every
+    // lexical binding written directly in the body is exposed wherever it sits
+    // and whatever the clauses above it say.
+    void switchBody(const SwitchStmt& sw) {
+        for (const auto& clause : sw.cases) {
+            for (const auto& s : clause.body) {
+                if (!s) continue;
+                std::vector<std::string> declared;
+                appendLexicalNames(*s, declared);
+                for (auto& name : declared) exposed.insert(std::move(name));
+            }
+        }
+        for (const auto& clause : sw.cases) list(clause.body);
+    }
+};
+
 }  // namespace
 
 std::unordered_set<std::string> getCapturedNames(const std::vector<StmtPtr>& stmts) {
@@ -653,6 +772,34 @@ std::vector<std::string> getHoistedVarDeclarations(const std::vector<StmtPtr>& s
     std::vector<std::string> names;
     collectHoistedVars(stmts, names);
     return names;
+}
+
+std::vector<std::string> getLexicalDeclarations(const std::vector<StmtPtr>& stmts) {
+    std::vector<std::string> names;
+    for (const auto& s : stmts) {
+        if (s) appendLexicalNames(*s, names);
+    }
+    return names;
+}
+
+std::vector<std::string> getLexicalDeclarations(const std::vector<const Stmt*>& stmts) {
+    std::vector<std::string> names;
+    for (const auto* s : stmts) {
+        if (s) appendLexicalNames(*s, names);
+    }
+    return names;
+}
+
+std::unordered_set<std::string> getTdzExposedNames(const std::vector<StmtPtr>& stmts) {
+    TdzScan scan;
+    scan.list(stmts);
+    return std::move(scan.exposed);
+}
+
+std::unordered_set<std::string> getTdzExposedNames(const std::vector<const Stmt*>& stmts) {
+    TdzScan scan;
+    scan.list(stmts);
+    return std::move(scan.exposed);
 }
 
 // The module's top level is lowered from a borrowed-pointer list (the

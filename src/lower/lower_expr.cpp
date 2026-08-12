@@ -271,7 +271,14 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             return emitReferenceError(ident->name, ident->span, ilFn);
         }
         const auto& b = varBindings_[it->second];
-        if (!b.isInitialized) {
+        // An uninitialized binding whose slot carries the marker is the
+        // language's dead zone, and 9.1.1.1.6 answers it at the moment of the
+        // READ — so it is lowered, not refused. What is left here is bronze's
+        // own gap: a binding with no value and no slot to hold a marker in,
+        // which no run can turn into an answer.
+        const bool tdzChecked =
+            b.inEnv && envSlotIsLexical(envDepthOf(b.envScopeIndex), b.envSlot);
+        if (!b.isInitialized && !tdzChecked) {
             if (b.isConst) {
                 diags_.error(ident->span, "use of 'const' binding before initialization");
             } else {
@@ -595,7 +602,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         if (isLocal) {
             writeBinding(varBindings_[bindingIdx], stored, ilFn);
         } else {
-            emitEnvSet(depth, index, stored, ilFn);
+            emitEnvSet(depth, index, stored, ilFn, /*assigning=*/true);
         }
         return stored;
     }

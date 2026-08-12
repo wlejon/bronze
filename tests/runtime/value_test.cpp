@@ -20,6 +20,7 @@ TEST_CASE("tag values pin ratchet") {
     CHECK(static_cast<uint16_t>(Tag::Undefined) == 0xFFF6);
     CHECK(static_cast<uint16_t>(Tag::Hole) == 0xFFF7);
     CHECK(static_cast<uint16_t>(Tag::Symbol) == 0xFFF8);
+    CHECK(static_cast<uint16_t>(Tag::Uninitialized) == 0xFFFA);
 }
 
 TEST_CASE("singletons encoding and queries") {
@@ -42,6 +43,25 @@ TEST_CASE("singletons encoding and queries") {
     Value defaultVal;
     CHECK(defaultVal.isUndefined());
     CHECK(defaultVal == undefinedVal);
+
+    // The uninitialized-binding marker. Its own singleton and not the Hole:
+    // the Hole means "no exception is pending" and this means "this binding is
+    // in its temporal dead zone", and a runtime that answered one question with
+    // the other would raise a ReferenceError on every read while nothing was
+    // pending. Neither is ever a program's value.
+    auto uninitVal = Value::fromUninitialized();
+    CHECK(uninitVal.isUninitialized());
+    CHECK_FALSE(uninitVal.isHole());
+    CHECK_FALSE(uninitVal.isUndefined());
+    CHECK_FALSE(uninitVal.isNull());
+    CHECK_FALSE(uninitVal.isNumber());
+    CHECK_FALSE(uninitVal.isPointer());
+    CHECK(uninitVal.tag() == 0xFFFA);
+    CHECK(uninitVal.payload() == 0);
+    CHECK(uninitVal.rawBits() == 0xFFFA000000000000ULL);
+    CHECK(uninitVal.rawBits() == BRONZE_ABI_UNINITIALIZED_BITS);
+    CHECK_FALSE(Value::fromHole().isUninitialized());
+    CHECK_FALSE(Value::fromUndefined().isUninitialized());
 
     auto holeVal = Value::fromHole();
     CHECK(holeVal.isHole());

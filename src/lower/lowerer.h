@@ -67,6 +67,14 @@ private:
         // `undefined variable: x` — the inner declaration destroyed the outer
         // binding instead of hiding it.
         size_t shadowedBinding = SIZE_MAX;
+        // Created by scope entry rather than by a declaration: the binding
+        // exists and holds the uninitialized marker, which is what makes a read
+        // above the declaration resolve HERE (and throw) instead of reaching
+        // out to whatever the enclosing scope calls the name. The declaration,
+        // when lowering reaches it, initializes this binding rather than making
+        // a second one — and clears the flag, so a genuine `let x; let x;` is
+        // still the redeclaration error it was.
+        bool isTdzHoisted = false;
     };
 
     // Where a `break` or a `continue` goes. ONE stack for all three kinds,
@@ -166,6 +174,15 @@ private:
     // is handed at entry.
     struct EnvScopeInfo {
         std::unordered_map<std::string, uint32_t> slotOf;
+        // Slot -> the name it holds. A checked read names the binding it
+        // refused, and a vector indexed by slot is the one form of that
+        // mapping no iteration order can reach.
+        std::vector<std::string> slotNames;
+        // Which slots hold a `let`, `const` or `class` binding — the ones that
+        // start out uninitialized and whose every read is 9.1.1.1.6's check.
+        // A parameter, a `var`, a hoisted `function` and the synthetic `this`
+        // and `arguments` slots are never among them.
+        std::vector<bool> slotIsLexical;
         il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
     };
     std::vector<EnvScopeInfo> envScopes_;
@@ -310,7 +327,18 @@ private:
     il::ValueId emitModuleEnvGet(il::Function& ilFn);
     void emitModuleEnvSet(il::ValueId env, il::Function& ilFn);
     Value emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn);
-    void emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn);
+    void emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn,
+                    bool assigning = false);
+    // Is (depth, index) a slot holding a lexical binding, and so a read that
+    // has to be checked? Asked by `emitEnvGet` alone, which is why every read
+    // path — a local, a free variable of a closure, a compound assignment's
+    // read half — gets the check without knowing it exists.
+    bool envSlotIsLexical(uint32_t depth, uint32_t index) const;
+    // The scope innermost right now takes its lexical bindings: each slot
+    // marked, filled with the uninitialized marker, and BOUND under its name.
+    // `scopeIndex` is the entry in `envScopes_` that owns them.
+    void openLexicalBindings(size_t scopeIndex, const std::vector<std::string>& lexicalNames,
+                             il::Function& ilFn);
     uint32_t envDepthOf(size_t scopeIndex) const;
     Value readBinding(const VarBinding& b, il::Function& ilFn);
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
@@ -318,9 +346,19 @@ private:
     void enterScope();
     // `extraDeclarations` names bindings the scope owns that its statement list
     // does not spell — a for-of head's, which is written outside the body but
-    // belongs to it. A LIST because a destructuring head binds several.
+    // belongs to it. A LIST because a destructuring head binds several. They
+    // are deliberately NOT lexical for the dead zone's purposes: the loop binds
+    // one before the body's first statement runs, every iteration, so it can
+    // never be observed uninitialized.
+    //
+    // `extraLexicalDeclarations` is the other half of that distinction, and it
+    // has exactly one caller: a `switch` body, whose lexical declarations are
+    // written inside the clauses but belong to the CaseBlock's one scope
+    // (14.12.2). They always get a slot, whether or not anything captures them,
+    // because the dead zone is the only thing that makes them well defined.
     void enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
-                    const std::vector<std::string>& extraDeclarations = {});
+                    const std::vector<std::string>& extraDeclarations = {},
+                    const std::vector<std::string>& extraLexicalDeclarations = {});
     void exitScope();
     // `site` is the AST node that IS the closure (a `FunctionExpr`, or a nested
     // `FunctionDecl` — a nested declaration desugars to a closure, so they are

@@ -2,6 +2,7 @@
 // captured one is read and written, and how a closure value is produced over
 // the environment innermost at its creation site.
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,7 +16,19 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
                               bool isVar, bool isInitialized, il::ValueId valId, Span span) {
     auto it = activeVarMap_.find(name);
     if (it != activeVarMap_.end()) {
-        const auto& existing = varBindings_[it->second];
+        auto& existing = varBindings_[it->second];
+        if (existing.scopeDepth == currentScopeDepth_ && existing.isTdzHoisted && !isVar) {
+            // The declaration that ends this binding's dead zone. Scope entry
+            // already made the binding and gave it its environment slot; this
+            // is the same binding reaching its initializer, not a second one.
+            existing.isTdzHoisted = false;
+            existing.type = type;
+            existing.isConst = isConst;
+            existing.isLet = isLet;
+            existing.isInitialized = isInitialized;
+            if (!existing.inEnv) existing.valueId = valId;
+            return true;
+        }
         if (existing.scopeDepth == currentScopeDepth_ && !isVar) {
             diags_.error(span, "redeclaration of variable '" + name + "' in same scope");
             return false;
@@ -105,20 +118,86 @@ void Lowerer::emitModuleEnvSet(il::ValueId env, il::Function& ilFn) {
     emitInst(ilFn, inst);
 }
 
+bool Lowerer::envSlotIsLexical(uint32_t depth, uint32_t index) const {
+    if (depth >= envScopes_.size()) return false;
+    const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
+    return index < scope.slotIsLexical.size() && scope.slotIsLexical[index];
+}
+
+// Every read of an environment slot passes through here, so this is the one
+// place 9.1.1.1.6's check has to be decided. A lexical slot gets the checked
+// form UNCONDITIONALLY — not only where lowering can see a read above the
+// declaration. The dead zone is a property of a moment in evaluation, and a
+// closure over the slot can be called at any moment, so "lowering has already
+// passed the declaration" is a fact about the source text and not about the
+// run. Eliding on it is exactly the bug the case in
+// `cases/temporal_dead_zone.js` pins.
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
+    const bool lexical = envSlotIsLexical(depth, index);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::EnvGet;
+    inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = {currentEnvValue_};
     inst.envDepth = depth;
     inst.envIndex = index;
+    if (lexical) {
+        inst.keyIndex =
+            getKeyConstantIndex(envScopes_[envScopes_.size() - 1 - depth].slotNames[index]);
+    }
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
 
-void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn) {
+void Lowerer::openLexicalBindings(size_t scopeIndex,
+                                  const std::vector<std::string>& lexicalNames,
+                                  il::Function& ilFn) {
+    const uint32_t depth = envDepthOf(scopeIndex);
+    for (const auto& name : lexicalNames) {
+        auto slotIt = envScopes_[scopeIndex].slotOf.find(name);
+        // No slot means nothing can observe the binding uninitialized: no
+        // closure reaches it and no read in its own scope is written above it,
+        // so it lives in SSA and its declaration is the first mention of it.
+        if (slotIt == envScopes_[scopeIndex].slotOf.end()) continue;
+        // Something at this depth already owns the name: a parameter, or a
+        // second declaration of it. Both are the declaration path's error to
+        // report, and putting the marker in the slot would answer them with a
+        // dead zone the language does not give either one.
+        auto bound = activeVarMap_.find(name);
+        if (bound != activeVarMap_.end() &&
+            varBindings_[bound->second].scopeDepth == currentScopeDepth_) {
+            continue;
+        }
+        const uint32_t slot = slotIt->second;
+        envScopes_[scopeIndex].slotIsLexical[slot] = true;
+
+        il::Instruction inst;
+        inst.op = il::Op::EnvInitTdz;
+        inst.type = il::Type::Void;
+        inst.result = il::kNoValue;
+        inst.operands = {currentEnvValue_};
+        inst.envDepth = depth;
+        inst.envIndex = slot;
+        emitInst(ilFn, inst);
+
+        if (!declareVariable(name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
+                             /*isVar=*/false, /*isInitialized=*/false, il::kNoValue, Span{})) {
+            continue;
+        }
+        varBindings_[activeVarMap_.at(name)].isTdzHoisted = true;
+    }
+}
+
+// `assigning` says this write comes from an assignment rather than from the
+// declaration that ends the binding's dead zone. 6.2.5.6 PutValue reaches
+// 9.1.1.1.5 SetMutableBinding, which throws a ReferenceError for an
+// uninitialized binding exactly as a read does — so an assignment to a lexical
+// slot is CHECKED first, by the same instruction a read uses. Its result is
+// discarded: what is wanted from it is the throw.
+void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn,
+                         bool assigning) {
+    if (assigning && envSlotIsLexical(depth, index)) emitEnvGet(depth, index, ilFn);
     Value boxed = boxValueIfNeeded(val, ilFn);
     il::Instruction inst;
     inst.op = il::Op::EnvSet;
@@ -141,7 +220,7 @@ Lowerer::Value Lowerer::readBinding(const VarBinding& b, il::Function& ilFn) {
 
 void Lowerer::writeBinding(VarBinding& b, Value val, il::Function& ilFn) {
     if (b.inEnv) {
-        emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, val, ilFn);
+        emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, val, ilFn, /*assigning=*/true);
         b.isInitialized = true;
         return;
     }
@@ -175,19 +254,29 @@ void Lowerer::enterScope() {
 // per iteration at runtime, which is exactly the per-iteration binding
 // the language specifies.
 void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& ilFn,
-                         const std::vector<std::string>& extraDeclarations) {
+                         const std::vector<std::string>& extraDeclarations,
+                         const std::vector<std::string>& extraLexicalDeclarations) {
     currentScopeDepth_++;
     std::vector<std::string> slots;
+    auto addSlot = [&](const std::string& name) {
+        if (name.empty()) return;
+        if (std::find(slots.begin(), slots.end(), name) != slots.end()) return;
+        slots.push_back(name);
+    };
     // for-of's loop variable is declared by the loop HEAD but belongs to the
     // body's scope, so it is not in the statement list and has to be named
     // here. Without it a closure over the loop variable would find no slot and
     // read SSA that the next iteration overwrites. A destructuring head names
     // several.
     for (const auto& name : extraDeclarations) {
-        if (!name.empty() && memoryNames_.contains(name)) slots.push_back(name);
+        if (memoryNames_.contains(name)) addSlot(name);
     }
+    // Unfiltered, unlike everything else here: a switch body's lexical binding
+    // needs a slot BECAUSE the dead zone is what makes it well defined, not
+    // because something captured it.
+    for (const auto& name : extraLexicalDeclarations) addSlot(name);
     for (const auto& name : ast::getScopeDeclarations(stmts)) {
-        if (memoryNames_.contains(name)) slots.push_back(name);
+        if (memoryNames_.contains(name)) addSlot(name);
     }
     if (slots.empty()) {
         scopeHasEnv_.push_back(false);
@@ -195,11 +284,17 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     }
     EnvScopeInfo info;
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
+    info.slotNames = slots;
+    info.slotIsLexical.assign(slots.size(), false);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
     currentEnvValue_ = envScopes_.back().envValue;
     scopeHasEnv_.push_back(true);
+
+    std::vector<std::string> lexical = extraLexicalDeclarations;
+    for (auto& name : ast::getLexicalDeclarations(stmts)) lexical.push_back(std::move(name));
+    openLexicalBindings(envScopes_.size() - 1, lexical, ilFn);
 }
 
 void Lowerer::exitScope() {

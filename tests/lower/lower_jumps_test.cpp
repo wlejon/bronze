@@ -79,10 +79,30 @@ TEST_CASE("an optional link branches on nullish") {
     CHECK(printed.find("br %") != std::string::npos);
 }
 
-TEST_CASE("a lexical declaration directly in a switch case is named") {
-    const std::string rendered = errorFor("switch (1) {\n  case 1:\n    let x = 1;\n}\n");
-    CHECK(rendered.find("unsupported construct: a 'let' declaration directly in a switch case") !=
-          std::string::npos);
+TEST_CASE("a lexical declaration directly in a switch case belongs to the whole body") {
+    // 14.12.2 makes the CaseBlock one declarative environment, so `x` is a
+    // binding of the switch and not of the clause that spells it — it gets an
+    // environment slot however few closures reach it, because the slot is
+    // where the uninitialized marker lives.
+    const std::string printed =
+        printOf("switch (1) {\n  case 1:\n    console.log(x);\n    break;\n"
+                "  case 2:\n    let x = 1;\n}\n");
+    CHECK(printed.find("env.create") != std::string::npos);
+    CHECK(printed.find("env.init.tdz") != std::string::npos);
+    // The read in the clause ABOVE the declaration is the checked form: which
+    // clause a jump entered is not a fact any position in the source holds.
+    CHECK(printed.find("env.get.tdz") != std::string::npos);
+    CHECK(printed.find("\"x\"") != std::string::npos);
+}
+
+TEST_CASE("a function declaration directly in a switch case is still named") {
+    // The one form the CaseBlock's scope does not carry: 8.6.2 instantiates a
+    // function declaration for the whole scope before any clause runs, which
+    // would mean hoisting it out of the clause it is written in.
+    const std::string rendered =
+        errorFor("switch (1) {\n  case 1:\n    function f() {}\n}\n");
+    CHECK(rendered.find("unsupported construct: a 'function' declaration directly in a switch "
+                        "case") != std::string::npos);
     CHECK(rendered.find("wrap the case body in a block") != std::string::npos);
 }
 

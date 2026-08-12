@@ -199,11 +199,23 @@ TEST_CASE("a class lowers to a constructor, a prototype and property writes") {
     CHECK(printed.find("func Q.get(%0: dynamic, %1: dynamic)") != std::string::npos);
     CHECK(printed.find("func P.make(%0: dynamic)") != std::string::npos);
     // `extends` runs before any method is stored: the prototype object it
-    // installs is the one they have to land on.
+    // installs is the one they have to land on. Asserted as an ORDER rather
+    // than against a value id — the id shifts whenever anything is emitted
+    // ahead of the class, and what the test is about is which object the
+    // methods reach.
     const size_t extend = printed.find("class.extend");
-    const size_t protoRead = printed.find("prop.get %5, 1", extend);
     REQUIRE(extend != std::string::npos);
-    CHECK(protoRead != std::string::npos);
+    const size_t protoRead = printed.find("prop.get", extend);
+    REQUIRE(protoRead != std::string::npos);
+    // Key constant 1 is "prototype", and the read is on the same line: this is
+    // the object `class.extend` has just replaced, not some other property.
+    const size_t lineEnd = printed.find('\n', protoRead);
+    CHECK(printed.find(", 1, ", protoRead) < lineEnd);
+    // The methods land on it, so they come after.
+    CHECK(printed.find("method.def", protoRead) != std::string::npos);
+    // And the base class's own prototype read happened earlier, under its own
+    // declaration, which is what makes this one P's rather than Q's.
+    CHECK(printed.find("prop.get") < extend);
 }
 
 TEST_CASE("super.m() calls the parent's method with the current receiver") {

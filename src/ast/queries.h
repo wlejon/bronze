@@ -64,6 +64,38 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<StmtPtr>& stmts);
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*>& stmts);
 
+// The LEXICAL half of `getScopeDeclarations`: the `let`, `const` and `class`
+// names this statement list declares directly, in source order. A hoisted
+// `function` declaration is deliberately absent — 14.3.1 leaves a lexical
+// binding uninitialized until its declaration is evaluated, and 8.6.2
+// instantiates a function declaration for its whole scope, so a function name
+// is never in a temporal dead zone and must never be given one.
+std::vector<std::string> getLexicalDeclarations(const std::vector<StmtPtr>& stmts);
+std::vector<std::string> getLexicalDeclarations(const std::vector<const Stmt*>& stmts);
+
+// Which lexical bindings anywhere in this function (but not inside a nested
+// one, which asks the question again for itself) can be READ while they are
+// still uninitialized, so that the read has to be checked at run time rather
+// than resolved to an SSA value.
+//
+// Two sources, and they are different in kind:
+//
+//   - a name mentioned in its own scope's statement list ABOVE its
+//     declaration. Within one activation of a scope control runs forward
+//     through the list, so a mention above the declaration is a mention while
+//     the binding is uninitialized — every time.
+//   - every lexical binding declared directly in a `switch` body. ECMA-262
+//     14.12.2 makes the whole CaseBlock one scope with as many entry points as
+//     it has clauses, so no position in it is safe.
+//
+// A binding a nested function reads is NOT here: `getCapturedNames` already
+// puts it in an environment record, and the check follows the slot rather than
+// the name. Over-approximating costs an environment slot and a compare;
+// under-approximating is a read of an uninitialized binding answering with
+// whatever the enclosing scope's same-named binding holds.
+std::unordered_set<std::string> getTdzExposedNames(const std::vector<StmtPtr>& stmts);
+std::unordered_set<std::string> getTdzExposedNames(const std::vector<const Stmt*>& stmts);
+
 // Does a function nested anywhere inside this `for` statement — its head, its
 // condition, its update or its body — reference `name` in a way that resolves
 // to the LOOP's binding of it?

@@ -190,7 +190,7 @@ of bug that silently changes meaning.
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |
-| `src/modules` | The module graph: specifier resolution, the depth-first load, the cycle refusal, and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
+| `src/modules` | The module graph: specifier resolution, the depth-first load (cycles included — the temporal dead zone is what makes one well defined), and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
 | `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing |
 | `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |

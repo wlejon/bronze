@@ -205,6 +205,11 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // for the one consumer that needs that narrower question.
     memoryNames_ = capturedNames_;
     for (auto& name : ast::getTryAssignedNames(body)) memoryNames_.insert(std::move(name));
+    // The third reason, and the one that has nothing to do with where a value
+    // can be read FROM: a lexical binding that can be read before its
+    // declaration has run needs somewhere to hold the uninitialized marker, and
+    // SSA has no room for a value that is not a value.
+    for (auto& name : ast::getTdzExposedNames(body)) memoryNames_.insert(std::move(name));
     functionEnvBase_ = envScopes_.size();
     functionEnvScope_ = SIZE_MAX;
 
@@ -248,6 +253,8 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
 
     EnvScopeInfo info;
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
+    info.slotNames = slots;
+    info.slotIsLexical.assign(slots.size(), false);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
@@ -290,6 +297,12 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     for (auto& name : ast::getTryAssignedNames(astModule_.body)) {
         moduleCaptures.insert(std::move(name));
     }
+    // And a top-level lexical binding read above its declaration, for the
+    // reason `enterFunctionEnv` widens the function's set: the marker needs a
+    // slot. Widened HERE and not into `capturedNames_`, for the reason above.
+    for (auto& name : ast::getTdzExposedNames(topLevelStmts)) {
+        moduleCaptures.insert(std::move(name));
+    }
 
     auto addSlot = [&](const std::string& name) {
         if (!moduleCaptures.contains(name)) return;
@@ -311,6 +324,16 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
 
     EnvScopeInfo info;
     for (uint32_t i = 0; i < moduleEnvSlots_.size(); ++i) info.slotOf[moduleEnvSlots_[i]] = i;
+    info.slotNames = moduleEnvSlots_;
+    // Which of them are lexical is settled HERE and not in `openModuleEnv`,
+    // for the same reason the layout is: a module function is lowered before
+    // `main` exists, and a read of a module-level `const` from inside one has
+    // to know it is reading a slot that can be uninitialized.
+    info.slotIsLexical.assign(moduleEnvSlots_.size(), false);
+    for (const auto& name : ast::getLexicalDeclarations(topLevelStmts)) {
+        auto slot = info.slotOf.find(name);
+        if (slot != info.slotOf.end()) info.slotIsLexical[slot->second] = true;
+    }
     // No value yet, and that is the point: the record is created by `main`,
     // which does not exist until every module function has been lowered.
     // Readers in those functions load it from the runtime instead.
@@ -330,6 +353,7 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     capturedNames_ = ast::getCapturedNames(topLevelStmts);
     memoryNames_ = capturedNames_;
     for (auto& name : ast::getTryAssignedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
+    for (auto& name : ast::getTdzExposedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
     if (moduleEnvScope_ == SIZE_MAX) return;
     envScopes_[moduleEnvScope_].envValue =
         emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);
@@ -337,6 +361,12 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     currentEnvValue_ = envScopes_[moduleEnvScope_].envValue;
     functionEnvScope_ = moduleEnvScope_;
     emitModuleEnvSet(currentEnvValue_, mainFn);
+    // Ahead of every top-level statement, and ahead of the hoisted closures
+    // that capture this record: 16.2.1.6.4 instantiates the module's lexical
+    // bindings — uninitialized — before any of its body runs, and a function
+    // called during that window reading one is the ReferenceError this puts
+    // there.
+    openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts), mainFn);
 }
 
 // Does this module function need the module scope's record at entry? An
@@ -433,6 +463,15 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     }
 
     if (!lowerParamBindings(params, paramBase, ilFn)) return false;
+
+    // After the parameters, so that a body that redeclares one is still the
+    // redeclaration error it was rather than a parameter slot holding the
+    // uninitialized marker; before the statements, because 14.3.1 creates the
+    // binding when the scope is entered and the declaration only initializes
+    // it.
+    if (functionEnvScope_ != SIZE_MAX) {
+        openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts), ilFn);
+    }
 
     if (!lowerStmtList(stmts, ilFn)) return false;
 

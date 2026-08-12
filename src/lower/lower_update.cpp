@@ -98,7 +98,7 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
     if (isLocal) {
         writeBinding(varBindings_[bindingIdx], newVal, ilFn);
     } else {
-        emitEnvSet(depth, index, newVal, ilFn);
+        emitEnvSet(depth, index, newVal, ilFn, /*assigning=*/true);
     }
     return isPrefix(un.op) ? newVal : numOld;
 }

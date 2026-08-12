@@ -42,6 +42,21 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         return false;
     }
 
+    // The heritage is READ before the class binding is initialized. 15.7.14
+    // evaluates ClassHeritage at step 5 and initializes `classBinding` only at
+    // step 17, which is what makes `class C extends C {}` a ReferenceError
+    // rather than a class extending itself: inside its own definition the name
+    // is still in its dead zone.
+    std::optional<Value> baseBoxed;
+    if (!cls->superName.empty()) {
+        ast::Ident baseIdent;
+        baseIdent.name = cls->superName;
+        baseIdent.span = cls->span;
+        auto baseVal = lowerExpr(baseIdent, ilFn);
+        if (!baseVal) return false;
+        baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
+    }
+
     // The class IS its constructor function, and the binding the declaration
     // introduces holds exactly that value.
     auto ctorVal = lowerClosure(*ctor->fn, cls->name, ctor->fn->params, ctor->fn->returnType,
@@ -57,20 +72,13 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     }
 
     // `extends` REPLACES the prototype object (the prototype lives on the
-    // shape), so it has to run before a single method is stored.
-    if (!cls->superName.empty()) {
-        ast::Ident baseIdent;
-        baseIdent.name = cls->superName;
-        baseIdent.span = cls->span;
-        auto baseVal = lowerExpr(baseIdent, ilFn);
-        if (!baseVal) return false;
-        auto baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
-
+    // shape), so it has to be linked before a single method is stored.
+    if (baseBoxed) {
         il::Instruction inst;
         inst.op = il::Op::ClassExtend;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
-        inst.operands = {ctorVal->id, baseBoxed.id};
+        inst.operands = {ctorVal->id, baseBoxed->id};
         emitInst(ilFn, inst);
     }
 

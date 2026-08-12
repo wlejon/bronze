@@ -1,7 +1,8 @@
 // Reading the graph: one file at a time, each parsed exactly once, following
 // specifiers depth-first in source order. What comes out is a post-order —
-// dependencies before dependents, entry last — which is the ES evaluation order
-// once cycles are out of the picture.
+// dependencies before dependents, entry last — which is the ES evaluation
+// order, and which stays the answer inside a cycle: 16.2.1.5.3 evaluates each
+// member once, on the way out of the walk.
 
 #include <fstream>
 #include <sstream>
@@ -24,10 +25,13 @@ bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
-// The depth-first walk. `stack` is the path of modules currently being
-// loaded, which is what makes a cycle a back edge and nothing subtler:
-// meeting an id that is on the stack means the specifier just followed closes
-// a loop, and the loop is exactly the tail of the stack.
+// The depth-first walk. Meeting an id that is already known is the same answer
+// whether it is a diamond or a cycle: the module is loaded, and the edge needs
+// nothing from this walk but its id. What separates the two is the POST-order
+// the walk records — a diamond's target has already been appended to the
+// evaluation order, a cycle's has not and will be appended when its own load
+// finishes, which is 16.2.1.5.3's "a module in a cycle is evaluated once, on
+// the way out".
 class Loader {
 public:
     Loader(SourceSet& sources, DiagnosticSink& diags, Graph& graph)
@@ -37,16 +41,11 @@ public:
         const std::string key = path.generic_string();
         auto known = byPath_.find(key);
         if (known != byPath_.end()) {
-            const uint16_t id = known->second;
-            for (size_t i = 0; i < stack_.size(); ++i) {
-                if (stack_[i] != id) continue;
-                reportCycle(i, importSpan);
-                return false;
-            }
-            // Already loaded and not on the stack: a diamond. One module,
-            // parsed once, evaluated once — which is what "a file imported
-            // twice is instantiated once" means.
-            outId = id;
+            // One module, parsed once, evaluated once — which is what "a file
+            // imported twice is instantiated once" means, and it is also all a
+            // cycle needs: following the back edge again would not read a
+            // second copy of anything.
+            outId = known->second;
             return true;
         }
 
@@ -82,14 +81,15 @@ public:
         }
 
         const uint16_t id = file->id;
+        // Registered BEFORE its dependencies are followed, which is the whole
+        // of cycle support: a specifier that comes back round to this file
+        // finds it here and stops.
         byPath_[key] = id;
         if (graph_.modules.size() <= id) graph_.modules.resize(id + 1);
         graph_.modules[id] = std::move(file);
-        stack_.push_back(id);
 
         if (!loadDependencies(*graph_.modules[id])) return false;
 
-        stack_.pop_back();
         graph_.evaluationOrder.push_back(id);
         outId = id;
         return true;
@@ -122,29 +122,10 @@ private:
         return true;
     }
 
-    // The cycle is the stack from the module that was met again, plus the
-    // module whose specifier closed it. Naming the whole path is the
-    // difference between a message a reader can act on and "there is a cycle
-    // somewhere".
-    void reportCycle(size_t firstOnStack, Span importSpan) {
-        std::string path;
-        for (size_t i = firstOnStack; i < stack_.size(); ++i) {
-            path += graph_.modules[stack_[i]]->displayName;
-            path += " -> ";
-        }
-        path += graph_.modules[stack_[firstOnStack]]->displayName;
-        diags_.error(importSpan,
-                     "cyclic module dependency: " + path +
-                         " (bronze has no temporal dead zone, so a binding read before its "
-                         "initialiser has run would answer undefined instead of raising a "
-                         "ReferenceError)");
-    }
-
     SourceSet& sources_;
     DiagnosticSink& diags_;
     Graph& graph_;
     std::map<std::string, uint16_t> byPath_;
-    std::vector<uint16_t> stack_;
 };
 
 }  // namespace

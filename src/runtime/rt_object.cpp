@@ -360,6 +360,37 @@ uint64_t bronze_env_get(uint64_t envBits, uint32_t depth, uint32_t index) {
     return env->slotsData()[index].rawBits();
 }
 
+static_assert(Value::fromUninitialized().rawBits() == BRONZE_ABI_UNINITIALIZED_BITS,
+              "BRONZE_ABI_UNINITIALIZED_BITS in bronze_abi.h has drifted from the "
+              "uninitialized-binding singleton");
+
+// The same read, for a slot holding a `let`, `const` or `class` binding.
+// ECMA-262 9.1.1.1.6 GetBindingValue: "if the binding for N in envRec is an
+// uninitialized binding, throw a ReferenceError". The marker is the only thing
+// that distinguishes the two states, and it can never be a program's value, so
+// one compare against it IS the check.
+//
+// `keyIndex` is the module's interned name, so the message can say which
+// binding without the backend carrying a string — the same arrangement
+// `bronze_reference_error` uses. Returns `undefined` on the raising path for
+// the reason every raise helper does: the result lands in a caller's GC root
+// slot before the pending cell is tested.
+uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
+                            uint32_t keyIndex) {
+    const uint64_t bits = bronze_env_get(envBits, depth, index);
+    if (bits != BRONZE_ABI_UNINITIALIZED_BITS) return bits;
+    // A binding name reaching here can be a FLATTENED one — the module linker
+    // renames a non-entry file's module scope to `modN.local`, and it can do
+    // that safely precisely because a JavaScript identifier contains no dot. So
+    // the text after the last dot is the name the program wrote, and a name
+    // with no dot is already it. The message says what the source says;
+    // `mod3.aLate` names a compilation strategy the programmer did not choose.
+    const std::string& key = rtKeyString(keyIndex);
+    const size_t dot = key.rfind('.');
+    const std::string shown = dot == std::string::npos ? key : key.substr(dot + 1);
+    return rtThrowReferenceError("Cannot access '" + shown + "' before initialization").rawBits();
+}
+
 void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t valBits) {
     EnvHeader* env = resolveEnv(envBits, depth);
     if (index >= env->slotCount()) {

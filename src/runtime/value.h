@@ -19,6 +19,18 @@ enum class Tag : uint16_t {
     // Heap-header-only tag (never appears in a Value): payload is raw bytes
     // the GC must not scan as Values (ArrayBuffer data).
     RawBytes  = 0xFFF9,
+    // A `let`, `const` or `class` binding that has been created and not yet
+    // initialized — ECMA-262 9.1.1.1.6's "uninitialized binding", the state a
+    // read of which is a ReferenceError. A tag of its OWN rather than a reuse
+    // of Hole: Hole is the empty pending-exception cell, and one internal
+    // singleton meaning two things is one place where "is an exception
+    // pending?" and "is this binding in its dead zone?" can be confused.
+    //
+    // Like Hole it is internal by construction: it lives only in an
+    // environment slot, and the only instruction that can read such a slot
+    // without checking for it is one lowering emitted for a binding that is
+    // not lexical.
+    Uninitialized = 0xFFFA,
     Forwarded = 0xFFFE,
 };
 
@@ -53,6 +65,10 @@ public:
 
     static constexpr Value fromHole() noexcept {
         return Value(static_cast<uint64_t>(Tag::Hole) << kTagShift);
+    }
+
+    static constexpr Value fromUninitialized() noexcept {
+        return Value(static_cast<uint64_t>(Tag::Uninitialized) << kTagShift);
     }
 
     static Value fromObject(const void* ptr) noexcept {
@@ -114,6 +130,10 @@ public:
 
     constexpr bool isHole() const noexcept {
         return tag() == static_cast<uint16_t>(Tag::Hole);
+    }
+
+    constexpr bool isUninitialized() const noexcept {
+        return tag() == static_cast<uint16_t>(Tag::Uninitialized);
     }
 
     constexpr bool isObject() const noexcept {

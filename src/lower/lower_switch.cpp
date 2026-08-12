@@ -23,31 +23,22 @@
 #include <vector>
 
 #include "ast/assigned.h"
+#include "ast/queries.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
 
 namespace {
 
-// A declaration written directly in a case clause, if there is one. The
-// clause is not a scope: ECMA-262 14.12.2 makes the whole switch BODY one
-// block, so such a binding is live in every other clause too — including the
-// ones a jump can enter without ever running the declaration.
-const ast::Stmt* lexicalDeclarationIn(const ast::SwitchCase& clause, const char*& what) {
+// A `function` declaration written directly in a case clause. Every other
+// declaration form is now lowered — the CaseBlock's one scope holds them and
+// the dead zone makes a jump past one well defined — but a function
+// declaration is not lexical: 8.6.2 instantiates it for the whole scope before
+// any clause runs, so it would have to be hoisted out of the clause it is
+// written in and bronze's hoisting pass works one statement list at a time.
+const ast::Stmt* functionDeclarationIn(const ast::SwitchCase& clause) {
     for (const auto& s : clause.body) {
-        if (const auto* v = dynamic_cast<const ast::VarDecl*>(s.get())) {
-            if (v->isVar) continue;  // `var` is the function's, not the block's
-            what = v->isConst ? "const" : "let";
-            return s.get();
-        }
-        if (dynamic_cast<const ast::ClassDecl*>(s.get())) {
-            what = "class";
-            return s.get();
-        }
-        if (dynamic_cast<const ast::FunctionDecl*>(s.get())) {
-            what = "function";
-            return s.get();
-        }
+        if (dynamic_cast<const ast::FunctionDecl*>(s.get())) return s.get();
     }
     return nullptr;
 }
@@ -57,24 +48,20 @@ const ast::Stmt* lexicalDeclarationIn(const ast::SwitchCase& clause, const char*
 bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
     const std::string label = takePendingLabel();
 
+    // The CaseBlock's own lexical bindings, in source order across every
+    // clause: 14.12.2 makes the whole body ONE declarative environment, so
+    // these belong to the switch and not to the clause that spells them.
+    std::vector<std::string> caseLexicals;
     for (const auto& clause : sw->cases) {
-        const char* what = "let";
-        if (const ast::Stmt* decl = lexicalDeclarationIn(clause, what)) {
-            // Named rather than lowered, because bronze cannot enforce what
-            // makes it safe. A case jump can enter a clause below the one that
-            // initializes the binding, and ECMA-262 answers that with a
-            // temporal-dead-zone ReferenceError. `throw` exists now; what does
-            // not is the uninitialized binding STATE that decides when to raise
-            // one, so this stays a named error — see
-            // cases/blocked/temporal_dead_zone.js. Wrapping the clause in a
-            // block gives the declaration a scope of its own and is what most
-            // JavaScript writes anyway.
+        if (const ast::Stmt* decl = functionDeclarationIn(clause)) {
             diags_.error(decl->span,
-                         std::string("unsupported construct: a '") + what +
-                             "' declaration directly in a switch case (the switch body is one "
-                             "scope, so a case jump could reach it uninitialized); wrap the "
-                             "case body in a block");
+                         "unsupported construct: a 'function' declaration directly in a switch "
+                         "case (the switch body is one scope, so the declaration belongs to it "
+                         "rather than to the clause); wrap the case body in a block");
             return false;
+        }
+        for (auto& name : ast::getLexicalDeclarations(clause.body)) {
+            caseLexicals.push_back(std::move(name));
         }
     }
 
@@ -106,7 +93,10 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
         if (!sw->cases[i].test) defaultClause = i;
     }
 
-    enterScope();
+    // One scope for the whole body, opened before the tests so that its record
+    // — and the uninitialized marker in every lexical slot of it — exists
+    // however the chain of tests ends up entering it.
+    enterScope(std::vector<ast::StmtPtr>{}, ilFn, {}, caseLexicals);
     auto snapshotState = [&]() { return snapshotVarStates(); };
     const VarStateMap stateBeforeTests = snapshotState();
 

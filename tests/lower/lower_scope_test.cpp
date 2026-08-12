@@ -176,3 +176,111 @@ TEST_CASE("an update expression on a captured binding goes through the environme
     CHECK(text.find("env.get") != std::string::npos);
     CHECK(text.find("env.set") != std::string::npos);
 }
+
+// --- the temporal dead zone ------------------------------------------------
+//
+// Where the uninitialized marker lives and which reads are checked. The
+// BEHAVIOUR these produce is the oracle suite's (cases/temporal_dead_zone*);
+// what is pinned here is the shape, because the cost of the mechanism is
+// exactly "which bindings stopped living in SSA" and a silent widening of that
+// set is how the first attempt put every local of every function in a record.
+
+TEST_CASE("a lexical binding read above its declaration moves into the environment") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "{\n  try { console.log(v); } catch (e) { console.log(e.name); }\n"
+        "  let v = 1;\n  console.log(v);\n}\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    // The slot, the marker in it, and the checked read that names the binding.
+    CHECK(text.find("env.init.tdz") != std::string::npos);
+    CHECK(text.find("env.get.tdz") != std::string::npos);
+    CHECK(text.find("\"v\"") != std::string::npos);
+}
+
+TEST_CASE("a straight line of lexical declarations stays in SSA") {
+    // The regression this exists for: an exposure scan that counted a
+    // declaration's own name as a mention reported every `const` in a function
+    // as read before itself, and moved the lot into an environment record —
+    // which is a whole-program slowdown wearing a correctness fix's costume.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function calc(x) {\n  const doubled = x * 2;\n  const less = doubled - 1;\n"
+        "  return less / 2;\n}\n"
+        "console.log(calc(4));\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.init.tdz") == std::string::npos);
+    CHECK(text.find("env.get.tdz") == std::string::npos);
+    CHECK(text.find("env.create") == std::string::npos);
+}
+
+TEST_CASE("a hoisted function declaration is never given a dead zone") {
+    // 8.6.2 instantiates a function declaration for its whole scope, so it is
+    // initialized from the moment the scope is entered. Marking it lexical
+    // would make calling it above where it is written a ReferenceError, which
+    // is ordinary JavaScript that must keep working.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "{\n  console.log(hoisted());\n  function hoisted() { return 1; }\n"
+        "  const seen = hoisted;\n  console.log(seen());\n}\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.get.tdz") == std::string::npos);
+    CHECK(text.find("env.init.tdz") == std::string::npos);
+}
+
+TEST_CASE("a module-level lexical binding a function reads is checked at the read") {
+    // The temporal half. `later` is written below `early`, and `early` is
+    // lowered as a module function that loads the module record — so nothing
+    // about the READ's position says whether the binding has been initialized,
+    // and the check has to be at the read rather than elided by lowering having
+    // walked past the declaration.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function early() { return later; }\n"
+        "let later = 1;\n"
+        "console.log(early());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.init.tdz") != std::string::npos);
+    CHECK(text.find("env.get.tdz") != std::string::npos);
+    CHECK(text.find("\"later\"") != std::string::npos);
+}
+
+TEST_CASE("an assignment to a lexical slot is checked before it stores") {
+    // 6.2.5.6 PutValue reaches SetMutableBinding, which refuses an
+    // uninitialized binding exactly as a read does — so the store is preceded
+    // by the same checked read, whose result nothing uses.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "let n = 0;\n"
+        "function bump() { n = n + 1; }\n"
+        "bump();\n"
+        "console.log(n);\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    const size_t checked = text.find("env.get.tdz");
+    REQUIRE(checked != std::string::npos);
+    CHECK(text.find("env.set", checked) != std::string::npos);
+}

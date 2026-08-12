@@ -91,6 +91,8 @@ const char* opName(Op op) {
         case Op::EnvCreate: return "env.create";
         case Op::EnvGet: return "env.get";
         case Op::EnvSet: return "env.set";
+        case Op::EnvInitTdz: return "env.init.tdz";
+        case Op::EnvGetTdz: return "env.get.tdz";
         case Op::ModuleEnvSet: return "module.env.set";
         case Op::ModuleEnvGet: return "module.env.get";
         case Op::Print: return "print";
@@ -154,6 +156,7 @@ bool canThrow(const Instruction& inst) {
         case Op::EnvCreate:
         case Op::EnvGet:
         case Op::EnvSet:
+        case Op::EnvInitTdz:
         case Op::ModuleEnvSet:
         case Op::ModuleEnvGet:
         case Op::GlobalGet:
@@ -431,6 +434,24 @@ std::string print(const Module& module) {
                         out += "env.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.envDepth) + ", " + std::to_string(inst.envIndex) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::EnvInitTdz:
+                        out += "env.init.tdz %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               std::to_string(inst.envDepth) + ", " +
+                               std::to_string(inst.envIndex);
+                        break;
+                    // The NAME, for the reason `ref.error` prints one: which
+                    // binding was read inside its dead zone IS the instruction.
+                    case Op::EnvGetTdz:
+                        out += "env.get.tdz %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               std::to_string(inst.envDepth) + ", " +
+                               std::to_string(inst.envIndex) + ", \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
                         break;
                     case Op::ModuleEnvSet:
                         out += "module.env.set %" +
