@@ -286,6 +286,16 @@ Value rtTypedArrayConstructor(const std::string& name) {
     return Value::fromUndefined();
 }
 
+const char* rtTypedArrayConstructorName(Value fn) {
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
+    if (code == arrayBufferCtor) return "ArrayBuffer";
+    for (const CtorEntry& entry : kCtors) {
+        if (entry.code == code) return elementKindInfo(entry.kind).name;
+    }
+    return nullptr;
+}
+
 Value rtTypedArrayConstructorFor(ElementKind kind) {
     for (const CtorEntry& entry : kCtors) {
         if (entry.kind == kind) return Value(bronze_function_singleton(entry.code, 0));

@@ -313,6 +313,15 @@ and each array already built joins the next one's frame.
   `undefined variable`, which named the wrong problem.
 - `ReferenceError: <name> is not defined` — at run time, catchable.
 
+One name was on the wrong side of decision 1's line and is now on the right
+one: `var` written inside a block. 8.6.2 hoists it to the enclosing FUNCTION,
+bronze creates the slot only for a function's top-level `var`s, and the rest
+were reported as unresolved GLOBALS — a compiler gap wearing a language error's
+costume, which is exactly what the named-function-expression guard above exists
+to prevent. It takes the same route now (docs/0031 decision 6):
+`error: unsupported construct: '<name>' is declared by a `var` inside a block,
+and bronze hoists `var` only from a function's top level`.
+
 ## Oracle cases
 
 - `unresolved_typeof.js` — the idiom in both directions, two more unresolved

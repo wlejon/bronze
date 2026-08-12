@@ -272,6 +272,15 @@ private:
     // resolution ladder and become an unresolvable reference, turning a bug
     // bronze reports into a ReferenceError a program could catch.
     std::vector<std::string> namedFunctionExprs_;
+    // Every name the function being lowered declares with `var`, at any block
+    // depth. Same job as the stack above and for the same reason: 8.6.2 hoists
+    // a `var` to the enclosing FUNCTION however deeply it is written, bronze
+    // gives a slot only to the ones written at the top level, and the rest
+    // would otherwise fall off the resolution ladder and be reported as
+    // unresolvable globals — a compiler gap wearing a language error's costume,
+    // which is precisely the line docs/0027 decision 1 draws (bronze can PROVE
+    // the name is declared, so it must refuse now).
+    std::vector<std::string> functionVarNames_;
     // Which unresolved names have already been warned about. Per module, so
     // one `document` warning covers every mention of it.
     std::unordered_set<std::string> warnedUnresolved_;

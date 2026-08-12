@@ -88,9 +88,20 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
 // instance and left `this` pointing into from-space, which crashed
 // `this.items = items` in a rest constructor under BRONZE_GC_STRESS.
 //
-// So the wrapper gets a root frame of its own for exactly those calls.
-// `argv` needs no protection: it points into the CALLER's frame, which the
-// collector updates in place, so reading it after the allocation is correct.
+// So the wrapper gets a root frame of its own for exactly those calls, and
+// every named parameter is read out of argv BEFORE the first of them and
+// carried through it.
+//
+// `argv` itself is not protected, and must not be assumed to be. It points
+// into the CALLER's block, and the collector updates that block in place only
+// when the caller is generated code, whose block lives in its own GC root
+// frame. A BUILTIN calling back into JS — `Array.prototype.map`, `forEach`,
+// `reduce`, `Array.from`'s mapper, the JSON replacer and reviver, the regexp
+// replacer, `bronze_dynamic_call`'s arity-adaptation vector — builds its block
+// in plain stack memory that nothing scans and nothing updates. Reading argv
+// after an allocation is therefore a stale read, and it is a SILENT one: a
+// forwarded header keeps its tag, so the value still looks like an array or a
+// string and reports a garbage length.
 //
 // `live` is what must survive: `env` and `this` always, plus anything an
 // EARLIER call here already built. A wrapper can make two of these — the rest
@@ -163,13 +174,50 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         // from argv: the environment from the closure (docs/0007), the
         // receiver from the caller (docs/0008).
         const size_t firstSourceParam = func.firstSourceParam();
-        // Both arrays are built FIRST, before any typed parameter is unpacked:
-        // building either can collect, and every value loaded out of argv
-        // beforehand would be stale afterwards. Each one that is already built
-        // joins the next one's root frame.
+        // Every named parameter is loaded out of argv HERE, before either
+        // array is built, and then travels through the root frames below.
+        //
+        // The order used to be the other way round, on the reasoning that
+        // building an array can collect and so anything loaded beforehand
+        // would be stale. That is only true if `argv` itself survives the
+        // collection — which holds when the caller is generated code, whose
+        // block lives in its own GC root frame, and fails when the caller is a
+        // BUILTIN: `builtin_array.cpp`'s `Value block[3]`, the JSON replacer's
+        // and the regexp replacer's are plain stack memory that nothing scans
+        // and nothing updates. So `["a"].map(function (s) { return
+        // arguments.length + s.n; })` allocated the arguments object, moved
+        // the heap, and then read `s` out of a block still holding pre-move
+        // bits. Loading first and ROOTING is what makes the claim true rather
+        // than assumed; `emitWrapperArrayCall` already updates every slot it
+        // is given.
+        std::vector<llvm::Value*> loaded;
+        const size_t namedCount =
+            func.params.size() - firstSourceParam - (func.hasRestParam ? 1 : 0);
+        for (size_t n = 0; n < namedCount; ++n) {
+            const uint32_t sourceIndex = static_cast<uint32_t>(n);
+            // The unguarded load is correct because `FunctionHeader::call`
+            // padded argv up to the declared arity before entering here. A
+            // function that owns an `arguments` object declares arity 0 so
+            // that padding does not happen — `f(1)` and `f(1, undefined)` must
+            // disagree about `arguments.length` — so its own reads are the one
+            // place that has to check (docs/0027 decision 3).
+            if (func.needsArguments) {
+                loaded.push_back(builder.CreateCall(
+                    abi.bronze_arg_at, {argc, argv, builder.getInt32(sourceIndex)}));
+            } else {
+                loaded.push_back(builder.CreateLoad(
+                    i64Ty, builder.CreateGEP(i64Ty, argv, builder.getInt32(sourceIndex))));
+            }
+        }
+
+        // Each array that is already built joins the next one's root frame,
+        // alongside every named parameter loaded above.
+        std::vector<llvm::Value**> live{&env, &thisArg};
+        for (llvm::Value*& slot : loaded) live.push_back(&slot);
+
         llvm::Value* argumentsArg = nullptr;
         if (func.needsArguments) {
-            argumentsArg = emitWrapperArrayCall(builder, ctx, globals, {&env, &thisArg}, [&] {
+            argumentsArg = emitWrapperArrayCall(builder, ctx, globals, live, [&] {
                 return builder.CreateCall(abi.bronze_arguments_object, {argc, argv});
             });
         }
@@ -177,7 +225,6 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         if (func.hasRestParam) {
             const uint32_t firstRest =
                 static_cast<uint32_t>(func.params.size() - 1 - firstSourceParam);
-            std::vector<llvm::Value**> live{&env, &thisArg};
             if (argumentsArg != nullptr) live.push_back(&argumentsArg);
             restArg = emitWrapperArrayCall(builder, ctx, globals, live, [&] {
                 return builder.CreateCall(abi.bronze_rest_args,
@@ -195,20 +242,9 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
                 callArgs.push_back(restArg);
                 break;
             }
-            // The unguarded load is correct because `FunctionHeader::call`
-            // padded argv up to the declared arity before entering here. A
-            // function that owns an `arguments` object declares arity 0 so
-            // that padding does not happen — `f(1)` and `f(1, undefined)` must
-            // disagree about `arguments.length` — so its own reads are the one
-            // place that has to check (docs/0027 decision 3).
-            llvm::Value* bits = nullptr;
-            if (func.needsArguments) {
-                bits = builder.CreateCall(abi.bronze_arg_at,
-                                          {argc, argv, builder.getInt32(sourceIndex)});
-            } else {
-                bits = builder.CreateLoad(
-                    i64Ty, builder.CreateGEP(i64Ty, argv, builder.getInt32(sourceIndex)));
-            }
+            // Loaded and rooted above, and re-read out of the root frame by
+            // every array build in between, so these bits are current.
+            llvm::Value* bits = loaded[sourceIndex];
             switch (func.params[p].type) {
                 case il::Type::F64:
                     callArgs.push_back(builder.CreateCall(abi.bronze_unbox_f64, {bits}));

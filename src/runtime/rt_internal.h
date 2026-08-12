@@ -227,6 +227,10 @@ Value rtMapConstructor(const std::string& name);
 // the receiver kind is a parameter rather than something the caller applies
 // afterwards.
 Value rtMapMethod(bool isSetReceiver, const std::string& key);
+// `"Map"` / `"Set"` when this function object IS one of the two interned
+// constructors, else nullptr. The property path needs the NAME, not just the
+// fact, so that the intrinsic bronze has not built can be refused by it.
+const char* rtMapConstructorName(Value fn);
 void rtCheckMapMember(bool isSetReceiver, const std::string& key);
 // What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
@@ -240,6 +244,10 @@ Value rtMapDefaultIterator(bool isSetReceiver);
 // (decision 2) — which is what `switch (array.constructor)` needs.
 Value rtTypedArrayConstructor(const std::string& name);
 Value rtTypedArrayConstructorFor(ElementKind kind);
+// The name of the view (or `"ArrayBuffer"`) this function object constructs,
+// else nullptr — the counterpart of `rtMapConstructorName`, for the same
+// reason.
+const char* rtTypedArrayConstructorName(Value fn);
 
 // `BYTES_PER_ELEMENT` off a constructor (23.2.6.2). Answers false — leaving
 // `out` alone — when the function is not one of the nine, so the caller falls

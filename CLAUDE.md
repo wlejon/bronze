@@ -10,13 +10,21 @@ explains every reference to "broc" (the retired TypeScript predecessor at
 ## Build & test (Ninja + cl via the vcvars wrapper)
 
 ```
-.\dev.cmd cmake --preset dev            # configure
-.\dev.cmd cmake --build --preset dev    # build (incremental ~2s)
-.\dev.cmd ctest --preset dev            # all tests
-.\dev.cmd ctest --preset dev -L lex     # one module's tests
+.\dev.cmd cmake --preset dev              # configure
+.\dev.cmd cmake --build --preset dev      # build (incremental ~2s)
+.\dev.cmd ctest --preset dev              # all tests (~7 min)
+.\dev.cmd ctest --preset dev -L lex       # one module's tests
+.\dev.cmd ctest --preset dev -LE threejs  # everything but the milestone (~4.5 min)
+.\dev.cmd ctest --preset dev -L threejs   # the milestone alone (~2.5 min)
 ```
 
 Iterate with scoped module tests; run the full `ctest` before any commit.
+
+`oracle-threejs` compiles unmodified three.js r160 from vendored source and
+checks the scene graph it builds (docs/0031, `tests/oracle/threejs/README.md`).
+It is ~145 s of the run because the 28-file graph is compiled once per inference
+mode. **It stays in the pre-commit run** — it is the only test that proves the
+project's stated bar — but `-LE threejs` is the loop to iterate against.
 
 ## Hard rules
 
@@ -146,3 +154,12 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   `new Array(n)` as holes, `instanceof Array` made exact by refusing to
   subclass it, and the primitive wrapper refused in both directions so
   `new String(x)` stops being `{}` and `true.constructor` stops being silent)
+- 0031 the milestone as a case (unmodified three.js vendored as its own
+  ctest label rather than approximated by a proxy program, what an expectation
+  may say when the subject is floating-point — exact arithmetic and invariants,
+  never an observed accumulation — `o[k]` folded onto `o.k`'s one dispatch so
+  the drift between the two copies stops answering `undefined`, the six read
+  and write branches that ended without a named error, the unhoisted `var`
+  moved back across docs/0027's provable line, and `argv` shown not to be
+  self-protecting — an argument block is only as rooted as its caller, and a
+  builtin calling back into JS builds one nothing scans)

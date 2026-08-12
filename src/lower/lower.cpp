@@ -375,6 +375,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     varDeclCounter_ = 0;
     jumpStack_.clear();
     scopeHasEnv_.clear();
+    functionVarNames_ = ast::getHoistedVarDeclarations(body);
 
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());

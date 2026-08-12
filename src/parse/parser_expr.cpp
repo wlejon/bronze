@@ -708,6 +708,16 @@ ExprPtr Parser::parsePrimary() {
                 error("an import declaration may only appear at the top level of a module");
             }
             return nullptr;
+        // `super` is a keyword, so reaching the default arm means it was
+        // written somewhere the call/member production does not look — inside a
+        // `new` callee (`new super.x()`), which docs/0025 turned into a full
+        // expression. "expected expression" points the reader at the wrong
+        // thing: `super` IS the expression, it is just not one that may appear
+        // here (ECMA-262 13.3.7 restricts it to a method's [[HomeObject]]).
+        case TokenKind::KwSuper:
+            error("unsupported construct: `super` is only supported as `super.x` or "
+                  "`super(...)` directly inside a class method");
+            return nullptr;
         default:
             error("expected expression");
             return nullptr;

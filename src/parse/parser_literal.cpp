@@ -471,6 +471,20 @@ ExprPtr Parser::parseObjectLit() {
             // is ToString(Number), which is the runtime's formatter and not
             // something the parser may reimplement. `{ [1]: 'a' }` is the
             // spelling that works, and it is the same property.
+            //
+            // It gets its own message, because 13.2.5 says a NumericLiteral IS
+            // a PropertyName — telling the reader one was expected names the
+            // wrong thing and sends them looking for a typo they did not make.
+            if (check(TokenKind::NumberLiteral)) {
+                // Quote the key the reader actually wrote: a fixed example
+                // sends someone who typed `{ 5: x }` looking for a `1`.
+                error((std::string("unsupported construct: a numeric property key "
+                                   "(its name is ToString(Number), which the parser "
+                                   "may not compute; write `[") +
+                       std::string(peek().text) + "]:` or its string name)")
+                          .c_str());
+                return nullptr;
+            }
             error("expected a property key: an identifier, a string literal, "
                   "or a computed '[expr]'");
             return nullptr;

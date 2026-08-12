@@ -273,7 +273,11 @@ stay where they are, beside header types that exist for nothing else.
 ## Named diagnostics
 
 - `unsupported: Array.prototype is not implemented`, and the same for `String`
-  and `Boolean` — decision 3.
+  and `Boolean` — decision 3. It covered only the three constructors in
+  `kCtors`; `Map`, `Set`, `ArrayBuffer` and the nine views are interned
+  singletons of their own and still reached the on-demand slot, so docs/0031
+  decision 5 extended the refusal to them. The reason is decision 3's, unchanged:
+  an empty object a program can install a method on is worse than an error.
 - `unsupported: Array.fromAsync is not implemented`, `String.fromCodePoint`,
   `String.raw` — real statics ECMA-262 defines and bronze has not built, on the
   same rule as every other table: membership is "does this exist?", never "have

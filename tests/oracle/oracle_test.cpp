@@ -39,6 +39,10 @@
 #define TEST_CASES_DIR "tests/oracle/cases"
 #endif
 
+#ifndef TEST_THREEJS_DIR
+#define TEST_THREEJS_DIR "tests/oracle/threejs"
+#endif
+
 namespace {
 
 constexpr uint32_t kRunTimeoutMs = 15000;
@@ -117,6 +121,22 @@ RunResult runWithTimeout(const std::string& exePath) {
 }
 #endif
 
+// Compiled cases inherit this process's environment, which is how ctest's
+// `ENVIRONMENT BRONZE_GC_STRESS=1` reaches them (docs/0006 decision 5). A case
+// too expensive to build twice sets it for itself around a second run of the
+// executable it already has.
+void setGcStress(bool on) {
+#ifdef _WIN32
+    _putenv_s("BRONZE_GC_STRESS", on ? "1" : "");
+#else
+    if (on) {
+        setenv("BRONZE_GC_STRESS", "1", 1);
+    } else {
+        unsetenv("BRONZE_GC_STRESS");
+    }
+#endif
+}
+
 bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
@@ -124,13 +144,18 @@ bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     return true;
 }
 
-std::filesystem::path findCasesDirectory() {
+// The configure-time absolute path first, then the same directory reached by
+// walking up from wherever ctest happened to start the binary. Taking the
+// suffix as a parameter is what lets `threejs/` be found by exactly the rule
+// that already finds `cases/`, rather than by a second one.
+std::filesystem::path findTestDirectory(const std::filesystem::path& baked,
+                                        const std::string& suffix) {
     std::vector<std::filesystem::path> candidates = {
-        TEST_CASES_DIR,
-        "tests/oracle/cases",
-        "../tests/oracle/cases",
-        "../../tests/oracle/cases",
-        "../../../tests/oracle/cases"
+        baked,
+        suffix,
+        "../" + suffix,
+        "../../" + suffix,
+        "../../../" + suffix
     };
 
     std::filesystem::path cwd = std::filesystem::current_path();
@@ -145,6 +170,10 @@ std::filesystem::path findCasesDirectory() {
         }
     }
     return {};
+}
+
+std::filesystem::path findCasesDirectory() {
+    return findTestDirectory(TEST_CASES_DIR, "tests/oracle/cases");
 }
 
 // One case: the entry file bronze is pointed at, and the name it is reported
@@ -288,5 +317,71 @@ TEST_CASE("Oracle blocked test suite") {
                 CHECK(true);  // still blocked at build time
             }
         }
+    }
+}
+
+// The milestone: unmodified three.js r160, compiled from its own source
+// (tests/oracle/threejs/README.md). It is a separate TEST_CASE and a separate
+// ctest test — `oracle-threejs`, label `threejs` — because compiling the
+// 28-file graph costs ~70 s, and a case sitting in `cases/` would be compiled
+// FOUR times per suite run (twice per mode, once per each of the two ctest
+// tests that share this binary). Here it is compiled once per mode.
+//
+// The gc-stress dimension is kept, because it is the one that has caught a
+// shipped rooting bug three times, but it is bought by re-RUNNING the
+// executable rather than by rebuilding it: the collector reads
+// BRONZE_GC_STRESS in the compiled program, not in the compiler, so a second
+// run of the same binary under that variable costs half a second.
+TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds") {
+    std::filesystem::path dir = findTestDirectory(TEST_THREEJS_DIR, "tests/oracle/threejs");
+    REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/threejs not found");
+
+    std::filesystem::path casePath = dir / "main.js";
+    REQUIRE(std::filesystem::exists(casePath));
+
+    // The library reaches Math.random through MathUtils.generateUUID, so the
+    // determinism grep the other two suites apply to a case's source cannot
+    // apply here. What replaces it is stricter and is enforced by the
+    // expectation itself: every line main.js prints is a boolean, an integer
+    // or an exactly representable decimal, and the uuid it draws is never
+    // printed. See main.js's header.
+    std::string expected;
+    std::filesystem::path expectedPath = dir / "main.expected";
+    REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
+                    ("Missing pinned expectation " + expectedPath.string()).c_str());
+
+    for (const bool infer : {true, false}) {
+        const std::string mode = infer ? " (inference on)" : " (--no-infer)";
+        std::filesystem::path exePath = std::filesystem::temp_directory_path() /
+                                        (infer ? "threejs_oracle.exe" : "threejs_oracle_ni.exe");
+        std::error_code ec;
+        std::filesystem::remove(exePath, ec);
+
+        std::string errOut;
+        int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
+        REQUIRE_MESSAGE(status == 0,
+                        ("Bronze failed to build three.js" + mode + ": " + errOut).c_str());
+        REQUIRE(std::filesystem::exists(exePath));
+
+        RunResult run = runWithTimeout(exePath.string());
+        CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode).c_str());
+        if (run.ran) {
+            CHECK_MESSAGE(expected == run.output,
+                          ("three.js output differs from the pinned expectation" + mode).c_str());
+        }
+
+        // Same executable, every allocation now moving the whole live set.
+        if (infer) {
+            setGcStress(true);
+            RunResult stressed = runWithTimeout(exePath.string());
+            setGcStress(false);
+            CHECK_MESSAGE(!stressed.timedOut,
+                          "three.js case did not finish within the timeout (gc-stress)");
+            if (stressed.ran) {
+                CHECK_MESSAGE(expected == stressed.output,
+                              "three.js output differs from the pinned expectation (gc-stress)");
+            }
+        }
+        std::filesystem::remove(exePath, ec);
     }
 }

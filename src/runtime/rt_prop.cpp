@@ -181,6 +181,17 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), ic);
 }
 
+// The receiver's kind, for the message of a write that cannot be performed.
+// Not `typeof`'s answer: this only ever names a primitive, and it is a
+// diagnostic rather than an operator, so it does not want typeof's rooted
+// string table.
+static const char* primitiveTypeName(Value v) {
+    if (v.isString()) return "a string";
+    if (v.isNumber()) return "a number";
+    if (v.isBool()) return "a boolean";
+    return "this value";
+}
+
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                               InlineCache* ic) {
     // The interned key is needed by more than the plain-object branch now, so
@@ -196,6 +207,18 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // chain here to find it on, so it is a branch in the property path —
         // which is where docs/0029 decision 2 put a typed array's.
         if (keyStr == "constructor") return rtStringConstructorObject().rawBits();
+        // An INDEX on a string. bronze has no String exotic object, so there
+        // are no index properties for 10.4.3.5 to find and the search below
+        // walks off its end into `undefined` — a silent wrong answer for
+        // `"abc"[0]`, and a particularly bad one because its own sibling
+        // `"abc"[i]` with a variable index is already a hard error further
+        // down this file. Refused by name until the exotic object exists,
+        // because the two spellings must not give two answers.
+        uint32_t strIdx = 0;
+        if (keyAsIndex(keyStr, strIdx)) {
+            fatal("unsupported: indexing a string is not implemented (bronze has no String "
+                  "exotic object; use s.charAt(i) or s.codePointAt(i))");
+        }
         Value method = rtStringMethod(keyStr);
         if (!method.isUndefined()) return method.rawBits();
         rtCheckStringMember(keyStr);
@@ -234,7 +257,15 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // a named error — two answers to one question, and the silent one was the
     // boolean's (docs/0030 decision 6).
     if (objVal.isBool()) return rtBooleanMember(keyStr).rawBits();
-    if (!objVal.isObject()) return Value::fromUndefined().rawBits();
+    // Everything with a branch above is handled; what is left is a tag no
+    // program can name — a symbol, or a hole sentinel that escaped an array.
+    // Neither is "a property that happens to be absent", so neither may answer
+    // `undefined`: this catch-all is the shape that let `true.foo` read as
+    // undefined until the boolean branch above was written for it.
+    if (!objVal.isObject()) {
+        fatal("unsupported: a property read on this value kind is not implemented "
+              "(bronze has no symbols, and an array hole is not a value)");
+    }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;
@@ -306,6 +337,22 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // decision 6). Reading `prototype` first is what keeps `call`, `bind`
         // and `name` diagnosed rather than answered as undefined.
         if (keyStr == "prototype") {
+            // The guard above only covers `kCtors`. Map, Set, ArrayBuffer and
+            // the nine views are interned function singletons of their own, so
+            // without this they reached the on-demand slot below and
+            // `Map.prototype` answered a fresh empty object — the exact lie
+            // the comment above says the ordering exists to prevent, told
+            // about every intrinsic that is not one of the three. Named here
+            // rather than by adding `prototype` to nine more tables, because
+            // the property is absent for the same one reason each time.
+            const char* intrinsic = rtMapConstructorName(objVal);
+            if (!intrinsic) intrinsic = rtTypedArrayConstructorName(objVal);
+            if (intrinsic) {
+                fatal((std::string("unsupported: ") + intrinsic +
+                       ".prototype is not implemented (bronze has no prototype OBJECT for this "
+                       "intrinsic; its methods are answered by the property path)")
+                          .c_str());
+            }
             Rooted<Value> fnRoot{objVal};
             rtEnsureFunctionPrototype(fnRoot);
             return fnRoot.get().asObject<FunctionHeader>()->prototype.rawBits();
@@ -341,6 +388,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // is a call, so this load is a collection point like any other helper
     // call (docs/0006 decision 4), and the raw bits this helper was handed
     // are dead the moment one runs.
+    // Every kind with a branch above returned; anything else reaching the
+    // plain-object tail would be read through an ObjectHeader it is not, so
+    // the cast is guarded rather than trusted. `bronze_elem_get` used to hold
+    // this guarantee for the computed path and lost it when that path was
+    // folded into this one.
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: a property read on an unknown object kind");
+    }
     Rooted<Value> objRoot{objVal};
     Rooted<Value> key(Value::fromString(keyHeader));
     Value result = objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic);
@@ -397,7 +452,16 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                          rtKeyString(keyIndex) + "')");
         return;
     }
-    if (!objVal.isObject()) return;
+    // A write to a property of a primitive. 6.2.5.6 PutValue takes the
+    // strict-mode branch — a module is always strict code (16.2.1.6) — and
+    // throws, and the two lines above have just said that discarding a write
+    // is worse than answering `undefined`. Discarding it here was the same
+    // silent lie in the same function.
+    if (!objVal.isObject()) {
+        rtThrowTypeError("Cannot create property '" + rtKeyString(keyIndex) +
+                         "' on " + primitiveTypeName(objVal));
+        return;
+    }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
 
@@ -590,67 +654,31 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;
-    if (hdr->flags == 1) {
-        if (!valueToElementIndex(Value(idxBits), idx)) {
-            // Not an index, so it names a property — which for an array is
-            // only ever a match array's `index`/`input`/`groups`. Answering
-            // `undefined` for `m["index"]` while `m.index` answered 0 would be
-            // two answers to one question.
-            Rooted<Value> objRoot{objVal};
-            Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-            Value props = objRoot.get().asObject<ArrayHeader>()->properties;
-            if (!props.isObject()) return Value::fromUndefined().rawBits();
-            Rooted<Value> propsRoot{props};
-            return propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits();
-        }
+    // The two receivers that have ELEMENTS get an index fast path, and only
+    // those two: `a[i]` and `v[i]` are the whole reason this helper is not
+    // just `bronze_prop_get`, and neither may walk a member table on the way
+    // to a slot.
+    if (hdr->flags == 1 && valueToElementIndex(Value(idxBits), idx)) {
         return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
     }
-    if (hdr->flags == TypedArrayHeader::kFlags) {
+    if (hdr->flags == TypedArrayHeader::kFlags && valueToElementIndex(Value(idxBits), idx)) {
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-        if (valueToElementIndex(Value(idxBits), idx)) {
-            if (idx >= view->length) return Value::fromUndefined().rawBits();
-            return Value::fromDouble(view->get(idx)).rawBits();
-        }
-        // Not an index, so it names a MEMBER — which is how `v[Symbol.iterator]`
-        // and a `for-in` key both arrive. Answering `undefined` here while
-        // `v.length` answered 8 would be two answers to one question.
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
-        return rtTypedArrayMember(objRoot.get(), name).rawBits();
+        // Out of range is `undefined`, not an error — 10.4.5.4 again.
+        if (idx >= view->length) return Value::fromUndefined().rawBits();
+        return Value::fromDouble(view->get(idx)).rawBits();
     }
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        // A plain object stores everything by NAME, so a computed key is a
-        // property read with a key the compiler did not know: ToPropertyKey,
-        // then the ordinary lookup. No inline cache, because there is no
-        // per-site key to cache against.
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-        return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits();
-    }
-    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
-        // `m[Symbol.iterator]` — a computed read of a MEMBER, not of a key.
-        // A Map's keys never live in its property space at all, which is the
-        // whole difference between a Map and an object used as one.
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
-        return mapMemberByName(objRoot.get().asObject<HeapObjectHeader>(), name).rawBits();
-    }
-    if (hdr->flags == 2) {  // Function
-        // `fn[k]` — a named read on a function object, which has no elements
-        // and so needs no index branch of its own. It reaches here rather than
-        // through `fn.k` because `JSON.stringify` asks every object it meets
-        // for `toJSON` with a key it built at run time, and a function is an
-        // object.
-        Rooted<Value> objRoot{objVal};
-        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
-        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
-        return propGetByName(objRoot.get(), name, key.get().asString<StringHeader>(),
-                             /*ic=*/nullptr);
-    }
-    fatal("computed index access is only supported on arrays, plain objects, "
-          "functions and typed arrays");
+    // Everything that is not an index NAMES something, and what a name means
+    // cannot depend on whether the compiler knew it: `o.k` and `const s = "k";
+    // o[s]` are one question. This branch used to be a second copy of
+    // propGetByName's receiver-kind dispatch, and every place the two copies
+    // had drifted was a silent wrong answer — `arr[s]` for "push", "length" or
+    // "constructor" answered `undefined` where `arr.push` answered the method,
+    // and `Math[s]` missed the namespace check that makes `Math.cbrt` a named
+    // error. Delegating is what keeps them one question with one answer.
+    Rooted<Value> objRoot{objVal};
+    Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+    StringHeader* keyHeader = key.get().asString<StringHeader>();
+    return propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, /*ic=*/nullptr);
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {

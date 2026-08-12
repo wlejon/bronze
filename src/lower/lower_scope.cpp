@@ -328,6 +328,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentFunctionIsArrow_ = isArrow;
     auto outerEnvBase = functionEnvBase_;
     auto outerEnvScope = functionEnvScope_;
+    // `var` names are per FUNCTION, so the nested body's list must not outlive
+    // it: leaving the callee's behind would make an enclosing free name look
+    // like a `var` the callee declared.
+    auto outerVarNames = functionVarNames_;
     size_t outerEnvDepth = envScopes_.size();
 
     // The body is lowered into a DIFFERENT function, so every piece of state
@@ -365,6 +369,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentFunctionIsArrow_ = outerIsArrow;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
+    functionVarNames_ = outerVarNames;
     if (!bodyOk) {
         if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);
         return std::nullopt;

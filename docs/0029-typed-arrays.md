@@ -191,6 +191,12 @@ code all still ask one question and get one answer. Encoding the kind in
 `flags` instead would have turned every `flags == 3` into a range test, and
 `flags` already means five other things.
 
+Of those dispatches, `bronze_elem_get` is no longer one: docs/0031 decision 4
+reduced it to the two integer-index fast paths (an array's and a view's) and
+made every other key delegate to `propGetByName`, because keeping a second copy
+of the receiver-kind dispatch is what let `o.k` and `o[k]` answer differently.
+A view's index path is unchanged and is still the reason the helper exists.
+
 The conversions are ECMA-262 7.1.6..7.1.11 and are written **once**:
 `toIntegerModulo(value, bits, isSigned)` covers all six integer kinds, so
 they cannot disagree about what `1e40` narrows to (the answer is 0 for all

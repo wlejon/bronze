@@ -1,1 +1,7 @@
 *.expected -text
+
+# The vendored three.js tree is checked in as published and is compared against
+# a pristine release tree when it is updated (docs/0031 decision 1). With
+# core.autocrlf on, a checkout would rewrite every line ending and "unmodified"
+# would stop being checkable.
+tests/oracle/threejs/three/** -text

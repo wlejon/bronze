@@ -114,9 +114,21 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
 // Called from the generated call wrapper, which is the only place that can
 // see the caller's real argument count (docs/0017 decision 2).
 uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
+    // The copy comes FIRST, before `newArray` — this is RootedArgs' contract
+    // ("read arguments from HERE and never from `argv` again"), and allocating
+    // ahead of it broke exactly the case that contract is written for. `argv`
+    // is only self-protecting when the caller is GENERATED code, whose block
+    // lives in its GC root frame; the blocks builtins build for callbacks
+    // (`builtin_array.cpp`'s `Value block[3]`, the JSON replacer's, the regexp
+    // replacer's) are plain stack memory nothing scans. So
+    // `items.map(function (...a) { ... })` collected inside `newArray`, moved
+    // the elements the caller had already written into that block, and every
+    // later iteration read a forwarded header — which still reports its old
+    // tag, so it answered wrongly and silently rather than crashing.
+    RootedArgs args(argc, argv);
     Rooted<Value> out{newArray()};
     for (uint32_t i = first; i < argc; ++i) {
-        Rooted<Value> elem{Value(argv[i])};
+        Rooted<Value> elem{args[i]};
         appendTo(out, elem);
     }
     return out.get().rawBits();

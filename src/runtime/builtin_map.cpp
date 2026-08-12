@@ -348,6 +348,14 @@ Value rtMapConstructor(const std::string& name) {
     return Value::fromUndefined();
 }
 
+const char* rtMapConstructorName(Value fn) {
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != 2) return nullptr;
+    const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
+    if (code == mapConstructor) return "Map";
+    if (code == setConstructor) return "Set";
+    return nullptr;
+}
+
 Value rtMapMethod(bool isSetReceiver, const std::string& key) {
     if (isSetReceiver) {
         for (const Method& m : kSetMethods) {
