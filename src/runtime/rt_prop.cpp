@@ -314,6 +314,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     if (hdr->flags == ArrayBufferHeader::kFlags) {
         return rtArrayBufferMember(objVal, keyStr).rawBits();
     }
+    if (hdr->flags == DataViewHeader::kFlags) {
+        // No index branch above this one, unlike a typed array's: 25.3 defines
+        // no integer-indexed access at all, so `view[0]` is an ordinary
+        // property name that DataView does not define and reads `undefined`.
+        return rtDataViewMember(objVal, keyStr).rawBits();
+    }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         return mapMemberByName(hdr, keyStr).rawBits();
     }
@@ -355,6 +361,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // the property is absent for the same one reason each time.
             const char* intrinsic = rtMapConstructorName(objVal);
             if (!intrinsic) intrinsic = rtTypedArrayConstructorName(objVal);
+            if (!intrinsic) intrinsic = rtDataViewConstructorName(objVal);
             if (intrinsic) {
                 fatal((std::string("unsupported: ") + intrinsic +
                        ".prototype is not implemented (bronze has no prototype OBJECT for this "
@@ -576,6 +583,16 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) {
         fatal("property writes on an ArrayBuffer are unsupported");
+    }
+    if (hdr->flags == DataViewHeader::kFlags) {
+        // 25.3 gives a DataView no writable property and no indexed access —
+        // its bytes are reached through `setUint8` and its siblings — and there
+        // is no shape here for a named one to go in. Diagnosed rather than
+        // discarded, which is what would leave a program believing it stored
+        // something.
+        fatal(("named property writes on a DataView are unsupported (its bytes are written "
+               "through setInt8/setFloat64 and the rest; tried to write `" + keyStr + "`)")
+                  .c_str());
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // `lastIndex` is the one writable property a RegExp has (22.2.6.9).

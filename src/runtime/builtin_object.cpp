@@ -47,6 +47,52 @@ bool isCallable(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
+// Why bronze cannot describe or redefine this receiver's own properties. One
+// sentence per storage story, because "unsupported" without the reason is a
+// reader's dead end.
+const char* propertyStoreReason(Value v) {
+    switch (v.asObject<HeapObjectHeader>()->flags) {
+        case HeapKind::Array:
+            return "its own keys are ELEMENTS and a `length`, and neither is a property "
+                   "bronze keeps in a shape a descriptor could be written to";
+        case HeapKind::Function:
+            return "its own keys are a `prototype` slot, a side object of statics, and "
+                   "`length` and `name`, which bronze does not store at all";
+        default:
+            return "it keeps no property table, so there is nothing here to describe";
+    }
+}
+
+// The receiver of an `Object` member that needs a property TABLE — one it can
+// describe, redefine, or copy into.
+//
+// `isPlainObject` is the wrong predicate to gate these on, and the wrongness is
+// not a matter of degree. It answers "does this keep its properties in a
+// shape"; the first step of every clause below asks whether the value is an
+// OBJECT, and an array is an object. So each of these told a program its array
+// "is not an object" — a false statement about the receiver, and the kind that
+// sends a reader looking for the wrong bug. It is the same mistake the
+// integrity levels made: a predicate answering a different question than the
+// step asks.
+//
+// Three answers, and the middle one is the fix. A plain object proceeds. A
+// PRIMITIVE gets the TypeError the clause specifies, and the message is now
+// true of what it was actually given. Any other object is refused BY NAME,
+// saying what it is and what about its storage bronze cannot reach —
+// `getOwnPropertyNames`'s precedent, which named the kinds before any of the
+// rest of them did.
+bool requirePropertyTable(Value v, const char* member) {
+    if (isPlainObject(v)) return true;
+    if (!v.isObject()) {
+        rtThrowTypeError(std::string("Object.") + member +
+                         " called on a value that is not an object");
+        return false;
+    }
+    fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
+           propertyStoreReason(v) + ")")
+              .c_str());
+}
+
 // ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
 // is not an optimization here: a DictEntry outlives every collection, so a heap
 // key would dangle.
@@ -122,10 +168,7 @@ DictEntry* entryOf(Value objVal, PropertyKey name) {
 // the one a shape transition cannot represent.
 uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError("Object.defineProperty called on a value that is not an object")
-            .rawBits();
-    }
+    if (!requirePropertyTable(args[0], "defineProperty")) return Value::fromUndefined().rawBits();
     if (!isPlainObject(args[2])) {
         return rtThrowTypeError("Property description must be an object").rawBits();
     }
@@ -185,10 +228,8 @@ uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                                         const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError(
-                   "Object.getOwnPropertyDescriptor called on a value that is not an object")
-            .rawBits();
+    if (!requirePropertyTable(args[0], "getOwnPropertyDescriptor")) {
+        return Value::fromUndefined().rawBits();
     }
     Rooted<Value> self{args[0]};
     rtCheckStringExoticOwnKeys(self.get(), "describing");
@@ -280,10 +321,7 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 // method can be shadowed by an own property of the object being asked about.
 uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError("Object.hasOwn called on a value that is not an object")
-            .rawBits();
-    }
+    if (!requirePropertyTable(args[0], "hasOwn")) return Value::fromUndefined().rawBits();
     Rooted<Value> self{args[0]};
     return Value::fromBool(hasOwnPropertyNamed(self, args[1])).rawBits();
 }
@@ -325,10 +363,8 @@ uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint
 uint64_t objectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                          const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError(
-                   "Object.getOwnPropertyDescriptors called on a value that is not an object")
-            .rawBits();
+    if (!requirePropertyTable(args[0], "getOwnPropertyDescriptors")) {
+        return Value::fromUndefined().rawBits();
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> out{Value(bronze_create_object())};
@@ -406,9 +442,8 @@ bool defineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descriptors) {
 
 uint64_t objectDefineProperties(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError("Object.defineProperties called on a value that is not an object")
-            .rawBits();
+    if (!requirePropertyTable(args[0], "defineProperties")) {
+        return Value::fromUndefined().rawBits();
     }
     Rooted<Value> target{args[0]};
     Rooted<Value> descriptors{args[1]};
@@ -441,17 +476,11 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 // and is one argument to one walk rather than a second walk.
 uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        // An array's own names include `length`, which bronze stores outside
-        // the shape system entirely, so the answer would be incomplete rather
-        // than merely different.
-        if (!args[0].isObject()) {
-            return rtThrowTypeError(
-                       "Object.getOwnPropertyNames called on a value that is not an object")
-                .rawBits();
-        }
-        fatal("unsupported: Object.getOwnPropertyNames on an array, a function, a Map or a Set "
-              "(their own non-enumerable names are not properties bronze stores)");
+    // An array's own names include `length`, which bronze stores outside the
+    // shape system entirely, so the answer would be incomplete rather than
+    // merely different — which is what the shared refusal says, by kind.
+    if (!requirePropertyTable(args[0], "getOwnPropertyNames")) {
+        return Value::fromUndefined().rawBits();
     }
     Rooted<Value> self{args[0]};
     // 20.1.2.10 is the STRING half of OwnPropertyKeys — the symbol half is
@@ -580,9 +609,10 @@ uint64_t objectEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
 // enumerable properties" would be two chances to disagree about a getter.
 uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!isPlainObject(args[0])) {
-        return rtThrowTypeError("Object.assign target must be an object").rawBits();
-    }
+    // 20.1.2.1 step 1 is ToObject(target), so the TARGET is the only argument
+    // with a kind requirement — a source that is not an object contributes no
+    // properties rather than raising.
+    if (!requirePropertyTable(args[0], "assign")) return Value::fromUndefined().rawBits();
     Rooted<Value> target{args[0]};
     for (uint32_t i = 1; i < args.count(); ++i) {
         Rooted<Value> src{args[i]};

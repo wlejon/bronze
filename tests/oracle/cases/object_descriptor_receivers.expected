@@ -1,0 +1,13 @@
+TypeError: Object.defineProperty called on a value that is not an object
+TypeError: Object.defineProperty called on a value that is not an object
+TypeError: Object.defineProperties called on a value that is not an object
+TypeError: Object.getOwnPropertyDescriptor called on a value that is not an object
+TypeError: Object.getOwnPropertyDescriptors called on a value that is not an object
+TypeError: Object.getOwnPropertyNames called on a value that is not an object
+TypeError: Object.hasOwn called on a value that is not an object
+TypeError: Object.assign called on a value that is not an object
+5 false true false
+true false
+x
+{"a":1,"b":2}
+{"q":{"value":1,"writable":true,"enumerable":true,"configurable":true}}

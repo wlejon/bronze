@@ -58,6 +58,11 @@ enum : uint16_t {
     Function,
     TypedArray,
     ArrayBuffer,
+    // A DataView is its own kind and not a tenth element kind: it reads a
+    // buffer at an arbitrary byte offset with an explicitly named byte order,
+    // so nothing about it shares the offset-times-width addressing every
+    // %TypedArray% element access is.
+    DataView,
     Map,
     Set,
     Iterator,

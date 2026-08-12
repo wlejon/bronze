@@ -45,6 +45,7 @@ static const char* valueKindName(Value v) {
             case TypedArrayHeader::kFlags:
                 return v.asObject<TypedArrayHeader>()->kindName();
             case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
+            case DataViewHeader::kFlags: return "a DataView";
             default: return "an object";
         }
     }

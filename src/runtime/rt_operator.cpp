@@ -287,6 +287,10 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         return rtIsIntegerLikeKey(key, index) && index < view->length;
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) return key == "byteLength";
+    // A DataView's members all live on its prototype, which bronze answers on
+    // the property path — so `in`, which walks the chain, must ask the same
+    // table the reads come from rather than report the object empty.
+    if (hdr->flags == DataViewHeader::kFlags) return rtDataViewHasMember(key);
 
     const bool isFunction = hdr->flags == HeapKind::Function;
     if (isFunction && key == "prototype") return true;

@@ -56,7 +56,7 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "ArrayBuffer" || name == "Int8Array" || name == "Uint8Array" ||
            name == "Uint8ClampedArray" || name == "Int16Array" || name == "Uint16Array" ||
            name == "Int32Array" || name == "Uint32Array" || name == "Float32Array" ||
-           name == "Float64Array";
+           name == "Float64Array" || name == "DataView";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {

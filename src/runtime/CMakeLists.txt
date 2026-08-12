@@ -19,6 +19,7 @@ bronze_add_module(runtime
         typed_array.cpp
         builtin_typed_array.cpp
         builtin_typed_array_methods.cpp
+        builtin_data_view.cpp
         fn.cpp
         builtin_math.cpp
         builtin_array.cpp
@@ -63,6 +64,7 @@ bronze_add_module(runtime
         ../../tests/runtime/object_test.cpp
         ../../tests/runtime/array_test.cpp
         ../../tests/runtime/typed_array_test.cpp
+        ../../tests/runtime/data_view_test.cpp
         ../../tests/runtime/fn_test.cpp
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp

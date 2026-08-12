@@ -224,4 +224,18 @@ TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, ElementKind kin
     return view;
 }
 
+DataViewHeader* DataViewHeader::create(Heap& heap, Rooted<Value>& buffer_val, uint32_t byteOffset,
+                                       uint32_t byteLength) {
+    size_t payload_bytes = sizeof(DataViewHeader) - sizeof(HeapObjectHeader);
+    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
+    auto* view = reinterpret_cast<DataViewHeader*>(raw_hdr);
+    view->header.flags = kFlags;
+    // Read the buffer through the ROOT, after the allocation above, for the
+    // reason createOverBuffer does: that allocation may have moved it.
+    view->buffer = buffer_val.get();
+    view->byteOffset = byteOffset;
+    view->byteLength = byteLength;
+    return view;
+}
+
 }  // namespace bronze

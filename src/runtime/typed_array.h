@@ -119,6 +119,55 @@ struct TypedArrayHeader {
                                               uint32_t length);
 };
 
+// ECMA-262 25.3's DataView. A second view over the same `ArrayBufferHeader`,
+// and deliberately not a tenth ElementKind: an element kind fixes a width and a
+// byte order for every access, and this object's whole purpose is that
+// `getFloat32(1, true)` fixes neither. So it carries no `kind` at all — the
+// type is a parameter of each ACCESS, which is why the sixteen accessors are
+// where the widths live and the header holds only the window.
+//
+// The GC rule is TypedArrayHeader's, unchanged and just as absolute: the buffer
+// is a `Value` so the generic payload scan forwards it, and the data address is
+// recomputed from that `Value` on every access, never cached across anything
+// that can allocate.
+//
+// The layout obeys kMaxByteLength for the same reason the view above does.
+// `{byteOffset, byteLength}` share the one 8-byte word the collector reads as a
+// `Value`, and on a little-endian host `byteLength` is its top half — so the
+// tag `forward_value` would test is `byteLength >> 16`. A byteLength at or
+// above 0xFFF1_0000 would present a valid pointer tag and be "relocated",
+// overwriting the window's length with an address. The cap is three orders of
+// magnitude below that, and it binds here because a DataView can only ever be
+// built over a buffer the cap already admitted. There is no third word to
+// worry about: the two fields fill it, so no padding is left holding whatever
+// the allocator last wrote there.
+struct DataViewHeader {
+    HeapObjectHeader header;
+    Value buffer;
+    uint32_t byteOffset;
+    uint32_t byteLength;
+
+    static constexpr uint16_t kFlags = HeapKind::DataView;
+
+    // The first byte of this view. Valid only until the next allocation.
+    uint8_t* bytes() noexcept {
+        return buffer.asObject<ArrayBufferHeader>()->data() + byteOffset;
+    }
+    const uint8_t* bytes() const noexcept {
+        return buffer.asObject<const ArrayBufferHeader>()->data() + byteOffset;
+    }
+
+    // The buffer arrives through a root because allocating the view can move
+    // it; the offset and length are the caller's to validate (25.3.2.1 has the
+    // whole ladder).
+    static DataViewHeader* create(Heap& heap, Rooted<Value>& buffer_val, uint32_t byteOffset,
+                                  uint32_t byteLength);
+};
+
+static_assert(sizeof(DataViewHeader) == 24,
+              "a DataView is a header, a buffer Value and ONE scanned {byteOffset, byteLength} "
+              "word; a third payload word would be scanned as a Value too");
+
 // The narrowing conversions of 7.1.6..7.1.11, exposed because construction
 // from another typed array converts element by element without materialising
 // a view. `value` has already been through ToNumber.

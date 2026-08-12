@@ -1,0 +1,24 @@
+8 0 4 4
+true true true
+1 2 3 4
+2864434397 2864434397
+3721182122 3721182122
+1 2 204 221
+258
+255 -1 -1 255
+254 -2 254
+4 4
+18 52 18 52
+true object function
+true true true
+true true true false
+undefined undefined undefined
+true true
+false false
+ArrayBuffer { [Uint8Contents]: <01 02 00 00>, byteLength: 4 }
+DataView { byteLength: 4, byteOffset: 0, buffer: ArrayBuffer { [Uint8Contents]: <01 02 00 00>, byteLength: 4 } }
+DataView { byteLength: 2, byteOffset: 2, buffer: ArrayBuffer { [Uint8Contents]: <01 02 00 00>, byteLength: 4 } }
+ArrayBuffer { [Uint8Contents]: <>, byteLength: 0 }
+[ DataView { byteLength: 4, byteOffset: 0, buffer: ArrayBuffer { [Uint8Contents]: <01 02 00 00>, byteLength: 4 } } ]
+[ [ DataView { byteLength: 4, byteOffset: 0, buffer: [ArrayBuffer] } ] ]
+[ [ [ [DataView] ] ] ]

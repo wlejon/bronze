@@ -178,7 +178,9 @@ private:
             case TypedArrayHeader::kFlags:
                 return typedArray(reinterpret_cast<TypedArrayHeader*>(hdr), depth);
             case ArrayBufferHeader::kFlags:
-                fatal("printing an ArrayBuffer is not implemented");
+                return arrayBuffer(reinterpret_cast<ArrayBufferHeader*>(hdr), depth);
+            case DataViewHeader::kFlags:
+                return dataView(reinterpret_cast<DataViewHeader*>(hdr), depth);
             case MapHeader::kMapFlags:
                 return collection(reinterpret_cast<MapHeader*>(hdr), false, depth);
             case MapHeader::kSetFlags:
@@ -284,6 +286,54 @@ private:
             body += numberText(view->get(i));
         }
         return out + "[ " + body + " ]";
+    }
+
+    // A buffer prints as its BYTES, in hex, because that is the whole of what
+    // it is: it has no elements, no element kind and no way for a program to
+    // read it except through a view. node's spelling, and the `[Uint8Contents]`
+    // label is part of it — the brackets say the entry is an internal slot
+    // rather than a property `Object.keys` would report.
+    //
+    // Long buffers are cut off at kMaxBytes with a count of what was dropped.
+    // A 256 MiB buffer (typed_array.h's cap) would otherwise print a line of
+    // 768 million characters, which is not a rendering of the value in any
+    // useful sense.
+    std::string arrayBuffer(ArrayBufferHeader* buf, int depth) {
+        static constexpr uint32_t kMaxBytes = 100;
+        if (depth > kMaxDepth) return "[ArrayBuffer]";
+        const uint32_t length = buf->byteLength;
+        const uint32_t shown = std::min(length, kMaxBytes);
+        const uint8_t* data = buf->data();
+        std::string body;
+        for (uint32_t i = 0; i < shown; ++i) {
+            if (i) body += ' ';
+            // Lowercase hex, two digits, always — a byte is a fixed-width thing
+            // and a printed buffer is read by counting columns.
+            static const char* kHex = "0123456789abcdef";
+            body += kHex[data[i] >> 4];
+            body += kHex[data[i] & 0xF];
+        }
+        if (length > shown) {
+            const uint32_t rest = length - shown;
+            body += " ... " + std::to_string(rest) + (rest == 1 ? " more byte" : " more bytes");
+        }
+        return "ArrayBuffer { [Uint8Contents]: <" + body +
+               ">, byteLength: " + std::to_string(length) + " }";
+    }
+
+    // The three slots 25.3.4.1..25.3.4.3 expose, in that order, and the buffer
+    // expanded inside them. Nothing about the CONTENT of the window is printed:
+    // a DataView has no element type, so there is no list of values to show —
+    // which is exactly the distinction from a typed array above.
+    std::string dataView(DataViewHeader* view, int depth) {
+        if (depth > kMaxDepth) return "[DataView]";
+        // The buffer is one level deeper than the view that names it, on the
+        // same terms as an object's property value — so a buffer nested past
+        // the cut prints as `[ArrayBuffer]` while the view around it still
+        // shows its slots.
+        return "DataView { byteLength: " + std::to_string(view->byteLength) +
+               ", byteOffset: " + std::to_string(view->byteOffset) + ", buffer: " +
+               arrayBuffer(view->buffer.asObject<ArrayBufferHeader>(), depth + 1) + " }";
     }
 
     std::string object(ObjectHeader* obj, int depth) {

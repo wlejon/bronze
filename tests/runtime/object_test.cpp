@@ -1,12 +1,19 @@
 #include <doctest/doctest.h>
 
+#include <stdexcept>
 #include <string>
+#include <vector>
 
+#include "abi/bronze_abi.h"
+#include "runtime/fatal.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 
 using namespace bronze;
 
@@ -176,4 +183,86 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
 
     CHECK(protoMutationEpoch() == filledAt);
     CHECK(ic.describes(inst.get()->shape));
+}
+
+// ---- the receiver of an `Object` member that needs a property table ---------
+//
+// The oracle case beside this one (`object_descriptor_receivers`) pins what a
+// PRIMITIVE receiver is told, which is a catchable TypeError. What it cannot
+// reach is the other half of the same fix: an array and a function are objects,
+// so telling them they are not was a false statement, and what they get now is
+// a hard error that names the kind and the storage reason. A hard error ends
+// the process, so it can only be observed here.
+
+TEST_CASE("an Object member that needs a property table names the receiver it refuses") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> ns{runtime::rtObjectNamespace()};
+    Rooted<Value> arr{Value(bronze_create_array(2))};
+    // A real function object: every member of the `Object` namespace is one.
+    Rooted<Value> keysKey{runtime::rtMakeString("keys")};
+    Rooted<Value> fn{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), keysKey)};
+    REQUIRE(fn.get().isObject());
+    REQUIRE(fn.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
+    Rooted<Value> view{
+        Value::fromObject(TypedArrayHeader::create(runtime::rtHeap(), ElementKind::Uint8, 1))};
+
+    // The receiver is read from its ROOT after the two lookups below, which
+    // both allocate: under BRONZE_GC_STRESS every allocation moves the live
+    // set, so a Value copied into an argument list before them would name dead
+    // from-space and the refusal would report the wrong kind. The extra
+    // arguments are numbers, which no collection can move — none of these
+    // calls gets far enough to look at one.
+    auto call = [&](const char* member, Rooted<Value>& recv, uint32_t extraArgs) {
+        Rooted<Value> key{runtime::rtMakeString(member)};
+        Rooted<Value> target{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), key)};
+        REQUIRE(target.get().isObject());
+        Value args[3] = {recv.get(), Value::fromDouble(0), Value::fromDouble(0)};
+        return Value(target.get().asObject<FunctionHeader>()->call(Value::fromUndefined(),
+                                                                  1 + extraArgs, args));
+    };
+
+    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
+
+    // The kind is named, and so is what about it cannot be done — never "this
+    // is not an object", which is what an array used to be told.
+    CHECK_THROWS_WITH_AS(call("defineProperty", arr, 2),
+                         doctest::Contains("Object.defineProperty on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("defineProperty", arr, 2),
+                         doctest::Contains("its own keys are ELEMENTS and a `length`"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyDescriptor", arr, 1),
+                         doctest::Contains("Object.getOwnPropertyDescriptor on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyDescriptors", arr, 0),
+                         doctest::Contains("Object.getOwnPropertyDescriptors on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("defineProperties", arr, 1),
+                         doctest::Contains("Object.defineProperties on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("hasOwn", arr, 1), doctest::Contains("Object.hasOwn on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("assign", arr, 0), doctest::Contains("Object.assign on an array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", arr, 0),
+                         doctest::Contains("Object.getOwnPropertyNames on an array"),
+                         std::runtime_error);
+
+    // A function is the other receiver the old message lied about, and its
+    // reason is a different one: the storage is a slot and a side object.
+    CHECK_THROWS_WITH_AS(call("hasOwn", fn, 1), doctest::Contains("Object.hasOwn on a function"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("hasOwn", fn, 1), doctest::Contains("`prototype` slot"),
+                         std::runtime_error);
+
+    // And a kind with no property table at all says exactly that.
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
+                         doctest::Contains("Object.getOwnPropertyNames on a typed array"),
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
+                         doctest::Contains("keeps no property table"), std::runtime_error);
+
+    setFatalHandler(nullptr);
+    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

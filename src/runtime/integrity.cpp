@@ -60,20 +60,16 @@ Target targetOf(Value v) {
     }
 }
 
-// The receiver's kind for a diagnostic, in the spelling a program would use.
+// The receiver's kind for a diagnostic. The three targets above never reach
+// this, so the shared namer's answers for them are unused here — what this adds
+// is the one kind that is not a JS value at all.
 const char* refusedKindName(Value v) {
-    switch (v.asObject<HeapObjectHeader>()->flags) {
-        case MapHeader::kMapFlags: return "a Map";
-        case MapHeader::kSetFlags: return "a Set";
-        case TypedArrayHeader::kFlags: return "a typed array";
-        case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
-        case RegExpHeader::kFlags: return "a RegExp";
-        case IterRecordHeader::kFlags:
-            // Not a JS value: nothing hands a program one, so reaching this is
-            // a lowering bug rather than something a program did.
-            fatal("internal: an integrity operation on an iteration record");
-        default: return "this object";
+    if (v.asObject<HeapObjectHeader>()->flags == IterRecordHeader::kFlags) {
+        // Nothing hands a program one, so reaching this is a lowering bug
+        // rather than something a program did.
+        fatal("internal: an integrity operation on an iteration record");
     }
+    return rtObjectKindName(v);
 }
 
 // What every refused kind has in common, said once: it has no side object, so
@@ -213,6 +209,26 @@ bool testIntegrity(Value receiver, bool frozen) {
 }
 
 }  // namespace
+
+// Every heap kind, named as a program would say it. It lives here because this
+// file already had the switch and every include it needs; what made it worth
+// exporting is that a diagnostic which REFUSES a receiver has to say what the
+// receiver IS, and more than one file had grown its own partial answer to that.
+const char* rtObjectKindName(Value v) {
+    if (!v.isObject()) fatal("internal: asked the heap kind of a value that is not an object");
+    switch (v.asObject<HeapObjectHeader>()->flags) {
+        case BRONZE_ABI_OBJ_FLAGS_PLAIN: return "a plain object";
+        case HeapKind::Array: return "an array";
+        case HeapKind::Function: return "a function";
+        case MapHeader::kMapFlags: return "a Map";
+        case MapHeader::kSetFlags: return "a Set";
+        case TypedArrayHeader::kFlags: return "a typed array";
+        case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
+        case DataViewHeader::kFlags: return "a DataView";
+        case RegExpHeader::kFlags: return "a RegExp";
+        default: return "this object";
+    }
+}
 
 Dictionary* rtIntegrityTable(Value obj) {
     ObjectHeader* owner = nullptr;

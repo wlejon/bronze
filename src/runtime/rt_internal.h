@@ -116,6 +116,14 @@ Value rtStringFromUnits(const std::vector<uint16_t>& units);
 // which it meant.
 std::string rtUtf8Chars(const StringHeader* s);
 
+// The heap kind of an object, in the spelling a program would use: "an array",
+// "a function", "a Map", "a DataView". For a diagnostic that REFUSES a
+// receiver, which has to say what the receiver is — and the reason this is one
+// function rather than one per refusing file is that a message naming the wrong
+// kind sends a reader to the wrong place. Defined in integrity.cpp, which had
+// the switch first. A non-object is a caller error, not an answer here.
+const char* rtObjectKindName(Value v);
+
 // Diagnose `key` if it is a real member of `receiver` that bronze has not
 // implemented; return quietly otherwise, so the caller reads `undefined`,
 // which is what the language says for a property that does not exist.
@@ -424,6 +432,26 @@ Value rtTypedArrayMethod(const std::string& key);
 // `v[Symbol.iterator]`, which 23.2.3.34 makes the same function object as
 // `values`. By key and not by name, because the key is a symbol.
 Value rtTypedArrayIteratorMethod();
+
+// ---- DataView (ECMA-262 25.3) ----------------------------------------------
+//
+// A separate object from the nine views and so a separate set of entry points:
+// its accessors choose a width and a byte order per CALL, which is the whole
+// reason it is not a tenth element kind.
+
+// `DataView` by the name lowering resolved; `undefined` for anything else.
+Value rtDataViewConstructor(const std::string& name);
+// `"DataView"` when this function object IS that constructor, else nullptr —
+// the counterpart of `rtTypedArrayConstructorName`, for the same reason.
+const char* rtDataViewConstructorName(Value fn);
+// A member of a DataView INSTANCE by name: `buffer`, `byteLength`,
+// `byteOffset`, `constructor`, or one of the sixteen accessors. A BigInt
+// accessor is diagnosed by name here rather than read as `undefined`; anything
+// else really is absent.
+Value rtDataViewMember(Value view, const std::string& key);
+// Whether 25.3.4 defines `key` on a DataView at all — what `in` asks, and
+// which must agree with the function above about every name.
+bool rtDataViewHasMember(const std::string& key);
 
 // ---- regular expressions ---------------------------------------
 

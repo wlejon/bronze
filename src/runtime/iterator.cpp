@@ -292,6 +292,9 @@ std::string rtIterableKindName(Value v) {
     switch (v.asObject<HeapObjectHeader>()->flags) {
         case 2: return "a function";
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
+        // Neither is iterable, and both are the mistake a program makes when it
+        // means the view over the buffer rather than the bytes themselves.
+        case DataViewHeader::kFlags: return "a DataView";
         default: return "an object";
     }
 }
