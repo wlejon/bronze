@@ -10,6 +10,7 @@ bronze_add_module(lower
                  ../../tests/lower/lower_try_test.cpp ../../tests/lower/lower_infer_test.cpp
                  ../../tests/lower/lower_scope_test.cpp
                  ../../tests/lower/lower_for_env_test.cpp
+                 ../../tests/lower/lower_loop_exit_test.cpp
                  ../../tests/lower/lower_unresolved_test.cpp
     # Test-only: the fixtures need a lexer and parser to produce an AST.
     # `bronze::lower` itself consumes an AST it is handed and includes

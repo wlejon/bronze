@@ -528,10 +528,16 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     if (perIteration) currentEnvValue_ = headerEnvParam;
 
     auto exitParamMap = addLoopBlockParams(loopParams, bExit, ilFn);
-    std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
 
     if (forStmt->condition) {
         Value condVal = lowerCondition(*forStmt->condition, ilFn);
+        // AFTER the condition, never before it. 14.7.4.8 step 3.a evaluates the
+        // test expression, and that expression may assign — `for (;(seen = i),
+        // i < 2;)` writes `seen` on the false evaluation too. The exit edge
+        // owes the exit block the values as of the BRANCH, so the args are
+        // collected where the branch is emitted; snapshotting them at the top
+        // of the header is how the final, loop-ending write got dropped.
+        std::vector<il::ValueId> headerExitArgs = collectEdgeArgs(loopVars, bExit, ilFn);
         il::Instruction brInst;
         brInst.op = il::Op::Branch;
         brInst.type = il::Type::Void;
