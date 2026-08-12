@@ -88,6 +88,77 @@ TEST_CASE("string equality and mixed representation equality") {
     CHECK(utf1.get()->equals(*lat1.get()));
 }
 
+TEST_CASE("string ordering is by UTF-16 code unit, and a prefix comes first") {
+    // ECMA-262 7.2.13 IsStringLessThan, which is what 13.10.1 step 3 uses to
+    // compare two strings without converting either. Code units, not
+    // characters and not a collation: `localeCompare` is deliberately
+    // unimplemented and this must never become it.
+    Heap heap;
+    ShadowStackFrame frame;
+
+    auto s = [&](const char* text) {
+        return StringHeader::createFromUTF8(heap, text);
+    };
+    Rooted<StringHeader*> a(s("a"));
+    Rooted<StringHeader*> b(s("b"));
+    CHECK(a.get()->lessThan(*b.get()));
+    CHECK_FALSE(b.get()->lessThan(*a.get()));
+
+    // Equal strings are not less than each other — the case that makes `<=`
+    // differ from `<`, and the reason this is not a three-way compare.
+    Rooted<StringHeader*> a2(s("a"));
+    CHECK_FALSE(a.get()->lessThan(*a2.get()));
+    CHECK_FALSE(a.get()->lessThan(*a.get()));
+
+    // A shared prefix: the first differing code unit decides, whatever
+    // follows it.
+    Rooted<StringHeader*> abc(s("abc"));
+    Rooted<StringHeader*> abd(s("abd"));
+    CHECK(abc.get()->lessThan(*abd.get()));
+    CHECK_FALSE(abd.get()->lessThan(*abc.get()));
+
+    // 7.2.13 step 3: a prefix is less than what extends it, and the empty
+    // string is a prefix of everything.
+    Rooted<StringHeader*> apple(s("apple"));
+    Rooted<StringHeader*> apples(s("apples"));
+    Rooted<StringHeader*> empty(s(""));
+    CHECK(apple.get()->lessThan(*apples.get()));
+    CHECK_FALSE(apples.get()->lessThan(*apple.get()));
+    CHECK(empty.get()->lessThan(*apple.get()));
+    CHECK_FALSE(empty.get()->lessThan(*empty.get()));
+
+    // Mixed case: 0x5A precedes 0x61, so every uppercase letter sorts before
+    // every lowercase one. A locale-aware comparison would answer otherwise,
+    // and that is the whole point of pinning it.
+    Rooted<StringHeader*> upperZ(s("Z"));
+    Rooted<StringHeader*> lowerA(s("a"));
+    CHECK(upperZ.get()->lessThan(*lowerA.get()));
+    CHECK_FALSE(lowerA.get()->lessThan(*upperZ.get()));
+
+    // Digits are code units too: "2" is above "1", so "2" is NOT less than
+    // "10" the way the number 2 is less than 10.
+    Rooted<StringHeader*> two(s("2"));
+    Rooted<StringHeader*> ten(s("10"));
+    CHECK_FALSE(two.get()->lessThan(*ten.get()));
+    CHECK(ten.get()->lessThan(*two.get()));
+
+    // A latin1 byte at or above 0x80 is a code unit above 0x7F, and `char` is
+    // signed here — a memcmp would order this the other way round.
+    const uint16_t highUnit[] = {0x00E9};  // é
+    Rooted<StringHeader*> eacute(StringHeader::createUTF16(heap, highUnit, 1));
+    CHECK(lowerA.get()->lessThan(*eacute.get()));
+    CHECK_FALSE(eacute.get()->lessThan(*lowerA.get()));
+
+    // The two representations answer the same question: a UTF-16 string and a
+    // latin1 one with the same code units compare as equals.
+    const uint16_t abcUnits[] = {'a', 'b', 'c'};
+    Rooted<StringHeader*> abcWide(StringHeader::createUTF16(heap, abcUnits, 3));
+    REQUIRE(abcWide.get()->isUTF16());
+    CHECK_FALSE(abc.get()->lessThan(*abcWide.get()));
+    CHECK_FALSE(abcWide.get()->lessThan(*abc.get()));
+    CHECK(abcWide.get()->lessThan(*abd.get()));
+}
+
 TEST_CASE("hash computation and caching") {
     Heap heap;
 

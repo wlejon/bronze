@@ -199,6 +199,21 @@ bool StringHeader::equals(const StringHeader& other) const noexcept {
     return true;
 }
 
+bool StringHeader::lessThan(const StringHeader& other) const noexcept {
+    // charCodeAt on both sides rather than a memcmp on the latin1 pair: a
+    // latin1 byte at or above 0x80 is a code unit above 0x7F, and `char` is
+    // signed on this target, so memcmp would order "é" below "a".
+    const uint32_t shared = length < other.length ? length : other.length;
+    for (uint32_t i = 0; i < shared; ++i) {
+        const uint16_t a = charCodeAt(i);
+        const uint16_t b = other.charCodeAt(i);
+        if (a != b) return a < b;
+    }
+    // 7.2.13 step 3: a prefix is less than what extends it, and equal strings
+    // are not less than each other — which is what makes `<=` differ from `<`.
+    return length < other.length;
+}
+
 uint32_t StringHeader::hash() const noexcept {
     if ((flags & kHasHashFlag) != 0) {
         return flags & 0xFFFFFFFCU;

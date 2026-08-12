@@ -35,6 +35,37 @@ struct HeapObjectHeader {
 
 static_assert(sizeof(HeapObjectHeader) == 8, "HeapObjectHeader must be 8 bytes");
 
+// What kind of thing a `Tag::Object` allocation is. The `flags` word above is
+// the only way to tell, because every one of these is reached through the same
+// `Value` representation and the same `asObject<T>()` cast — so a wrong answer
+// here is not a wrong answer, it is reading one type's memory as another's.
+//
+// They are enumerated in ONE place because two of them were once the same
+// number. An environment record and a Map both answered 5, and `resolveEnv`'s
+// brand check — whose whole job is to reject a value that is not an environment
+// record — accepted a Map and walked its payload as scope slots. Nothing named
+// the collision because nothing named the set: a kind's value was a literal at
+// its own allocation sites and a constant on its own header, and no file saw
+// two of them at once.
+//
+// A value is read by nothing outside this process, so these may be renumbered
+// freely. What must never happen is two of them matching, which an enum makes
+// a matter of adding a name rather than of remembering a number.
+namespace HeapKind {
+enum : uint16_t {
+    Plain = 0,  // an ordinary object; ties to BRONZE_ABI_OBJ_FLAGS_PLAIN in object.h
+    Array,
+    Function,
+    TypedArray,
+    ArrayBuffer,
+    Map,
+    Set,
+    Iterator,
+    RegExp,
+    Env,
+};
+}  // namespace HeapKind
+
 class VirtualMemory {
 public:
     static void* reserve(size_t bytes);

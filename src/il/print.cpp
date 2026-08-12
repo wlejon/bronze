@@ -39,11 +39,17 @@ const char* opName(Op op) {
         case Op::UShr: return "ushr";
         case Op::CmpLt: return "cmp.lt";
         case Op::CmpGt: return "cmp.gt";
+        case Op::CmpLe: return "cmp.le";
+        case Op::CmpGe: return "cmp.ge";
         case Op::CmpEq: return "cmp.eq";
         case Op::CmpNe: return "cmp.ne";
         case Op::NumTruthy: return "num.truthy";
         case Op::StrictEq: return "strict.eq";
         case Op::LooseEq: return "loose.eq";
+        case Op::RelLt: return "rel.lt";
+        case Op::RelGt: return "rel.gt";
+        case Op::RelLe: return "rel.le";
+        case Op::RelGe: return "rel.ge";
         case Op::TypeOf: return "typeof";
         case Op::InstanceOf: return "instanceof";
         case Op::In: return "in";
@@ -139,6 +145,11 @@ bool canThrow(const Instruction& inst) {
         case Op::UShr:
         case Op::CmpLt:
         case Op::CmpGt:
+        // The ordered compares are machine instructions on two numbers, like
+        // the two above them. Their boxed siblings — rel.lt and friends — are
+        // NOT here: those reach ToPrimitive.
+        case Op::CmpLe:
+        case Op::CmpGe:
         case Op::CmpEq:
         case Op::CmpNe:
         case Op::NumTruthy:

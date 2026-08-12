@@ -54,8 +54,8 @@ struct MapHeader {
     // the index is valid only when BOTH agree.
     Value indexAnchor;
 
-    static constexpr uint16_t kMapFlags = 5;
-    static constexpr uint16_t kSetFlags = 6;
+    static constexpr uint16_t kMapFlags = HeapKind::Map;
+    static constexpr uint16_t kSetFlags = HeapKind::Set;
 
     static MapHeader* create(Heap& heap, uint16_t flags);
 

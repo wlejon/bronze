@@ -1,0 +1,8 @@
+string named: true TypeError
+string index: true TypeError
+abc a
+number named: true TypeError
+number index: true TypeError
+boolean index: true TypeError
+null named: true TypeError
+null index: true TypeError

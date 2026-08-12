@@ -1,10 +1,12 @@
 // `Object.prototype` as a REAL object on the real chain: every plain object's
 // root shape names it, so the prototype walk that already found a class's
 // methods finds these, and a program can hold the object, compare it, and add
-// to it. That is the difference this case exists to pin — bronze's other
-// builtin receivers (an array, a string, a function) still have their members
-// handed out BESIDE them by the property path, where nothing can reach the
-// holder, and `Object.getPrototypeOf` still says so by name for those.
+// to it. That is the difference this case exists to pin — an array, a number
+// and a function still have their members handed out BESIDE them by the
+// property path, where nothing can reach the holder, and
+// `Object.getPrototypeOf` still says so by name for those. A string and a
+// boolean have joined this side of the line
+// (`cases/get_prototype_of_primitive`).
 //
 // The property that made this safe to introduce under a suite of pinned
 // expectations is on line 1 of 20.1.3: every member of `Object.prototype` is

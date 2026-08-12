@@ -36,7 +36,7 @@ struct IterRecordHeader {
     Value kind;     // double, one of Kind below
     Value done;     // bool: the iteration is finished, so closing it is a no-op
 
-    static constexpr uint16_t kFlags = 7;
+    static constexpr uint16_t kFlags = HeapKind::Iterator;
 
     // Which walk this record is. The fast kinds exist because an array, a
     // string and a Map have a cursor the runtime can step directly — no

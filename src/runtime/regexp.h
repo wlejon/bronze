@@ -28,7 +28,7 @@ struct RegExpHeader {
     Value lastIndex;
     Value programIndex;  // double: index into the compiled-pattern table
 
-    static constexpr uint16_t kFlags = 8;
+    static constexpr uint16_t kFlags = HeapKind::RegExp;
 };
 
 }  // namespace bronze

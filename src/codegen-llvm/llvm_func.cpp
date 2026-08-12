@@ -403,11 +403,17 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::Mod:
         case il::Op::CmpLt:
         case il::Op::CmpGt:
+        case il::Op::CmpLe:
+        case il::Op::CmpGe:
         case il::Op::CmpEq:
         case il::Op::CmpNe:
         case il::Op::NumTruthy:
         case il::Op::StrictEq:
         case il::Op::LooseEq:
+        case il::Op::RelLt:
+        case il::Op::RelGt:
+        case il::Op::RelLe:
+        case il::Op::RelGe:
         case il::Op::Pow:
         case il::Op::ToInt32:
         case il::Op::BitAnd:

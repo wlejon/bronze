@@ -311,13 +311,30 @@ uint64_t objectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
 // property path rather than found on a prototype object, so there is no
 // `Array.prototype` to return and `null` would be a lie about a chain that
 // really does have methods on it.
+//
+// Step 1 of 20.1.2.12 is ToObject, which is the whole reason a PRIMITIVE has an
+// answer here at all: `Object.getPrototypeOf("x")` is String.prototype, and
+// only `null` and `undefined` are the TypeError (7.1.18). The wrapper ToObject
+// would build is not built — [[GetPrototypeOf]] of one is the intrinsic
+// whatever it wraps, so building it would allocate an object to read a constant
+// off it.
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     if (!isPlainObject(args[0])) {
-        if (!args[0].isObject()) {
-            return rtThrowTypeError(
-                       "Object.getPrototypeOf called on a value that is not an object")
+        if (args[0].isNull() || args[0].isUndefined()) {
+            return rtThrowTypeError("Object.getPrototypeOf called on " +
+                                    std::string(args[0].isNull() ? "null" : "undefined"))
                 .rawBits();
+        }
+        if (args[0].isString()) return rtStringPrototype().rawBits();
+        if (args[0].isBool()) return rtBooleanPrototype().rawBits();
+        if (!args[0].isObject()) {
+            // A number's and a symbol's members are still handed out beside the
+            // value, so there is no object to return and no honest way to
+            // invent one: `null` would deny a chain that really does carry
+            // `toFixed`, and `Object.prototype` would name the wrong holder.
+            fatal("unsupported: Object.getPrototypeOf of a number or a symbol needs "
+                  "Number.prototype / Symbol.prototype, which bronze does not provide");
         }
         fatal("unsupported: Object.getPrototypeOf of an array or a function needs "
               "Array.prototype / Function.prototype, which bronze does not provide");

@@ -581,6 +581,12 @@ private:
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
                                        il::Function& ilFn);
+    // `<`, `>`, `<=`, `>=`. Which of the two algorithms ECMA-262 13.10.1 holds
+    // is reached depends on the operand types, and the choice is not an
+    // optimisation: an unproven operand may be a String, and step 3 compares
+    // two of those by code unit without converting anything.
+    std::optional<Value> lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,
+                                         il::Function& ilFn);
     // ECMA-262 ToInt32, and the bitwise/shift operators built on it. The int32
     // is an intermediate: every one of these produces an F64, because that is
     // the type the language gives their result and the only numeric element

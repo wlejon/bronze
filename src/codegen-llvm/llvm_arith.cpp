@@ -3,9 +3,10 @@
 // Every binary form here asks the same question first: are the operands
 // doubles? IL types say so directly for proven code; a Bool that reaches a
 // numeric op is widened, which is the one coercion this file performs. A
-// Dynamic operand never arrives at a compare — lowering routes those through
-// unbox or strict.eq — so mismatched operand types are a lowering bug and are
-// reported as one rather than coerced.
+// Dynamic operand never arrives at a machine compare — lowering routes those
+// through unbox, strict.eq or the rel.* family, each of which leaves through a
+// helper call above — so mismatched operand types at the compares below are a
+// lowering bug and are reported as one rather than coerced.
 
 #include <string>
 
@@ -76,6 +77,22 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
             return true;
         case il::Op::LooseEq:
             values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_loose_eq, {lhs, rhs});
+            return true;
+
+        // The relational operators over boxed operands: the runtime owns
+        // ECMA-262 13.10.1 entire, string branch included, so there is nothing
+        // for a compare instruction to do here.
+        case il::Op::RelLt:
+            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_lt, {lhs, rhs});
+            return true;
+        case il::Op::RelGt:
+            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_gt, {lhs, rhs});
+            return true;
+        case il::Op::RelLe:
+            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_le, {lhs, rhs});
+            return true;
+        case il::Op::RelGe:
+            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_ge, {lhs, rhs});
             return true;
         case il::Op::Pow:
             values_[inst.result] = builder_.CreateCall(
@@ -181,6 +198,11 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         switch (inst.op) {
             case il::Op::CmpLt: values_[inst.result] = builder_.CreateFCmpOLT(lhs, rhs); break;
             case il::Op::CmpGt: values_[inst.result] = builder_.CreateFCmpOGT(lhs, rhs); break;
+            // ORDERED, like the two above: `NaN <= 1` is false, which the
+            // unordered forms (ULE/UGE) would answer true. That difference is
+            // the whole of ECMA-262 13.10's "undefined becomes false".
+            case il::Op::CmpLe: values_[inst.result] = builder_.CreateFCmpOLE(lhs, rhs); break;
+            case il::Op::CmpGe: values_[inst.result] = builder_.CreateFCmpOGE(lhs, rhs); break;
             case il::Op::CmpEq: values_[inst.result] = builder_.CreateFCmpOEQ(lhs, rhs); break;
             // UNordered: `!==` is the negation of `===`, and `NaN !== NaN` is
             // true. The ordered form is `num.truthy` and means something else.
@@ -198,6 +220,8 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         switch (inst.op) {
             case il::Op::CmpLt: values_[inst.result] = builder_.CreateICmpSLT(lhs, rhs); break;
             case il::Op::CmpGt: values_[inst.result] = builder_.CreateICmpSGT(lhs, rhs); break;
+            case il::Op::CmpLe: values_[inst.result] = builder_.CreateICmpSLE(lhs, rhs); break;
+            case il::Op::CmpGe: values_[inst.result] = builder_.CreateICmpSGE(lhs, rhs); break;
             case il::Op::CmpEq: values_[inst.result] = builder_.CreateICmpEQ(lhs, rhs); break;
             default: values_[inst.result] = builder_.CreateICmpNE(lhs, rhs); break;
         }

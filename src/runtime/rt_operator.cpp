@@ -101,6 +101,54 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
     fatal("prototype chain too deep (a cycle?)");
 }
 
+// ToPrimitive with the NUMBER hint, for the two operands ECMA-262 13.10.1
+// step 1 asks for. A primitive is already one; a primitive WRAPPER answers
+// with its internal slot, which is what OrdinaryToPrimitive's `valueOf` call
+// would return, and is what makes `new String("a") < "b"` a string comparison
+// rather than a numeric one. Every other object needs the real algorithm —
+// a user `valueOf`, then `toString`, with the primitive test between them —
+// and it is not built; naming it is the honest answer, and it is the same
+// answer `rtToNumber` already gives such an object.
+//
+// Nothing here allocates, which is what lets the comparison below hold raw
+// StringHeader pointers across it.
+Value relationalToPrimitive(Value v) {
+    if (!v.isObject()) return v;
+    if (Value prim; rtWrapperPrimitive(v, prim)) return prim;
+    fatal("a relational operator ('<', '>', '<=', '>=') on an object needs ToPrimitive, "
+          "which is unsupported");
+}
+
+// ECMA-262 13.10.1 IsLessThan, whose result is a Boolean **or undefined**.
+// The third answer is the whole reason the four operators are not one compare
+// and its negation: 13.10 maps undefined to false for every one of them, while
+// `!` maps it to true for two of them.
+enum class LessThan { False, True, Undefined };
+
+// `x < y` in the spec's own terms. The LeftFirst flag of 13.10.1 orders the two
+// ToPrimitive calls and nothing else, and neither call above can run user code
+// or have an effect, so the order is unobservable here and is not threaded
+// through.
+LessThan isLessThan(Value x, Value y) {
+    const Value px = relationalToPrimitive(x);
+    const Value py = relationalToPrimitive(y);
+    // Step 3: both Strings, compared by code unit with NOTHING converted. It
+    // comes before ToNumeric, which is why `"2" < "10"` is true where
+    // `2 < 10` is false — the digits are never read as digits.
+    if (px.isString() && py.isString()) {
+        return px.asString<StringHeader>()->lessThan(*py.asString<StringHeader>())
+                   ? LessThan::True
+                   : LessThan::False;
+    }
+    // Step 4, the else-branch: ToNumeric on both, and step 4.c's undefined for
+    // a NaN on either side — which includes the case where one operand is a
+    // string that does not parse as a number.
+    const double nx = rtToNumber(px);
+    const double ny = rtToNumber(py);
+    if (std::isnan(nx) || std::isnan(ny)) return LessThan::Undefined;
+    return nx < ny ? LessThan::True : LessThan::False;
+}
+
 }  // namespace
 
 double rtExponentiate(double base, double exponent) {
@@ -260,6 +308,31 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         holder = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
     }
     return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
+}
+
+// The four relational operators of ECMA-262 13.10, each written as the
+// standard writes it: one IsLessThan call, with the operands in the order that
+// clause gives, and its undefined folded to false.
+//
+// The pairing is what matters. `a < b` and `a >= b` ask IsLessThan(a, b);
+// `a > b` and `a <= b` ask IsLessThan(b, a). Within a pair the two operators
+// differ only in which of the three answers they call true — and `<=` calls
+// true exactly one of them, so the undefined a NaN produces lands on false
+// where a negation of the boolean would have put it on true.
+bool bronze_rel_lt(uint64_t aBits, uint64_t bBits) {
+    return isLessThan(Value(aBits), Value(bBits)) == LessThan::True;
+}
+
+bool bronze_rel_gt(uint64_t aBits, uint64_t bBits) {
+    return isLessThan(Value(bBits), Value(aBits)) == LessThan::True;
+}
+
+bool bronze_rel_le(uint64_t aBits, uint64_t bBits) {
+    return isLessThan(Value(bBits), Value(aBits)) == LessThan::False;
+}
+
+bool bronze_rel_ge(uint64_t aBits, uint64_t bBits) {
+    return isLessThan(Value(aBits), Value(bBits)) == LessThan::False;
 }
 
 // ECMA-262 7.2.14, IsLooselyEqual, in the order the spec states it. The

@@ -15,7 +15,7 @@ struct EnvHeader {
     HeapObjectHeader header;
     Value parent;  // undefined at the outermost environment
 
-    static constexpr uint16_t kFlags = 5;
+    static constexpr uint16_t kFlags = HeapKind::Env;
 
     static EnvHeader* create(Heap& heap, Rooted<Value>& parent, uint32_t slot_count);
 

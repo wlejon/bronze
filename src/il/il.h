@@ -61,6 +61,14 @@ enum class Op : uint8_t {
     UShr,       // logical, and the ONE bitwise op whose result is ToUint32
     CmpLt,      // a: bool = cmp.lt b, c
     CmpGt,
+    // The ORDERED `<=` and `>=` on numbers, which are not `!(a > b)` and
+    // `!(a < b)`: that identity needs a total order and NaN does not give one.
+    // ECMA-262 13.10 answers false when IsLessThan produces *undefined* —
+    // 13.10.1 step 4.c, either operand NaN — and a negation maps that same
+    // undefined to true, so `NaN <= 1` came out yes. These two answer false for
+    // NaN the way cmp.lt and cmp.gt already did.
+    CmpLe,      // a: bool = cmp.le b, c
+    CmpGe,
     CmpEq,
     // The exact negation of CmpEq, NaN included: `NaN != NaN` is true, so on
     // doubles this is the UNORDERED compare. Numeric truthiness is a
@@ -74,6 +82,21 @@ enum class Op : uint8_t {
     NumTruthy,  // a: bool = num.truthy b     (b: f64)
     StrictEq,   // a: bool = strict.eq b, c   (JS ===, both operands dynamic)
     LooseEq,    // a: bool = loose.eq b, c    (JS ==, both operands dynamic)
+    // The four relational operators over BOXED operands: ECMA-262 13.10 and
+    // 13.10.1 IsLessThan entire, which no compare instruction implements. Step
+    // 3 asks whether both operands are Strings after ToPrimitive and, if they
+    // are, compares them by CODE UNIT and converts nothing — so `"2" < "10"` is
+    // true where `2 < 10` is false. ToNumeric is step 4, the else-branch, and
+    // reaching for it first is how two strings came to be compared as NaNs.
+    //
+    // Four named ops rather than one carrying an operator field, for the reason
+    // `print.err` is not a flag on `print`: the canonical dump is what a reader
+    // bisects with, and which comparison this is, is exactly the kind of fact a
+    // field can silently omit.
+    RelLt,      // a: bool = rel.lt b, c      (both operands dynamic)
+    RelGt,
+    RelLe,
+    RelGe,
     TypeOf,     // a: dynamic = typeof b      (one of six strings)
     InstanceOf, // a: bool = instanceof b, c
     In,         // a: bool = in b, c          (b: key, c: object)

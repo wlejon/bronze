@@ -62,7 +62,7 @@ struct ArrayBufferHeader {
     uint32_t byteLength;
     uint32_t reserved;
 
-    static constexpr uint16_t kFlags = 4;
+    static constexpr uint16_t kFlags = HeapKind::ArrayBuffer;
 
     // Zero-filled, as 25.1.3.1 AllocateArrayBuffer requires. `byte_length` is
     // the caller's business to validate; this allocates what it is asked for.
@@ -85,7 +85,7 @@ struct TypedArrayHeader {
     uint32_t kind;      // ElementKind
     uint32_t reserved;  // zero; keeps the scanned word above `kind` a non-pointer
 
-    static constexpr uint16_t kFlags = 3;
+    static constexpr uint16_t kFlags = HeapKind::TypedArray;
 
     ElementKind elementKind() const noexcept { return static_cast<ElementKind>(kind); }
     uint32_t bytesPerElement() const noexcept {

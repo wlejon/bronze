@@ -5,6 +5,7 @@
 #include "runtime/array.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
@@ -75,6 +76,56 @@ TEST_CASE("a cycle is marked, not followed") {
     obj.get().asObject<ObjectHeader>()->setProp(heap, arena, key, self);
 
     CHECK(rtInspect(obj.get()) == "<ref *1> { self: [Circular *1] }");
+}
+
+TEST_CASE("a Map prints its entries with an arrow and a Set prints a list") {
+    // The arm this exercises replaced a `default:` that cast a MapHeader to an
+    // ObjectHeader and read a shape word that is not there — a segfault, not a
+    // wrong answer. The `Ctor(size)` prefix is the one a typed array already
+    // prints, and an empty collection keeps it, which is what distinguishes it
+    // in output from the `{}` of a property-less object.
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    CHECK(rtInspect(map.get()) == "Map(0) {}");
+
+    Rooted<Value> ka{Value::fromString(StringHeader::createFromUTF8(heap, "a"))};
+    Rooted<Value> one{Value::fromDouble(1.0)};
+    MapHeader::set(heap, map, ka, one);
+    Rooted<Value> kb{Value::fromString(StringHeader::createFromUTF8(heap, "b"))};
+    Rooted<Value> two{Value::fromDouble(2.0)};
+    MapHeader::set(heap, map, kb, two);
+    CHECK(rtInspect(map.get()) == "Map(2) { 'a' => 1, 'b' => 2 }");
+
+    // A Set is the same layout with no second half to separate, so its entries
+    // print as a plain list.
+    Rooted<Value> set{Value::fromObject(MapHeader::create(heap, MapHeader::kSetFlags))};
+    CHECK(rtInspect(set.get()) == "Set(0) {}");
+    Rooted<Value> e1{Value::fromDouble(1.0)};
+    Rooted<Value> e2{Value::fromDouble(2.0)};
+    MapHeader::set(heap, set, e1, e1);
+    MapHeader::set(heap, set, e2, e2);
+    CHECK(rtInspect(set.get()) == "Set(2) { 1, 2 }");
+
+    // A deleted entry is tombstoned rather than erased — the table keeps its
+    // position so a live iterator's cursor stays meaningful — and the printer
+    // must not show one.
+    Rooted<Value> gone{Value::fromDouble(1.0)};
+    CHECK(MapHeader::remove(heap, set, gone));
+    CHECK(rtInspect(set.get()) == "Set(1) { 2 }");
+}
+
+TEST_CASE("a Map that contains itself is marked, not followed") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> key{Value::fromString(StringHeader::createFromUTF8(heap, "self"))};
+    Rooted<Value> self{map.get()};
+    MapHeader::set(heap, map, key, self);
+
+    CHECK(rtInspect(map.get()) == "<ref *1> Map(1) { 'self' => [Circular *1] }");
 }
 
 TEST_CASE("a key that is not an identifier is quoted") {

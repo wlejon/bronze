@@ -834,8 +834,25 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         fatal("a symbol-keyed property write is only supported on a plain object or a "
               "function (an array, a Map, a Set and a typed array carry no shape)");
     }
+    // A write through `o[i]` to something that is not an object, answered
+    // exactly as `bronze_prop_set` answers `o.k` — the same two TypeErrors, in
+    // the same order. They are one operation with two spellings, and the read
+    // side has already been made to agree (`cases/string_index`); a `fatal`
+    // here would kill a process where the `o.k` spelling of the same write is
+    // a value a `catch` can hold.
     if (!objVal.isObject()) {
-        fatal("computed index write on a non-object value is unsupported");
+        Rooted<Value> recv{objVal};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
+        if (recv.get().isNull() || recv.get().isUndefined()) {
+            rtThrowTypeError("Cannot set properties of " +
+                             std::string(recv.get().isNull() ? "null" : "undefined") +
+                             " (setting '" + keyText + "')");
+            return;
+        }
+        rtThrowTypeError("Cannot create property '" + keyText + "' on " +
+                         primitiveTypeName(recv.get()));
+        return;
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;

@@ -10,10 +10,12 @@
 #include <string>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
@@ -162,20 +164,64 @@ private:
             return std::string("[Boolean: ") + (data.asBool() ? "true" : "false") + "]";
         }
 
+        // One arm per heap kind, and a `default:` that REFUSES. It used to cast
+        // whatever it had not been taught to an ObjectHeader and read a shape
+        // word that a Map or a Set does not have there — a segfault, which is
+        // the one failure the house rules rank below a wrong answer. A kind
+        // added tomorrow lands on the diagnostic instead.
         auto* hdr = v.asObject<HeapObjectHeader>();
         switch (hdr->flags) {
+            case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+                return object(reinterpret_cast<ObjectHeader*>(hdr), depth);
             case 1: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);
             case 2: return "[Function]";
             case TypedArrayHeader::kFlags:
                 return typedArray(reinterpret_cast<TypedArrayHeader*>(hdr), depth);
             case ArrayBufferHeader::kFlags:
                 fatal("printing an ArrayBuffer is not implemented");
+            case MapHeader::kMapFlags:
+                return collection(reinterpret_cast<MapHeader*>(hdr), false, depth);
+            case MapHeader::kSetFlags:
+                return collection(reinterpret_cast<MapHeader*>(hdr), true, depth);
             // node prints a RegExp as its source form, and so does bronze:
             // `/ab+/gi`, with no quotes, which is what distinguishes it in
             // output from the string of the same characters.
             case RegExpHeader::kFlags: return rtRegExpText(v);
-            default: return object(reinterpret_cast<ObjectHeader*>(hdr), depth);
+            default:
+                fatal(("internal: console.log reached a heap object of an unknown kind (flags " +
+                       std::to_string(hdr->flags) + ")")
+                          .c_str());
         }
+    }
+
+    // A Map and a Set are ONE layout that differs in what an entry means: a
+    // Map's has a key and a value with ` => ` between them, a Set's is a single
+    // element with no second half to separate. The `Ctor(size)` prefix is the
+    // one `Float32Array(3) [ 0, 0, 0 ]` already established here, and it is
+    // what makes an empty collection say what it is instead of showing `{}`.
+    std::string collection(MapHeader* map, bool isSet, int depth) {
+        const char* name = isSet ? "Set" : "Map";
+        if (!enter(map)) {
+            sawCircular_ = true;
+            return "[Circular *1]";
+        }
+        if (depth > kMaxDepth) {
+            leave();
+            return std::string("[") + name + "]";
+        }
+        std::string out = std::string(name) + "(" + std::to_string(map->liveSize()) + ") ";
+        std::string body;
+        for (uint32_t slot = 0; slot < map->used(); ++slot) {
+            // A deleted entry is TOMBSTONED rather than erased, so that a live
+            // iterator's cursor keeps meaning what it meant; nothing that reads
+            // the collection may see one.
+            if (!map->liveAt(slot)) continue;
+            if (!body.empty()) body += ", ";
+            body += format(map->keyAt(slot), depth + 1);
+            if (!isSet) body += " => " + format(map->valueAt(slot), depth + 1);
+        }
+        leave();
+        return body.empty() ? out + "{}" : out + "{ " + body + " }";
     }
 
     std::string array(ArrayHeader* arr, int depth) {

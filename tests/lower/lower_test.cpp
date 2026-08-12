@@ -46,6 +46,79 @@ TEST_CASE("numeric comparisons <, >, ==") {
               "}\n") != std::string::npos);
 }
 
+TEST_CASE("<= and >= are ordered compares, not negations of > and <") {
+    // `a <= b` used to be emitted as `!(a > b)` — a cmp.gt, a const.bool false
+    // and a cmp.eq. The identity needs a total order and NaN does not give one:
+    // ECMA-262 13.10 folds IsLessThan's *undefined* (step 4.c, a NaN operand)
+    // to false, while the negation maps it to true. cmp.le and cmp.ge are the
+    // ordered compares, which answer false for NaN the way cmp.lt already did.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "function compare(a, b) {\n"
+        "  const le = a <= b;\n"
+        "  const ge = a >= b;\n"
+        "  return le;\n"
+        "}\n"
+        "console.log(compare(1, 2));\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find(
+              "func compare(%0: f64, %1: f64) -> bool {\n"
+              "  b0:\n"
+              "    %2: bool = cmp.le %0, %1\n"
+              "    %3: bool = cmp.ge %0, %1\n"
+              "    ret %2\n"
+              "}\n") != std::string::npos);
+    // The shape of the old lowering, named so it cannot come back: a compare
+    // followed by a comparison against `false` is the negation this replaced.
+    CHECK(printed.find("const.bool") == std::string::npos);
+}
+
+TEST_CASE("an unproven relational operand takes the runtime algorithm") {
+    // A `dynamic` operand may be a STRING, and ECMA-262 13.10.1 step 3 compares
+    // two of those by code unit without converting anything. Only a proof that
+    // neither side is boxed licenses the machine compare; sending a boxed
+    // operand down the f64 path is what made `"a" < "b"` a comparison of two
+    // NaNs.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "function order(a, b) {\n"
+        "  return a < b;\n"
+        "}\n"
+        "console.log(order('a', 'b'));\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("%2: bool = rel.lt %0, %1") != std::string::npos);
+    CHECK(printed.find("cmp.lt") == std::string::npos);
+    // No unbox in front of it: ToNumber is step 4, the else-branch, and
+    // reaching for it before step 3 is the defect.
+    CHECK(printed.find("unbox") == std::string::npos);
+}
+
+TEST_CASE("all four relational operators reach the runtime when unproven") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function f(a, b) { return [a < b, a > b, a <= b, a >= b]; }\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    for (const char* op : {"rel.lt", "rel.gt", "rel.le", "rel.ge"}) {
+        CHECK(printed.find(op) != std::string::npos);
+    }
+}
+
 TEST_CASE("top-level statements lowered to main") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");

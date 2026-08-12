@@ -262,6 +262,10 @@ static_assert(sizeof(InlineCache::cached_slot) == 4 && sizeof(InlineCache::cache
               "the fast path reads slot and depth as one u64; both halves must be 32 bits");
 
 static_assert(offsetof(HeapObjectHeader, flags) == BRONZE_ABI_OBJ_FLAGS_OFFSET);
+// Generated code inlines the plain-object check (llvm_prop.cpp), so this one
+// kind's number is part of the ABI and the registry in heap.h must agree with
+// it. The other kinds are runtime-internal and free to move.
+static_assert(HeapKind::Plain == BRONZE_ABI_OBJ_FLAGS_PLAIN);
 static_assert(offsetof(ObjectHeader, shape) == BRONZE_ABI_OBJ_SHAPE_OFFSET);
 static_assert(sizeof(ObjectHeader) == BRONZE_ABI_OBJ_SLOTS_OFFSET,
               "inline slots start immediately after ObjectHeader");

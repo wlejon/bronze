@@ -66,6 +66,7 @@ bronze_add_module(runtime
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp
         ../../tests/runtime/map_test.cpp
+        ../../tests/runtime/relational_test.cpp
         ../../tests/runtime/exact_decimal_test.cpp
         ../../tests/runtime/regexp_test.cpp
         ../../tests/runtime/arguments_test.cpp

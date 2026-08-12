@@ -122,6 +122,55 @@ std::optional<Lowerer::Value> Lowerer::lowerEquality(ast::BinaryOp op, Value lhs
     return emitLogicalNot(eqRes, ilFn);
 }
 
+// `a < b`, `a > b`, `a <= b`, `a >= b` — ECMA-262 13.10.
+//
+// The operand types choose between two algorithms, and the choice is a
+// correctness question rather than a speed one. 13.10.1 IsLessThan step 3 asks
+// whether BOTH operands are Strings after ToPrimitive and, if they are,
+// compares them by code unit and converts nothing; ToNumeric is step 4, the
+// else-branch. A `dynamic` operand may be a string, so only a proof that
+// neither side is boxed licenses the machine compare — sending a boxed operand
+// down the F64 path is what made `"a" < "b"` a comparison of two NaNs.
+//
+// The other half of this is what is NOT here any more: `a <= b` used to be
+// emitted as `!(a > b)`. That identity needs a total order, and NaN does not
+// give one. 13.10 answers false when IsLessThan produces undefined — 13.10.1
+// step 4.c, either operand NaN — while the negation maps that same undefined to
+// true. cmp.le and cmp.ge are ordered compares and answer false for NaN
+// directly, which is what `<` and `>` were already doing right.
+std::optional<Lowerer::Value> Lowerer::lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,
+                                                       il::Function& ilFn) {
+    // Stated as the types that ARE numeric rather than as "not dynamic": a
+    // native string type would satisfy the negative form and take the f64 path,
+    // which is the defect in its next disguise.
+    auto isNumeric = [](il::Type t) {
+        return t == il::Type::F64 || t == il::Type::I32 || t == il::Type::Bool;
+    };
+    const bool provenNumeric = isNumeric(lhs.type) && isNumeric(rhs.type);
+
+    il::Op ilOp;
+    switch (op) {
+        case ast::BinaryOp::Less: ilOp = provenNumeric ? il::Op::CmpLt : il::Op::RelLt; break;
+        case ast::BinaryOp::Greater: ilOp = provenNumeric ? il::Op::CmpGt : il::Op::RelGt; break;
+        case ast::BinaryOp::LessEqual: ilOp = provenNumeric ? il::Op::CmpLe : il::Op::RelLe; break;
+        default: ilOp = provenNumeric ? il::Op::CmpGe : il::Op::RelGe; break;
+    }
+
+    Value l = provenNumeric ? unboxValueIfNeeded(lhs, il::Type::F64, ilFn)
+                            : boxValueIfNeeded(lhs, ilFn);
+    Value r = provenNumeric ? unboxValueIfNeeded(rhs, il::Type::F64, ilFn)
+                            : boxValueIfNeeded(rhs, ilFn);
+
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = ilOp;
+    inst.type = il::Type::Bool;
+    inst.result = res;
+    inst.operands = {l.id, r.id};
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::Bool};
+}
+
 // `!b` for a value already known to be a bool: compare it against false.
 // There is no `not` op — the IL has no unary boolean instruction, and this
 // is the shape every negation in lowering already had.
@@ -198,6 +247,10 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
         bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe) {
         return lowerEquality(bin->op, lhs, rhs, ilFn);
     }
+    if (bin->op == ast::BinaryOp::Less || bin->op == ast::BinaryOp::Greater ||
+        bin->op == ast::BinaryOp::LessEqual || bin->op == ast::BinaryOp::GreaterEqual) {
+        return lowerRelational(bin->op, lhs, rhs, ilFn);
+    }
 
     il::Op op;
     il::Type resType;
@@ -236,80 +289,16 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
             op = il::Op::Mod;
             resType = il::Type::F64;
             break;
-        case ast::BinaryOp::Less:
-            op = il::Op::CmpLt;
-            resType = il::Type::Bool;
-            break;
-        case ast::BinaryOp::Greater:
-            op = il::Op::CmpGt;
-            resType = il::Type::Bool;
-            break;
-        case ast::BinaryOp::LessEqual: {
-            // a <= b is !(a > b) -> cmp.gt, then cmp.eq false
-            Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-            il::ValueId gtRes = ilFn.valueCount++;
-            il::Instruction gtInst;
-            gtInst.op = il::Op::CmpGt;
-            gtInst.type = il::Type::Bool;
-            gtInst.result = gtRes;
-            gtInst.operands = {l.id, r.id};
-            emitInst(ilFn, gtInst);
-
-            il::ValueId falseVal = ilFn.valueCount++;
-            il::Instruction falseInst;
-            falseInst.op = il::Op::ConstBool;
-            falseInst.type = il::Type::Bool;
-            falseInst.result = falseVal;
-            falseInst.immI32 = 0;
-            emitInst(ilFn, falseInst);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction cmpInst;
-            cmpInst.op = il::Op::CmpEq;
-            cmpInst.type = il::Type::Bool;
-            cmpInst.result = res;
-            cmpInst.operands = {gtRes, falseVal};
-            emitInst(ilFn, cmpInst);
-            return Value{res, il::Type::Bool};
-        }
-        case ast::BinaryOp::GreaterEqual: {
-            // a >= b is !(a < b)
-            Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
-            Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
-            il::ValueId ltRes = ilFn.valueCount++;
-            il::Instruction ltInst;
-            ltInst.op = il::Op::CmpLt;
-            ltInst.type = il::Type::Bool;
-            ltInst.result = ltRes;
-            ltInst.operands = {l.id, r.id};
-            emitInst(ilFn, ltInst);
-
-            il::ValueId falseVal = ilFn.valueCount++;
-            il::Instruction falseInst;
-            falseInst.op = il::Op::ConstBool;
-            falseInst.type = il::Type::Bool;
-            falseInst.result = falseVal;
-            falseInst.immI32 = 0;
-            emitInst(ilFn, falseInst);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction cmpInst;
-            cmpInst.op = il::Op::CmpEq;
-            cmpInst.type = il::Type::Bool;
-            cmpInst.result = res;
-            cmpInst.operands = {ltRes, falseVal};
-            emitInst(ilFn, cmpInst);
-            return Value{res, il::Type::Bool};
-        }
         default:
             diags_.error(bin->span, "unsupported binary operator: " + std::string(ast::binaryOpName(bin->op)));
             return std::nullopt;
     }
 
-    // Arithmetic and relational comparison are numeric: dynamic
-    // operands go through runtime-checked ToNumber first.
-    if (resType == il::Type::F64 || op == il::Op::CmpLt || op == il::Op::CmpGt) {
+    // Arithmetic is numeric whatever came in: a dynamic operand goes through
+    // runtime-checked ToNumber first. The relational operators do NOT belong
+    // here — they left through lowerRelational above, because ToNumber is only
+    // one of their two branches.
+    if (resType == il::Type::F64) {
         lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
         rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
     }
