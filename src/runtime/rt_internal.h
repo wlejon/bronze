@@ -75,6 +75,13 @@ std::vector<StringHeader*> rtOwnStringKeysOrdered(const struct ObjectHeader* obj
 // name outside Latin-1.
 Value rtCopyKeyToHeap(const StringHeader* key);
 
+// The own keys of a STRING as a fresh array of heap strings, in 10.4.3.3
+// OwnPropertyKeys order: the indices ascending, then `length` — which
+// `enumerableOnly` drops, because 10.4.3.4 defines it non-enumerable where
+// 10.4.3.5 makes every index enumerable. That one flag is the whole difference
+// between `Object.keys("ab")` and `Object.getOwnPropertyNames("ab")`.
+Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly);
+
 // Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it and
 // so does console.log of an object, which reports the same order — one test, so
 // the two answers cannot drift.
@@ -264,6 +271,21 @@ void rtObjectCheckMissingMember(Value obj, const std::string& key);
 // one initializer and either accessor triggers it.
 Value rtObjectPrototype();
 
+// The members of `Object.prototype` (builtin_object_proto.cpp), installed onto
+// the object builtin_object.cpp allocates. Two files for one pair of intrinsics
+// because 20.1.2.1 and 20.1.3.1 make the namespace and the prototype each
+// other's property, so one initializer has to hold both — the arrangement
+// `String.prototype`'s members already reach their object through.
+void rtInstallObjectProtoMethods(Rooted<Value>& proto);
+
+// ToPropertyKey (7.1.19) into the immortal arena form a DictEntry can hold, and
+// own-property existence over it. Both are shared by the `Object` statics and
+// the `Object.prototype` methods, which are the same operations with the
+// receiver in a different position (20.1.2.13 and 20.1.3.2) — writing either
+// twice is how the two would come to disagree about a dictionary-mode object.
+PropertyKey rtInternPropertyKey(Value keyVal);
+bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key);
+
 // `Function.prototype.call` / `.apply`, answered beside a function rather than
 // found on a prototype object — a FunctionHeader has no shape for a walk to
 // follow. `undefined` for every other name, which leaves `bind`, `name` and
@@ -282,6 +304,37 @@ void rtObjectProtoCheckMissingMember(const std::string& key);
 // receiver's own storage, which is why it is not in rt_prop.cpp.
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                         struct InlineCache* ic);
+
+// ---- the property path's shared key decoding (rt_prop.cpp) ------------------
+//
+// A key means the same thing whichever direction it is used in, so the READ
+// dispatch (rt_prop.cpp) and the WRITE dispatch (rt_prop_write.cpp) ask these
+// through one implementation rather than each carrying its own. Two copies of
+// the canonical-index test would be two answers to `a["01"]`, and the pair of
+// them would drift the way `o.k` and `o[k]` once did.
+
+// The inline-cache entry a property site owns, as the runtime's type. Inline
+// because it is a cast on the hot path and nothing else; the entry is null only
+// for a caller with no site to cache against.
+inline struct InlineCache* rtAsCache(uint64_t* entry) noexcept {
+    return reinterpret_cast<struct InlineCache*>(entry);
+}
+
+// Does this key name an ELEMENT of a receiver that stores its elements by
+// index? The canonical-array-index test and nothing else, in both spellings a
+// key arrives in — already a string, or still a value.
+bool rtKeyAsIndex(const std::string& key, uint32_t& out);
+bool rtValueToElementIndex(Value idxVal, uint32_t& out);
+
+// ToPropertyKey (7.1.19) as a heap string, for a computed key that named no
+// element. ALLOCATES, so the caller must have the receiver rooted.
+Value rtElemKeyAsString(Value idxVal);
+
+// The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
+// for a function — the side object its statics live in. Null for every receiver
+// with no shape, which the two directions report differently and so is not
+// decided here.
+struct ObjectHeader* rtSymbolKeyHolder(Value objVal);
 
 // ---- the primitive wrappers (builtin_wrappers.cpp) --------------------------
 
@@ -342,10 +395,30 @@ Value rtStringCharAsString(Value str, uint32_t index);
 // Allocation-free, which two typed-array writes in rt_prop.cpp depend on.
 bool rtWrapperPrimitive(Value v, Value& out);
 
-// 10.4.3.5 StringGetOwnProperty, plus the `length` 10.4.3.4 defines: true —
-// with `out` set — for a canonical index below the length and for `length`
-// itself. False means "not an own property of this exotic object", which is the
-// fall-through to the ordinary lookup that 10.4.3 requires. ALLOCATES.
+// An own property 10.4.3 gives a String, computed from the CHARACTERS rather
+// than from an object. `writable` and `configurable` are false for every one of
+// them, so `enumerable` is the only attribute that varies: an index is
+// (10.4.3.5), `length` is not (10.4.3.4).
+struct StringOwnProperty {
+    Value value;
+    bool enumerable;
+};
+
+// 10.4.3.5 StringGetOwnProperty plus 10.4.3.4's `length`, asked of the string
+// ITSELF. Both a primitive string and the String exotic object ToObject would
+// build answer from exactly this, which is why it is one function — and it is
+// what lets `Object.hasOwn("ab", 0)` and `Object.getOwnPropertyNames("ab")`
+// answer without allocating a box to read a constant off it. ALLOCATES (an
+// index property's value is a fresh one-code-unit string).
+bool rtStringDataOwnProperty(Value str, const std::string& key, StringOwnProperty& out);
+// The same question with no value produced and so no allocation, for the
+// callers that only need to know whether the key names one.
+bool rtStringDataHasOwnKey(Value str, const std::string& key);
+
+// The same, for a receiver that is the exotic OBJECT: unwraps [[StringData]]
+// and asks the above. False means "not an own property of this exotic object",
+// which is the fall-through to the ordinary lookup that 10.4.3 requires.
+// ALLOCATES.
 bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out);
 
 // Refuse `operation` by name when `v` is a String object with characters in it.

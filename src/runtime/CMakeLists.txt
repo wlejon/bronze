@@ -35,11 +35,13 @@ bronze_add_module(runtime
         rt_operator.cpp
         rt_prop.cpp
         rt_prop_primitive.cpp
+        rt_prop_write.cpp
         rt_delete.cpp
         iterator.cpp
         map.cpp
         builtin_map.cpp
         builtin_object.cpp
+        builtin_object_proto.cpp
         builtin_number.cpp
         builtin_number_proto.cpp
         builtin_json.cpp

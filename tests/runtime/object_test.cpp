@@ -263,6 +263,20 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
                          doctest::Contains("keeps no property table"), std::runtime_error);
 
+    // A NUMBER target for `Object.assign`, which is the one member here whose
+    // primitive case ToObject does not settle. The four that only READ own keys
+    // answer a number with the empty answer and never build the box
+    // (`cases/object_own_keys_primitive`); this one has to build it, because
+    // the box is what it returns — and a Number object needs the
+    // `Number.prototype` bronze has not got (`cases/blocked/
+    // get_prototype_of_number`). Handing back a plain object instead would be a
+    // silent lie about the receiver's prototype, so it is named.
+    Rooted<Value> number{Value::fromDouble(5)};
+    CHECK_THROWS_WITH_AS(
+        call("assign", number, 1),
+        doctest::Contains("Object.assign with a number or a symbol as the target"),
+        std::runtime_error);
+
     setFatalHandler(nullptr);
     bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

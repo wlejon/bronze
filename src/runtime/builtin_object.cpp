@@ -15,6 +15,14 @@
 // dictionary entry and nowhere else, so asking for either moves the object out
 // of its shape chain. That is what keeps the inline caches out of this file
 // entirely.
+//
+// Every function here takes its subject as an ARGUMENT. The ones that take it
+// as `this` are `Object.prototype`'s and live in builtin_object_proto.cpp,
+// which is the seam: a static raises the TypeError its clause names for a
+// receiver it will not take, while a method can only have been REACHED through
+// its receiver, so a kind bronze cannot walk is a refusal there rather than a
+// throw. `ensureObjectIntrinsics` at the foot of this file still builds both
+// objects, because each is a property of the other.
 
 #include <iterator>
 #include <string>
@@ -36,6 +44,41 @@
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+
+// ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
+// is not an optimization here: a DictEntry outlives every collection, so a heap
+// key would dangle.
+//
+// A SYMBOL is returned as it stands and never converted: it already lives in
+// the arena, and running ToString on one is the TypeError this whole type
+// exists to raise. That is also what lets `Object.defineProperty`,
+// `getOwnPropertyDescriptor` and `hasOwn` take a symbol key without a branch of
+// their own.
+PropertyKey rtInternPropertyKey(Value keyVal) {
+    if (keyVal.isSymbol()) return PropertyKey::fromValue(keyVal);
+    Rooted<Value> str{rtValueToString(keyVal)};
+    return PropertyKey::forString(
+        StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>()));
+}
+
+// Own-property existence, shared by `Object.prototype.hasOwnProperty` and
+// `Object.hasOwn` — 20.1.3.2 and 20.1.2.13 are the same operation with the
+// receiver in a different position, and writing it twice is how the two would
+// come to disagree about a dictionary-mode object.
+//
+// The key is interned BEFORE the object is read: `rtInternPropertyKey` runs
+// ToString, which allocates, so an ObjectHeader* taken across it would be stale.
+bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
+    // A String exotic object's own keys are not all in its shape: 10.4.3.4
+    // synthesises index properties from the wrapped characters, and bronze
+    // answers those on the property path only. Refused by name rather than
+    // reported absent (rt_object.cpp says why they are not materialised).
+    rtCheckStringExoticOwnKeys(self.get(), "testing");
+    PropertyKey name = rtInternPropertyKey(key);
+    auto* obj = self.get().asObject<ObjectHeader>();
+    uint32_t slot = 0;
+    return obj->shape && obj->shape->lookupProperty(name, slot);
+}
 
 namespace {
 
@@ -81,6 +124,12 @@ const char* propertyStoreReason(Value v) {
 // saying what it is and what about its storage bronze cannot reach —
 // `getOwnPropertyNames`'s precedent, which named the kinds before any of the
 // rest of them did.
+[[noreturn]] void refuseObjectKind(Value v, const char* member) {
+    fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
+           propertyStoreReason(v) + ")")
+              .c_str());
+}
+
 bool requirePropertyTable(Value v, const char* member) {
     if (isPlainObject(v)) return true;
     if (!v.isObject()) {
@@ -88,25 +137,50 @@ bool requirePropertyTable(Value v, const char* member) {
                          " called on a value that is not an object");
         return false;
     }
-    fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
-           propertyStoreReason(v) + ")")
-              .c_str());
+    refuseObjectKind(v, member);
 }
 
-// ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
-// is not an optimization here: a DictEntry outlives every collection, so a heap
-// key would dangle.
+// Where a receiver's OWN KEYS come from — which is what the members whose step
+// 1 is ToObject actually need, and it is less than the object itself.
 //
-// A SYMBOL is returned as it stands and never converted: it already lives in
-// the arena, and running ToString on one is the TypeError this whole type
-// exists to raise. That is also what lets `Object.defineProperty`,
-// `getOwnPropertyDescriptor` and `hasOwn` take a symbol key without a branch of
-// their own.
-PropertyKey internOf(Value keyVal) {
-    if (keyVal.isSymbol()) return PropertyKey::fromValue(keyVal);
+// The box is deliberately not built, the arrangement `Object.getPrototypeOf`
+// takes for a primitive. Here it buys more than a skipped allocation: a Number
+// object and a Symbol object are boxes bronze cannot make at all, having no
+// `Number.prototype` or `Symbol.prototype` to point them at — and neither has
+// an own property, so `None` is the COMPLETE answer rather than the one bronze
+// can reach. `requirePropertyTable` above stays the gate for `defineProperty`
+// and `defineProperties`, whose step 1 is "If O is not an Object, throw"
+// (20.1.2.4, 20.1.2.3) and not ToObject.
+enum class OwnKeys {
+    Shape,        // a plain object: its own keys are in its shape
+    StringChars,  // a primitive string: 10.4.3 synthesises them from the characters
+    None,         // a number, a boolean, a symbol: the box has no own property
+    Threw,        // null or undefined: ToObject has no answer, and this raised it
+};
+
+OwnKeys ownKeysOf(Value v, const char* member) {
+    if (v.isNull() || v.isUndefined()) {
+        // The same sentence the other refusals use, and it is true of exactly
+        // these two: 7.1.18's only failures are the two values that are not
+        // objects and have no box.
+        rtThrowTypeError(std::string("Object.") + member +
+                         " called on a value that is not an object");
+        return OwnKeys::Threw;
+    }
+    if (v.isString()) return OwnKeys::StringChars;
+    if (!v.isObject()) return OwnKeys::None;
+    if (isPlainObject(v)) return OwnKeys::Shape;
+    refuseObjectKind(v, member);
+}
+
+// ToPropertyKey (7.1.19) as the text an own-key question compares. A SYMBOL is
+// never one of the keys a string or an empty box has, so the caller answers for
+// one without converting it — which is also the only way to answer, since
+// ToString of a symbol is a TypeError.
+std::string keyTextOf(Value keyVal) {
     Rooted<Value> str{rtValueToString(keyVal)};
-    return PropertyKey::forString(
-        StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>()));
+    if (rtExceptionPending()) return std::string();
+    return rtUtf8Chars(str.get().asString<StringHeader>());
 }
 
 // A key as text, for a diagnostic. `Symbol(desc)` for a symbol, which is the
@@ -132,25 +206,6 @@ void putField(Rooted<Value>& obj, const char* name, Rooted<Value>& val) {
 // the target's own property names, which have no C string to go back to.
 void putField(Rooted<Value>& obj, Rooted<Value>& key, Rooted<Value>& val) {
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
-}
-
-// Own-property existence, shared by `Object.prototype.hasOwnProperty` and
-// `Object.hasOwn` — 20.1.3.2 and 20.1.2.13 are the same operation with the
-// receiver in a different position, and writing it twice is how the two would
-// come to disagree about a dictionary-mode object.
-//
-// The key is interned BEFORE the object is read: `internOf` runs ToString,
-// which allocates, so an ObjectHeader* taken across it would be stale.
-bool hasOwnPropertyNamed(Rooted<Value>& self, Value key) {
-    // A String exotic object's own keys are not all in its shape: 10.4.3.4
-    // synthesises index properties from the wrapped characters, and bronze
-    // answers those on the property path only. Refused by name rather than
-    // reported absent (rt_object.cpp says why they are not materialised).
-    rtCheckStringExoticOwnKeys(self.get(), "testing");
-    PropertyKey name = internOf(key);
-    auto* obj = self.get().asObject<ObjectHeader>();
-    uint32_t slot = 0;
-    return obj->shape && obj->shape->lookupProperty(name, slot);
 }
 
 // The entry `name` names, after the object has been moved to dictionary mode.
@@ -197,7 +252,7 @@ uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 
     // The key is built before the object is disturbed, and interned so the
     // entry can hold it forever.
-    PropertyKey name = internOf(args[1]);
+    PropertyKey name = rtInternPropertyKey(args[1]);
 
     ObjectHeader::toDictionary(rtArena(), self);
     DictEntry* existing = entryOf(self.get(), name);
@@ -228,12 +283,43 @@ uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                                         const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!requirePropertyTable(args[0], "getOwnPropertyDescriptor")) {
-        return Value::fromUndefined().rawBits();
+    switch (ownKeysOf(args[0], "getOwnPropertyDescriptor")) {
+        case OwnKeys::Threw:
+            return Value::fromUndefined().rawBits();
+        case OwnKeys::None:
+            // The box has no own property, so every key misses — which is
+            // `undefined`, the same answer a plain object gives for a name it
+            // does not carry.
+            return Value::fromUndefined().rawBits();
+        case OwnKeys::StringChars: {
+            if (args[1].isSymbol()) return Value::fromUndefined().rawBits();
+            const std::string key = keyTextOf(args[1]);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            StringOwnProperty own;
+            if (!rtStringDataOwnProperty(args[0], key, own)) {
+                return Value::fromUndefined().rawBits();
+            }
+            // 6.2.6.4 FromPropertyDescriptor in the same field order as below,
+            // over the attributes 10.4.3 fixes: non-writable and
+            // non-configurable for both kinds of own key, and enumerable for an
+            // index alone. Rooted first — building the result allocates.
+            Rooted<Value> value{own.value};
+            Rooted<Value> out{Value(bronze_create_object())};
+            putField(out, "value", value);
+            Rooted<Value> w{Value::fromBool(false)};
+            putField(out, "writable", w);
+            Rooted<Value> e{Value::fromBool(own.enumerable)};
+            putField(out, "enumerable", e);
+            Rooted<Value> c{Value::fromBool(false)};
+            putField(out, "configurable", c);
+            return out.get().rawBits();
+        }
+        case OwnKeys::Shape:
+            break;
     }
     Rooted<Value> self{args[0]};
     rtCheckStringExoticOwnKeys(self.get(), "describing");
-    PropertyKey name = internOf(args[1]);
+    PropertyKey name = rtInternPropertyKey(args[1]);
 
     PropertyInfo info;
     auto* obj = self.get().asObject<ObjectHeader>();
@@ -321,9 +407,25 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 // method can be shadowed by an own property of the object being asked about.
 uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!requirePropertyTable(args[0], "hasOwn")) return Value::fromUndefined().rawBits();
+    switch (ownKeysOf(args[0], "hasOwn")) {
+        case OwnKeys::Threw:
+            return Value::fromUndefined().rawBits();
+        case OwnKeys::None:
+            return Value::fromBool(false).rawBits();
+        case OwnKeys::StringChars: {
+            // A symbol is never an own key of a String exotic object: 10.4.3.3
+            // reports the indices and `length`, all of them strings.
+            if (args[1].isSymbol()) return Value::fromBool(false).rawBits();
+            const std::string key = keyTextOf(args[1]);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            // args[0] re-read through RootedArgs: `keyTextOf` allocates.
+            return Value::fromBool(rtStringDataHasOwnKey(args[0], key)).rawBits();
+        }
+        case OwnKeys::Shape:
+            break;
+    }
     Rooted<Value> self{args[0]};
-    return Value::fromBool(hasOwnPropertyNamed(self, args[1])).rawBits();
+    return Value::fromBool(rtHasOwnPropertyNamed(self, args[1])).rawBits();
 }
 
 // 20.1.2.14 Object.is — SameValue (7.2.11), which differs from `===` in exactly
@@ -363,7 +465,10 @@ uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint
 uint64_t objectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                          const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!requirePropertyTable(args[0], "getOwnPropertyDescriptors")) {
+    // The receiver classification happens here only to raise (or refuse) before
+    // any work; every source below is then handled by the two members this is
+    // defined in terms of, which is the point of defining it in terms of them.
+    if (ownKeysOf(args[0], "getOwnPropertyDescriptors") == OwnKeys::Threw) {
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> self{args[0]};
@@ -479,8 +584,18 @@ uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint
     // An array's own names include `length`, which bronze stores outside the
     // shape system entirely, so the answer would be incomplete rather than
     // merely different — which is what the shared refusal says, by kind.
-    if (!requirePropertyTable(args[0], "getOwnPropertyNames")) {
-        return Value::fromUndefined().rawBits();
+    switch (ownKeysOf(args[0], "getOwnPropertyNames")) {
+        case OwnKeys::Threw:
+            return Value::fromUndefined().rawBits();
+        case OwnKeys::None:
+            return bronze_create_array(0);
+        case OwnKeys::StringChars:
+            // 10.4.3.3's own order — the indices ascending and THEN `length` —
+            // and `length` is here where `Object.keys` drops it, because this
+            // member is OwnPropertyKeys without the enumerable filter.
+            return rtStringOwnKeyNames(args[0], /*enumerableOnly=*/false).rawBits();
+        case OwnKeys::Shape:
+            break;
     }
     Rooted<Value> self{args[0]};
     // 20.1.2.10 is the STRING half of OwnPropertyKeys — the symbol half is
@@ -607,13 +722,36 @@ uint64_t objectEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
 // later source wins. The copy is `bronze_object_spread`, which is the same
 // operation `{ ...src }` performs; two implementations of "copy the own
 // enumerable properties" would be two chances to disagree about a getter.
+// 20.1.2.1 step 1's ToObject, and the one place in this file where the box has
+// to be BUILT rather than reasoned about: it is the value `assign` returns, so
+// the program can hold it. The two bronze has — the String and Boolean exotic
+// objects — are built; a number and a symbol are refused by name, which is the
+// same missing intrinsic `Object.getPrototypeOf` of a number names.
+Value toObjectForAssign(Value v) {
+    if (v.isNull() || v.isUndefined()) {
+        rtThrowTypeError("Object.assign called on a value that is not an object");
+        return Value::fromUndefined();
+    }
+    if (v.isString()) {
+        Rooted<Value> str{v};
+        return rtMakeStringWrapper(str);
+    }
+    if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
+    if (!v.isObject()) {
+        fatal("unsupported: Object.assign with a number or a symbol as the target (7.1.18 "
+              "boxes it, and bronze has no Number.prototype / Symbol.prototype for the box "
+              "to be an instance of)");
+    }
+    if (isPlainObject(v)) return v;
+    refuseObjectKind(v, "assign");
+}
+
 uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    // 20.1.2.1 step 1 is ToObject(target), so the TARGET is the only argument
-    // with a kind requirement — a source that is not an object contributes no
-    // properties rather than raising.
-    if (!requirePropertyTable(args[0], "assign")) return Value::fromUndefined().rawBits();
-    Rooted<Value> target{args[0]};
+    // The TARGET is the only argument with a kind requirement — a source that
+    // is not an object contributes no properties rather than raising.
+    Rooted<Value> target{toObjectForAssign(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 1; i < args.count(); ++i) {
         Rooted<Value> src{args[i]};
         bronze_object_spread(target.get().rawBits(), src.get().rawBits());
@@ -651,124 +789,6 @@ struct NamespaceFn {
     const char* name;
     bronze_fn_code code;
     uint32_t arity;
-};
-
-// ---- Object.prototype -------------------------------------------------------
-//
-// The intrinsic every plain object inherits from. It is a real object on the
-// real chain, found by the ordinary prototype walk — not a table consulted
-// beside it, which is what every other builtin receiver in bronze still is. The
-// difference is the whole point: a method here can be held, compared, passed to
-// `.call`, and replaced, and `Object.getPrototypeOf({})` has something true to
-// answer.
-//
-// Every member is defined NON-ENUMERABLE, per 20.1.3. That is not tidiness:
-// `for-in` walks the prototype chain, so an enumerable member here would appear
-// in every for-in over every object in the program. `Object.keys`, spread and
-// `JSON.stringify` ask for own enumerable keys and so cannot see it either,
-// which is why this object can be introduced under a suite of pinned
-// expectations without moving one of them.
-
-// The receiver of an Object.prototype method, which reaches one only through an
-// ordinary call on a plain object or through `.call`. Three answers, and the
-// third is the house rule: a receiver bronze cannot answer for is refused BY
-// NAME rather than told that it has no own properties.
-bool requireProtoReceiver(Value self, const char* method) {
-    if (self.isNull() || self.isUndefined()) {
-        rtThrowTypeError(std::string("Object.prototype.") + method +
-                         " called on null or undefined");
-        return false;
-    }
-    if (isPlainObject(self)) return true;
-    fatal((std::string("unsupported: Object.prototype.") + method +
-           " on a receiver that is not a plain object (an array, a function, a Map or a "
-           "primitive reaches its members through the property path rather than through a "
-           "prototype object, so bronze has no chain here to answer about)")
-              .c_str());
-}
-
-uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
-                                   const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "hasOwnProperty")) {
-        return Value::fromUndefined().rawBits();
-    }
-    return Value::fromBool(hasOwnPropertyNamed(self, args[0])).rawBits();
-}
-
-// 20.1.3.4. Own AND enumerable — a name that is only inherited answers false
-// here where `in` answers true, and a class method (15.7.14 defines it
-// non-enumerable) answers false where `hasOwnProperty` answers true.
-uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t argc,
-                                         const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "propertyIsEnumerable")) {
-        return Value::fromUndefined().rawBits();
-    }
-    rtCheckStringExoticOwnKeys(self.get(), "testing");
-    PropertyKey name = internOf(args[0]);
-    auto* obj = self.get().asObject<ObjectHeader>();
-    PropertyInfo info;
-    if (!obj->shape || !obj->shape->lookupProperty(name, info)) {
-        return Value::fromBool(false).rawBits();
-    }
-    return Value::fromBool(info.enumerable).rawBits();
-}
-
-// 20.1.3.3. Walks the ARGUMENT's chain looking for the receiver, so it answers
-// about ancestry rather than about identity: an object is not its own
-// prototype, and the walk starts one link up for that reason.
-uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
-                                  const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "isPrototypeOf")) {
-        return Value::fromUndefined().rawBits();
-    }
-    if (!isPlainObject(args[0])) return Value::fromBool(false).rawBits();
-    // No allocation in the loop, so the raw pointers stay valid throughout.
-    ObjectHeader* walker = args[0].asObject<ObjectHeader>();
-    ObjectHeader* target = self.get().asObject<ObjectHeader>();
-    for (uint32_t depth = 0; depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
-        walker = walker->protoAncestor(1);
-        if (!walker) return Value::fromBool(false).rawBits();
-        if (walker == target) return Value::fromBool(true).rawBits();
-    }
-    fatal("prototype chain too deep (a cycle?)");
-}
-
-// 20.1.3.7 ToObject(this), which for an object is the object. It exists so that
-// the name is not a hole in the chain; it is NOT what makes `{} + 1` work,
-// because ToPrimitive is what calls valueOf and ToPrimitive is still unbuilt
-// (rt_convert.cpp names it).
-uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
-    Value self(thisBits);
-    if (!requireProtoReceiver(self, "valueOf")) return Value::fromUndefined().rawBits();
-    return self.rawBits();
-}
-
-const NamespaceFn kObjectProtoFunctions[] = {
-    {"hasOwnProperty", objectProtoHasOwnProperty, 1},
-    {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
-    {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1},
-    {"valueOf", objectProtoValueOf, 0},
-};
-
-// 20.1.3 members bronze has not built, diagnosed by name on a plain object's
-// full-chain miss.
-//
-// `toString` is deliberately here rather than answered with "[object Object]".
-// 20.1.3.6 is a tag lookup — Array, Function, Error, Arguments, each of the
-// wrapper kinds — and bronze cannot ask the question for all of them: an error
-// object here is an ordinary plain object with no [[ErrorData]] to find, so a
-// toString written today would answer "[object Object]" for one and be
-// confidently wrong at exactly the place `Object.prototype.toString.call(x)` is
-// used. `toLocaleString` is 20.1.3.5, which calls toString.
-const char* const kObjectProtoUnimplemented[] = {
-    "toLocaleString",
-    "toString",
 };
 
 const NamespaceFn kObjectFunctions[] = {
@@ -839,16 +859,11 @@ void ensureObjectIntrinsics() {
         Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
         ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
-    // Non-enumerable, and `defineOwn` because this is DefineOwnProperty and not
-    // an assignment — 20.1.3 defines every one of these with
-    // `enumerable: false`, and an enumerable member here would surface in every
-    // `for-in` in the program, which walks the prototype chain.
-    for (const NamespaceFn& fn : kObjectProtoFunctions) {
-        Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
-        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
+    // The prototype's own members come from builtin_object_proto.cpp, which owns
+    // every function whose subject is `this` rather than an argument. They are
+    // installed from here because 20.1.2.1 and 20.1.3.1 make these two objects
+    // each other's property, so one initializer has to hold both.
+    rtInstallObjectProtoMethods(proto);
 
     // The two cross-references, on the same non-enumerable terms (20.1.2.1
     // makes `Object.prototype` non-writable and non-enumerable; 20.1.3.1 makes
@@ -880,11 +895,6 @@ Value rtObjectNamespace() {
 Value rtObjectPrototype() {
     ensureObjectIntrinsics();
     return g_objectPrototype;
-}
-
-void rtObjectProtoCheckMissingMember(const std::string& key) {
-    rtCheckUnimplementedMember("Object.prototype", kObjectProtoUnimplemented,
-                               std::size(kObjectProtoUnimplemented), key);
 }
 
 void rtObjectCheckMissingMember(Value obj, const std::string& key) {

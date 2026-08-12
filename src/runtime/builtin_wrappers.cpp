@@ -335,14 +335,13 @@ bool rtWrapperPrimitive(Value v, Value& out) {
     return true;
 }
 
-bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out) {
-    Value data;
-    if (!rtStringWrapperData(obj, data)) return false;
-    // 10.4.3.4 StringCreate step 5 defines `length` as an own data property of
-    // the exotic object, non-writable and non-configurable and NOT enumerable —
-    // the one own property of a String object that is not an index.
+bool rtStringDataOwnProperty(Value str, const std::string& key, StringOwnProperty& out) {
+    // 10.4.3.4 StringCreate step 5 defines `length` as an own data property,
+    // non-writable and non-configurable and NOT enumerable — the one own
+    // property of a String that is not an index.
     if (key == "length") {
-        out = Value::fromDouble(data.asString<StringHeader>()->getLength());
+        out.value = Value::fromDouble(str.asString<StringHeader>()->getLength());
+        out.enumerable = false;
         return true;
     }
     // 10.4.3.5 StringGetOwnProperty: a CANONICAL numeric string below the
@@ -351,9 +350,26 @@ bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out) {
     // lookup, which is what the caller does when this answers false.
     uint32_t index = 0;
     if (!rtIsIntegerLikeKey(key, index)) return false;
-    if (index >= data.asString<StringHeader>()->getLength()) return false;
-    Rooted<Value> str{data};
-    out = rtStringCharAsString(str.get(), index);
+    if (index >= str.asString<StringHeader>()->getLength()) return false;
+    // Rooted before the character below allocates; nothing above it does.
+    Rooted<Value> self{str};
+    out.value = rtStringCharAsString(self.get(), index);
+    out.enumerable = true;
+    return true;
+}
+
+bool rtStringDataHasOwnKey(Value str, const std::string& key) {
+    if (key == "length") return true;
+    uint32_t index = 0;
+    return rtIsIntegerLikeKey(key, index) && index < str.asString<StringHeader>()->getLength();
+}
+
+bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out) {
+    Value data;
+    if (!rtStringWrapperData(obj, data)) return false;
+    StringOwnProperty own;
+    if (!rtStringDataOwnProperty(data, key, own)) return false;
+    out = own.value;
     return true;
 }
 

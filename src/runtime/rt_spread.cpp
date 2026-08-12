@@ -117,6 +117,22 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     }
 }
 
+// A copy into a String exotic TARGET that 10.4.3 forbids.
+//
+// Every own property of one — each index (10.4.3.5) and `length` (10.4.3.4) —
+// is non-writable, so the `Set(to, key, value, true)` that CopyDataProperties
+// performs (7.3.25 step 5.c.ii, and 20.1.2.1 step 3.c.iii for `Object.assign`)
+// throws for one. It has to be raised HERE: the copy below writes through
+// `setProp`, which sees a plain object with a shape and has no view of the
+// wrapped characters — so without this the write would land as a shadow
+// property no read could ever reach, since the property path consults 10.4.3.5
+// first. A silently unreachable property is the worse half of a wrong answer.
+bool stringTargetRefuses(Value stringData, const std::string& key) {
+    if (!rtStringDataHasOwnKey(stringData, key)) return false;
+    rtThrowTypeError("Cannot assign to read only property '" + key + "' of a String object");
+    return true;
+}
+
 // One own enumerable property, copied into `target` under the same key. The
 // key is an arena-interned shape string, so it is copied into the heap first:
 // the result holds ordinary JS strings, never pointers into the shape arena.
@@ -245,6 +261,15 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     Rooted<Value> target{Value(objBits)};
     Rooted<Value> src{srcVal};
 
+    // Asked once, outside the loops: only `Object.assign` with a primitive
+    // string target ever produces one, and every other spread in the program
+    // must not pay a key conversion per property to find that out.
+    Rooted<Value> stringTarget;
+    {
+        Value data;
+        if (rtStringWrapperData(target.get(), data)) stringTarget.set(data);
+    }
+
     if (isArray(srcVal)) {
         // An array's own enumerable keys are its indices; `length` is not
         // enumerable and is deliberately not copied. A HOLE is not an own key
@@ -254,6 +279,10 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         const uint32_t length = srcVal.asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < length; ++i) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            if (stringTarget.get().isString() &&
+                stringTargetRefuses(stringTarget.get(), std::to_string(i))) {
+                return;
+            }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/false);
@@ -269,6 +298,12 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     // `Object.assign` carry a symbol-keyed property across. That is the one
     // enumeration in the language that does.
     for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
+        // A symbol is never an own key of a String exotic object (10.4.3.3
+        // reports the indices and `length`), so only a string key can collide.
+        if (stringTarget.get().isString() && !name.isSymbol() &&
+            stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
+            return;
+        }
         copyProperty(target, src, name);
         // `copyProperty` reads with Get, so a source property that is an
         // accessor runs user code. Copying the next one after that threw would

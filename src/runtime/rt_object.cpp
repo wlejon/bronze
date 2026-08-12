@@ -19,7 +19,9 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/iterator.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -171,6 +173,33 @@ std::vector<StringHeader*> rtOwnStringKeysOrdered(const ObjectHeader* obj, bool 
     return names;
 }
 
+// An array index as the STRING that names it — the spelling ToPropertyKey gives
+// it, and the only one an own-key answer may contain. `std::to_chars` rather
+// than a stream for the reason every number that reaches output uses it:
+// deterministic bytes with no locale in the path.
+static Value indexName(uint32_t index) {
+    char buf[16];
+    auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), index);
+    return Value::fromString(
+        StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)));
+}
+
+Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
+    Rooted<Value> self{strVal};
+    const uint32_t length = self.get().asString<StringHeader>()->getLength();
+    const uint32_t total = enumerableOnly ? length : length + 1;
+    Rooted<Value> out{Value(bronze_create_array(total))};
+    for (uint32_t i = 0; i < length; ++i) {
+        Rooted<Value> key{indexName(i)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+    }
+    if (!enumerableOnly) {
+        Rooted<Value> key{rtMakeString("length")};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), length, key);
+    }
+    return out.get();
+}
+
 Value rtCopyKeyToHeap(const StringHeader* key) {
     if (key->isLatin1()) {
         return Value::fromString(
@@ -316,11 +345,37 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
 
+// ECMA-262 20.1.2.17 Object.keys: own ENUMERABLE STRING keys, which is 7.3.23
+// EnumerableOwnProperties with key-of-type-String.
+//
+// Every receiver gets an answer here or is named, and the difference between
+// those two is not how much bronze has built — it is whether the answer is
+// COMPLETE. A Map, a Set, a RegExp, an ArrayBuffer and a DataView have no own
+// enumerable string-keyed property at all, so the empty array is derivable
+// rather than a gap dressed up as a result; a typed array's indices ARE own
+// enumerable properties (10.4.5.3), so it answers those and not `[]`. The old
+// message said which receivers were "supported", which names bronze's coverage
+// where the reader needs the receiver's storage.
 uint64_t bronze_object_keys(uint64_t objBits) {
     Value objVal(objBits);
-    if (!objVal.isObject()) {
-        fatal("Object.keys on a value that is not an object");
+    // Step 1 is ToObject, whose only two failures are these (7.1.18). Thrown
+    // rather than fatal: the language names this TypeError, so a `catch` may
+    // hold it.
+    if (objVal.isNull() || objVal.isUndefined()) {
+        return rtThrowTypeError("Object.keys called on a value that is not an object").rawBits();
     }
+    // ToObject("ab") is a String exotic object whose own keys are the indices
+    // and `length` (10.4.3.3) — and only the indices are enumerable, so those
+    // are the answer. Computed from the characters rather than from a box built
+    // to be read once and thrown away, which is the arrangement
+    // `Object.getPrototypeOf` of a primitive already uses.
+    if (objVal.isString()) return rtStringOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
+    // A number, a boolean and a symbol box to an object with no own property of
+    // any kind, so the empty answer needs no box either — which is what lets
+    // `Object.keys(5)` answer at all, since bronze has no Number.prototype for
+    // one to point at.
+    if (!objVal.isObject()) return bronze_create_array(0);
+
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
 
     // An array's own keys are its indices, already in ascending order — the
@@ -334,10 +389,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         uint32_t at = 0;
         for (uint32_t i = 0; i < length; ++i) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-            char buf[16];
-            auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
-            Rooted<Value> key{Value::fromString(
-                StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)))};
+            Rooted<Value> key{indexName(i)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         // Then the named ones — the indices come first because they are
@@ -354,8 +406,59 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
+    // A typed array's integer-indexed elements are own enumerable properties
+    // (10.4.5.3 [[DefineOwnProperty]] gives one `enumerable: true`), so this is
+    // the one receiver below whose answer is not empty — and the reason the
+    // whole group could not be answered with `[]` and a comment. There are no
+    // holes: 23.2.5.1 allocates every element, so the keys are exactly
+    // `0..length-1`. `length`, `buffer` and `byteOffset` are accessors on
+    // %TypedArray%.prototype and own properties of nothing.
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        const uint32_t length = reinterpret_cast<TypedArrayHeader*>(hdr)->length;
+        Rooted<Value> out{Value(bronze_create_array(length))};
+        for (uint32_t i = 0; i < length; ++i) {
+            Rooted<Value> key{indexName(i)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+        }
+        return out.get().rawBits();
+    }
+    // A function's own keys are `length`, `name` and `prototype` — every one of
+    // them non-enumerable (10.2.4, 20.2.4) — plus the statics it was assigned,
+    // which are the only group this member reports. Those live in the side
+    // object, so the answer is COMPLETE, and that is what separates this from
+    // `Object.getOwnPropertyNames` of the same function: that member wants the
+    // non-enumerable three, and bronze stores none of them.
+    if (hdr->flags == HeapKind::Function) {
+        Value props = objVal.asObject<FunctionHeader>()->properties;
+        if (!props.isObject()) return bronze_create_array(0);
+        Rooted<Value> propsRoot{props};
+        const std::vector<StringHeader*> named =
+            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
+        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
+        uint32_t at = 0;
+        for (StringHeader* k : named) {
+            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        return out.get().rawBits();
+    }
+    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags ||
+        hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
+        hdr->flags == DataViewHeader::kFlags) {
+        // None of these has an own enumerable string-keyed property, and that
+        // is a fact about the LANGUAGE rather than about bronze's storage: a
+        // Map's and a Set's entries are internal slots reached by `get`/`add`,
+        // a RegExp's `lastIndex` is an own property but non-enumerable
+        // (22.2.6.9), and an ArrayBuffer's and a DataView's `byteLength` and
+        // friends are accessors on their prototypes. So `[]` is the complete
+        // answer, and refusing it named bronze's coverage instead.
+        return bronze_create_array(0);
+    }
     if (hdr->flags != HeapKind::Plain) {
-        fatal("Object.keys is only supported on plain objects and arrays");
+        // An iteration record and an environment record are the remainder, and
+        // nothing hands a program either — so reaching here is a lowering bug
+        // rather than something a program did.
+        fatal("internal: Object.keys on an object kind no program can hold");
     }
 
     // `Object.keys` is own ENUMERABLE STRING keys (20.1.2.17 -> 7.3.23 with

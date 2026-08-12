@@ -23,10 +23,12 @@
 //    which cannot be pinned in a case that also prints, because it ends the
 //    process. `tests/runtime/object_test.cpp` holds those.
 //
-// The primitives that ToObject would SUCCEED on are deliberately absent. bronze
-// throws for `Object.hasOwn(1, "a")` where the language answers false, which is
-// a divergence and not a message bug, and pinning it here would put a wrong
-// answer in a committed expectation.
+// The primitives that ToObject SUCCEEDS on are not here, and the reason they
+// are not is the opposite of what it once was: bronze answers them.
+// `Object.hasOwn(1, "a")` is false and `Object.getOwnPropertyNames("ab")` is
+// `["0","1","length"]`, which `cases/object_own_keys_primitive` pins. What is
+// left in this file is the receiver ToObject itself rejects — the only one
+// these five have a TypeError for at all.
 
 function message(fn) {
   try {

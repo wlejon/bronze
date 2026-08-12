@@ -1,0 +1,24 @@
+true true false
+true false false
+0,1,length
+0,1
+length
+a,b [["0","a"],["1","b"]]
+a false true false
+2 false false false
+undefined
+{"0":{"value":"a","writable":false,"enumerable":true,"configurable":false},"1":{"value":"b","writable":false,"enumerable":true,"configurable":false},"length":{"value":2,"writable":false,"enumerable":false,"configurable":false}}
+false false
+0 0
+0 0
+undefined undefined
+{}
+TypeError: Object.hasOwn called on a value that is not an object
+TypeError: Object.getOwnPropertyNames called on a value that is not an object
+TypeError: Object.getOwnPropertyDescriptor called on a value that is not an object
+TypeError: Object.keys called on a value that is not an object
+object x 2 a ab
+object y false
+TypeError: Cannot assign to read only property '0' of a String object
+TypeError: Cannot assign to read only property '0' of a String object
+TypeError: Object.assign called on a value that is not an object
