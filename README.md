@@ -147,7 +147,10 @@ means inference is.
 
 ```
 source.js
-   │  src/lex      — tokens (hand-written lexer, hard errors on unknown input)
+   │  src/lex      — tokens (hand-written lexer, hard errors on unknown input).
+   │                 A `/` is a division or the start of a pattern depending on
+   │                 what preceded it; when it is a pattern, src/regex owns the
+   │                 grammar inside it
    ▼
 tokens
    │  src/parse    — recursive descent, consumes ALL input or errors
@@ -189,16 +192,17 @@ of bug that silently changes meaning.
 | `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and the LLVM backend both report through |
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
-| `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |
+| `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes), `parser_pattern` (destructuring targets), `parser_module` (import/export), `parser_generator` (the desugaring) |
 | `src/modules` | The module graph: specifier resolution, the depth-first load (cycles included — the temporal dead zone is what makes one well defined), and the linker that renames N files' module scopes into one flat namespace so everything downstream still sees a single-file program |
 | `src/types` | Type/shape inference over the AST — lattice, flow analysis, shape classes, call-graph signatures, canonical dump. Produces a side table; mutates nothing |
-| `src/lower` | AST + inference side table → IL. Split by seam: `lower_infer` (what may be believed), `lower_scope` (closures), `lower_control` (block-argument SSA), `lower_expr`, `lower_object`, `lower_stmt` |
+| `src/lower` | AST + inference side table → IL. Split by seam, one file per construct family rather than by size: `lower_infer` (what may be believed), `lower_scope` (closures and env slots), `lower_control` (block-argument SSA), and a file each for the expression kinds (`lower_expr`, `_binary`, `_chain`, `_cond`), the statement kinds (`lower_stmt`, `_switch`, `_try`, `_label`, `_iter_loop`), and the declaration kinds (`lower_object`, `_class`, `_pattern`, `_update`, `_unresolved`) |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
 | `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop` (inline property caches), `llvm_func`/`llvm_ops`/`llvm_arith` (one IL function's body), `llvm_backend` (module in, object file out) |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written |
 | `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments. The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_prop`, `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built) |
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
+| `src/regex` | The RegExp pattern grammar (ECMA-262 22.2.1) and its backtracking matcher, on the same rule as `src/json`: a language of its own inside the source text, with its own parser and its own diagnostics. Reached from `src/lex`, which decides whether a `/` opens a pattern or divides, by what came before it |
 | `src/rt` | The static library compiled output links against |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
