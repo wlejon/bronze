@@ -148,14 +148,23 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * so adding a field to `InlineCache`, `HeapObjectHeader` or `ObjectHeader`
  * is a compile error rather than a silent miscompile.
  *
- * The entry is three plain words the collector never touches: shapes are
+ * The entry is four plain words the collector never touches: shapes are
  * immortal and non-moving (docs/0004 decision 2), and the holder is derived
  * from `cached_depth` rather than cached (docs/0008 decision 2).
+ *
+ * The fourth word is the prototype-mutation epoch the entry was filled at,
+ * and it is what makes a depth > 0 entry sound: the receiver's shape cannot
+ * notice a property added to an object BETWEEN the receiver and the holder,
+ * because that add changes only the intermediate's shape (docs/0032). The
+ * inline fast path never reads it — that path is depth 0 only, where the
+ * receiver's own shape is the whole answer — so this word costs generated
+ * code the table stride and nothing else.
  */
-#define BRONZE_ABI_IC_ENTRY_SIZE     16 /* sizeof(InlineCache) */
+#define BRONZE_ABI_IC_ENTRY_SIZE     24 /* sizeof(InlineCache) */
 #define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
 #define BRONZE_ABI_IC_SLOT_OFFSET     8 /* InlineCache::cached_slot  (uint32) */
 #define BRONZE_ABI_IC_DEPTH_OFFSET   12 /* InlineCache::cached_depth (uint32) */
+#define BRONZE_ABI_IC_EPOCH_OFFSET   16 /* InlineCache::cached_epoch (uint64) */
 /* slot and depth are adjacent and little-endian, so the single u64 at
  * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
  * therefore ONE compare meaning "own property, in an inline slot" — the

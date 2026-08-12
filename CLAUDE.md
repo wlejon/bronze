@@ -163,3 +163,19 @@ project's stated bar — but `-LE threejs` is the loop to iterate against.
   moved back across docs/0027's provable line, and `argv` shown not to be
   self-protecting — an argument block is only as rooted as its caller, and a
   builtin calling back into JS builds one nothing scans)
+- 0032 prototype mutation and the cache that missed it (the add to an
+  INTERMEDIATE prototype that no receiver shape can see, a global epoch
+  recorded in a fourth cache word and checked only at depth > 0, the mark kept
+  on the shape so that only adds to a PROTOTYPE bump it — counting every add
+  measured 40% on a loop that constructs — the hit condition collapsed from
+  three copies to one `describes`, and the write path that checked the cached
+  shape without checking the cached depth)
+- 0033 where the compile time goes (`--timings` and why a duration may be
+  nondeterministic where an artefact may not, 95% of a three.js compile shown
+  to be LLVM's object emission and 5% everything bronze wrote, the codegen opt
+  level costed at 5.3x compile against 2.45x on proven-f64 loops and
+  deliberately not pulled, and the GC root frame that gave every value ever
+  computed a permanent slot — 6002 for a function needing a handful — reused
+  by a block-local liveness scan whose three load-bearing details are the
+  one-instruction release delay, the pool shared across blocks, and the block
+  argument lists that are uses too)

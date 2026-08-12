@@ -12,8 +12,12 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr);
 // reproduce). It is the bisection seam for a miscompile inference is
 // suspected of causing, and it is what `--no-infer` selects.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true);
+// `timings` prints per-phase wall time to stderr. It defaults off and no test
+// passes it: a duration is the one thing bronze emits that cannot be
+// deterministic, so it stays out of every path an expectation can see
+// (docs/0033).
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
-             std::string* errOut = nullptr, bool infer = true);
+             std::string* errOut = nullptr, bool infer = true, bool timings = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

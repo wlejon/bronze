@@ -90,7 +90,7 @@ means inference is.
 
 | Path | Contents |
 |---|---|
-| `src/support` | Source buffers, spans, diagnostics |
+| `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and the LLVM backend both report through (docs/0033) |
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes) |

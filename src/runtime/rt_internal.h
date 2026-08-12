@@ -183,6 +183,50 @@ private:
     ShadowStackFrame* frame_{nullptr};
 };
 
+// RootedArgs in the other direction: an argument block the RUNTIME builds and
+// hands to a callee, rather than one a callee copies out of.
+//
+// Most blocks the runtime builds need nothing like this — `builtin_array`'s
+// `Value block[3]`, the JSON replacer's and the regexp replacer's are all
+// filled from roots on the statement before the call, and `bronze_dynamic_call`
+// reaches the callee without allocating, so nothing can move in between.
+//
+// `bronze_construct` is the exception and the reason this class exists: it
+// allocates the INSTANCE before it reads the block, so a block that is not
+// rooted holds pre-collection addresses by the time the constructor is
+// entered. Every slot here is pushed onto the shadow stack for the block's
+// lifetime, which makes it safe to pass to a helper that allocates first.
+// The vector is sized once and never resized, so the pushed pointers stay
+// valid — the same reason RootedArgs above may push into its own storage.
+class RootedBlock {
+public:
+    explicit RootedBlock(uint32_t count) : slots_(count, Value::fromUndefined()) {
+        frame_ = ShadowStackFrame::current();
+        if (frame_) {
+            for (Value& slot : slots_) frame_->push(&slot);
+        }
+    }
+
+    ~RootedBlock() {
+        if (frame_) {
+            for (Value& slot : slots_) frame_->pop(&slot);
+        }
+    }
+
+    RootedBlock(const RootedBlock&) = delete;
+    RootedBlock& operator=(const RootedBlock&) = delete;
+
+    void set(uint32_t i, Value v) { slots_[i] = v; }
+    uint32_t count() const noexcept { return static_cast<uint32_t>(slots_.size()); }
+    const uint64_t* data() const noexcept {
+        return reinterpret_cast<const uint64_t*>(slots_.data());
+    }
+
+private:
+    std::vector<Value> slots_;
+    ShadowStackFrame* frame_{nullptr};
+};
+
 // ---- builtin namespaces ---------------------------------------------------
 // Each family owns its own translation unit and exposes exactly two things:
 // the namespace object, and the miss check that keeps an unimplemented

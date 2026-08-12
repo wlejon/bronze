@@ -11,7 +11,8 @@ import subprocess
 import statistics
 from pathlib import Path
 
-BENCHMARKS = ["fib.js", "numeric_loop.js", "property_access.js", "typed_array_loop.js"]
+BENCHMARKS = ["fib.js", "numeric_loop.js", "property_access.js", "typed_array_loop.js",
+              "proto_dispatch.js", "proto_dispatch_churn.js"]
 ITERATIONS = 10
 
 

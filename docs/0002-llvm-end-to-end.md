@@ -131,3 +131,46 @@ none. The log starts from the rewrite that made them real loops.
   fast *and wrong* becomes dynamic and correct. Code that was fast because
   inference proved it is untouched, which is the entire point of decision
   6.
+
+- 2026-08-12 (the prototype-mutation epoch, docs/0032): fib 13.5/7.4ms,
+  numeric_loop 41.2/33.7ms, property_access 60.8/52.0ms — all at or inside
+  their previous minima, which is the expected answer: the fourth cache word
+  is read only at depth > 0, and every one of these three benchmarks is
+  either pure f64 or an OWN property that generated code inlines.
+
+  **Two benchmarks join the suite, and they are the entry.** Nothing in
+  `bench/` measured an INHERITED property read before now, so a change that
+  switched proto caching off entirely could not have moved a number here —
+  and the first version of docs/0032 did exactly that. Baselines, 3M
+  iterations, best of five:
+
+  - proto_dispatch.js — depth-3 read, no adds in the loop — 233ms
+  - proto_dispatch_churn.js — the same read with `new Pt(i)` per iteration —
+    1960ms, against 1880ms for the identical loop reading an OWN property.
+
+  The pair is the measurement, not either number: the 80ms gap between them
+  is what a cached depth-3 hit costs over a depth-0 one, and it is 857ms when
+  the invalidation rule is too coarse (docs/0032 decision 2). A future change
+  that regresses proto caching shows up as that gap widening while
+  proto_dispatch.js stands still.
+
+- 2026-08-12 (GC root slots reused, docs/0033): **a COMPILE-time entry, the
+  first in this log.** Every benchmark's runtime is unchanged; what moved is
+  how long bronze takes to produce them.
+
+  three.js, 28 files: **80.6s → 64.6s**, of which object emission is 74.5s →
+  59.4s. A synthetic 2000 property reads in one function: **50.4s → 16.7s**.
+
+  `bronze build --timings` is the instrument and is where these come from. It
+  found that 95% of a compile is LLVM's object emission and 5% is everything
+  bronze wrote, so the lexer, parser, inference and lowering are together not
+  worth optimising — a 2x on all four saves 1.9s of 80. What was worth it was
+  the root frame: it held a slot per Dynamic value the function ever computed
+  rather than per value live at once, so a 2000-statement function allocated
+  6002 of them and handed the register allocator 6002 stack locations.
+
+  Recorded and NOT taken: `CodeGenOptLevel::None` is a further 5.3x on
+  compile time and costs 2.45x on numeric_loop while leaving fib,
+  property_access, proto_dispatch and typed_array_loop at noise. Trading the
+  one benchmark that is the point of the project for compile speed is not a
+  default; docs/0033 decision 3 has the full table.

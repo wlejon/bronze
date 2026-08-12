@@ -3,12 +3,29 @@
 #include <algorithm>
 
 #include "runtime/fatal.h"
+#include "runtime/object.h"
 
 namespace bronze {
 
 Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     Shape* root = arena.create<Shape>();
     root->prototype = proto;
+    // This is the ONE moment an object becomes a prototype — every route to
+    // one (a class, `Object.create`, `Object.setPrototypeOf`) ends in a root
+    // shape carrying it — so it is where the mark is applied rather than at
+    // each of those callers (docs/0032 decision 2).
+    //
+    // Only a plain object is marked: `cachedProtoHolder` refuses to walk
+    // through anything else, so an array or a function used as a prototype
+    // already misses for a reason that has nothing to do with the epoch.
+    if (proto.isObject()) {
+        auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+            if (Shape* protoShape = reinterpret_cast<ObjectHeader*>(hdr)->shape) {
+                protoShape->used_as_prototype = true;
+            }
+        }
+    }
     return root;
 }
 
@@ -24,28 +41,39 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
 
     StringHeader* prop_str = name.get().asString<StringHeader>();
 
+    Shape* next_shape = nullptr;
     for (const auto& trans : transitions) {
         if (trans.enumerable == is_enumerable && trans.accessor == is_accessor &&
             trans.property_name && trans.property_name->equals(*prop_str)) {
             out_slot = trans.next_shape->slot_index;
-            return trans.next_shape;
+            next_shape = trans.next_shape;
+            break;
         }
     }
 
-    uint32_t next_slot = nextSlotIndex();
+    if (!next_shape) {
+        uint32_t next_slot = nextSlotIndex();
 
-    if (next_slot + (is_accessor ? 1u : 0u) >= kDictionaryThreshold) {
-        fatal("object has too many properties for the shape transition tree; "
-              "dictionary mode is not implemented");
+        if (next_slot + (is_accessor ? 1u : 0u) >= kDictionaryThreshold) {
+            fatal("object has too many properties for the shape transition tree; "
+                  "dictionary mode is not implemented");
+        }
+
+        out_slot = next_slot;
+        // Shapes are immortal and non-moving, so they must never point into
+        // the movable heap: property names are copied into the arena.
+        StringHeader* interned = StringHeader::internToArena(arena, prop_str);
+        next_shape =
+            arena.create<Shape>(this, interned, next_slot, root, is_enumerable, is_accessor);
+        transitions.push_back(ShapeTransition{interned, next_shape, is_enumerable, is_accessor});
     }
 
-    out_slot = next_slot;
-    // Shapes are immortal and non-moving, so they must never point into
-    // the movable heap: property names are copied into the arena.
-    StringHeader* interned = StringHeader::internToArena(arena, prop_str);
-    Shape* next_shape =
-        arena.create<Shape>(this, interned, next_slot, root, is_enumerable, is_accessor);
-    transitions.push_back(ShapeTransition{interned, next_shape, is_enumerable, is_accessor});
+    // An object that was a prototype before this add is still one after it, so
+    // the mark has to reach the shape it lands on or the NEXT add would not
+    // bump the epoch. On the reuse path as much as the create path: a shape is
+    // marked when some object first becomes a prototype, which can be long
+    // after its transitions were built by unrelated objects.
+    if (used_as_prototype) next_shape->used_as_prototype = true;
     return next_shape;
 }
 

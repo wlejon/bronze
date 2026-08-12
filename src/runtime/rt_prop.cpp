@@ -154,7 +154,7 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
         if (fastHdr->flags == 0 && ic && ic->cached_shape) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
-            if (ic->cached_shape == fastObj->shape) {
+            if (ic->describes(fastObj->shape)) {
                 // Depth 0 is an own property — the common case, straight to
                 // the slot. Anything else was found up the prototype chain, so
                 // the cached slot belongs to an ancestor and reading it off the
@@ -168,7 +168,8 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 // of them is a dictionary — which is what a delete and a
                 // prototype swap both leave behind, and neither of which the
                 // receiver's shape, all this entry checks, notices (docs/0019
-                // decision 5, docs/0022).
+                // decision 5, docs/0022). `describes` above has already ruled
+                // out the third change, an add to an intermediate (docs/0032).
                 bool crossedDictionary = false;
                 if (ObjectHeader* holder =
                         fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
@@ -472,7 +473,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // a call either way (docs/0010 decision 7 inlines the read).
     if (hdr->flags == 0 && ic && ic->cached_shape) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
-        if (ic->cached_shape == fastObj->shape) {
+        if (ic->describesOwn(fastObj->shape)) {
             fastObj->setSlot(ic->cached_slot, valVal);
             return;
         }

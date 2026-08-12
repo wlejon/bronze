@@ -136,6 +136,7 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         existing->accessor = accessor;
         existing->slot = d.allocateSlots(accessor ? 2u : 1u);
         out_slot = existing->slot;
+        bumpProtoMutationEpoch();
     } else {
         // The entry lives in the arena and outlives every collection, so the
         // name it holds must too — the same rule shape nodes follow, and the
@@ -144,6 +145,12 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         StringHeader* interned = StringHeader::internToArena(arena, name);
         out_slot = d.allocateSlots(accessor ? 2u : 1u);
         d.entries.push_back(DictEntry{interned, out_slot, enumerable, accessor});
+        // A depth > 0 entry can never be walking THROUGH this object — a
+        // dictionary anywhere on the path is what `cachedProtoHolder` refuses
+        // — so this bump is redundant with that refusal. It is written anyway:
+        // "the other mechanism happens to cover it" is how the add-to-an-
+        // intermediate hole survived docs/0019 in the first place.
+        bumpProtoMutationEpoch();
     }
 
     const uint32_t needed = d.nextSlot;

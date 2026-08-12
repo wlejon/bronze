@@ -13,7 +13,20 @@
 
 namespace bronze {
 
-// A monomorphic property cache: three plain words, none of which the
+// The number of property ADDS that have happened anywhere in the program.
+// A depth > 0 inline-cache entry records it and re-checks it, because the
+// receiver's shape — the only thing the entry compares — cannot see a
+// property appear on an object BETWEEN the receiver and the holder, and such
+// a property shadows what the entry points at (docs/0032).
+//
+// Counting every add rather than only the ones that land on a prototype is
+// deliberate and measured: identifying a prototype needs a per-object bit,
+// and the imprecise counter costs nothing on the workloads bronze has
+// (docs/0032 decision 2). It only ever causes a MISS, never a wrong answer.
+uint64_t protoMutationEpoch() noexcept;
+void bumpProtoMutationEpoch() noexcept;
+
+// A monomorphic property cache: four plain words, none of which the
 // collector has to touch. `cached_depth` is how many prototype links to
 // follow from the receiver before reading `cached_slot` — 0 for an own
 // property, so this one form covers own hits and proto hits alike. The
@@ -30,6 +43,39 @@ struct InlineCache {
     Shape* cached_shape{nullptr};
     uint32_t cached_slot{0};
     uint32_t cached_depth{0};
+    // The epoch this entry was filled at. Consulted only when
+    // `cached_depth > 0`; at depth 0 the receiver's own shape already
+    // changes whenever an own property is added to it.
+    uint64_t cached_epoch{0};
+
+    // Is this entry still about the chain it was filled against? Both runtime
+    // hit paths — `bronze_prop_get`'s and `ObjectHeader::getProp`'s — ask
+    // here rather than restating the condition, because the last time this
+    // question had two copies (docs/0031 decision 4) they answered
+    // differently. It deliberately does NOT cover whether the walk to the
+    // holder is safe to take; `cachedProtoHolder` owns that, and a caller
+    // needs both.
+    bool describes(const Shape* receiverShape) const noexcept {
+        return cached_shape == receiverShape &&
+               (cached_depth == 0 || cached_epoch == protoMutationEpoch());
+    }
+
+    // The same question for a WRITE, which additionally requires depth 0: the
+    // slot is written on the RECEIVER, so an entry naming an ancestor's slot
+    // would put the value in an unrelated own property. Set sites and get
+    // sites never share a table entry, so no entry a write path sees has ever
+    // been filled at depth > 0 — this asks anyway, because that is a fact
+    // about the compiler's site numbering and this is the runtime.
+    bool describesOwn(const Shape* receiverShape) const noexcept {
+        return cached_depth == 0 && cached_shape == receiverShape;
+    }
+
+    void fill(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = depth;
+        cached_epoch = protoMutationEpoch();
+    }
 };
 
 struct ObjectHeader {
@@ -73,10 +119,13 @@ struct ObjectHeader {
     // the shape, so it cannot change without the shape changing) and stays a
     // tripwire; a dictionary on the path is ordinary and expected.
     //
-    // What it does NOT close is an ADD to an intermediate prototype, which
-    // takes a shape transition and leaves no dictionary behind:
-    // `cases/blocked/proto_chain_invalidation.js` is that hole and needs the
-    // entry to grow, which is a generated-code contract change.
+    // The third change — an ADD to an intermediate, which takes a shape
+    // transition and leaves no dictionary behind — is NOT visible here and
+    // cannot be: this walk sees the chain as it is now, not as it was when
+    // the entry was filled. `cached_epoch` is what covers it (docs/0032), and
+    // the two mechanisms are kept separate because they answer different
+    // questions — "is this walk safe to take" and "is this entry still about
+    // the same chain".
     ObjectHeader* cachedProtoHolder(uint32_t depth, bool& crossedDictionary) noexcept;
 
     // `Object.setPrototypeOf`. The prototype lives on the shape's ROOT
@@ -185,6 +234,7 @@ static_assert(alignof(InlineCache) <= 8);
 static_assert(offsetof(InlineCache, cached_shape) == BRONZE_ABI_IC_SHAPE_OFFSET);
 static_assert(offsetof(InlineCache, cached_slot) == BRONZE_ABI_IC_SLOT_OFFSET);
 static_assert(offsetof(InlineCache, cached_depth) == BRONZE_ABI_IC_DEPTH_OFFSET);
+static_assert(offsetof(InlineCache, cached_epoch) == BRONZE_ABI_IC_EPOCH_OFFSET);
 static_assert(sizeof(InlineCache::cached_slot) == 4 && sizeof(InlineCache::cached_depth) == 4,
               "the fast path reads slot and depth as one u64; both halves must be 32 bits");
 

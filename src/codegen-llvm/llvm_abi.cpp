@@ -9,14 +9,22 @@
 namespace bronze::codegen_llvm {
 
 // The table is an array of i64 rather than of a named struct type: an IC
-// entry is exactly two words, the helpers take `uint64_t*`, and the field
-// offsets the fast path reads are word-aligned constants in the ABI header.
-// A struct type here would add a second, drifting description of a layout
-// the ABI already pins.
-static_assert(BRONZE_ABI_IC_ENTRY_SIZE == 2 * sizeof(uint64_t),
-              "the IC table is emitted as pairs of i64 words");
+// entry is a whole number of words, the helpers take `uint64_t*`, and the
+// field offsets the fast path reads are word-aligned constants in the ABI
+// header. A struct type here would add a second, drifting description of a
+// layout the ABI already pins.
+//
+// Generated code reads words 0 and 1 and never word 2 — the inline path is
+// depth 0 only, and the epoch that word 2 holds is what makes a DEPTH > 0
+// entry sound (docs/0032), which is the helper's business. The stride is
+// derived from the ABI constant rather than written as a literal, so growing
+// the entry again stays one edit in one file.
+static constexpr unsigned kIcEntryWords = BRONZE_ABI_IC_ENTRY_SIZE / sizeof(uint64_t);
+static_assert(BRONZE_ABI_IC_ENTRY_SIZE % sizeof(uint64_t) == 0,
+              "the IC table is emitted as i64 words, so an entry must be a whole number of them");
 static_assert(BRONZE_ABI_IC_SHAPE_OFFSET == 0, "word 0 of an entry is the cached shape");
 static_assert(BRONZE_ABI_IC_SLOTWORD_OFFSET == 8, "word 1 of an entry is (depth << 32) | slot");
+static_assert(BRONZE_ABI_IC_EPOCH_OFFSET == 16, "word 2 of an entry is the fill epoch");
 
 void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
                        AbiGlobals& globals) {
@@ -74,7 +82,8 @@ llvm::GlobalVariable* createIcTable(llvm::Module& llvmModule, llvm::LLVMContext&
                                     uint32_t siteCount) {
     if (siteCount == 0) return nullptr;
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-    llvm::ArrayType* tableTy = llvm::ArrayType::get(i64Ty, static_cast<uint64_t>(siteCount) * 2);
+    llvm::ArrayType* tableTy =
+        llvm::ArrayType::get(i64Ty, static_cast<uint64_t>(siteCount) * kIcEntryWords);
     // Internal linkage: the table belongs to this object file, and its
     // address never crosses a module boundary — generated code passes entry
     // pointers to the helpers and nothing else ever names it.
@@ -88,7 +97,8 @@ llvm::GlobalVariable* createIcTable(llvm::Module& llvmModule, llvm::LLVMContext&
 
 llvm::Value* icEntryPtr(llvm::IRBuilder<>& builder, llvm::GlobalVariable* icTable,
                         uint32_t icIndex) {
-    return builder.CreateConstInBoundsGEP2_32(icTable->getValueType(), icTable, 0, icIndex * 2,
+    return builder.CreateConstInBoundsGEP2_32(icTable->getValueType(), icTable, 0,
+                                              icIndex * kIcEntryWords,
                                               "ic" + std::to_string(icIndex));
 }
 

@@ -80,6 +80,18 @@ public:
     // `transitions` stays empty on one — a dictionary is a leaf that never
     // becomes anyone's parent.
     Dictionary* dict{nullptr};
+    // Some object AT this shape is the prototype recorded on some root shape,
+    // so adding a property to such an object shadows what inline-cache entries
+    // BELOW it point at (docs/0032). Only adds from a marked shape bump the
+    // prototype-mutation epoch, which is what keeps ordinary object
+    // construction from invalidating every proto cache in the program.
+    //
+    // It is a property of the SHAPE and shapes are shared, so an object that
+    // merely has the same layout as a prototype is marked too. That direction
+    // is safe — it can only cost an extra miss — and the direction that would
+    // not be, a prototype whose shape is unmarked, is what `addProperty`'s
+    // propagation and `createRoot`'s marking exist to rule out.
+    bool used_as_prototype{false};
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
     Shape(Shape* parent_shape, StringHeader* prop_name, uint32_t slot, Shape* root_shape,

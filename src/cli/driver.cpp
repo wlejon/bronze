@@ -1,5 +1,6 @@
 #include "cli/driver.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -27,11 +28,50 @@
 #include "modules/modules.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
+#include "support/timings.h"
 #include "types/dump.h"
 #include "types/infer.h"
 
 namespace bronze::cli {
 namespace {
+
+// Wall time per compilation phase, printed to stderr on `--timings`.
+//
+// This is the one thing bronze prints that cannot be deterministic, and the
+// house rule (docs/0001 decision 10) is about bronze's OWN output — so it is
+// opt-in, it goes to stderr, and nothing in the suite compares it. The
+// alternative was measuring from outside with a stopwatch, which gives one
+// number for a five-phase pipeline and cannot say which phase to attack
+// (docs/0033).
+class PhaseTimer {
+public:
+    explicit PhaseTimer(bool enabled) : enabled_(enabled) {
+        if (enabled_) start_ = last_ = std::chrono::steady_clock::now();
+    }
+
+    void mark(const char* phase) {
+        if (!enabled_) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "  %-14s %8.1f ms\n", phase, millisSince(last_, now));
+        last_ = now;
+    }
+
+    void total() {
+        if (!enabled_) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "  %-14s %8.1f ms\n", "total", millisSince(start_, now));
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    static double millisSince(Clock::time_point from, Clock::time_point to) {
+        return std::chrono::duration<double, std::milli>(to - from).count();
+    }
+
+    bool enabled_;
+    Clock::time_point start_{};
+    Clock::time_point last_{};
+};
 
 constexpr const char* kUsage =
     "bronze — AOT compiler for JavaScript (native-first, LLVM backend)\n"
@@ -53,6 +93,13 @@ constexpr const char* kUsage =
     "                                      is at fault. The oracle suite runs every\n"
     "                                      case both ways and requires the same bytes\n"
     "                                      from both (docs/0010 decision 8).\n"
+    "\n"
+    "Options (build):\n"
+    "  --timings                           Print per-phase wall time to stderr. The\n"
+    "                                      one deliberately nondeterministic thing\n"
+    "                                      bronze prints, which is why it is opt-in\n"
+    "                                      and on stderr: no pinned output can see it\n"
+    "                                      (docs/0033).\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
     "discarded with a warning and the value stays dynamic (docs/0010 decision 6).\n";
@@ -284,17 +331,23 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
 }
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
-             bool infer) {
+             bool infer, bool timings) {
 #if !BRONZE_WITH_LLVM
     (void)infer;
+    (void)timings;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
     return 1;
 #else
+    // The backend reports the inside of its own phase, and it is reached
+    // through `codegen::Backend`, which no debugging concern belongs in.
+    support::setTimingsEnabled(timings);
+    PhaseTimer timer(timings);
     SourceSet sources;
     DiagnosticSink diags;
     auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    timer.mark("load");
     if (!astModule) {
         std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
@@ -305,6 +358,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     std::optional<types::InferenceResult> inferred;
     if (infer) {
         inferred = types::inferModule(*astModule, diags);
+        timer.mark("infer");
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);
             if (errOut) *errOut = msg;
@@ -315,6 +369,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr);
+    timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
@@ -328,7 +383,9 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                     (std::filesystem::path(sourcePath).stem().string() + "_temp.obj");
 
     LLVMBackend backend;
-    if (!backend.emitObject(*ilModule, tempObj.string(), diags)) {
+    const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);
+    timer.mark("codegen");
+    if (!emitted) {
         std::error_code ec;
         if (std::filesystem::exists(tempObj, ec)) std::filesystem::remove(tempObj, ec);
         std::string msg = diags.render(sources);
@@ -338,6 +395,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     bool linked = linkExecutable(tempObj.string(), outputPath, diags);
+    timer.mark("link");
+    timer.total();
 
     std::error_code ec;
     if (std::filesystem::exists(tempObj, ec)) {
@@ -415,11 +474,14 @@ int runDriver(int argc, char** argv) {
         std::string sourcePath;
         std::string outputPath = "a.exe";
         bool infer = true;
+        bool timings = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--timings") {
+                timings = true;
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -434,7 +496,7 @@ int runDriver(int argc, char** argv) {
         }
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runBuild(sourcePath, outputPath, nullptr, infer);
+        return runBuild(sourcePath, outputPath, nullptr, infer, timings);
     }
 
     return fail(kUsage);

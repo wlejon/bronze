@@ -4,6 +4,10 @@
 
 #include "codegen-llvm/llvm_backend.h"
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -34,6 +38,7 @@
 #include "codegen-llvm/llvm_func.h"
 #include "il/print.h"
 #include "il/verifier.h"
+#include "support/timings.h"
 
 namespace bronze {
 
@@ -331,7 +336,19 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
 
 bool LLVMBackend::emitObject(const il::Module& module, const std::string& outputPath,
                              DiagnosticSink& diags) {
+    // Indented one level under the CLI's own phase lines, because these four
+    // are the inside of its `codegen` (docs/0033).
+    const bool timing = support::timingsEnabled();
+    auto t0 = std::chrono::steady_clock::now();
+    auto lap = [&t0, timing](const char* what) {
+        if (!timing) return;
+        auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "    %-14s %8.1f ms\n", what,
+                     std::chrono::duration<double, std::milli>(now - t0).count());
+        t0 = now;
+    };
     if (!il::verify(module, diags)) return false;
+    lap("il-verify");
 
     llvm::LLVMContext ctx;
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
@@ -360,6 +377,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         FunctionEmitter emitter(shared, module.functions[i], entries[i]);
         if (!emitter.emit()) return false;
     }
+    lap("ir-build");
 
     std::string errStr;
     llvm::raw_string_ostream os(errStr);
@@ -370,8 +388,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         diags.error(Span{}, "LLVM module verification failed: " + errStr);
         return false;
     }
+    lap("llvm-verify");
 
-    return writeObjectFile(*llvmModule, outputPath, diags);
+    bool ok = writeObjectFile(*llvmModule, outputPath, diags);
+    lap("obj-emit");
+    return ok;
 }
 
 }  // namespace bronze

@@ -93,6 +93,10 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         toDictionary(arena, self);
         obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
     } else {
+        // An add on a shape-chain object, exactly like `setProp`'s: if this
+        // object is somebody's prototype, the pair just defined shadows what
+        // every depth > 0 entry below it points at (docs/0032).
+        if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
         Shape* next = obj->shape->addProperty(arena, heap, key, slot, enumerable,
                                               /*is_accessor=*/true);
         obj = ensureSlots(heap, self, slot + 2);

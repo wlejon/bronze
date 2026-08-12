@@ -258,8 +258,14 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     instance->header.flags = 0;
 
     Rooted<Value> self{Value::fromObject(instance)};
-    // argv is the caller's rooted frame slots (docs/0006), so the argument
-    // values stay live across the callee's allocations without a copy.
+    // This helper is the one place in the runtime that ALLOCATES before it
+    // reads its argument block — `rtEnsureFunctionPrototype` and the instance
+    // above — so the block must already be rooted when it arrives, and
+    // "argv points into the caller's frame" is not the reason (docs/0032
+    // decision 6; docs/0031 decision 7 is why that reason is not enough).
+    // Two callers, and each satisfies it its own way: generated code puts the
+    // block in its GC root frame (docs/0006), and `bronze_construct_spread`
+    // builds a `RootedBlock`. A third caller has to do one or the other.
     fn = fnRoot.get().asObject<FunctionHeader>();
     Value result = fn->call(self.get(), argc,
                             const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));

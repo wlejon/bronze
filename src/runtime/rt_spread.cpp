@@ -262,10 +262,9 @@ uint64_t bronze_dynamic_call_spread(uint64_t calleeBits, uint64_t thisBits, uint
         fatal("internal: spread call arguments are not an array");
     }
     auto* args = argsVal.asObject<ArrayHeader>();
-    std::vector<uint64_t> block(args->length);
-    for (uint32_t i = 0; i < args->length; ++i) block[i] = args->getElem(i).rawBits();
-    return bronze_dynamic_call(calleeBits, thisBits, static_cast<uint32_t>(block.size()),
-                               block.data());
+    RootedBlock block(args->length);
+    for (uint32_t i = 0; i < args->length; ++i) block.set(i, args->getElem(i));
+    return bronze_dynamic_call(calleeBits, thisBits, block.count(), block.data());
 }
 
 uint64_t bronze_construct_spread(uint64_t calleeBits, uint64_t argsBits) {
@@ -274,9 +273,13 @@ uint64_t bronze_construct_spread(uint64_t calleeBits, uint64_t argsBits) {
         fatal("internal: spread constructor arguments are not an array");
     }
     auto* args = argsVal.asObject<ArrayHeader>();
-    std::vector<uint64_t> block(args->length);
-    for (uint32_t i = 0; i < args->length; ++i) block[i] = args->getElem(i).rawBits();
-    return bronze_construct(calleeBits, static_cast<uint32_t>(block.size()), block.data());
+    // Rooted, unlike every other block the runtime builds, because
+    // `bronze_construct` allocates the instance BEFORE it reads this — see
+    // RootedBlock. A plain vector here segfaulted under `BRONZE_GC_STRESS=1`
+    // on `new Pair(...[{n:1},{n:2}])` (docs/0032 decision 6).
+    RootedBlock block(args->length);
+    for (uint32_t i = 0; i < args->length; ++i) block.set(i, args->getElem(i));
+    return bronze_construct(calleeBits, block.count(), block.data());
 }
 
 }  // extern "C"

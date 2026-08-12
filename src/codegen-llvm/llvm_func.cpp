@@ -64,23 +64,83 @@ void FunctionEmitter::reload(il::ValueId id) {
 // collection inside any helper call moves the object and updates the slot,
 // while an SSA register would keep pointing into dead from-space. A function
 // with no Dynamic values (proven-f64 code) gets no frame and pays nothing.
+//
+// Slots are REUSED once the value in them is dead, which is what keeps the
+// frame proportional to how many values are live at once rather than to how
+// many the function ever computes. Without it a 2000-statement function got
+// 6002 slots — a 48 KB alloca, 6002 unrolled initialising stores, and 6002
+// stack locations for the register allocator to colour — and that, not
+// anything bronze does, was 93% of a three.js compile (docs/0033).
+//
+// A slot may be reused only where nothing can read the old value again, so
+// the eligibility rule is deliberately narrow:
+//
+//  - A value used OUTSIDE its defining block keeps a slot to itself. So does
+//    a block parameter and a function parameter. Deciding those needs real
+//    liveness over the CFG — a loop header's parameter is live across the
+//    back edge — and a wrong answer here is a use-after-move that only shows
+//    up under GC stress, which is the most expensive bug this project has.
+//  - Everything else is a temporary whose whole life is inside one block, and
+//    a linear scan over that block is exact: the range is [def, last use] in
+//    textual order, because within a block a def precedes every use of it.
+//
+// A freed slot is not cleared. It holds a dead-but-valid Value until the next
+// def overwrites it, so a collection in between forwards one object that is
+// no longer reachable from the program — the same one cycle of float the
+// frame already had, not a new hazard.
 
 void FunctionEmitter::planRootFrame() {
-    uint32_t slotCount = 0;
-    auto assignSlot = [&](il::ValueId id, il::Type ty) {
-        if (id == il::kNoValue || id >= func_.valueCount) return;
-        if (ty != il::Type::Dynamic) return;
-        if (slotOf_[id] == kNoSlot) slotOf_[id] = slotCount++;
+    const uint32_t n = func_.valueCount;
+    constexpr uint32_t kNoBlockIdx = UINT32_MAX;
+
+    auto isRooted = [&](il::ValueId id, il::Type ty) {
+        return id != il::kNoValue && id < n && ty == il::Type::Dynamic;
     };
 
-    uint32_t maxArgc = 0;
+    // Where each rooted value is defined, and whether any use is somewhere
+    // its defining block's linear scan cannot see.
+    std::vector<uint32_t> defBlock(n, kNoBlockIdx);
+    std::vector<uint32_t> lastUse(n, 0);
+    std::vector<bool> pinned(n, false);
+
     for (size_t p = 0; p < func_.params.size(); ++p) {
-        assignSlot(static_cast<il::ValueId>(p), func_.params[p].type);
+        const auto id = static_cast<il::ValueId>(p);
+        if (isRooted(id, func_.params[p].type)) pinned[id] = true;
     }
-    for (const auto& block : func_.blocks) {
-        for (const auto& param : block.params) assignSlot(param.id, param.type);
-        for (const auto& inst : block.instructions) {
-            assignSlot(inst.result, inst.type);
+
+    uint32_t maxArgc = 0;
+    for (uint32_t b = 0; b < func_.blocks.size(); ++b) {
+        const auto& block = func_.blocks[b];
+        for (const auto& param : block.params) {
+            if (isRooted(param.id, param.type)) pinned[param.id] = true;
+        }
+        for (uint32_t i = 0; i < block.instructions.size(); ++i) {
+            const auto& inst = block.instructions[i];
+            if (isRooted(inst.result, inst.type)) {
+                defBlock[inst.result] = b;
+                lastUse[inst.result] = i;
+            }
+            // Every field on an instruction that names a value: `operands`,
+            // and the two block-argument lists a terminator carries. The
+            // argument lists are read HERE, at the branch, so they are
+            // ordinary uses at index `i` rather than something wider — but
+            // they are read out of `inst.target`, not `inst.operands`, and a
+            // scan that forgot them would pool a value the branch still needs
+            // and hand its slot to the next def.
+            auto noteUse = [&](il::ValueId use) {
+                if (use == il::kNoValue || use >= n) return;
+                if (defBlock[use] != b) {
+                    // Defined in another block, or not yet seen here at all
+                    // (a value this block only reads). Either way its life is
+                    // wider than this scan.
+                    pinned[use] = true;
+                } else {
+                    lastUse[use] = i;
+                }
+            };
+            for (il::ValueId use : inst.operands) noteUse(use);
+            for (il::ValueId use : inst.target.args) noteUse(use);
+            for (il::ValueId use : inst.elseTarget.args) noteUse(use);
             if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2) {
                 maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 2));
             }
@@ -96,12 +156,62 @@ void FunctionEmitter::planRootFrame() {
         }
     }
 
+    // The pinned values first, in the order they appear, so a frame's layout
+    // stays a function of the IL and nothing else.
+    uint32_t pinnedCount = 0;
+    auto pin = [&](il::ValueId id, il::Type ty) {
+        if (!isRooted(id, ty) || !pinned[id]) return;
+        if (slotOf_[id] == kNoSlot) slotOf_[id] = pinnedCount++;
+    };
+    for (size_t p = 0; p < func_.params.size(); ++p) {
+        pin(static_cast<il::ValueId>(p), func_.params[p].type);
+    }
+    for (const auto& block : func_.blocks) {
+        for (const auto& param : block.params) pin(param.id, param.type);
+        for (const auto& inst : block.instructions) pin(inst.result, inst.type);
+    }
+
+    // Then the block-local temporaries, out of a pool every block reuses:
+    // two values in different blocks can never both be live, so the pool only
+    // has to be as deep as the worst single block.
+    uint32_t poolHighWater = 0;
+    std::vector<uint32_t> freeSlots;
+    std::vector<std::vector<il::ValueId>> expiringAt;
+    for (const auto& block : func_.blocks) {
+        uint32_t poolSize = 0;
+        freeSlots.clear();
+        expiringAt.assign(block.instructions.size(), {});
+        for (uint32_t i = 0; i < block.instructions.size(); ++i) {
+            const auto& inst = block.instructions[i];
+            // Release what died at the PREVIOUS instruction, never at this
+            // one: this instruction's operands are loaded out of their slots
+            // before its result is stored, and a slot handed to the result
+            // here would be read after it had been overwritten.
+            if (i > 0) {
+                for (il::ValueId dead : expiringAt[i - 1]) freeSlots.push_back(slotOf_[dead]);
+                expiringAt[i - 1].clear();
+            }
+            const il::ValueId res = inst.result;
+            if (!isRooted(res, inst.type) || pinned[res]) continue;
+            // Absolute from the start — the pool sits immediately above the
+            // pinned block, and `pinnedCount` is already final here.
+            if (freeSlots.empty()) {
+                slotOf_[res] = pinnedCount + poolSize++;
+            } else {
+                slotOf_[res] = freeSlots.back();
+                freeSlots.pop_back();
+            }
+            expiringAt[lastUse[res]].push_back(res);
+        }
+        poolHighWater = std::max(poolHighWater, poolSize);
+    }
+
     // Call arguments live in the frame too: they are live across the callee,
     // and the widest call site's worth of slots is enough because IL is flat
     // SSA — an argument list is built immediately before its call and dead
     // immediately after, never nested.
-    argvBase_ = slotCount;
-    frameSlots_ = slotCount + maxArgc;
+    argvBase_ = pinnedCount + poolHighWater;
+    frameSlots_ = argvBase_ + maxArgc;
 }
 
 void FunctionEmitter::emitPrologue() {

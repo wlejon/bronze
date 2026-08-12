@@ -6,6 +6,16 @@
 
 namespace bronze {
 
+// Starts at 1 so that a zero-initialized IC entry — which is what the table
+// in a freshly loaded object file is — can never read as "filled at the
+// current epoch". A depth > 0 entry with a null shape would miss on the
+// shape compare anyway; this makes it miss twice over rather than rely on
+// that one guard staying first.
+static uint64_t g_protoMutationEpoch = 1;
+
+uint64_t protoMutationEpoch() noexcept { return g_protoMutationEpoch; }
+void bumpProtoMutationEpoch() noexcept { ++g_protoMutationEpoch; }
+
 ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape) {
     (void)arena;
     if (!shape) {
@@ -127,6 +137,11 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
 }
 
 void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shape* newRoot) {
+    // The most direct form of "the chain an entry was filled against is not
+    // the chain any more". Dictionary mode below already makes every walk
+    // crossing this object miss; the bump says so in the mechanism that owns
+    // the question rather than leaving it to a side effect.
+    bumpProtoMutationEpoch();
     toDictionary(arena, self);
     // Only the root of a transition tree carries a prototype, and a dictionary
     // shape belongs to exactly one object — so repointing its root moves this
@@ -142,7 +157,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
     }
     StringHeader* prop_name = key.get().asString<StringHeader>();
 
-    if (ic && ic->cached_shape == shape) {
+    if (ic && ic->describes(shape)) {
         if (ic->cached_depth == 0) return getSlot(ic->cached_slot);
         bool crossedDictionary = false;
         ObjectHeader* holder = cachedProtoHolder(ic->cached_depth, crossedDictionary);
@@ -180,9 +195,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
             bool crossedDictionary = false;
             if (ic && shape && !shape->isDictionary() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
-                ic->cached_shape = shape;
-                ic->cached_slot = info.slot;
-                ic->cached_depth = depth;
+                ic->fill(shape, info.slot, depth);
             }
             return holder->getSlot(info.slot);
         }
@@ -206,7 +219,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // A set-site entry only ever describes an OWN DATA property of a
     // non-dictionary shape (below), so a shape match is a slot write with
     // nothing left to check.
-    if (ic && ic->cached_shape == shape && ic->cached_depth == 0) {
+    if (ic && ic->describesOwn(shape)) {
         setSlot(ic->cached_slot, val.get());
         return this;
     }
@@ -236,11 +249,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // inferred from that, because "the cache happens to miss" is not a
         // reason a write is discarded.
         if (!own.writable) return this;
-        if (ic && !shape->isDictionary()) {
-            ic->cached_shape = shape;
-            ic->cached_slot = own.slot;
-            ic->cached_depth = 0;
-        }
+        if (ic && !shape->isDictionary()) ic->fill(shape, own.slot, /*depth=*/0);
         setSlot(own.slot, val.get());
         return this;
     }
@@ -289,14 +298,17 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (shape->isDictionary()) {
         live = dictDefine(heap, arena, self, prop_name, enumerable, /*accessor=*/false, new_slot);
     } else {
+        // If this object is somebody's prototype, the property just created
+        // shadows whatever the depth > 0 entries below it point at, and their
+        // receivers' shapes are untouched — so those entries have to miss
+        // (docs/0032). One load and a not-taken branch for every other add,
+        // which is what keeps `new Point(x, y)` in a loop from invalidating
+        // the whole program's proto caches.
+        if (shape->used_as_prototype) bumpProtoMutationEpoch();
         Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
-        if (ic) {
-            ic->cached_shape = next_shape;
-            ic->cached_slot = new_slot;
-            ic->cached_depth = 0;
-        }
+        if (ic) ic->fill(next_shape, new_slot, /*depth=*/0);
     }
     live->setSlot(new_slot, val.get());
     return live;
