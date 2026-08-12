@@ -379,6 +379,32 @@ public:
     void visit(const ClassDecl&) override {}
 };
 
+// Finds `arguments` in a function body, descending into ARROWS and stopping
+// at every other function — the same boundary `ThisVisitor` walks, because it
+// is the same rule: an arrow has no `arguments` of its own and sees the
+// enclosing function's, exactly as it does for `this` (docs/0012 decision 3,
+// applied by docs/0027 decision 3).
+//
+// `arguments` is an ordinary Identifier, not a keyword, so the name can be
+// bound — and where it is, the binding wins and no arguments object exists.
+// That test is `usesArguments`'s, below: this visitor only finds mentions.
+class ArgumentsVisitor final : public CaptureVisitor {
+public:
+    bool found = false;
+    void visit(const Ident& i) override {
+        if (i.name == "arguments") found = true;
+    }
+    void visit(const FunctionExpr& f) override {
+        if (!f.isArrow) return;
+        visitParamExprs(f.params, *this);
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
+    void visit(const FunctionDecl&) override {}
+    void visit(const ClassDecl&) override {}
+};
+
 // Finds a `return <expr>;` in a function body, stopping at any nested
 // function: an inner `return` returns from that function, not this one.
 // Same traversal shape as ThisVisitor, recording something else again.
@@ -547,6 +573,38 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
 bool returnsAValue(const std::vector<StmtPtr>& stmts) {
     ValueReturnVisitor v;
     for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.found;
+}
+
+bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
+    // A declaration of the name wins over the arguments object, and there is
+    // no object at all in that case (10.2.11 CreateMappedArgumentsObject runs
+    // only when `arguments` is not already bound). Checked first, so a
+    // function whose parameter is called `arguments` never grows the synthetic
+    // binding that would then be a redeclaration of it.
+    for (const auto& p : params) {
+        if (p.pattern) {
+            for (const auto& bound : patternBoundNames(*p.pattern)) {
+                if (bound == "arguments") return false;
+            }
+        } else if (p.name == "arguments") {
+            return false;
+        }
+    }
+    for (const auto& name : getScopeDeclarations(body)) {
+        if (name == "arguments") return false;
+    }
+    for (const auto& name : getHoistedVarDeclarations(body)) {
+        if (name == "arguments") return false;
+    }
+    ArgumentsVisitor v;
+    // A parameter DEFAULT runs inside the function and appears nowhere in its
+    // body, so it is scanned here for the reason `getParamReferencedNames`
+    // exists (docs/0017 decision 9).
+    visitParamExprs(params, v);
+    for (const auto& s : body) {
         if (s) s->accept(v);
     }
     return v.found;

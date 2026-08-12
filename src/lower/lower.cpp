@@ -31,6 +31,14 @@ std::optional<il::Module> Lowerer::lower() {
                 fn.needsThis = true;
                 fn.params.push_back({"__this", il::Type::Dynamic});
             }
+            // `arguments` is the caller's real argument list, which only the
+            // call wrapper can see — so it arrives as a synthetic parameter
+            // too, and the function stops being a direct-call target
+            // (docs/0027 decision 3).
+            if (ast::usesArguments(fnDecl->params, fnDecl->body)) {
+                fn.needsArguments = true;
+                fn.params.push_back({"__arguments", il::Type::Dynamic});
+            }
             // Every source parameter starts on the uniform dynamic
             // convention and stays there unless a PROOF moves it. An
             // annotation is not a proof (docs/0010 decision 6): it is
@@ -234,6 +242,13 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // nested inside it would find that empty slot first and read `undefined`
     // instead of walking on to the function that does bind one.
     if (!currentFunctionIsArrow_) addSlot("this");
+    // The arguments object, when an arrow in this body reads it. Same rule as
+    // the receiver above and for the same reason: never for an arrow's own
+    // record, because an arrow binds no `arguments` and a slot here would be
+    // one nothing can fill — and one a more deeply nested arrow would find
+    // first, reading `undefined` instead of walking on to the function that
+    // does bind one.
+    if (!currentFunctionIsArrow_ && ilFn.needsArguments) addSlot("arguments");
     if (slots.empty()) return;
 
     EnvScopeInfo info;
@@ -400,6 +415,26 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
         }
         emitEnvSet(envDepthOf(functionEnvScope_), envScopes_[functionEnvScope_].slotOf.at("this"),
                    thisVal, ilFn);
+    }
+
+    // The arguments object is a BINDING named `arguments`, not a keyword:
+    // that is what makes an arrow in this body see it through the ordinary
+    // capture machinery, and what makes a `let arguments` shadow it without a
+    // rule of its own. Declared before the parameters so that any real
+    // declaration of the name — which `ast::usesArguments` already refuses to
+    // create this for — would shadow rather than collide with it.
+    if (ilFn.needsArguments) {
+        const il::ValueId argsVal = static_cast<il::ValueId>(ilFn.firstSourceParam() - 1);
+        if (functionEnvScope_ != SIZE_MAX &&
+            envScopes_[functionEnvScope_].slotOf.contains("arguments")) {
+            emitEnvSet(envDepthOf(functionEnvScope_),
+                       envScopes_[functionEnvScope_].slotOf.at("arguments"),
+                       Value{argsVal, il::Type::Dynamic}, ilFn);
+        }
+        if (!declareVariable("arguments", il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
+                             /*isVar=*/true, /*isInitialized=*/true, argsVal, Span{})) {
+            return false;
+        }
     }
 
     if (!lowerParamBindings(params, paramBase, ilFn)) return false;

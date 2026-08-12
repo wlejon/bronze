@@ -1,0 +1,21 @@
+true false false false
+true true false false
+false false true
+true false false false
+true false false true
+8 31 12 42
+NaN -16 7 NaN
+16 0 2 35
+10 NaN NaN 2
+10 10 NaN
+15 1 5
+NaN NaN NaN
+5 Infinity 1 100
+3.5 0.5 -Infinity
+NaN 0 NaN NaN
+1e+21 -0.5 NaN NaN
+true true
+true false
+true false
+shadowed
+31

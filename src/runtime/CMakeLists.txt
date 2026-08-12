@@ -59,6 +59,7 @@ bronze_add_module(runtime
         ../../tests/runtime/map_test.cpp
         ../../tests/runtime/exact_decimal_test.cpp
         ../../tests/runtime/regexp_test.cpp
+        ../../tests/runtime/arguments_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

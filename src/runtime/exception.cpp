@@ -63,6 +63,7 @@ uint64_t errorCtorError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorTypeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorRangeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorSyntaxError(uint64_t, uint64_t, uint32_t, const uint64_t*);
+uint64_t errorCtorReferenceError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 
 // Order matters only in that `Error` is first: the other two chain their
 // prototypes to its, so it has to exist before they are built.
@@ -71,6 +72,7 @@ ErrorClass g_errorClasses[] = {
     {"TypeError", ErrorKind::TypeError, errorCtorTypeError},
     {"RangeError", ErrorKind::RangeError, errorCtorRangeError},
     {"SyntaxError", ErrorKind::SyntaxError, errorCtorSyntaxError},
+    {"ReferenceError", ErrorKind::ReferenceError, errorCtorReferenceError},
 };
 
 ErrorClass& classFor(ErrorKind kind) {
@@ -154,6 +156,10 @@ uint64_t errorCtorRangeError(uint64_t, uint64_t thisBits, uint32_t argc, const u
 }
 uint64_t errorCtorSyntaxError(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     return errorCtorImpl(ErrorKind::SyntaxError, thisBits, argc, argv);
+}
+uint64_t errorCtorReferenceError(uint64_t, uint64_t thisBits, uint32_t argc,
+                                 const uint64_t* argv) {
+    return errorCtorImpl(ErrorKind::ReferenceError, thisBits, argc, argv);
 }
 
 void ensureErrorClasses() {
@@ -264,6 +270,10 @@ Value rtThrowSyntaxError(const std::string& message) {
     return rtThrowError(ErrorKind::SyntaxError, message);
 }
 
+Value rtThrowReferenceError(const std::string& message) {
+    return rtThrowError(ErrorKind::ReferenceError, message);
+}
+
 Value rtErrorConstructor(const std::string& name) {
     ensureErrorClasses();
     for (const ErrorClass& cls : g_errorClasses) {
@@ -316,6 +326,21 @@ std::string rtUncaughtText(Value thrown) {
 }
 
 extern "C" {
+
+// An unresolvable reference, EVALUATED (docs/0027 decision 1). ECMA-262
+// 6.2.5.5 GetValue step 2: a Reference Record whose base is unresolvable
+// throws a ReferenceError — at the moment of use, which is why lowering emits
+// an instruction here instead of refusing the program. The key index is the
+// module's interned name, so the message can name the identifier without the
+// backend carrying a string.
+//
+// Returns `undefined` for the reason every other raise helper does: the value
+// lands in a caller's GC root slot before the pending cell is tested, so
+// anything the collector cannot parse would put a bad word in a live root
+// (docs/0020 decision 2).
+uint64_t bronze_reference_error(uint32_t keyIndex) {
+    return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
+}
 
 // The end of a program with an exception still pending. Reported on STDERR,
 // which is what node does and what keeps an uncaught-throw oracle case

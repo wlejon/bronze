@@ -494,7 +494,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         if (envIt == activeVarMap_.end() &&
             !findEnclosingEnvVar(calleeIdent->name, shadowDepth, shadowIndex)) {
             auto it = functionIndices_.find(calleeIdent->name);
-            if (it != functionIndices_.end()) {
+            // A callee that needs an `arguments` object is not a direct-call
+            // target: the object is built from the caller's REAL argument
+            // list, which only the uniform path's wrapper can see (docs/0027
+            // decision 3). The same exclusion `needsEnv` carries.
+            if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments) {
                 uint32_t calleeIdx = it->second;
                 const auto& calleeFn = ilModule_.functions[calleeIdx];
 

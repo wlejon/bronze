@@ -186,6 +186,13 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 callWith(abi.bronze_global_get, {builder_.getInt32(inst.keyIndex)});
             }
             return true;
+        // The result is `undefined` and nothing reads it: the exception check
+        // `il::canThrow` puts after this instruction always fires, so control
+        // never reaches a use. It is still materialized, because a value id
+        // with no definition is exactly what the verifier exists to catch.
+        case il::Op::RefError:
+            callWith(abi.bronze_reference_error, {builder_.getInt32(inst.keyIndex)});
+            return true;
         case il::Op::ClassExtend: {
             if (!needs(2, false, "Invalid operands for ClassExtend")) return false;
             llvm::Value* derived = operand(inst, 0, "Undefined operand in ClassExtend instruction");
@@ -293,7 +300,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // supplies. A rest parameter is not one of them — padding argv up
             // to it would put an `undefined` in the rest array (docs/0017
             // decision 2).
-            uint32_t arity = static_cast<uint32_t>(target.callerParamCount());
+            uint32_t arity = target.adaptArity();
             callWith(abi.bronze_function_singleton,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity)});
             return true;

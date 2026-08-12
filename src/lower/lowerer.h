@@ -260,6 +260,22 @@ private:
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
+    // --- lower_unresolved.cpp: names that resolve to nothing (docs/0027) ---
+    bool resolvesName(const std::string& name) const;
+    void warnUnresolved(const std::string& name, Span span);
+    Value emitReferenceError(const std::string& name, Span span, il::Function& ilFn);
+    // The names of the function expressions whose bodies are currently being
+    // lowered, innermost last. A named function expression's own name is
+    // DECLARED — 15.2.5 puts it in a scope of the function's own — and bronze
+    // does not yet bind it. That is a known, named limitation, and this stack
+    // is what keeps it a compile error: without it the name would fall off the
+    // resolution ladder and become an unresolvable reference, turning a bug
+    // bronze reports into a ReferenceError a program could catch.
+    std::vector<std::string> namedFunctionExprs_;
+    // Which unresolved names have already been warned about. Per module, so
+    // one `document` warning covers every mention of it.
+    std::unordered_set<std::string> warnedUnresolved_;
+
     // --- lower_util.cpp: key constants, blocks, coercions, truthiness ----
     bool isProvidedGlobal(const std::string& name) const;
     uint32_t getKeyConstantIndex(const std::string& key);

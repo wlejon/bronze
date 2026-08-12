@@ -181,9 +181,11 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
     return g_functionSingletons.back().second.rawBits();
 }
 
-// An unknown name never reaches here: lowering diagnoses it at compile time,
-// which is why the miss below is an internal tripwire rather than a JS
-// ReferenceError.
+// An unknown name never reaches here. Lowering emits this instruction only
+// for a name on its closed provided-globals list; anything else becomes
+// `ref.error`, which raises the JS ReferenceError (docs/0027 decision 1). So
+// the miss below is a drift between lowering's list and this one — an
+// internal tripwire, not a program error.
 uint64_t bronze_global_get(uint32_t keyIndex) {
     if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
         return g_globalCache[keyIndex].rawBits();
@@ -206,6 +208,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = collection;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
         resolved = ctor;
+    } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
+        resolved = numeric;
     } else {
         fatal(("internal: no global named " + keyStr).c_str());
     }

@@ -39,7 +39,7 @@ void rtClearException() noexcept;
 // stores the returned value into a GC root slot before it tests the cell, so
 // a helper that returned anything the collector cannot parse would put a bad
 // word in a live root (docs/0020 decision 2).
-enum class ErrorKind { Error, TypeError, RangeError, SyntaxError };
+enum class ErrorKind { Error, TypeError, RangeError, SyntaxError, ReferenceError };
 
 Value rtThrow(Value thrown) noexcept;
 Value rtThrowError(ErrorKind kind, const std::string& message);
@@ -50,6 +50,11 @@ Value rtThrowRangeError(const std::string& message);
 // compiled where it was written (docs/0024 decision 3), so only a pattern
 // built at run time can reach here.
 Value rtThrowSyntaxError(const std::string& message);
+// 13.5.3 / 6.2.5.5: an unresolvable reference that is EVALUATED. Raised from
+// `bronze_reference_error`, the one instruction lowering emits for a name it
+// could not resolve (docs/0027 decision 1) — never from the runtime's own
+// internals, which have no names to fail to resolve.
+Value rtThrowReferenceError(const std::string& message);
 
 // The constructor objects, by name, for the provided-global path
 // (docs/0011 decision 1). `undefined` for a name that is not one of them.

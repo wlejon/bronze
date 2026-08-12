@@ -131,6 +131,13 @@ enum class Op : uint8_t {
     PropDelete,  // a: bool = prop.delete obj, <key_const_index>
     ElemDelete,  // a: bool = elem.delete obj, idx
     GlobalGet,  // a = global.get <key_const_index>   (docs/0011)
+    // A name lowering could not resolve to anything, EVALUATED. Raises
+    // ReferenceError at run time rather than refusing the program at compile
+    // time, because what a free name denotes is a fact only the running
+    // environment holds (docs/0027 decision 1). Not a terminator: it is a
+    // helper call like any other, and the block's handler is what the
+    // backend's exception test after it branches to.
+    RefError,   // a: dynamic = ref.error <key_const_index>
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
     // be made together, before any method is stored (docs/0012 dec. 5).
@@ -277,7 +284,8 @@ struct Param {
 struct Function {
     std::string name;
     // Synthetic leading parameters come first, in this order:
-    //   [__env if needsEnv] [__this if needsThis] source parameters...
+    //   [__env if needsEnv] [__this if needsThis]
+    //   [__arguments if needsArguments] source parameters...
     // __env can only come from the closure, so a needsEnv function is
     // never a direct-call target (docs/0007); __this is supplied by every
     // caller, including direct ones, so needsThis carries no such
@@ -294,6 +302,12 @@ struct Function {
     bool isEntryPoint = false;
     bool needsEnv = false;
     bool needsThis = false;
+    // `arguments`: every argument the caller really passed, as one array
+    // (docs/0027 decision 3). Like the rest array it can only be built where
+    // the true argument count is visible, which is the call WRAPPER — so a
+    // function that needs one is never a direct-call target, the same
+    // restriction `needsEnv` carries and for a related reason.
+    bool needsArguments = false;
     // `...rest`: the LAST source parameter, and the one no caller supplies a
     // value for. It arrives as an array built from whatever arguments were
     // left over — by the call wrapper on the uniform path, by the call site
@@ -307,12 +321,22 @@ struct Function {
 
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {
-        return static_cast<size_t>(needsEnv) + static_cast<size_t>(needsThis);
+        return static_cast<size_t>(needsEnv) + static_cast<size_t>(needsThis) +
+               static_cast<size_t>(needsArguments);
     }
     // How many arguments a CALLER passes: every source parameter but the
     // rest one, which is not a value the convention carries.
     size_t callerParamCount() const {
         return params.size() - firstSourceParam() - static_cast<size_t>(hasRestParam);
+    }
+    // The arity a short call is PADDED to with `undefined`. Zero means "do not
+    // pad", which is what a function owning an `arguments` object needs: the
+    // object is built from the argument count the wrapper sees, and padding
+    // would make `f(1)` indistinguishable from `f(1, undefined)` where the
+    // language says `arguments.length` is 1 and 2 (docs/0027 decision 3). Its
+    // wrapper reads argv through `bronze_arg_at` instead.
+    uint32_t adaptArity() const {
+        return needsArguments ? 0u : static_cast<uint32_t>(callerParamCount());
     }
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)

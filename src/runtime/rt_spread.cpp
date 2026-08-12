@@ -122,6 +122,29 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
     return out.get().rawBits();
 }
 
+// The `arguments` object of one call: every argument the caller actually
+// passed, in order (docs/0027 decision 3). Built by the call wrapper for the
+// same reason the rest array is — it is the only code that can see the real
+// argument count.
+//
+// UNMAPPED, and an ordinary array: writing `arguments[0]` does not write the
+// parameter, and `Array.isArray(arguments)` answers true where a spec engine
+// answers false. Both are recorded divergences, argued in docs/0027.
+uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
+    return bronze_rest_args(argc, argv, 0);
+}
+
+// One argument, or `undefined` when the caller passed fewer. Every other
+// function's wrapper reads argv unguarded, because `FunctionHeader::call` has
+// already padded it up to the declared arity — and a function that owns an
+// `arguments` object declares arity 0 precisely so that padding does NOT
+// happen, since `f(1)` and `f(1, undefined)` must give `arguments.length` 1
+// and 2. Guarding the read is what that costs (docs/0027 decision 3).
+uint64_t bronze_arg_at(uint32_t argc, const uint64_t* argv, uint32_t index) {
+    if (index >= argc) return BRONZE_ABI_UNDEFINED_BITS;
+    return argv[index];
+}
+
 void bronze_array_append(uint64_t arrBits, uint64_t valBits) {
     Rooted<Value> arr{Value(arrBits)};
     Rooted<Value> val{Value(valBits)};

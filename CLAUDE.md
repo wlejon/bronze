@@ -120,3 +120,9 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   missing receiver of `o[k]()`, the receiver slot an arrow must not own, and
   `warn`/`error` on stderr so the oracle's pinned stdout never protects
   library chatter)
+- 0027 unresolvable names and `arguments` (the provable/unprovable line that
+  makes a free name a runtime `ReferenceError` plus a warning while
+  `console.table` stays a compile error, bare `typeof` exempt and unwarned,
+  the named function expression kept out of it, `arguments` as an ordinary
+  binding carried in by the call wrapper with padding turned off, and the
+  four global numeric functions)

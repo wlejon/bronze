@@ -137,12 +137,31 @@ uint64_t numberParseInt(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
     RootedArgs args(argc, argv);
     const std::string text = textOf(args[0]);
     const Value radixVal = args[1];
+    // 19.2.5 step 4 is ToInt32(radix), not a truncation: `parseInt("10",
+    // Infinity)` is 10 because ToInt32(Infinity) is 0, which selects the
+    // default radix. A `static_cast<int>` of an infinity or a NaN is undefined
+    // behaviour, and on this target it produced INT_MIN — so the radix range
+    // check rejected it and the answer was NaN.
     int radix = 0;
     if (!radixVal.isUndefined()) {
-        const double r = rtToNumber(radixVal);
-        radix = std::isnan(r) ? 0 : static_cast<int>(r);
+        radix = bronze_to_int32_f64(rtToNumber(radixVal));
     }
     return Value::fromDouble(parseIntText(text, radix)).rawBits();
+}
+
+// ECMA-262 19.2.2 / 19.2.3: the GLOBAL predicates, which DO coerce. They are
+// separate functions from `Number.isNaN` / `Number.isFinite` above, and the
+// difference is the whole reason both exist — `isNaN("x")` is true because
+// ToNumber("x") is NaN, and `Number.isNaN("x")` is false because a string is
+// not a Number.
+uint64_t globalIsNaN(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    return Value::fromBool(std::isnan(rtToNumber(args[0]))).rawBits();
+}
+
+uint64_t globalIsFinite(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    return Value::fromBool(std::isfinite(rtToNumber(args[0]))).rawBits();
 }
 
 struct NamespaceFn {
@@ -180,9 +199,28 @@ const char* const kNumberUnimplemented[] = {
     "prototype",
 };
 
+// 19.2's function properties of the global object, by the name a free
+// identifier spells (docs/0011 decision 1). `parseInt` and `parseFloat` share
+// their code pointers with the `Number` statics, and `bronze_function_singleton`
+// interns by code pointer, so the two names denote ONE object — 21.1.2.12 and
+// 21.1.2.13 say exactly that ("the same function object").
+const NamespaceFn kGlobalFunctions[] = {
+    {"isNaN", globalIsNaN, 1},
+    {"isFinite", globalIsFinite, 1},
+    {"parseInt", numberParseInt, 2},
+    {"parseFloat", numberParseFloat, 1},
+};
+
 Value g_numberNamespace = Value::fromUndefined();
 
 }  // namespace
+
+Value rtGlobalNumericFunction(const std::string& name) {
+    for (const NamespaceFn& fn : kGlobalFunctions) {
+        if (name == fn.name) return Value(bronze_function_singleton(fn.code, fn.arity));
+    }
+    return Value::fromUndefined();
+}
 
 Value rtNumberNamespace() {
     if (g_numberNamespace.isObject()) return g_numberNamespace;

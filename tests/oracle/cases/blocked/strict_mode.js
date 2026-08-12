@@ -37,6 +37,13 @@ console.log(square.area);
 
 // 13.15.2 PutValue step 6: an assignment to an unresolvable reference is a
 // ReferenceError in strict mode, and creates a global in sloppy mode.
+//
+// This block alone now prints the pinned line, and not because strictness
+// arrived: docs/0027 decision 1 gives bronze one answer for an unresolvable
+// reference in every position, and it is the strict one — sloppy mode's
+// implicit global was never available, because bronze has no global object to
+// create a binding on (docs/0011 decision 1). The case stays blocked on the
+// two halves above and below, which are what a Directive Prologue would buy.
 try {
   undeclared = 1;
   console.log("no throw");

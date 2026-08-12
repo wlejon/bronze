@@ -25,10 +25,21 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // survive a second member — `assign`, `defineProperty` and the rest would
     // each need their own IL op and arity check here. The `Object.keys`
     // recognition stays as a fast path over the same runtime function.
+    // `ReferenceError` is on the list because docs/0027 decision 1 made
+    // bronze RAISE one: a program that catches what an unresolvable name
+    // throws must be able to name its class, exactly as it can for the
+    // TypeErrors the runtime raises (docs/0020 decision 7).
+    //
+    // The four global function properties of 19.2 are here rather than
+    // recognized at the call, for the reason `Math` was: `arr.map(parseFloat)`
+    // is ordinary JS and a call-site recognition cannot express it. Each is
+    // interned by code pointer, so `parseInt === Number.parseInt` — which is
+    // what 21.1.2.13's "same function object" says.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
            name == "Symbol" || name == "RegExp" ||
            name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
-           name == "RangeError" || name == "SyntaxError";
+           name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
+           name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {

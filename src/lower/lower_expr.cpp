@@ -266,8 +266,10 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 emitInst(ilFn, inst);
                 return Value{res, il::Type::Dynamic};
             }
-            diags_.error(ident->span, "undefined variable: " + ident->name);
-            return std::nullopt;
+            // Nothing in the ladder claims this name, and nothing here can
+            // know whether the running environment does. 6.2.5.5 GetValue
+            // step 2 (docs/0027 decision 1).
+            return emitReferenceError(ident->name, ident->span, ilFn);
         }
         const auto& b = varBindings_[it->second];
         if (!b.isInitialized) {
@@ -340,6 +342,24 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             return emitBitwise(il::Op::BitXor, *valOpt, Value{allOnes, il::Type::I32}, ilFn);
         }
         if (un->op == ast::UnaryOp::TypeOf) {
+            // 13.5.3 step 1: `typeof` of an UNRESOLVABLE reference is the
+            // string "undefined", not an error and not a throw. This is the
+            // universal feature-detection idiom, and it is the one position in
+            // the language where a free name is not a question about the
+            // environment — so it gets no warning either. Bare form only:
+            // `typeof x.y` still evaluates `x` and throws (docs/0027).
+            if (const auto* operandIdent = dynamic_cast<const ast::Ident*>(un->operand.get());
+                operandIdent && !resolvesName(operandIdent->name)) {
+                il::ValueId res = ilFn.valueCount++;
+                il::Instruction strInst;
+                strInst.op = il::Op::Box;
+                strInst.type = il::Type::Dynamic;
+                strInst.boxType = il::Type::Str;
+                strInst.result = res;
+                strInst.keyIndex = getKeyConstantIndex("undefined");
+                emitInst(ilFn, strInst);
+                return Value{res, il::Type::Dynamic};
+            }
             auto valOpt = lowerExpr(*un->operand, ilFn);
             if (!valOpt) return std::nullopt;
             Value boxed = boxValueIfNeeded(*valOpt, ilFn);
@@ -405,7 +425,14 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             uint32_t index = 0;
             if (!isLocal && (currentEnvValue_ == il::kNoValue ||
                              !findEnclosingEnvVar(ident->name, depth, index))) {
-                diags_.error(ident->span, "undefined variable: " + ident->name);
+                if (!resolvesName(ident->name)) {
+                    // `x++` on an unresolvable name throws at the READ, before
+                    // any write is attempted (13.4.4.1 step 1 is GetValue).
+                    return emitReferenceError(ident->name, ident->span, ilFn);
+                }
+                // A name the ladder DOES resolve, but not to something an
+                // update can write: a module function, or a provided global.
+                diags_.error(ident->span, "cannot assign to '" + ident->name + "'");
                 return std::nullopt;
             }
             Value oldVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
@@ -610,7 +637,21 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             // sees it.
             if (currentEnvValue_ == il::kNoValue ||
                 !findEnclosingEnvVar(ident->name, depth, index)) {
-                diags_.error(ident->span, "undefined variable: " + ident->name);
+                if (!resolvesName(ident->name)) {
+                    // A module is strict code (16.2.1.6.4), so an assignment
+                    // to an unresolvable name is a ReferenceError rather than
+                    // sloppy mode's implicit global — bronze has no global
+                    // object to create one on either way.
+                    //
+                    // A COMPOUND assignment throws at its read, before the
+                    // right side is evaluated (13.15.4 step 1 is GetValue); a
+                    // simple one evaluates the right side first and throws at
+                    // PutValue (13.15.2 step 1.e), so its side effects still
+                    // happen.
+                    if (!compound && !lowerExpr(*bin->rhs, ilFn)) return std::nullopt;
+                    return emitReferenceError(ident->name, ident->span, ilFn);
+                }
+                diags_.error(ident->span, "cannot assign to '" + ident->name + "'");
                 return std::nullopt;
             }
         }

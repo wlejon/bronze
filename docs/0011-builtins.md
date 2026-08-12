@@ -102,8 +102,14 @@ Decision 4's numeric fast path is the one part still open.
 
 ## Named diagnostics
 
-- `undefined variable: <name>` — unchanged, and now the answer for any free
-  name that is not on the provided-globals list.
+- `undefined variable: <name>` — the answer for any free name that is not on
+  the provided-globals list. **Superseded by docs/0027 decision 1**, which
+  keeps the closed list and its compile-time check and changes only what
+  happens when the check misses: a `ReferenceError` where the name is
+  evaluated, plus a compile-time warning, because what a free name denotes is
+  not a fact this compilation holds. The list stays closed for the reason
+  given above — a global bronze does not provide must never become a runtime
+  `undefined` a program feature-tests its way around — and it does not.
 - `unsupported: Math.<name> is not implemented` — decision 3.
 - `internal: no global named <name>` — a `global.get` for a name the runtime
   cannot resolve. Lowering's list is what prevents it, so reaching it is a

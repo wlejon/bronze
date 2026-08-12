@@ -4,6 +4,7 @@
 
 #include "codegen-llvm/llvm_backend.h"
 
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -87,37 +88,47 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
 // instance and left `this` pointing into from-space, which crashed
 // `this.items = items` in a rest constructor under BRONZE_GC_STRESS.
 //
-// So the wrapper gets a two-slot root frame of its own for exactly that call.
+// So the wrapper gets a root frame of its own for exactly those calls.
 // `argv` needs no protection: it points into the CALLER's frame, which the
 // collector updates in place, so reading it after the allocation is correct.
-llvm::Value* emitRestArgs(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, const AbiFns& abi,
-                          const AbiGlobals& globals, llvm::Value*& env, llvm::Value*& thisArg,
-                          llvm::Value* argc, llvm::Value* argv, uint32_t firstRest) {
+//
+// `live` is what must survive: `env` and `this` always, plus anything an
+// EARLIER call here already built. A wrapper can make two of these — the rest
+// array and the `arguments` object (docs/0027 decision 3) — and the second
+// allocation moves the first. Rooting only env and this left the rest array
+// pointing at the arguments array that had been allocated over it, so
+// `rest.length` was the whole argument count. Only BRONZE_GC_STRESS=1 showed
+// it, which is the argument for that mode existing.
+llvm::Value* emitWrapperArrayCall(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
+                                  const AbiGlobals& globals,
+                                  const std::vector<llvm::Value**>& live,
+                                  const std::function<llvm::Value*()>& build) {
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
-    llvm::StructType* frameTy =
-        llvm::StructType::get(ctx, {ptrTy, i64Ty, llvm::ArrayType::get(i64Ty, 2)});
+    const uint32_t slotCount = static_cast<uint32_t>(live.size());
+    llvm::Type* slotsTy = llvm::ArrayType::get(i64Ty, slotCount);
+    llvm::StructType* frameTy = llvm::StructType::get(ctx, {ptrTy, i64Ty, slotsTy});
 
     llvm::Value* frame = builder.CreateAlloca(frameTy, nullptr, "wrapframe");
     llvm::Value* slots = builder.CreateStructGEP(frameTy, frame, 2);
-    llvm::Type* slotsTy = llvm::ArrayType::get(i64Ty, 2);
-    llvm::Value* slot0 = builder.CreateConstInBoundsGEP2_32(slotsTy, slots, 0, 0);
-    llvm::Value* slot1 = builder.CreateConstInBoundsGEP2_32(slotsTy, slots, 0, 1);
-    builder.CreateStore(env, slot0);
-    builder.CreateStore(thisArg, slot1);
-    builder.CreateStore(builder.getInt64(2), builder.CreateStructGEP(frameTy, frame, 1));
+    std::vector<llvm::Value*> slotPtrs;
+    for (uint32_t i = 0; i < slotCount; ++i) {
+        slotPtrs.push_back(builder.CreateConstInBoundsGEP2_32(slotsTy, slots, 0, i));
+        builder.CreateStore(*live[i], slotPtrs.back());
+    }
+    builder.CreateStore(builder.getInt64(slotCount), builder.CreateStructGEP(frameTy, frame, 1));
     builder.CreateStore(builder.CreateLoad(ptrTy, globals.bronze_gc_frame_top),
                         builder.CreateStructGEP(frameTy, frame, 0));
     builder.CreateStore(frame, globals.bronze_gc_frame_top);
 
-    llvm::Value* rest =
-        builder.CreateCall(abi.bronze_rest_args, {argc, argv, builder.getInt32(firstRest)});
+    llvm::Value* built = build();
 
-    env = builder.CreateLoad(i64Ty, slot0);
-    thisArg = builder.CreateLoad(i64Ty, slot1);
+    for (uint32_t i = 0; i < slotCount; ++i) {
+        *live[i] = builder.CreateLoad(i64Ty, slotPtrs[i]);
+    }
     builder.CreateStore(builder.CreateLoad(ptrTy, builder.CreateStructGEP(frameTy, frame, 0)),
                         globals.bronze_gc_frame_top);
-    return rest;
+    return built;
 }
 
 void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
@@ -152,26 +163,52 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         // from argv: the environment from the closure (docs/0007), the
         // receiver from the caller (docs/0008).
         const size_t firstSourceParam = func.firstSourceParam();
-        // The rest array is built FIRST, because building it can collect and
-        // every value loaded before it would be stale afterwards.
+        // Both arrays are built FIRST, before any typed parameter is unpacked:
+        // building either can collect, and every value loaded out of argv
+        // beforehand would be stale afterwards. Each one that is already built
+        // joins the next one's root frame.
+        llvm::Value* argumentsArg = nullptr;
+        if (func.needsArguments) {
+            argumentsArg = emitWrapperArrayCall(builder, ctx, globals, {&env, &thisArg}, [&] {
+                return builder.CreateCall(abi.bronze_arguments_object, {argc, argv});
+            });
+        }
         llvm::Value* restArg = nullptr;
         if (func.hasRestParam) {
-            restArg = emitRestArgs(
-                builder, ctx, abi, globals, env, thisArg, argc, argv,
-                static_cast<uint32_t>(func.params.size() - 1 - firstSourceParam));
+            const uint32_t firstRest =
+                static_cast<uint32_t>(func.params.size() - 1 - firstSourceParam);
+            std::vector<llvm::Value**> live{&env, &thisArg};
+            if (argumentsArg != nullptr) live.push_back(&argumentsArg);
+            restArg = emitWrapperArrayCall(builder, ctx, globals, live, [&] {
+                return builder.CreateCall(abi.bronze_rest_args,
+                                          {argc, argv, builder.getInt32(firstRest)});
+            });
         }
 
         std::vector<llvm::Value*> callArgs;
         if (func.needsEnv) callArgs.push_back(env);
         if (func.needsThis) callArgs.push_back(thisArg);
+        if (func.needsArguments) callArgs.push_back(argumentsArg);
         for (size_t p = firstSourceParam; p < func.params.size(); ++p) {
             const uint32_t sourceIndex = static_cast<uint32_t>(p - firstSourceParam);
             if (func.hasRestParam && p + 1 == func.params.size()) {
                 callArgs.push_back(restArg);
                 break;
             }
-            llvm::Value* slot = builder.CreateGEP(i64Ty, argv, builder.getInt32(sourceIndex));
-            llvm::Value* bits = builder.CreateLoad(i64Ty, slot);
+            // The unguarded load is correct because `FunctionHeader::call`
+            // padded argv up to the declared arity before entering here. A
+            // function that owns an `arguments` object declares arity 0 so
+            // that padding does not happen — `f(1)` and `f(1, undefined)` must
+            // disagree about `arguments.length` — so its own reads are the one
+            // place that has to check (docs/0027 decision 3).
+            llvm::Value* bits = nullptr;
+            if (func.needsArguments) {
+                bits = builder.CreateCall(abi.bronze_arg_at,
+                                          {argc, argv, builder.getInt32(sourceIndex)});
+            } else {
+                bits = builder.CreateLoad(
+                    i64Ty, builder.CreateGEP(i64Ty, argv, builder.getInt32(sourceIndex)));
+            }
             switch (func.params[p].type) {
                 case il::Type::F64:
                     callArgs.push_back(builder.CreateCall(abi.bronze_unbox_f64, {bits}));

@@ -73,6 +73,19 @@ std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*
 bool usesThis(const std::vector<StmtPtr>& stmts);
 bool usesThis(const std::vector<const Stmt*>& stmts);
 
+// Does this function need an `arguments` object, and may it have one?
+//
+// Two questions in one answer, because they have one consumer. It descends
+// into ARROWS and no further — an arrow has no `arguments` of its own and sees
+// the enclosing function's, exactly as it does for `this` (docs/0012 decision
+// 3) — and it answers false outright when the name is BOUND by a parameter or
+// by a declaration in the body, because then the binding is what `arguments`
+// means and no object exists.
+//
+// Parameter defaults are scanned too: they are code that runs in the function
+// and appears nowhere in its body.
+bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>& body);
+
 // Does this function body contain a `return <expr>;`? Like `usesThis`, it
 // does NOT descend into nested functions: an inner `return` returns from
 // that function.

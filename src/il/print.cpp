@@ -72,6 +72,7 @@ const char* opName(Op op) {
         case Op::PropDelete: return "prop.delete";
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
+        case Op::RefError: return "ref.error";
         case Op::ClassExtend: return "class.extend";
         case Op::IterOpen: return "iter.open";
         case Op::IterStep: return "iter.step";
@@ -405,6 +406,15 @@ std::string print(const Module& module) {
                     // resolved is the whole content of the instruction, and
                     // an index would make the dump move whenever an
                     // unrelated property key was added ahead of it.
+                    // The NAME for the same reason `global.get` prints one:
+                    // which name failed to resolve IS the instruction.
+                    case Op::RefError:
+                        out += "ref.error \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
+                        break;
                     case Op::GlobalGet:
                         out += "global.get \"" +
                                (inst.keyIndex < module.keyConstants.size()

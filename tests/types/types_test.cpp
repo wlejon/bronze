@@ -598,3 +598,48 @@ TEST_CASE("the operator results docs/0015 fixes are fixed regardless of operand 
     // number even though the right operand is a string.
     CHECK(dump.find("j: number") != std::string::npos);
 }
+
+TEST_CASE("an unresolved name is dynamic, and does not poison what surrounds it") {
+    // docs/0027 decision 1 lets a name nothing declares reach inference. The
+    // only sound answer for it is `dynamic` — what the running environment
+    // holds is not a fact this compilation has — and, just as importantly, the
+    // code AROUND it stays analysable: a `typeof` guard is an ordinary
+    // condition, and a binding assigned from a literal in the same function is
+    // still proven a number.
+    const auto inferred = infer(
+        "function probe() {\n"
+        "  const found = __MISSING__;\n"
+        "  let n = 0;\n"
+        "  if (typeof __MISSING__ !== \"undefined\") {\n"
+        "    n = 1;\n"
+        "  }\n"
+        "  return n;\n"
+        "}\n"
+        "console.log(probe());\n");
+
+    const ast::FunctionDecl* probe = nullptr;
+    for (const auto& s : inferred.module->body) {
+        if (const auto* fn = dynamic_cast<const ast::FunctionDecl*>(s.get())) probe = fn;
+    }
+    REQUIRE(probe != nullptr);
+
+    // The `if` is the merge point: what its join produced is what the code
+    // after it believes.
+    const ast::Stmt* branch = nullptr;
+    for (const auto& s : probe->body) {
+        if (dynamic_cast<const ast::IfStmt*>(s.get()) != nullptr) branch = s.get();
+    }
+    REQUIRE(branch != nullptr);
+
+    const auto& r = *inferred.result;
+    // The unresolved name itself: the only sound answer.
+    CHECK(r.typeOfBindingAt(branch, "found") == types::Type::dynamic());
+    // And the join still happened over BOTH arms — the guard did not make the
+    // then-arm unreachable, and the surrounding binding keeps its element
+    // type rather than degrading to dynamic because something near it was
+    // unresolved.
+    CHECK(r.typeOfBindingAt(branch, "n") == types::Type::number());
+    // Inference reports nothing at all for the unresolved name; the warning
+    // is lowering's, and the guard is an ordinary condition.
+    CHECK(inferred.diags.all().empty());
+}

@@ -261,6 +261,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }
+    // An arrow has no `arguments` either, and for the same reason: it sees the
+    // enclosing function's through the environment (docs/0027 decision 3).
+    if (!isArrow && ast::usesArguments(params, body)) {
+        newFn.needsArguments = true;
+        newFn.params.push_back({"__arguments", il::Type::Dynamic});
+    }
     // A closure's parameters and return are always the uniform dynamic
     // convention, and an annotation cannot change that (docs/0010 decision
     // 6).
@@ -333,7 +339,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // report a second diagnostic resolved names against the wrong scope. The
     // caller stops at the first error either way, so this restores and then
     // reports rather than reporting and leaving the wreckage.
+    // A named function EXPRESSION only: a nested function declaration's name
+    // is a binding of the enclosing scope and resolves through it, so it must
+    // not be caught by the limitation this records (see emitReferenceError).
+    const bool isNamedFunctionExpr =
+        !isArrow && !declaredName.empty() && dynamic_cast<const ast::FunctionExpr*>(&site);
+    if (isNamedFunctionExpr) namedFunctionExprs_.push_back(declaredName);
     const bool bodyOk = lowerFunctionBody(params, body, newFn);
+    if (isNamedFunctionExpr) namedFunctionExprs_.pop_back();
 
     varBindings_ = outerVarBindings;
     activeVarMap_ = outerActiveVarMap;
@@ -378,8 +391,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // The arity a CALL adapts to. A rest parameter is not one of them: it is
     // built from whatever is left over, so counting it would have short calls
     // padded with an `undefined` that the rest array then contained.
-    inst.immI32 = static_cast<int32_t>(params.size()) -
-                  (params.empty() || !params.back().isRest ? 0 : 1);
+    // Zero for a closure that owns an `arguments` object, for the reason
+    // `il::Function::adaptArity` records: padding would erase the difference
+    // between `f(1)` and `f(1, undefined)`, which `arguments.length` sees.
+    inst.immI32 = ilModule_.functions[createdFnIdx].needsArguments
+                      ? 0
+                      : static_cast<int32_t>(params.size()) -
+                            (params.empty() || !params.back().isRest ? 0 : 1);
     inst.operands = {envArg};
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};

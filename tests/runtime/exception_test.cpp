@@ -73,15 +73,17 @@ TEST_CASE("a raise sets the cell and returns undefined") {
     CHECK(textOf(thrown) == "TypeError: boom");
 }
 
-TEST_CASE("the three error classes are distinct objects with a shared root") {
+TEST_CASE("the error classes are distinct objects with a shared root") {
     ShadowStackFrame frame;
 
     Rooted<Value> error{rtErrorConstructor("Error")};
     Rooted<Value> typeError{rtErrorConstructor("TypeError")};
     Rooted<Value> rangeError{rtErrorConstructor("RangeError")};
+    Rooted<Value> referenceError{rtErrorConstructor("ReferenceError")};
     REQUIRE(error.get().isObject());
     REQUIRE(typeError.get().isObject());
     REQUIRE(rangeError.get().isObject());
+    REQUIRE(referenceError.get().isObject());
 
     // They were once ONE object: native function objects are interned by code
     // pointer, and all three constructors shared a body, so the last class
@@ -91,7 +93,13 @@ TEST_CASE("the three error classes are distinct objects with a shared root") {
     CHECK(error.get().rawBits() != rangeError.get().rawBits());
     CHECK(typeError.get().rawBits() != rangeError.get().rawBits());
 
-    CHECK(rtErrorConstructor("ReferenceError").isUndefined());
+    // `ReferenceError` was NOT a class here until docs/0027 decision 1 gave
+    // bronze something to raise one for: an unresolvable name, evaluated. It
+    // needs its own code pointer for the same reason the others do.
+    CHECK(referenceError.get().rawBits() != error.get().rawBits());
+    CHECK(referenceError.get().rawBits() != typeError.get().rawBits());
+    CHECK(referenceError.get().rawBits() != rangeError.get().rawBits());
+
     CHECK(rtErrorConstructor("Math").isUndefined());
 }
 

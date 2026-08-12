@@ -13,9 +13,10 @@
 //    file does not compile at all if the bindings leak; and
 //  - a top-level read of such a name resolved to the leaked binding's SSA
 //    value id, which in `main` names an unrelated instruction — a plausible
-//    number invented out of another function's arithmetic. That half cannot
-//    be a stdout case (it must be the compile error `undefined variable`), so
-//    it is pinned in tests/lower.
+//    number invented out of another function's arithmetic. That half is
+//    pinned in tests/lower, where the observable is that the name does not
+//    RESOLVE: since docs/0027 decision 1 it lowers to `ref.error` and a
+//    warning rather than to a compile error.
 //
 // The names below are deliberately the ordinary ones — `i`, `acc`, `result`,
 // `secret` — because those are what collide in real files.

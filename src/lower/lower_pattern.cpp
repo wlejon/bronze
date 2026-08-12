@@ -139,7 +139,15 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
         emitEnvSet(depth, index, boxed, ilFn);
         return true;
     }
-    diags_.error(span, "undefined variable: " + name);
+    if (!resolvesName(name)) {
+        // A destructuring ASSIGNMENT target that names nothing. The source has
+        // already been evaluated and destructured, which is the order 13.15.2
+        // gives: every PutValue happens after, and this one throws (docs/0027
+        // decision 1).
+        emitReferenceError(name, span, ilFn);
+        return true;
+    }
+    diags_.error(span, "cannot assign to '" + name + "'");
     return false;
 }
 

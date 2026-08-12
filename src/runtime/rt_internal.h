@@ -192,6 +192,12 @@ void rtObjectCheckMissingMember(Value obj, const std::string& key);
 Value rtNumberNamespace();
 void rtNumberCheckMissingMember(Value obj, const std::string& key);
 
+// The four function properties of the global object that ECMA-262 19.2
+// defines over numbers: `isNaN`, `isFinite`, `parseInt`, `parseFloat`.
+// `undefined` for any other name. They live beside the `Number` statics
+// because two of them ARE the `Number` statics, interned by code pointer.
+Value rtGlobalNumericFunction(const std::string& name);
+
 // `Number.prototype`, reached by a property read on a PRIMITIVE number the
 // way `String.prototype` already is. `undefined` for a name that is not an
 // implemented method, so the caller falls through to the unimplemented-member
