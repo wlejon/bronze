@@ -73,11 +73,10 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // table in rt_members.cpp: membership is ECMA-262's "does this exist?", never
 // "have we got round to it?".
 //
-// `iterator` is NOT here and is not implemented either — it is the string
-// `"@@iterator"` (runtime/iterator.h), which is a divergence pinned the other
-// way round in cases/iterator_protocol.js rather than a missing name. Promoting
-// it to a real symbol is a migration of its own: the `@@` prefix is what makes
-// three separate mechanisms work, only one of which is about iterators.
+// `iterator` is NOT here because it is BUILT: it is the well-known symbol
+// `rtSymbolIterator()` (runtime/symbol.h), read by every iteration bronze
+// opens. The other twelve are names ECMA-262 defines and bronze has not, so
+// `Symbol.toPrimitive` is a diagnosed missing member rather than `undefined`.
 const char* const kSymbolUnimplemented[] = {
     "asyncIterator", "hasInstance", "isConcatSpreadable", "match",       "matchAll",
     "replace",       "search",      "species",            "split",       "toPrimitive",
@@ -109,14 +108,13 @@ Value rtSymbolFunction() {
         Rooted<Value> val{Value(bronze_function_singleton(s.code, s.arity))};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
-    // `Symbol.iterator` is still the STRING `"@@iterator"`, unchanged and
-    // deliberately so. Landing the symbol primitive does not migrate it: the
-    // `@@` prefix is load-bearing in three places — the iterator hook, the
-    // generator desugaring's self-property, and the internal slots a Map's and
-    // a string's iterators keep — and moving one of them without the others
-    // would break the other two silently.
+    // 20.4.2.5 `Symbol.iterator`: the well-known symbol itself, as an ordinary
+    // property of this object. A property and not a compile-time constant,
+    // because that is what ECMA-262 makes it — `[Symbol.iterator]` is a member
+    // expression, and evaluating it is what makes a program that rebinds
+    // `Symbol` get its own answer.
     Rooted<Value> key{rtMakeString("iterator")};
-    Rooted<Value> val{Value::fromString(rtIteratorKey())};
+    Rooted<Value> val{rtIteratorKey()};
     props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     g_symbolFunction = fn.get();
     rtHeap().add_permanent_root(&g_symbolFunction);

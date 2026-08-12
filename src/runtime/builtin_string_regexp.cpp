@@ -293,36 +293,17 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     return out.get().rawBits();
 }
 
-// The iterator `matchAll` hands back. A plain object with `next` and
-// `@@iterator`, exactly as a Map's iterators are — the state is three internal
-// slots whose `@@` names keep them out of `Object.keys` and out of
-// `console.log`.
-StringHeader* internKey(const char* text) {
-    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
-    return StringHeader::internToArena(rtArena(), tmp);
+// The iterator `matchAll` hands back. A plain object with `next` and the
+// `[Symbol.iterator]` it inherits, exactly as a Map's iterators are — and its
+// state is the three INTERNAL SLOTS of 22.2.9.1: [[IteratingRegExp]],
+// [[IteratedString]] and [[Done]]. Real fields, so nothing that enumerates an
+// object can see them, `getOwnPropertyNames` included.
+Value readSlot(Rooted<Value>& obj, uint32_t slot) {
+    return obj.get().asObject<ObjectHeader>()->internalSlot(slot);
 }
 
-StringHeader* keyRegExp() {
-    static StringHeader* k = internKey("@@matchAllRegExp");
-    return k;
-}
-StringHeader* keyInput() {
-    static StringHeader* k = internKey("@@matchAllInput");
-    return k;
-}
-StringHeader* keyDone() {
-    static StringHeader* k = internKey("@@matchAllDone");
-    return k;
-}
-
-Value readSlot(Rooted<Value>& obj, StringHeader* name) {
-    Rooted<Value> key{Value::fromString(name)};
-    return obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-}
-
-void writeSlot(Rooted<Value>& obj, StringHeader* name, Rooted<Value>& val) {
-    Rooted<Value> key{Value::fromString(name)};
-    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
+    obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
 Value iterResult(Rooted<Value>& value, bool done) {
@@ -335,24 +316,24 @@ Value iterResult(Rooted<Value>& value, bool done) {
     return out.get();
 }
 
-uint64_t iterSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) { return thisBits; }
-
 uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
     Rooted<Value> none;
-    if (!self.get().isObject() ||
-        self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    // 22.2.9.2.1 step 3: a receiver without the internal slots is a TypeError.
+    // The brand is also what makes the slot reads below safe.
+    if (!rtIsIteratorObject(self.get(), IteratorProto::RegExpString)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
-    if (readSlot(self, keyDone()).asBool()) return iterResult(none, true).rawBits();
+    if (readSlot(self, RegExpStringIteratorSlot::Done).asBool()) {
+        return iterResult(none, true).rawBits();
+    }
 
-    Rooted<Value> re{readSlot(self, keyRegExp())};
-    Rooted<Value> input{readSlot(self, keyInput())};
+    Rooted<Value> re{readSlot(self, RegExpStringIteratorSlot::IteratingRegExp)};
+    Rooted<Value> input{readSlot(self, RegExpStringIteratorSlot::IteratedString)};
     Value result = rtRegExpExec(re, input);
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (result.isNull()) {
-        Rooted<Value> flag{Value::fromBool(true)};
-        writeSlot(self, keyDone(), flag);
+        writeSlot(self, RegExpStringIteratorSlot::Done, Value::fromBool(true));
         return iterResult(none, true).rawBits();
     }
     Rooted<Value> match{result};
@@ -395,19 +376,16 @@ uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     Rooted<Value> re{rtRegExpFromParts(source, flagsText)};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
-    static Shape* shape = nullptr;
-    if (!shape) shape = rtNewRootShape(Value::fromUndefined());
-    Rooted<Value> it{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), shape))};
-    it.get().asObject<ObjectHeader>()->header.flags = 0;
+    // %RegExpStringIteratorPrototype% (22.2.9.1), which is where the
+    // `[Symbol.iterator]` self-hook lives — inherited from %IteratorPrototype%,
+    // so this object has no own symbol-keyed property.
+    Rooted<Value> it{rtNewIteratorObject(IteratorProto::RegExpString)};
     Rooted<Value> nextFn{Value(bronze_function_singleton(matchAllNext, 0))};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
-    Rooted<Value> selfFn{Value(bronze_function_singleton(iterSelf, 0))};
-    writeSlot(it, rtIteratorKey(), selfFn);
-    writeSlot(it, keyRegExp(), re);
-    writeSlot(it, keyInput(), self);
-    Rooted<Value> notDone{Value::fromBool(false)};
-    writeSlot(it, keyDone(), notDone);
+    writeSlot(it, RegExpStringIteratorSlot::IteratingRegExp, re.get());
+    writeSlot(it, RegExpStringIteratorSlot::IteratedString, self.get());
+    writeSlot(it, RegExpStringIteratorSlot::Done, Value::fromBool(false));
     return it.get().rawBits();
 }
 

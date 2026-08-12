@@ -78,7 +78,10 @@ public:
         emit(")");
     }
     void visit(const ObjectLit& n) override {
-        emit("(object");
+        // A generator object dumps under its own head: it is the same property
+        // list with a different PROTOTYPE, and a form that printed it as
+        // `(object` would hide the one thing the desugaring decides.
+        emit(n.isGeneratorObject ? "(generator-object" : "(object");
         indented([&] {
             for (const auto& p : n.props) {
                 // A computed key is a runtime ToPropertyKey of an evaluated
@@ -158,13 +161,23 @@ public:
         emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
-                const char* head = m.accessor == AccessorKind::Getter
+                // A computed key is a runtime ToPropertyKey of an evaluated
+                // expression and a written one is a compile-time constant, so
+                // the two must not dump the same — the rule an object
+                // literal's property already follows.
+                const char* head = m.computed()
+                                       ? (m.isStatic ? "(static-method-computed"
+                                                     : "(method-computed")
+                                   : m.accessor == AccessorKind::Getter
                                        ? (m.isStatic ? "(static-get " : "(get ")
                                    : m.accessor == AccessorKind::Setter
                                        ? (m.isStatic ? "(static-set " : "(set ")
                                        : (m.isStatic ? "(static-method " : "(method ");
                 emit(std::string(head) + m.name);
-                indented([&] { m.fn->accept(*this); });
+                indented([&] {
+                    if (m.keyExpr) m.keyExpr->accept(*this);
+                    m.fn->accept(*this);
+                });
                 emit(")");
             }
         });

@@ -290,18 +290,26 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     CHECK(gen.find("(method each") != std::string::npos);
     CHECK(gen.find("(let gen.0.step") != std::string::npos);
     CHECK(gen.find("(arrow-expr gen.0.next") != std::string::npos);
-    CHECK(gen.find("(prop @@iterator") != std::string::npos);
+    // The object it returns is a GENERATOR OBJECT: 27.5.1.2 puts
+    // `[Symbol.iterator]` on %GeneratorPrototype%, so the literal carries `next`
+    // and nothing else, and the prototype is what the head names.
+    CHECK(gen.find("(generator-object") != std::string::npos);
+    CHECK(gen.find("(prop next") != std::string::npos);
+    CHECK(gen.find("@@iterator") == std::string::npos);
 
     // `*[Symbol.iterator]()` is the one computed member name bronze reads, and
-    // it names the string the protocol uses.
+    // it is an EXPRESSION: the key is whatever `Symbol.iterator` evaluates to,
+    // which is the well-known symbol.
     const auto symbolIter = parseAndDump("class C { *[Symbol.iterator]() { yield this.x; } }");
     CHECK(symbolIter.substr(0, 7) != "ERRORS:");
-    CHECK(symbolIter.find("(method @@iterator") != std::string::npos);
+    CHECK(symbolIter.find("(method-computed") != std::string::npos);
+    CHECK(symbolIter.find("(member .iterator") != std::string::npos);
 
     // The same key without the `*`: an iterator written out by hand.
     const auto handWritten = parseAndDump("class C { [Symbol.iterator]() { return this.it; } }");
     CHECK(handWritten.substr(0, 7) != "ERRORS:");
-    CHECK(handWritten.find("(method @@iterator") != std::string::npos);
+    CHECK(handWritten.find("(method-computed") != std::string::npos);
+    CHECK(handWritten.find("(member .iterator") != std::string::npos);
 
     const auto otherComputedGen = parseAndDump("class C { *[k]() { yield 1; } }");
     CHECK(otherComputedGen.find("unsupported construct: a computed generator name") !=

@@ -5,8 +5,8 @@
 // From ECMA-262 7.4.2 (GetIterator), 7.4.6 (IteratorStep), 27.1.2
 // (%IteratorPrototype%) and 14.7.5.6 (ForIn/OfBodyEvaluation):
 //
-// 1. A user object is iterable because it has an `@@iterator` method, and
-//    every construct that consumes an iterable goes through the same one:
+// 1. A user object is iterable because it has a `[Symbol.iterator]` method,
+//    and every construct that consumes an iterable goes through the same one:
 //    `for-of`, spread, and array destructuring — including a rest element,
 //    which drains what the elements before it left.
 // 2. The method is looked up on the object, so it can live on a PROTOTYPE:
@@ -14,18 +14,15 @@
 //    iteration gets a FRESH iterator, which is what makes a nested loop over
 //    the same iterable terminate rather than share a cursor.
 // 3. Each of the four ways the protocol can be malformed is its own named
-//    TypeError, not one generic message: not iterable at all, an
-//    `@@iterator` that returns a non-object, an iterator with no `next`, and
-//    a `next` that returns a non-object.
+//    TypeError, not one generic message: not iterable at all, a
+//    `[Symbol.iterator]` that returns a non-object, an iterator with no
+//    `next`, and a `next` that returns a non-object.
 // 4. An exception from `next` propagates unchanged — 7.4.6 leaves the
 //    iterator alone, and `return` is NOT called on it.
-//
-// DELIBERATE DIVERGENCE: bronze has no symbol primitive, so `Symbol.iterator`
-// is the well-known STRING key "@@iterator" and `typeof Symbol.iterator`
-// answers "string" where node answers "symbol". The compensating rule is pinned
-// below: a key that begins with `@@` is created non-enumerable, so it stays out
-// of `Object.keys` and `for-in` exactly as a real symbol key would.
-// `cases/blocked/symbols.js` is the case for the primitive itself.
+// 5. `Symbol.iterator` is a SYMBOL (20.4.2.5, 6.1.5), so `typeof` it is
+//    "symbol". The hook it names is invisible to `Object.keys` and to
+//    `for-in` by BEING a symbol key — those two are defined over string keys
+//    — and not by any rule about how the key is spelled.
 
 const range = {
   from: 1,

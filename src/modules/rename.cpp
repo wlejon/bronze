@@ -223,6 +223,9 @@ private:
                 }
             }
             for (auto& m : cd->methods) {
+                // The computed member name is an expression of this file's
+                // module scope, so the names in it move with everything else.
+                if (m.keyExpr) expr(*m.keyExpr);
                 if (!m.fn) continue;
                 m.fn->span.file = fileId_;
                 functionBody(m.fn->params, m.fn->body, std::string());

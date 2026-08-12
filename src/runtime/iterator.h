@@ -10,6 +10,8 @@
 
 namespace bronze {
 
+class Shape;
+
 // One live iteration. Every construct that walks a value — `for-of`, array
 // spread, a rest element, array destructuring — opens one of these, steps it,
 // and closes it if it stops early.
@@ -71,22 +73,65 @@ Value rtOpenIterator(Value source);
 // one never sees either.
 std::string rtIterableKindName(Value v);
 
-// The property key `Symbol.iterator` evaluates to. bronze HAS a symbol
-// primitive now (runtime/symbol.h), and this is still the string
-// `"@@iterator"`, arena-interned so the property path allocates nothing.
-//
-// Migrating it is a chunk of its own rather than a line of this one. The `@@`
-// prefix is load-bearing in three places and only one of them is the iterator
-// hook: the generator desugaring gives its object a `@@iterator` self-property,
-// and builtin_map.cpp and builtin_string_regexp.cpp spell their internal slots
-// `@@mapTarget`, `@@matchAllInput` and friends — all three leaning on the
-// same "an own key beginning with @@ is created non-enumerable" rule.
-StringHeader* rtIteratorKey();
+// The property key `Symbol.iterator` denotes: the well-known symbol itself
+// (runtime/symbol.h), as a Value ready to hand to `getProp`. One identity for
+// the whole process, matched by ADDRESS — which is the entire difference from
+// the string `"@@iterator"` this used to be, and the reason
+// `{ "@@iterator": f }` is no longer an iterable.
+Value rtIteratorKey();
 
-// Is this an own key that stands for a well-known symbol? Such a key is
-// created NON-ENUMERABLE, which is what keeps `Object.keys`, `for-in`, object
-// spread and console.log agreeing with node about an object that defines its
-// own iterator.
-bool rtIsWellKnownSymbolKey(const StringHeader* name) noexcept;
+// The prototype chain an ITERATOR OBJECT hangs from, and the reason none of
+// them carries an own `[Symbol.iterator]`.
+//
+// ECMA-262 gives each built-in iterator a prototype of its own —
+// %MapIteratorPrototype% (24.1.5.2), %ArrayIteratorPrototype% (23.1.5.2, which
+// a typed array's iterator shares by 23.2.5.2), %RegExpStringIteratorPrototype%
+// (22.2.9.1) and %GeneratorPrototype% (27.5.1) — and all four inherit
+// %IteratorPrototype% (27.1.2), whose ONE member is
+// `[Symbol.iterator]() { return this; }` (27.1.2.1). That is where the self-hook
+// belongs, and putting it there rather than on each iterator is what keeps
+// `Object.getOwnPropertySymbols(m.entries())` at zero: an inherited property is
+// not an own one, and `getOwnPropertySymbols` reports own keys.
+//
+// The kinds are kept apart even though bronze puts no member on any of them,
+// because the prototype is what an iterator's `next` recognises its own
+// receiver by. A brand check needs the four to be four objects.
+enum class IteratorProto : uint32_t { Map, Array, RegExpString, Generator };
+
+// The INTERNAL SLOTS each kind carries, named after ECMA-262's. They are real
+// fields on the object (`ObjectHeader::internalSlot`) and not properties under
+// a reserved name, which is what makes them invisible to
+// `Object.getOwnPropertyNames` as well as to `Object.keys`.
+//
+// The COUNT lives here rather than in the file that reads the slots because it
+// is half of the BRAND: `rtIsIteratorObject` asks the question 24.1.5.1 step 3
+// spells "does it have an [[IteratedMap]] internal slot", and the only way to
+// ask it is the pair (this kind's prototype, this kind's slots).
+namespace MapIteratorSlot {
+enum : uint32_t { IteratedMap, NextIndex, Kind, kCount };
+}
+namespace ArrayIteratorSlot {
+enum : uint32_t { IteratedArrayLike, NextIndex, kCount };
+}
+namespace RegExpStringIteratorSlot {
+enum : uint32_t { IteratingRegExp, IteratedString, Done, kCount };
+}
+
+// A fresh iterator object of that kind: the kind's prototype, and the internal
+// slots above, all `undefined`. The caller fills the slots in and adds `next`.
+//
+// A generator object goes through here too, with no slots: its state is the
+// step variable in the closure the desugaring built, not a field.
+Value rtNewIteratorObject(IteratorProto kind);
+
+// The brand. Both halves are needed: a prototype alone can be forged with
+// `Object.create(Object.getPrototypeOf(m.keys()))`, and that object was not
+// allocated with the slots, so reading them off it would read past its end; a
+// slot count alone does not say WHOSE slots they are, and two kinds have three.
+bool rtIsIteratorObject(Value v, IteratorProto kind);
+
+// That kind's prototype object. `rtNewIteratorObject` builds one on first use;
+// this only reads it back.
+Value rtIteratorPrototype(IteratorProto kind);
 
 }  // namespace bronze::runtime

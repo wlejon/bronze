@@ -5,7 +5,7 @@ clean
 clean
 clean value {"value":7}
 7
-string 0
+symbol 1
 0
 0
 a,b 1,2

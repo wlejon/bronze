@@ -1,11 +1,11 @@
-// The iterator protocol, and the well-known key that stands in for
-// `Symbol.iterator` until bronze has a symbol primitive.
+// The iterator protocol: the key `Symbol.iterator` denotes, the prototype chain
+// every iterator object hangs from, and the two walks a for-of can take.
 //
 // Two walks live here and they are deliberately not two mechanisms. The FAST
 // kinds — an array, a string, a typed array, a Map, a Set — step a cursor the
 // runtime owns: no iterator object, no result object, no call into user code
 // per element, which is what the index walk bought and what this must not give
-// back. The PROTOCOL kind is the general answer: read `@@iterator`, call it,
+// back. The PROTOCOL kind is the general answer: read `[Symbol.iterator]`, call it,
 // call `next` until `done`, and call `return` if the loop is abandoned. A
 // user-defined iterable is the whole reason it exists.
 //
@@ -25,6 +25,8 @@
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
+#include "runtime/shape.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 
 namespace bronze {
@@ -99,10 +101,21 @@ StringHeader* keyReturn() {
     return k;
 }
 
-// The @@iterator method of a value, or `undefined`. Only a plain object can
-// carry one: an array, a string and a typed array take the fast kinds above,
-// and a Map answers for itself in `openRecord`.
-Value iteratorMethodOf(Value v) { return namedProp(v, rtIteratorKey()); }
+// The `[Symbol.iterator]` method of a value, or `undefined`. Only a plain
+// object can carry one: an array, a string and a typed array take the fast
+// kinds above, and a Map answers for itself in `openRecord`.
+//
+// The key is a SYMBOL, so this walks the prototype chain looking for a symbol
+// key and can no longer be confused by a string property that happens to spell
+// the hook's old name.
+Value iteratorMethodOf(Value v) {
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        return Value::fromUndefined();
+    }
+    Rooted<Value> objRoot{v};
+    Rooted<Value> keyRoot{rtIteratorKey()};
+    return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
+}
 
 // Everything 7.4.2 GetIterator does, into an already-created record.
 // `recRoot` holds the record; `srcRoot` the value being iterated.
@@ -165,14 +178,105 @@ bool stepFast(IterRecordHeader* rec) {
 
 }  // namespace
 
-StringHeader* rtIteratorKey() {
-    static StringHeader* k = internKey("@@iterator");
-    return k;
+Value rtIteratorKey() { return Value::fromSymbol(rtSymbolIterator()); }
+
+namespace {
+
+// %IteratorPrototype%'s one member (27.1.2.1): an iterator is its own iterable,
+// which is what lets `for (const x of m.keys())` and `[...gen()]` work — the
+// for-of opens the value it is given, and the value it is given is already an
+// iterator.
+uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return thisBits;
 }
 
-bool rtIsWellKnownSymbolKey(const StringHeader* name) noexcept {
-    return name && name->getLength() >= 2 && name->charCodeAt(0) == '@' &&
-           name->charCodeAt(1) == '@';
+// The four per-kind prototypes plus the %IteratorPrototype% they share, in one
+// table indexed by `IteratorProto`. Permanent roots: the collector moves plain
+// objects, and a `static Value` it has not been told about would be an address
+// recorded before a collection and read after one.
+struct ProtoEntry {
+    Value proto = Value::fromUndefined();
+    Shape* shape = nullptr;
+};
+
+ProtoEntry& protoEntry(IteratorProto kind) {
+    static ProtoEntry table[4];
+    return table[static_cast<uint32_t>(kind)];
+}
+
+// %IteratorPrototype% (27.1.2). Inherits Object.prototype, like every other
+// intrinsic object, so `m.entries().hasOwnProperty` is the method a program
+// would find in a spec engine rather than `undefined`.
+Value iteratorPrototypeRoot() {
+    static Value root = Value::fromUndefined();
+    if (root.isObject()) return root;
+    Rooted<Value> obj{
+        Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
+    Rooted<Value> key{rtIteratorKey()};
+    Rooted<Value> self{Value(bronze_function_singleton(iteratorProtoSelf, 0))};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
+    root = obj.get();
+    rtHeap().add_permanent_root(&root);
+    return root;
+}
+
+// How many internal slots each kind's objects are allocated with, in the order
+// `IteratorProto` declares. Half the brand, so it is written once and read by
+// both the creator and the check.
+constexpr uint32_t kInternalSlots[] = {
+    MapIteratorSlot::kCount,
+    ArrayIteratorSlot::kCount,
+    RegExpStringIteratorSlot::kCount,
+    0,  // a generator object: its state is the step variable in the closure
+};
+
+Shape* iteratorObjectShape(IteratorProto kind) {
+    ProtoEntry& entry = protoEntry(kind);
+    if (entry.shape) return entry.shape;
+    // The kind's own prototype: an object with NO members of its own, whose
+    // whole content is the %IteratorPrototype% it inherits and the identity it
+    // gives the objects below it. bronze puts `next` on the iterator itself
+    // rather than here, which is a divergence recorded in
+    // cases/collection_internal_slots.js and not one this seam decides.
+    Rooted<Value> parent{iteratorPrototypeRoot()};
+    Rooted<Value> proto{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(parent.get())))};
+    entry.proto = proto.get();
+    rtHeap().add_permanent_root(&entry.proto);
+    // The root shape holds the prototype, and `rtNewRootShape` hands it to the
+    // collector — so the object above is reachable twice over, once for the
+    // shape and once for the static this function reads it back from.
+    entry.shape = rtNewRootShape(entry.proto);
+    return entry.shape;
+}
+
+}  // namespace
+
+Value rtNewIteratorObject(IteratorProto kind) {
+    const uint32_t slots = kInternalSlots[static_cast<uint32_t>(kind)];
+    ObjectHeader* obj = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(),
+                                                              iteratorObjectShape(kind), slots);
+    obj->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    return Value::fromObject(obj);
+}
+
+bool rtIsIteratorObject(Value v, IteratorProto kind) {
+    if (!v.isObject()) return false;
+    HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+    auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+    if (obj->internalSlotCount() != kInternalSlots[static_cast<uint32_t>(kind)]) return false;
+    // The prototype lives on the shape's ROOT, which a delete carries across
+    // into dictionary mode — so an iterator a program has deleted a property
+    // from is still branded. `Object.setPrototypeOf` is the one thing that
+    // unbrands one, and that is a program saying it is no longer that object.
+    const Shape* root = obj->shape ? obj->shape->root : nullptr;
+    return root && root->prototype.rawBits() == rtIteratorPrototype(kind).rawBits();
+}
+
+Value rtIteratorPrototype(IteratorProto kind) {
+    iteratorObjectShape(kind);
+    return protoEntry(kind).proto;
 }
 
 // The kind of a value, for the "is not iterable" TypeError. Its own function

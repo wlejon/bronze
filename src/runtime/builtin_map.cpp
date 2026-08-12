@@ -45,38 +45,23 @@ bool requireMapLike(Value self, const char* method) {
     return false;
 }
 
-StringHeader* internKey(const char* text) {
-    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
-    return StringHeader::internToArena(rtArena(), tmp);
-}
-
-// The iterator object's private state. Spelled with the `@@` prefix so the
-// enumerability rule for well-known symbol keys hides it: an iterator prints as
-// `{}` and `Object.keys` of one is empty, which is what a real internal slot
-// would do.
-StringHeader* keyTarget() {
-    static StringHeader* k = internKey("@@mapTarget");
-    return k;
-}
-StringHeader* keyCursor() {
-    static StringHeader* k = internKey("@@mapCursor");
-    return k;
-}
-StringHeader* keyKind() {
-    static StringHeader* k = internKey("@@mapKind");
-    return k;
-}
-
 enum IterKind : uint32_t { Keys = 0, Values = 1, Entries = 2 };
 
-Value readSlot(Rooted<Value>& obj, StringHeader* name) {
-    Rooted<Value> key{Value::fromString(name)};
-    return obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+// The iterator object's INTERNAL SLOTS (24.1.5.1): [[IteratedMap]],
+// [[MapNextIndex]] and [[MapIterationKind]]. Real fields on the object, which
+// is what makes them invisible to every enumeration there is — `Object.keys`,
+// `for-in`, spread, `JSON.stringify` AND `getOwnPropertyNames` — rather than
+// only to the four defined over enumerable keys.
+//
+// Neither of these allocates, so neither can move the object; the caller reads
+// the pointer out of its root each time regardless, because the code around
+// them does allocate.
+Value readSlot(Rooted<Value>& obj, uint32_t slot) {
+    return obj.get().asObject<ObjectHeader>()->internalSlot(slot);
 }
 
-void writeSlot(Rooted<Value>& obj, StringHeader* name, Rooted<Value>& val) {
-    Rooted<Value> key{Value::fromString(name)};
-    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
+    obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
 Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
@@ -99,17 +84,21 @@ Value iterResult(Rooted<Value>& value, bool done) {
 
 uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
-    if (!self.get().isObject() ||
-        self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    // 24.1.5.1 step 3: a receiver without the internal slots is a TypeError,
+    // not an exhausted iterator. `rtIsIteratorObject` is how bronze asks "does
+    // it have an [[IteratedMap]]" — the kind's prototype and the kind's slots —
+    // and it is a memory-safety check as much as a semantic one, since the
+    // reads below address fields only an object created here has.
+    if (!rtIsIteratorObject(self.get(), IteratorProto::Map)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
-    Rooted<Value> target{readSlot(self, keyTarget())};
+    Rooted<Value> target{readSlot(self, MapIteratorSlot::IteratedMap)};
     if (!isMapLike(target.get())) {
         Rooted<Value> none;
         return iterResult(none, true).rawBits();
     }
-    const auto kind = static_cast<uint32_t>(readSlot(self, keyKind()).asNumber());
-    uint32_t at = static_cast<uint32_t>(readSlot(self, keyCursor()).asNumber());
+    const auto kind = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::Kind).asNumber());
+    uint32_t at = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::NextIndex).asNumber());
 
     auto* map = target.get().asObject<MapHeader>();
     while (at < map->used() && !map->liveAt(at)) ++at;
@@ -118,14 +107,12 @@ uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         // The cursor is left past the end, so a live iterator over a map that
         // grows after it finished does NOT resume — 24.1.5.1 step 4.c sets
         // [[Map]] to undefined once, and this is that latch.
-        Rooted<Value> stop{Value::fromUndefined()};
-        writeSlot(self, keyTarget(), stop);
+        writeSlot(self, MapIteratorSlot::IteratedMap, Value::fromUndefined());
         return iterResult(none, true).rawBits();
     }
     Rooted<Value> k{map->keyAt(at)};
     Rooted<Value> v{map->valueAt(at)};
-    Rooted<Value> cursor{Value::fromDouble(static_cast<double>(at + 1))};
-    writeSlot(self, keyCursor(), cursor);
+    writeSlot(self, MapIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
 
     Rooted<Value> produced;
     if (kind == Keys) {
@@ -139,30 +126,23 @@ uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return iterResult(produced, false).rawBits();
 }
 
-// `iterator[Symbol.iterator]()` is the iterator itself (%IteratorPrototype%'s
-// one member, 27.1.2.1), which is what makes `for (const k of m.keys())`
-// work: the for-of opens the value it is given, and the value it is given is
-// already an iterator.
-uint64_t iterSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) { return thisBits; }
-
 Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
-    // One shared root shape, so every map iterator has the same hidden class
-    // and the `next` read inside a loop is a monomorphic cache hit.
-    static Shape* shape = nullptr;
-    if (!shape) shape = rtNewRootShape(Value::fromUndefined());
-
-    Rooted<Value> it{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), shape))};
-    it.get().asObject<ObjectHeader>()->header.flags = 0;
+    // %MapIteratorPrototype% (24.1.5.2), which is where `[Symbol.iterator]`
+    // lives — 27.1.2.1 puts the self-hook on the shared %IteratorPrototype%,
+    // and an INHERITED property is not an own one, so
+    // `Object.getOwnPropertySymbols(m.keys())` is empty. The shape is shared by
+    // every map iterator, so the `next` read inside a loop is a monomorphic
+    // cache hit.
+    Rooted<Value> it{rtNewIteratorObject(IteratorProto::Map)};
     Rooted<Value> nextFn{Value(bronze_function_singleton(mapIterNext, 0))};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
-    Rooted<Value> selfFn{Value(bronze_function_singleton(iterSelf, 0))};
-    writeSlot(it, rtIteratorKey(), selfFn);
-    writeSlot(it, keyTarget(), map);
-    Rooted<Value> zero{Value::fromDouble(0.0)};
-    writeSlot(it, keyCursor(), zero);
-    Rooted<Value> kindVal{Value::fromDouble(static_cast<double>(kind))};
-    writeSlot(it, keyKind(), kindVal);
+    // Written AFTER the property above, which is the only thing here that can
+    // allocate: `writeSlot` re-derives the object from its root, so the order
+    // is not load-bearing, but reading it in this order is.
+    writeSlot(it, MapIteratorSlot::IteratedMap, map.get());
+    writeSlot(it, MapIteratorSlot::NextIndex, Value::fromDouble(0.0));
+    writeSlot(it, MapIteratorSlot::Kind, Value::fromDouble(static_cast<double>(kind)));
     return it.get();
 }
 

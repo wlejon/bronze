@@ -8,6 +8,16 @@ namespace bronze {
 
 using namespace ast;
 
+namespace {
+
+// The IL symbol a class's `[Symbol.iterator]` method compiles to. A computed
+// key has no NAME — the two fields of a class member are never both meaningful
+// — but a function still needs a symbol, and this one cannot collide with a
+// method a program wrote: a source identifier cannot contain a dot.
+constexpr const char* kIteratorMethodSymbol = "Symbol.iterator";
+
+}  // namespace
+
 StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultName) {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionDecl>();
@@ -333,7 +343,14 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         // bronze reads.
         if (check(TokenKind::Star)) {
             const Token& star = advance();
-            if (!matchSymbolIteratorKey(member.name)) {
+            member.keyExpr = matchSymbolIteratorKey();
+            if (member.keyExpr) {
+                // `name` and `keyExpr` are never both meaningful, the same rule
+                // an object literal's property follows: a computed key has no
+                // name until it is evaluated. The FUNCTION still needs an IL
+                // symbol, and that is what `kIteratorMethodSymbol` spells.
+                member.name.clear();
+            } else {
                 if (check(TokenKind::LBracket)) {
                     error("unsupported construct: a computed generator name in a class body "
                           "(only `*[Symbol.iterator]()` is read)");
@@ -349,7 +366,8 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             }
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = star.span.begin;
-            fn->name = cls->name + "." + member.name;
+            fn->name = cls->name + "." +
+                       (member.keyExpr ? std::string(kIteratorMethodSymbol) : member.name);
             if (!parseGeneratorTail(*fn)) {
                 ok = false;
                 break;
@@ -363,7 +381,9 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             // out by hand rather than as a generator. One rule for what a
             // computed class member name may be, not a generator-only one.
             const Span keySpan = peek().span;
-            if (matchSymbolIteratorKey(member.name)) {
+            member.keyExpr = matchSymbolIteratorKey();
+            if (member.keyExpr) {
+                member.name.clear();
                 if (!check(TokenKind::LParen)) {
                     error("unsupported construct: a `[Symbol.iterator]` class field "
                           "(only methods are supported)");
@@ -376,7 +396,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
                 // class method and its `super` is the class's.
                 auto fn = std::make_unique<FunctionExpr>();
                 fn->span.begin = keySpan.begin;
-                fn->name = cls->name + ".@@iterator";
+                fn->name = cls->name + "." + kIteratorMethodSymbol;
                 advance();  // '('
                 if (!parseParams(fn->params)) return nullptr;
                 if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;

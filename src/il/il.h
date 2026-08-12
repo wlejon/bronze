@@ -108,6 +108,12 @@ enum class Op : uint8_t {
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
+    // A GENERATOR OBJECT (ECMA-262 27.5.1): the same empty object with
+    // %GeneratorPrototype% in place of Object.prototype. Its own op rather than
+    // an immediate on `create.object`, because the prototype an object is born
+    // with is not a parameter of anything else here and naming it is what makes
+    // the desugaring's one divergence from a literal readable in the IL.
+    CreateGeneratorObject, // a = create.generator_object
     ObjectKeys, // a = object.keys b
     // The keys a `for-in` will visit, as one array built before the first
     // iteration: own AND inherited enumerable string keys, each once.
@@ -119,6 +125,13 @@ enum class Op : uint8_t {
     // ordinary `prop.set` cannot express and which is what keeps a method out
     // of `Object.keys` and `for-in`. No IC index — a class body runs once.
     MethodDef,  // method.def obj, <key_const_index>, v
+    // The same definition with a key that is a VALUE rather than a compile-time
+    // constant — `class C { [Symbol.iterator]() {} }`. Its own op and not
+    // `elem.set`, because a method is `enumerable: false` (15.7.14) and an
+    // assignment cannot say that; and not `method.def`, because there is no
+    // key constant to name. The key is whatever the expression evaluated to,
+    // which for the one spelling bronze admits is the well-known symbol.
+    MethodDefComputed,  // method.def.computed obj, key, v
     // An accessor property: one property with two halves, either of which may
     // be `undefined` here because the source wrote only one of them. `immI32`
     // is the enumerable attribute — 1 for an object literal's accessor, 0 for a

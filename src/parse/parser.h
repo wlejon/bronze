@@ -71,7 +71,7 @@ private:
     bool inGeneratorBody_ = false;
     const char* yieldRefusal_ = nullptr;
     // Ordinal of the next desugared generator, for the IL symbols its `next`
-    // and `@@iterator` compile to and for the step variable it declares.
+    // compiles to and for the step variable it declares.
     // Same reasoning as `objectMethodOrdinal_`, including the file
     // qualification: two files' first generators must not name one symbol.
     size_t generatorOrdinal_ = 0;
@@ -176,10 +176,10 @@ private:
     // construct outside the straight-line subset.
     bool parseGeneratorTail(ast::FunctionExpr& fn);
     // `[ Symbol.iterator ]` as a class member name, the only computed key
-    // bronze reads, and the only one three.js's generators use. True with the
-    // cursor past the `]` and `outName` set to `"@@iterator"`; false with the
-    // cursor unmoved when the bracketed key is anything else.
-    bool matchSymbolIteratorKey(std::string& outName);
+    // bronze reads there, and the only one three.js's generators use. Returns
+    // the KEY EXPRESSION with the cursor past the `]`, or null with the cursor
+    // unmoved when the bracketed key is anything else.
+    ast::ExprPtr matchSymbolIteratorKey();
     // Saves and restores the generator state across a nested function body:
     // a `yield` inside a function written inside a generator belongs to that
     // function, which is not a generator, so it is an ordinary identifier

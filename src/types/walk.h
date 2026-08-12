@@ -100,7 +100,10 @@ public:
         n.value->accept(*this);
     }
     void visit(const ast::ClassDecl& n) override {
-        for (const auto& m : n.methods) m.fn->accept(*this);
+        for (const auto& m : n.methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            m.fn->accept(*this);
+        }
     }
     void visit(const ast::FunctionExpr& n) override {
         walkParams(n.params);

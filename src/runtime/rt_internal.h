@@ -336,6 +336,9 @@ Value rtArrayBufferMember(Value buffer, const std::string& key);
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table.
 Value rtTypedArrayMethod(const std::string& key);
+// `v[Symbol.iterator]`, which 23.2.3.34 makes the same function object as
+// `values`. By key and not by name, because the key is a symbol.
+Value rtTypedArrayIteratorMethod();
 
 // ---- regular expressions ---------------------------------------
 

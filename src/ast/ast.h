@@ -317,6 +317,18 @@ struct ObjectProp {
 
 struct ObjectLit final : Expr {
     std::vector<ObjectProp> props;
+    // A GENERATOR OBJECT (ECMA-262 27.5.1): the object the generator
+    // desugaring returns, whose prototype is %GeneratorPrototype% rather than
+    // Object.prototype. That is the whole difference — the properties below are
+    // built exactly as any other literal's — and it is what makes the object
+    // iterable without an own `[Symbol.iterator]`, because 27.5.1.2 puts the
+    // self-hook on the prototype.
+    //
+    // A flag on the literal rather than a node of its own: only the prototype
+    // differs, and a second node would duplicate every property form to say so.
+    // Nothing but src/parse/parser_generator.cpp sets it, and no source syntax
+    // can.
+    bool isGeneratorObject = false;
     void accept(Visitor& v) const override;
 };
 
@@ -510,7 +522,17 @@ struct ThrowStmt final : Stmt {
 // capture analysis, `this`, inference's nested-function pass — reaches a
 // method without a second code path.
 struct ClassMethod {
+    // The member's name, when the source wrote one. A COMPUTED key —
+    // `[Symbol.iterator]() {}` — has no name until `keyExpr` is evaluated and
+    // ToPropertyKey'd, so `name` is empty and means nothing there; the same
+    // rule an object literal's `ObjectProp` follows, and for the same reason.
     std::string name;
+    // `[e]` as a member name. Null unless the key is computed. bronze admits
+    // exactly one spelling of one in a class body (`[Symbol.iterator]`) and
+    // refuses the rest by name, but what reaches lowering from here is an
+    // ordinary expression: the key is whatever it evaluates to.
+    ExprPtr keyExpr;
+    bool computed() const { return keyExpr != nullptr; }
     bool isStatic = false;
     bool isConstructor = false;
     // A class accessor, which differs from an object literal's in exactly

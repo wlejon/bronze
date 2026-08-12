@@ -18,16 +18,18 @@
 // 3. A generator object IS its own iterable: `it[Symbol.iterator]()` is `it`,
 //    so a half-drained iterator can be handed to `for-of` or to spread and
 //    continues from where it was.
-// 4. `@@iterator` read off the object and called through `o[k]()` runs with
-//    `o` as its receiver (13.3.6.1 evaluates the MemberExpression once and
-//    passes its base as the this value), which is what makes `this.base`
+// 4. `[Symbol.iterator]` read off the object and called through `o[k]()` runs
+//    with `o` as its receiver (13.3.6.1 evaluates the MemberExpression once
+//    and passes its base as the this value), which is what makes `this.base`
 //    inside the body mean this instance.
 //
-// DELIBERATE DIVERGENCE: `Symbol.iterator` is the string "@@iterator", so
-// `r[Symbol.iterator]` is an ordinary property read. DELIBERATE DIVERGENCE:
-// bronze's generator object is a plain object literal, so it has no
-// `%GeneratorPrototype%`, no `return` and no `throw` method, and `typeof` its
-// `next` is the only thing about its identity this case may pin.
+// The generator object's `[Symbol.iterator]` is INHERITED, exactly as 27.5.1.2
+// defines it: bronze builds the object against a %GeneratorPrototype% carrying
+// the self-hook, so its own keys are `next` and nothing else — which is why
+// `Object.getOwnPropertySymbols` of one is empty in cases/
+// collection_internal_slots.js. DELIBERATE DIVERGENCE: that prototype carries
+// no `return` and no `throw` method, so `typeof` its `next` is the only thing
+// about its identity this case may pin.
 
 class Pair {
     constructor(base) {

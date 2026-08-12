@@ -28,7 +28,6 @@
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
-#include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
@@ -365,31 +364,16 @@ uint64_t taJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
 // for is a program that reads `v[Symbol.iterator]` and drives it by hand, which
 // must get the same values.
 
-StringHeader* internKey(const char* text) {
-    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
-    return StringHeader::internToArena(rtArena(), tmp);
+// The iterator object's INTERNAL SLOTS (23.1.5.1, which 23.2.5.2 gives a typed
+// array's iterator too): [[IteratedArrayLike]] and [[ArrayLikeNextIndex]]. Real
+// fields on the object rather than properties under a reserved name, so they
+// are absent from `getOwnPropertyNames` as well as from `Object.keys`.
+Value readSlot(Rooted<Value>& obj, uint32_t slot) {
+    return obj.get().asObject<ObjectHeader>()->internalSlot(slot);
 }
 
-// `@@`-prefixed so the enumerability rule for well-known symbol keys hides
-// them: an iterator prints as `{}` and `Object.keys` of one is empty, which is
-// what a real internal slot would do.
-StringHeader* keyTarget() {
-    static StringHeader* k = internKey("@@taTarget");
-    return k;
-}
-StringHeader* keyCursor() {
-    static StringHeader* k = internKey("@@taCursor");
-    return k;
-}
-
-Value readSlot(Rooted<Value>& obj, StringHeader* name) {
-    Rooted<Value> key{Value::fromString(name)};
-    return obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-}
-
-void writeSlot(Rooted<Value>& obj, StringHeader* name, Rooted<Value>& val) {
-    Rooted<Value> key{Value::fromString(name)};
-    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
+    obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
 Value iterResult(Rooted<Value>& value, bool done) {
@@ -404,46 +388,40 @@ Value iterResult(Rooted<Value>& value, bool done) {
 
 uint64_t taIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
-    if (!self.get().isObject() ||
-        self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    // 23.1.5.1 step 3: a receiver without the internal slots is a TypeError.
+    // The brand is also what makes the slot reads below safe — only an object
+    // this file created has fields there at all.
+    if (!rtIsIteratorObject(self.get(), IteratorProto::Array)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
-    Rooted<Value> target{readSlot(self, keyTarget())};
+    Rooted<Value> target{readSlot(self, ArrayIteratorSlot::IteratedArrayLike)};
     Rooted<Value> none;
     if (!isTypedArray(target.get())) return iterResult(none, true).rawBits();
-    const auto at = static_cast<uint32_t>(readSlot(self, keyCursor()).asNumber());
+    const auto at = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::NextIndex).asNumber());
     if (at >= lengthOf(target.get())) return iterResult(none, true).rawBits();
 
     Rooted<Value> produced{Value::fromDouble(elemOf(target.get(), at))};
-    Rooted<Value> cursor{Value::fromDouble(static_cast<double>(at + 1))};
-    writeSlot(self, keyCursor(), cursor);
+    writeSlot(self, ArrayIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
     return iterResult(produced, false).rawBits();
 }
-
-// %IteratorPrototype%'s one member (27.1.2.1): an iterator is its own
-// iterable, which is what lets `for (const x of v[Symbol.iterator]())` work.
-uint64_t iterSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) { return thisBits; }
 
 uint64_t taValues(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "[Symbol.iterator]")) {
         return Value::fromUndefined().rawBits();
     }
-    // One shared root shape, so every typed-array iterator has the same hidden
-    // class and the `next` read inside a loop is a monomorphic cache hit.
-    static Shape* shape = nullptr;
-    if (!shape) shape = rtNewRootShape(Value::fromUndefined());
-
-    Rooted<Value> it{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), shape))};
-    it.get().asObject<ObjectHeader>()->header.flags = 0;
+    // %ArrayIteratorPrototype% (23.1.5.2, shared by a typed array's iterator
+    // through 23.2.5.2), which is where the `[Symbol.iterator]` self-hook lives
+    // — inherited from %IteratorPrototype% rather than written here, so this
+    // object has no own symbol-keyed property at all. One shared root shape, so
+    // every typed-array iterator has the same hidden class and the `next` read
+    // inside a loop is a monomorphic cache hit.
+    Rooted<Value> it{rtNewIteratorObject(IteratorProto::Array)};
     Rooted<Value> nextFn{Value(bronze_function_singleton(taIterNext, 0))};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
-    Rooted<Value> selfFn{Value(bronze_function_singleton(iterSelf, 0))};
-    writeSlot(it, rtIteratorKey(), selfFn);
-    writeSlot(it, keyTarget(), self);
-    Rooted<Value> zero{Value::fromDouble(0.0)};
-    writeSlot(it, keyCursor(), zero);
+    writeSlot(it, ArrayIteratorSlot::IteratedArrayLike, self.get());
+    writeSlot(it, ArrayIteratorSlot::NextIndex, Value::fromDouble(0.0));
     return it.get().rawBits();
 }
 
@@ -457,10 +435,16 @@ const Method kMethods[] = {
     {"set", taSet, 0},           {"subarray", taSubarray, 0}, {"slice", taSlice, 0},
     {"fill", taFill, 0},         {"copyWithin", taCopyWithin, 0},
     {"forEach", taForEach, 1},   {"map", taMap, 1},           {"indexOf", taIndexOf, 0},
-    {"includes", taIncludes, 0}, {"join", taJoin, 0},         {"@@iterator", taValues, 0},
+    {"includes", taIncludes, 0}, {"join", taJoin, 0},
 };
 
 }  // namespace
+
+// 23.2.3.34 `%TypedArray%.prototype[@@iterator]`, which 23.2.3.32 makes the
+// same function object as `values`. Reached by KEY rather than by name now
+// that the key is a symbol, so it is handed out here instead of sitting in the
+// string table above — where it only ever was because the key used to be one.
+Value rtTypedArrayIteratorMethod() { return Value(bronze_function_singleton(taValues, 0)); }
 
 Value rtTypedArrayMethod(const std::string& key) {
     for (const Method& m : kMethods) {

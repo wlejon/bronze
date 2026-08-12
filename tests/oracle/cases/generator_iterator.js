@@ -11,25 +11,20 @@
 // destructuring) and 15.7.14 (a class method is non-enumerable):
 //
 // 1. The three consumers of an iterable are one mechanism: `for-of`, spread
-//    `[...v]` and `const [a, b, c] = v` all call `@@iterator` and step the
-//    result, so all three must agree about the same object.
-// 2. Calling `@@iterator` again produces a FRESH walk. A second `[...v]`
-//    yields the same three values, and two nested loops over one iterable
-//    terminate instead of sharing a cursor.
+//    `[...v]` and `const [a, b, c] = v` all call `[Symbol.iterator]` and step
+//    the result, so all three must agree about the same object.
+// 2. Calling `[Symbol.iterator]` again produces a FRESH walk. A second
+//    `[...v]` yields the same three values, and two nested loops over one
+//    iterable terminate instead of sharing a cursor.
 // 3. Each yielded expression is evaluated when its step is REACHED, not when
 //    the iterator is created: writing `v.y` between two walks changes what
 //    the second walk yields.
-// 4. `this` inside the generator body is the receiver `@@iterator` was
+// 4. `this` inside the generator body is the receiver `[Symbol.iterator]` was
 //    called on, which is what makes one method on the prototype serve every
 //    instance.
 // 5. The method is a class method, so 15.7.14 makes it non-enumerable — and
-//    its name begins with `@@`, which the runtime
-//    forces non-enumerable as well. Neither `Object.keys` nor `for-in` may
-//    report it.
-//
-// DELIBERATE DIVERGENCE: `Symbol.iterator` is the string "@@iterator", so
-// `*[Symbol.iterator]()` is a method named "@@iterator" and the key is matched
-// syntactically at compile time.
+//    its key is a SYMBOL, which `Object.keys` and `for-in` are not defined
+//    over at all. Neither may report it, for two independent reasons.
 
 class Vector3 {
     constructor(x, y, z) {

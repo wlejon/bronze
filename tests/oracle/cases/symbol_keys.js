@@ -12,9 +12,11 @@
 // The invisibility half is 7.3.23's `key-of-type-String` filter and nothing
 // else. A symbol-keyed property is absent from `Object.keys`, `Object.entries`,
 // `for-in`, `JSON.stringify` and `getOwnPropertyNames` because it is a SYMBOL,
-// not because of anything about how it is spelled — which is what distinguishes
-// this from the `@@` prefix rule that stands in for `Symbol.iterator`
-// (collection_internal_slots.js pins that the two mechanisms stay apart).
+// not because of anything about how it is spelled. The other way an object can
+// carry state nothing enumerates is an INTERNAL SLOT, which is not a property
+// at all; collection_internal_slots.js pins that the two mechanisms stay
+// apart, and in particular that a slot is absent from
+// `getOwnPropertySymbols` where a symbol key is present.
 const key = Symbol("k");
 const other = Symbol("k");
 

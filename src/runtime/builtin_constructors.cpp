@@ -143,7 +143,7 @@ bool hasIterator(Rooted<Value>& src) {
         return true;
     }
     if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
-    Rooted<Value> key{Value::fromString(rtIteratorKey())};
+    Rooted<Value> key{rtIteratorKey()};
     const Value method = src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
     return isCallable(method);
 }

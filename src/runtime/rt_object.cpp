@@ -18,6 +18,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -175,6 +176,16 @@ uint64_t bronze_create_object() {
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
     obj->header.flags = 0;
     return Value::fromObject(obj).rawBits();
+}
+
+// A GENERATOR OBJECT (ECMA-262 27.5.1): `bronze_create_object` with
+// %GeneratorPrototype% in place of Object.prototype, and nothing else. The
+// prototype is where 27.5.1.2's `[Symbol.iterator]() { return this; }` lives, so
+// the object the generator desugaring fills in below is iterable without an own
+// symbol-keyed property — which is what `Object.getOwnPropertySymbols` of one
+// reports, and what a spec engine reports too.
+uint64_t bronze_create_generator_object() {
+    return rtNewIteratorObject(IteratorProto::Generator).rawBits();
 }
 
 uint64_t bronze_create_array(uint32_t length) {

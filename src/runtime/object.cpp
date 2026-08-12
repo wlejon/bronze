@@ -2,7 +2,6 @@
 
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
-#include "runtime/iterator.h"
 
 namespace bronze {
 
@@ -16,23 +15,63 @@ static uint64_t g_protoMutationEpoch = 1;
 uint64_t protoMutationEpoch() noexcept { return g_protoMutationEpoch; }
 void bumpProtoMutationEpoch() noexcept { ++g_protoMutationEpoch; }
 
+namespace {
+
+// The payload of an object with no internal slots: the fields after the heap
+// header, plus the inline property slots. Anything past it is an internal slot,
+// which is how `internalSlotCount` recovers the number from `header.size`
+// without a field of its own — a field would be one more word on every `{}`
+// literal in a program to describe a thing almost none of them have.
+constexpr size_t kObjectBasePayload =
+    (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) + ObjectHeader::kInlineSlots * sizeof(Value);
+
+}  // namespace
+
 ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape) {
+    return createWithInternalSlots(heap, arena, shape, 0);
+}
+
+ObjectHeader* ObjectHeader::createWithInternalSlots(Heap& heap, NonMovingArena& arena,
+                                                    Shape* shape, uint32_t count) {
     (void)arena;
     if (!shape) {
         fatal("object creation without a shape (the shape carries the prototype)");
     }
-    size_t payload_bytes =
-        (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) + kInlineSlots * sizeof(Value);
+    size_t payload_bytes = kObjectBasePayload + count * sizeof(Value);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* obj = reinterpret_cast<ObjectHeader*>(raw_hdr);
     obj->shape = shape;
     obj->overflow = Value::fromUndefined();
 
+    // The internal slots are initialized with the inline ones and by the same
+    // loop: the collector scans every payload word as a Value, so leaving one
+    // uninitialized would hand it a pointer made of whatever the semispace last
+    // held there.
     Value* slots = obj->slotsData();
-    for (uint32_t i = 0; i < kInlineSlots; ++i) {
+    for (uint32_t i = 0; i < kInlineSlots + count; ++i) {
         slots[i] = Value::fromUndefined();
     }
     return obj;
+}
+
+uint32_t ObjectHeader::internalSlotCount() const noexcept {
+    const size_t payload = header.size - sizeof(HeapObjectHeader);
+    if (payload <= kObjectBasePayload) return 0;
+    return static_cast<uint32_t>((payload - kObjectBasePayload) / sizeof(Value));
+}
+
+Value ObjectHeader::internalSlot(uint32_t index) const {
+    if (index >= internalSlotCount()) {
+        fatal("internal slot index beyond what the object was created with");
+    }
+    return slotsData()[kInlineSlots + index];
+}
+
+void ObjectHeader::setInternalSlot(uint32_t index, Value val) {
+    if (index >= internalSlotCount()) {
+        fatal("internal slot index beyond what the object was created with");
+    }
+    slotsData()[kInlineSlots + index] = val;
 }
 
 Value ObjectHeader::getSlot(uint32_t index) const {
@@ -284,24 +323,14 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // property discards its write.
     if (shape->isDictionary() && !shape->dict->extensible) return this;
 
-    // A well-known symbol key is not an enumerable property. bronze spells
-    // `Symbol.iterator` as the string `"@@iterator"`, and a real symbol key
-    // would never appear in `Object.keys`, `for-in`, object spread or
-    // console.log — so the string standing in for one must not either. The rule
-    // is on the KEY rather than on the call site because there are four call
-    // sites and one of them is `o[k] = v` with a computed key, where nothing
-    // but the key is known.
-    //
-    // It applies to STRING keys only, and asking that first is what keeps the
-    // rule where it belongs. A REAL symbol key is enumerable (ECMA-262
-    // 10.1.9.2 -> 7.3.5 CreateDataProperty: `enumerable: true`); it is absent
-    // from `Object.keys` and `for-in` because those are defined over string
-    // keys, not because it is hidden. Applying the `@@` rule to it would make
-    // `Object.assign` and `{ ...o }` drop symbol-keyed properties they are
-    // required to copy.
-    if (prop_name.isString() && runtime::rtIsWellKnownSymbolKey(prop_name.string())) {
-        enumerable = false;
-    }
+    // There is no rule here about what a key is SPELLED like, and there must not
+    // be one. A symbol key is enumerable (10.1.9.2 -> 7.3.5 CreateDataProperty:
+    // `enumerable: true`) and is absent from `Object.keys` and `for-in` because
+    // those are defined over string keys, not because it is hidden — so forcing
+    // one non-enumerable would make `Object.assign` and `{ ...o }` drop
+    // symbol-keyed properties 10.1.9.2 requires them to copy. And the state the
+    // runtime's iterator objects carry is not a property at all now
+    // (`ObjectHeader::internalSlot`), so nothing needs a reserved prefix either.
 
     // Create the own property: a shape transition, or an entry in the
     // dictionary once one delete has made the chain unusable. Both may grow

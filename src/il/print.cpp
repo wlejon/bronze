@@ -65,9 +65,11 @@ const char* opName(Op op) {
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
+        case Op::CreateGeneratorObject: return "create.generator_object";
         case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
         case Op::MethodDef: return "method.def";
+        case Op::MethodDefComputed: return "method.def.computed";
         case Op::AccessorDef: return "accessor.def";
         case Op::PropDelete: return "prop.delete";
         case Op::ElemDelete: return "elem.delete";
@@ -150,6 +152,7 @@ bool canThrow(const Instruction& inst) {
         // out of memory` in bronze, and inventing one would let a program
         // continue past a heap that could not grow).
         case Op::CreateObject:
+        case Op::CreateGeneratorObject:
         case Op::CreateArray:
         case Op::CreateFunction:
         case Op::FunctionRef:
@@ -278,6 +281,17 @@ std::string print(const Module& module) {
                                ", " + std::to_string(inst.keyIndex) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
                         break;
+                    // The KEY as a value, where `method.def` prints a constant
+                    // index: there is no constant, and printing one would name
+                    // a key this instruction does not have.
+                    case Op::MethodDefComputed:
+                        out += "method.def.computed %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
+                        break;
                     // Both halves are printed even when one is undefined:
                     // which half the source wrote is exactly what this op
                     // carries, and a form that dropped the absent one would
@@ -351,6 +365,9 @@ std::string print(const Module& module) {
                         break;
                     case Op::CreateObject:
                         out += "create.object";
+                        break;
+                    case Op::CreateGeneratorObject:
+                        out += "create.generator_object";
                         break;
                     case Op::ForInKeys:
                     case Op::IterOpen:

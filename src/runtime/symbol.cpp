@@ -77,6 +77,16 @@ Value rtMakeSymbol(Value description) {
     return Value::fromSymbol(allocateSymbol(internDescription(description)));
 }
 
+SymbolHeader* rtSymbolIterator() {
+    // Built on FIRST USE, not at load time: interning the description goes
+    // through the heap, so this must not run before the heap exists. The
+    // earliest anything can ask for it is a program evaluating `Symbol.iterator`
+    // or opening an iteration, both of which are long past that point.
+    static SymbolHeader* sym = allocateSymbol(StringHeader::internToArena(
+        rtArena(), StringHeader::createFromUTF8(rtHeap(), std::string_view("Symbol.iterator"))));
+    return sym;
+}
+
 Value rtSymbolFor(Rooted<Value>& keyString) {
     if (!keyString.get().isString()) {
         fatal("internal: Symbol.for with a key that is not a string");

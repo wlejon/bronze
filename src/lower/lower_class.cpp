@@ -104,9 +104,34 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
             continue;
         }
 
+        // A COMPUTED member name — `[Symbol.iterator]() {}` — is an expression
+        // evaluated where the class is defined, and BEFORE the method it names
+        // (15.7.14 evaluates the ClassElementName first). It is the same
+        // ordering an object literal's computed key already follows, and it is
+        // observable the moment the key expression has an effect.
+        std::optional<Value> keyBoxed;
+        if (m.keyExpr) {
+            auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
+            if (!keyOpt) return false;
+            keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+        }
+
         auto fnVal = lowerClosure(*m.fn, m.fn->name, m.fn->params, m.fn->returnType, m.fn->body,
                                   m.fn->span, ilFn);
         if (!fnVal) return false;
+
+        if (keyBoxed) {
+            // `method.def.computed` and not `elem.set`: 15.7.14 defines a
+            // method with `enumerable: false` whatever spelled its name, and an
+            // assignment cannot say that.
+            il::Instruction computedInst;
+            computedInst.op = il::Op::MethodDefComputed;
+            computedInst.type = il::Type::Void;
+            computedInst.result = il::kNoValue;
+            computedInst.operands = {homeObject, keyBoxed->id, fnVal->id};
+            emitInst(ilFn, computedInst);
+            continue;
+        }
 
         // An instance method belongs to the prototype, shared by every
         // instance; a `static` one belongs to the constructor itself, which is

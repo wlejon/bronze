@@ -98,6 +98,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::CreateObject:
             if (inst.result != il::kNoValue) callWith(abi.bronze_create_object, {});
             return true;
+        case il::Op::CreateGeneratorObject:
+            if (inst.result != il::kNoValue) callWith(abi.bronze_create_generator_object, {});
+            return true;
         case il::Op::CreateArray:
             if (inst.result != il::kNoValue) {
                 callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});
@@ -125,6 +128,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!target || !value) return false;
             callWith(abi.bronze_method_def,
                      {target, builder_.getInt32(inst.keyIndex), value});
+            return true;
+        }
+        case il::Op::MethodDefComputed: {
+            if (!needs(3, false, "Invalid operands for MethodDefComputed")) return false;
+            const char* what = "Undefined operand in MethodDefComputed instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* key = operand(inst, 1, what);
+            llvm::Value* value = operand(inst, 2, what);
+            if (!target || !key || !value) return false;
+            callWith(abi.bronze_method_def_computed, {target, key, value});
             return true;
         }
         case il::Op::AccessorDef: {

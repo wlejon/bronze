@@ -8,17 +8,21 @@
 //
 // becomes
 //
-//     @@iterator() {
+//     [Symbol.iterator]() {
 //         let step = 0;
-//         return {
+//         return <a generator object> {
 //             next: () => {
 //                 if (step === 0) { step = 1; return { value: this.x, done: false }; }
 //                 if (step === 1) { step = 2; return { value: this.y, done: false }; }
 //                 return { value: undefined, done: true };
-//             },
-//             "@@iterator"() { return this; }
+//             }
 //         };
 //     }
+//
+// The returned object is created against %GeneratorPrototype% rather than the
+// plain-object root, which is where `[Symbol.iterator]() { return this; }` lives
+// (27.5.1.2). It is INHERITED and not an own property, so the object a program
+// gets back has exactly one own key — `next` — and no own symbol-keyed property.
 //
 // `next` is an ARROW so that `this` in a yielded expression is the receiver the
 // generator method was called on, which is the whole reason the three.js
@@ -179,25 +183,34 @@ ExprPtr Parser::refuseYield() {
     return nullptr;
 }
 
-// `[ Symbol.iterator ]`, the one computed member name bronze reads. It is
-// matched SYNTACTICALLY, on the two identifiers, rather than evaluated:
-// `Symbol.iterator` is the string `"@@iterator"` at compile time, and a class
-// body has no place to run an expression for a key. The divergence is that a
-// program which rebinds `Symbol` still gets `@@iterator` here; that is the same
-// bet made for every provided global, and `Symbol` is on that list.
-bool Parser::matchSymbolIteratorKey(std::string& outName) {
-    if (!check(TokenKind::LBracket)) return false;
-    if (!(peek(1).kind == TokenKind::Identifier && peek(1).text == "Symbol")) return false;
-    if (peek(2).kind != TokenKind::Dot) return false;
-    if (!(peek(3).kind == TokenKind::Identifier && peek(3).text == "iterator")) return false;
-    if (peek(4).kind != TokenKind::RBracket) return false;
+// `[ Symbol.iterator ]`, the one computed member name a CLASS BODY reads.
+//
+// The shape is matched syntactically — on the two identifiers — because that is
+// how much of the computed-key grammar bronze admits in a class body, and an
+// unrecognised one is refused by name rather than approximated. What it hands
+// back is the EXPRESSION, not a name: `Symbol.iterator` is an ordinary member
+// read (20.4.2.5) whose value is the well-known symbol, so it is evaluated at
+// class-definition time like the object-literal form already was. That is what
+// makes a program which rebinds `Symbol` get its own answer here rather than
+// bronze's, and it is why the well-known symbols needed no representation in the
+// IL: a symbol key reaches the runtime through the ordinary computed-key path.
+ExprPtr Parser::matchSymbolIteratorKey() {
+    if (!check(TokenKind::LBracket)) return nullptr;
+    if (!(peek(1).kind == TokenKind::Identifier && peek(1).text == "Symbol")) return nullptr;
+    if (peek(2).kind != TokenKind::Dot) return nullptr;
+    if (!(peek(3).kind == TokenKind::Identifier && peek(3).text == "iterator")) return nullptr;
+    if (peek(4).kind != TokenKind::RBracket) return nullptr;
+    const Span span = peek().span;
     advance();  // '['
     advance();  // 'Symbol'
     advance();  // '.'
     advance();  // 'iterator'
     advance();  // ']'
-    outName = "@@iterator";
-    return true;
+    auto member = std::make_unique<MemberAccess>();
+    member->span = span;
+    member->object = identExpr("Symbol", span);
+    member->property = "iterator";
+    return member;
 }
 
 bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
@@ -377,28 +390,19 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     nextFn->isArrow = true;
     nextFn->body = std::move(nextBody);
 
-    // 27.5.1.2: a generator object is its own iterator. Written as a method
-    // rather than an arrow precisely because it wants the RECEIVER — the
-    // object it is read from — and not the enclosing `this`.
-    auto selfFn = std::make_unique<FunctionExpr>();
-    selfFn->span = bodySpan;
-    selfFn->name = "gen." + qualifier + ".@@iterator";
-    {
-        auto self = std::make_unique<ThisExpr>();
-        self->span = bodySpan;
-        selfFn->body.push_back(returnStmt(std::move(self), bodySpan));
-    }
-
+    // 27.5.1.2: a generator object is its own iterator — and it is so by
+    // INHERITANCE. `%GeneratorPrototype%[Symbol.iterator]` returns `this`, so
+    // the hook is on the prototype and the object itself owns nothing but
+    // `next`. That is what `isGeneratorObject` asks the runtime for, and it is
+    // why `Object.getOwnPropertySymbols(gen())` is empty: a generator object has
+    // no own symbol-keyed property at all.
     auto iterObj = std::make_unique<ObjectLit>();
     iterObj->span = bodySpan;
+    iterObj->isGeneratorObject = true;
     ObjectProp nextProp;
     nextProp.key = "next";
     nextProp.value = std::move(nextFn);
     iterObj->props.push_back(std::move(nextProp));
-    ObjectProp selfProp;
-    selfProp.key = "@@iterator";
-    selfProp.value = std::move(selfFn);
-    iterObj->props.push_back(std::move(selfProp));
 
     auto stepDecl = std::make_unique<VarDecl>();
     stepDecl->span = bodySpan;

@@ -98,6 +98,32 @@ struct ObjectHeader {
     // hidden class.
     static ObjectHeader* create(Heap& heap, NonMovingArena& arena, Shape* shape);
 
+    // The same object with INTERNAL SLOTS (ECMA-262 6.1.7.2): `count` Values
+    // the object carries that are not properties and cannot be reached as any.
+    //
+    // They live immediately after the inline property slots, where the property
+    // path cannot address them: a slot index below `kInlineSlots` is an inline
+    // property and every index at or above it is resolved against `overflow`,
+    // so nothing a shape or a dictionary can name lands here. That is the whole
+    // point. An internal slot is invisible to `Object.keys`, to `for-in`, to
+    // `getOwnPropertyNames` AND to `getOwnPropertySymbols`; spelling one as a
+    // property under a reserved name buys the first two and nothing else, which
+    // is all the retired `@@` convention could ever do.
+    //
+    // The collector needs nothing added for them: it scans an object's payload
+    // as an array of Values sized by `header.size`, so a wider block is traced
+    // by the same walk that already traces the inline slots.
+    static ObjectHeader* createWithInternalSlots(Heap& heap, NonMovingArena& arena, Shape* shape,
+                                                 uint32_t count);
+
+    // How many this object was created with — 0 for every ordinary object.
+    // Part of the BRAND a runtime iterator checks its receiver with: an object
+    // forged with `Object.create(<that prototype>)` was not allocated with
+    // these, so it answers 0 and is refused rather than read past its end.
+    uint32_t internalSlotCount() const noexcept;
+    Value internalSlot(uint32_t index) const;
+    void setInternalSlot(uint32_t index, Value val);
+
     // The object `cached_depth` prototype links up from this one, or null
     // if the chain is shorter than that. No allocation, so the raw pointer
     // is safe to the next allocation.

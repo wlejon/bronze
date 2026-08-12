@@ -368,9 +368,13 @@ const RegExpMethod kRegExpMethods[] = {
 // RegExp.prototype, minus everything above and minus the flag accessors, which
 // are real. A member ECMA-262 defines and bronze has not built is a named error
 // rather than `undefined`.
+//
+// The SYMBOL-keyed members — `[Symbol.match]`, `[Symbol.replace]` and the rest
+// of 22.2.6 — are not here and cannot be: this table is matched against a
+// string, and no string names one of them. They are refused a step earlier, at
+// `Symbol.match` itself, which is in builtin_symbol.cpp's unimplemented list.
 const char* const kRegExpMembers[] = {
     "compile", "constructor", "hasIndices", "unicode", "unicodeSets",
-    "@@match", "@@matchAll", "@@replace", "@@search", "@@split",
 };
 
 }  // namespace

@@ -127,11 +127,59 @@ static Value mapMemberByName(HeapObjectHeader* hdr, const std::string& keyStr) {
     if (keyStr == "size") {
         return Value::fromDouble(reinterpret_cast<MapHeader*>(hdr)->liveSize());
     }
-    if (keyStr == "@@iterator") return rtMapDefaultIterator(set);
     Value method = rtMapMethod(set, keyStr);
     if (!method.isUndefined()) return method;
     rtCheckMapMember(set, keyStr);
     return Value::fromUndefined();
+}
+
+// What a WELL-KNOWN symbol names on a receiver that carries no shape.
+//
+// `o[sym]` on a plain object or a function is a slot the shape decides, and
+// needs nothing from here. An array, a string, a typed array, a Map and a Set
+// have no own properties at all, so what `v[Symbol.iterator]` means for them is
+// ECMA-262's answer rather than the object's — and it used to arrive through
+// the string member tables purely because the key used to be the string
+// `"@@iterator"`. This is the one place that sees both the receiver kind and
+// the key, so it is where that answer moved to.
+//
+// `handled` separates "this receiver kind has no answer here" from "the answer
+// is undefined", which are the same bits and different facts: only the first
+// may fall through to the shape.
+Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
+    handled = false;
+    if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
+    if (objVal.isString()) {
+        // 22.1.3.32 String.prototype[@@iterator] exists; bronze steps a string
+        // by code point inside the for-of and has no string-iterator OBJECT for
+        // a program to drive by hand, so this is diagnosed by name rather than
+        // read as `undefined`.
+        handled = true;
+        fatal("unsupported: String.prototype[Symbol.iterator] is not implemented "
+              "(a string is iterable, but its iterator object is not built)");
+    }
+    if (!objVal.isObject()) return Value::fromUndefined();
+    switch (objVal.asObject<HeapObjectHeader>()->flags) {
+        case 1:
+            // 23.1.3.34 makes it the same function object as
+            // `Array.prototype.values`, which is itself on the unimplemented
+            // list — so the two agree instead of one of them being `undefined`.
+            handled = true;
+            fatal("unsupported: Array.prototype[Symbol.iterator] is not implemented "
+                  "(neither is Array.prototype.values, which 23.1.3.34 makes the same "
+                  "function object)");
+        case TypedArrayHeader::kFlags:
+            handled = true;
+            return rtTypedArrayIteratorMethod();
+        case MapHeader::kMapFlags:
+            handled = true;
+            return rtMapDefaultIterator(/*isSetReceiver=*/false);
+        case MapHeader::kSetFlags:
+            handled = true;
+            return rtMapDefaultIterator(/*isSetReceiver=*/true);
+        default:
+            return Value::fromUndefined();
+    }
 }
 
 extern "C" {
@@ -625,6 +673,36 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
                                                     /*defineOwn=*/true);
 }
 
+// The same definition with a key that is a VALUE — `class C { [e]() {} }`,
+// which for the one spelling bronze admits is `[Symbol.iterator]`. Its own
+// helper and not `bronze_elem_set`, because the property is `enumerable: false`
+// (15.7.14) and an assignment cannot say that; the `static` split above does
+// not repeat here because a class body's computed name is only read for an
+// instance method.
+//
+// ToPropertyKey (7.1.19) has already run on the key when it is a string or a
+// symbol, which is every key the class grammar bronze reads can produce. A key
+// of any other type is a bug in that grammar rather than a program error, so it
+// is fatal by name rather than converted.
+void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
+    Value objVal(objBits);
+    if (!objVal.isObject() ||
+        objVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: a computed class method defined on a receiver that is not a plain "
+              "object");
+    }
+    Value keyVal(keyBits);
+    if (!keyVal.isString() && !keyVal.isSymbol()) {
+        fatal("internal: a computed class method name that is neither a string nor a symbol");
+    }
+    Rooted<Value> objRoot{objVal};
+    Rooted<Value> key{keyVal};
+    Rooted<Value> val{Value(valBits)};
+    objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                    /*ic=*/nullptr, /*enumerable=*/false,
+                                                    /*defineOwn=*/true);
+}
+
 // `get k() {}` / `set k(v) {}`, in an object literal or a class body. One
 // helper for both halves and both places, because they define one property
 // either way; `enumerable` is the whole difference between the two places
@@ -671,8 +749,9 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
 // Its own function because a symbol key can never mean anything else. Every
 // receiver-kind branch on the string path exists to decide between an element,
 // a member table and a shape slot, and a symbol key is only ever the third — so
-// a symbol never enters that dispatch at all, and the `@@`-spelled internal
-// slots a Map's iterators keep are untouched by every line of it.
+// a symbol never enters that dispatch at all. The internal slots a Map's
+// iterators keep are untouched by every line of it for a stronger reason: they
+// are not properties, and no key of any kind names one.
 static ObjectHeader* symbolKeyHolder(Value objVal) {
     if (!objVal.isObject()) return nullptr;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -696,9 +775,16 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                                     " (reading a symbol-keyed property)")
                 .rawBits();
         }
+        // A well-known symbol first, and only for the receivers with no shape:
+        // a plain object's own `[Symbol.iterator]` must win over the built-in
+        // meaning, and it does because none of the kinds below is a plain
+        // object.
+        bool handled = false;
+        const Value wellKnown = wellKnownSymbolMember(objVal, Value(idxBits), handled);
+        if (handled) return wellKnown.rawBits();
         ObjectHeader* holder = symbolKeyHolder(objVal);
-        // A primitive receiver, an array, a Map: no own symbol-keyed property
-        // and no prototype object here to inherit one from.
+        // A primitive receiver: no own symbol-keyed property and no prototype
+        // object here to inherit one from.
         if (!holder) return Value::fromUndefined().rawBits();
         // Rooted because a symbol-keyed property can be an accessor, and a
         // getter is a call. No inline cache: a computed site has no entry.

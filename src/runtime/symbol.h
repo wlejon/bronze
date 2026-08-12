@@ -58,6 +58,23 @@ Value rtMakeSymbol(Value description);
 Value rtSymbolFor(Rooted<Value>& keyString);
 Value rtSymbolKeyFor(Value symbol);
 
+// `Symbol.iterator` (ECMA-262 6.1.5.1 / 20.4.2.5): the ONE well-known symbol
+// bronze has, as the one interned identity every reader and every writer of the
+// iterator hook must agree on. Its [[Description]] is "Symbol.iterator", so
+// `String(Symbol.iterator)` is "Symbol(Symbol.iterator)".
+//
+// A well-known symbol is a permanent root by construction rather than by
+// registration: it lives in the arena like every other symbol, the collector
+// never walks the arena, and the `static` that holds it therefore cannot go
+// stale (runtime/symbol.h's opening note). Nothing about GC changes by adding
+// one, which is exactly why the arena was the right home for symbols.
+//
+// The other twelve names 20.4.2 defines are NOT here and are not stand-ins
+// either: they are in `kSymbolUnimplemented` (builtin_symbol.cpp), so
+// `Symbol.asyncIterator` is a diagnosed missing member rather than
+// `undefined`. This one exists because the iterator protocol is built.
+SymbolHeader* rtSymbolIterator();
+
 // SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
 // description spelled `Symbol()` — the description of a `Symbol()` and of a
 // `Symbol("")` print alike, which is exactly what the specification says and is

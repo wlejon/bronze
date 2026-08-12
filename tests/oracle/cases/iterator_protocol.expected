@@ -1,7 +1,7 @@
 10
 1-2-3-4
 1 2 3,4
-string
+symbol
 from,to
 in:from
 in:to

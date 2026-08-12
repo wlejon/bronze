@@ -1,33 +1,28 @@
-// Nothing internal leaks into an enumeration — the guard on a rule three
-// separate mechanisms lean on, only one of which is about iterators.
+// Nothing internal leaks into an enumeration — the guard on the state
+// ECMA-262 keeps in INTERNAL SLOTS.
 //
-// bronze spells `Symbol.iterator` as the STRING `"@@iterator"` and buys back
-// the one property of a real symbol key the protocol needs with a compensating
-// rule: an own key beginning with `@@` is created non-enumerable. Two other
-// things then took that rule for their own use — a Map's and a Set's iterators
-// keep `@@mapTarget`, `@@mapCursor` and `@@mapKind` as internal slots, and
-// `String.prototype.matchAll`'s iterator keeps `@@matchAllRegExp` and friends —
-// so the rule is now load-bearing for state that has nothing to do with
-// iteration protocols at all.
+// A Map's and a Set's iterators carry [[IteratedMap]], [[MapNextIndex]] and
+// [[MapIterationKind]] (24.1.5), a typed array's carries the array-iterator
+// slots of 23.1.5, and `String.prototype.matchAll`'s carries [[IteratingRegExp]]
+// and friends (22.2.9.1). None of those is a property, so none of them is
+// visible to ANY enumeration — not `Object.keys`, not `for-in`, not spread, not
+// `JSON.stringify`, and not `Object.getOwnPropertyNames`, which reports own
+// string keys regardless of enumerability (20.1.2.10).
 //
-// That makes it the thing a change to how keys are STORED, ENUMERATED or
-// CLASSIFIED breaks silently: a Map's internal slots simply start appearing in
-// `Object.keys` and `for-in`, and every other case in this suite still passes.
-// This case is the tripwire. It asks, of every object in the language that has
-// internal state kept this way, whether any `@@` name is visible — and the
-// answer ECMA-262 gives is "no", because those are not properties at all.
+// bronze once spelled them as properties under `@@`-prefixed names and bought
+// back non-enumerability with a rule about the prefix. That rule could never
+// buy the fifth, so `getOwnPropertyNames` reported them; they are real fields
+// on the object now, and all five hold. The probes below are written against
+// the `@@` spelling on purpose — it is what a regression would reintroduce.
+//
+// That makes this the tripwire for a change to how state is STORED, ENUMERATED
+// or CLASSIFIED: a Map's internals would simply start appearing in an
+// enumeration, and every other case in this suite would still pass.
 //
 // It deliberately does NOT pin the full key list of an iterator. bronze's
 // iterators carry `next` as an own property where the language puts it on a
 // prototype, and pinning that divergence here would make this case about the
 // iterator's shape instead of about the leak.
-//
-// `Object.getOwnPropertyNames` is not probed either, and that is a divergence
-// rather than an oversight: it reports own string keys REGARDLESS of
-// enumerability (20.1.2.10), so it does report `@@mapTarget` today. The `@@`
-// rule only ever bought non-enumerability, and that is all it can buy — a real
-// symbol key would be absent from `getOwnPropertyNames` as well, which is one
-// more thing the migration in the blocked case will fix and this one cannot.
 function leaks(o) {
   let bad = "";
   const own = Object.keys(o);
@@ -36,6 +31,10 @@ function leaks(o) {
   }
   for (const k in o) {
     if (k.indexOf("@@") === 0) bad = bad + "forin:" + k + ";";
+  }
+  const names = Object.getOwnPropertyNames(o);
+  for (let i = 0; i < names.length; i++) {
+    if (names[i].indexOf("@@") === 0) bad = bad + "names:" + names[i] + ";";
   }
   const text = JSON.stringify(o);
   if (text !== undefined && text.indexOf("@@") >= 0) bad = bad + "json;";
@@ -66,7 +65,9 @@ function* pair() {
 console.log(leaks(pair()));
 
 // An object that defines its own iterator hook keeps it out of enumeration
-// too — the same rule, reached through the spelling a program can write.
+// too — for a different reason, and one this case exists to keep distinct: the
+// hook's key is a SYMBOL (20.4.2.5), and `Object.keys`, `for-in`, spread and
+// `JSON.stringify` are all defined over string keys.
 const custom = { value: 7 };
 custom[Symbol.iterator] = function () {
   let done = false;
@@ -82,9 +83,15 @@ custom[Symbol.iterator] = function () {
 console.log(leaks(custom), Object.keys(custom).join(","), JSON.stringify(custom));
 console.log([...custom].join(","));
 
-// The `@@` names are STRINGS, and landing the symbol primitive did not turn
-// any of them into symbols. If it ever does, these counts move and this case
-// says so before a Map's internals become visible somewhere else.
+// The counts, which are where the two mechanisms are told apart. `custom` has
+// ONE own symbol key — the hook it was given by assignment (13.15.2 reaching
+// CreateDataProperty; 20.1.2.11 reports own symbol keys). A Map's iterator and
+// a generator object have NONE: their `[Symbol.iterator]` is INHERITED from
+// %MapIteratorPrototype% and %GeneratorPrototype% (24.1.5.2 and 27.5.1.2, both
+// reaching 27.1.2.1), and their internal slots are not properties of any kind.
+// If a slot ever becomes one — string-keyed or symbol-keyed — one of these
+// counts or one of the probes above moves, and this case says so before a
+// Map's internals become visible somewhere else.
 console.log(typeof Symbol.iterator, Object.getOwnPropertySymbols(custom).length);
 console.log(Object.getOwnPropertySymbols(m.entries()).length);
 console.log(Object.getOwnPropertySymbols(pair()).length);

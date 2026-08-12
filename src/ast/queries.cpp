@@ -87,7 +87,13 @@ public:
     void visit(const ClassDecl& c) override {
         names.insert(c.name);
         if (!c.superName.empty()) names.insert(c.superName);
-        for (const auto& m : c.methods) m.fn->accept(*this);
+        for (const auto& m : c.methods) {
+            // A computed member name is an expression of the ENCLOSING scope,
+            // evaluated where the class is defined rather than where the method
+            // is called, so what it mentions belongs here and not in the body.
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            m.fn->accept(*this);
+        }
     }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) {
@@ -262,7 +268,10 @@ public:
     // mentions is a candidate capture - including the parent class name that a
     // `super` inside it resolves against.
     void visit(const ClassDecl& c) override {
-        for (const auto& m : c.methods) addFunctionBody(m.fn->body, &m.fn->params);
+        for (const auto& m : c.methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            addFunctionBody(m.fn->body, &m.fn->params);
+        }
     }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) {
@@ -471,6 +480,11 @@ public:
     void visit(const ClassDecl& c) override {
         if (c.superName == name_) found = true;
         for (const auto& m : c.methods) {
+            // A computed member name is not inside a function at all, so this
+            // over-approximates for the nested-function question and answers
+            // the free-mention one exactly. Over-approximating "free" costs an
+            // environment slot; the other direction is a wrong capture.
+            if (m.keyExpr) m.keyExpr->accept(*this);
             if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
         }
     }
