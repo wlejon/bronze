@@ -35,11 +35,23 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // is ordinary JS and a call-site recognition cannot express it. Each is
     // interned by code pointer, so `parseInt === Number.parseInt` — which is
     // what 21.1.2.13's "same function object" says.
+    //
+    // `ArrayBuffer` and the nine views joined with docs/0029. They were
+    // reachable before only through a `new` that lowering recognised by name,
+    // which is not the same thing as a value: `switch (array.constructor)` and
+    // `{ Float32Array: Float32Array }` both need the constructor OBJECT, and
+    // `new source.array.constructor(...)` needs it reached through a member
+    // expression that no name recognition can see. Putting them here deletes
+    // the special case rather than adding to it.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
            name == "Symbol" || name == "RegExp" ||
            name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
-           name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat";
+           name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat" ||
+           name == "ArrayBuffer" || name == "Int8Array" || name == "Uint8Array" ||
+           name == "Uint8ClampedArray" || name == "Int16Array" || name == "Uint16Array" ||
+           name == "Int32Array" || name == "Uint32Array" || name == "Float32Array" ||
+           name == "Float64Array";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {

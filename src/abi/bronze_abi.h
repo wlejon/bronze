@@ -109,8 +109,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_dynamic_call_spread, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_construct_spread,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
-    X(bronze_create_arraybuffer,  BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
-    X(bronze_create_float32array, BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_dynamic_call,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_construct,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_function_singleton,  BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32)) \
@@ -172,7 +170,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_TAG_OBJECT           0xFFF1
 
 /* HeapObjectHeader::flags, and the value that means "a plain object" as
- * opposed to an array (1), a function (2), a Float32Array (3) or an
+ * opposed to an array (1), a function (2), a typed-array view (3) or an
  * ArrayBuffer (4). All of them reach bronze_prop_get, so the fast path has
  * to discriminate on this before it believes anything else. */
 #define BRONZE_ABI_OBJ_FLAGS_OFFSET      2

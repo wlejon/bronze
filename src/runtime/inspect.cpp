@@ -139,8 +139,10 @@ private:
         switch (hdr->flags) {
             case 1: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);
             case 2: return "[Function]";
-            case 3: return typedArray(reinterpret_cast<Float32ArrayHeader*>(hdr), depth);
-            case 4: fatal("printing an ArrayBuffer is not implemented");
+            case TypedArrayHeader::kFlags:
+                return typedArray(reinterpret_cast<TypedArrayHeader*>(hdr), depth);
+            case ArrayBufferHeader::kFlags:
+                fatal("printing an ArrayBuffer is not implemented");
             // node prints a RegExp as its source form, and so does bronze:
             // `/ab+/gi`, with no quotes, which is what distinguishes it in
             // output from the string of the same characters.
@@ -197,16 +199,17 @@ private:
         return out.empty() ? "[]" : "[ " + out + " ]";
     }
 
-    std::string typedArray(Float32ArrayHeader* view, int depth) {
-        // The constructor name and length are part of the format, so an
-        // empty one still says what it is.
-        std::string out = "Float32Array(" + std::to_string(view->length) + ") ";
+    std::string typedArray(TypedArrayHeader* view, int depth) {
+        // The constructor name and length are part of the format, so an empty
+        // one still says what it is — and the name comes from the element kind,
+        // so all nine views print as themselves (docs/0013 decision 1).
+        std::string out = std::string(view->kindName()) + "(" + std::to_string(view->length) + ") ";
         if (view->length == 0) return out + "[]";
         if (depth > kMaxDepth) return out + "[Array]";
         std::string body;
         for (uint32_t i = 0; i < view->length; ++i) {
             if (i) body += ", ";
-            body += numberText(static_cast<double>(view->data()[i]));
+            body += numberText(view->get(i));
         }
         return out + "[ " + body + " ]";
     }

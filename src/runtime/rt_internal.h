@@ -10,6 +10,7 @@
 #include "runtime/heap.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 // The runtime's process-wide state — the heap, the non-moving arena, the
@@ -120,9 +121,13 @@ void rtCheckUnimplementedMember(const char* receiver, const char* const* names, 
 // ECMA-262 defines and bronze has not built.
 void rtCheckArrayMember(const std::string& key);
 void rtCheckStringMember(const std::string& key);
-void rtCheckTypedArrayMember(const std::string& key);
-void rtCheckArrayBufferMember(const std::string& key);
 void rtCheckFunctionMember(const std::string& key);
+// The typed-array table takes the RECEIVER's constructor name, so the message
+// says `Uint8Array.prototype.sort` and not `%TypedArray%.prototype.sort`: nine
+// views share one implementation (docs/0029 decision 3), and a diagnostic that
+// forgot which one the program was holding would be a worse message for the
+// sake of the implementation's convenience.
+void rtCheckTypedArrayMember(const char* kindName, const std::string& key);
 
 // A function's `.prototype` and its own-property object, created on first
 // demand: a function that is never used as a constructor and never given a
@@ -226,6 +231,30 @@ void rtCheckMapMember(bool isSetReceiver, const std::string& key);
 // What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
 Value rtMapDefaultIterator(bool isSetReceiver);
+
+// ---- typed arrays (docs/0029) ----------------------------------------------
+
+// `ArrayBuffer` and the nine views, by the name lowering resolved;
+// `undefined` for anything else. One function object per name, interned by
+// code pointer, so the bare name and `v.constructor` are the SAME object
+// (decision 2) — which is what `switch (array.constructor)` needs.
+Value rtTypedArrayConstructor(const std::string& name);
+Value rtTypedArrayConstructorFor(ElementKind kind);
+
+// `BYTES_PER_ELEMENT` off a constructor (23.2.6.2). Answers false — leaving
+// `out` alone — when the function is not one of the nine, so the caller falls
+// through to the ordinary function-member path.
+bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out);
+
+// A member of a typed-array or ArrayBuffer INSTANCE by name. The caller has
+// already tried the key as an index; what reaches here is `length`, `buffer`,
+// `constructor`, a method, or a name that is diagnosed and then read as
+// `undefined`.
+Value rtTypedArrayMember(Value view, const std::string& key);
+Value rtArrayBufferMember(Value buffer, const std::string& key);
+// `undefined` for a name that is not an implemented method, so the property
+// path can fall through to the unimplemented-member table.
+Value rtTypedArrayMethod(const std::string& key);
 
 // ---- regular expressions (docs/0024) ---------------------------------------
 

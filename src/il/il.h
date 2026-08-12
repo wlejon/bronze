@@ -199,8 +199,6 @@ enum class Op : uint8_t {
     // record to it.
     ModuleEnvSet,  // module.env.set %env
     ModuleEnvGet,  // a: dynamic = module.env.get
-    CreateArrayBuffer,  // a = create.arraybuffer len      (len dynamic)
-    CreateFloat32Array, // a = create.f32array arg         (length or buffer, dynamic)
     Print,      // print a, ...            (console.log / info / debug)
     // Same formatter, other stream. Its own op rather than a flag on `Print`
     // because the canonical dump is what a reader bisects with (docs/0003),

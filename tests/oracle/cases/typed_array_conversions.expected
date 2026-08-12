@@ -1,0 +1,16 @@
+Int8Array(6) [ -1, 0, 0, 0, 0, 0 ]
+Uint8Array(6) [ 255, 0, 0, 0, 0, 0 ]
+Uint8ClampedArray(6) [ 0, 255, 0, 255, 0, 0 ]
+Int16Array(6) [ -1, 256, 0, 0, 0, 0 ]
+Uint16Array(6) [ 65535, 256, 0, 0, 0, 0 ]
+Int32Array(6) [ -1, 256, 0, 0, 0, 0 ]
+Uint32Array(6) [ 4294967295, 256, 0, 0, 0, 0 ]
+Float32Array(6) [ -1, 256, NaN, Infinity, 0.5, -0.5 ]
+Float64Array(6) [ -1, 256, NaN, 1e+40, 0.5, -0.5 ]
+Uint8ClampedArray(8) [ 0, 2, 2, 4, 4, 254, 254, 255 ]
+Uint8ClampedArray(4) [ 2, 3, 3, 4 ]
+Int8Array(2) [ 0, 0 ]
+Float64Array(1) [ -0 ]
+undefined 2 Int8Array(2) [ 0, 0 ]
+1 0
+RangeError

@@ -36,6 +36,15 @@ Float32Array(3) [ 0, 0, 0 ]
   so it is the same code path, and the two cannot drift.
 - `-0` prints as `-0`, here and at the top level. It is inspect formatting,
   not ToString(Number), and the sign of zero is observable.
+- a **typed array** prints as its constructor's name, the element count in
+  parentheses, then the elements: `Float32Array(3) [ 0, 0, 0 ]`,
+  `Uint8ClampedArray(3) [ 0, 255, 7 ]`, `Float64Array(0) []`. The name comes
+  from the element kind stored in the view (docs/0029 decision 3), so all
+  nine views print as themselves from one code path — which is the point:
+  the name is the only thing distinguishing a `Uint8Array` from an
+  `Int8Array` in output, and the two disagree about what `-1` means.
+  A stored `-0` prints `-0` here as it does anywhere else, so a `Float64Array`
+  can show one and an `Int8Array` never can (7.1.6 truncates to `+0`).
 
 ## Decision 2 — depth 2, and cycles are marked, not followed
 

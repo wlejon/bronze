@@ -103,22 +103,6 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});
             }
             return true;
-        case il::Op::CreateArrayBuffer: {
-            if (!needs(1, true, "Invalid operands for CreateArrayBuffer")) return false;
-            llvm::Value* len =
-                operand(inst, 0, "Undefined operand in CreateArrayBuffer instruction");
-            if (!len) return false;
-            callWith(abi.bronze_create_arraybuffer, {len});
-            return true;
-        }
-        case il::Op::CreateFloat32Array: {
-            if (!needs(1, true, "Invalid operands for CreateFloat32Array")) return false;
-            llvm::Value* arg =
-                operand(inst, 0, "Undefined operand in CreateFloat32Array instruction");
-            if (!arg) return false;
-            callWith(abi.bronze_create_float32array, {arg});
-            return true;
-        }
         case il::Op::ObjectKeys: {
             if (!needs(1, false, "Invalid operands for ObjectKeys")) return false;
             llvm::Value* target = operand(inst, 0, "Undefined operand in ObjectKeys instruction");

@@ -143,9 +143,9 @@ bool stepFast(IterRecordHeader* rec) {
             return true;
         }
         case IterRecordHeader::TypedArray: {
-            auto* view = rec->target.asObject<Float32ArrayHeader>();
+            auto* view = rec->target.asObject<TypedArrayHeader>();
             if (i >= view->length) return false;
-            rec->current = Value::fromDouble(static_cast<double>(view->data()[i]));
+            rec->current = Value::fromDouble(view->get(i));
             rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
             return true;
         }
@@ -188,7 +188,7 @@ std::string rtIterableKindName(Value v) {
     if (!v.isObject()) return "a value";
     switch (v.asObject<HeapObjectHeader>()->flags) {
         case 2: return "a function";
-        case 4: return "an ArrayBuffer";
+        case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         default: return "an object";
     }
 }
@@ -201,7 +201,7 @@ Value rtOpenIterator(Value source) {
     } else if (source.isObject()) {
         switch (source.asObject<HeapObjectHeader>()->flags) {
             case 1: kind = IterRecordHeader::Array; break;
-            case 3: kind = IterRecordHeader::TypedArray; break;
+            case TypedArrayHeader::kFlags: kind = IterRecordHeader::TypedArray; break;
             case MapHeader::kMapFlags: kind = IterRecordHeader::MapEntries; break;
             case MapHeader::kSetFlags: kind = IterRecordHeader::SetValues; break;
             default: break;

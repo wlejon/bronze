@@ -14,6 +14,8 @@ bronze_add_module(runtime
         object.cpp
         array.cpp
         typed_array.cpp
+        builtin_typed_array.cpp
+        builtin_typed_array_methods.cpp
         fn.cpp
         builtin_math.cpp
         builtin_array.cpp

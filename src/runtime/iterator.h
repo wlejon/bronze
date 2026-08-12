@@ -67,7 +67,7 @@ Value rtOpenIterator(Value source);
 
 // The kind of a value, for that TypeError. `rt_object.cpp` answers the same
 // question for "is not a function"; the two spellings are deliberately not
-// shared, because that one has to name an array and a Float32Array and this
+// shared, because that one has to name an array and a typed array and this
 // one never sees either.
 std::string rtIterableKindName(Value v);
 

@@ -105,7 +105,7 @@ static_assert(static_cast<uint16_t>(Tag::Object) == BRONZE_ABI_TAG_OBJECT);
 static_assert(sizeof(ObjectHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(ArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(FunctionHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
-static_assert(sizeof(Float32ArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
+static_assert(sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 
 // ---- Property keys ----------------------------------------------------------
@@ -206,6 +206,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = regexp;
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
         resolved = collection;
+    } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
+        resolved = typed;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
         resolved = ctor;
     } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {

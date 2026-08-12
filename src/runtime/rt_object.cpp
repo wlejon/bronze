@@ -1,6 +1,7 @@
-// Object, array, function and typed-array construction, the two class links,
-// environment records, and the dynamic call path. Property access itself is
-// rt_prop.cpp.
+// Object, array and function construction, the two class links, environment
+// records, and the dynamic call path. Property access itself is rt_prop.cpp;
+// typed arrays build themselves through ordinary constructor objects
+// (docs/0029 decision 2) and so need nothing here.
 
 #include <algorithm>
 #include <charconv>
@@ -40,8 +41,9 @@ static const char* valueKindName(Value v) {
         switch (v.asObject<HeapObjectHeader>()->flags) {
             case 1: return "an array";
             case 2: return "a function";
-            case 3: return "a Float32Array";
-            case 4: return "an ArrayBuffer";
+            case TypedArrayHeader::kFlags:
+                return v.asObject<TypedArrayHeader>()->kindName();
+            case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
             default: return "an object";
         }
     }
@@ -332,38 +334,6 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
         fatal("environment slot index out of range (lowering bug)");
     }
     env->slotsData()[index] = Value(valBits);
-}
-
-// ---- Typed arrays -----------------------------------------------------------
-
-uint64_t bronze_create_arraybuffer(uint64_t lenBits) {
-    Value lenVal(lenBits);
-    if (!lenVal.isNumber()) {
-        fatal("new ArrayBuffer requires a numeric byte length");
-    }
-    double d = lenVal.asNumber();
-    if (!(d >= 0.0) || d != std::floor(d) || d > 268435456.0) {
-        fatal("invalid ArrayBuffer byte length");
-    }
-    return Value::fromObject(ArrayBufferHeader::create(rtHeap(), static_cast<uint32_t>(d)))
-        .rawBits();
-}
-
-uint64_t bronze_create_float32array(uint64_t argBits) {
-    Value arg(argBits);
-    if (arg.isNumber()) {
-        double d = arg.asNumber();
-        if (!(d >= 0.0) || d != std::floor(d) || d > 67108864.0) {
-            fatal("invalid Float32Array length");
-        }
-        return Value::fromObject(Float32ArrayHeader::create(rtHeap(), static_cast<uint32_t>(d)))
-            .rawBits();
-    }
-    if (arg.isObject() && arg.asObject<HeapObjectHeader>()->flags == 4) {
-        Rooted<Value> bufRoot(arg);
-        return Value::fromObject(Float32ArrayHeader::createOverBuffer(rtHeap(), bufRoot)).rawBits();
-    }
-    fatal("new Float32Array requires a length or an ArrayBuffer");
 }
 
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,

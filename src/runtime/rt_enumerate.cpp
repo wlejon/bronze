@@ -43,7 +43,7 @@ bool alreadySeen(const std::vector<StringHeader*>& seen, const StringHeader* key
 }
 
 // The receivers whose own enumerable properties are their INDICES and nothing
-// else: an array, a Float32Array and a string. `length` is not among them —
+// else: an array, a typed array and a string. `length` is not among them —
 // it is a non-enumerable own property in the language, and bronze stores it
 // outside the shape system entirely, so it could not be enumerated by
 // accident. Returns false for anything that is not one of the three.
@@ -58,8 +58,8 @@ bool indexedLength(Value v, uint32_t& outLength) {
         outLength = reinterpret_cast<ArrayHeader*>(hdr)->length;
         return true;
     }
-    if (hdr->flags == 3) {
-        outLength = reinterpret_cast<Float32ArrayHeader*>(hdr)->length;
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        outLength = reinterpret_cast<TypedArrayHeader*>(hdr)->length;
         return true;
     }
     return false;

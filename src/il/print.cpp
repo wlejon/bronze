@@ -93,8 +93,6 @@ const char* opName(Op op) {
         case Op::EnvSet: return "env.set";
         case Op::ModuleEnvSet: return "module.env.set";
         case Op::ModuleEnvGet: return "module.env.get";
-        case Op::CreateArrayBuffer: return "create.arraybuffer";
-        case Op::CreateFloat32Array: return "create.f32array";
         case Op::Print: return "print";
         case Op::PrintErr: return "print.err";
     }
@@ -348,14 +346,6 @@ std::string print(const Module& module) {
                         out += "elem.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
-                        break;
-                    case Op::CreateArrayBuffer:
-                        out += "create.arraybuffer %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
-                        break;
-                    case Op::CreateFloat32Array:
-                        out += "create.f32array %" +
-                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
                     case Op::CreateObject:
                         out += "create.object";

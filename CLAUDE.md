@@ -133,3 +133,9 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
   given an environment record so a shadowing `let` stops aliasing what it
   shadows, `return;` made to return a value, and the Error family given the
   10.2.5 back-pointer)
+- 0029 typed arrays (the byte store as a MOVING RawBytes object with views
+  holding an offset rather than a data pointer, the nine views as one header
+  parameterised by a stored element kind, the constructor as a real global
+  object interned by code pointer so `x.constructor === Float32Array` holds
+  and two IL opcodes could be deleted, the ECMA-262 narrowing conversions
+  written once, and the indexed fast path examined, costed and deferred)

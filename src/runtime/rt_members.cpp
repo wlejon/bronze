@@ -40,20 +40,10 @@ const char* const kStringMembers[] = {
     "trim", "trimEnd", "trimStart", "valueOf",
 };
 
-// %TypedArray%.prototype, minus `length` and `buffer`, which are real.
-const char* const kTypedArrayMembers[] = {
-    "BYTES_PER_ELEMENT", "at", "byteLength", "byteOffset", "constructor", "copyWithin",
-    "entries", "every", "fill", "filter", "find", "findIndex", "findLast", "findLastIndex",
-    "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "reduce",
-    "reduceRight", "reverse", "set", "slice", "some", "sort", "subarray", "toLocaleString",
-    "toReversed", "toSorted", "toString", "values", "with",
-};
-
-// ArrayBuffer.prototype, minus `byteLength`, which is real.
-const char* const kArrayBufferMembers[] = {
-    "constructor", "detached", "maxByteLength", "resizable", "resize", "slice",
-    "transfer", "transferToFixedLength",
-};
+// The typed-array and ArrayBuffer tables are NOT here: they live in
+// builtin_typed_array.cpp, beside the members that answer, because that file
+// is where a name leaves the list when it lands and the two halves must be
+// read together (docs/0029 decision 3).
 
 // Function.prototype, minus `prototype`, which is real.
 const char* const kFunctionMembers[] = {
@@ -78,16 +68,6 @@ void rtCheckArrayMember(const std::string& key) {
 
 void rtCheckStringMember(const std::string& key) {
     rtCheckUnimplementedMember("String.prototype", kStringMembers, std::size(kStringMembers), key);
-}
-
-void rtCheckTypedArrayMember(const std::string& key) {
-    rtCheckUnimplementedMember("Float32Array.prototype", kTypedArrayMembers,
-                               std::size(kTypedArrayMembers), key);
-}
-
-void rtCheckArrayBufferMember(const std::string& key) {
-    rtCheckUnimplementedMember("ArrayBuffer.prototype", kArrayBufferMembers,
-                               std::size(kArrayBufferMembers), key);
 }
 
 void rtCheckFunctionMember(const std::string& key) {

@@ -197,12 +197,15 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         // without moving `length` (docs/0019 decision 2).
         return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
     }
-    if (hdr->flags == 3) {  // Float32Array view
-        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
-        if (key == "length" || key == "buffer") return true;
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (key == "length" || key == "buffer" || key == "byteLength" ||
+            key == "byteOffset" || key == "BYTES_PER_ELEMENT") {
+            return true;
+        }
         return rtIsIntegerLikeKey(key, index) && index < view->length;
     }
-    if (hdr->flags == 4) return key == "byteLength";
+    if (hdr->flags == ArrayBufferHeader::kFlags) return key == "byteLength";
 
     const bool isFunction = hdr->flags == 2;
     if (isFunction && key == "prototype") return true;

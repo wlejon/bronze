@@ -247,26 +247,21 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         rtCheckArrayMember(keyStr);
         return Value::fromUndefined().rawBits();
     }
-    if (hdr->flags == 3) {  // Float32Array view
-        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
-        if (keyStr == "length") return Value::fromDouble(view->length).rawBits();
-        if (keyStr == "buffer") return view->buffer.rawBits();
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        // The index is tried FIRST: `v[0]` is the whole point of a typed array
+        // and must not walk a member table on the way to the element.
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (keyAsIndex(keyStr, idx)) {
-            if (idx >= view->length) {
-                return Value::fromUndefined().rawBits();
-            }
-            return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
+            // Out of range is `undefined` and not an error — a typed array has
+            // no elements outside its length and no prototype chain to
+            // continue the search on (10.4.5.4 canonical numeric strings).
+            if (idx >= view->length) return Value::fromUndefined().rawBits();
+            return Value::fromDouble(view->get(idx)).rawBits();
         }
-        rtCheckTypedArrayMember(keyStr);
-        return Value::fromUndefined().rawBits();
+        return rtTypedArrayMember(objVal, keyStr).rawBits();
     }
-    if (hdr->flags == 4) {  // ArrayBuffer
-        if (keyStr == "byteLength") {
-            return Value::fromDouble(reinterpret_cast<ArrayBufferHeader*>(hdr)->byteLength)
-                .rawBits();
-        }
-        rtCheckArrayBufferMember(keyStr);
-        return Value::fromUndefined().rawBits();
+    if (hdr->flags == ArrayBufferHeader::kFlags) {
+        return rtArrayBufferMember(objVal, keyStr).rawBits();
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         return mapMemberByName(hdr, keyStr).rawBits();
@@ -310,6 +305,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // rather than reporting that an object is not callable, which means
         // its unimplemented members reach the FUNCTION miss path rather than
         // a namespace object's (docs/0021 decision 1).
+        // 23.2.6.2's own data property, before the Function.prototype table:
+        // a typed-array constructor really carries it, so answering
+        // `undefined` would be a silent lie about a name ECMA-262 defines.
+        if (Value stat; rtTypedArrayStatic(objVal, keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(objVal, keyStr);
         rtCheckFunctionMember(keyStr);
         return Value::fromUndefined().rawBits();
@@ -409,17 +408,23 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
         return;
     }
-    if (hdr->flags == 3) {  // Float32Array view
-        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
+    if (hdr->flags == TypedArrayHeader::kFlags) {
         if (!keyAsIndex(keyStr, idx)) {
-            fatal("named property writes on a Float32Array are unsupported");
+            fatal(("named property writes on a typed array (" +
+                   std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
+                   ") are unsupported").c_str());
         }
-        if (idx < view->length) {
-            view->data()[idx] = static_cast<float>(bronze_unbox_f64(valBits));
-        }
+        // ToNumber BEFORE the bounds test, because 10.4.5.5
+        // IntegerIndexedElementSet performs it whether or not the index is in
+        // range. `hdr` survives the call only because rtToNumber cannot
+        // allocate — it is a hard error on an object rather than ToPrimitive
+        // (docs/0015 decision 7) — so nothing here can move the view.
+        const double num = rtToNumber(Value(valBits));
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (idx < view->length) view->set(idx, num);
         return;  // out-of-bounds typed-array writes are discarded, per spec
     }
-    if (hdr->flags == 4) {
+    if (hdr->flags == ArrayBufferHeader::kFlags) {
         fatal("property writes on an ArrayBuffer are unsupported");
     }
     if (hdr->flags == RegExpHeader::kFlags) {
@@ -579,12 +584,19 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         }
         return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
     }
-    if (hdr->flags == 3) {
-        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
-        if (!valueToElementIndex(Value(idxBits), idx) || idx >= view->length) {
-            return Value::fromUndefined().rawBits();
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (valueToElementIndex(Value(idxBits), idx)) {
+            if (idx >= view->length) return Value::fromUndefined().rawBits();
+            return Value::fromDouble(view->get(idx)).rawBits();
         }
-        return Value::fromDouble(static_cast<double>(view->data()[idx])).rawBits();
+        // Not an index, so it names a MEMBER — which is how `v[Symbol.iterator]`
+        // and a `for-in` key both arrive. Answering `undefined` here while
+        // `v.length` answered 8 would be two answers to one question.
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> key{elemKeyAsString(Value(idxBits))};
+        const std::string name = rtUtf8Chars(key.get().asString<StringHeader>());
+        return rtTypedArrayMember(objRoot.get(), name).rawBits();
     }
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         // A plain object stores everything by NAME, so a computed key is a
@@ -617,7 +629,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                              /*ic=*/nullptr);
     }
     fatal("computed index access is only supported on arrays, plain objects, "
-          "functions and Float32Array");
+          "functions and typed arrays");
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
@@ -635,11 +647,16 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
         return;
     }
-    if (hdr->flags == 3) {
-        auto* view = reinterpret_cast<Float32ArrayHeader*>(hdr);
-        if (valueToElementIndex(Value(idxBits), idx) && idx < view->length) {
-            view->data()[idx] = static_cast<float>(bronze_unbox_f64(valBits));
+    if (hdr->flags == TypedArrayHeader::kFlags) {
+        if (!valueToElementIndex(Value(idxBits), idx)) {
+            fatal(("named property writes on a typed array (" +
+                   std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
+                   ") are unsupported").c_str());
         }
+        // rtToNumber cannot allocate (see bronze_prop_set), so `hdr` is live.
+        const double num = rtToNumber(Value(valBits));
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (idx < view->length) view->set(idx, num);
         return;  // out-of-bounds typed-array writes are discarded, per spec
     }
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -650,7 +667,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
         return;
     }
     fatal("computed index writes are only supported on arrays, plain objects "
-          "and Float32Array");
+          "and typed arrays");
 }
 
 }  // extern "C"

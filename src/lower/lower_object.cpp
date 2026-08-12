@@ -244,34 +244,7 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
 
 std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
                                                     il::Function& ilFn) {
-    // The two provided globals that `new` builds directly rather than through
-    // the construct helper. They are recognised by NAME because there is no
-    // function object behind either one (docs/0011 decision 1), so only a
-    // bare identifier can ever be one — `new lib.Float32Array()` is an
-    // ordinary construction of whatever that property holds.
-    const auto* calleeIdent = dynamic_cast<const ast::Ident*>(newExpr->callee.get());
-    const std::string calleeName = calleeIdent != nullptr ? calleeIdent->name : std::string();
-    if (calleeName == "Float32Array" || calleeName == "ArrayBuffer") {
-        if (newExpr->args.size() != 1 ||
-            dynamic_cast<const ast::SpreadElement*>(newExpr->args[0].get())) {
-            diags_.error(newExpr->span, "unsupported construct: new " + calleeName +
-                                            " expects exactly one argument");
-            return std::nullopt;
-        }
-        auto argVal = lowerExpr(*newExpr->args[0], ilFn);
-        if (!argVal) return std::nullopt;
-        auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = calleeName == "Float32Array" ? il::Op::CreateFloat32Array
-                                               : il::Op::CreateArrayBuffer;
-        inst.type = il::Type::Dynamic;
-        inst.result = res;
-        inst.operands = {argBoxed.id};
-        emitInst(ilFn, inst);
-        return Value{res, il::Type::Dynamic};
-    }
-    // Any other callee is an ordinary value: the whole ceremony
+    // Every callee is an ordinary value: the whole ceremony
     // (prototype, instance shape, receiver, result rule) lives in
     // one runtime helper rather than in codegen — docs/0008
     // decision 4. "Is this a constructor" is therefore a check the helper
