@@ -12,21 +12,21 @@
 
 namespace bronze {
 
-const DictEntry* Dictionary::find(const StringHeader* name) const noexcept {
-    if (!name) return nullptr;
+const DictEntry* Dictionary::find(PropertyKey name) const noexcept {
+    if (!name.valid()) return nullptr;
     for (const DictEntry& e : entries) {
-        if (e.name && e.name->equals(*name)) return &e;
+        if (e.key.matches(name)) return &e;
     }
     return nullptr;
 }
 
-DictEntry* Dictionary::find(const StringHeader* name) noexcept {
+DictEntry* Dictionary::find(PropertyKey name) noexcept {
     return const_cast<DictEntry*>(static_cast<const Dictionary*>(this)->find(name));
 }
 
-bool Dictionary::remove(const StringHeader* name) noexcept {
+bool Dictionary::remove(PropertyKey name) noexcept {
     for (auto it = entries.begin(); it != entries.end(); ++it) {
-        if (!it->name || !it->name->equals(*name)) continue;
+        if (!it->key.matches(name)) continue;
         // Only a single slot goes back on the free list. An accessor owns two
         // ADJACENT slots, and a free list of individual slots cannot promise
         // the next accessor two adjacent ones; leaking the pair keeps the
@@ -76,8 +76,8 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     // nothing recovers it. The SLOTS are kept exactly as they were, so the
     // conversion moves no data and the object's storage already covers them.
     for (const Shape* curr = old; curr != nullptr; curr = curr->parent) {
-        if (!curr->property_name) continue;
-        d.entries.push_back(DictEntry{curr->property_name, curr->slot_index, curr->enumerable,
+        if (!curr->key.valid()) continue;
+        d.entries.push_back(DictEntry{curr->key, curr->slot_index, curr->enumerable,
                                       curr->accessor});
         const uint32_t past = curr->slot_index + curr->slotWidth();
         if (past > d.nextSlot) d.nextSlot = past;
@@ -87,7 +87,7 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     obj->shape = dictShape;
 }
 
-bool ObjectHeader::deleteProperty(NonMovingArena& arena, StringHeader* name) {
+bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     if (!shape) return true;
     PropertyInfo info;
     // Absent, or present only on a prototype: already in the state delete
@@ -113,7 +113,7 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, StringHeader* name) {
 }
 
 ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
-                                       StringHeader* name, bool enumerable, bool accessor,
+                                       PropertyKey name, bool enumerable, bool accessor,
                                        uint32_t& out_slot) {
     auto* obj = self.get().asObject<ObjectHeader>();
     if (!obj->shape || !obj->shape->isDictionary()) {
@@ -139,10 +139,15 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         // The entry lives in the arena and outlives every collection, so the
         // name it holds must too — the same rule shape nodes follow, and the
         // reason a computed key (`o[k] = v`, whose key is a fresh heap
-        // string) cannot simply be pointed at.
-        StringHeader* interned = StringHeader::internToArena(arena, name);
+        // string) cannot simply be pointed at. A SYMBOL key is already in the
+        // arena and is stored as it stands: interning a copy would mint a key
+        // that is no longer the symbol the program holds (Shape::addProperty
+        // says the same thing for the transition tree).
+        PropertyKey stored =
+            name.isSymbol() ? name
+                            : PropertyKey::forString(StringHeader::internToArena(arena, name.string()));
         out_slot = d.allocateSlots(accessor ? 2u : 1u);
-        d.entries.push_back(DictEntry{interned, out_slot, enumerable, accessor});
+        d.entries.push_back(DictEntry{stored, out_slot, enumerable, accessor});
         // A depth > 0 entry can never be walking THROUGH this object — a
         // dictionary anywhere on the path is what `cachedProtoHolder` refuses —
         // so this bump is redundant with that refusal. It is written anyway:

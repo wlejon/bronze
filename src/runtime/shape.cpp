@@ -32,19 +32,18 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
                           uint32_t& out_slot, bool is_enumerable, bool is_accessor) {
     (void)heap;
-    if (!name.get().isString()) {
-        fatal("property name must be a string");
+    PropertyKey incoming = PropertyKey::fromValue(name.get());
+    if (!incoming.valid()) {
+        fatal("property name must be a string or a symbol");
     }
     if (isDictionary()) {
         fatal("internal: a shape transition attempted on a dictionary-mode object");
     }
 
-    StringHeader* prop_str = name.get().asString<StringHeader>();
-
     Shape* next_shape = nullptr;
     for (const auto& trans : transitions) {
         if (trans.enumerable == is_enumerable && trans.accessor == is_accessor &&
-            trans.property_name && trans.property_name->equals(*prop_str)) {
+            trans.key.matches(incoming)) {
             out_slot = trans.next_shape->slot_index;
             next_shape = trans.next_shape;
             break;
@@ -60,12 +59,19 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
         }
 
         out_slot = next_slot;
-        // Shapes are immortal and non-moving, so they must never point into
-        // the movable heap: property names are copied into the arena.
-        StringHeader* interned = StringHeader::internToArena(arena, prop_str);
+        // Shapes are immortal and non-moving, so they must never point into the
+        // movable heap. A STRING key is copied into the arena, which is sound
+        // exactly because a string key is matched by content — the copy is the
+        // same key. A SYMBOL is already in the arena and must NOT be copied: a
+        // symbol is matched by identity, so a copy would be a different key
+        // that nothing could ever look up again (runtime/symbol.h).
+        PropertyKey stored =
+            incoming.isSymbol()
+                ? incoming
+                : PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
         next_shape =
-            arena.create<Shape>(this, interned, next_slot, root, is_enumerable, is_accessor);
-        transitions.push_back(ShapeTransition{interned, next_shape, is_enumerable, is_accessor});
+            arena.create<Shape>(this, stored, next_slot, root, is_enumerable, is_accessor);
+        transitions.push_back(ShapeTransition{stored, next_shape, is_enumerable, is_accessor});
     }
 
     // An object that was a prototype before this add is still one after it, so
@@ -77,19 +83,19 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     return next_shape;
 }
 
-std::vector<StringHeader*> Shape::ownKeysInInsertionOrder(bool enumerableOnly) const {
-    std::vector<StringHeader*> keys;
+std::vector<PropertyKey> Shape::ownKeysInInsertionOrder(bool enumerableOnly) const {
+    std::vector<PropertyKey> keys;
     if (isDictionary()) {
         for (const DictEntry& e : dict->entries) {
             if (enumerableOnly && !e.enumerable) continue;
-            keys.push_back(e.name);
+            keys.push_back(e.key);
         }
         return keys;
     }
     for (const Shape* curr = this; curr != nullptr; curr = curr->parent) {
-        if (!curr->property_name) continue;
+        if (!curr->key.valid()) continue;
         if (enumerableOnly && !curr->enumerable) continue;
-        keys.push_back(curr->property_name);
+        keys.push_back(curr->key);
     }
     // Collected newest-first walking toward the root; insertion order is
     // the reverse.
@@ -97,8 +103,8 @@ std::vector<StringHeader*> Shape::ownKeysInInsertionOrder(bool enumerableOnly) c
     return keys;
 }
 
-bool Shape::lookupProperty(StringHeader* name, PropertyInfo& out) const noexcept {
-    if (!name) return false;
+bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
+    if (!name.valid()) return false;
 
     if (isDictionary()) {
         const DictEntry* e = dict->find(name);
@@ -113,7 +119,7 @@ bool Shape::lookupProperty(StringHeader* name, PropertyInfo& out) const noexcept
 
     const Shape* curr = this;
     while (curr != nullptr) {
-        if (curr->property_name && curr->property_name->equals(*name)) {
+        if (curr->key.matches(name)) {
             out.slot = curr->slot_index;
             out.enumerable = curr->enumerable;
             out.accessor = curr->accessor;
@@ -124,7 +130,7 @@ bool Shape::lookupProperty(StringHeader* name, PropertyInfo& out) const noexcept
     return false;
 }
 
-bool Shape::lookupProperty(StringHeader* name, uint32_t& out_slot) const noexcept {
+bool Shape::lookupProperty(PropertyKey name, uint32_t& out_slot) const noexcept {
     PropertyInfo info;
     if (!lookupProperty(name, info)) return false;
     out_slot = info.slot;

@@ -51,13 +51,22 @@ Shape* rtPlainObjectShape();
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 
-// A plain object's own string keys in ECMA-262 order — integer-like keys
-// ascending, then the rest in insertion order. The pointers are arena-interned
-// shape keys, so they are immortal and non-moving and stay valid across the
-// allocations a caller makes while walking them. `Object.keys`, object spread
-// and object rest all ask this one question.
-std::vector<StringHeader*> rtOwnKeysOrdered(const struct ObjectHeader* obj,
-                                            bool enumerableOnly = true);
+// A plain object's own keys in ECMA-262 6.1.7.1 OwnPropertyKeys order:
+// integer-like keys ascending, then the remaining STRING keys in insertion
+// order, then the SYMBOL keys in insertion order. The keys are arena-interned
+// or arena-allocated, so they are immortal and non-moving and stay valid across
+// the allocations a caller makes while walking them.
+std::vector<PropertyKey> rtOwnKeysOrdered(const struct ObjectHeader* obj,
+                                          bool enumerableOnly = true);
+
+// The same walk with the symbol keys dropped, which is what every ENUMERATION
+// caller wants: `Object.keys`, `Object.entries`, `for-in`, `JSON.stringify` and
+// `Object.getOwnPropertyNames` are all defined over string keys alone (7.3.23
+// EnumerableOwnProperties takes `key-of-type-String` as a filter). Its own
+// function rather than a flag, so that a caller reading the result as strings
+// cannot have got a symbol.
+std::vector<StringHeader*> rtOwnStringKeysOrdered(const struct ObjectHeader* obj,
+                                                  bool enumerableOnly = true);
 
 // A heap copy of an arena-interned key. Every consumer that hands a shape key
 // back to a program needs one — the arena string is immortal and the heap

@@ -1,0 +1,80 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+#include "runtime/gc.h"
+#include "runtime/heap.h"
+#include "runtime/string.h"
+#include "runtime/value.h"
+
+namespace bronze {
+
+// A Symbol (ECMA-262 6.1.5): a primitive whose identity IS its address, so two
+// symbols with the same description are two different values and no amount of
+// content comparison can make them one.
+//
+// It lives in the NON-MOVING ARENA rather than on the collected heap, and that
+// single decision is what makes a symbol usable as a property key. A shape node
+// is immortal and may never point into the movable heap — which is why a STRING
+// key is copied into the arena on its way into a transition. Copying is
+// available to a string precisely because a string key is matched by CONTENT; a
+// copy of a symbol would be a different symbol, matched by nothing. So the
+// symbol goes where the shape can point at it, and stays there.
+//
+// Two consequences worth stating rather than discovering. A symbol is never
+// collected — the same bargain every property key in bronze already makes
+// (`StringHeader::internToArena`), and symbols are created by the handful, not
+// per iteration. And a Symbol-tagged Value needs no GC rooting of its own:
+// `Heap::forward_value` skips any pointer outside the semispace, so the
+// registry below is a plain table rather than a root source.
+struct SymbolHeader {
+    HeapObjectHeader header;
+    // Arena-interned, or null for `Symbol()` with no argument. Null and the
+    // empty string are DIFFERENT: `Symbol().description` is `undefined` and
+    // `Symbol("").description` is `""`.
+    //
+    // It is the ONLY field, and nothing else may be added that a program can
+    // observe: everything else about a symbol is its address. In particular
+    // there is no creation ordinal, because nothing orders symbols — 6.1.7.1
+    // puts an object's symbol keys in the order they were added to THAT object,
+    // which is the transition chain's order and not the symbols' own.
+    StringHeader* description;
+};
+
+}  // namespace bronze
+
+namespace bronze::runtime {
+
+// `Symbol()` / `Symbol(description)`: a fresh symbol every call, which is the
+// whole point of the type. `description` must be a string Value or undefined;
+// ToString of anything else is the caller's job (20.4.1.1 step 2).
+Value rtMakeSymbol(Value description);
+
+// `Symbol.for(key)` / `Symbol.keyFor(sym)` — the global registry of 20.4.2.1
+// and 20.4.2.2, which returns the SAME symbol for the same string where
+// `Symbol()` never does. `rtSymbolKeyFor` answers `undefined` for a symbol that
+// is not in the registry.
+Value rtSymbolFor(Rooted<Value>& keyString);
+Value rtSymbolKeyFor(Value symbol);
+
+// SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
+// description spelled `Symbol()` — the description of a `Symbol()` and of a
+// `Symbol("")` print alike, which is exactly what the specification says and is
+// why `.description` exists to tell them apart.
+std::string rtSymbolDescriptiveString(Value symbol);
+
+// A member read on a primitive symbol — `toString`, `description`,
+// `constructor` — answered beside the value the way a number's and a string's
+// are, since bronze has no wrapper object for one to be found on. A name
+// 20.4.3 defines and bronze has not built is diagnosed here rather than read as
+// `undefined`.
+Value rtSymbolMember(Value symbol, const std::string& key);
+
+// `Symbol` itself — a function object, so `Symbol("tag")` is a call rather than
+// "an object is not callable", and so its statics reach the function property
+// path.
+Value rtSymbolFunction();
+void rtSymbolCheckMissingMember(Value fn, const std::string& key);
+
+}  // namespace bronze::runtime

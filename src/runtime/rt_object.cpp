@@ -102,25 +102,37 @@ void rtEnsureFunctionProperties(Rooted<Value>& fnVal) {
     fn->properties = Value::fromObject(props);
 }
 
-// Spec order for a plain object's own ENUMERABLE string keys, in one place
-// because four callers need the same answer and a second copy of the
-// integer-first split would be a second chance to get `"10"` before `"2"`
-// wrong. Enumerable-only because every caller — `Object.keys`, object spread,
-// object rest and `for-in` — is defined over own enumerable keys, and a class
-// method is not one.
-std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
+// ECMA-262 6.1.7.1 OwnPropertyKeys, in one place because six callers need the
+// same answer and a second copy of the integer-first split would be a second
+// chance to get `"10"` before `"2"` wrong. Enumerable-only by default because
+// most callers — `Object.keys`, object spread, object rest and `for-in` — are
+// defined over own enumerable keys, and a class method is not one.
+//
+// The three groups are the specification's, and the ORDER between them is
+// pinned rather than incidental: integer-like keys ascending, then the
+// remaining string keys in creation order, then the symbol keys in creation
+// order. Symbols last is a rule about the answer and not about how they are
+// stored — a symbol-keyed property sits in the transition chain wherever it was
+// added, and this is where 6.1.7.1's grouping is applied. Nothing here consults
+// a hash table, so the order is a function of the program and not of an address.
+std::vector<PropertyKey> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
     // Shape keys are arena-interned and immortal, so collecting them up front
     // is safe across whatever the caller allocates while walking them.
     Shape* shape = obj->shape;
-    std::vector<StringHeader*> inserted =
-        shape ? shape->ownKeysInInsertionOrder(enumerableOnly)
-              : std::vector<StringHeader*>{};
+    std::vector<PropertyKey> inserted =
+        shape ? shape->ownKeysInInsertionOrder(enumerableOnly) : std::vector<PropertyKey>{};
 
-    std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
-    std::vector<StringHeader*> strKeys;
-    for (StringHeader* k : inserted) {
+    std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
+    std::vector<PropertyKey> strKeys;
+    std::vector<PropertyKey> symKeys;
+    for (PropertyKey k : inserted) {
+        if (k.isSymbol()) {
+            symKeys.push_back(k);
+            continue;
+        }
         uint32_t idx = 0;
-        if (k->isLatin1() && rtIsIntegerLikeKey(latin1View(k), idx)) {
+        StringHeader* s = k.string();
+        if (s->isLatin1() && rtIsIntegerLikeKey(latin1View(s), idx)) {
             intKeys.emplace_back(idx, k);
         } else {
             strKeys.push_back(k);
@@ -129,11 +141,23 @@ std::vector<StringHeader*> rtOwnKeysOrdered(const ObjectHeader* obj, bool enumer
     std::sort(intKeys.begin(), intKeys.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    std::vector<StringHeader*> ordered;
-    ordered.reserve(intKeys.size() + strKeys.size());
+    std::vector<PropertyKey> ordered;
+    ordered.reserve(intKeys.size() + strKeys.size() + symKeys.size());
     for (const auto& [idx, name] : intKeys) ordered.push_back(name);
-    for (StringHeader* name : strKeys) ordered.push_back(name);
+    for (PropertyKey name : strKeys) ordered.push_back(name);
+    for (PropertyKey name : symKeys) ordered.push_back(name);
     return ordered;
+}
+
+std::vector<StringHeader*> rtOwnStringKeysOrdered(const ObjectHeader* obj, bool enumerableOnly) {
+    std::vector<StringHeader*> names;
+    for (PropertyKey k : rtOwnKeysOrdered(obj, enumerableOnly)) {
+        // Symbols are last, so this could stop at the first one — it does not,
+        // because "the order happens to make the loop right" is how an
+        // ordering change becomes a silently missing key.
+        if (StringHeader* s = k.string()) names.push_back(s);
+    }
+    return names;
 }
 
 Value rtCopyKeyToHeap(const StringHeader* key) {
@@ -303,7 +327,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         if (src.get().asObject<ArrayHeader>()->properties.isObject()) {
             Rooted<Value> props{src.get().asObject<ArrayHeader>()->properties};
             const std::vector<StringHeader*> named =
-                rtOwnKeysOrdered(props.get().asObject<ObjectHeader>());
+                rtOwnStringKeysOrdered(props.get().asObject<ObjectHeader>());
             for (StringHeader* k : named) {
                 Rooted<Value> key{rtCopyKeyToHeap(k)};
                 out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
@@ -315,8 +339,13 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         fatal("Object.keys is only supported on plain objects and arrays");
     }
 
+    // `Object.keys` is own ENUMERABLE STRING keys (20.1.2.17 -> 7.3.23 with
+    // key-of-type-String), so the symbol half of the own keys never reaches
+    // here — which is how a symbol-keyed property becomes invisible to
+    // `Object.keys`, `Object.entries` and `JSON.stringify` at once, by BEING a
+    // symbol rather than by any rule about its spelling.
     const std::vector<StringHeader*> ordered =
-        rtOwnKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
+        rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
 
     const uint32_t total = static_cast<uint32_t>(ordered.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};

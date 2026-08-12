@@ -17,6 +17,7 @@
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -107,7 +108,13 @@ void writeValue(uint64_t valBits, std::FILE* out) {
         // would hide the bug that let it escape.
         fatal("internal: the hole sentinel reached console.log");
     } else if (v.isSymbol()) {
-        fatal("printing a symbol is unsupported (bronze has no symbols)");
+        // Unquoted, and the same text `sym.toString()` gives — which is what
+        // distinguishes a symbol in output from the string of the same
+        // characters, since a top-level string prints unquoted too. The one
+        // formatter rule holds: this is `rtSymbolDescriptiveString`, the same
+        // function the inspect walk uses for a symbol nested in a container.
+        const std::string text = rtSymbolDescriptiveString(v);
+        std::fwrite(text.data(), 1, text.size(), out);
     } else {
         fatal("internal: console.log reached a value with an unknown tag");
     }

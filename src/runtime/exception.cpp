@@ -208,11 +208,17 @@ void ensureErrorClasses() {
         cls.prototype = proto.get();
     }
 
-    for (StringHeader* key :
+    // The two keys the error prototype was just given, recovered as the
+    // arena-interned headers the walk above already holds. Both are string
+    // keys by construction; the filter says so rather than assuming it, since
+    // a shape's own keys are no longer strings by definition.
+    for (PropertyKey key :
          g_errorClasses[0].prototype.asObject<ObjectHeader>()->shape->ownKeysInInsertionOrder()) {
-        const std::string text = rtUtf8Chars(key);
-        if (text == "name") g_nameKey = key;
-        if (text == "message") g_messageKey = key;
+        StringHeader* name = key.string();
+        if (!name) continue;
+        const std::string text = rtUtf8Chars(name);
+        if (text == "name") g_nameKey = name;
+        if (text == "message") g_messageKey = name;
     }
 }
 

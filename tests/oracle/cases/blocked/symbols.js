@@ -1,47 +1,50 @@
-// BLOCKED: `unsupported: Symbol() (bronze has no symbol primitive;
-// Symbol.iterator is a well-known string key)`.
+// BLOCKED on ONE line: `typeof Symbol.iterator` answers "string".
 //
-// The iterator protocol shipped WITHOUT a symbol primitive, and this case is
-// the receipt for that trade. `Symbol.iterator` is the string "@@iterator", and
-// the compensating rule — any own key beginning with `@@` is created
-// non-enumerable — buys back the one property of a symbol key that the protocol
-// depends on. It buys nothing else, and this case pins what is still missing.
+// The symbol PRIMITIVE has landed. `Symbol()`, symbol-keyed properties,
+// `Symbol.for`/`keyFor`, `getOwnPropertySymbols` and the refusal to coerce are
+// all built and pinned in cases/symbol_primitive.js, symbol_keys.js and
+// symbol_registry.js — the value-model problem this case's header used to
+// describe is solved, by a one-pointer `PropertyKey` (runtime/property_key.h)
+// that matches a string key by content and a symbol key by identity, and by
+// putting a symbol in the non-moving arena so a shape node may point at it.
 //
-// The blocker is the value model, not the syntax. Tag 0xFFF8 is reserved for
-// Symbol and free, so there is room for the VALUE; the cost is
-// everywhere a property KEY is handled. A shape's transition key is an
-// arena-interned `StringHeader*` compared by CONTENT, and that
-// content comparison is what makes two objects with the same property names
-// share a shape. A symbol key is the opposite: it is compared by IDENTITY,
-// and two symbols with the same description are two different keys. So
-// landing symbols means one of:
+// What is left is the WELL-KNOWN symbols, and specifically `Symbol.iterator`,
+// which is still the string `"@@iterator"`. That migration is not one line of
+// the value model. The `@@` prefix rule — an own key beginning with `@@` is
+// created non-enumerable — is load-bearing in three separate places and only
+// one of them is the iterator hook:
 //
-//  - a parallel key type threaded through shapes, dictionaries, enumeration,
-//    the inline caches and `Object.keys` — every one of which currently
-//    assumes "key" means "interned string"; or
-//  - a pointer-identity rule for symbol-keyed transitions only, which makes
-//    property matching two rules instead of one and has to be right in the
-//    inline cache fast path that generated code open-codes.
+//  - `Symbol.iterator` itself, read by the for-of and spread paths and written
+//    by a program that makes an object iterable (src/parse/parser_generator.cpp
+//    lowers `[Symbol.iterator]` to the string at compile time);
+//  - the generator desugaring's self-property, which every `function*` object
+//    carries so that iterating one twice works;
+//  - the internal slots `Map`, `Set`, `String.prototype.matchAll` and the typed
+//    arrays keep on their iterator objects — `@@mapTarget`, `@@mapCursor`,
+//    `@@matchAllInput` and friends — which are not iterator hooks at all and
+//    only use the rule to stay out of enumeration.
 //
-// Either is a value-model chunk of its own, which is why it is not this one.
+// Moving one without the others breaks the other two silently, which is why
+// cases/collection_internal_slots.js exists and why this is a chunk of its own.
 //
-// What this case pins when it lands, from ECMA-262 6.1.5 (the Symbol type),
-// 20.4.1 (the Symbol constructor), 20.4.2.1 (Symbol.for) and 7.1.19
-// (ToPropertyKey):
+// What this case still pins, from ECMA-262 6.1.5 (the Symbol type), 20.4.1 (the
+// constructor), 20.4.2.1 (Symbol.for) and 7.1.19 (ToPropertyKey) — points 1, 2,
+// 3 and 5 pass today and are here as the promoted case's regression cover;
+// point 4 is the blocker:
 //
 // 1. `Symbol()` produces a value whose `typeof` is "symbol", and two calls
 //    with the SAME description are two different values. That is the whole
 //    point of the type and the thing a string key cannot do.
 // 2. A symbol used as a property key is invisible to `Object.keys`, to
-//    `for-in`, to `Object.entries` and to `JSON.stringify` — which bronze
-//    approximates today with the `@@` prefix rule, and which the real thing
-//    gets for free.
+//    `for-in`, to `Object.entries` and to `JSON.stringify` — by being a symbol,
+//    which is what the `@@` prefix rule only ever approximated.
 // 3. `Symbol.for` is a REGISTRY: it returns the same symbol for the same
 //    string, where `Symbol()` never does, and `Symbol.keyFor` reverses it.
 // 4. `Symbol.iterator` is a symbol rather than a string, so `typeof
 //    Symbol.iterator` is "symbol" and a user cannot make an object iterable
 //    by assigning a string key. Both halves of that are divergences pinned
-//    the other way round in cases/iterator_protocol.js today.
+//    the other way round in cases/iterator_protocol.js today, and both are
+//    what the migration above has to change.
 // 5. A symbol does not coerce: `"" + sym` is a TypeError, and `toString`
 //    is the only conversion, which is what makes an accidental
 //    stringification loud instead of silent. The MESSAGE is not pinned —

@@ -31,6 +31,7 @@
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -45,12 +46,27 @@ bool isCallable(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == 2;
 }
 
-// The arena-interned name a descriptor field or a property key reaches the
-// dictionary under. Interning is not an optimization here: a DictEntry
-// outlives every collection, so a heap key would dangle.
-StringHeader* internOf(Value keyVal) {
+// ToPropertyKey (7.1.19) into the immortal form a DictEntry can hold. Interning
+// is not an optimization here: a DictEntry outlives every collection, so a heap
+// key would dangle.
+//
+// A SYMBOL is returned as it stands and never converted: it already lives in
+// the arena, and running ToString on one is the TypeError this whole type
+// exists to raise. That is also what lets `Object.defineProperty`,
+// `getOwnPropertyDescriptor` and `hasOwn` take a symbol key without a branch of
+// their own.
+PropertyKey internOf(Value keyVal) {
+    if (keyVal.isSymbol()) return PropertyKey::fromValue(keyVal);
     Rooted<Value> str{rtValueToString(keyVal)};
-    return StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>());
+    return PropertyKey::forString(
+        StringHeader::internToArena(rtArena(), str.get().asString<StringHeader>()));
+}
+
+// A key as text, for a diagnostic. `Symbol(desc)` for a symbol, which is the
+// only spelling one has (20.4.3.3.1) and is not a conversion a program could
+// have performed itself.
+std::string keyText(PropertyKey key) {
+    return key.isSymbol() ? rtSymbolDescriptiveString(key.toValue()) : rtUtf8Chars(key.string());
 }
 
 Value readField(Rooted<Value>& desc, const char* name, bool& present) {
@@ -79,7 +95,7 @@ void putField(Rooted<Value>& obj, Rooted<Value>& key, Rooted<Value>& val) {
 // The key is interned BEFORE the object is read: `internOf` runs ToString,
 // which allocates, so an ObjectHeader* taken across it would be stale.
 bool hasOwnPropertyNamed(Rooted<Value>& self, Value key) {
-    StringHeader* name = internOf(key);
+    PropertyKey name = internOf(key);
     auto* obj = self.get().asObject<ObjectHeader>();
     uint32_t slot = 0;
     return obj->shape && obj->shape->lookupProperty(name, slot);
@@ -87,7 +103,7 @@ bool hasOwnPropertyNamed(Rooted<Value>& self, Value key) {
 
 // The entry `name` names, after the object has been moved to dictionary mode.
 // Null only for a name that is not an own property.
-DictEntry* entryOf(Value objVal, StringHeader* name) {
+DictEntry* entryOf(Value objVal, PropertyKey name) {
     auto* obj = objVal.asObject<ObjectHeader>();
     if (!obj->shape || !obj->shape->isDictionary()) return nullptr;
     return obj->shape->dict->find(name);
@@ -130,9 +146,9 @@ uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     const bool enumerable = hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
     const bool configurable = hasConfigurable && bronze_truthy(configurableV.get().rawBits());
 
-    // The key string is built before the object is disturbed, and interned so
-    // the entry can hold it forever.
-    StringHeader* name = internOf(args[1]);
+    // The key is built before the object is disturbed, and interned so the
+    // entry can hold it forever.
+    PropertyKey name = internOf(args[1]);
 
     ObjectHeader::toDictionary(rtArena(), self);
     DictEntry* existing = entryOf(self.get(), name);
@@ -140,7 +156,7 @@ uint64_t objectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         return rtThrowTypeError("Cannot define property, object is not extensible").rawBits();
     }
     if (existing && !existing->configurable) {
-        return rtThrowTypeError("Cannot redefine property: " + rtUtf8Chars(name)).rawBits();
+        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
     }
 
     uint32_t slot = 0;
@@ -169,7 +185,7 @@ uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             .rawBits();
     }
     Rooted<Value> self{args[0]};
-    StringHeader* name = internOf(args[1]);
+    PropertyKey name = internOf(args[1]);
 
     PropertyInfo info;
     auto* obj = self.get().asObject<ObjectHeader>();
@@ -488,13 +504,69 @@ uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint
               "(their own non-enumerable names are not properties bronze stores)");
     }
     Rooted<Value> self{args[0]};
+    // 20.1.2.10 is the STRING half of OwnPropertyKeys — the symbol half is
+    // `getOwnPropertySymbols`, and the two are separate functions in the
+    // language precisely so that neither ever reports the other's keys.
     const std::vector<StringHeader*> ordered =
-        rtOwnKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
+        rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
     Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(ordered.size())))};
     uint32_t at = 0;
     for (StringHeader* name : ordered) {
         Rooted<Value> key{rtCopyKeyToHeap(name)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    return out.get().rawBits();
+}
+
+// 20.1.2.11 Object.getOwnPropertySymbols: the SYMBOL half of OwnPropertyKeys,
+// which 6.1.7.1 orders after every string key and among themselves in
+// property-creation order. Non-enumerable symbol keys are included — this is
+// getOwnPropertyKeys and not an enumeration, which is the same reason
+// `getOwnPropertyNames` passes `enumerableOnly=false`.
+//
+// The order is a fact about the object's transition chain and nothing else. No
+// hash table is consulted on the way here, and in particular the `Symbol.for`
+// registry is not: a registered symbol has no privileged position among an
+// object's keys.
+uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject()) {
+        return rtThrowTypeError(
+                   "Object.getOwnPropertySymbols called on a value that is not an object")
+            .rawBits();
+    }
+    // Where the receiver keeps symbol keys, which is `symbolKeyHolder`'s
+    // question in rt_prop.cpp asked from the other side: a plain object keeps
+    // them itself and a function keeps them in the side object its statics use.
+    //
+    // An array, a Map, a Set, a typed array and a RegExp carry no shape, so
+    // they have nowhere to put one — and a symbol-keyed WRITE to any of them is
+    // a named hard error, so the empty answer here is COMPLETE rather than a
+    // gap dressed up as a result. That is the whole difference from
+    // `getOwnPropertyNames`, which refuses those receivers: an array really has
+    // an own `length`, so the string answer would be short by one.
+    Rooted<Value> self{args[0]};
+    ObjectHeader* holder = nullptr;
+    HeapObjectHeader* hdr = self.get().asObject<HeapObjectHeader>();
+    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        holder = reinterpret_cast<ObjectHeader*>(hdr);
+    } else if (hdr->flags == 2) {
+        Value props = self.get().asObject<FunctionHeader>()->properties;
+        if (props.isObject()) holder = props.asObject<ObjectHeader>();
+    }
+    if (!holder) return bronze_create_array(0);
+
+    const std::vector<PropertyKey> ordered =
+        rtOwnKeysOrdered(holder, /*enumerableOnly=*/false);
+    Rooted<Value> out{Value(bronze_create_array(0))};
+    uint32_t at = 0;
+    for (PropertyKey key : ordered) {
+        if (!key.isSymbol()) continue;
+        // A symbol lives in the arena and never moves, so it goes into the
+        // result as it is — there is no `rtCopyKeyToHeap` counterpart, and a
+        // copy would be a different symbol.
+        Rooted<Value> sym{key.toValue()};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, sym);
     }
     return out.get().rawBits();
 }
@@ -651,7 +723,7 @@ uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t a
     if (!requireProtoReceiver(self.get(), "propertyIsEnumerable")) {
         return Value::fromUndefined().rawBits();
     }
-    StringHeader* name = internOf(args[0]);
+    PropertyKey name = internOf(args[0]);
     auto* obj = self.get().asObject<ObjectHeader>();
     PropertyInfo info;
     if (!obj->shape || !obj->shape->lookupProperty(name, info)) {
@@ -736,11 +808,11 @@ const NamespaceFn kObjectFunctions[] = {
     {"getOwnPropertyDescriptors", objectGetOwnPropertyDescriptors, 1},
     {"hasOwn", objectHasOwn, 2},
     {"is", objectIs, 2},
+    {"getOwnPropertySymbols", objectGetOwnPropertySymbols, 1},
 };
 
 // Real members of `Object` that bronze has not built.
 const char* const kObjectUnimplemented[] = {
-    "getOwnPropertySymbols",
     "groupBy",
 };
 

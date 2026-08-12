@@ -15,7 +15,7 @@ TEST_CASE("Shape property addition and transitions") {
     Shape* root = Shape::createRoot(arena);
     REQUIRE(root != nullptr);
     CHECK(root->parent == nullptr);
-    CHECK(root->property_name == nullptr);
+    CHECK_FALSE(root->key.valid());
 
     Rooted<Value> key_a(Value::fromString(StringHeader::createFromUTF8(heap, "a")));
     Rooted<Value> key_b(Value::fromString(StringHeader::createFromUTF8(heap, "b")));

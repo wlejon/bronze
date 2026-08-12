@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "runtime/property_key.h"
 #include "runtime/string.h"
 
 namespace bronze {
@@ -19,7 +20,10 @@ class Shape;
 // object that ever took that path. An entry vector owned by ONE object
 // renumbers nobody.
 struct DictEntry {
-    StringHeader* name{nullptr};  // arena-interned, immortal, non-moving
+    // Arena-interned (a string) or arena-allocated (a symbol) either way, so
+    // it is immortal and non-moving — which it has to be, since a dictionary
+    // outlives every collection.
+    PropertyKey key;
     uint32_t slot{0};
     bool enumerable{true};
     // The slot holds the getter and `slot + 1` the setter, either of which may
@@ -65,13 +69,13 @@ public:
     // already is.
     bool extensible{true};
 
-    const DictEntry* find(const StringHeader* name) const noexcept;
-    DictEntry* find(const StringHeader* name) noexcept;
+    const DictEntry* find(PropertyKey name) const noexcept;
+    DictEntry* find(PropertyKey name) noexcept;
 
     // True when an entry was there to remove. The slot goes on the free list
     // only for a data property: an accessor's two slots are adjacent and the
     // free list cannot promise adjacency to the next accessor that asks.
-    bool remove(const StringHeader* name) noexcept;
+    bool remove(PropertyKey name) noexcept;
 
     // `width` is 1 for a data property and 2 for an accessor pair. A pair
     // always takes fresh slots, for the adjacency reason above.

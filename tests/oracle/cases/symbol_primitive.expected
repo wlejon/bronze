@@ -1,0 +1,23 @@
+symbol
+false true
+false false false
+Symbol(tag)
+tag
+Symbol(tag)
+Symbol(tag)
+Symbol() Symbol()
+undefined ""
+false
+undefined
+true function function
+true symbol
+truthy false true
+concat throws: true
+template throws: true
+add throws: true
+mixed add throws: true
+3 true 1 2
+true
+true
+1
+3

@@ -1,0 +1,30 @@
+first second 1 2
+undefined undefined
+plain,later
+1,2
+2
+{"plain":1,"later":2}
+plain,later
+plain;later;
+2 true true
+true true false
+true false
+{ plain: 1, later: 2, [Symbol(k)]: 'first', [Symbol(k)]: 'second' }
+plain,later first second
+first 2
+1,2,b
+1
+{ '1': 'one', '2': 'two', b: 'b', [Symbol(s1)]: 'sym' }
+inherited 0 true
+own inherited 1
+true
+undefined second 1
+plain,later {"plain":1,"later":2}
+re-added 2
+2772 bag bag
+name 9
+108 200 false
+on the function 1 true
+bare 1
+true undefined 0
+0 0 0

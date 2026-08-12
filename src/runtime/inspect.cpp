@@ -20,6 +20,7 @@
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -87,6 +88,16 @@ bool isIdentifierKey(const std::string& s) {
     return true;
 }
 
+// A key as it appears on the left of a `:`. node brackets a symbol key —
+// `{ [Symbol(tag)]: 1 }` — because the text is not a name a program could have
+// written unbracketed, and that is the whole visual difference between a symbol
+// key and a string one that happens to spell "Symbol(tag)".
+std::string keyLabel(PropertyKey k) {
+    if (k.isSymbol()) return "[" + rtSymbolDescriptiveString(k.toValue()) + "]";
+    const std::string name = utf8Of(k.string());
+    return isIdentifierKey(name) ? name : quoted(name);
+}
+
 std::string numberText(double num) {
     char buf[64];
     size_t len = 0;
@@ -124,7 +135,11 @@ private:
         if (v.isNull()) return "null";
         if (v.isUndefined()) return "undefined";
         if (v.isHole()) fatal("internal: the hole sentinel reached console.log");
-        if (v.isSymbol()) fatal("printing a symbol is unsupported (bronze has no symbols)");
+        // A symbol prints as its descriptive string and NOT quoted, which is
+        // what distinguishes `Symbol("a")` from the string "Symbol(a)" in
+        // output — the same rule that prints a RegExp as `/a/g` rather than as
+        // its source text.
+        if (v.isSymbol()) return rtSymbolDescriptiveString(v);
         if (!v.isObject()) fatal("internal: console.log reached a value with an unknown tag");
 
         // An Error prints as `Name: message`, which is what node shows on the
@@ -182,15 +197,14 @@ private:
         // unchanged.
         if (arr->properties.isObject()) {
             auto* props = arr->properties.asObject<ObjectHeader>();
-            const std::vector<StringHeader*> keys =
+            const std::vector<PropertyKey> keys =
                 props->shape ? props->shape->ownKeysInInsertionOrder()
-                             : std::vector<StringHeader*>{};
-            for (StringHeader* k : keys) {
+                             : std::vector<PropertyKey>{};
+            for (PropertyKey k : keys) {
                 PropertyInfo info;
                 if (!props->shape->lookupProperty(k, info) || info.accessor) continue;
                 if (!out.empty()) out += ", ";
-                const std::string name = utf8Of(k);
-                out += isIdentifierKey(name) ? name : quoted(name);
+                out += keyLabel(k);
                 out += ": " + format(props->getSlot(info.slot), depth + 1);
             }
         }
@@ -225,12 +239,19 @@ private:
         std::string out;
         // Own keys in the language's order — the same order Object.keys
         // reports, because they are the same question.
-        std::vector<StringHeader*> keys =
-            obj->shape ? obj->shape->ownKeysInInsertionOrder() : std::vector<StringHeader*>{};
-        std::vector<std::pair<uint32_t, StringHeader*>> intKeys;
-        std::vector<StringHeader*> strKeys;
-        for (StringHeader* k : keys) {
-            const std::string name = utf8Of(k);
+        std::vector<PropertyKey> keys =
+            obj->shape ? obj->shape->ownKeysInInsertionOrder() : std::vector<PropertyKey>{};
+        std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
+        std::vector<PropertyKey> strKeys;
+        // Symbol keys print LAST, after every string key, which is the order
+        // 6.1.7.1 gives them and the order node shows them in.
+        std::vector<PropertyKey> symKeys;
+        for (PropertyKey k : keys) {
+            if (k.isSymbol()) {
+                symKeys.push_back(k);
+                continue;
+            }
+            const std::string name = utf8Of(k.string());
             uint32_t idx = 0;
             if (rtIsIntegerLikeKey(name, idx)) {
                 intKeys.emplace_back(idx, k);
@@ -241,12 +262,11 @@ private:
         std::sort(intKeys.begin(), intKeys.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
 
-        auto emit = [&](StringHeader* k) {
+        auto emit = [&](PropertyKey k) {
             PropertyInfo info;
             if (!obj->shape || !obj->shape->lookupProperty(k, info)) return;
-            const std::string name = utf8Of(k);
             if (!out.empty()) out += ", ";
-            out += isIdentifierKey(name) ? name : quoted(name);
+            out += keyLabel(k);
             out += ": ";
             if (info.accessor) {
                 // node names the halves rather than RUNNING the getter, and
@@ -260,7 +280,8 @@ private:
             out += format(obj->getSlot(info.slot), depth + 1);
         };
         for (const auto& [idx, k] : intKeys) emit(k);
-        for (StringHeader* k : strKeys) emit(k);
+        for (PropertyKey k : strKeys) emit(k);
+        for (PropertyKey k : symKeys) emit(k);
 
         leave();
         return out.empty() ? "{}" : "{ " + out + " }";

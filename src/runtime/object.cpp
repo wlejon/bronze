@@ -151,11 +151,18 @@ void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shap
 Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
                             const Value* receiver) {
     (void)heap;
-    if (!key.get().isString()) {
-        fatal("property key must be a string");
+    const PropertyKey prop_name = PropertyKey::fromValue(key.get());
+    if (!prop_name.valid()) {
+        fatal("property key must be a string or a symbol");
     }
-    StringHeader* prop_name = key.get().asString<StringHeader>();
 
+    // A symbol key never reaches an inline cache, and that is a fact about the
+    // COMPILER rather than a rule enforced here: an entry belongs to a property
+    // site whose key is a compile-time constant, and the only syntax that can
+    // produce a symbol key is a computed access, which has no site entry. So a
+    // key-representation change cannot desynchronise the open-coded fast path
+    // in codegen-llvm — it compares a shape pointer and nothing else, and a
+    // shape that gained a symbol-keyed transition is a different pointer.
     if (ic && ic->describes(shape)) {
         if (ic->cached_depth == 0) return getSlot(ic->cached_slot);
         bool crossedDictionary = false;
@@ -210,10 +217,10 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                                     Rooted<Value>& val, InlineCache* ic, bool enumerable,
                                     bool defineOwn, const Value* receiver) {
-    if (!key.get().isString()) {
-        fatal("property key must be a string");
+    const PropertyKey prop_name = PropertyKey::fromValue(key.get());
+    if (!prop_name.valid()) {
+        fatal("property key must be a string or a symbol");
     }
-    StringHeader* prop_name = key.get().asString<StringHeader>();
 
     // A set-site entry only ever describes an OWN DATA property of a
     // non-dictionary shape (below), so a shape match is a slot write with
@@ -284,7 +291,17 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // is on the KEY rather than on the call site because there are four call
     // sites and one of them is `o[k] = v` with a computed key, where nothing
     // but the key is known.
-    if (runtime::rtIsWellKnownSymbolKey(prop_name)) enumerable = false;
+    //
+    // It applies to STRING keys only, and asking that first is what keeps the
+    // rule where it belongs. A REAL symbol key is enumerable (ECMA-262
+    // 10.1.9.2 -> 7.3.5 CreateDataProperty: `enumerable: true`); it is absent
+    // from `Object.keys` and `for-in` because those are defined over string
+    // keys, not because it is hidden. Applying the `@@` rule to it would make
+    // `Object.assign` and `{ ...o }` drop symbol-keyed properties they are
+    // required to copy.
+    if (prop_name.isString() && runtime::rtIsWellKnownSymbolKey(prop_name.string())) {
+        enumerable = false;
+    }
 
     // Create the own property: a shape transition, or an entry in the
     // dictionary once one delete has made the chain unusable. Both may grow

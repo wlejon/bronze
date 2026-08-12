@@ -71,9 +71,16 @@ Value rtOpenIterator(Value source);
 // one never sees either.
 std::string rtIterableKindName(Value v);
 
-// The property key `Symbol.iterator` evaluates to: bronze has no symbol
-// primitive, so the well-known symbol is the string `"@@iterator"`,
-// arena-interned so the property path allocates nothing.
+// The property key `Symbol.iterator` evaluates to. bronze HAS a symbol
+// primitive now (runtime/symbol.h), and this is still the string
+// `"@@iterator"`, arena-interned so the property path allocates nothing.
+//
+// Migrating it is a chunk of its own rather than a line of this one. The `@@`
+// prefix is load-bearing in three places and only one of them is the iterator
+// hook: the generator desugaring gives its object a `@@iterator` self-property,
+// and builtin_map.cpp and builtin_string_regexp.cpp spell their internal slots
+// `@@mapTarget`, `@@matchAllInput` and friends — all three leaning on the
+// same "an own key beginning with @@ is created non-enumerable" rule.
 StringHeader* rtIteratorKey();
 
 // Is this an own key that stands for a well-known symbol? Such a key is
@@ -81,11 +88,5 @@ StringHeader* rtIteratorKey();
 // spread and console.log agreeing with node about an object that defines its
 // own iterator.
 bool rtIsWellKnownSymbolKey(const StringHeader* name) noexcept;
-
-// `Symbol` itself — a function object, so that `Symbol("x")` is a named error
-// rather than "an object is not a function", carrying `iterator` as its one
-// implemented member.
-Value rtSymbolFunction();
-void rtSymbolCheckMissingMember(Value fn, const std::string& key);
 
 }  // namespace bronze::runtime

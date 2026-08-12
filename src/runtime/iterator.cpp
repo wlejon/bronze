@@ -375,49 +375,4 @@ uint64_t bronze_iter_rest(uint64_t recBits) {
 
 }  // extern "C"
 
-// ---- Symbol -----------------------------------------------------------------
-//
-// A function object rather than a namespace object, so that `Symbol("tag")` —
-// the thing a program reaches for first — is a named error about bronze
-// rather than "an object is not a function", which names nothing.
-
-namespace {
-
-uint64_t symbolCall(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: Symbol() (bronze has no symbol primitive; Symbol.iterator "
-          "is a well-known string key)");
-}
-
-// Real members of `Symbol` that bronze has not built. Same rule as every
-// other table in rt_members.cpp: membership is ECMA-262's "does this exist?",
-// never "have we got round to it?".
-const char* const kSymbolUnimplemented[] = {
-    "asyncIterator", "for",        "hasInstance",       "isConcatSpreadable", "keyFor",
-    "match",         "matchAll",   "replace",           "search",             "species",
-    "split",         "toPrimitive", "toStringTag",      "unscopables",
-};
-
-Value g_symbolFunction = Value::fromUndefined();
-
-}  // namespace
-
-Value rtSymbolFunction() {
-    if (g_symbolFunction.isObject()) return g_symbolFunction;
-    Rooted<Value> fn{Value(bronze_function_singleton(symbolCall, 1))};
-    rtEnsureFunctionProperties(fn);
-    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
-    Rooted<Value> key{rtMakeString("iterator")};
-    Rooted<Value> val{Value::fromString(rtIteratorKey())};
-    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
-    g_symbolFunction = fn.get();
-    rtHeap().add_permanent_root(&g_symbolFunction);
-    return g_symbolFunction;
-}
-
-void rtSymbolCheckMissingMember(Value fn, const std::string& key) {
-    if (!g_symbolFunction.isObject() || fn.rawBits() != g_symbolFunction.rawBits()) return;
-    rtCheckUnimplementedMember("Symbol", kSymbolUnimplemented, std::size(kSymbolUnimplemented),
-                               key);
-}
-
 }  // namespace bronze::runtime

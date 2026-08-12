@@ -7,6 +7,8 @@ bronze_add_module(runtime
         gc.cpp
         env.cpp
         string.cpp
+        symbol.cpp
+        builtin_symbol.cpp
         shape.cpp
         dictionary.cpp
         accessor.cpp
@@ -53,6 +55,7 @@ bronze_add_module(runtime
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp
         ../../tests/runtime/string_test.cpp
+        ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/shape_test.cpp
         ../../tests/runtime/object_test.cpp
         ../../tests/runtime/array_test.cpp

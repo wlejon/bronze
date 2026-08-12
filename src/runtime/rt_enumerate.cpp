@@ -143,7 +143,11 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // allocation happens: no raw object pointer here has to survive one.
     std::vector<StringHeader*> keys;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
-        for (StringHeader* key : rtOwnKeysOrdered(holder)) {
+        // String keys only: 14.7.5.6 EnumerateObjectProperties yields
+        // property names, and a symbol key is not one. It is the same filter
+        // `Object.keys` applies, asked in the same place, so the two cannot
+        // disagree about what a `for-in` visits.
+        for (StringHeader* key : rtOwnStringKeysOrdered(holder)) {
             // A key redefined further up the chain is visited once, at the
             // level nearest the receiver — the level whose value a read would
             // find (ECMA-262 14.7.5.6).

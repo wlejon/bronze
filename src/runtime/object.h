@@ -171,7 +171,7 @@ struct ObjectHeader {
     // impossible, so the first successful delete moves the object to dictionary
     // mode. Allocates nothing on the heap; the dictionary and its shape live in
     // the arena.
-    bool deleteProperty(NonMovingArena& arena, StringHeader* name);
+    bool deleteProperty(NonMovingArena& arena, PropertyKey name);
 
     // `get k() {}` / `set k(v) {}`. Defines ONE property with two halves: a
     // second call for the other half of the same name updates the pair
@@ -193,7 +193,7 @@ struct ObjectHeader {
     // dictionary mode the general answer for a redefinition the transition
     // tree cannot express.
     static ObjectHeader* dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
-                                    StringHeader* name, bool enumerable, bool accessor,
+                                    PropertyKey name, bool enumerable, bool accessor,
                                     uint32_t& out_slot);
 
     // Grow the out-of-line block so that `needed` overflow slots — or, for

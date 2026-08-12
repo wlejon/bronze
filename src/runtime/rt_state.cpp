@@ -18,6 +18,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 

@@ -17,17 +17,33 @@
 #include <system_error>
 
 #include "abi/bronze_abi.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
 
 static Value valueToString(Value v) {
     if (v.isString()) return v;
+    // A symbol does not coerce (ECMA-262 6.1.5.1: ToString of a Symbol throws a
+    // TypeError). That is the whole reason the type is worth having — an
+    // accidental stringification is loud instead of silently producing a name
+    // no other symbol would have produced. `sym.toString()` and `String(sym)`
+    // are the two ways to ask for the text, and both spell it out.
+    //
+    // Thrown rather than fatal, and CATCHABLE: `"" + sym` lowers to a dynamic
+    // add, which `il::canThrow` marks, so generated code tests the pending cell
+    // right after it. The empty string returned here is what the caller stores
+    // into its root slot before that test, never a value a program reads.
+    if (v.isSymbol()) {
+        rtThrowTypeError("Cannot convert a Symbol value to a string");
+        return rtMakeString("");
+    }
     char buf[64];
     if (v.isNumber()) {
         size_t len = formatJsNumber(v.asNumber(), buf);
@@ -183,6 +199,17 @@ static double stringToNumber(const StringHeader* s) {
 }
 
 double rtToNumber(Value v) {
+    // ToNumber of a Symbol is a TypeError in 6.1.5.1, and a HARD error here for
+    // the reason ToNumber of an object is one: `Op::Unbox` is on `canThrow`'s
+    // cannot-throw list, so generated code emits no cell test after it and a
+    // thrown TypeError would propagate past the `catch` that should have taken
+    // it. Naming the construct is the honest answer until the numeric path
+    // learns to unwind; guessing a number is not.
+    if (v.isSymbol()) {
+        fatal("unsupported: a Symbol in an arithmetic position (ECMA-262 6.1.5.1 makes "
+              "ToNumber of a Symbol a TypeError, and bronze's numeric path cannot yet "
+              "raise one; use sym.description or sym.toString())");
+    }
     if (v.isNumber()) return v.asNumber();
     if (v.isInt32()) return static_cast<double>(static_cast<int32_t>(v.payload()));
     if (v.isBool()) return v.asBool() ? 1.0 : 0.0;
@@ -304,6 +331,19 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     Value aVal(aBits);
     Value bVal(bBits);
     if (aVal.isString() || bVal.isString()) return bronze_string_concat(aBits, bBits);
+    // A symbol has no `+` at all. 13.15.3 runs ToPrimitive and then either
+    // ToString or ToNumeric, and 6.1.5.1 makes both a TypeError for a Symbol —
+    // so the string branch above covers `"" + sym` and this covers the rest.
+    //
+    // It is raised HERE rather than left to `rtToNumber` below because this
+    // helper is on `il::canThrow`'s list and the unbox is not: a throw from
+    // inside the arithmetic would propagate past the `catch` that should have
+    // taken it. `undefined` goes into the caller's root slot before it tests
+    // the pending cell, which is the contract every raising helper keeps.
+    if (aVal.isSymbol() || bVal.isSymbol()) {
+        rtThrowTypeError("Cannot convert a Symbol value to a number");
+        return Value::fromUndefined().rawBits();
+    }
     return Value::fromDouble(bronze_unbox_f64(aBits) + bronze_unbox_f64(bBits)).rawBits();
 }
 

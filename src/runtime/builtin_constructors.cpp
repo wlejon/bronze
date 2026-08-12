@@ -34,6 +34,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -234,6 +235,12 @@ uint64_t stringConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     // Step 1: no argument at all is the empty string, which is NOT the same as
     // `String(undefined)` — that one is the text "undefined".
     if (args.count() == 0) return rtMakeString("").rawBits();
+    // 22.1.1.1 step 2: called WITHOUT `new`, a symbol argument is the one value
+    // `String` does not put through ToString — it answers
+    // SymbolDescriptiveString instead. Reading it as a plain conversion would
+    // make `String(sym)` throw, which is a wrong answer rather than a missing
+    // feature: the specification says this call is how you spell it.
+    if (args[0].isSymbol()) return rtMakeString(rtSymbolDescriptiveString(args[0])).rawBits();
     return rtValueToString(args[0]).rawBits();
 }
 

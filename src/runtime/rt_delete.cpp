@@ -117,6 +117,13 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits) {
 
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
+    // A SYMBOL key is already a property key, so ToPropertyKey is the identity
+    // for it — and running ToString on one would throw where `delete o[sym]`
+    // must simply remove the property. It also cannot allocate, so the owner
+    // pointer taken above is still live.
+    if (idxVal.isSymbol()) {
+        return owner->deleteProperty(rtArena(), PropertyKey::fromValue(idxVal));
+    }
     // ToPropertyKey allocates the key string, so the owner is reached through
     // a root afterwards rather than through the pointer taken above.
     Rooted<Value> ownerRoot{Value::fromObject(owner)};

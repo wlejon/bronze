@@ -69,8 +69,8 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
 // One own enumerable property, copied into `target` under the same key. The
 // key is an arena-interned shape string, so it is copied into the heap first:
 // the result holds ordinary JS strings, never pointers into the shape arena.
-void copyProperty(Rooted<Value>& target, Rooted<Value>& source, StringHeader* name) {
-    Rooted<Value> key{rtCopyKeyToHeap(name)};
+void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name) {
+    Rooted<Value> key{name.isSymbol() ? name.toValue() : rtCopyKeyToHeap(name.string())};
     Rooted<Value> val{source.get().asObject<ObjectHeader>()->getProp(rtHeap(), key)};
     target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
 }
@@ -203,7 +203,11 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         fatal("object spread of a value that is not a plain object, an array, null or "
               "undefined");
     }
-    for (StringHeader* name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
+    // Own enumerable keys of BOTH kinds: 7.3.25 CopyDataProperties takes
+    // OwnPropertyKeys, not the string half of it, so `{ ...o }` and
+    // `Object.assign` carry a symbol-keyed property across. That is the one
+    // enumeration in the language that does.
+    for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         copyProperty(target, src, name);
         // `copyProperty` reads with Get, so a source property that is an
         // accessor runs user code. Copying the next one after that threw would
@@ -229,7 +233,7 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
     // the property `"1"` the read actually took.
     Rooted<Value> excluded{Value(excludedBits)};
     Rooted<Value> src{srcVal};
-    for (StringHeader* name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
+    for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         bool skip = false;
         if (isArray(excluded.get())) {
             // Re-derived per iteration: copyProperty below allocates, and a
@@ -237,7 +241,7 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
             auto* keys = excluded.get().asObject<ArrayHeader>();
             for (uint32_t i = 0; i < keys->length && !skip; ++i) {
                 Value k = keys->getElem(i);
-                skip = k.isString() && k.asString<StringHeader>()->equals(*name);
+                skip = PropertyKey::fromValue(k).matches(name);
             }
         }
         if (skip) continue;

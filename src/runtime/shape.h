@@ -6,6 +6,7 @@
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/property_key.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -29,7 +30,7 @@ struct PropertyInfo {
 };
 
 struct ShapeTransition {
-    StringHeader* property_name{nullptr};
+    PropertyKey key;
     class Shape* next_shape{nullptr};
     // Part of the KEY, not payload: `enumerable` and `accessor` are attributes
     // of the property, so two objects that added the same name with different
@@ -55,7 +56,9 @@ struct ShapeTransition {
 class Shape {
 public:
     Shape* parent{nullptr};
-    StringHeader* property_name{nullptr};
+    // The own property this node adds: a string key or a symbol key, matched
+    // by PropertyKey's one rule. Invalid on a root shape, which owns none.
+    PropertyKey key;
     uint32_t slot_index{0};
     // Whether the property this node owns is visible to enumeration —
     // `Object.keys`, object spread, and `for-in`. False for a class method,
@@ -89,10 +92,10 @@ public:
     bool used_as_prototype{false};
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
-    Shape(Shape* parent_shape, StringHeader* prop_name, uint32_t slot, Shape* root_shape,
+    Shape(Shape* parent_shape, PropertyKey prop_key, uint32_t slot, Shape* root_shape,
           bool is_enumerable, bool is_accessor)
         : parent(parent_shape),
-          property_name(prop_name),
+          key(prop_key),
           slot_index(slot),
           enumerable(is_enumerable),
           accessor(is_accessor),
@@ -113,7 +116,7 @@ public:
     // The first slot a property added after this one may use. A root shape
     // owns no property, so the first property added to it takes slot 0.
     uint32_t nextSlotIndex() const noexcept {
-        return property_name == nullptr ? 0u : slot_index + slotWidth();
+        return !key.valid() ? 0u : slot_index + slotWidth();
     }
 
     Shape* addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot,
@@ -122,8 +125,8 @@ public:
     // Existence and location of an own property. The `out_slot` overload is
     // for callers that only ask "is it there, and where" — `in`, and the
     // unit tests that pin the transition tree.
-    bool lookupProperty(StringHeader* name, PropertyInfo& out) const noexcept;
-    bool lookupProperty(StringHeader* name, uint32_t& out_slot) const noexcept;
+    bool lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept;
+    bool lookupProperty(PropertyKey name, uint32_t& out_slot) const noexcept;
 
     // Own property names in INSERTION order. For a transition-tree shape the
     // chain already IS that order, newest first, so this walks to the root and
@@ -135,7 +138,13 @@ public:
     // `enumerableOnly` is what every ENUMERATION caller passes: `Object.keys`,
     // object spread and `for-in` all speak of own *enumerable* keys, and a
     // class method is not one.
-    std::vector<StringHeader*> ownKeysInInsertionOrder(bool enumerableOnly = false) const;
+    //
+    // BOTH kinds of key come back, in one list, because insertion order is one
+    // order — 6.1.7.1's "symbols after strings" is a rule about the ANSWER a
+    // caller builds, and `rtOwnKeysOrdered` is where it is applied. A caller
+    // that only wants string keys says so there rather than trusting this to
+    // have filtered for it.
+    std::vector<PropertyKey> ownKeysInInsertionOrder(bool enumerableOnly = false) const;
 
     // Past this many own properties an object is a map, not a record, and
     // the transition tree is the wrong structure for it. Reaching it is a

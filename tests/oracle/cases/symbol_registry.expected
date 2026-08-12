@@ -1,0 +1,14 @@
+true false false
+symbol function function
+shared Symbol(shared)
+shared shared
+undefined
+undefined
+false other
+"" ""
+true Symbol()
+registered undefined local
+2 true true
+0 {}
+true 200
+true true

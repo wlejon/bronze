@@ -71,11 +71,11 @@ void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value) {
 void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                   Rooted<Value>& key, Rooted<Value>& getter,
                                   Rooted<Value>& setter, bool enumerable) {
-    if (!key.get().isString()) {
-        fatal("property name must be a string");
+    const PropertyKey name = PropertyKey::fromValue(key.get());
+    if (!name.valid()) {
+        fatal("property name must be a string or a symbol");
     }
     auto* obj = self.get().asObject<ObjectHeader>();
-    StringHeader* name = key.get().asString<StringHeader>();
     if (!obj->shape) {
         fatal("internal: an accessor defined on an object with no shape");
     }

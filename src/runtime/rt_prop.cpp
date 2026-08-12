@@ -25,6 +25,7 @@
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -102,7 +103,10 @@ static Value elemKeyAsString(Value idxVal) {
         std::memcpy(buf, "null", len);
     } else {
         // An object key would need ToPrimitive, the same missing piece behind
-        // `String(obj)` and `==` between an object and a primitive.
+        // `String(obj)` and `==` between an object and a primitive. A SYMBOL
+        // never arrives here: it is ALREADY a property key, so every caller
+        // branches on it before conversion — converting one is the TypeError
+        // that would turn `o[sym]` into a throw.
         fatal("a computed property key that is an object needs ToPrimitive, "
               "which is unsupported");
     }
@@ -255,14 +259,18 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // a named error — two answers to one question, and the silent one was the
     // boolean's.
     if (objVal.isBool()) return rtBooleanMember(keyStr).rawBits();
+    // A property read on a primitive SYMBOL — `sym.toString()`,
+    // `sym.description`. Answered beside the value like a number's and a
+    // string's, since bronze builds no wrapper object for one to be found on.
+    if (objVal.isSymbol()) return rtSymbolMember(objVal, keyStr).rawBits();
     // Everything with a branch above is handled; what is left is a tag no
-    // program can name — a symbol, or a hole sentinel that escaped an array.
-    // Neither is "a property that happens to be absent", so neither may answer
-    // `undefined`: this catch-all is the shape that let `true.foo` read as
-    // undefined until the boolean branch above was written for it.
+    // program can name — a hole sentinel that escaped an array. That is not "a
+    // property that happens to be absent", so it may not answer `undefined`:
+    // this catch-all is the shape that let `true.foo` read as undefined until
+    // the boolean branch above was written for it.
     if (!objVal.isObject()) {
         fatal("unsupported: a property read on this value kind is not implemented "
-              "(bronze has no symbols, and an array hole is not a value)");
+              "(an array hole is not a value)");
     }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -654,8 +662,54 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
 }
 
+// The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
+// for a function — the side object its statics live in. Null for every receiver
+// with no shape, which is not an error: an array or a Map simply has no own
+// symbol-keyed property, so a read of one is `undefined` and a write is
+// diagnosed by the caller.
+//
+// Its own function because a symbol key can never mean anything else. Every
+// receiver-kind branch on the string path exists to decide between an element,
+// a member table and a shape slot, and a symbol key is only ever the third — so
+// a symbol never enters that dispatch at all, and the `@@`-spelled internal
+// slots a Map's iterators keep are untouched by every line of it.
+static ObjectHeader* symbolKeyHolder(Value objVal) {
+    if (!objVal.isObject()) return nullptr;
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
+    if (hdr->flags == 2) {
+        Value props = objVal.asObject<FunctionHeader>()->properties;
+        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    }
+    return nullptr;
+}
+
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     Value objVal(objBits);
+    if (Value(idxBits).isSymbol()) {
+        // Reading a property of null or undefined is the TypeError of 7.3.2
+        // whatever the key is; the `fatal` below would kill the process where
+        // the language throws.
+        if (objVal.isNull() || objVal.isUndefined()) {
+            return rtThrowTypeError("Cannot read properties of " +
+                                    std::string(objVal.isNull() ? "null" : "undefined") +
+                                    " (reading a symbol-keyed property)")
+                .rawBits();
+        }
+        ObjectHeader* holder = symbolKeyHolder(objVal);
+        // A primitive receiver, an array, a Map: no own symbol-keyed property
+        // and no prototype object here to inherit one from.
+        if (!holder) return Value::fromUndefined().rawBits();
+        // Rooted because a symbol-keyed property can be an accessor, and a
+        // getter is a call. No inline cache: a computed site has no entry.
+        Rooted<Value> holderRoot{Value::fromObject(holder)};
+        Rooted<Value> recv{objVal};
+        Rooted<Value> key{Value(idxBits)};
+        return holderRoot.get()
+            .asObject<ObjectHeader>()
+            ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
+            .rawBits();
+    }
     if (!objVal.isObject()) {
         fatal("computed index access on a non-object value is unsupported");
     }
@@ -690,6 +744,42 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits) {
     Value objVal(objBits);
+    if (Value(idxBits).isSymbol()) {
+        if (objVal.isNull() || objVal.isUndefined()) {
+            rtThrowTypeError("Cannot set properties of " +
+                             std::string(objVal.isNull() ? "null" : "undefined") +
+                             " (setting a symbol-keyed property)");
+            return;
+        }
+        Rooted<Value> recv{objVal};
+        // Rooted BEFORE the side-object build below, which allocates. The key
+        // needs no root — a symbol lives in the arena and never moves — but the
+        // VALUE is an ordinary heap value, and rooting it after the allocation
+        // would root a pointer the collector had already moved. That is exactly
+        // what it did: `f[sym] = "bare"` on a fresh function read back as an
+        // unrelated string under BRONZE_GC_STRESS=1.
+        Rooted<Value> val{Value(valBits)};
+        // A function's side object of statics is built on first demand, so a
+        // symbol-keyed write can be the demand — without this, `f[sym] = v` on
+        // a function that had never been given a static reached the "no shape"
+        // error below and the write was refused for a receiver that can hold
+        // one perfectly well.
+        if (recv.get().isObject() && recv.get().asObject<HeapObjectHeader>()->flags == 2) {
+            rtEnsureFunctionProperties(recv);
+        }
+        if (ObjectHeader* holder = symbolKeyHolder(recv.get())) {
+            Rooted<Value> holderRoot{Value::fromObject(holder)};
+            Rooted<Value> key{Value(idxBits)};
+            holderRoot.get().asObject<ObjectHeader>()->setProp(
+                rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
+                /*defineOwn=*/false, recv.slot_ptr());
+            return;
+        }
+        // A receiver with no shape has nowhere to put one, and discarding the
+        // write would leave the program believing it stored something.
+        fatal("a symbol-keyed property write is only supported on a plain object or a "
+              "function (an array, a Map, a Set and a typed array carry no shape)");
+    }
     if (!objVal.isObject()) {
         fatal("computed index write on a non-object value is unsupported");
     }

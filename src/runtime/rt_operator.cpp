@@ -45,19 +45,20 @@ int32_t toInt32(double d) {
         static_cast<int64_t>(residue < 0 ? residue + 4294967296.0 : residue)));
 }
 
-// The six strings `typeof` can produce, made once and rooted for the life of
-// the program. A fresh heap string per evaluation would put an allocation —
-// and so a possible collection — inside an operator that cannot fail.
-Value g_typeofStrings[6] = {};
+// The strings `typeof` can produce, made once and rooted for the life of the
+// program. A fresh heap string per evaluation would put an allocation — and so
+// a possible collection — inside an operator that cannot fail.
+constexpr int kTypeOfCount = 7;
+Value g_typeofStrings[kTypeOfCount] = {};
 bool g_typeofReady = false;
 
-enum TypeOfKind { kUndefined, kObject, kBoolean, kNumber, kString, kFunction };
+enum TypeOfKind { kUndefined, kObject, kBoolean, kNumber, kString, kFunction, kSymbol };
 
 Value typeofString(TypeOfKind kind) {
     if (!g_typeofReady) {
-        static const char* const kNames[6] = {"undefined", "object",  "boolean",
-                                              "number",    "string",  "function"};
-        for (int i = 0; i < 6; ++i) {
+        static const char* const kNames[kTypeOfCount] = {
+            "undefined", "object", "boolean", "number", "string", "function", "symbol"};
+        for (int i = 0; i < kTypeOfCount; ++i) {
             g_typeofStrings[i] = rtMakeString(kNames[i]);
             rtHeap().add_permanent_root(&g_typeofStrings[i]);
         }
@@ -75,8 +76,10 @@ bool isCallable(Value v) {
 
 // A key as the string the language would use to look it up. `in` takes an
 // arbitrary expression on its left — `0 in arr` is as ordinary as
-// `"length" in arr` — and ToPropertyKey is ToString for everything bronze
-// has, since there are no symbols.
+// `"length" in arr` — so this is ToPropertyKey's ToString branch. A SYMBOL
+// never reaches it: `bronze_has_property` answers for one before converting,
+// because ToString of a symbol is the TypeError that would make `sym in o`
+// throw instead of answering.
 std::string keyText(Value key) {
     Rooted<Value> str{rtValueToString(key)};
     return rtAsciiChars(str.get().asString<StringHeader>());
@@ -87,7 +90,7 @@ std::string keyText(Value key) {
 // reads the value — which is exactly the difference between `in` and a
 // property read, and why a property whose value is undefined still answers
 // true here.
-bool plainObjectHas(ObjectHeader* holder, StringHeader* name) {
+bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         uint32_t slot = 0;
         if (holder->shape && holder->shape->lookupProperty(name, slot)) return true;
@@ -133,7 +136,7 @@ uint64_t bronze_typeof(uint64_t bits) {
     if (v.isBool()) return typeofString(kBoolean).rawBits();
     if (v.isNumber() || v.isInt32()) return typeofString(kNumber).rawBits();
     if (v.isString()) return typeofString(kString).rawBits();
-    if (v.isSymbol()) fatal("typeof on a symbol is unsupported (bronze has no symbols)");
+    if (v.isSymbol()) return typeofString(kSymbol).rawBits();
     if (isCallable(v)) return typeofString(kFunction).rawBits();
     return typeofString(kObject).rawBits();
 }
@@ -192,6 +195,25 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
     if (!objRoot.get().isObject()) {
         rtThrowTypeError("Cannot use 'in' operator: the right-hand side is not an object");
         return false;
+    }
+    // A SYMBOL key, answered before ToPropertyKey below can try to stringify
+    // it. Only the receivers with a shape can carry one, and none of the
+    // index-and-member branches below could recognise it: an array's elements
+    // are indices, a typed array's members are a fixed list, and both would
+    // read a symbol as the absent name it converts to.
+    if (Value(keyBits).isSymbol()) {
+        HeapObjectHeader* symHdr = objRoot.get().asObject<HeapObjectHeader>();
+        ObjectHeader* symHolder = nullptr;
+        if (symHdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+            symHolder = reinterpret_cast<ObjectHeader*>(symHdr);
+        } else if (symHdr->flags == 2) {
+            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
+            if (!props.isObject()) return false;
+            symHolder = props.asObject<ObjectHeader>();
+        } else {
+            return false;
+        }
+        return plainObjectHas(symHolder, PropertyKey::fromValue(Value(keyBits)));
     }
     // keyText allocates a string, so the header is derived only afterwards,
     // from the root the collector updates.
@@ -259,6 +281,15 @@ bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     }
     if (a.isBool() && b.isBool()) return a.asBool() == b.asBool();
     if (a.isObject() && b.isObject()) return aBits == bBits;
+
+    // A symbol is loosely equal to the same symbol and to nothing else. 7.2.14
+    // reaches that by omission — no step converts a Symbol — so the answer for
+    // every mixed pairing is false WITHOUT a conversion, which is what keeps
+    // `sym == "Symbol(tag)"` false rather than a TypeError. An object on the
+    // other side is the one exception and falls to the ToPrimitive error below.
+    if ((a.isSymbol() || b.isSymbol()) && !a.isObject() && !b.isObject()) {
+        return aBits == bBits;
+    }
 
     // A boolean operand is ToNumber'd and the comparison restarts, so
     // `true == "1"` becomes `1 == "1"` becomes `1 == 1`.
