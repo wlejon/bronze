@@ -9,8 +9,9 @@ namespace bronze::il {
 // bronze IL: a typed, SSA, mid-level IR. Static layouts are used wherever
 // analysis can PROVE them (inference-first; TS annotations are untrusted
 // hints); Dynamic is the explicit fallback type for code the analysis
-// cannot type — wild JS must always compile. The inverse of broc's design,
-// where dynamic was the substrate rather than the fallback.
+// cannot type — wild JS must always compile. Dynamic is the fallback and
+// never the substrate: a value is boxed because nothing PROVED it, not
+// because boxing is the default the proofs opt out of.
 //
 // Deliberately tiny today: enough structure to carry lower→codegen work and
 // to pin the canonical text form. Every addition must keep print(parse(x))

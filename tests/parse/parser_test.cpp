@@ -323,3 +323,34 @@ TEST_CASE("`static` is still an ordinary name outside a class member position") 
     CHECK(out.substr(0, 7) != "ERRORS:");
     CHECK(out.find("(member .static") != std::string::npos);
 }
+
+TEST_CASE("a module is never returned with input left unconsumed") {
+    // The predecessor's .form parser stopped at the first construct it could
+    // not continue past and returned what it had, so files silently lost
+    // everything after module 1. The rule here is that `parseModule` has two
+    // outcomes and no third: a module that consumed every token, or a
+    // diagnostic. Never a shorter module and silence.
+    //
+    // `parseStatement` diagnoses each of these before the end-of-input check
+    // in `parseModule` can be reached, which is why that check has no case of
+    // its own — it is the backstop for a production that returns without
+    // consuming, and this test is what would notice one appearing.
+    for (const std::string_view src : {
+             "let a = 1; }",
+             "let a = 1; )",
+             "let a = 1; ]",
+             "function f() {} }",
+             "const o = { a: 1 }; case 2:",
+             "let a = 1; let",
+         }) {
+        CAPTURE(src);
+        SourceBuffer buf("t.ts", std::string(src));
+        DiagnosticSink diags;
+        auto tokens = Lexer(buf, diags).lex();
+        auto mod = Parser(std::move(tokens), diags).parseModule("t");
+        // Loud, and empty-handed: a partial module with no complaint is the
+        // failure this pins against.
+        CHECK(diags.hasErrors());
+        CHECK(mod == nullptr);
+    }
+}

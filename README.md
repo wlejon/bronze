@@ -1,17 +1,62 @@
 # bronze
 
-AOT compiler for JavaScript — real-world, untyped JS (three.js is the bar).
-Native code with native data layouts wherever analysis can prove them;
-`dynamic` representation where it cannot. TypeScript annotations, when
-present, are optimization hints — never required, never trusted for
-correctness.
-C++ implementation, own typed SSA IL, LLVM backend. Sibling of `bro`
-(engine) and `brokit`.
+An ahead-of-time compiler that turns real-world JavaScript into a native
+executable. C++20 implementation, own typed SSA IL, LLVM backend. Sibling of
+`bro` (engine) and `brokit`.
 
-bronze exists because its predecessor (`broc`, TypeScript implementation,
-QuickJS object model everywhere) proved the pipeline discipline but landed
-~50x slower than node on compiler workloads — the value representation was
-the wrong foundation.
+## What it is for
+
+**The input is the JavaScript people actually write.** Untyped, dynamic,
+prototype-heavy — three.js is the bar, and it is compiled unmodified from
+vendored source as part of the test suite. bronze is not a compiler for a
+disciplined subset, and it never asks source to be annotated, restricted or
+ported before it will build.
+
+**The output should be faster than node.** Not as a hoped-for side effect of
+compiling ahead of time, but as the reason the project exists. A benchmark
+that is slower than node is a bug to be investigated now, not later.
+
+**Speed comes from proof, not from declaration.** `src/types` analyses the
+AST and proves what it can — a binding's type at a program point, an object
+site's shape, a function's signature joined over its call sites. Lowering
+emits a native type only where a proof backs it. Everything else is
+`dynamic`, which is the designed sound fallback, not a failure and not a
+diagnostic.
+
+`dynamic` is the fallback and never the substrate. That distinction is the
+whole architecture: a value is boxed because nothing proved it, rather than
+boxed by default with proofs carving out exceptions. It is what makes
+`function fib(n) { ... }` lower to `func fib(%0: f64) -> f64` with a direct
+typed call rather than to a boxed argument through the uniform dynamic
+convention.
+
+**A TypeScript annotation is an untrusted hint.** It is compared against
+what inference proved and discarded with a warning when no proof backs it.
+`function f(x: number)` reached with a string compiles and runs as
+JavaScript, because that is what the program means.
+
+### What it is not
+
+- Not a JavaScript engine. There is no interpreter and no eval; a program is
+  compiled, linked and run.
+- Not a type checker. An annotation that contradicts a proof is a discarded
+  hint and a warning, never an error about the program's correctness.
+- Not a subset compiler. A construct bronze has not built is a hard error
+  that names the construct — never a silent skip, a placeholder, or a quietly
+  wrong answer.
+
+## How correctness is held
+
+Every stage — tokens, AST, IL — owns a canonical, deterministic text form,
+and tests compare bytes. Above that sits the oracle suite
+(`tests/oracle/README.md`): JavaScript programs whose exact stdout is pinned
+in a committed file, derived from ECMA-262 rather than from bronze's own
+output, and never edited to make bronze pass. Every case runs twice, with
+inference and with `--no-infer`, and both must produce the same bytes — so a
+case only one mode gets right is a proof that the other is unsound.
+
+`node` is not a dependency. Nothing in the build, the tests or the benchmarks
+invokes it.
 
 ## Build
 

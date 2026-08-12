@@ -3,10 +3,8 @@
 AOT compiler for JavaScript (wild, untyped JS — three.js is the bar) in
 C++20. Native layouts wherever inference proves them; `dynamic` is the
 fallback, never the substrate. Goal: faster than node for typed/inferable
-code. Read `README.md` first. "broc" is the retired TypeScript predecessor at
-`D:\projects\broc` — read-only, methodology donor. It landed ~50x slower than
-node because it used QuickJS values as the universal representation, which is
-the mistake bronze's design is a reaction to.
+code. Read `README.md` first — it states the goals and what is deliberately
+out of scope.
 
 ## Build & test (Ninja + cl via the vcvars wrapper)
 

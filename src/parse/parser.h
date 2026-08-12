@@ -25,8 +25,11 @@ public:
         : tokens_(std::move(tokens)), diags_(diags), fileId_(fileId) {}
 
     // Parses a whole module (a file). Consumes ALL input: trailing tokens
-    // after the last declaration are a hard error (lesson pinned by broc's
-    // parser, which silently dropped modules 2..N for a week).
+    // after the last declaration are a hard error. Two outcomes and no third
+    // — a module that consumed every token, or a diagnostic — because a
+    // parser that returns what it managed and stays quiet loses the rest of
+    // the file silently. Pinned by "a module is never returned with input
+    // left unconsumed" in tests/parse.
     std::unique_ptr<ast::Module> parseModule(std::string name);
 
 private:
