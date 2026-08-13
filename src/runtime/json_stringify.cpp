@@ -20,12 +20,14 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
+#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/namespace.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -303,23 +305,47 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
     }
     if (v.isObject() && !isCallable(v)) {
         if (isArray(v)) return serializeArray(state, value, out);
-        const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
-        // A module namespace goes through the object walk with the plain
-        // objects, and not because it resembles one: 25.5.2.4 asks for
-        // EnumerableOwnPropertyNames, and 10.4.6.5 gives every export
-        // `enumerable: true`. Both halves of that walk already answer for a
-        // namespace — `bronze_object_keys` returns the sorted export names and
-        // the Get below reads the live binding — which is why
-        // `Object.entries(ns)` was right while this reported the object empty.
-        if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN && kind != ModuleNamespaceHeader::kFlags) {
-            // A Map, a Set or a RegExp has no own enumerable string
-            // properties, so ECMA-262 serializes it as `{}` — a real answer
-            // rather than a fallback, and the reason `JSON.stringify(map)`
-            // is the classic surprise it is in every engine.
-            appendAscii(out, "{}");
-            return true;
+        // Which kind this is decides between two different right answers, so
+        // the question is asked as a list and not as "is it plain". 25.5.2.4
+        // asks for EnumerableOwnPropertyNames; `{}` is the answer only for a
+        // kind that genuinely HAS none, and a kind that has some must walk
+        // them. Getting that backwards is invisible in the output — `{}` is
+        // well-formed JSON either way — which is why the kinds are named here
+        // rather than left to a default.
+        switch (v.asObject<HeapObjectHeader>()->flags) {
+            // A module namespace: 10.4.6.5 gives every export
+            // `enumerable: true`. A typed array: 10.4.5.3 makes every
+            // integer-indexed element an own enumerable property. Both halves
+            // of the walk below already answer for each of them —
+            // `bronze_object_keys` returns the keys and the Get reads the
+            // value — which is why `Object.entries` was right about both while
+            // this reported them empty.
+            case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+            case ModuleNamespaceHeader::kFlags:
+            case TypedArrayHeader::kFlags:
+                return serializeObject(state, value, out);
+            // A Map, a Set, a RegExp, an ArrayBuffer and a DataView keep
+            // everything they hold in internal slots, so they have no own
+            // enumerable string properties and `{}` is what 25.5.2.4 produces.
+            // It is a real answer rather than a fallback, and the reason
+            // `JSON.stringify(map)` is the classic surprise it is in every
+            // engine.
+            case HeapKind::Map:
+            case HeapKind::Set:
+            case HeapKind::RegExp:
+            case ArrayBufferHeader::kFlags:
+            case DataViewHeader::kFlags:
+                appendAscii(out, "{}");
+                return true;
+            // An iteration record and an environment are bronze's own, and a
+            // program has no expression that hands one to JSON.stringify.
+            // Reaching here means the value came from somewhere this list has
+            // not considered, and `{}` would bury that.
+            default:
+                fatal((std::string("JSON.stringify of ") + rtObjectKindName(v) +
+                       " is unsupported")
+                          .c_str());
         }
-        return serializeObject(state, value, out);
     }
     return false;  // undefined, a function, or a symbol
 }
