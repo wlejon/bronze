@@ -93,6 +93,24 @@ void ArrayHeader::deleteElem(uint32_t index) noexcept {
     elementsData()[index] = Value::fromHole();
 }
 
+void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength) {
+    {
+        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+        if (newLength <= arr->length) {
+            Value* slots = arr->elementsData();
+            for (uint32_t i = newLength; i < arr->length; ++i) slots[i] = Value::fromHole();
+            arr->length = newLength;
+            return;
+        }
+        if (newLength > arr->capacity) setCapacity(heap, self, newLength);
+    }
+    // `setCapacity` allocates, so the header is re-derived through the root.
+    ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+    Value* slots = arr->elementsData();
+    for (uint32_t i = arr->length; i < newLength; ++i) slots[i] = Value::fromHole();
+    arr->length = newLength;
+}
+
 void ArrayHeader::setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
     if (index > length) {
         fatal("sparse array write (index past the end) is unsupported until dictionary "

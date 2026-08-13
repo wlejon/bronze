@@ -80,6 +80,13 @@ void rtCheckArrayMember(const std::string& key) {
     rtCheckUnimplementedMember("Array.prototype", kArrayMembers, std::size(kArrayMembers), key);
 }
 
+bool rtArrayMemberUnimplemented(const std::string& key) {
+    for (const char* name : kArrayMembers) {
+        if (key == name) return true;
+    }
+    return false;
+}
+
 void rtCheckStringMember(const std::string& key) {
     rtCheckUnimplementedMember("String.prototype", kStringMembers, std::size(kStringMembers), key);
 }

@@ -822,4 +822,21 @@ Value rtArrayMethod(const std::string& key) {
     return Value::fromUndefined();
 }
 
+bool rtArrayHasMember(const std::string& key) {
+    // `constructor` is answered beside the value too (rt_prop.cpp), so it is a
+    // member of the same list as far as anything asking about existence is
+    // concerned — the table above holds it only for `Array.prototype` the
+    // object.
+    if (key == "constructor") return true;
+    for (const ArrayMethod& m : kArrayMethods) {
+        if (key == m.name) return true;
+    }
+    // And the members 23.1.3 defines that bronze has not built. The property
+    // EXISTS — what is missing is its value — and that is the whole difference
+    // between this question and a read, which refuses those by name
+    // (`rtCheckArrayMember`). Reporting them absent would make `'flat' in a`
+    // false about the language rather than about bronze.
+    return rtArrayMemberUnimplemented(key);
+}
+
 }  // namespace bronze::runtime

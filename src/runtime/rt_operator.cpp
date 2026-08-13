@@ -264,6 +264,28 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             // one either — `delete a[1]` takes index 1 out of the own keys
             // without moving `length`.
             if (rtIsIntegerLikeKey(key, index) && arr->hasElem(index)) return true;
+            // A named own property — one a program wrote, or a match array's
+            // `index`. Asked of the same storage the READ answers from, so `in`
+            // and `a.k` cannot disagree; the string allocates, so the header
+            // above is dead from here and the root is what is asked.
+            {
+                Rooted<Value> keyStr{rtMakeString(key)};
+                PropertyInfo info;
+                if (rtArrayOwnNamed(objRoot.get(), keyStr.get().asString<StringHeader>(), info)) {
+                    return true;
+                }
+            }
+            // `Array.prototype`'s members, which an array answers BESIDE the
+            // value rather than off a prototype object on its chain — so this
+            // table is what stands in for that object, exactly as the typed
+            // array's and the Map's do below. Without it `'push' in a` was
+            // false while `a.push` was a function: one question with two
+            // answers, which is what every arm of this switch exists to
+            // prevent. A name 23.1.3 defines and bronze has NOT built answers
+            // true here where a read of it is a named hard error, which is the
+            // split every other arm makes: the member exists, and its value is
+            // what bronze has not got.
+            if (rtArrayHasMember(key)) return true;
             break;
         }
         case HeapKind::TypedArray: {

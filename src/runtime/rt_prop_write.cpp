@@ -5,12 +5,17 @@
 // not a line count — read from the other side. A read asks every receiver the
 // same question and each kind answers it from different storage; a write asks
 // whether the receiver can hold the property AT ALL, and for most kinds the
-// answer is no. So this file is mostly refusals, one per storage story: an
-// array carries no shape for a named property, a typed array's named writes
-// have nowhere to go, a Map's entries are not properties, a DataView's bytes
-// are written through its accessors. None of them may be quietly discarded — a
-// discarded write leaves the program believing it stored something, which is
-// the silent-wrong-answer shape the house rules rank below process death.
+// answer is no. So this file is mostly refusals, one per storage story: a typed
+// array's named writes have nowhere to go, a Map's entries are not properties, a
+// DataView's bytes are written through its accessors. None of them may be
+// quietly discarded — a discarded write leaves the program believing it stored
+// something, which is the silent-wrong-answer shape the house rules rank below
+// process death.
+//
+// An ARRAY is the receiver that stopped being one of them. It is an object, so
+// `a.foo = 1` and `a.length = 0` are ordinary JavaScript; both arms live in
+// rt_prop_array.cpp, beside every other path that has to agree about what an
+// array owns.
 //
 // The definition forms are here rather than beside the literal that spells
 // them because what separates each from an ordinary assignment is an ATTRIBUTE
@@ -145,12 +150,22 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     uint32_t idx = 0;
 
     if (hdr->flags == HeapKind::Array) {
-        // Numeric keys store an element. A named write is diagnosed rather
-        // than discarded: JS would create the property, and arrays carry no
-        // shape for named properties yet.
+        // Numeric keys store an element; everything else is one of the two
+        // properties an array has beside them, and rt_prop_array.cpp owns both.
+        // The index test is FIRST because `a[i] = v` is the hot write and must
+        // not walk two string compares to reach the block.
         if (!rtKeyAsIndex(keyStr, idx)) {
-            fatal("named property writes on an array are unsupported "
-                  "(arrays carry no shape for named properties yet)");
+            Rooted<Value> arrRoot{objVal};
+            if (keyStr == "length") {
+                rtReportSetRefusal(rtArraySetLength(arrRoot, valVal), strict, keyStr);
+                return;
+            }
+            StringHeader* named = rtKeyHeader(keyIndex);
+            if (!named) fatal("property write with an unregistered key index");
+            Rooted<Value> val{valVal};
+            Rooted<Value> key(Value::fromString(named));
+            rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, keyStr);
+            return;
         }
         // A frozen or non-extensible array refuses the write on exactly the
         // terms a plain object's property does, so it reports through the same
@@ -457,9 +472,16 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // 10.4.6.9 returns false without ever looking at the key.
         if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
         // A receiver with no shape has nowhere to put one, and discarding the
-        // write would leave the program believing it stored something.
+        // write would leave the program believing it stored something. An ARRAY
+        // is refused for a different reason from the rest: it HAS storage for
+        // an own property now, but only for a string-named one — the two
+        // well-known symbols an array answers are answered beside the value
+        // (rt_prop.cpp's `wellKnownSymbolMember`), so an own symbol-keyed
+        // property would be written where no read could ever shadow them with
+        // it.
         fatal("a symbol-keyed property write is only supported on a plain object or a "
-              "function (an array, a Map, a Set and a typed array carry no shape)");
+              "function (an array holds string-named own properties only; a Map, a Set "
+              "and a typed array carry no shape at all)");
     }
     // A write through `o[i]` to something that is not an object, answered
     // exactly as `bronze_prop_set` answers `o.k` — the same two TypeErrors, in
@@ -485,7 +507,20 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     uint32_t idx = 0;
     if (hdr->flags == HeapKind::Array) {
         if (!rtValueToElementIndex(Value(idxBits), idx)) {
-            fatal("non-integer array index write is unsupported");
+            // A key that is not a canonical array index NAMES a property, and
+            // `a[k] = v` means exactly what `a.k = v` means — so it takes the
+            // same two arms, through the same file, rather than keeping a
+            // second opinion about what `a["length"]` is.
+            Rooted<Value> arrRoot{objVal};
+            Rooted<Value> val{Value(valBits)};
+            Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+            const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
+            if (keyText == "length") {
+                rtReportSetRefusal(rtArraySetLength(arrRoot, val.get()), strict, keyText);
+                return;
+            }
+            rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, keyText);
+            return;
         }
         const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
         if (refusal != SetRefusal::None) {

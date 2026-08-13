@@ -91,6 +91,50 @@ bool deleteElementByIndex(Value objVal, Value idxVal, uint32_t& outIndex) {
     return true;
 }
 
+// `delete a.k` for ANY key, which is the whole of an array's [[Delete]]: an
+// element, `length` — non-configurable from birth (10.4.2.2), so the answer is
+// FALSE — or a named property in the side object.
+//
+// One function rather than three arms in two callers, because it is one
+// question: which of an array's three kinds of own property does this key name.
+// Splitting it is how `delete a.length` came to answer true.
+//
+// `outKeyText` is what a refusal quotes, and it is the key's ToString spelling
+// in every arm — the digits of a canonical index, `length`, or the name.
+bool deleteArrayProperty(Rooted<Value>& objRoot, Value keyVal, std::string& outKeyText) {
+    // A SYMBOL is already a property key, and an array carries no symbol-keyed
+    // property: a symbol-keyed write to one is refused by name
+    // (rt_prop_write.cpp), so the key is absent and that is the state delete
+    // wants.
+    if (keyVal.isSymbol()) {
+        outKeyText = "<symbol>";
+        return true;
+    }
+    uint32_t idx = 0;
+    if (keyVal.isNumber() || keyVal.isString()) {
+        const bool isIndex =
+            keyVal.isNumber()
+                ? rtValueToElementIndex(keyVal, idx)
+                : (keyVal.asString<StringHeader>()->isLatin1() &&
+                   rtIsIntegerLikeKey(
+                       std::string_view(keyVal.asString<StringHeader>()->latin1Data(),
+                                        keyVal.asString<StringHeader>()->getLength()),
+                       idx));
+        if (isIndex) {
+            outKeyText = std::to_string(idx);
+            return deleteElementByIndex(objRoot.get(), keyVal, idx);
+        }
+    }
+    // Not an index, so it names a property — through ToString, which allocates,
+    // so the array is reached through the root from here on. `a[1.5]` arrives
+    // here as the name "1.5", which is what the WRITE stored it under.
+    Rooted<Value> key{rtValueToString(keyVal)};
+    StringHeader* keyHeader = key.get().asString<StringHeader>();
+    outKeyText = rtUtf8Chars(keyHeader);
+    if (outKeyText == "length") return false;
+    return rtArrayNamedDelete(objRoot.get(), keyHeader);
+}
+
 }  // namespace
 
 extern "C" {
@@ -120,11 +164,12 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
 
     // A key that names an ARRAY ELEMENT reaches the elements, not a shape:
     // `delete a["1"]` and `delete a[1]` are the same property (7.1.19).
+    // Everything else is one of the two properties an array has beside them.
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        uint32_t idx = 0;
+        Rooted<Value> arrRoot{objVal};
+        std::string keyText;
         return reportRefusedDelete(
-            deleteElementByIndex(objVal, Value::fromString(keyHeader), idx), strict,
-            rtKeyString(keyIndex));
+            deleteArrayProperty(arrRoot, Value::fromString(keyHeader), keyText), strict, keyText);
     }
 
     // 10.4.6.10: deleting an EXPORTED name answers false — a namespace property
@@ -155,9 +200,9 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     if (!objVal.isObject()) return true;
 
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        uint32_t idx = 0;
-        return reportRefusedDelete(deleteElementByIndex(objVal, idxVal, idx), strict,
-                                   std::to_string(idx));
+        Rooted<Value> arrRoot{objVal};
+        std::string keyText;
+        return reportRefusedDelete(deleteArrayProperty(arrRoot, idxVal, keyText), strict, keyText);
     }
 
     ObjectHeader* owner = namedPropertyOwner(objVal);

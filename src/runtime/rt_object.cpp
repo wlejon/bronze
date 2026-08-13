@@ -426,15 +426,11 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         // Then the named ones — the indices come first because they are
         // integer-like keys, and own-enumerable order puts those ahead of the
-        // rest. Only a match array has any.
-        if (src.get().asObject<ArrayHeader>()->properties.isObject()) {
-            Rooted<Value> props{src.get().asObject<ArrayHeader>()->properties};
-            const std::vector<StringHeader*> named =
-                rtOwnStringKeysOrdered(props.get().asObject<ObjectHeader>());
-            for (StringHeader* k : named) {
-                Rooted<Value> key{rtCopyKeyToHeap(k)};
-                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-            }
+        // rest. The keys are arena-interned and immortal, so the vector
+        // survives the allocations the copy below makes.
+        for (StringHeader* k : rtArrayOwnNamedKeys(src.get())) {
+            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
     }

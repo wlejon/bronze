@@ -106,21 +106,20 @@ bool isArray(Value v) {
 }  // namespace
 
 // The brand, asked from outside: is this array the one an `arguments` binding
-// holds? `callee` is the discriminator for the reason the comment above
-// `installArgumentsCallee` gives — it is the one own named property bronze ever
-// puts on an array that is not a match array, and a program cannot add one
-// (rt_prop_write.cpp refuses a named write to an array by name). So a hit here
-// really is 10.2.11's object and not something that resembles it.
+// holds? `callee` is the discriminator, and what makes it one is not the NAME —
+// a program can write `a.callee = 1` on any array — but the SHAPE of the
+// property: `installArgumentsCallee` defines a non-enumerable ACCESSOR, and an
+// assignment can only ever create an enumerable data property. So the two
+// attributes are checked rather than mere presence, and nothing a program can
+// write forges the answer.
 //
 // It is what `Object.prototype.toString` needs for step 5's "[[ParameterMap]]",
 // and it costs a shape lookup on the side object rather than a walk.
 bool rtIsArgumentsObject(Value v) {
     if (!isArray(v)) return false;
-    Value props = v.asObject<ArrayHeader>()->properties;
-    if (!props.isObject()) return false;
-    uint32_t slot = 0;
-    ObjectHeader* holder = props.asObject<ObjectHeader>();
-    return holder->shape && holder->shape->lookupProperty(calleeKey(), slot);
+    PropertyInfo info;
+    if (!rtArrayOwnNamed(v, calleeKey(), info)) return false;
+    return info.accessor && !info.enumerable;
 }
 
 namespace {
@@ -350,6 +349,24 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/false);
+        }
+        // Then its NAMED own enumerable properties, which 7.3.25 copies like
+        // any other and 6.1.7.1 orders after the indices. `[...a]` drops them
+        // and this does not, and neither is a special case: array spread is the
+        // ITERATOR (23.1.3.41 walks `0..length`), object spread is the own
+        // keys, and an array's named properties are own keys.
+        for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
+            if (stringTarget.get().isString() &&
+                stringTargetRefuses(stringTarget.get(), rtUtf8Chars(named))) {
+                return;
+            }
+            Rooted<Value> key{rtCopyKeyToHeap(named)};
+            Rooted<Value> val{
+                Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+            if (rtExceptionPending()) return;
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            /*strict=*/false);
+            if (rtExceptionPending()) return;
         }
         return;
     }

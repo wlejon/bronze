@@ -105,6 +105,26 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
         CHECK(hasName("0", a));
         CHECK(hasName("length", a));
         CHECK_FALSE(hasName("1", a));
+        // `Array.prototype`'s members, which an array answers beside the value
+        // rather than off an object on its chain — so the member TABLE stands
+        // in for that object here, exactly as the typed array's does above.
+        // Without it `'push' in a` was false while `a.push` was a function.
+        CHECK(hasName("push", a));
+        CHECK(hasName("constructor", a));
+        // A member 23.1.3 defines that bronze has not built: the property
+        // exists and only its value is missing, so `in` says true where a READ
+        // is a named hard error.
+        CHECK(hasName("flat", a));
+        // And the chain does not stop at that table: `Object.prototype` is one
+        // link further up.
+        CHECK(hasName("hasOwnProperty", a));
+        CHECK_FALSE(hasName("missing", a));
+        // A NAMED own property, which a program can write on an array like any
+        // other object — asked of the same storage the read answers from.
+        Rooted<Value> key{rtMakeString("tag")};
+        Rooted<Value> val{Value::fromDouble(1.0)};
+        rtArrayNamedSet(a, key, val);
+        CHECK(hasName("tag", a));
     }
 
     SUBCASE("a function") {

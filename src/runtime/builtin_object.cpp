@@ -97,8 +97,9 @@ bool isPlainObject(Value v) { return rtObjectIsPlain(v); }
 const char* propertyStoreReason(Value v) {
     switch (v.asObject<HeapObjectHeader>()->flags) {
         case HeapKind::Array:
-            return "its own keys are ELEMENTS and a `length`, and neither is a property "
-                   "bronze keeps in a shape a descriptor could be written to";
+            return "its own keys are ELEMENTS and a `length` — neither of which bronze keeps "
+                   "in a shape a descriptor could be written to — plus the side object its "
+                   "NAMED properties live in, which is the only one that could be described";
         case HeapKind::Function:
             return "its own keys come from three places — a `prototype` slot, a `length` and a "
                    "`name` in the header, and a side object of statics — and only the last is a "

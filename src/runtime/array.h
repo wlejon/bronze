@@ -22,18 +22,20 @@ struct ArrayHeader {
     // pointing at this header stays valid. (Inline elements would have to
     // move the array object itself, invalidating every reference to it.)
     Value elements;
-    // Undefined, or a plain object holding this array's NAMED properties.
+    // Undefined, or a plain object holding this array's NAMED properties —
+    // every own property of the array that is neither an element nor `length`.
     //
-    // Arrays store everything else by index, and until `exec` there was
-    // nothing that needed both: a match array is an array of captures that
-    // also carries `index`, `input` and `groups` (ECMA-262 22.2.7.2 steps
-    // 16-28), and there is nowhere else to put those. Created only when
-    // something writes one, so an ordinary array is the same size it was.
+    // An array is an object, so `a.foo = 1` is ordinary JavaScript and three.js
+    // writes one on the render path; the storage was already here for the
+    // runtime's own use, since a match array is an array of captures that also
+    // carries `index`, `input` and `groups` (ECMA-262 22.2.7.2 steps 16-28) and
+    // an `arguments` object carries `callee`. Created only when something writes
+    // one, so an ordinary array is the same size it was and the element path
+    // loads nothing extra.
     //
-    // Only the RUNTIME writes here. A program still cannot write `a.foo = 1`
-    // — that is a named error, as it was — because making assignment create
-    // one would also have to answer for `length`, for enumeration and for the
-    // inline caches, and none of that is what a match array needs.
+    // The object has a NULL prototype: it is storage, not a link in the array's
+    // chain, and the property path reads it before the array's own members
+    // (rt_prop_array.cpp owns every rule about what is in here).
     Value properties;
 
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
@@ -64,6 +66,20 @@ struct ArrayHeader {
     // is performed through a rooted self-reference and `this` must not be used
     // afterwards.
     void setElem(Heap& heap, uint32_t index, Rooted<Value>& val);
+
+    // `length` moved to exactly `newLength`, which is the storage half of
+    // ArraySetLength (ECMA-262 10.4.2.4) and nothing else: the WRITABILITY of
+    // `length` and the RangeError for a value that is not one are the runtime's
+    // (rt_prop_array.cpp), because they are rules about the property rather
+    // than about the block.
+    //
+    // Shrinking overwrites the dropped elements with HOLES rather than leaving
+    // them, so growing back does not resurrect a value the language says was
+    // deleted — and the collector stops tracing them. Growing leaves holes for
+    // the same reason: nothing between the old and the new length is an own
+    // property. Allocates when the block has to grow, so the array arrives
+    // through a root and `this` must not be reused.
+    static void setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength);
 
     Value* elementsData() noexcept {
         if (!elements.isPointer()) return nullptr;

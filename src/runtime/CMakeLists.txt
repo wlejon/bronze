@@ -44,6 +44,7 @@ bronze_add_module(runtime
         rt_operator.cpp
         rt_prop.cpp
         rt_prop_primitive.cpp
+        rt_prop_array.cpp
         rt_prop_write.cpp
         rt_delete.cpp
         iterator.cpp
@@ -81,6 +82,7 @@ bronze_add_module(runtime
         ../../tests/runtime/primitive_prototype_test.cpp
         ../../tests/runtime/to_primitive_test.cpp
         ../../tests/runtime/array_test.cpp
+        ../../tests/runtime/array_named_property_test.cpp
         ../../tests/runtime/typed_array_test.cpp
         ../../tests/runtime/data_view_test.cpp
         ../../tests/runtime/fn_test.cpp

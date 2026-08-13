@@ -107,17 +107,19 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         // invalidate it; the source is rooted anyway, because the array of
         // digit strings is built one allocation at a time.
         Rooted<Value> src{v};
-        // An array index that a `delete` turned into a HOLE is no longer an own
-        // property, so the enumeration skips it — 14.7.5.6 visits own keys, and
-        // a hole is not one. The result is therefore not simply
-        // `0..indexCount-1`, which is why the length is left to the writes
-        // below rather than set up front.
+        // Which of the three this receiver is, asked once. An array is the only
+        // one that can have a HOLE — an index a `delete` turned into one is no
+        // longer an own property, so the enumeration skips it (14.7.5.6 visits
+        // own keys, and a hole is not one), and the result is therefore not
+        // simply `0..indexCount-1`, which is why the length is left to the
+        // writes below rather than set up front. It is also the only one that
+        // can have a NAMED own property, which the tail below appends.
         //
         // Asked BEFORE the allocation below, and of the ROOT: a plain `v`
         // read afterwards is a pointer into dead from-space, which under
         // --gc-stress reported every string as an array and every array as
         // something else on the very first case that had a hole in it.
-        const bool skipHoles =
+        const bool isArray =
             src.get().isObject() &&
             src.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         Rooted<Value> out{Value::fromObject(
@@ -125,12 +127,27 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
         uint32_t at = 0;
         for (uint32_t i = 0; i < indexCount; ++i) {
-            if (skipHoles && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            if (isArray && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             char buf[16];
             auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), i);
             Rooted<Value> key{Value::fromString(
                 StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)))};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        // An array's own named properties, AFTER its indices — 6.1.7.1's order,
+        // which needs no sort here because an integer-like key names an element
+        // and can never have reached the named storage. A string and a typed
+        // array have none, and the prototype step below is skipped for all
+        // three: `Array.prototype`'s members are answered beside the value
+        // rather than by an object with enumerable properties, and 23.2.3 and
+        // 22.1.3 put nothing enumerable on the other two either.
+        if (isArray) {
+            // The keys are arena-interned and immortal, so the vector survives
+            // the allocations the copy below makes.
+            for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
+                Rooted<Value> copy{rtCopyKeyToHeap(named)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, copy);
+            }
         }
         return out.get().rawBits();
     }

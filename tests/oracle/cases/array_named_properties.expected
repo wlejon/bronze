@@ -1,0 +1,45 @@
+t
+2
+2
+10 20
+true false true true
+true true false
+true
+0,1,tag,count
+10,20,t,2
+[["0",10],["1",20],["tag","t"],["count",2]]
+0|1|tag|count|
+[10,20]
+[10,20]
+{"0":10,"1":20,"tag":"t","count":2}
+{"0":10,"1":20,"tag":"t","count":2}
+[ 10, 20, tag: 't', count: 2 ]
+3 t 0,1,2,tag,count
+true
+false undefined false
+0,1,2,count,tag
+again
+function
+5 number true
+0,1,2,map
+true
+function
+2,4,6
+undefined true true
+true
+function
+1
+2
+frac frac 1
+0,k,k2,1.5
+true undefined 0,k,k2
+1,2,3
+3 hi
+-1 false
+4 undefined
+undefined
+undefined
+123
+123
+true
+[1,2] 3 0,1,q

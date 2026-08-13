@@ -420,15 +420,25 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         ArrayHeader* arr = recv.get().asObject<ArrayHeader>();
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (rtKeyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
-        // A named property, which only a match array has. Read BEFORE the
-        // prototype methods, because an own property shadows an inherited one —
-        // and `m.index` must not answer with `Array.prototype.index` if one is
-        // ever added.
-        if (Value props = arr->properties; props.isObject()) {
-            Rooted<Value> propsRoot{props};
+        // A named own property: a match array's `index`, an `arguments`
+        // object's `callee`, or anything a program assigned. Read BEFORE the
+        // prototype methods, because an own property SHADOWS an inherited one —
+        // `a.map = 5` reads 5, and `m.index` must not answer with
+        // `Array.prototype.index` if one is ever added.
+        //
+        // The presence test is the shape's and not "the value is not
+        // undefined": `a.map = undefined` is an own property whose value is
+        // undefined, and reading the builtin for it would un-shadow a property
+        // the program really created.
+        if (PropertyInfo info; rtArrayOwnNamed(recv.get(), keyHeader, info)) {
+            Rooted<Value> propsRoot{recv.get().asObject<ArrayHeader>()->properties};
             Rooted<Value> key(Value::fromString(keyHeader));
-            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-            if (!found.isUndefined()) return found.rawBits();
+            // The array is the receiver, so a getter stored here runs against
+            // the object the program read from rather than against the box.
+            return propsRoot.get()
+                .asObject<ObjectHeader>()
+                ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
+                .rawBits();
         }
         if (keyStr == "constructor") return rtArrayConstructorObject().rawBits();
         Value method = rtArrayMethod(keyStr);

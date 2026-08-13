@@ -158,13 +158,12 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
                 enumerable = true;
                 return true;
             }
-            // A match array's `index`, `input` and `groups` (22.2.7.2), which
-            // are the only NAMED properties an array in bronze can carry.
-            Value props = self.get().asObject<ArrayHeader>()->properties;
-            if (!props.isObject()) return false;
+            // A NAMED property: one a program assigned, a match array's
+            // `index`/`input`/`groups` (22.2.7.2), or an `arguments` object's
+            // `callee`. Asked of rt_prop_array.cpp, which is where every path
+            // that has an opinion about an array's own properties asks.
             PropertyInfo info;
-            auto* holder = props.asObject<ObjectHeader>();
-            if (!holder->shape || !holder->shape->lookupProperty(name, info)) return false;
+            if (!rtArrayOwnNamed(self.get(), name, info)) return false;
             enumerable = info.enumerable;
             return true;
         }

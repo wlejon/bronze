@@ -8,6 +8,7 @@
 #include "regex/regex.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -149,6 +150,12 @@ void rtCheckUnimplementedMember(const char* receiver, const char* const* names, 
 void rtCheckArrayMember(const std::string& key);
 void rtCheckStringMember(const std::string& key);
 void rtCheckFunctionMember(const std::string& key);
+
+// The Array table asked without the refusal: does 23.1.3 define this member,
+// whether or not bronze has built it. `in` needs the question in this form —
+// the property EXISTS and only its value is missing — where a READ of the same
+// name is the hard error above.
+bool rtArrayMemberUnimplemented(const std::string& key);
 // The typed-array table takes the RECEIVER's constructor name, so the message
 // says `Uint8Array.prototype.sort` and not `%TypedArray%.prototype.sort`: nine
 // views share one implementation, and a diagnostic that forgot which one the
@@ -767,12 +774,49 @@ Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText);
 // whichever kind of separator it later passes.
 uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
+// ---- an array's own properties that are not elements (rt_prop_array.cpp) ----
+//
+// `length` and the named ones. Six paths ask — a read, a write, `in`, `delete`,
+// `for-in` and the own-key walks — and each reaches an array from its own file,
+// so the question is answered in one place rather than restated in six.
+
+// Is `name` an own NAMED property of this array, and with what attributes? No
+// allocation, so the answer is good until the next one. The receiver must be an
+// array; every caller has already dispatched on the kind.
+bool rtArrayOwnNamed(Value arrVal, PropertyKey name, PropertyInfo& out);
+
+// This array's own named keys in insertion order. They come AFTER the indices
+// in every own-key answer, which is 6.1.7.1's order and needs no sort here: an
+// integer-like key names an element and can never reach the named storage.
+std::vector<StringHeader*> rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly = true);
+
+// `a.foo = v`, creating the side object on first use. Allocates and may run an
+// inherited setter, so the array arrives through a root.
+SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val);
+
+// `delete a.foo`, whose false is 13.5.1's — a non-configurable property, which
+// only `Object.seal` and `Object.freeze` create here.
+bool rtArrayNamedDelete(Value arrVal, PropertyKey name);
+
+// `a.length = v` — ECMA-262 10.4.2.4 ArraySetLength, which truncates or leaves
+// a run of holes. Throws the RangeError 10.4.2.4 names for a value that is not
+// an array length; the refusal is a frozen `length` or a sealed array's
+// elements refusing to be deleted.
+SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal);
+
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the
 // language's own answer for a property that does not exist. An array's members
 // are still answered BESIDE the value this way; a string's moved onto
 // `String.prototype` and are found by the ordinary prototype walk.
 Value rtArrayMethod(const std::string& key);
+
+// The same table asked for EXISTENCE, which is `in`'s question and allocates
+// nothing — a method's value is a function object this would otherwise have to
+// build to throw away. Its own function so that `'push' in a` and `a.push` are
+// answered from one list: they were two, and `in` reported false for every
+// method an array has.
+bool rtArrayHasMember(const std::string& key);
 
 // Rows of builtin_array.cpp's method table whose bodies live in a translation
 // unit of their own — `sort` (builtin_array_sort.cpp) and the three iterator
