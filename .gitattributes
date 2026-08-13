@@ -8,3 +8,7 @@ tests/oracle/threejs/three/** -text
 
 # The single-file renderer bundle, same rule and same reason as the tree above.
 tests/oracle/threejs/three.module.js -text
+
+# Vendored as published from the r160 examples tree; byte-for-byte identity
+# with upstream is the provenance check, so a checkout must not rewrite it.
+tests/oracle/threejs/OrbitControls.js -text
