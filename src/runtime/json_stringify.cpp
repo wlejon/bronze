@@ -276,6 +276,15 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
         if (rtExceptionPending()) return false;
     }
 
+    // Step 4: a primitive WRAPPER is unwrapped before the type dispatch below —
+    // [[NumberData]] through ToNumber, [[StringData]] through ToString,
+    // [[BooleanData]] straight out of the slot. Without it a wrapper fell into
+    // the object arm and serialized as `{}`, which is well-formed JSON and the
+    // wrong value, so nothing in the output said it had happened. It sits after
+    // `toJSON` and the replacer because that is where the clause puts it: an
+    // object either of those RETURNED is unwrapped too.
+    if (Value prim; rtWrapperPrimitive(value.get(), prim)) value.set(prim);
+
     const Value v = value.get();
     if (v.isNull()) {
         appendAscii(out, "null");

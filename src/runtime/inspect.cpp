@@ -153,7 +153,7 @@ private:
         if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
 
         // A primitive wrapper prints as node prints one — `[String: 'ab']`,
-        // `[Boolean: false]` — and not as the `{}` an object with no own
+        // `[Number: 1]`, `[Boolean: false]` — and not as the `{}` an object with no own
         // properties would otherwise show. The whole content of one of these is
         // an internal slot, so `{}` would be a lie about the value rather than
         // a terse rendering of it. Tested by the brand, which reads two words
@@ -163,6 +163,9 @@ private:
         }
         if (Value data; rtBooleanWrapperData(v, data)) {
             return std::string("[Boolean: ") + (data.asBool() ? "true" : "false") + "]";
+        }
+        if (Value data; rtNumberWrapperData(v, data)) {
+            return "[Number: " + numberText(data.asNumber()) + "]";
         }
 
         // One arm per heap kind, and a `default:` that REFUSES. It used to cast

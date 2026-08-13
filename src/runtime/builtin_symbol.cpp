@@ -1,13 +1,21 @@
-// The `Symbol` constructor object: what the identifier `Symbol` denotes, and
-// the statics hanging off it.
+// The `Symbol` constructor object and `Symbol.prototype`: the two objects a
+// program names, and the members of 20.4.2 and 20.4.3 hanging off them.
 //
-// It is a FUNCTION object rather than a namespace object because `Symbol("tag")`
-// is a call — 20.4.1.1 defines it as a constructor that refuses `new`. That
-// shape also decides where its unimplemented members are diagnosed: they reach
-// the function property path in rt_prop.cpp, not a namespace object's.
+// `Symbol` is a FUNCTION object rather than a namespace object because
+// `Symbol("tag")` is a call — 20.4.1.1 defines it as a constructor that refuses
+// `new`. That shape also decides where its unimplemented members are diagnosed:
+// they reach the function property path in rt_prop.cpp, not a namespace
+// object's.
 //
-// The value model this hands out lives in symbol.cpp; here is only the object a
-// program names.
+// `Symbol.prototype` is an ORDINARY object, which is the one thing separating
+// it from the three intrinsics in builtin_wrappers.cpp: 20.4.3 says it "is not
+// a Symbol instance and does not have a [[SymbolData]] internal slot", where
+// 21.1.3 and 22.1.3 say the opposite of theirs. So there is no brand to carry
+// and no wrapper to allocate, and a symbol reaches its members by the ordinary
+// prototype walk with the primitive as the receiver.
+//
+// The value model this hands out lives in symbol.cpp; here is only what a
+// program can hold.
 
 #include <iterator>
 #include <string>
@@ -86,6 +94,7 @@ const char* const kSymbolUnimplemented[] = {
 };
 
 Value g_symbolFunction = Value::fromUndefined();
+Value g_symbolPrototype = Value::fromUndefined();
 
 struct SymbolStatic {
     const char* name;
@@ -98,17 +107,138 @@ const SymbolStatic kSymbolStatics[] = {
     {"keyFor", symbolKeyForCall, 1},
 };
 
+// ---- Symbol.prototype (20.4.3) ---------------------------------------------
+
+// 20.4.3.4 thisSymbolValue. Only the PRIMITIVE half exists: 20.4.3 gives this
+// prototype no [[SymbolData]] slot of its own, and bronze builds no Symbol
+// wrapper object — `new Symbol()` is the TypeError 20.4.1.1 makes it, and
+// `Object(sym)` is a construct bronze refuses by name — so there is nothing
+// else that could carry one.
+bool thisSymbol(Value self, const char* method, Value& out) {
+    if (!self.isSymbol()) {
+        rtThrowTypeError(std::string("Symbol.prototype.") + method +
+                         " called on an incompatible receiver");
+        return false;
+    }
+    out = self;
+    return true;
+}
+
+uint64_t symbolProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self;
+    if (!thisSymbol(Value(thisBits), "toString", self)) {
+        return Value::fromUndefined().rawBits();
+    }
+    return rtMakeString(rtSymbolDescriptiveString(self)).rawBits();
+}
+
+uint64_t symbolProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self;
+    if (!thisSymbol(Value(thisBits), "valueOf", self)) {
+        return Value::fromUndefined().rawBits();
+    }
+    return self.rawBits();
+}
+
+// 20.4.3.2 is `get Symbol.prototype.description`, an ACCESSOR and not a data
+// property — which is the whole reason `Symbol.prototype` needed a real object
+// before it could be right: a table consulted beside the value cannot express
+// the difference, and `Object.getOwnPropertyDescriptor(Symbol.prototype,
+// "description")` is how a program asks.
+uint64_t symbolProtoDescription(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self;
+    if (!thisSymbol(Value(thisBits), "description", self)) {
+        return Value::fromUndefined().rawBits();
+    }
+    const StringHeader* desc = self.asSymbol<SymbolHeader>()->description;
+    // `undefined`, not "", for a symbol made without one — the clause reads
+    // [[Description]] straight out and that field is genuinely absent.
+    if (!desc) return Value::fromUndefined().rawBits();
+    return rtCopyKeyToHeap(desc).rawBits();
+}
+
+const NativeMethod kSymbolProtoMethods[] = {
+    {"toString", symbolProtoToString, 0},
+    {"valueOf", symbolProtoValueOf, 0},
+};
+
+// 20.4.3, built on first use like every other intrinsic and PUBLISHED before it
+// is decorated, because `constructor` asks for the function object and building
+// that asks for this. A permanent root, not a plain static: the collector moves
+// it and the installs below allocate.
+void ensureSymbolPrototype() {
+    if (g_symbolPrototype.isObject()) return;
+    Rooted<Value> objectProto{rtObjectPrototype()};
+    Rooted<Value> proto{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(objectProto.get())))};
+    proto.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
+    g_symbolPrototype = proto.get();
+    rtHeap().add_permanent_root(&g_symbolPrototype);
+
+    rtDefineMethods(proto, kSymbolProtoMethods, std::size(kSymbolProtoMethods));
+    {
+        Rooted<Value> key{rtMakeString("description")};
+        Rooted<Value> getter{rtNativeFunction(symbolProtoDescription, 0)};
+        Rooted<Value> setter{Value::fromUndefined()};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                     /*enumerable=*/false);
+    }
+    // 20.4.3.6: the tag is an ordinary own property of this object, and a
+    // string. Making it real rather than a stand-in in `toStringTagOf` is what
+    // lets `Symbol.prototype[Symbol.toStringTag]` be read off the object a
+    // program holds — the same move `Object.prototype.toString`'s Math and JSON
+    // tags made.
+    {
+        Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
+        Rooted<Value> tag{rtMakeString("Symbol")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, tag, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        Rooted<Value> ctor{rtSymbolFunction()};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+}
+
 }  // namespace
 
 Value rtSymbolFunction() {
     if (g_symbolFunction.isObject()) return g_symbolFunction;
     Rooted<Value> fn{rtNativeFunction(symbolCall, 1)};
     rtEnsureFunctionProperties(fn);
+    // Published before the prototype is asked for, because `Symbol.prototype`'s
+    // `constructor` asks for THIS object back and the two would otherwise
+    // recurse without end.
+    g_symbolFunction = fn.get();
+    rtHeap().add_permanent_root(&g_symbolFunction);
+    // 20.4.2.9, and it must be set here rather than left to
+    // `rtEnsureFunctionPrototype`, which mints a fresh empty object for a
+    // function that has none — that object is what `Symbol.prototype` would
+    // read, and a method installed on it would be found by nothing.
+    //
+    // `instance_shape` is set with it because that function's guard tests BOTH,
+    // and a prototype without one is re-minted on the next read. Nothing ever
+    // builds an object from the shape: 20.4.1.1 makes `new Symbol()` a
+    // TypeError, so this constructor has no instances.
+    {
+        Rooted<Value> proto{rtSymbolPrototype()};
+        FunctionHeader* live = fn.get().asObject<FunctionHeader>();
+        live->prototype = proto.get();
+        live->instance_shape = rtRootShapeForPrototype(proto.get());
+    }
     Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    // NON-ENUMERABLE, which 20.4.2 makes all sixteen own properties of `Symbol`
+    // and bronze had wrong: `Object.keys(Symbol)` reported four names and
+    // `for (k in Symbol)` visited them. `writable` and `configurable` stay true
+    // — a shape transition carries neither, and dictionary mode is the only
+    // storage that does (cases/blocked/intrinsic_property_attributes).
     for (const SymbolStatic& s : kSymbolStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
         Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
     // 20.4.2.5 `Symbol.iterator` and 20.4.2.14 `Symbol.toStringTag`: the
     // well-known symbols themselves, as ordinary properties of this object.
@@ -118,16 +248,21 @@ Value rtSymbolFunction() {
     {
         Rooted<Value> key{rtMakeString("iterator")};
         Rooted<Value> val{rtIteratorKey()};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
     {
         Rooted<Value> key{rtMakeString("toStringTag")};
         Rooted<Value> val{Value::fromSymbol(rtSymbolToStringTag())};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
-    g_symbolFunction = fn.get();
-    rtHeap().add_permanent_root(&g_symbolFunction);
     return g_symbolFunction;
+}
+
+Value rtSymbolPrototype() {
+    ensureSymbolPrototype();
+    return g_symbolPrototype;
 }
 
 void rtSymbolCheckMissingMember(Value fn, const std::string& key) {

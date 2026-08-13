@@ -13,7 +13,8 @@
 // the witness. 3. Short-circuiting is on NULLISH, not on falsy. `""` is not
 // nullish, so `empty?.length` reads and gives 0, where `nn?.length` gives
 // undefined. The two answers differ, which is what makes the distinction
-// observable. (`0?.x` is likewise a real read, but Number.prototype has no `x`,
+// observable. (`0?.x` is likewise a real read, reaching Number.prototype,
+// which has no `x`,
 // so it also lands on undefined and pins nothing extra.) 4. Parentheses end a
 // chain: `(o?.a).b` is a NEW MemberExpression whose base happens to be a
 // parenthesized optional expression, so `.b` is an ordinary access that does

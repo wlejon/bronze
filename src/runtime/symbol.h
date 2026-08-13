@@ -84,17 +84,18 @@ SymbolHeader* rtSymbolToStringTag();
 // why `.description` exists to tell them apart.
 std::string rtSymbolDescriptiveString(Value symbol);
 
-// A member read on a primitive symbol — `toString`, `description`,
-// `constructor` — answered beside the value the way a number's and a string's
-// are, since bronze has no wrapper object for one to be found on. A name
-// 20.4.3 defines and bronze has not built is diagnosed here rather than read as
-// `undefined`.
-Value rtSymbolMember(Value symbol, const std::string& key);
-
 // `Symbol` itself — a function object, so `Symbol("tag")` is a call rather than
 // "an object is not callable", and so its statics reach the function property
 // path.
 Value rtSymbolFunction();
 void rtSymbolCheckMissingMember(Value fn, const std::string& key);
+
+// `Symbol.prototype` (20.4.3): a real object on the real chain, which a
+// primitive symbol reaches by the ordinary prototype walk. Unlike the other
+// three prototypes it is an ORDINARY object and not a wrapper — 20.4.3 says so
+// in as many words ("it is not a Symbol instance and does not have a
+// [[SymbolData]] internal slot"), which is why it is built here rather than
+// beside the wrappers.
+Value rtSymbolPrototype();
 
 }  // namespace bronze::runtime

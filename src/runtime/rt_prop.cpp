@@ -189,20 +189,15 @@ static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr) {
 // function's own `[Symbol.toStringTag]` is a slot, found by the ordinary walk
 // that this function declines (`handled` stays false) to intercept.
 //
-// Two of the answers are not approximations at all. A module namespace's is an
-// OWN property that 10.4.6.1 defines on the object itself, and a symbol's is
-// `Symbol.prototype[@@toStringTag]` (20.4.3.5) reached the way every other
-// member of a symbol is — beside the value, since bronze has no
-// `Symbol.prototype`.
+// One of the answers is not an approximation at all: a module namespace's is an
+// OWN property that 10.4.6.1 defines on the object itself.
+//
+// A PRIMITIVE is not this function's business any more. All four kinds reach a
+// real intrinsic prototype now, and the walk below finds what that object
+// carries — "Symbol" from `Symbol.prototype[@@toStringTag]` (20.4.3.6), and
+// nothing from the other three, because 21.1.3, 22.1.3 and 20.3.3 define no tag
+// and the language's answer really is `undefined`.
 Value toStringTagOf(Value objVal, bool& handled) {
-    if (objVal.isSymbol()) {
-        handled = true;
-        return rtMakeString("Symbol");
-    }
-    // Every other primitive reaches a real prototype object (`String.prototype`,
-    // `Boolean.prototype`) or, for a number, a member table that 21.1.3 gives no
-    // tag — and neither carries one, so this declines and the walk answers
-    // `undefined`.
     if (!objVal.isObject()) return Value::fromUndefined();
     switch (objVal.asObject<HeapObjectHeader>()->flags) {
         case MapHeader::kMapFlags:
@@ -298,6 +293,30 @@ ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     }
     return nullptr;
 }
+
+namespace {
+
+// Where a symbol-keyed READ starts its prototype walk. It is deliberately NOT
+// the function above, and the difference is the point: a primitive has no
+// storage of its own to write a symbol-keyed property INTO, but it does have a
+// chain to read one OFF — which is how `sym[Symbol.toStringTag]` reaches
+// 20.4.3.6's "Symbol" on `Symbol.prototype`. One function serving both would
+// make `sym[k] = v` write onto the intrinsic every symbol in the program
+// shares.
+//
+// ALLOCATES, because the first read of any intrinsic builds it — so the caller
+// roots its receiver and its key before asking, and the raw header the tail
+// derives is read after everything that can move it.
+Value symbolReadStart(Value v) {
+    if (v.isString()) return rtStringPrototype();
+    if (v.isBool()) return rtBooleanPrototype();
+    if (v.isNumber()) return rtNumberPrototype();
+    if (v.isSymbol()) return rtSymbolPrototype();
+    ObjectHeader* holder = rtSymbolKeyHolder(v);
+    return holder ? Value::fromObject(holder) : Value::fromUndefined();
+}
+
+}  // namespace
 
 extern "C" {
 
@@ -606,7 +625,6 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     if (result.isUndefined()) {
         rtMathCheckMissingMember(objRoot.get(), keyStr);
         rtObjectCheckMissingMember(objRoot.get(), keyStr);
-        rtNumberCheckMissingMember(objRoot.get(), keyStr);
         rtJsonCheckMissingMember(objRoot.get(), keyStr);
         // And the chain's own end: a 20.1.3 member of `Object.prototype` that
         // bronze has not built. Applied to every plain object because every
@@ -663,15 +681,16 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         bool handled = false;
         const Value wellKnown = wellKnownSymbolMember(objVal, Value(idxBits), handled);
         if (handled) return wellKnown.rawBits();
-        ObjectHeader* holder = rtSymbolKeyHolder(objVal);
-        // A primitive receiver: no own symbol-keyed property and no prototype
-        // object here to inherit one from.
-        if (!holder) return Value::fromUndefined().rawBits();
         // Rooted because a symbol-keyed property can be an accessor, and a
-        // getter is a call. No inline cache: a computed site has no entry.
-        Rooted<Value> holderRoot{Value::fromObject(holder)};
+        // getter is a call — and because the walk below can build an intrinsic,
+        // which allocates. No inline cache: a computed site has no entry.
         Rooted<Value> recv{objVal};
         Rooted<Value> key{Value(idxBits)};
+        Rooted<Value> holderRoot{symbolReadStart(recv.get())};
+        // A receiver with neither own symbol-keyed storage nor a chain: an
+        // array, a Map, a RegExp. Those have no own symbol-keyed property and
+        // no prototype object here to inherit one from.
+        if (!holderRoot.get().isObject()) return Value::fromUndefined().rawBits();
         return holderRoot.get()
             .asObject<ObjectHeader>()
             ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())

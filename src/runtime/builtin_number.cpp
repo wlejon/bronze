@@ -1,11 +1,20 @@
-// The `Number` namespace.
+// The `Number` CONSTRUCTOR object: what the identifier `Number` denotes, its
+// conversion body (21.1.1.1), and the statics of 21.1.2.
 //
-// Statics only. `Number.prototype.toFixed` and the rest of the wrapper
-// methods are NOT here: reaching them means a primitive number answering a
-// property read, which bronze has no wrapper object for, and 21.1.3.3's
-// rounding is defined on the decimal expansion rather than on the double —
-// getting it nearly right is the shape of silent wrong answer this project
-// exists to avoid. `cases/blocked/number_methods.js` holds it.
+// It is a function object and not a namespace object, which it was for as long
+// as bronze had no `Number.prototype` for `new Number(1)` to build an instance
+// of. Both halves of 21.1.1.1 follow from that one change: `Number("5")` is a
+// CALL, where a namespace object could only report that an object is not
+// callable, and `new Number(5)` is a Number exotic object with a [[NumberData]]
+// slot, which `bronze_construct` builds from the ctor table rather than by
+// entering this body (builtin_wrappers.cpp says why a native constructor cannot
+// see NewTarget).
+//
+// `Number.prototype.toFixed` and the rest of the wrapper methods are NOT here:
+// they are members of the intrinsic prototype object, installed on it by
+// builtin_number_proto.cpp. The split ECMA-262 itself draws — 21.1.2 is the
+// constructor's own properties, 21.1.3 is the prototype's — is the split
+// between the two files.
 
 #include <cmath>
 #include <cstdlib>
@@ -13,7 +22,9 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/exception.h"
 #include "runtime/fn.h"
+#include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -170,6 +181,10 @@ struct NamespaceFn {
     uint32_t arity;
 };
 
+// The two tables below are the whole of 21.1.2 but for `prototype`, which the
+// ctor table answers from the intrinsic — which is why this file has no
+// unimplemented-member list at all. `Boolean` has none for the same reason, and
+// its row in `kCtors` carries a null one.
 const NamespaceFn kNumberFunctions[] = {
     {"isNaN", numberIsNaN, 1},           {"isFinite", numberIsFinite, 1},
     {"isInteger", numberIsInteger, 1},   {"isSafeInteger", numberIsSafeInteger, 1},
@@ -192,13 +207,6 @@ const NamespaceConst kNumberConstants[] = {
     {"NaN", std::numeric_limits<double>::quiet_NaN()},
 };
 
-// `prototype` is on this list for the reason it is on Map's: bronze has no
-// Number wrapper object, so answering `undefined` would let a program install
-// a method nothing would find.
-const char* const kNumberUnimplemented[] = {
-    "prototype",
-};
-
 // 19.2's function properties of the global object, by the name a free
 // identifier spells. `parseInt` and `parseFloat` share their code pointers with
 // the `Number` statics, and `bronze_function_singleton` interns by code
@@ -211,7 +219,12 @@ const NamespaceFn kGlobalFunctions[] = {
     {"parseFloat", numberParseFloat, 1},
 };
 
-Value g_numberNamespace = Value::fromUndefined();
+// Whether this function's statics have been installed. A plain bool and not a
+// look-before-you-write, because `rtNativeFunction` interns on the code pointer:
+// every route to `Number` reaches the SAME function object, so installing twice
+// would be redefining the same fourteen properties rather than decorating two
+// objects.
+bool g_numberStaticsInstalled = false;
 
 }  // namespace
 
@@ -222,30 +235,66 @@ Value rtGlobalNumericFunction(const std::string& name) {
     return Value::fromUndefined();
 }
 
-Value rtNumberNamespace() {
-    if (g_numberNamespace.isObject()) return g_numberNamespace;
-    Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
-    for (const NamespaceFn& fn : kNumberFunctions) {
-        Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+// 21.1.1.1 as a CONVERSION, which is what the body is when NewTarget is absent.
+// The `new` form never enters here — `bronze_construct` recognises this
+// function object and builds the Number exotic object from the same step 1.
+//
+// Named at namespace scope rather than through an accessor because
+// `builtin_constructors.cpp`'s ctor table takes its ADDRESS at static
+// initialization, and a function that returned the pointer would make that a
+// cross-translation-unit initialization order.
+uint64_t rtNumberConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    // Step 2: no argument AT ALL is +0𝔽, which is not the same as
+    // `Number(undefined)` — that one is ToNumber(undefined), NaN.
+    if (args.count() == 0) return Value::fromDouble(0.0).rawBits();
+    return rtNumberValueOfArgument(args[0]).rawBits();
+}
+
+Value rtNumberValueOfArgument(Value v) {
+    // 21.1.1.1 step 1 is ToNumeric, whose step 1 is ToPrimitive with hint
+    // NUMBER — so an object is asked for `valueOf` before `toString`, and a
+    // program's override runs. This is an ordinary builtin, so it may: the
+    // hard-error shape `rtToNumber` gives an object belongs to the sites that
+    // hold a raw pointer across the call, and this is not one.
+    Rooted<Value> input{v};
+    Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
+    if (rtExceptionPending()) return Value::fromDouble(0.0);
+    // 6.1.5.1: ToNumber of a Symbol is a TypeError. Raised here rather than
+    // left to `rtToNumber`, which makes it a FATAL because its callers sit
+    // under ops `il::canThrow` does not mark — `Number(sym)` is an ordinary
+    // call and the language says it throws something a `catch` can hold.
+    if (prim.get().isSymbol()) {
+        return rtThrowTypeError("Cannot convert a Symbol value to a number");
+    }
+    return Value::fromDouble(rtToNumber(prim.get()));
+}
+
+void rtInstallNumberStatics(Rooted<Value>& fn) {
+    if (g_numberStaticsInstalled) return;
+    g_numberStaticsInstalled = true;
+    rtEnsureFunctionProperties(fn);
+    Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
+    // NON-ENUMERABLE, every one of them, because that is the attribute 21.1.2
+    // gives all fifteen and it is the one this storage can express: a shape
+    // transition carries `enumerable`, where `writable` and `configurable` are
+    // fixed true by the transition tree and false only in dictionary mode. So
+    // `Object.keys(Number)` is `[]` and `for (k in Number)` visits nothing,
+    // which is what a program can see; the other two attributes stay a
+    // divergence this object shares with every intrinsic in bronze
+    // (cases/blocked/intrinsic_property_attributes).
+    for (const NamespaceFn& f : kNumberFunctions) {
+        Rooted<Value> key{rtMakeString(f.name)};
+        Rooted<Value> val{rtNativeFunction(f.code, f.arity)};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
     for (const NamespaceConst& c : kNumberConstants) {
         Rooted<Value> key{rtMakeString(c.name)};
         Rooted<Value> val{Value::fromDouble(c.value)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
-    g_numberNamespace = obj.get();
-    rtHeap().add_permanent_root(&g_numberNamespace);
-    return g_numberNamespace;
-}
-
-void rtNumberCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_numberNamespace.isObject() || obj.rawBits() != g_numberNamespace.rawBits()) return;
-    rtCheckUnimplementedMember("Number", kNumberUnimplemented, std::size(kNumberUnimplemented),
-                               key);
 }
 
 }  // namespace bronze::runtime

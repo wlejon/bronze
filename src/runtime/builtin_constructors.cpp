@@ -1,4 +1,4 @@
-// The global constructor OBJECTS: `Array`, `String` and `Boolean`.
+// The global constructor OBJECTS: `Array`, `String`, `Boolean` and `Number`.
 //
 // This file is about the objects a bare name resolves to, which is a different
 // thing from the prototype method tables in builtin_array.cpp and
@@ -311,8 +311,8 @@ const StaticFn kStringStatics[] = {
 // members are still handed out by the property path BESIDE the value, so there
 // is no object to hand over, and the empty one a FunctionHeader would otherwise
 // answer with is worse than an error — a method installed on it would be found
-// by nothing. `String.prototype` and `Boolean.prototype` are real objects and
-// are answered from the constructor's own prototype slot.
+// by nothing. `String.prototype`, `Boolean.prototype` and `Number.prototype`
+// are real objects and are answered from the constructor's own prototype slot.
 const char* const kArrayCtorUnimplemented[] = {"fromAsync", "prototype"};
 const char* const kStringCtorUnimplemented[] = {"fromCodePoint", "raw"};
 
@@ -333,14 +333,27 @@ struct CtorEntry {
     // of the plain instance), so `bronze_construct` builds it from this rather
     // than entering the body.
     Value (*prototype)();
+    // Own properties this constructor carries that are not in the table above,
+    // installed on the function object the first time anything asks for it.
+    // `Number` is the one entry that has any: its fourteen statics are the
+    // tables in builtin_number.cpp, and 21.1.2 makes them non-enumerable own
+    // properties rather than the beside-the-value answers `Array.from` and
+    // `String.fromCharCode` are — so a program can ask `'EPSILON' in Number`
+    // and get the language's answer. Idempotent, because every route to a
+    // constructor reaches the same interned function object.
+    void (*decorate)(Rooted<Value>&);
 };
 
 const CtorEntry kCtors[] = {
     {"Array", arrayConstructor, kArrayStatics, std::size(kArrayStatics),
-     kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), nullptr},
+     kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), nullptr, nullptr},
     {"String", stringConstructor, kStringStatics, std::size(kStringStatics),
-     kStringCtorUnimplemented, std::size(kStringCtorUnimplemented), rtStringPrototype},
-    {"Boolean", booleanConstructor, nullptr, 0, nullptr, 0, rtBooleanPrototype},
+     kStringCtorUnimplemented, std::size(kStringCtorUnimplemented), rtStringPrototype, nullptr},
+    {"Boolean", booleanConstructor, nullptr, 0, nullptr, 0, rtBooleanPrototype, nullptr},
+    // No unimplemented list: 21.1.2 names fifteen own properties and bronze
+    // answers all fifteen (builtin_number.cpp says so at the table).
+    {"Number", rtNumberConstructorBody, nullptr, 0, nullptr, 0, rtNumberPrototype,
+     rtInstallNumberStatics},
 };
 
 // Arity 0 for the constructors too, and here it decides an answer rather than
@@ -365,6 +378,7 @@ Value ctorObject(const CtorEntry& entry) {
         // these two.
         live->instance_shape = rtRootShapeForPrototype(proto.get());
     }
+    if (entry.decorate) entry.decorate(fn);
     return fn.get();
 }
 
@@ -382,6 +396,8 @@ Value rtArrayConstructorObject() { return ctorObject(kCtors[0]); }
 Value rtStringConstructorObject() { return ctorObject(kCtors[1]); }
 
 Value rtBooleanConstructorObject() { return ctorObject(kCtors[2]); }
+
+Value rtNumberConstructorObject() { return ctorObject(kCtors[3]); }
 
 const char* rtPrimitiveWrapperConstructorName(Value fn) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {

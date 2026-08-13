@@ -219,8 +219,6 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = rtMathObject();
     } else if (keyStr == "Object") {
         resolved = rtObjectNamespace();
-    } else if (keyStr == "Number") {
-        resolved = rtNumberNamespace();
     } else if (keyStr == "JSON") {
         resolved = rtJsonNamespace();
     } else if (keyStr == "Symbol") {

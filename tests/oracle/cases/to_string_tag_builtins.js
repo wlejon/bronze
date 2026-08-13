@@ -1,12 +1,18 @@
-// The receivers whose tag ECMA-262 puts on a PROTOTYPE, and whose prototype
-// object bronze does not have.
+// The receivers whose tag ECMA-262 puts on a PROTOTYPE rather than in
+// 20.1.3.6's own list.
 //
-// 20.1.3.6's builtin-tag list (steps 4-14) gives every one of these "Object".
-// They read as themselves only because of step 15: 24.1.3.13 puts "Map" on
-// `Map.prototype`, 24.2.3.12 puts "Set" on `Set.prototype`, 23.2.3.35 puts an
-// accessor over [[TypedArrayName]] on `%TypedArray%.prototype`, 25.1.6.6 puts
-// "ArrayBuffer" on `ArrayBuffer.prototype`, 25.3.4.25 puts "DataView" on
-// `DataView.prototype`, and 20.4.3.5 puts "Symbol" on `Symbol.prototype`.
+// That list (steps 4-14) gives every one of these "Object". They read as
+// themselves only because of step 15: 24.1.3.13 puts "Map" on `Map.prototype`,
+// 24.2.3.12 puts "Set" on `Set.prototype`, 23.2.3.35 puts an accessor over
+// [[TypedArrayName]] on `%TypedArray%.prototype`, 25.1.6.6 puts "ArrayBuffer"
+// on `ArrayBuffer.prototype`, 25.3.4.25 puts "DataView" on `DataView.prototype`,
+// and 20.4.3.6 puts "Symbol" on `Symbol.prototype`.
+//
+// The symbol line is the one that no longer stands in for anything: bronze
+// builds `Symbol.prototype`, so its tag is a real own property of a real object
+// found by the ordinary walk (`cases/symbol_prototype`). The other five
+// prototypes are still unbuilt, and rt_prop.cpp answers for them from the heap
+// kind — the same VALUE by a different route, which is what the case is for.
 //
 // `Math` and `JSON` are different in kind and are here to say so: 21.3.1.9 and
 // 25.5.3 make the tag an OWN property of those two objects, so nothing is

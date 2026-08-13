@@ -31,11 +31,12 @@ namespace bronze::runtime {
 // 1 is ToObject actually need, and it is less than the object itself.
 //
 // The box is deliberately not built, the arrangement `Object.getPrototypeOf`
-// takes for a primitive. Here it buys more than a skipped allocation: a Number
-// object and a Symbol object are boxes bronze cannot make at all, having no
-// `Number.prototype` or `Symbol.prototype` to point them at — and neither has
-// an own property, so `None` is the COMPLETE answer rather than the one bronze
-// can reach. `rtObjectRequirePropertyTable` below stays the gate for
+// takes for a primitive. It buys more than a skipped allocation: a Number
+// object, a Boolean object and a Symbol object have no own property at all, so
+// `None` is the COMPLETE answer rather than the one bronze can reach — and for
+// a symbol it is also the ONLY one, since 20.4.3 gives `Symbol.prototype` no
+// [[SymbolData]] slot and bronze allocates no object that carries one.
+// `rtObjectRequirePropertyTable` below stays the gate for
 // `defineProperty` and `defineProperties`, whose step 1 is "If O is not an
 // Object, throw" (20.1.2.4, 20.1.2.3) and not ToObject.
 enum class ObjectOwnKeys {

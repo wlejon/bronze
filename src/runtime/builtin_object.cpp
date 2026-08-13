@@ -189,8 +189,9 @@ namespace {
 //
 // Step 1 of 20.1.2.12 is ToObject, which is the whole reason a PRIMITIVE has an
 // answer here at all: `Object.getPrototypeOf("x")` is String.prototype, and
-// only `null` and `undefined` are the TypeError (7.1.18). The wrapper ToObject
-// would build is not built — [[GetPrototypeOf]] of one is the intrinsic
+// only `null` and `undefined` are the TypeError (7.1.18). All four primitive
+// kinds with an intrinsic now answer from it, and the wrapper ToObject would
+// build is still not built — [[GetPrototypeOf]] of one is the intrinsic
 // whatever it wraps, so building it would allocate an object to read a constant
 // off it.
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
@@ -203,18 +204,12 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         }
         if (args[0].isString()) return rtStringPrototype().rawBits();
         if (args[0].isBool()) return rtBooleanPrototype().rawBits();
+        if (args[0].isNumber()) return rtNumberPrototype().rawBits();
+        if (args[0].isSymbol()) return rtSymbolPrototype().rawBits();
         // 10.4.6.1 fixes a module namespace's [[Prototype]] at null, and it is
         // immutable — so this is the language's own answer and not the "no
         // prototype object exists" that an array's `null` would have been.
         if (rtIsModuleNamespace(args[0])) return Value::fromNull().rawBits();
-        if (!args[0].isObject()) {
-            // A number's and a symbol's members are still handed out beside the
-            // value, so there is no object to return and no honest way to
-            // invent one: `null` would deny a chain that really does carry
-            // `toFixed`, and `Object.prototype` would name the wrong holder.
-            fatal("unsupported: Object.getPrototypeOf of a number or a symbol needs "
-                  "Number.prototype / Symbol.prototype, which bronze does not provide");
-        }
         fatal("unsupported: Object.getPrototypeOf of an array or a function needs "
               "Array.prototype / Function.prototype, which bronze does not provide");
     }
@@ -579,9 +574,10 @@ uint64_t objectEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
 // enumerable properties" would be two chances to disagree about a getter.
 // 20.1.2.1 step 1's ToObject, and the one place in this file where the box has
 // to be BUILT rather than reasoned about: it is the value `assign` returns, so
-// the program can hold it. The two bronze has — the String and Boolean exotic
-// objects — are built; a number and a symbol are refused by name, which is the
-// same missing intrinsic `Object.getPrototypeOf` of a number names.
+// the program can hold it. The three exotic objects bronze has — String,
+// Boolean and Number — are built; a SYMBOL is refused by name, because 20.4.3
+// gives `Symbol.prototype` no [[SymbolData]] slot and bronze allocates no
+// object that carries one.
 Value toObjectForAssign(Value v) {
     if (v.isNull() || v.isUndefined()) {
         rtThrowTypeError("Object.assign called on a value that is not an object");
@@ -592,10 +588,12 @@ Value toObjectForAssign(Value v) {
         return rtMakeStringWrapper(str);
     }
     if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
+    if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
     if (!v.isObject()) {
-        fatal("unsupported: Object.assign with a number or a symbol as the target (7.1.18 "
-              "boxes it, and bronze has no Number.prototype / Symbol.prototype for the box "
-              "to be an instance of)");
+        fatal("unsupported: Object.assign with a symbol as the target (7.1.18 boxes it in a "
+              "Symbol object, and bronze builds none — 20.4.3 makes Symbol.prototype an "
+              "ordinary object with no [[SymbolData]] slot, so there is nothing for the box "
+              "to be)");
     }
     if (isPlainObject(v)) return v;
     refuseObjectKind(v, "assign");

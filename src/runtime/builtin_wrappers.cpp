@@ -1,6 +1,8 @@
-// The primitive wrapper objects, and the two intrinsic prototypes they and
+// The primitive wrapper objects, and the three intrinsic prototypes they and
 // their primitives share: `String.prototype` (22.1.3), `Boolean.prototype`
-// (20.3.3), the String exotic object (10.4.3) and the Boolean exotic object.
+// (20.3.3), `Number.prototype` (21.1.3), and the exotic objects that carry each
+// wrapped primitive — the String exotic object (10.4.3), the Boolean object and
+// the Number object.
 //
 // These are REAL objects on the real chain, in the sense builtin_object.cpp's
 // `Object.prototype` is one: a program can hold `String.prototype`, compare it,
@@ -43,20 +45,21 @@ namespace bronze::runtime {
 
 namespace {
 
-// The one internal slot a wrapper carries: [[StringData]] or [[BooleanData]]
-// (ECMA-262 6.1.7.2). It is a real field on the object rather than a property
-// under a reserved name, so it is invisible to `Object.keys`, to `for-in`, to
-// `getOwnPropertyNames` AND to `getOwnPropertySymbols`.
+// The one internal slot a wrapper carries: [[StringData]], [[BooleanData]] or
+// [[NumberData]] (ECMA-262 6.1.7.2). It is a real field on the object rather
+// than a property under a reserved name, so it is invisible to `Object.keys`,
+// to `for-in`, to `getOwnPropertyNames` AND to `getOwnPropertySymbols`.
 namespace WrapperSlot {
 enum : uint32_t { Data, kCount };
 }
 
 // The BRAND, and it is the slot count paired with the slot's TYPE rather than
-// the (prototype, count) pair an iterator object uses. The reason is that the
-// two prototypes are themselves wrappers — 22.1.3 makes `String.prototype` a
-// String exotic object with [[StringData]] "" — so their own prototype is
-// `Object.prototype` and a prototype test would exclude the two objects the
-// test most needs to include. The slot's type is what separates the kinds, and
+// the (prototype, count) pair an iterator object uses. The reason is that all
+// three prototypes are themselves wrappers — 22.1.3 makes `String.prototype` a
+// String exotic object with [[StringData]] "", and 21.1.3 makes
+// `Number.prototype` a Number object with [[NumberData]] +0𝔽 — so their own
+// prototype is `Object.prototype` and a prototype test would exclude the very
+// objects the test most needs to include. The slot's type separates them, and
 // it can do that job here because a wrapper's slot holds a primitive of a known
 // type where an iterator's holds whatever it is iterating.
 //
@@ -106,8 +109,10 @@ const NativeMethod kBooleanProtoMethods[] = {
 
 Value g_stringPrototype = Value::fromUndefined();
 Value g_booleanPrototype = Value::fromUndefined();
+Value g_numberPrototype = Value::fromUndefined();
 Shape* g_stringWrapperShape = nullptr;
 Shape* g_booleanWrapperShape = nullptr;
+Shape* g_numberWrapperShape = nullptr;
 // `valueOf`, arena-interned once, so the ToPrimitive guard below can walk a
 // chain without allocating — which is what lets `rtToNumber` keep the promise
 // two callers in rt_prop.cpp rely on, that it cannot move the heap.
@@ -119,6 +124,7 @@ StringHeader* g_valueOfKey = nullptr;
 // about which function that is.
 Value g_pristineStringValueOf = Value::fromUndefined();
 Value g_pristineBooleanValueOf = Value::fromUndefined();
+Value g_pristineNumberValueOf = Value::fromUndefined();
 
 // An OWN data property by arena key, with no allocation and no accessor call.
 // `undefined` for a name the object does not carry.
@@ -141,14 +147,15 @@ Value newWrapper(Shape* shape, Rooted<Value>& data) {
     return Value::fromObject(obj);
 }
 
-// Both prototypes, built by one initializer.
+// All three prototypes, built by one initializer.
 //
-// They are wrappers of their own kind, which is what 22.1.3 and 20.3.3 say they
-// are — `String.prototype` is a String exotic object with [[StringData]] "", so
-// `String.prototype.length` is 0 rather than absent — and their [[Prototype]]
-// is `Object.prototype` rather than each other's. The chain a primitive string
-// walks is therefore String.prototype, Object.prototype, null, exactly as a
-// spec engine's is.
+// They are wrappers of their own kind, which is what 22.1.3, 20.3.3 and 21.1.3
+// say they are — `String.prototype` is a String exotic object with
+// [[StringData]] "", so `String.prototype.length` is 0 rather than absent, and
+// `Number.prototype` is a Number object with [[NumberData]] +0𝔽, so
+// `Number.prototype + 1` is 1 — and their [[Prototype]] is `Object.prototype`
+// rather than each other's. The chain a primitive string walks is therefore
+// String.prototype, Object.prototype, null, exactly as a spec engine's is.
 //
 // They share ONE root shape, and it is not the one `{}` literals start from,
 // for the reason a namespace object has its own: a site reading `"".indexOf`
@@ -170,18 +177,26 @@ void ensureWrapperIntrinsics() {
     Rooted<Value> stringProto{newWrapper(protoShape, emptyString)};
     Rooted<Value> falseValue{Value::fromBool(false)};
     Rooted<Value> booleanProto{newWrapper(protoShape, falseValue)};
+    // 21.1.3: `Number.prototype` is itself a Number object, and its
+    // [[NumberData]] is +0𝔽 — which is what makes `Number.prototype + 1` be 1
+    // rather than NaN, and what puts it in `builtinTag`'s [[NumberData]] arm.
+    Rooted<Value> zero{Value::fromDouble(0.0)};
+    Rooted<Value> numberProto{newWrapper(protoShape, zero)};
 
     // Published before anything is installed on them, for the reentrancy above.
     // Permanent roots rather than plain statics: the collector moves these
     // objects, and the installs below allocate.
     g_stringPrototype = stringProto.get();
     g_booleanPrototype = booleanProto.get();
+    g_numberPrototype = numberProto.get();
     rtHeap().add_permanent_root(&g_stringPrototype);
     rtHeap().add_permanent_root(&g_booleanPrototype);
+    rtHeap().add_permanent_root(&g_numberPrototype);
 
     rtInstallStringMethods(stringProto);
     rtInstallStringPatternMethods(stringProto);
     rtDefineMethods(booleanProto, kBooleanProtoMethods, std::size(kBooleanProtoMethods));
+    rtInstallNumberMethods(numberProto);
 
     // 22.1.3.2 and 20.3.3.1, non-enumerable like everything else here. This is
     // the object `"abc".constructor` answers, and it is the same function
@@ -201,21 +216,35 @@ void ensureWrapperIntrinsics() {
                                                              nullptr, /*enumerable=*/false,
                                                              /*defineOwn=*/true);
     }
+    // 21.1.3.1, and the reason `Number` had to stop being a namespace object:
+    // this back-pointer has to be the same object the bare name resolves to,
+    // and a namespace object is not a constructor for `new Number(1)` to
+    // intercept.
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        Rooted<Value> ctor{rtNumberConstructorObject()};
+        numberProto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor,
+                                                            nullptr, /*enumerable=*/false,
+                                                            /*defineOwn=*/true);
+    }
 
     {
         Rooted<Value> name{rtMakeString("valueOf")};
         g_valueOfKey = StringHeader::internToArena(rtArena(), name.get().asString<StringHeader>());
         g_pristineStringValueOf = readOwn(stringProto.get(), g_valueOfKey);
         g_pristineBooleanValueOf = readOwn(booleanProto.get(), g_valueOfKey);
+        g_pristineNumberValueOf = readOwn(numberProto.get(), g_valueOfKey);
     }
 
     rtHeap().add_permanent_root(&g_pristineStringValueOf);
     rtHeap().add_permanent_root(&g_pristineBooleanValueOf);
+    rtHeap().add_permanent_root(&g_pristineNumberValueOf);
     // Last, because it is what the guard at the top of this function tests: a
     // wrapper cannot be allocated until there is a shape naming its prototype,
     // and nothing above allocates one.
     g_stringWrapperShape = rtNewRootShape(g_stringPrototype);
     g_booleanWrapperShape = rtNewRootShape(g_booleanPrototype);
+    g_numberWrapperShape = rtNewRootShape(g_numberPrototype);
 }
 
 // The `valueOf` an ordinary lookup on this object would find, WITHOUT
@@ -245,6 +274,11 @@ Value rtBooleanPrototype() {
     return g_booleanPrototype;
 }
 
+Value rtNumberPrototype() {
+    ensureWrapperIntrinsics();
+    return g_numberPrototype;
+}
+
 void rtDefineMethods(Rooted<Value>& proto, const NativeMethod* methods, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         Rooted<Value> key{rtMakeString(methods[i].name)};
@@ -269,6 +303,12 @@ Value rtMakeBooleanWrapper(bool value) {
     return newWrapper(g_booleanWrapperShape, data);
 }
 
+Value rtMakeNumberWrapper(double value) {
+    ensureWrapperIntrinsics();
+    Rooted<Value> data{Value::fromDouble(value)};
+    return newWrapper(g_numberWrapperShape, data);
+}
+
 bool rtStringWrapperData(Value v, Value& out) {
     Value data;
     if (!wrapperData(v, data) || !data.isString()) return false;
@@ -279,6 +319,13 @@ bool rtStringWrapperData(Value v, Value& out) {
 bool rtBooleanWrapperData(Value v, Value& out) {
     Value data;
     if (!wrapperData(v, data) || !data.isBool()) return false;
+    out = data;
+    return true;
+}
+
+bool rtNumberWrapperData(Value v, Value& out) {
+    Value data;
+    if (!wrapperData(v, data) || !data.isNumber()) return false;
     out = data;
     return true;
 }
@@ -299,6 +346,14 @@ bool rtThisBooleanValue(Value self, Value& out) {
     return rtBooleanWrapperData(self, out);
 }
 
+bool rtThisNumberValue(Value self, Value& out) {
+    if (self.isNumber()) {
+        out = self;
+        return true;
+    }
+    return rtNumberWrapperData(self, out);
+}
+
 Value rtStringCharAsString(Value str, uint32_t index) {
     StringHeader* s = str.asString<StringHeader>();
     if (index >= s->getLength()) return Value::fromUndefined();
@@ -313,8 +368,8 @@ Value rtStringCharAsString(Value str, uint32_t index) {
 bool rtWrapperPrimitive(Value v, Value& out) {
     Value data;
     if (!wrapperData(v, data)) return false;
-    if (!data.isString() && !data.isBool()) return false;
-    const bool isString = data.isString();
+    if (!data.isString() && !data.isBool() && !data.isNumber()) return false;
+    const char* kind = data.isString() ? "String" : (data.isBool() ? "Boolean" : "Number");
     // This is not 7.1.1 ToPrimitive, which is built and lives in rt_convert.cpp.
     // It is the SHORTCUT the sites that cannot run user code take instead: for a
     // PRISTINE wrapper the answer OrdinaryToPrimitive would produce is exactly
@@ -329,9 +384,11 @@ bool rtWrapperPrimitive(Value v, Value& out) {
     // algorithm, which calls the override. What is left are `rel.lt` and
     // friends, `==`, and ToNumber, each of which holds something the collector
     // would move or sits under an op `il::canThrow` does not mark.
-    const Value pristine = isString ? g_pristineStringValueOf : g_pristineBooleanValueOf;
+    const Value pristine = data.isString()  ? g_pristineStringValueOf
+                           : data.isBool() ? g_pristineBooleanValueOf
+                                           : g_pristineNumberValueOf;
     if (resolvedValueOf(v).rawBits() != pristine.rawBits()) {
-        fatal((std::string("unsupported: ToPrimitive of a ") + (isString ? "String" : "Boolean") +
+        fatal((std::string("unsupported: ToPrimitive of a ") + kind +
                " object whose `valueOf` is not the builtin (7.1.1 OrdinaryToPrimitive calls it, "
                "and bronze answers from the internal slot instead, which an override would "
                "change)")
@@ -400,6 +457,24 @@ bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, 
         // object is TRUTHY whatever is in that slot, which is 7.1.2 ToBoolean
         // of an Object and the single most cited reason not to write this.
         out = rtMakeBooleanWrapper(bronze_truthy(args[0].rawBits()));
+        return true;
+    }
+    if (std::string_view(name) == "Number") {
+        // 21.1.1.1 with NewTarget present: no argument at all is +0𝔽, and
+        // anything else is ToNumeric — which for a SYMBOL is the TypeError
+        // 6.1.5.1 names. Thrown here rather than left to `rtToNumber`, which
+        // makes it a hard error because its callers cannot unwind; this one is
+        // an ordinary builtin and can.
+        if (args.count() == 0) {
+            out = rtMakeNumberWrapper(0.0);
+            return true;
+        }
+        out = rtNumberValueOfArgument(args[0]);
+        if (rtExceptionPending()) {
+            out = Value::fromUndefined();
+            return true;
+        }
+        out = rtMakeNumberWrapper(out.asNumber());
         return true;
     }
     // 22.1.1.1 with NewTarget present: no argument at all is the empty string,

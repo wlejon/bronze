@@ -1,0 +1,18 @@
+true true
+true true
+true true
+true true
+true true
+0 0
+1.00 ff 42
+detached toFixed throws: true
+function false
+false false
+object true true
+7.5 7.5 8.5 true false
+[Number: 1] [Number: 1.5]
+[object Number] [object Number] [object Number]
+42 0 NaN 1 0 NaN
+0 number 31 12
+0 true true
+function true 9007199254740991

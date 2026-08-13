@@ -10,12 +10,12 @@
 //
 // The box is not built for the seven that only READ own keys, which is the
 // arrangement `Object.getPrototypeOf` of a primitive already uses. It buys more
-// than a skipped allocation here: a Number object and a Symbol object are boxes
-// bronze cannot make at all — there is no `Number.prototype` for one to be an
-// instance of (`cases/blocked/get_prototype_of_number`) — and neither has an own
-// property, so the empty answer is COMPLETE rather than the one bronze can
-// reach. `assign` is the exception and has to build its box, because the box is
-// what it returns.
+// than a skipped allocation here: neither a Number object nor a Symbol object
+// has an own property of any kind, so the empty answer is COMPLETE rather than
+// the one bronze can reach — and a Symbol object is one bronze cannot make at
+// all, since 20.4.3 gives `Symbol.prototype` no [[SymbolData]] slot. `assign` is
+// the exception and has to build its box, because the box is what it returns;
+// it is also why a symbol is the one primitive `assign` still refuses.
 //
 // This is about the PRIMITIVE and not about the exotic object: `Object.keys(new
 // String("ab"))` is still refused by name, because reporting a String OBJECT's

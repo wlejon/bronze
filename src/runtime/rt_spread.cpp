@@ -309,10 +309,10 @@ void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
 // - A STRING contributes its index properties — `{ ..."ab" }` is
 //   `{ 0: "a", 1: "b" }` — because 10.4.3 makes them own and enumerable.
 // - A number, a boolean or a symbol contributes nothing, because its box has
-//   no own property at all. The box is not built, for the reason
-//   builtin_object.cpp's `ownKeysOf` does not build one: nothing is the
-//   COMPLETE answer rather than the one bronze can reach, and a Number object
-//   would need the `Number.prototype` bronze has not got.
+//   no own property at all. The box is not built even for a number, whose box
+//   bronze can now make, for the reason builtin_object.cpp's `ownKeysOf` does
+//   not build one: nothing is the COMPLETE answer rather than the one bronze
+//   can reach, so allocating an object to read no keys off it buys nothing.
 void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     Value srcVal(srcBits);
     if (srcVal.isUndefined() || srcVal.isNull()) return;

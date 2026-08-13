@@ -16,8 +16,9 @@
 // digits were consumed. `parseFloat` reads a prefix the same way and accepts
 // "Infinity", which `Number("Infinity")` also does but `parseInt` does not.
 //
-// `Number.prototype.toFixed` is NOT here: it belongs to the Number wrapper
-// rather than the namespace, and it is pinned in cases/blocked/.
+// `Number.prototype.toFixed` is NOT here: it belongs to 21.1.3, the prototype
+// object, where these belong to 21.1.2, the constructor's own properties. The
+// two are pinned in cases/number_methods and cases/number_prototype_chain.
 
 console.log(Number.isInteger(5), Number.isInteger(5.5), Number.isInteger("5"));
 console.log(Number.isNaN(NaN), Number.isNaN("NaN"), Number.isNaN(0 / 0));

@@ -19,9 +19,10 @@
 // three correct empty answers and one two-property answer into a process
 // death. The empty ones are what made the refusal tempting -- a quiet `{}` is
 // the shape of bug that hides longest -- but 20.1.2.1 is explicit, and the box
-// that would have to be built to prove it has no own property to find. Not
-// building it is also what keeps a number source out of `Number.prototype`,
-// which bronze has not got (`cases/blocked/get_prototype_of_number`).
+// that would have to be built to prove it has no own property to find. The
+// box for a number is buildable now (`cases/number_prototype_chain`) and is
+// still not built here, because CopyDataProperties reads own keys and a Number
+// object has none.
 //
 // The last line is the seam that is NOT this: spreading a string into an ARRAY
 // is the iterator walk that `for-of` uses, not CopyDataProperties, and it was

@@ -1,0 +1,9 @@
+1.5 "ab"
+false true
+{"a":1,"b":"x","c":true}
+[1,"y",false]
+null null
+[null]
+0
+{"n":42}
+"via toJSON"

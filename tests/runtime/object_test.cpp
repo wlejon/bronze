@@ -14,6 +14,7 @@
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 
 using namespace bronze;
@@ -267,16 +268,23 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     // A NUMBER target for `Object.assign`, which is the one member here whose
     // primitive case ToObject does not settle. The four that only READ own keys
     // answer a number with the empty answer and never build the box
-    // (`cases/object_own_keys_primitive`); this one has to build it, because
-    // the box is what it returns — and a Number object needs the
-    // `Number.prototype` bronze has not got (`cases/blocked/
-    // get_prototype_of_number`). Handing back a plain object instead would be a
-    // silent lie about the receiver's prototype, so it is named.
+    // (`cases/object_own_keys_primitive`); this one has to BUILD it, because
+    // the box is what it returns — and now it can, because `Number.prototype`
+    // exists for the box to be an instance of.
     Rooted<Value> number{Value::fromDouble(5)};
-    CHECK_THROWS_WITH_AS(
-        call("assign", number, 1),
-        doctest::Contains("Object.assign with a number or a symbol as the target"),
-        std::runtime_error);
+    Rooted<Value> boxed{call("assign", number, 1)};
+    REQUIRE(boxed.get().isObject());
+    Value data;
+    REQUIRE(runtime::rtNumberWrapperData(boxed.get(), data));
+    CHECK(data.asNumber() == 5.0);
+
+    // A SYMBOL is the one primitive still refused, and its reason is not
+    // bronze's coverage: 20.4.3 gives `Symbol.prototype` no [[SymbolData]]
+    // slot, so there is no Symbol object in this runtime for the box to be.
+    Rooted<Value> sym{runtime::rtMakeSymbol(Value::fromUndefined())};
+    CHECK_THROWS_WITH_AS(call("assign", sym, 1),
+                         doctest::Contains("Object.assign with a symbol as the target"),
+                         std::runtime_error);
 
     // `Object.hasOwn` was on the list above and has come off it. The refusal's
     // REASON was accurate — an array's own keys are its elements and a `length`

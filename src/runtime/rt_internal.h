@@ -430,33 +430,41 @@ struct NativeMethod {
 void rtDefineMethods(Rooted<Value>& proto, const NativeMethod* methods, size_t count);
 void rtInstallStringMethods(Rooted<Value>& proto);
 void rtInstallStringPatternMethods(Rooted<Value>& proto);
+void rtInstallNumberMethods(Rooted<Value>& proto);
 
-// `String.prototype` and `Boolean.prototype`: real objects on the real chain,
-// which a primitive reaches by the ordinary prototype walk rather than through
-// a table consulted beside it. A program can hold either, compare it, add to it
-// and pass its methods to `.call` — where an array's and a function's members
-// are still handed out BESIDE the value.
+// `String.prototype`, `Boolean.prototype` and `Number.prototype`: real objects
+// on the real chain, which a primitive reaches by the ordinary prototype walk
+// rather than through a table consulted beside it. A program can hold any of
+// them, compare it, add to it and pass its methods to `.call` — where an
+// array's and a function's members are still handed out BESIDE the value.
+//
+// `Symbol.prototype` is the fourth and lives in symbol.h, because 20.4.3 makes
+// it an ordinary object rather than a wrapper.
 Value rtStringPrototype();
 Value rtBooleanPrototype();
+Value rtNumberPrototype();
 
-// The String (10.4.3) and Boolean (20.3) exotic objects: a plain object with
-// one internal slot holding the wrapped primitive, and the matching intrinsic
-// on its chain.
+// The String (10.4.3), Boolean (20.3) and Number (21.1) exotic objects: a plain
+// object with one internal slot holding the wrapped primitive, and the matching
+// intrinsic on its chain.
 Value rtMakeStringWrapper(Rooted<Value>& str);
 Value rtMakeBooleanWrapper(bool value);
+Value rtMakeNumberWrapper(double value);
 
-// The [[StringData]] / [[BooleanData]] of a wrapper; false for every other
-// value. The brand is the internal-slot count paired with the slot's type —
-// builtin_wrappers.cpp says why it is not the (prototype, count) pair an
-// iterator object uses.
+// The [[StringData]] / [[BooleanData]] / [[NumberData]] of a wrapper; false for
+// every other value. The brand is the internal-slot count paired with the
+// slot's type — builtin_wrappers.cpp says why it is not the (prototype, count)
+// pair an iterator object uses.
 bool rtStringWrapperData(Value v, Value& out);
 bool rtBooleanWrapperData(Value v, Value& out);
+bool rtNumberWrapperData(Value v, Value& out);
 
-// 22.1.3.35 thisStringValue / 20.3.3.3 thisBooleanValue: the primitive itself,
-// or a wrapper's slot. False for anything else, which the caller reports as the
-// TypeError those clauses name.
+// 22.1.3.35 thisStringValue / 20.3.3.3 thisBooleanValue / 21.1.3's
+// thisNumberValue: the primitive itself, or a wrapper's slot. False for
+// anything else, which the caller reports as the TypeError those clauses name.
 bool rtThisStringValue(Value self, Value& out);
 bool rtThisBooleanValue(Value self, Value& out);
+bool rtThisNumberValue(Value self, Value& out);
 
 // One code unit of a string, as a String of length 1 — 10.4.3.5's answer, and
 // the value `s[i]` is. `undefined` past the end. ALLOCATES.
@@ -583,8 +591,17 @@ bool rtModuleNamespaceWriteRefused(Value nsVal, const std::string& key, bool str
 // wrapper IS the instance rather than something a body fills in.
 bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, Value& out);
 
-Value rtNumberNamespace();
-void rtNumberCheckMissingMember(Value obj, const std::string& key);
+// 21.1.1.1's body as a conversion, and its step 1 pulled out so the `new` form
+// can run the same one. `rtNumberValueOfArgument` is ToNumeric, exception
+// included: a SYMBOL is the TypeError 6.1.5.1 names, THROWN here where
+// `rtToNumber` can only be fatal.
+uint64_t rtNumberConstructorBody(uint64_t env, uint64_t thisBits, uint32_t argc,
+                                 const uint64_t* argv);
+Value rtNumberValueOfArgument(Value v);
+// 21.1.2's fourteen own properties of `Number`, as non-enumerable own
+// properties of the function object. Idempotent; `rtNativeFunction` interns on
+// the code pointer, so every route reaches the one object.
+void rtInstallNumberStatics(Rooted<Value>& fn);
 
 // The four function properties of the global object that ECMA-262 19.2
 // defines over numbers: `isNaN`, `isFinite`, `parseInt`, `parseFloat`.
@@ -592,12 +609,9 @@ void rtNumberCheckMissingMember(Value obj, const std::string& key);
 // because two of them ARE the `Number` statics, interned by code pointer.
 Value rtGlobalNumericFunction(const std::string& name);
 
-// `Number.prototype`, reached by a property read on a PRIMITIVE number the
-// way `String.prototype` already is. `undefined` for a name that is not an
-// implemented method, so the caller falls through to the unimplemented-member
-// table and then to the language's own answer for a property that is not
-// there.
-Value rtNumberMethod(const std::string& key);
+// A name 21.1.3 defines on `Number.prototype` and bronze has not built,
+// diagnosed rather than read as `undefined`. Asked only after the intrinsic
+// itself has missed.
 void rtCheckNumberProtoMember(const std::string& key);
 
 Value rtJsonNamespace();
@@ -751,6 +765,7 @@ Value rtGlobalConstructor(const std::string& name);
 Value rtArrayConstructorObject();
 Value rtStringConstructorObject();
 Value rtBooleanConstructorObject();
+Value rtNumberConstructorObject();
 
 // A member read on one of those constructor objects. True — with `out` set —
 // only when it was answered; a name ECMA-262 defines and bronze has not built

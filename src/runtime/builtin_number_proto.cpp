@@ -1,11 +1,17 @@
-// `Number.prototype` — the four formatting methods (ECMA-262 21.1.3).
+// `Number.prototype`'s members — the four formatting methods and `valueOf`
+// (ECMA-262 21.1.3).
 //
 // Split from builtin_number.cpp along the line ECMA-262 itself draws: that file
-// is the `Number` NAMESPACE, whose members are statics reached through an
-// object a program holds, and this one is the WRAPPER's methods, reached
-// through a property read on a primitive. bronze has no Number wrapper object,
-// so the property path hands these out directly the way it already does for
-// `String.prototype`.
+// is the `Number` CONSTRUCTOR and the statics of 21.1.2, and this one is
+// 21.1.3, the members a NUMBER answers with. The object they are installed on
+// is built in builtin_wrappers.cpp beside the other two intrinsic prototypes,
+// because 21.1.3 makes it a Number object and that file owns what a wrapper is.
+//
+// They are installed on that object rather than handed out beside the value,
+// which is the difference between a member that can be REACHED and one that can
+// only be produced: `Object.getPrototypeOf(1).toFixed` and `(1).toFixed` are one
+// function object found by one prototype walk, and a program can hold the
+// holder.
 //
 // All four are defined on the exact real number the double denotes, which is
 // why every digit below comes from `exact_decimal.h` and none from printf or a
@@ -13,6 +19,7 @@
 // that answers "1.01" is wrong in exactly the code that calls toFixed.
 
 #include <cmath>
+#include <iterator>
 #include <string>
 
 #include "abi/bronze_abi.h"
@@ -20,6 +27,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/gc.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -29,16 +37,18 @@ namespace bronze::runtime {
 
 namespace {
 
-// 21.1.3's thisNumberValue: bronze has no Number wrapper, so the receiver is
-// the primitive or it is a TypeError. A non-number reaching here means the
-// method object escaped its receiver, which a program can do.
+// 21.1.3's thisNumberValue: the primitive itself, or a Number object's
+// [[NumberData]]. Anything else is the TypeError the clause names, and it is
+// reachable — `Number.prototype.toFixed.call("x")` is a program detaching the
+// method from its receiver.
 bool thisNumber(Value self, const char* method, double& out) {
-    if (!self.isNumber()) {
+    Value number;
+    if (!rtThisNumberValue(self, number)) {
         rtThrowTypeError(std::string("Number.prototype.") + method +
                          " called on a value that is not a number");
         return false;
     }
-    out = self.asNumber();
+    out = number.asNumber();
     return true;
 }
 
@@ -257,13 +267,7 @@ uint64_t numberValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return Value::fromDouble(x).rawBits();
 }
 
-struct NumberMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
-
-const NumberMethod kNumberMethods[] = {
+const NativeMethod kNumberProtoMethods[] = {
     {"toFixed", numberToFixed, 1},
     {"toExponential", numberToExponential, 1},
     {"toPrecision", numberToPrecision, 1},
@@ -275,19 +279,17 @@ const NumberMethod kNumberMethods[] = {
 // `toLocaleString` is here for the reason `Math.random` is on Math's list:
 // bronze has no locale data and deterministic output is a house rule, so a
 // locale-formatted number needs a decision before it can have an
-// implementation.
+// implementation. `constructor` LEFT this list when the prototype became a real
+// object — 21.1.3.1 is an ordinary property of it now, wired where the two
+// intrinsics are built.
 const char* const kNumberProtoMembers[] = {
-    "constructor",
     "toLocaleString",
 };
 
 }  // namespace
 
-Value rtNumberMethod(const std::string& key) {
-    for (const NumberMethod& m : kNumberMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
-    }
-    return Value::fromUndefined();
+void rtInstallNumberMethods(Rooted<Value>& proto) {
+    rtDefineMethods(proto, kNumberProtoMethods, std::size(kNumberProtoMethods));
 }
 
 void rtCheckNumberProtoMember(const std::string& key) {

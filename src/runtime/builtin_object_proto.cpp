@@ -328,18 +328,18 @@ uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_
 //   - [[ErrorData]] is `rtIsErrorInstance`, a walk to `Error.prototype`. bronze
 //     builds every error from one of five constructors whose prototypes all
 //     chain to it, so the walk is the brand.
-//   - [[BooleanData]] and [[StringData]] are the wrappers' internal slots, read
-//     through the same accessors `valueOf` uses.
-//   - [[NumberData]] has no object to hold it — bronze has no `Number.prototype`
-//     and so no Number wrapper — but a PRIMITIVE number still reaches this with
-//     `.call(5)`, and its tag is fixed whether or not the box is built.
+//   - [[BooleanData]], [[StringData]] and [[NumberData]] are the wrappers'
+//     internal slots, read through the same accessors `valueOf` uses.
 //   - [[DateValue]] cannot occur: bronze has no `Date`, so no receiver can have
 //     one, and a branch for it would name a kind nothing can produce.
 const char* builtinTag(Value self) {
     if (self.isNumber()) return "Number";   // step 9, via the box that is not built
     if (self.isString()) return "String";   // step 10
     if (self.isBool()) return "Boolean";    // step 8
-    if (!self.isObject()) return "Object";  // a symbol: its tag comes from @@toStringTag
+    // A symbol reaches none of steps 4-14, so its tag is step 14's "Object" and
+    // the real answer comes from step 15: `Symbol.prototype[@@toStringTag]` is
+    // the string "Symbol" (20.4.3.6), found by the ordinary walk.
+    if (!self.isObject()) return "Object";
     switch (self.asObject<HeapObjectHeader>()->flags) {
         case HeapKind::Array:
             return rtIsArgumentsObject(self) ? "Arguments" : "Array";
@@ -353,6 +353,7 @@ const char* builtinTag(Value self) {
     if (rtIsErrorInstance(self)) return "Error";
     if (Value data; rtStringWrapperData(self, data)) return "String";
     if (Value data; rtBooleanWrapperData(self, data)) return "Boolean";
+    if (Value data; rtNumberWrapperData(self, data)) return "Number";
     // Everything else — a plain object, a Map, a Set, a typed array, a module
     // namespace — is step 14's "Object", and reads as something else only if
     // step 15's @@toStringTag says so.

@@ -5,19 +5,17 @@
 //
 // 7.3.2 GetV boxes a primitive and reads the box. bronze does not build the
 // box, because for every member that exists it is unobservable — so what these
-// branches decide is where the answer comes from instead. Two arrangements live
-// here, and the difference between them is the difference between a member that
-// can be reached and one that can only be handed out:
+// branches decide is where the answer comes from instead, and the answer is now
+// the same shape for every one of the four: a REAL intrinsic prototype object,
+// walked by the ordinary prototype chain with the PRIMITIVE as the receiver.
 //
-//   A string reaches `String.prototype` and a boolean reaches
-//   `Boolean.prototype`, which are REAL objects, walked by the ordinary
-//   prototype chain. That is what gives an index somewhere to fall through TO
-//   (10.4.3.5), and it is why `"abc"[0]` can answer at all.
-//
-//   A number and a symbol still get their members handed out BESIDE the value
-//   from a table. `Number` is a namespace object in bronze and not a
-//   constructor, so there is no `Number.prototype` for one to point at yet;
-//   that is its own gap and named as one.
+// That uniformity is recent and it is the point. A string reaching
+// `String.prototype` is what gives an index somewhere to fall through TO
+// (10.4.3.5), and it is why `"abc"[0]` can answer at all. A number reaching
+// `Number.prototype` is what makes `Object.getPrototypeOf(1)` an object a
+// program can name, and what makes the `toFixed` it finds there the same
+// function object `(1).toFixed` is — where a table consulted beside the value
+// has no holder for either question to be about.
 
 #include <string>
 
@@ -97,6 +95,33 @@ Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key
     return Value::fromUndefined();
 }
 
+Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+    Rooted<Value> self{numVal};
+    const Value found = protoMember(rtNumberPrototype(), self, key, ic);
+    if (!found.isUndefined()) return found;
+    // The two holders on this chain, nearest first: 21.1.3 has one name bronze
+    // has not built, and then `Object.prototype` has its own. Answering
+    // `undefined` without asking either is what made `(1.5).toFixed(2)` die as
+    // "undefined is not a function" instead of naming the member.
+    rtCheckNumberProtoMember(keyStr);
+    rtObjectProtoCheckMissingMember(keyStr);
+    return Value::fromUndefined();
+}
+
+Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+    Rooted<Value> self{symVal};
+    const Value found = protoMember(rtSymbolPrototype(), self, key, ic);
+    // No nearer unimplemented holder to name: 20.4.3 defines `constructor`,
+    // `description`, `toString`, `valueOf` and two SYMBOL-keyed members, and
+    // bronze answers every string-keyed one of them. So an `undefined` here is
+    // either 20.4.3.2's own answer for a symbol with no description — which is
+    // why this does not treat `undefined` as a miss worth diagnosing — or a
+    // genuine miss for `Object.prototype` to have the last word on.
+    if (!found.isUndefined()) return found;
+    rtObjectProtoCheckMissingMember(keyStr);
+    return Value::fromUndefined();
+}
+
 }  // namespace
 
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
@@ -108,31 +133,8 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
     Rooted<Value> key{Value::fromString(keyHeader)};
     if (objVal.isString()) return stringMember(objVal, keyStr, key, ic);
     if (objVal.isBool()) return booleanMember(objVal, keyStr, key, ic);
-    // A primitive NUMBER. Answering `undefined` here is what made
-    // `(1.5).toFixed(2)` die as "undefined is not a function" instead of naming
-    // the member, which is the silent fallback the loud-member rule exists to
-    // prevent.
-    if (objVal.isNumber()) {
-        const Value method = rtNumberMethod(keyStr);
-        if (!method.isUndefined()) return method;
-        rtCheckNumberProtoMember(keyStr);
-        // `Number.prototype` is the table above, and 21.1.3 makes
-        // `Object.prototype` the next link. bronze has no object for the first,
-        // which is why the walk is one step here and two in the language — and
-        // it is exact, because a 21.1.3 member is either answered by the table
-        // or refused by it and so can never reach this line.
-        Rooted<Value> self{objVal};
-        return rtObjectProtoMember(self, keyStr);
-    }
-    // A primitive SYMBOL — `sym.toString()`, `sym.description`.
-    if (objVal.isSymbol()) {
-        Rooted<Value> self{objVal};
-        const Value found = rtSymbolMember(self.get(), keyStr);
-        if (!found.isUndefined()) return found;
-        // 20.4.3's own members have answered or been refused by name; what is
-        // left is `Symbol.prototype`'s own next link.
-        return rtObjectProtoMember(self, keyStr);
-    }
+    if (objVal.isNumber()) return numberMember(objVal, keyStr, key, ic);
+    if (objVal.isSymbol()) return symbolMember(objVal, keyStr, key, ic);
     // Everything a program can name has a branch above; what is left is a tag
     // no program can hold — a hole sentinel that escaped an array. That is not
     // "a property that happens to be absent", so it may not answer `undefined`.

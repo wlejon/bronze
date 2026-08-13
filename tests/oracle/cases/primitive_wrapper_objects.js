@@ -19,9 +19,10 @@
 // program received `{}`, and `new String("ab").length` read `undefined`. So
 // `bronze_construct` builds the wrapper INSTEAD of entering the body.
 //
-// `Number` is deliberately absent and is not the same gap: `Number` is a
-// namespace object in bronze and not a constructor at all, so it has no `new`
-// form to intercept.
+// `new Number(x)` is the third of these and lives in
+// `cases/number_prototype_chain`, beside the intrinsic it needed: `Number` was
+// a namespace object rather than a constructor when this case was written, so
+// there was no `new` form to intercept.
 //
 // What this pins, from 22.1.1.1 (String as a constructor), 10.4.3 (String
 // exotic objects), 20.3.1.1 (Boolean), 7.2.15 (IsLooselyEqual) and 7.1.2

@@ -281,6 +281,8 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
     // Step 2's ToObject would box. A String exotic object's own keys are
     // 10.4.3.4's `length` and 10.4.3.5's one property per code unit; the other
     // three wrappers have none at all, so the answer is false whatever the key.
+    // That stays true of a NUMBER now that its box is buildable: `toFixed` is a
+    // member of `Number.prototype`, which is inherited and not own.
     SUBCASE("a primitive, whose box bronze does not build and does not need") {
         Rooted<Value> s{rtMakeString("ab")};
         CHECK(hasOwn(s, "0"));
