@@ -362,6 +362,8 @@ const char* builtinTag(Value self) {
     return "Object";
 }
 
+}  // namespace
+
 // 20.1.3.6 Object.prototype.toString.
 //
 // Its receiver rule is the one thing here that is not the ordinary one: steps 1
@@ -374,7 +376,7 @@ const char* builtinTag(Value self) {
 // none; this one needs a tag, and every kind has one — which is exactly why
 // `Object.prototype.toString.call(x)` is the type probe real code uses it as,
 // and why making it die on a Map would be worse than useless.
-uint64_t objectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (self.isUndefined()) return rtMakeString("[object Undefined]").rawBits();
     if (self.isNull()) return rtMakeString("[object Null]").rawBits();
@@ -408,6 +410,8 @@ uint64_t objectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64
     return rtMakeString("[object " + tag + "]").rawBits();
 }
 
+namespace {
+
 // 20.1.3.5 Object.prototype.toLocaleString: `Invoke(O, "toString")` with no
 // arguments, and nothing else. No locale is consulted — the name is a hook the
 // subclasses of 21.1.3.4, 23.1.3.32 and friends override, and the base
@@ -436,7 +440,7 @@ const NativeMethod kObjectProtoMethods[] = {
     {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
     {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1},
     {"toLocaleString", objectProtoToLocaleString, 0},
-    {"toString", objectProtoToString, 0},
+    {"toString", rtObjectProtoToString, 0},
     {"valueOf", objectProtoValueOf, 0},
 };
 

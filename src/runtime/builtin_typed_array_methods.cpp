@@ -435,7 +435,7 @@ const Method kMethods[] = {
     {"set", taSet, 0},           {"subarray", taSubarray, 0}, {"slice", taSlice, 0},
     {"fill", taFill, 0},         {"copyWithin", taCopyWithin, 0},
     {"forEach", taForEach, 1},   {"map", taMap, 1},           {"indexOf", taIndexOf, 0},
-    {"includes", taIncludes, 0}, {"join", taJoin, 0},
+    {"includes", taIncludes, 0}, {"join", taJoin, 0},         {"toString", rtArrayToStringBuiltin, 0},
 };
 
 }  // namespace

@@ -526,6 +526,29 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     return acc.get().rawBits();
 }
 
+}  // namespace
+
+// 23.1.3.33 Array.prototype.toString.
+// 23.2.3.31 makes %TypedArray%.prototype.toString the SAME function object,
+// so this body is shared between both.
+uint64_t rtArrayToStringBuiltin(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (self.get().isNull() || self.get().isUndefined()) {
+        return rtThrowTypeError("Array.prototype.toString called on null or undefined").rawBits();
+    }
+    Rooted<Value> joinKey{rtMakeString("join")};
+    Rooted<Value> func{Value(bronze_elem_get(self.get().rawBits(), joinKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    if (!func.get().isObject() ||
+        func.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return rtObjectProtoToString(0, self.get().rawBits(), 0, nullptr);
+    }
+    return bronze_dynamic_call(func.get().rawBits(), self.get().rawBits(), 0, nullptr);
+}
+
+namespace {
+
 // ---- iteration ------------------------------------------------------------
 
 uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -743,6 +766,7 @@ const ArrayMethod kArrayMethods[] = {
     {"some", arraySome, 1},
     {"sort", rtArraySortBuiltin, 1},
     {"splice", arraySplice, 0},
+    {"toString", rtArrayToStringBuiltin, 0},
     {"unshift", arrayUnshift, 0},
     {"values", rtArrayValuesBuiltin, 0},
 };

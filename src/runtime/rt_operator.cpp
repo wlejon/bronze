@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -496,17 +497,37 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         return objRoot.get().isObject() &&
                objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
     }
+    if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
+        if (!objRoot.get().isObject()) return false;
+        const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
+        if (std::strcmp(name, "ArrayBuffer") == 0) {
+            return flags == ArrayBufferHeader::kFlags;
+        }
+        if (flags == TypedArrayHeader::kFlags) {
+            auto* view = objRoot.get().asObject<TypedArrayHeader>();
+            return std::strcmp(view->kindName(), name) == 0;
+        }
+        return false;
+    }
+    if (rtDataViewConstructorName(ctorRoot.get())) {
+        if (!objRoot.get().isObject()) return false;
+        return objRoot.get().asObject<HeapObjectHeader>()->flags == DataViewHeader::kFlags;
+    }
     // A primitive left operand has no prototype chain, so the answer is
     // false — not an error, which is what makes `x instanceof C` a safe
     // guard on an unknown value.
     if (!objRoot.get().isObject()) return false;
-    if (objRoot.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
-        return false;  // arrays, functions, typed arrays
-    }
 
     rtEnsureFunctionPrototype(ctorRoot);
     Value proto = ctorRoot.get().asObject<FunctionHeader>()->prototype;
     if (!proto.isObject()) return false;
+
+    if (objRoot.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+        if (proto.rawBits() == rtObjectPrototype().rawBits()) {
+            return true;
+        }
+        return false;  // arrays, functions, typed arrays
+    }
 
     // The walk compares OBJECT IDENTITY at each link, which is why the
     // prototype has to be materialized above: a constructor whose

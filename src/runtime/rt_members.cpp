@@ -26,7 +26,7 @@ namespace {
 // real. `sort`, `splice` and the three iterator methods left when they landed.
 const char* const kArrayMembers[] = {
     "copyWithin", "flat", "flatMap",
-    "toLocaleString", "toReversed", "toSorted", "toSpliced", "toString", "with",
+    "toLocaleString", "toReversed", "toSorted", "toSpliced", "with",
 };
 
 // String.prototype, on the same rule — and the answering side is the
@@ -61,7 +61,7 @@ const char* const kStringMembers[] = {
 // function bronze did not compile refuses them there with a message about its
 // own missing answer rather than about an unimplemented prototype member.
 const char* const kFunctionMembers[] = {
-    "constructor", "toString",
+    "constructor",
 };
 
 }  // namespace

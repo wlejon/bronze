@@ -826,10 +826,14 @@ bool rtArrayHasMember(const std::string& key);
 // the SAME function object — an identity the code-pointer intern table gives
 // for free.
 uint64_t rtArraySortBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtArrayToStringBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                                const uint64_t* argv);
 uint64_t rtArrayValuesBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
                               const uint64_t* argv);
 uint64_t rtArrayKeysBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t rtArrayEntriesBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                               const uint64_t* argv);
+uint64_t rtObjectProtoToString(uint64_t env, uint64_t thisBits, uint32_t argc,
                                const uint64_t* argv);
 
 // The `Array.prototype` OBJECT — the value the expression denotes, built from

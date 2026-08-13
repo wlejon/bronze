@@ -261,7 +261,7 @@ const char* const kTypedArrayUnimplemented[] = {
     "at",         "entries",     "every",    "filter",  "find",        "findIndex",
     "findLast",   "findLastIndex", "keys",   "lastIndexOf", "reduce",  "reduceRight",
     "reverse",    "some",        "sort",     "toLocaleString", "toReversed", "toSorted",
-    "toString",   "values",      "with",
+    "values",     "with",
 };
 
 // Real members of `ArrayBuffer.prototype`, minus `byteLength`, which is real.

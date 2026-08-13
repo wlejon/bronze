@@ -92,6 +92,18 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), count, block.data());
 }
 
+// 20.2.3.5 Function.prototype.toString().
+uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self(thisBits);
+    if (!requireFunctionReceiver(self, "toString")) return Value::fromUndefined().rawBits();
+    auto* fn = self.asObject<FunctionHeader>();
+    if (fn->name && fn->name->getLength() > 0) {
+        std::string name = rtUtf8Chars(fn->name);
+        return rtMakeString("function " + name + "() { [native code] }").rawBits();
+    }
+    return rtMakeString("function () { [native code] }").rawBits();
+}
+
 struct FunctionMethod {
     const char* name;
     bronze_fn_code code;
@@ -102,6 +114,7 @@ const FunctionMethod kFunctionMethods[] = {
     {"apply", functionApply, 2},
     {"bind", rtFunctionBindBuiltin, 1},
     {"call", functionCall, 1},
+    {"toString", functionToString, 0},
 };
 
 }  // namespace
