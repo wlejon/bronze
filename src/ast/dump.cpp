@@ -130,7 +130,7 @@ public:
     // of the node is not the operand's, it is whatever resumed the generator,
     // so a dump that showed only the operand would show a different tree.
     void visit(const YieldExpr& n) override {
-        emit("(yield");
+        emit(n.delegate ? "(yield*" : "(yield");
         indented([&] { n.argument->accept(*this); });
         emit(")");
     }

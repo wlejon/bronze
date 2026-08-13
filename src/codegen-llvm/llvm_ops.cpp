@@ -230,6 +230,17 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
+        case il::Op::IterDelegate: {
+            if (!needs(3, true, "Invalid operands for IterDelegate")) return false;
+            const char* what = "Undefined operand in an IterDelegate instruction";
+            llvm::Value* rec = operand(inst, 0, what);
+            llvm::Value* mode = operand(inst, 1, what);
+            llvm::Value* sent = operand(inst, 2, what);
+            if (!rec || !mode || !sent) return false;
+            callWith(abi.bronze_iter_delegate, {rec, mode, sent});
+            return true;
+        }
+
         case il::Op::IterClose: {
             if (!needs(1, false, "Invalid operands for IterClose")) return false;
             llvm::Value* rec = operand(inst, 0, "Undefined record in IterClose instruction");

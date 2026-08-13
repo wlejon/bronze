@@ -204,7 +204,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* yield = dynamic_cast<const ast::YieldExpr*>(&expr)) {
-        return lowerYield(*yield, ilFn);
+        return yield->delegate ? lowerYieldStar(*yield, ilFn) : lowerYield(*yield, ilFn);
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
         auto it = activeVarMap_.find(ident->name);

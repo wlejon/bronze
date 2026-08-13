@@ -3,8 +3,8 @@
 // `function* g(a) { ... }` becomes two IL functions. `g` itself never runs the
 // body — 15.5.3 says calling a generator function evaluates none of it. It
 // creates one environment record holding everything the body will need (its
-// parameters, its receiver, every binding it declares, and two slots of the
-// machine's own), closes the resume function over that record, and returns a
+// parameters, its receiver, every binding it declares, and the machine's own
+// slots), closes the resume function over that record, and returns a
 // generator object carrying the closure as its [[GeneratorContext]].
 //
 // `g.resume(__env, __mode, __sent)` is the body. Its entry block dispatches on
@@ -29,6 +29,9 @@
 // `Lowerer::currentEnv` re-derives the record innermost at each point by
 // walking DOWN from the frame instead of carrying it in a value.
 //
+// `yield*` is the same machine with a loop at one suspension point, and it is
+// enough of a protocol to live next door: lower_yield_star.cpp.
+//
 // The runtime owns [[GeneratorState]] (27.5.1.1) and therefore owns the two
 // rules this file does not implement: resuming a generator that is already
 // executing is a TypeError, and a completed one answers
@@ -44,29 +47,25 @@
 namespace bronze::lower {
 
 namespace {
-// The two frame slots the machine owns. Dotted, for the reason every other
-// synthesized name here is: a source identifier cannot contain a dot, so
-// neither of these can be shadowed by — or confused with — a binding a program
-// wrote.
+// The frame slots the machine owns. Dotted, for the reason every other
+// synthesized name here is: a source identifier cannot contain a dot, so none
+// of these can be shadowed by — or confused with — a binding a program wrote.
 constexpr const char* kStateSlot = "gen.state";
 constexpr const char* kEnvSlot = "gen.env";
+// The third, present only in a body that delegates: see GeneratorContext's
+// `iterSlot` for why one slot serves every `yield*` in a body.
+constexpr const char* kIterSlot = "gen.iter";
 
 // The resume index that means "the walk is over". Never dispatched to: the
 // runtime latches [[GeneratorState]] the moment a result says `done`, so the
 // body is not re-entered. Written anyway, so that the machine is consistent
 // read on its own — the dispatch's final `else` answers `done` for it.
 constexpr double kCompletedState = -1.0;
-
-// How `next`, `return` and `throw` reach the body. Mirrors GeneratorSlot's
-// GeneratorResumeMode in the runtime; the two are pinned against each other by
-// tests/lower/lower_generator_test.cpp and by every oracle case that drives a
-// generator by hand.
-constexpr double kModeThrow = 2.0;
-constexpr double kModeReturn = 1.0;
 }  // namespace
 
 const char* Lowerer::generatorStateSlotName() { return kStateSlot; }
 const char* Lowerer::generatorEnvSlotName() { return kEnvSlot; }
+const char* Lowerer::generatorIterSlotName() { return kIterSlot; }
 
 Lowerer::Value Lowerer::emitConstF64(double value, il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
@@ -243,7 +242,7 @@ std::optional<Lowerer::Value> Lowerer::lowerYield(const ast::YieldExpr& yield,
     cmpThrow.op = il::Op::CmpEq;
     cmpThrow.type = il::Type::Bool;
     cmpThrow.result = isThrow;
-    cmpThrow.operands = {mode, emitConstF64(kModeThrow, ilFn).id};
+    cmpThrow.operands = {mode, emitConstF64(GeneratorContext::kModeThrow, ilFn).id};
     emitInst(ilFn, cmpThrow);
     il::Instruction branchAbrupt;
     branchAbrupt.op = il::Op::Branch;
@@ -366,6 +365,10 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     context.modeParam = 1;
     context.sentParam = 2;
     context.stateSlot = envScopes_[frameScope].slotOf.at(kStateSlot);
+    if (auto it = envScopes_[frameScope].slotOf.find(kIterSlot);
+        it != envScopes_[frameScope].slotOf.end()) {
+        context.iterSlot = it->second;
+    }
     auto outerGenerator = std::move(generator_);
     generator_ = std::move(context);
 

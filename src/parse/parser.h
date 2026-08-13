@@ -212,7 +212,7 @@ private:
         }
         ~GeneratorScopeGuard() { p.inGeneratorBody_ = savedInBody; }
     };
-    // `yield` / `yield <expr>` under the cursor, and the refusal for `yield*`.
+    // `yield`, `yield <expr>` and `yield* <expr>` under the cursor.
     // Null on a diagnosed error.
     ast::ExprPtr parseYieldExpr();
 

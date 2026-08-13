@@ -4,7 +4,7 @@ bronze_add_module(lower
             lower_update.cpp
             lower_object.cpp lower_pattern.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
-            lower_try.cpp lower_unresolved.cpp
+            lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp
     DEPS ast il support types
     TEST_SOURCES ../../tests/lower/lower_test.cpp ../../tests/lower/lower_jumps_test.cpp
                  ../../tests/lower/lower_try_test.cpp ../../tests/lower/lower_infer_test.cpp

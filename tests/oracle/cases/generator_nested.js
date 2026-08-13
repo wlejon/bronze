@@ -19,12 +19,13 @@
 //   its own execution context (27.5.1.2), so two walks of one function
 //   interleave without sharing a position.
 //
-// NOT IN THIS CASE, and refused by name rather than answered wrongly:
-// `yield* inner()`, the syntax that would replace the hand-written driver
-// below. Delegation (27.5.3.7) is a second walk suspended inside the outer one,
-// including forwarding `next`, `return` and `throw` through to the inner
-// iterator; `src/parse/parser_generator.cpp` reports
-// "unsupported construct: `yield*` (delegation to another iterable)".
+// The driver below is written BY HAND on purpose. `yield* inner()` is the
+// syntax for it and is pinned in cases/generator_delegation.js, but the two are
+// not the same program: 27.5.3.7 forwards `next`, `return` and `throw` through
+// to the inner iterator, and this loop forwards only `next`. What is pinned
+// here is that the hand-written form still works — a generator object driven
+// from inside another generator body is an ordinary object being used
+// ordinarily.
 
 // --- one generator driving another by hand --------------------------------
 function* inner() {

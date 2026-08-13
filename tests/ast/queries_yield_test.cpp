@@ -98,6 +98,44 @@ TEST_CASE("containsYield finds a suspension at any depth, and stops at a functio
     CHECK(ast::containsYield(*firstGeneratorBody(*sibling->mod)));
 }
 
+TEST_CASE("yieldFormsIn separates `yield` from `yield*`") {
+    // The exhaustive walk, and the reason it cannot stop at the first hit: two
+    // consumers ask WHICH forms are here, and one of them — the lifter's
+    // refusal — has to name every form in a position, not the first one found.
+    auto plain = parse("function* g() { yield 1; }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*plain->mod)) == ast::YieldForms::Plain);
+    CHECK_FALSE(ast::hasDelegating(ast::yieldFormsIn(*firstGeneratorBody(*plain->mod))));
+
+    auto delegating = parse("function* g() { yield* xs; }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*delegating->mod)) == ast::YieldForms::Delegating);
+    CHECK(ast::hasDelegating(ast::yieldFormsIn(*firstGeneratorBody(*delegating->mod))));
+
+    // Both, and the delegation is written SECOND — an answer that quit at the
+    // first suspension would report only the plain one.
+    auto both = parse("function* g() { yield 1; if (a) { yield* xs; } }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*both->mod)) == ast::YieldForms::Both);
+    CHECK(ast::hasDelegating(ast::yieldFormsIn(*firstGeneratorBody(*both->mod))));
+
+    auto none = parse("function* g() { const x = 1; return x; }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*none->mod)) == ast::YieldForms::None);
+
+    // The same boundary the boolean has: a nested generator's delegation is not
+    // this body's, so the frame here needs no slot for one.
+    auto nested = parse("function* g() { function* i() { yield* xs; } return i; }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*nested->mod)) == ast::YieldForms::None);
+
+    // A delegation nested INSIDE a suspension's operand is still this body's,
+    // which is what makes `yield_lift` hoist the inner one out.
+    auto inOperand = parse("function* g() { yield (yield* xs); }");
+    CHECK(ast::yieldFormsIn(*firstGeneratorBody(*inOperand->mod)) == ast::YieldForms::Both);
+
+    // The names a refusal uses. Three, because a position holding both forms
+    // must not be reported as holding one of them.
+    CHECK(std::string(ast::yieldFormName(ast::YieldForms::Plain)) == "a `yield`");
+    CHECK(std::string(ast::yieldFormName(ast::YieldForms::Delegating)) == "a `yield*`");
+    CHECK(std::string(ast::yieldFormName(ast::YieldForms::Both)) == "a `yield` or a `yield*`");
+}
+
 TEST_CASE("getGeneratorFrameNames collects every declared name, at every depth") {
     auto p = parse(
         "function* g() {"

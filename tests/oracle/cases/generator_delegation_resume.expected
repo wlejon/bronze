@@ -1,0 +1,19 @@
+{ value: 'give me one', done: false }
+{ value: 11, done: false }
+{ value: 30, done: false }
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+{ value: 'a', done: false }
+inner caught kaboom
+{ value: 'recovered', done: false }
+{ value: 'b', done: false }
+{ value: 'inner done', done: false }
+{ value: undefined, done: true }
+{ value: 'only', done: false }
+inner return ran, with undefined
+outer caught a TypeError: true
+{ value: 'after the violation', done: false }
+{ value: undefined, done: true }
+{ value: 1, done: false }
+TypeError: true
+{ value: undefined, done: true }

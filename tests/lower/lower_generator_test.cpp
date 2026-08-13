@@ -172,6 +172,53 @@ TEST_CASE("a nested scope's record is reachable downward from the frame") {
     CHECK(countOf(resume, "env.get %0, 0,") >= 2);
 }
 
+TEST_CASE("a `yield*` keeps its iterator in the frame and its completion in SSA") {
+    // The same soundness property as the binding test above, applied to the two
+    // things a delegation has live at its suspension — and they land in
+    // DIFFERENT places, which is the whole design of lower_yield_star.cpp.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod =
+        inferAndLower("function* g() { yield* xs; }\nconst it = g();\n", diags, buf);
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+
+    // The frame gains a THIRD machine slot, and only because this body
+    // delegates: a generator with a plain `yield` keeps the two-slot frame.
+    CHECK(textOf(*optMod, "g").find("env.create %0, 3") != std::string::npos);
+    DiagnosticSink plainDiags;
+    SourceBuffer plainBuf("test.ts", "");
+    const auto plainMod =
+        inferAndLower("function* g() { yield xs; }\nconst it = g();\n", plainDiags, plainBuf);
+    REQUIRE(plainMod.has_value());
+    CHECK(textOf(*plainMod, "g").find("env.create %0, 2") != std::string::npos);
+    CHECK(textOf(*plainMod, "g.resume").find("iter.delegate") == std::string::npos);
+
+    const std::string resume = textOf(*optMod, "g.resume");
+    // GetIterator runs once, and the record it produces goes STRAIGHT into the
+    // frame: the loop reads it back from the `__env` parameter on every trip,
+    // because one of the edges into the loop head comes from the resume
+    // dispatch and defines no SSA value.
+    CHECK(countOf(resume, "iter.open") == 1);
+    CHECK(resume.find("env.set %0, 0, 2,") != std::string::npos);
+    CHECK(resume.find("env.get %0, 0, 2") != std::string::npos);
+    CHECK(countOf(resume, "iter.delegate") == 1);
+
+    // The received completion needs no slot at all. It is produced by whichever
+    // edge entered the loop, so it rides the edge: two block parameters on the
+    // head, fed by the resume function's own `__mode` and `__sent` (%1 and %2)
+    // on the way back round.
+    CHECK(resume.find("(%5: dynamic, %6: dynamic)") != std::string::npos);
+    CHECK(resume.find("jump b2(%1, %2)") != std::string::npos);
+
+    // 27.5.3.8: the inner iterator's result object is forwarded by IDENTITY,
+    // so the suspension returns it rather than building a `{ value, done }` of
+    // its own. Every `create.object` here belongs to an ending of the walk.
+    CHECK(resume.find("ret %11") != std::string::npos);
+    CHECK(countOf(resume, "create.object") == countOf(resume, "const.bool true"));
+    CHECK(countOf(resume, "const.bool false") == 0);
+}
+
 TEST_CASE("a generator returns dynamic whatever inference proved about the body") {
     // Inference reasons about the body's `return`, but a generator function
     // does not return that: it returns a generator object. The IL signature has

@@ -88,6 +88,7 @@ const char* opName(Op op) {
         case Op::IterValue: return "iter.value";
         case Op::IterClose: return "iter.close";
         case Op::IterRest: return "iter.rest";
+        case Op::IterDelegate: return "iter.delegate";
         case Op::PatternCheck: return "pattern.check";
         case Op::ArrayAppend: return "array.append";
         case Op::ArraySpread: return "array.spread";
@@ -391,6 +392,14 @@ std::string print(const Module& module) {
                     case Op::IterRest:
                         out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::IterDelegate:
+                        out += "iter.delegate %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
                         break;
                     // The SUPPRESS flag, because it is the whole content of
                     // the instruction: a close on the throw path discards an

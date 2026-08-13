@@ -13,9 +13,10 @@
 // not of its meaning, and it belongs on this side of the AST because it is the
 // precondition lowering's re-entry needs; see ast/yield_lift.h for why.
 //
-// `yield*` is refused by name. Delegation is a second, nested walk suspended
-// inside the outer one — two live positions where a resume point is one — and
-// bronze has no node for it.
+// `yield*` is the same node with a flag. Delegation is a protocol rather than a
+// second operator (27.5.3.7), and the whole of that protocol is built in
+// src/lower/lower_yield_star.cpp; here it is one token and one operand that is
+// no longer optional.
 
 #include <memory>
 #include <string>
@@ -28,21 +29,29 @@ namespace bronze {
 
 using namespace ast;
 
-// `yield`, `yield <AssignmentExpression>` and the refused `yield*`
+// `yield`, `yield <AssignmentExpression>` and `yield* <AssignmentExpression>`
 // (ECMA-262 15.5.1). Called from `parseAssign`, which is the precedence the
 // grammar gives it: `yield a + 1` yields the sum, and `x = yield v` assigns what
 // the resumption supplied.
 ExprPtr Parser::parseYieldExpr() {
     const Token& kw = advance();  // `yield`
-    if (check(TokenKind::Star)) {
-        diags_.error(peek().span,
-                     "unsupported construct: `yield*` (delegation to another iterable); bronze "
-                     "implements a generator as one suspension point at a time, and a delegating "
-                     "yield is a second walk suspended inside the outer one");
-        return nullptr;
-    }
     auto node = std::make_unique<YieldExpr>();
     node->span = kw.span;
+    // 15.5.1 writes the delegating form `yield [no LineTerminator here] *
+    // AssignmentExpression`, so a line break before the star is not a
+    // delegation at all — it ends a bare `yield`, and the `*` after it is
+    // whatever the next statement makes of it.
+    if (!atLineBreak() && check(TokenKind::Star)) {
+        advance();  // `*`
+        node->delegate = true;
+        // The operand is REQUIRED here, unlike a plain `yield`: the grammar has
+        // no production for a bare `yield*`, and a delegation with nothing to
+        // delegate to has no iterator to open.
+        node->argument = parseAssign();
+        if (!node->argument) return nullptr;
+        node->span.end = node->argument->span.end;
+        return node;
+    }
     // The operand is optional, and 15.5.1's restricted production ends the
     // expression at a line terminator: `yield\n x` yields undefined and `x` is
     // a statement of its own. The closers are the tokens no

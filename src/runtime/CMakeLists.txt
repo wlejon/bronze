@@ -39,6 +39,7 @@ bronze_add_module(runtime
         rt_prop_write.cpp
         rt_delete.cpp
         iterator.cpp
+        iterator_delegate.cpp
         map.cpp
         builtin_map.cpp
         builtin_object.cpp

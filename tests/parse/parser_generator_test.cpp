@@ -155,14 +155,59 @@ TEST_CASE("every yield is lifted to a statement boundary before lowering sees it
     CHECK(two.find("gen.1.t0") != std::string::npos);
 }
 
+TEST_CASE("`yield*` reaches the AST as a delegating yield") {
+    // Delegation is a protocol (27.5.3.7) rather than a second operator, and
+    // all of the protocol is built in lowering. What the parser owes it is one
+    // node that says WHICH form was written, because the two lower to entirely
+    // different machines and nothing downstream can recover the difference from
+    // the operand.
+    const auto delegating = parseAndDump("class C { *g() { yield* other(); } }");
+    CHECK(delegating.substr(0, 7) != "ERRORS:");
+    CHECK(delegating.find("(yield*") != std::string::npos);
+    CHECK(delegating.find("(call") != std::string::npos);
+
+    // And a plain `yield` is still a plain `yield`: the dump distinguishes them
+    // because a tree that printed both as `(yield` would let the flag be
+    // dropped without a single assertion noticing.
+    const auto plain = parseAndDump("class C { *g() { yield other(); } }");
+    CHECK(plain.substr(0, 7) != "ERRORS:");
+    CHECK(plain.find("(yield*") == std::string::npos);
+
+    // 15.5.1 has no production for a bare `yield*`: the delegating form takes
+    // an AssignmentExpression, and a delegation with nothing to delegate to has
+    // no iterator to open.
+    const auto bare = parseAndDump("class C { *g() { yield*; } }");
+    CHECK(bare.substr(0, 7) == "ERRORS:");
+
+    // `yield [no LineTerminator here] *`, so a line break ends a bare `yield`
+    // and the `*` after it starts a statement that no production admits.
+    const auto broken = parseAndDump("class C { *g() { yield\n* other(); } }");
+    CHECK(broken.substr(0, 7) == "ERRORS:");
+
+    // The lifter treats it as the suspension it is: in expression position it
+    // is pinned into a temporary like any other, so the delegation stands alone
+    // at a statement boundary.
+    const auto lifted = parseAndDump("class C { *g() { const x = 1 + (yield* a); } }");
+    CHECK(lifted.substr(0, 7) != "ERRORS:");
+    CHECK(lifted.find("(let gen.0.t0") != std::string::npos);
+    CHECK(lifted.find("(yield*") != std::string::npos);
+}
+
 TEST_CASE("a generator outside what bronze implements is refused by name") {
     // Each construct gets its OWN message: someone who hits one has to be able
     // to learn from it what bronze does support.
 
-    // Delegation is a second walk suspended inside the outer one — a whole
-    // protocol (27.5.3.7), not a second entry in a state table.
-    const auto delegating = parseAndDump("class C { *g() { yield* other(); } }");
-    CHECK(delegating.find("`yield*` (delegation") != std::string::npos);
+    // Both suspension forms reach every refused position, and the message names
+    // the one that was written — a reader who hit the restriction on `yield*`
+    // must not be sent looking for the one on `yield`.
+    const auto delegatingInFinally =
+        parseAndDump("class C { *g() { try { f(); } finally { yield* other(); } } }");
+    CHECK(delegatingInFinally.find("unsupported construct: a `yield*` inside a `finally` block") !=
+          std::string::npos);
+    const auto bothForms =
+        parseAndDump("class C { *g() { for (const v of xs) { yield v; yield* other(); } } }");
+    CHECK(bothForms.find("unsupported construct: a `yield` or a `yield*` inside the body of a "
+                         "`for-of`") != std::string::npos);
 
     const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
     CHECK(objectLiteral.find("a generator method in an object literal") != std::string::npos);

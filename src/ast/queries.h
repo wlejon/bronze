@@ -155,6 +155,26 @@ bool returnsAValue(const std::vector<StmtPtr>& stmts);
 bool containsYield(const Node& node);
 bool containsYield(const std::vector<StmtPtr>& stmts);
 
+// WHICH suspension forms are under there. Two consumers, and neither can use
+// the boolean above: the lifter has to NAME the construct it refuses, and a
+// message that says `yield` about a `yield*` sends the reader looking for a
+// restriction that is not the one they hit; and lowering gives a generator's
+// frame a slot for the delegated iteration only when the body has a delegation
+// to hold in it.
+enum class YieldForms : uint8_t { None = 0, Plain = 1, Delegating = 2, Both = 3 };
+inline YieldForms operator|(YieldForms a, YieldForms b) {
+    return static_cast<YieldForms>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+inline bool hasDelegating(YieldForms f) {
+    return (static_cast<uint8_t>(f) & static_cast<uint8_t>(YieldForms::Delegating)) != 0;
+}
+YieldForms yieldFormsIn(const Node& node);
+YieldForms yieldFormsIn(const std::vector<StmtPtr>& stmts);
+YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts);
+// The noun phrase a refusal names those forms by: "a `yield`", "a `yield*`", or
+// "a `yield` or a `yield*`" where the refused position holds both.
+const char* yieldFormName(YieldForms forms);
+
 // Every binding a GENERATOR's frame must hold: each name declared anywhere under
 // `stmts`, at any block depth, nested functions excluded.
 //

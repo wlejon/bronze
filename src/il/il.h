@@ -214,6 +214,20 @@ enum class Op : uint8_t {
     // Everything the cursor has left, as a fresh array — a rest element's
     // value. Drains the same record the elements before it were stepped from.
     IterRest,    // a = iter.rest %record
+    // One RESUMPTION forwarded to a delegated iterator: ECMA-262 27.5.3.7
+    // steps 5.a, 5.b and 5.c, without the loop around them. The loop is
+    // compiled code — it has a suspension in it, and a suspension is a return
+    // from the resume function — so what is left for one instruction is the
+    // part that is not control flow: WHICH method of the inner iterator this
+    // resumption calls, and what happens when it has none.
+    //
+    // `b` is the record, `c` the resumption kind as a number (the runtime's
+    // GeneratorResumeMode), and `d` the value it carried. The result is the
+    // inner iterator's RESULT OBJECT — forwarded by identity, which is what
+    // 27.5.3.8 GeneratorYield does with it — or `undefined` for the one case
+    // that produces no object at all: a `return` resumption to an iterator
+    // with no `return` method, which 5.c.iii passes straight through.
+    IterDelegate,  // a: dynamic = iter.delegate %record, %mode, %sent
     // The source of a destructuring, checked once before any element is read.
     // `immI32` names which pattern asked, so the diagnostic can say `array
     // destructuring` rather than `for-of`, and the check is what lets every

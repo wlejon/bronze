@@ -304,6 +304,31 @@ private:
         il::ValueId modeParam = il::kNoValue;
         il::ValueId sentParam = il::kNoValue;
         uint32_t stateSlot = 0;
+        // Where the iteration record of a `yield*` in progress lives, or
+        // `UINT32_MAX` in a body that has no delegation. In the FRAME, for the
+        // reason every binding is: the delegation loop is re-entered from the
+        // resume dispatch, and that edge defines no SSA value.
+        //
+        // ONE slot for a whole body, however many `yield*` sites it has. At
+        // most one delegation can be in progress at a time: the loop is
+        // straight-line control flow that is entered, driven to a completion
+        // and left, and the only way to leave it and come back is its own
+        // suspension — which comes back to the same delegation. `yield_lift`
+        // is what makes that true of nested ones as well, hoisting the inner
+        // `yield*` of `yield* (yield* g())` into a statement of its own.
+        uint32_t iterSlot = UINT32_MAX;
+
+        // How `next`, `return` and `throw` reach the body. Mirrors
+        // GeneratorResumeMode in src/runtime/generator.h — which lowering
+        // cannot include, because `bronze::lower` depends on `ast il support
+        // types` and a module reaching into the runtime's headers would make
+        // it depend on the runtime too. Here rather than in either unit that
+        // reads them, because both do; pinned against the runtime by
+        // tests/lower/lower_generator_test.cpp and by every oracle case that
+        // drives a generator by hand.
+        static constexpr double kModeNext = 0.0;
+        static constexpr double kModeReturn = 1.0;
+        static constexpr double kModeThrow = 2.0;
         // One per suspension point, in the order they were lowered, with the
         // body's first block at index 0. The entry block's dispatch is built
         // from this once the whole body is done, because how many there are is
@@ -314,6 +339,7 @@ private:
 
     static const char* generatorStateSlotName();
     static const char* generatorEnvSlotName();
+    static const char* generatorIterSlotName();
     Value emitConstF64(double value, il::Function& ilFn);
     Value emitIterResult(Value value, bool done, il::Function& ilFn);
     Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
@@ -322,6 +348,8 @@ private:
     void emitGeneratorDispatch(il::Function& ilFn);
     bool lowerGeneratorReturn(const ast::ReturnStmt* retStmt, il::Function& ilFn);
     std::optional<Value> lowerYield(const ast::YieldExpr& yield, il::Function& ilFn);
+    // --- lower_yield_star.cpp: `yield*`, the delegation protocol ---------
+    std::optional<Value> lowerYieldStar(const ast::YieldExpr& yield, il::Function& ilFn);
     bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn);
     bool lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
 

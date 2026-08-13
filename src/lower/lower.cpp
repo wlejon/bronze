@@ -264,12 +264,19 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
         if (std::find(slots.begin(), slots.end(), slotName) != slots.end()) return;
         slots.push_back(slotName);
     };
-    // The machine's own two, ahead of every binding so that a dump of a
-    // generator's frame reads with them first. Their names hold no source
-    // identifier, so nothing can collide with them.
+    // The machine's own, ahead of every binding so that a dump of a generator's
+    // frame reads with them first. Their names hold no source identifier, so
+    // nothing can collide with them.
     if (isGenerator) {
         slots.emplace_back(generatorStateSlotName());
         slots.emplace_back(generatorEnvSlotName());
+        // The third only where a `yield*` needs it. A generator with no
+        // delegation gets the two-slot frame it always had, so its IL is
+        // unchanged and a reader of one is not left asking what the empty
+        // third word is for.
+        if (ast::hasDelegating(ast::yieldFormsIn(body))) {
+            slots.emplace_back(generatorIterSlotName());
+        }
     }
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped

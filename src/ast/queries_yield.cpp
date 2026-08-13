@@ -19,8 +19,22 @@ namespace {
 class YieldScan final : public Visitor {
 public:
     bool found = false;
+    YieldForms forms = YieldForms::None;
 
-    void visit(const YieldExpr&) override { found = true; }
+    // `stopAtFirst` is the whole difference between the two questions this
+    // walk answers. "Is there one" can quit at the first hit; "which forms are
+    // there" cannot, because `yield` and `yield*` can share a position and a
+    // refusal that named only the first one found would name the wrong one
+    // half the time.
+    explicit YieldScan(bool stopAtFirst = true) : stopAtFirst_(stopAtFirst) {}
+
+    void visit(const YieldExpr& y) override {
+        found = true;
+        forms = forms | (y.delegate ? YieldForms::Delegating : YieldForms::Plain);
+        // `yield* (yield x)` is two suspensions at one site, and the operand is
+        // this generator's code like any other.
+        walk(y.argument);
+    }
 
     void visit(const NumberLit&) override {}
     void visit(const StringLit&) override {}
@@ -138,9 +152,13 @@ public:
     void visit(const Module& n) override { walkList(n.body); }
 
 private:
+    bool stopAtFirst_ = true;
+
+    bool done() const { return found && stopAtFirst_; }
+
     template <typename T>
     void walk(const std::unique_ptr<T>& node) {
-        if (node && !found) node->accept(*this);
+        if (node && !done()) node->accept(*this);
     }
     template <typename T>
     void walkList(const std::vector<std::unique_ptr<T>>& list) {
@@ -171,6 +189,39 @@ bool containsYield(const std::vector<StmtPtr>& stmts) {
         if (scan.found) return true;
     }
     return scan.found;
+}
+
+YieldForms yieldFormsIn(const Node& node) {
+    YieldScan scan(/*stopAtFirst=*/false);
+    node.accept(scan);
+    return scan.forms;
+}
+
+YieldForms yieldFormsIn(const std::vector<StmtPtr>& stmts) {
+    YieldScan scan(/*stopAtFirst=*/false);
+    for (const auto& s : stmts) {
+        if (s) s->accept(scan);
+    }
+    return scan.forms;
+}
+
+YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts) {
+    YieldScan scan(/*stopAtFirst=*/false);
+    for (const auto* s : stmts) {
+        if (s) s->accept(scan);
+    }
+    return scan.forms;
+}
+
+const char* yieldFormName(YieldForms forms) {
+    switch (forms) {
+        case YieldForms::Delegating: return "a `yield*`";
+        case YieldForms::Both: return "a `yield` or a `yield*`";
+        // `None` cannot reach a refusal — nothing refuses a position with no
+        // suspension in it — and answering for the plain form is the honest
+        // reading of "there is a suspension here and it is not a delegation".
+        default: return "a `yield`";
+    }
 }
 
 namespace {

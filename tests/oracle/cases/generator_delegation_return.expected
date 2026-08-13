@@ -1,0 +1,16 @@
+{ value: 'tick', done: false }
+closable.return got 7
+{ value: 'closed with 7', done: true }
+{ value: undefined, done: true }
+{ value: 1, done: false }
+{ value: 42, done: true }
+{ value: undefined, done: true }
+{ value: 'next:undefined', done: false }
+{ value: 'refused:2', done: false }
+{ value: 'next:3', done: false }
+{ value: 'p', done: false }
+{ value: 'stop', done: true }
+{ value: undefined, done: true }
+[ 1, 2, 1.5, 2.5 ]
+{ value: 1, done: false }
+{ value: -1.5, done: true }

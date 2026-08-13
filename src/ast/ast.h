@@ -282,11 +282,18 @@ struct SuperMember final : Expr {
 // `yield undefined`, and the parser writes that literal in rather than leaving a
 // hole every consumer would have to test for.
 //
-// `yield*` (delegation) has no node here. It is refused by name in the parser,
-// because a delegating yield is two live suspension points where this is one,
-// and an approximation of it would be a silent wrong answer.
+// `yield*` is the same node with `delegate` set. One node and not two, because
+// everything on this side of the AST treats them alike — one operand evaluated
+// here, one suspension site, the same rule about where the lifter may leave it
+// — and they part company only in what lowering builds at that site.
 struct YieldExpr final : Expr {
     ExprPtr argument;
+    // 27.5.3.7: the operand is an ITERABLE, and this expression forwards every
+    // resumption to it — `next(v)` to its `next`, `throw(e)` to its `throw`,
+    // `return(v)` to its `return` — until one of them reports done, whose
+    // `value` is then the value of this expression. So the operand is not what
+    // gets yielded; it is what decides what gets yielded, several times over.
+    bool delegate = false;
     void accept(Visitor& v) const override;
 };
 
