@@ -352,6 +352,35 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key) {
     return Value::fromUndefined();
 }
 
+// What `in` must answer about a Map or a Set, off the SAME two tables the read
+// path answers from — because the two are one question, and a second list here
+// is how they would come to disagree.
+//
+// A name in neither table is not silently false. `rtCheckMapMember` refuses it
+// by name if bronze knows the member and has not built it, which is exactly
+// what a READ of that name does: `'constructor' in m` and `m.constructor` are
+// both the named hard error, and the day the member lands both answers change
+// together. Only a name the read path answers `undefined` for reaches the
+// `false` below.
+bool rtMapHasMember(bool isSetReceiver, const std::string& key) {
+    // 24.1.3.10 / 24.2.3.9 make `size` an accessor on the prototype. `in` does
+    // not read it, so the getter bronze has not got costs nothing here — the
+    // property exists either way, which is the whole difference between this
+    // question and a property read.
+    if (key == "size") return true;
+    if (isSetReceiver) {
+        for (const Method& m : kSetMethods) {
+            if (key == m.name) return true;
+        }
+    } else {
+        for (const Method& m : kMapMethods) {
+            if (key == m.name) return true;
+        }
+    }
+    rtCheckMapMember(isSetReceiver, key);
+    return false;
+}
+
 void rtCheckMapMember(bool isSetReceiver, const std::string& key) {
     if (isSetReceiver) {
         rtCheckUnimplementedMember("Set", kSetUnimplemented, std::size(kSetUnimplemented), key);

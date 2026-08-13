@@ -15,13 +15,19 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/env.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/iterator.h"
+#include "runtime/map.h"
+#include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -99,6 +105,190 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
         holder = next;
     }
     fatal("prototype chain too deep (a cycle?)");
+}
+
+// ---- `in`, kind by kind ----------------------------------------------------
+//
+// The two dispatches below are SWITCHES over the whole of HeapKind, and the
+// reason is a memory-safety bug rather than a matter of taste. `in` used to be
+// an if-chain whose tail cast whatever was left to `ObjectHeader*` and read
+// `->shape`. For a Map that word is the entries table, for a RegExp the source
+// string, for a module namespace the export count — so `'size' in new Map()`
+// did not answer wrongly, it dereferenced a `Value` as a `Shape*` and the
+// process died with no diagnostic. Any kind added later would have inherited
+// that by doing nothing at all.
+//
+// So every kind is named, and the fall-through is gone: a kind either has an
+// arm that answers or is refused by name. `flags` is a plain `uint16_t` and
+// HeapKind is an unnamed enum, so no compiler warning can check these switches
+// for exhaustiveness — the static_assert below is the tripwire instead. It
+// fails the BUILD when a kind is added, at the one place that has to have an
+// opinion about it, which is the property a runtime `default:` alone cannot
+// give.
+static_assert(HeapKind::Count == 12,
+              "a HeapKind was added or removed: give `in` an arm for it in the two switches "
+              "below, or refuse it there by name. A kind with no arm used to fall through to "
+              "a cast that read its payload's first word as a Shape*.");
+
+// The kinds no program can be holding, so that reaching one is a lowering bug
+// and not something a program did — the same answer the property read path
+// gives them (rt_prop.cpp).
+[[noreturn]] void refuseInternalKind(uint16_t kind) {
+    fatal(kind == EnvHeader::kFlags ? "internal: 'in' on an environment record"
+                                    : "internal: 'in' on an iteration record");
+}
+
+// `Symbol.iterator` is the ONE well-known symbol bronze has (runtime/symbol.h);
+// every other symbol a program can hold is one it made with `Symbol()`, and
+// nothing puts one of those on a receiver that has no shape. So for the kinds
+// below the whole symbol question is: does this prototype carry @@iterator.
+//
+// `in` can say yes even where a READ of it is a named hard error — an array's
+// is, because 23.1.3.34 makes it the same function object as
+// `Array.prototype.values` and neither is built. That split is the one
+// `rtDataViewHasMember` already makes: the member exists, and its value is what
+// bronze has not got. Answering `false` instead is what this used to do, and it
+// contradicted `m[Symbol.iterator]`, which hands back `Map.prototype.entries`.
+bool shapelessHasSymbol(uint16_t kind, Value key) {
+    if (key.asSymbol<SymbolHeader>() != rtSymbolIterator()) return false;
+    switch (kind) {
+        // 23.1.3.34, 23.2.3.34, 24.1.3.12, 24.2.3.11.
+        case HeapKind::Array:
+        case HeapKind::TypedArray:
+        case HeapKind::Map:
+        case HeapKind::Set:
+            return true;
+        // An ArrayBuffer, a DataView and a RegExp are not iterable, and a
+        // module namespace's own keys are its exports alone (10.4.6.5 sends a
+        // symbol to OrdinaryGetOwnProperty, and a namespace has none).
+        default:
+            return false;
+    }
+}
+
+// `sym in obj`, for a key that is a Symbol. Only a receiver with a SHAPE can
+// carry a symbol-keyed own property, so the two arms that have one do the walk
+// and every other kind is asked the ECMA-262 question instead.
+bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
+    const uint16_t kind = objRoot.get().asObject<HeapObjectHeader>()->flags;
+    ObjectHeader* holder = nullptr;
+    switch (kind) {
+        case HeapKind::Plain:
+            holder = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
+            break;
+        case HeapKind::Function: {
+            // A function keeps its own properties, symbol-keyed ones included,
+            // in the side object its statics live in.
+            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
+            if (!props.isObject()) return false;
+            holder = props.asObject<ObjectHeader>();
+            break;
+        }
+        case HeapKind::Array:
+        case HeapKind::TypedArray:
+        case HeapKind::ArrayBuffer:
+        case HeapKind::DataView:
+        case HeapKind::Map:
+        case HeapKind::Set:
+        case HeapKind::RegExp:
+        case HeapKind::ModuleNamespace:
+            return shapelessHasSymbol(kind, key);
+        case HeapKind::Iterator:
+        case HeapKind::Env:
+            refuseInternalKind(kind);
+        default:
+            fatal((std::string("internal: 'in' with a symbol key on ") +
+                   rtObjectKindName(objRoot.get()) + ", a heap kind the operator has no arm for")
+                      .c_str());
+    }
+    return plainObjectHas(holder, PropertyKey::fromValue(key));
+}
+
+// `"k" in obj`, for a key that has already been through ToPropertyKey's
+// ToString branch.
+//
+// Every arm answers from the same place the property READ answers from, which
+// is what makes `in` and `o.k` one question. For the kinds whose members live
+// in a C table rather than on a prototype object bronze has not built, that
+// means the table's own predicate — and a name the table knows but bronze has
+// not implemented gets the SAME named refusal a read of it gets, because
+// answering `false` for a member ECMA-262 defines would be the silent wrong
+// answer the refusal exists to prevent.
+bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
+    HeapObjectHeader* hdr = objRoot.get().asObject<HeapObjectHeader>();
+    uint32_t index = 0;
+    switch (hdr->flags) {
+        case HeapKind::Array: {
+            auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
+            if (key == "length") return true;
+            // An index within the length is a key; one past the end is not,
+            // which is the whole reason `in` exists on an array. A HOLE is not
+            // one either — `delete a[1]` takes index 1 out of the own keys
+            // without moving `length`.
+            return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
+        }
+        case HeapKind::TypedArray: {
+            // The index first, and against the LENGTH: 10.4.5.2 makes a
+            // canonical numeric string outside the range absent rather than
+            // inherited, so there is no member table to fall through to.
+            auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+            if (rtIsIntegerLikeKey(key, index)) return index < view->length;
+            return rtTypedArrayHasMember(view->kindName(), key);
+        }
+        case HeapKind::ArrayBuffer:
+            return rtArrayBufferHasMember(key);
+        // A DataView's members all live on its prototype, which bronze answers
+        // on the property path — so `in`, which walks the chain, must ask the
+        // same table the reads come from rather than report the object empty.
+        case HeapKind::DataView:
+            return rtDataViewHasMember(key);
+        case HeapKind::Map:
+            return rtMapHasMember(/*isSetReceiver=*/false, key);
+        case HeapKind::Set:
+            return rtMapHasMember(/*isSetReceiver=*/true, key);
+        case HeapKind::RegExp:
+            return rtRegExpHasMember(key);
+        case HeapKind::ModuleNamespace: {
+            // 10.4.6.4 [[HasProperty]] is exactly "is this an export name":
+            // [[Prototype]] is null (10.4.6.1), so nothing else can be true.
+            // The last allocation, and the header is re-derived through the
+            // root afterwards.
+            Rooted<Value> keyStr{rtMakeString(key)};
+            return rtModuleNamespaceHasExport(objRoot.get(),
+                                              keyStr.get().asString<StringHeader>());
+        }
+        case HeapKind::Function: {
+            // `prototype` lives in its own slot and is materialised lazily, so
+            // the walk below cannot see it — but the PROPERTY is there either
+            // way, which is what `in` asks.
+            if (key == "prototype") return true;
+            Rooted<Value> keyStr{rtMakeString(key)};
+            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
+            if (!props.isObject()) return false;
+            return plainObjectHas(props.asObject<ObjectHeader>(),
+                                  keyStr.get().asString<StringHeader>());
+        }
+        case HeapKind::Plain: {
+            // A String exotic object's index properties are own properties that
+            // live nowhere the walk below can see them — 10.4.3.4 synthesises
+            // them from the wrapped characters and bronze answers them on the
+            // property path alone — so `"0" in new String("ab")` would read
+            // false. Refused by name instead (rt_object.cpp carries the
+            // reasoning).
+            rtCheckStringExoticOwnKeys(objRoot.get(), "testing");
+            Rooted<Value> keyStr{rtMakeString(key)};
+            auto* holder =
+                reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
+            return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
+        }
+        case HeapKind::Iterator:
+        case HeapKind::Env:
+            refuseInternalKind(hdr->flags);
+        default:
+            fatal((std::string("internal: 'in' on ") + rtObjectKindName(objRoot.get()) +
+                   ", a heap kind the operator has no arm for")
+                      .c_str());
+    }
 }
 
 // ToPrimitive with the NUMBER hint, for the two operands ECMA-262 13.10.1
@@ -245,73 +435,13 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
         return false;
     }
     // A SYMBOL key, answered before ToPropertyKey below can try to stringify
-    // it. Only the receivers with a shape can carry one, and none of the
-    // index-and-member branches below could recognise it: an array's elements
-    // are indices, a typed array's members are a fixed list, and both would
-    // read a symbol as the absent name it converts to.
-    if (Value(keyBits).isSymbol()) {
-        HeapObjectHeader* symHdr = objRoot.get().asObject<HeapObjectHeader>();
-        ObjectHeader* symHolder = nullptr;
-        if (symHdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-            symHolder = reinterpret_cast<ObjectHeader*>(symHdr);
-        } else if (symHdr->flags == HeapKind::Function) {
-            Value props = objRoot.get().asObject<FunctionHeader>()->properties;
-            if (!props.isObject()) return false;
-            symHolder = props.asObject<ObjectHeader>();
-        } else {
-            return false;
-        }
-        return plainObjectHas(symHolder, PropertyKey::fromValue(Value(keyBits)));
-    }
-    // keyText allocates a string, so the header is derived only afterwards,
+    // it — ToString of a symbol is the TypeError that would make `sym in o`
+    // throw rather than answer. A symbol is arena-allocated and never moves
+    // (runtime/symbol.h), so holding these bits across the calls below is safe.
+    if (Value(keyBits).isSymbol()) return hasSymbolProperty(objRoot, Value(keyBits));
+    // keyText allocates a string, so every header below is derived afterwards,
     // from the root the collector updates.
-    const std::string key = keyText(Value(keyBits));
-    uint32_t index = 0;
-
-    HeapObjectHeader* hdr = objRoot.get().asObject<HeapObjectHeader>();
-    if (hdr->flags == HeapKind::Array) {
-        auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
-        if (key == "length") return true;
-        // An index within the length is a key; one past the end is not, which
-        // is the whole reason `in` exists on an array. A HOLE is not one either
-        // — `delete a[1]` takes index 1 out of the own keys without moving
-        // `length`.
-        return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
-    }
-    if (hdr->flags == TypedArrayHeader::kFlags) {
-        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-        if (key == "length" || key == "buffer" || key == "byteLength" ||
-            key == "byteOffset" || key == "BYTES_PER_ELEMENT") {
-            return true;
-        }
-        return rtIsIntegerLikeKey(key, index) && index < view->length;
-    }
-    if (hdr->flags == ArrayBufferHeader::kFlags) return key == "byteLength";
-    // A DataView's members all live on its prototype, which bronze answers on
-    // the property path — so `in`, which walks the chain, must ask the same
-    // table the reads come from rather than report the object empty.
-    if (hdr->flags == DataViewHeader::kFlags) return rtDataViewHasMember(key);
-
-    const bool isFunction = hdr->flags == HeapKind::Function;
-    if (isFunction && key == "prototype") return true;
-
-    // A String exotic object's index properties are own properties that live
-    // nowhere the walk below can see them — 10.4.3.4 synthesises them from the
-    // wrapped characters and bronze answers them on the property path alone —
-    // so `"0" in new String("ab")` would read false. Refused by name instead
-    // (rt_object.cpp carries the reasoning).
-    rtCheckStringExoticOwnKeys(objRoot.get(), "testing");
-    // The last allocation; everything the walk touches is re-derived below it.
-    Rooted<Value> keyStr{rtMakeString(key)};
-    ObjectHeader* holder = nullptr;
-    if (isFunction) {
-        Value props = objRoot.get().asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return false;
-        holder = props.asObject<ObjectHeader>();
-    } else {
-        holder = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
-    }
-    return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
+    return hasNamedProperty(objRoot, keyText(Value(keyBits)));
 }
 
 // The four relational operators of ECMA-262 13.10, each written as the

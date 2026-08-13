@@ -74,6 +74,16 @@ enum : uint16_t {
     // none of the three is expressible as an attribute on a plain object's
     // property. See runtime/namespace.h.
     ModuleNamespace,
+
+    // Not a kind: how many there are. It exists so that a dispatch which must
+    // be TOTAL over the registry can pin the registry's size and break the
+    // build when a kind is added. `flags` is a `uint16_t` and this enum is
+    // unnamed, so no compiler warning can check such a switch for
+    // exhaustiveness — a static_assert on this number is the only tripwire
+    // available, and `bronze_has_property` is why one is needed: a kind with no
+    // arm there once fell through to a cast that read its payload's first word
+    // as a `Shape*`.
+    Count,
 };
 }  // namespace HeapKind
 

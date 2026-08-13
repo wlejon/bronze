@@ -83,6 +83,20 @@ std::vector<StringHeader*> rtModuleNamespaceKeys(Value nsVal) {
     return out;
 }
 
+// 10.4.6.4 [[HasProperty]], which is the whole of it: a namespace's
+// [[Prototype]] is null (10.4.6.1), so there is no chain to continue on and
+// being one of the export names is the only way to be true. It is the same
+// `indexOf` [[Get]] and [[GetOwnProperty]] use rather than a second walk,
+// because a second walk would be a second answer to what this object holds.
+//
+// No allocation, and no getter call: `in` asks whether the property is there,
+// and running the binding's getter to find out would be a side effect the
+// operator does not have.
+bool rtModuleNamespaceHasExport(Value nsVal, const StringHeader* key) {
+    ModuleNamespaceHeader* ns = asNamespace(nsVal);
+    return ns != nullptr && ns->indexOf(key) >= 0;
+}
+
 bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out) {
     ModuleNamespaceHeader* ns = asNamespace(nsVal);
     if (!ns) return false;

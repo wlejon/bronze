@@ -453,4 +453,14 @@ Value rtTypedArrayMethod(const std::string& key) {
     return Value::fromUndefined();
 }
 
+// The same table asked for existence alone, which is what `in` wants: no
+// function object is built, so asking does not allocate and the caller's
+// header stays good across it.
+bool rtTypedArrayHasMethod(const std::string& key) {
+    for (const Method& m : kMethods) {
+        if (key == m.name) return true;
+    }
+    return false;
+}
+
 }  // namespace bronze::runtime

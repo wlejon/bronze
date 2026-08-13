@@ -43,6 +43,15 @@ namespace bronze::runtime {
 // a hard error by name (integrity.cpp), which is what makes the predicates'
 // answers for them TRUE rather than merely convenient: the only route to
 // non-extensible is refused loudly, so "extensible" is a fact and not a guess.
+//
+// A MODULE NAMESPACE has no side object either and is nonetheless not refused,
+// because its state is decided by its KIND rather than by anything done to it.
+// 10.4.6.3 [[IsExtensible]] returns false unconditionally and 10.4.6.5 makes
+// every export non-configurable, so a namespace is non-extensible and sealed
+// from birth and there is no bit for a level to be recorded in. That inverts
+// the rule above rather than bending it: the refusal exists because a level
+// nothing could read back would be a no-op reported as a success, and here
+// there is no level to record and nothing to report.
 
 // The table `obj` records its integrity level in, or null when nothing has ever
 // set one — which for every kind that can have one means "extensible, open".

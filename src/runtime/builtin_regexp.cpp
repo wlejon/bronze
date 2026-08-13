@@ -377,6 +377,43 @@ const char* const kRegExpMembers[] = {
     "compile", "constructor", "hasIndices", "unicodeSets",
 };
 
+// The two groups of REAL members, as tables rather than as a ladder of `if`s,
+// so that `rtRegExpMember` and `rtRegExpHasMember` read one list each. They are
+// pointers-to-member rather than names alone because the reader needs the
+// field, and a name list beside the ladder would be a second list to keep in
+// step — which for `in` is exactly the failure mode being fixed elsewhere in
+// this change.
+
+// 22.2.6.10, 22.2.6.5 and 22.2.6.9: the three the header carries verbatim.
+// `lastIndex` is the only own property of the three; the other two are
+// prototype accessors, and `in` cannot tell the difference because a RegExp
+// has no chain here for it to stop at.
+struct HeaderMember {
+    const char* name;
+    Value RegExpHeader::* field;
+};
+
+const HeaderMember kRegExpHeaderMembers[] = {
+    {"source", &RegExpHeader::source},
+    {"flags", &RegExpHeader::flagsText},
+    {"lastIndex", &RegExpHeader::lastIndex},
+};
+
+// The flag accessors of 22.2.6, each reading one bool out of the compiled
+// pattern's flags.
+struct FlagMember {
+    const char* name;
+    bool regex::Flags::* field;
+};
+
+const FlagMember kRegExpFlagMembers[] = {
+    {"global", &regex::Flags::global},       {"ignoreCase", &regex::Flags::ignoreCase},
+    {"multiline", &regex::Flags::multiline}, {"dotAll", &regex::Flags::dotAll},
+    // 22.2.6.18: a real accessor now that the flag is a real mode, and the one
+    // way a program can ask which alphabet a pattern was compiled over.
+    {"unicode", &regex::Flags::unicode},     {"sticky", &regex::Flags::sticky},
+};
+
 }  // namespace
 
 Value rtRegExpConstructor(const std::string& name) {
@@ -399,22 +436,36 @@ std::string rtRegExpText(Value re) {
 
 Value rtRegExpMember(Value re, const std::string& key) {
     const auto* header = re.asObject<RegExpHeader>();
-    if (key == "source") return header->source;
-    if (key == "flags") return header->flagsText;
-    if (key == "lastIndex") return header->lastIndex;
+    for (const HeaderMember& m : kRegExpHeaderMembers) {
+        if (key == m.name) return header->*m.field;
+    }
     const regex::Flags& flags = regex::patternFlags(programOf(re));
-    if (key == "global") return Value::fromBool(flags.global);
-    if (key == "ignoreCase") return Value::fromBool(flags.ignoreCase);
-    if (key == "multiline") return Value::fromBool(flags.multiline);
-    if (key == "dotAll") return Value::fromBool(flags.dotAll);
-    // 22.2.6.18: a real accessor now that the flag is a real mode, and the one
-    // way a program can ask which alphabet a pattern was compiled over.
-    if (key == "unicode") return Value::fromBool(flags.unicode);
-    if (key == "sticky") return Value::fromBool(flags.sticky);
+    for (const FlagMember& m : kRegExpFlagMembers) {
+        if (key == m.name) return Value::fromBool(flags.*m.field);
+    }
     Value method = rtRegExpMethod(key);
     if (!method.isUndefined()) return method;
     rtCheckUnimplementedMember("RegExp.prototype", kRegExpMembers, std::size(kRegExpMembers), key);
     return Value::fromUndefined();
+}
+
+// The same three tables, asked whether the member EXISTS rather than what it
+// is — which is all `in` needs, and is answerable for a member whose value
+// bronze refuses to produce. A name in none of them is refused by name if
+// ECMA-262 defines it, exactly as a read of it is, and is `false` only when the
+// read path would answer `undefined`.
+bool rtRegExpHasMember(const std::string& key) {
+    for (const HeaderMember& m : kRegExpHeaderMembers) {
+        if (key == m.name) return true;
+    }
+    for (const FlagMember& m : kRegExpFlagMembers) {
+        if (key == m.name) return true;
+    }
+    for (const RegExpMethod& m : kRegExpMethods) {
+        if (key == m.name) return true;
+    }
+    rtCheckUnimplementedMember("RegExp.prototype", kRegExpMembers, std::size(kRegExpMembers), key);
+    return false;
 }
 
 bool rtRegExpSetMember(Value re, const std::string& key, Value value) {

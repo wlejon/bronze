@@ -464,6 +464,14 @@ std::vector<StringHeader*> rtModuleNamespaceKeys(Value nsVal);
 // closes over the exporting module's binding, which is what makes it live.
 bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out);
 
+// 10.4.6.4 [[HasProperty]]: is `key` one of the exports. False for a receiver
+// that is not a namespace, and false for a name it does not export — there is
+// no prototype chain to continue on (10.4.6.1 fixes [[Prototype]] at null), so
+// this is the complete answer and not a first step. Unlike [[Get]] above it
+// neither allocates nor runs the binding's getter, which is the difference
+// between asking whether a property is there and reading it.
+bool rtModuleNamespaceHasExport(Value nsVal, const StringHeader* key);
+
 // 10.4.6.5 [[GetOwnProperty]] minus the descriptor OBJECT, which the caller
 // builds: is `key` one of the exports, and what is its value NOW. False for a
 // symbol, for a name the module does not export, and for a receiver that is not
@@ -527,6 +535,10 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key);
 // fact, so that the intrinsic bronze has not built can be refused by it.
 const char* rtMapConstructorName(Value fn);
 void rtCheckMapMember(bool isSetReceiver, const std::string& key);
+// Whether 24.1.3 / 24.2.3 give the receiver `key` at all — what `in` asks. It
+// reads the same tables `rtMapMethod` does and ends at the same named refusal,
+// so the operator and a property read never disagree about a Map's members.
+bool rtMapHasMember(bool isSetReceiver, const std::string& key);
 // What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
 Value rtMapDefaultIterator(bool isSetReceiver);
@@ -555,9 +567,19 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out);
 // `undefined`.
 Value rtTypedArrayMember(Value view, const std::string& key);
 Value rtArrayBufferMember(Value buffer, const std::string& key);
+// The same two questions asked for EXISTENCE, which is `in`'s. Both walk the
+// lists their readers walk and end at the same named refusal, and neither
+// allocates — so a caller may hold a header across the call. The typed-array
+// one takes the receiver's constructor name for the same reason
+// `rtCheckTypedArrayMember` does.
+bool rtTypedArrayHasMember(const char* kindName, const std::string& key);
+bool rtArrayBufferHasMember(const std::string& key);
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table.
 Value rtTypedArrayMethod(const std::string& key);
+// The same table by name alone: no function object is built, so this is what
+// an existence question asks.
+bool rtTypedArrayHasMethod(const std::string& key);
 // `v[Symbol.iterator]`, which 23.2.3.34 makes the same function object as
 // `values`. By key and not by name, because the key is a symbol.
 Value rtTypedArrayIteratorMethod();
@@ -592,6 +614,9 @@ Value rtRegExpConstructor(const std::string& name);
 // bronze has not built is a named error here rather than `undefined`.
 Value rtRegExpMember(Value re, const std::string& key);
 Value rtRegExpMethod(const std::string& key);
+// Whether 22.2.6 defines `key` on a RegExp at all — `in`'s question, off the
+// same tables the reader above uses and ending at the same named refusal.
+bool rtRegExpHasMember(const std::string& key);
 // True when the write was a RegExp's business. `lastIndex` is the only
 // writable property one has, and a write to anything else is the caller's to
 // diagnose.

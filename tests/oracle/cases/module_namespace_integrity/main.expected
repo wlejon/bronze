@@ -1,0 +1,16 @@
+false true false
+true true
+false true false
+true
+true false
+0 true true
+true true
+{"c":2,"k":1}
+{
+  "c": 2,
+  "k": 1
+}
+bump,c,k 2 1 function
+bump,c,k 2 1
+2 1 1
+{"c":2,"k":2}

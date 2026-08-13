@@ -331,6 +331,31 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         }
         return;
     }
+    // A module namespace's own keys are not in a shape either, and it is the
+    // one such kind with a COMPLETE answer: 10.4.6.2 gives the sorted export
+    // names and 10.4.6.5 makes every one of them enumerable, so
+    // CopyDataProperties has exactly this list and no symbol half to miss. The
+    // names are arena-interned and immortal (namespace.cpp), which is what lets
+    // the vector be held across the getter calls the reads below make.
+    if (rtIsModuleNamespace(srcVal)) {
+        for (StringHeader* name : rtModuleNamespaceKeys(src.get())) {
+            if (stringTarget.get().isString() &&
+                stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name))) {
+                return;
+            }
+            Rooted<Value> key{rtCopyKeyToHeap(name)};
+            // The read runs the export's getter, so it can throw; carrying on
+            // to the next name would be the runtime continuing past an
+            // exception.
+            Rooted<Value> val{
+                Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+            if (rtExceptionPending()) return;
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            /*strict=*/false);
+            if (rtExceptionPending()) return;
+        }
+        return;
+    }
     // Every PRIMITIVE now has an answer, so what is left is an object kind
     // whose own keys are not in a shape. It is named rather than reported
     // empty, because "no properties" is a wrong answer about a Map with

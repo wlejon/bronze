@@ -21,6 +21,7 @@
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
+#include "runtime/namespace.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -302,8 +303,16 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
     }
     if (v.isObject() && !isCallable(v)) {
         if (isArray(v)) return serializeArray(state, value, out);
-        if (v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-            // A Map, a Set or a typed array has no own enumerable string
+        const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
+        // A module namespace goes through the object walk with the plain
+        // objects, and not because it resembles one: 25.5.2.4 asks for
+        // EnumerableOwnPropertyNames, and 10.4.6.5 gives every export
+        // `enumerable: true`. Both halves of that walk already answer for a
+        // namespace — `bronze_object_keys` returns the sorted export names and
+        // the Get below reads the live binding — which is why
+        // `Object.entries(ns)` was right while this reported the object empty.
+        if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN && kind != ModuleNamespaceHeader::kFlags) {
+            // A Map, a Set or a RegExp has no own enumerable string
             // properties, so ECMA-262 serializes it as `{}` — a real answer
             // rather than a fallback, and the reason `JSON.stringify(map)`
             // is the classic surprise it is in every engine.

@@ -270,6 +270,14 @@ const char* const kArrayBufferUnimplemented[] = {
     "transferToFixedLength",
 };
 
+// The five slot accessors and the 10.2.5 back-pointer, by name. They are a
+// ladder in `rtTypedArrayMember`, which needs each one's field, and a list here
+// for `rtTypedArrayHasMember`, which needs only the name — one list, so the two
+// readers cannot come to disagree about what a typed array HAS.
+const char* const kTypedArraySlotMembers[] = {
+    "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT", "constructor",
+};
+
 }  // namespace
 
 Value rtTypedArrayConstructor(const std::string& name) {
@@ -363,6 +371,31 @@ Value rtArrayBufferMember(Value bufferVal, const std::string& key) {
     rtCheckUnimplementedMember("ArrayBuffer.prototype", kArrayBufferUnimplemented,
                                std::size(kArrayBufferUnimplemented), key);
     return Value::fromUndefined();
+}
+
+// The two receivers above asked whether a member EXISTS, which is `in`'s
+// question and not a read's. Both walk the same lists their readers walk and
+// end at the same named refusal, so `'sort' in v` is the diagnostic `v.sort`
+// is, rather than a `false` that contradicts it. Nothing here allocates: the
+// caller holds a header across the call.
+//
+// The INDEX half of a typed array is not here — 10.4.5 makes an integer index a
+// different question from a member name, and the caller answers it against the
+// view's length before it ever gets this far.
+bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
+    for (const char* name : kTypedArraySlotMembers) {
+        if (key == name) return true;
+    }
+    if (rtTypedArrayHasMethod(key)) return true;
+    rtCheckTypedArrayMember(kindName, key);
+    return false;
+}
+
+bool rtArrayBufferHasMember(const std::string& key) {
+    if (key == "byteLength" || key == "constructor") return true;
+    rtCheckUnimplementedMember("ArrayBuffer.prototype", kArrayBufferUnimplemented,
+                               std::size(kArrayBufferUnimplemented), key);
+    return false;
 }
 
 }  // namespace bronze::runtime

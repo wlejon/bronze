@@ -48,6 +48,12 @@ enum class Target {
     Plain,
     Array,
     Function,
+    // A module namespace: the one kind with no storage that is not refused,
+    // because it needs none. 10.4.6.3 [[IsExtensible]] returns false for every
+    // namespace and 10.4.6.5 makes every export non-configurable, so its
+    // integrity state is a fact about the KIND and there is nothing a
+    // dictionary would have to record.
+    ModuleNamespace,
     Refused,
 };
 
@@ -57,9 +63,14 @@ Target targetOf(Value v) {
         case BRONZE_ABI_OBJ_FLAGS_PLAIN: return Target::Plain;
         case HeapKind::Array: return Target::Array;
         case HeapKind::Function: return Target::Function;
+        case ModuleNamespaceHeader::kFlags: return Target::ModuleNamespace;
         default: return Target::Refused;
     }
 }
+
+// How many names a namespace exports, which is the only thing about one that
+// varies — and it decides exactly one answer, `isFrozen`.
+uint32_t namespaceExportCount(Value v) { return v.asObject<ModuleNamespaceHeader>()->count; }
 
 // The receiver's kind for a diagnostic. The three targets above never reach
 // this, so the shared namer's answers for them are unused here — what this adds
@@ -138,6 +149,30 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
     const Target target = targetOf(receiver);
     // 20.1.2.6 step 1 returns a non-object unchanged rather than throwing.
     if (target == Target::NotAnObject) return receiver.rawBits();
+    if (target == Target::ModuleNamespace) {
+        // 7.3.14 on a namespace, and every step of it has an answer here.
+        // [[PreventExtensions]] (10.4.6.4) returns true with nothing to do,
+        // because [[IsExtensible]] was already the constant false. Then step 5
+        // defines each own key — `configurable: false` for `seal`, and
+        // `configurable: false, writable: false` for `freeze`. 10.4.6.6
+        // [[DefineOwnProperty]] accepts a descriptor only when it MATCHES what
+        // 10.4.6.5 reports, and that says `writable: true`.
+        //
+        // So `seal` and `preventExtensions` succeed as no-ops, and `freeze`
+        // fails — as a catchable TypeError from step 5.b.i's
+        // DefinePropertyOrThrow, which is the language's own answer and not
+        // bronze's "nowhere to record a level". A namespace with no exports has
+        // no key for that step to reach, so it freezes vacuously.
+        if (want == IntegrityLevel::Frozen && namespaceExportCount(receiver) > 0) {
+            return rtThrowTypeError(
+                       std::string("Cannot ") + operation +
+                       " a module namespace object that has exports: 10.4.6.5 reports every "
+                       "export as writable, and 10.4.6.6 accepts no descriptor that "
+                       "disagrees")
+                .rawBits();
+        }
+        return receiver.rawBits();
+    }
     if (target == Target::Refused) {
         // A typed array is the one refused kind with a SPECIFIED answer rather
         // than a bronze gap: 10.4.5.3 [[DefineOwnProperty]] refuses any
@@ -178,6 +213,17 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
 bool testIntegrity(Value receiver, bool frozen) {
     const Target target = targetOf(receiver);
     if (target == Target::NotAnObject) return true;  // 7.3.15 step 1: vacuously
+    if (target == Target::ModuleNamespace) {
+        // 7.3.15 over 10.4.6, and nothing here is read off the object. Step 3's
+        // [[IsExtensible]] is the constant false (10.4.6.3) and every own
+        // property is `configurable: false` (10.4.6.5) — so a namespace is
+        // SEALED from birth, with nothing having been done to it. FROZEN wants
+        // every data property non-writable as well, and 10.4.6.5 says
+        // `writable: true`, so the only frozen namespace is one with no export
+        // to be writable. That is the same split `Object.freeze` above makes,
+        // and it is why the two cannot be written independently.
+        return !frozen || namespaceExportCount(receiver) == 0;
+    }
     // Nothing can have made one of these non-extensible — every route is the
     // hard error above — so `false` here is the correct answer and not a guess.
     if (target == Target::Refused) return false;
@@ -308,6 +354,10 @@ uint64_t rtObjectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     RootedArgs args(argc, argv);
     const Target target = targetOf(args[0]);
     if (target == Target::NotAnObject) return Value::fromBool(false).rawBits();
+    // 10.4.6.3 [[IsExtensible]] "return false" — no steps, no slot, no
+    // condition. A namespace is the one object whose answer is fixed by its
+    // kind, which is exactly why it needs no place to record one.
+    if (target == Target::ModuleNamespace) return Value::fromBool(false).rawBits();
     if (target == Target::Refused) return Value::fromBool(true).rawBits();
     return Value::fromBool(rtIsExtensible(args[0])).rawBits();
 }
