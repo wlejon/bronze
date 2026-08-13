@@ -24,3 +24,6 @@ const dv = new DataView(buf);
 console.log(dv instanceof DataView);
 console.log(dv instanceof ArrayBuffer);
 console.log(dv instanceof Object);
+
+const nullProto = Object.create(null);
+console.log(nullProto instanceof Object);

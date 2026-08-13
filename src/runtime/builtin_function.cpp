@@ -1,13 +1,11 @@
-// `Function.prototype.call`, `.apply` and `.bind` — the three members that
-// make a function value usable as a function of its receiver.
+// `Function` and `Function.prototype` — the Function global constructor and
+// its prototype object (ECMA-262 20.2), holder of `call`, `apply`, `bind`,
+// `toString` and `constructor`.
 //
-// They are answered by the property path, beside a function rather than found
-// on a `Function.prototype` object a program can hold: a FunctionHeader is not
-// an ObjectHeader, so it has no shape and no prototype chain for a walk to
-// follow. That is the same arrangement `Array.prototype`'s methods are still
-// in, and it is why `Object.getPrototypeOf(f)` remains a named error while
-// `Object.getPrototypeOf({})` no longer is — an intrinsic bronze hands out
-// but cannot hand over is not one a program may claim to hold.
+// `Function.prototype` is itself a callable function object (20.2.3) that
+// returns undefined when called. Constructor-from-string (`new Function(...)`
+// or `Function(...)`) is out of scope for an AOT compiler and is diagnosed by
+// name with a TypeError.
 //
 // `bind` is a row here and a body elsewhere: it has to MAKE a function, and
 // the making — the trampoline, the cell that holds [[BoundTargetFunction]],
@@ -23,12 +21,59 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/heap.h"
 #include "runtime/rt_internal.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
 
 namespace {
+
+// 20.2.1 The Function Constructor.
+// Constructor-from-string (`new Function(...)` or `Function(...)`) is out of scope
+// for an AOT compiler — refused by name.
+uint64_t functionConstructorBody(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtThrowTypeError(
+               "Function: dynamic code compilation from strings is out of scope for an AOT compiler")
+        .rawBits();
+}
+
+// 20.2.3 The Function Prototype Object is itself a built-in function object.
+// When called, it accepts any arguments and returns undefined.
+uint64_t functionPrototypeBody(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
+static Value g_functionPrototype = Value::fromUndefined();
+static Value g_functionConstructor = Value::fromUndefined();
+
+void ensureFunctionIntrinsics() {
+    if (g_functionPrototype.isObject()) return;
+
+    // Intern immortal arena strings FIRST, before allocating heap function objects.
+    StringHeader* emptyName = StringHeader::internToArena(
+        rtArena(), StringHeader::createFromUTF8(rtHeap(), ""));
+    StringHeader* fnName = StringHeader::internToArena(
+        rtArena(), StringHeader::createFromUTF8(rtHeap(), "Function"));
+
+    // 20.2.3: Function.prototype is a callable function object.
+    Rooted<Value> proto{rtNativeFunction(functionPrototypeBody, 0)};
+    proto.get().asObject<FunctionHeader>()->name = emptyName;
+    proto.get().asObject<FunctionHeader>()->length = 0;
+
+    // 20.2.1: Function constructor object.
+    Rooted<Value> ctor{rtNativeFunction(functionConstructorBody, 1)};
+    ctor.get().asObject<FunctionHeader>()->name = fnName;
+    ctor.get().asObject<FunctionHeader>()->length = 1;
+    ctor.get().asObject<FunctionHeader>()->prototype = proto.get();
+    ctor.get().asObject<FunctionHeader>()->instance_shape =
+        rtRootShapeForPrototype(proto.get());
+
+    g_functionPrototype = proto.get();
+    g_functionConstructor = ctor.get();
+    rtHeap().add_permanent_root(&g_functionPrototype);
+    rtHeap().add_permanent_root(&g_functionConstructor);
+}
 
 bool requireFunctionReceiver(Value self, const char* method) {
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
@@ -119,7 +164,32 @@ const FunctionMethod kFunctionMethods[] = {
 
 }  // namespace
 
+Value rtFunctionConstructorObject() {
+    ensureFunctionIntrinsics();
+    return g_functionConstructor;
+}
+
+Value rtFunctionPrototypeObject() {
+    ensureFunctionIntrinsics();
+    return g_functionPrototype;
+}
+
+bool rtIsFunctionConstructor(Value fn) {
+    if (!fn.isObject()) return false;
+    HeapObjectHeader* hdr = fn.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Function) return false;
+    return reinterpret_cast<FunctionHeader*>(hdr)->code == functionConstructorBody;
+}
+
+bool rtIsFunctionPrototype(Value fn) {
+    if (!fn.isObject()) return false;
+    HeapObjectHeader* hdr = fn.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Function) return false;
+    return reinterpret_cast<FunctionHeader*>(hdr)->code == functionPrototypeBody;
+}
+
 Value rtFunctionMethod(const std::string& key) {
+    if (key == "constructor") return rtFunctionConstructorObject();
     for (const FunctionMethod& m : kFunctionMethods) {
         if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }

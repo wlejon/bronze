@@ -8,16 +8,16 @@ const bar = function () {};
 console.log(foo.toString());
 console.log(bar.toString());
 console.log((function () {}).toString());
-console.log(foo.call.toString());
+console.log(Function.prototype.call.toString());
 
 try {
-  foo.toString.call(123);
+  Function.prototype.toString.call(123);
 } catch (e) {
   console.log(e.name);
 }
 
 try {
-  foo.toString.call(null);
+  Function.prototype.toString.call(null);
 } catch (e) {
   console.log(e.name);
 }

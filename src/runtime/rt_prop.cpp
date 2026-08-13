@@ -536,6 +536,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // `prototype` first is what keeps `call`, `bind` and `name` answered
         // or diagnosed rather than read as undefined.
         if (keyStr == "prototype") {
+            if (rtIsFunctionPrototype(recv.get())) {
+                return Value::fromUndefined().rawBits();
+            }
+            if (rtIsFunctionConstructor(recv.get())) {
+                return rtFunctionPrototypeObject().rawBits();
+            }
             // The guard above only covers `kCtors`. Map, Set, ArrayBuffer and
             // the nine views are interned function singletons of their own, so
             // without this they reached the on-demand slot below and

@@ -861,6 +861,12 @@ uint64_t rtFunctionBindBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
                                const uint64_t* argv);
 bool rtBoundFunctionState(Value fn, Value& target, Value& boundThis, Value& boundArgs);
 
+// `Function` and `Function.prototype` (builtin_function.cpp).
+Value rtFunctionConstructorObject();
+Value rtFunctionPrototypeObject();
+bool rtIsFunctionConstructor(Value fn);
+bool rtIsFunctionPrototype(Value fn);
+
 // ---- the global constructor objects -----------------------------
 
 // `Array`, `String` and `Boolean`, by the name lowering resolved; `undefined`

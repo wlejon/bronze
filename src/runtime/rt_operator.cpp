@@ -482,51 +482,59 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     // allocate points into dead from-space.
     Rooted<Value> objRoot{Value(objBits)};
     Rooted<Value> ctorRoot{Value(ctorBits)};
-    if (ctorRoot.get().rawBits() == rtObjectNamespace().rawBits()) {
-        return objRoot.get().isObject();
-    }
-    if (!isCallable(ctorRoot.get())) {
-        rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
-        return false;
-    }
-    // `x instanceof Array` is IsArray(x), answered here rather than by the walk
-    // below. The walk cannot answer it at all: an array carries no shape and
-    // therefore no prototype chain, so it would report false for every array,
-    // on one of the most common guards written in JS. The shortcut is EXACT and
-    // not an approximation, because bronze refuses `class X extends Array`
-    // (bronze_class_extends) — so there is no array in a bronze program whose
-    // chain would have made the two differ.
-    if (rtIsArrayConstructor(ctorRoot.get())) {
-        return objRoot.get().isObject() &&
-               objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
-    }
-    if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
-        if (!objRoot.get().isObject()) return false;
-        const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
-        if (std::strcmp(name, "ArrayBuffer") == 0) {
-            return flags == ArrayBufferHeader::kFlags;
-        }
-        if (flags == TypedArrayHeader::kFlags) {
-            auto* view = objRoot.get().asObject<TypedArrayHeader>();
-            return std::strcmp(view->kindName(), name) == 0;
-        }
-        return false;
-    }
-    if (rtDataViewConstructorName(ctorRoot.get())) {
-        if (!objRoot.get().isObject()) return false;
-        return objRoot.get().asObject<HeapObjectHeader>()->flags == DataViewHeader::kFlags;
-    }
+
     // A primitive left operand has no prototype chain, so the answer is
     // false — not an error, which is what makes `x instanceof C` a safe
-    // guard on an unknown value.
+    // guard on an unknown value (ECMA-262 7.3.22 step 3).
     if (!objRoot.get().isObject()) return false;
 
-    rtEnsureFunctionPrototype(ctorRoot);
-    Value proto = ctorRoot.get().asObject<FunctionHeader>()->prototype;
-    if (!proto.isObject()) return false;
+    Rooted<Value> protoRoot{Value::fromUndefined()};
+    if (ctorRoot.get().rawBits() == rtObjectNamespace().rawBits()) {
+        protoRoot.set(rtObjectPrototype());
+    } else {
+        if (!isCallable(ctorRoot.get())) {
+            rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
+            return false;
+        }
+        // `x instanceof Array` is IsArray(x), answered here rather than by the walk
+        // below. The walk cannot answer it at all: an array carries no shape and
+        // therefore no prototype chain, so it would report false for every array,
+        // on one of the most common guards written in JS. The shortcut is EXACT and
+        // not an approximation, because bronze refuses `class X extends Array`
+        // (bronze_class_extends) — so there is no array in a bronze program whose
+        // chain would have made the two differ.
+        if (rtIsArrayConstructor(ctorRoot.get())) {
+            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
+        }
+        if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
+            const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
+            if (std::strcmp(name, "ArrayBuffer") == 0) {
+                return flags == ArrayBufferHeader::kFlags;
+            }
+            if (flags == TypedArrayHeader::kFlags) {
+                auto* view = objRoot.get().asObject<TypedArrayHeader>();
+                return std::strcmp(view->kindName(), name) == 0;
+            }
+            return false;
+        }
+        if (rtDataViewConstructorName(ctorRoot.get())) {
+            return objRoot.get().asObject<HeapObjectHeader>()->flags == DataViewHeader::kFlags;
+        }
+        if (rtIsFunctionConstructor(ctorRoot.get())) {
+            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+        }
+
+        rtEnsureFunctionPrototype(ctorRoot);
+        protoRoot.set(ctorRoot.get().asObject<FunctionHeader>()->prototype);
+        if (!protoRoot.get().isObject()) return false;
+    }
 
     if (objRoot.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
-        if (proto.rawBits() == rtObjectPrototype().rawBits()) {
+        if (protoRoot.get().rawBits() == rtObjectPrototype().rawBits()) {
+            return true;
+        }
+        if (objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+            protoRoot.get().rawBits() == rtFunctionPrototypeObject().rawBits()) {
             return true;
         }
         return false;  // arrays, functions, typed arrays
@@ -541,7 +549,7 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         ObjectHeader* next = cur->protoAncestor(1);
         if (!next) return false;
-        if (Value::fromObject(next).rawBits() == proto.rawBits()) return true;
+        if (protoRoot.get().rawBits() == Value::fromObject(next).rawBits()) return true;
         cur = next;
     }
     fatal("prototype chain too deep (a cycle?)");

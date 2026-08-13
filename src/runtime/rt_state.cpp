@@ -92,7 +92,11 @@ Shape* rtPlainObjectShape() {
     // Built on FIRST USE, and `rtObjectPrototype()` allocates: it must not be
     // reached before the heap is usable, which the lazy static guarantees since
     // the first plain object in a program is the earliest anything can ask.
-    static Shape* shape = rtNewRootShape(rtObjectPrototype());
+    static Shape* shape = [] {
+        Shape* s = rtNewRootShape(rtObjectPrototype());
+        (void)rtFunctionPrototypeObject();
+        return s;
+    }();
     return shape;
 }
 
@@ -250,6 +254,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = rtMathObject();
     } else if (keyStr == "Object") {
         resolved = rtObjectNamespace();
+    } else if (keyStr == "Function") {
+        resolved = rtFunctionConstructorObject();
     } else if (keyStr == "JSON") {
         resolved = rtJsonNamespace();
     } else if (keyStr == "Symbol") {

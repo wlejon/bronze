@@ -50,10 +50,9 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // `Array`, `String` and `Boolean` joined later, through exactly the
     // mechanism the line above describes — the list, an interned function
     // object, and no special case anywhere — and `WeakMap` / `WeakSet` joined
-    // beside `Map` and `Set` the same way. `Function` is deliberately NOT
-    // here: `new Function(src)` compiles source at run time, which an AOT
-    // compiler cannot do, so the name stays an unresolved one that says so
-    // where it is used rather than a value that lies about being callable.
+    // beside `Map` and `Set` the same way. `Function` joined as the global
+    // constructor and namespace holding `Function.prototype` (dynamic compilation
+    // from string source remains diagnosed by name at run time).
     // `Promise` joined with async/await: an async function RETURNS one, so a
     // program must be able to name the class it is handed — `Promise.all`,
     // `p instanceof Promise` — the same obligation the Error classes state.
@@ -70,7 +69,7 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "ArrayBuffer" || name == "Int8Array" || name == "Uint8Array" ||
            name == "Uint8ClampedArray" || name == "Int16Array" || name == "Uint16Array" ||
            name == "Int32Array" || name == "Uint32Array" || name == "Float32Array" ||
-           name == "Float64Array" || name == "DataView";
+           name == "Float64Array" || name == "DataView" || name == "Function";
 }
 
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
