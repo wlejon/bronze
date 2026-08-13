@@ -9,6 +9,7 @@ bronze_add_module(embed
         embed_function.cpp
         embed_object.cpp
         embed_handle.cpp
+        embed_typed_array.cpp
     DEPS
         runtime
         abi

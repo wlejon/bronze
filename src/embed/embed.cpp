@@ -62,6 +62,42 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     return CallResult{result.get(), /*thrown=*/false};
 }
 
+// ---- property reads --------------------------------------------------------
+
+namespace {
+
+// The shared tail of both readers: the generic element-get (the path a
+// computed `obj[key]` in compiled code takes), with the pending cell handled
+// exactly as `call` handles it — the host boundary is where propagation ends,
+// so a throwing getter answers undefined here rather than poisoning the next
+// entry into compiled code.
+Value elemGetAtHostBoundary(uint64_t objBits, uint64_t keyBits) {
+    Rooted<Value> result{Value(bronze_elem_get(objBits, keyBits))};
+    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+        return Value::fromUndefined();
+    }
+    return result.get();
+}
+
+}  // namespace
+
+Value getProperty(Value obj, std::string_view key) {
+    ShadowStackFrame frame;
+    Rooted<Value> self{obj};
+    // Receiver rooted before the key string is allocated — setProperty's
+    // discipline, mirrored.
+    Rooted<Value> keyRoot{runtime::rtMakeString(key)};
+    return elemGetAtHostBoundary(self.get().rawBits(), keyRoot.get().rawBits());
+}
+
+Value getElement(Value obj, uint32_t index) {
+    ShadowStackFrame frame;
+    Rooted<Value> self{obj};
+    return elemGetAtHostBoundary(self.get().rawBits(),
+                                 Value::fromDouble(index).rawBits());
+}
+
 // ---- throw helpers ---------------------------------------------------------
 
 Value throwValue(Value thrown) { return runtime::rtThrow(thrown); }

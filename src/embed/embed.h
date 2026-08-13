@@ -30,6 +30,13 @@
 // frames — lives in a `Persistent`. Functions here that allocate say so, and
 // the ones that take a receiver and allocate return its post-call address.
 
+namespace bronze {
+// runtime/typed_array.h owns the definition; this is the opaque redeclaration,
+// so typedArrayInfo below can name the kind without pulling the heap headers
+// into every host translation unit.
+enum class ElementKind : uint32_t;
+}  // namespace bronze
+
 namespace bronze::embed {
 
 using Value = bronze::Value;
@@ -153,6 +160,22 @@ Value defineAccessor(Value obj, std::string_view key, Value getter, Value setter
 // uniform shape keeps call sites chainable).
 Value freeze(Value obj);
 
+// ---- property reads (embed.cpp) --------------------------------------------
+
+// `obj[key]` through the same generic element-get path a computed read in
+// compiled code takes — prototype chain, accessors and all. A getter that
+// throws is handled the way `call` handles a throw: the pending cell is
+// cleared at the host boundary and the read answers undefined (a host
+// accessor has no JS frame to propagate into). MAY ALLOCATE and MAY RUN USER
+// CODE (a getter), so every other Value the host holds must be re-read from a
+// Persistent afterwards.
+Value getProperty(Value obj, std::string_view key);
+
+// `obj[3]` spelled from the host — the numeric key takes the same path a
+// program's `arr[i]` does, so it answers for real arrays, typed arrays and
+// plain objects alike. Same allocation and throw contract as getProperty.
+Value getElement(Value obj, uint32_t index);
+
 // ---- opaque native handles (embed_handle.cpp) ------------------------------
 
 // A heap cell owning a raw host pointer and a destructor: how a binding hangs
@@ -172,6 +195,50 @@ Value makeHandle(void* data, HandleDestructor dtor);
 
 // The pointer a handle carries, or nullptr for a value that is not one.
 void* handleData(Value handle);
+
+// ---- typed-array access (embed_typed_array.cpp) ----------------------------
+
+// Raw views over the program's binary data, for a host that consumes it in
+// place — a GL buffer upload, a texture image, an audio block.
+//
+// THE POINTER CONTRACT, stated as loudly as it deserves: `data` points INTO
+// THE MOVING BRONZE HEAP and is valid only until the next allocation on it —
+// any embed call marked ALLOCATES, any call into compiled code, any native
+// function a callback re-enters. A host either consumes the bytes
+// synchronously (hand them to a GL call that copies them into the driver) or
+// memcpy's them out before doing anything else. It never stores the pointer,
+// not even alongside a Persistent — the Persistent keeps the VALUE alive and
+// current, but this pointer is a snapshot of an address the collector is free
+// to abandon.
+
+struct TypedArrayInfo {
+    uint8_t* data{nullptr};  // nullptr: the value was not a typed array
+    uint32_t byteLength{0};
+    uint32_t elementCount{0};
+    uint32_t bytesPerElement{0};
+    ElementKind elementKind{};  // meaningful only when data != nullptr
+    explicit operator bool() const { return data != nullptr; }
+};
+
+// The view's window over its buffer — offset already applied, so `data` is
+// element 0. Answers a null-data result for anything that is not a typed
+// array (an ArrayBuffer and a DataView included: each has its own accessor
+// or deliberately none, below).
+TypedArrayInfo typedArrayInfo(Value v);
+
+struct ArrayBufferInfo {
+    uint8_t* data{nullptr};  // nullptr: the value was not an ArrayBuffer
+    uint32_t byteLength{0};
+    explicit operator bool() const { return data != nullptr; }
+};
+
+// The whole byte store of an ArrayBuffer value. bronze models the buffer and
+// its views as separate heap kinds (runtime/typed_array.h), so a host handed
+// a Float32Array must go through typedArrayInfo — this answers null for a
+// view, exactly as typedArrayInfo answers null for a bare buffer. A DataView
+// has no accessor here on purpose: nothing a host binding consumes arrives as
+// one, and exposing it would be surface without a caller.
+ArrayBufferInfo arrayBufferInfo(Value v);
 
 // ---- calling into compiled code (embed.cpp) --------------------------------
 
