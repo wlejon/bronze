@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Bronze benchmark suite package configuration for manual Node.js execution"
+}

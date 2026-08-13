@@ -1,114 +1,88 @@
 # Benchmarks
 
-Six programs, run by `run_benchmarks.py`, timing a bronze-built executable.
-`node` is not invoked — these measure bronze against its own history, and the
-trend line is the point.
+Deterministic benchmark harness and runner for Bronze and the Bro runtime integration.
+Measures execution performance across compilation modes (inferred native layouts vs uniform dynamic convention) and compares compiled host apps against interpreted QuickJS.
 
+> [!IMPORTANT]
+> **Automated runner hard rule**: `node` is NEVER invoked by the automated runner or test suite (see `CLAUDE.md`).
+> Benchmarks measure Bronze against its own history and execution modes. Manual instructions for running outside Bronze (e.g. in Node.js) are documented below for manual reference only.
+
+## Running Benchmarks
+
+Run via the bash runner:
+
+```bash
+bench/run_benchmarks.sh          # Full suite (5 runs per case, warmup discarded)
+bench/run_benchmarks.sh --pure-only   # Pure-compute scenes only (no GL/DOM)
+bench/run_benchmarks.sh --render-only # Bro WebGL/scenegraph render scenes only
+bench/run_benchmarks.sh --filter math # Filter benchmarks by name/description
+bench/run_benchmarks.sh --json        # Machine-readable JSON-lines only
 ```
-python bench/run_benchmarks.py
+
+Or via the alias:
+```bash
+./bench/bench.sh
 ```
 
-| Program | What it measures |
-|---|---|
-| `fib.js` | recursive `fib(30)` — call overhead on a tiny all-`dynamic` function |
-| `numeric_loop.js` | 10M-iteration float loop — proven-f64 arithmetic |
-| `property_access.js` | 1M iterations of `o.a + o.b` — own-property dispatch |
-| `proto_dispatch.js` | depth-3 inherited read, no adds in the loop |
-| `proto_dispatch_churn.js` | the same read with `new Pt(i)` per iteration |
-| `typed_array_loop.js` | element access on a typed array view |
+## Benchmark Suite Catalog
 
-The last two are a **pair**, and neither number means anything alone. The gap
-between them is what a cached depth-3 hit costs over a depth-0 one: ~80ms when
-the cache invalidation rule is right, and 857ms when it is too coarse. A change
-that regresses proto caching shows up as that gap widening while
-`proto_dispatch.js` stands still.
+### 1. Pure-Compute Scenes (Plain JS, no GL, no DOM)
 
-## The log
+| Benchmark | Description | Key Subsystems Exercised |
+|---|---|---|
+| `three_math.js` | Vector3, Matrix4, Euler, Quaternion math loop against vendored Three.js | Math transforms, matrix compositions/inversions, quaternion rotations |
+| `object_graph.js` | Graph/tree traversal, search (DFS/BFS), mutation, cloning | Object allocation, depth traversal, property mutations, prototype chains |
+| `typed_array_crunch.js` | N-body gravitational physics (Verlet) + Radix-2 FFT | Float64Array / Float32Array numeric operations, math kernels |
+| `mesh_churn_2k.js` | 2,000 animated meshes with per-frame matrix world updates | Scene graph hierarchy, Object3D updates, Float32Array geometry churn |
+| `fib.js` | Recursive `fib(30)` | Call overhead on tiny all-`dynamic` vs inferred-f64 function |
+| `numeric_loop.js` | 10M-iteration float arithmetic loop | Proven-f64 arithmetic in tight loop |
+| `property_access.js` | 1M iterations of `o.a + o.b` | Own-property IC fast path dispatch |
+| `proto_dispatch.js` | Depth-3 inherited property read (stable epoch) | Prototype chain IC caching at depth > 0 |
+| `proto_dispatch_churn.js` | Depth-3 inherited read with interleaved `new Pt(i)` | Ordinary object property adds vs prototype cache invalidation |
+| `typed_array_loop.js` | Float32Array element access vs plain Array | TypedArray buffer access vs JS array indexing |
 
-One entry per change that can move a number, each measured against the one
-above it, so a regression cannot hide in an average.
+### 2. Render Scene Benchmarks (Bro Host Execution)
 
-This is a record of measurements, not of work — a number bronze produced on
-this machine at a point in time. It is the one place in the repo where "what it
-used to be" is the content rather than a smell, because a trend line is the
-only way to notice a slow regression that no single run would fail.
+| Scene Benchmark | Mode / Runtime | What It Measures |
+|---|---|---|
+| `render_scenegraph_host` | Compiled Host (`bro-bronze-host`) | Full Three.js scene graph + WebGL2 context loop (30 frames) |
+| `render_wild_orbit_host` | Compiled Host (`bro-bronze-host-wild`) | Unmodified Three.js scene + OrbitControls + textures + lit pixels (30 frames) |
+| `render_interpreted_bro` | Interpreted QuickJS (`bro-headless`) | Interpreted 3D scene graph animation under QuickJS engine (30 frames) |
 
-- **honest baseline** (control flow landed, benchmarks rewritten as real loops;
-  the earlier entries were dropped because the programs were straight-line code
-  LLVM constant-folded, so they mostly measured process startup):
-  - fib — 112.0ms avg / 105.7ms min
-  - numeric_loop — 86.9 / 81.8ms
-  - property_access — 890.1 / 876.0ms. ~0.9µs per iteration of two `prop.get`
-    helper calls plus boxing — the number inference and the IC fast paths exist
-    to attack.
-- **out-of-line slots, interned property keys**: fib 118.4/113.4, numeric_loop
-  88.1/82.8 (both noise), property_access **144.5/138.1 — 6.2x faster**. The
-  890ms was mostly self-inflicted allocation: every property access built a
-  fresh key string (~48MB of garbage over the run). Keys are interned once at
-  registration, and the IC-hit path now touches no key, no `std::string` and no
-  root registration.
-- **generated code rooted**: fib 118.3/113.0, numeric_loop 87.4/81.9,
-  property_access 148.4/143.1. Cost of surviving a moving collection:
-  **nothing** on the two f64 benchmarks — they hold no `dynamic` values, so they
-  get no root frame at all — and **~3%** on property_access. The first
-  implementation registered each frame with a pair of helper calls and cost
-  **2.1x on fib** (248ms), because a tiny hot all-`dynamic` function pays a
-  fixed per-call cost twice; linking the frame inline put it back exactly.
-- **inference landed**: fib **10.7/6.6ms (11.3x)**, numeric_loop **37.7/33.4ms
-  (2.4x)**, property_access 134.0/126.9 (1.13x). Byte-identical output.
+## Manual Node.js Execution Instructions
 
-  The two numeric benchmarks are the whole argument for inference in one line.
-  Codegen did not change: inference proves `fib`'s parameter and return are
-  numbers and that its name never escapes, so it lowers to
-  `func fib(%0: f64) -> f64` with a direct typed call instead of boxing an
-  argument, calling through the uniform dynamic convention, and unboxing a
-  result — per call, on a function whose body is two additions.
+Each pure-compute benchmark is standard ES module JavaScript (or script) and can be executed unmodified in Node.js for manual, out-of-band comparison.
 
-  property_access barely moves, as predicted: every iteration is still two
-  `prop.get` helper calls. Its 1.13x is the control, not the result.
-- **inline property caches**: property_access **85.1/80.6ms — 37% faster**; fib
-  10.7/6.9 and numeric_loop 37.5/33.3 unchanged (they hold no objects).
+Because `bench/package.json` specifies `"type": "module"`, run directly from the workspace root or inside `bench/`:
 
-  The IC table moved out of a runtime `std::vector` and into a global array in
-  the generated object file, so generated code can hold a stable pointer to a
-  site's entry and do the check itself. Instrumented over the benchmark's
-  2,000,000 property reads, `bronze_prop_get` is entered **twice** — one cold
-  miss per site. The remaining time is no longer dispatch.
+```bash
+# From workspace root (Node.js 18+):
+node bench/three_math.js
+node bench/object_graph.js
+node bench/typed_array_crunch.js
+node bench/mesh_churn_2k.js
+node bench/fib.js
+node bench/numeric_loop.js
+node bench/property_access.js
+node bench/proto_dispatch.js
+node bench/proto_dispatch_churn.js
+node bench/typed_array_loop.js
+```
 
-  Cumulative since inference began: fib **11.1x**, numeric_loop **2.4x**,
-  property_access **1.75x**.
-- **annotations became untrusted hints**: **no entry, deliberately.** No
-  `bench/*.js` carries an annotation, so this cannot move a number by
-  construction. Where it applies at all its effect is the opposite of a speedup:
-  an annotation no proof backs no longer buys a native type, so code that was
-  fast *and wrong* becomes dynamic and correct.
-- **the prototype-mutation epoch**: fib 13.5/7.4, numeric_loop 41.2/33.7,
-  property_access 60.8/52.0 — all at or inside their previous minima, which is
-  the expected answer: the fourth cache word is read only at depth > 0, and
-  these three are either pure f64 or an own property generated code inlines.
+## The Benchmark Log
 
-  **`proto_dispatch.js` and `proto_dispatch_churn.js` join here, and they are
-  the entry.** Nothing in `bench/` measured an inherited read before, so a
-  change that switched proto caching off entirely could not have moved a number
-  — and the first version of this work did exactly that. Baselines, 3M
-  iterations, best of five: proto_dispatch **233ms**; proto_dispatch_churn
-  **1960ms**, against 1880ms for the identical loop reading an own property.
-- **GC root slots reused** — a **compile-time** entry, the first in this log.
-  Every benchmark's runtime is unchanged; what moved is how long bronze takes to
-  produce them.
+Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
-  three.js, 28 files: **80.6s → 64.6s**, of which object emission is 74.5 →
-  59.4s. A synthetic 2000 property reads in one function: **50.4s → 16.7s**.
-
-  `bronze build --timings` found that 95% of a compile is LLVM's object emission
-  and 5% is everything bronze wrote — so the lexer, parser, inference and
-  lowering are together not worth optimising (a 2x on all four saves 1.9s of
-  80). What was worth it was the root frame: it held a slot per `dynamic` value
-  the function ever computed rather than per value live at once, so a
-  2000-statement function allocated 6002 of them and handed the register
-  allocator 6002 stack locations.
-
-  Measured and **deliberately not taken**: `CodeGenOptLevel::None` is a further
-  5.3x on compile time and costs **2.45x on numeric_loop** while leaving the
-  others at noise. Trading the one benchmark that is the point of the project
-  for compile speed is not a default.
+- **Chunk 1: Benchmark Harness Baseline**:
+  - `fib.js`: **22.77ms** (infer) vs 476.48ms (no-infer) — **20.93x inference speedup**
+  - `numeric_loop.js`: **48.74ms** (infer) vs 751.07ms (no-infer) — **15.41x inference speedup**
+  - `typed_array_crunch.js`: **5086.68ms** (infer) vs 8053.74ms (no-infer) — **1.58x inference speedup**
+  - `proto_dispatch.js`: **778.77ms** (infer) vs 1539.76ms (no-infer) — **1.98x inference speedup**
+  - `property_access.js`: **424.18ms** (infer) vs 512.26ms (no-infer) — **1.21x inference speedup**
+  - `three_math.js`: **1439.06ms** (infer) vs 1460.23ms (no-infer) — **1.01x**
+  - `mesh_churn_2k.js`: **2636.39ms** (infer) vs 2726.82ms (no-infer) — **1.03x**
+  - `object_graph.js`: **2082.22ms** (infer) vs 2061.81ms (no-infer) — **0.99x**
+  - `typed_array_loop.js`: **1901.88ms** (infer) vs 2157.08ms (no-infer) — **1.13x**
+  - `render_scenegraph_host`: **446.66ms** (compiled bro-bronze-host, 30 frames)
+  - `render_wild_orbit_host`: **535.25ms** (compiled bro-bronze-host-wild, 30 frames)
+  - `render_interpreted_bro`: **449.83ms** (interpreted QuickJS, 30 frames)
