@@ -7,10 +7,12 @@
 // shape, the per-iteration binding, the close-on-abrupt-exit handler — is
 // written once.
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "ast/assigned.h"
+#include "ast/queries.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -48,6 +50,39 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     openInst.operands = {iterVal.id};
     emitInst(ilFn, openInst);
 
+    // A loop whose body can SUSPEND keeps its record in the frame instead of
+    // in SSA, for the reason `yield*` keeps its delegation record there: the
+    // header is re-entered from the resume dispatch, and that edge defines no
+    // SSA value. `recVal` above is still the record for the whole of the entry
+    // path; every read from the header onward goes through `readRecord`, which
+    // re-derives it from the frame when there is one to re-derive it from.
+    const bool suspends = generator_ && ast::containsYield(body);
+    uint32_t frameSlot = UINT32_MAX;
+    if (suspends) {
+        if (generator_->activeIterLoops >= generator_->loopIterSlots.size()) {
+            // The frame is laid out from the same query that decides this, so
+            // reaching here means the two disagreed about which loops suspend.
+            diags_.error(loopStmt.span,
+                         "internal: a suspending iteration loop deeper than the frame reserved");
+            return false;
+        }
+        frameSlot = generator_->loopIterSlots[generator_->activeIterLoops++];
+        emitFrameSlotSet(frameSlot, Value{recVal, il::Type::Dynamic}, ilFn);
+    }
+    // Undone on EVERY exit from this function, so a failure below cannot leave
+    // the depth counter naming a loop that is no longer being lowered.
+    struct DepthGuard {
+        std::optional<GeneratorContext>* gen;
+        bool held;
+        ~DepthGuard() {
+            if (held) --(*gen)->activeIterLoops;
+        }
+    } depthGuard{&generator_, suspends};
+
+    const auto readRecord = [&](il::Function& fn) {
+        return frameSlot == UINT32_MAX ? recVal : emitFrameSlotGet(frameSlot, fn).id;
+    };
+
     const auto loopParams = collectLoopParams(loopStmt, ast::getAssignedNames(loopStmt));
     std::vector<std::string> loopVars;
     for (const auto& param : loopParams) loopVars.push_back(param.name);
@@ -82,7 +117,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     stepInst.op = il::Op::IterStep;
     stepInst.type = il::Type::Bool;
     stepInst.result = moreVal;
-    stepInst.operands = {recVal};
+    stepInst.operands = {readRecord(ilFn)};
     emitInst(ilFn, stepInst);
 
     // The exit block carries the loop variables only: `break` reaches it from
@@ -107,7 +142,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     valueInst.op = il::Op::IterValue;
     valueInst.type = il::Type::Dynamic;
     valueInst.result = elemVal;
-    valueInst.operands = {recVal};
+    valueInst.operands = {readRecord(ilFn)};
     emitInst(ilFn, valueInst);
 
     // The jump target goes on FIRST and the cleanup second, so the cleanup's
@@ -119,7 +154,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                    bExit,           loopVars,
                    cleanupStack_.size(), cleanupStack_.size()};
     jumpStack_.push_back(ctx);
-    cleanupStack_.push_back(CleanupFrame{CleanupKind::IteratorClose, nullptr, recVal,
+    cleanupStack_.push_back(CleanupFrame{CleanupKind::IteratorClose, nullptr, recVal, frameSlot,
                                          jumpStack_.size(), outerHandler});
     jumpStack_.back().cleanupDepthInBody = cleanupStack_.size();
 
@@ -188,7 +223,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     take.type = il::Type::Dynamic;
     take.result = pending;
     emitInst(ilFn, take);
-    emitIterClose(recVal, /*suppress=*/true, ilFn);
+    emitIterClose(readRecord(ilFn), /*suppress=*/true, ilFn);
     il::Instruction rethrow;
     rethrow.op = il::Op::Throw;
     rethrow.type = il::Type::Void;

@@ -180,7 +180,14 @@ void appendReaction(Rooted<Value>& promise, uint32_t slot, Rooted<Value>& handle
                     Rooted<Value>& capability) {
     Rooted<Value> list{readSlot(promise.get(), slot)};
     if (!list.get().isObject()) {
-        list.set(Value::fromObject(ArrayHeader::create(rtHeap(), 4)));
+        ArrayHeader* fresh = ArrayHeader::create(rtHeap(), 4);
+        // `create` leaves `flags` a raw 0, which reads as HeapKind::Plain — and
+        // settleInternal below asks `flags == HeapKind::Array` before it walks
+        // this list. An unflagged list is therefore not a slow list, it is an
+        // INVISIBLE one: every reaction subscribed to a still-pending promise
+        // is silently dropped when it settles.
+        fresh->header.flags = HeapKind::Array;
+        list.set(Value::fromObject(fresh));
         writeSlot(promise.get(), slot, list.get());
     }
     bronze_array_append(list.get().rawBits(), handler.get().rawBits());

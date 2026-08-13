@@ -168,6 +168,11 @@ private:
         CleanupKind kind = CleanupKind::Finally;
         const ast::TryStmt* stmt = nullptr;      // Finally only
         il::ValueId iterRecord = il::kNoValue;   // IteratorClose only
+        // Where that record lives in a MACHINE body's frame, or UINT32_MAX
+        // for a loop in ordinary code. A `break` out of a suspending loop can
+        // be reached from a resume block, where the SSA value above was never
+        // defined — so the close has to re-read the record from the frame.
+        uint32_t iterFrameSlot = UINT32_MAX;     // IteratorClose only
         size_t jumpDepth = 0;
         // The handler in effect OUTSIDE this try. Every copy of the finally
         // body runs under it, never under the try's own handler: an exception
@@ -343,6 +348,15 @@ private:
         // whose edge defines no SSA value.
         uint32_t machineSlot = UINT32_MAX;
 
+        // The frame slots reserved for the iteration records of `for-of` and
+        // `for-in` loops whose body suspends — one per level of NESTING, in
+        // depth order, because two such loops are only ever stepping at once
+        // when one is inside the other. `activeIterLoops` is how deep lowering
+        // currently is in them, and so which slot the next one claims.
+        // Empty in a body that has no such loop, which is almost every body.
+        std::vector<uint32_t> loopIterSlots;
+        uint32_t activeIterLoops = 0;
+
         // How `next`, `return` and `throw` reach the body. Mirrors
         // GeneratorResumeMode in src/runtime/generator.h — which lowering
         // cannot include, because `bronze::lower` depends on `ast il support
@@ -368,9 +382,11 @@ private:
     static const char* generatorEnvSlotName();
     static const char* generatorIterSlotName();
     static const char* asyncMachineSlotName();
+    static std::string loopIterSlotName(uint32_t depth);
     Value emitConstF64(double value, il::Function& ilFn);
     Value emitIterResult(Value value, bool done, il::Function& ilFn);
     Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
+    void emitFrameSlotSet(uint32_t slot, Value val, il::Function& ilFn);
     void emitGeneratorResult(Value value, bool done, il::Function& ilFn);
     void emitGeneratorFinish(Value value, il::Function& ilFn);
     void emitGeneratorDispatch(il::Function& ilFn);

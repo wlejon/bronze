@@ -117,7 +117,13 @@ bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
             // path (a `break` or a `return`, not a throw) propagates like any
             // other — 7.4.9 discards one only when a throw is already in
             // flight, which is the handler's copy, not this one.
-            emitIterClose(frame.iterRecord, /*suppress=*/false, ilFn);
+            // A loop whose body suspends holds its record in the frame, and
+            // this path can be reached from a resume block — where the SSA
+            // value the loop opened was never defined.
+            const il::ValueId record = frame.iterFrameSlot == UINT32_MAX
+                                           ? frame.iterRecord
+                                           : emitFrameSlotGet(frame.iterFrameSlot, ilFn).id;
+            emitIterClose(record, /*suppress=*/false, ilFn);
             continue;
         }
         // Truncated below this entry while its body runs, so a `break` inside
@@ -154,7 +160,7 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
     emitInst(ilFn, jumpTo(bProtected));
     setCurrentBlock(bProtected);
 
-    cleanupStack_.push_back(CleanupFrame{CleanupKind::Finally, tryStmt, il::kNoValue,
+    cleanupStack_.push_back(CleanupFrame{CleanupKind::Finally, tryStmt, il::kNoValue, UINT32_MAX,
                                         jumpStack_.size(), outerHandler});
     const bool protectedOk =
         tryStmt->hasCatch ? lowerTryCatch(tryStmt, ilFn) : lowerTryBlock(tryStmt, ilFn);

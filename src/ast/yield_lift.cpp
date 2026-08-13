@@ -565,16 +565,20 @@ private:
             out.push_back(std::move(s));
             return;
         }
+        // The head of either form runs ONCE, so its lifted statements belong
+        // ahead of the loop. The BODY needs nothing from this pass beyond the
+        // ordinary lifting: the one thing a suspension in it would strand is
+        // the iteration record the loop is stepping, which has no name to lift
+        // it under — so lowering keeps that record in a frame slot of its own
+        // (Lowerer::loopIterSlotName) instead of in SSA.
         if (auto* fo = dynamic_cast<ForOfStmt*>(s.get())) {
             fo->iterable = lift(std::move(fo->iterable), out);
-            refuseSuspendingIterationBody(fo->body, fo->span, "for-of");
             liftStmts(fo->body);
             out.push_back(std::move(s));
             return;
         }
         if (auto* fi = dynamic_cast<ForInStmt*>(s.get())) {
             fi->object = lift(std::move(fi->object), out);
-            refuseSuspendingIterationBody(fi->body, fi->span, "for-in");
             liftStmts(fi->body);
             out.push_back(std::move(s));
             return;
@@ -611,15 +615,6 @@ private:
         // Everything else — `break`, `continue`, a nested declaration — either
         // holds no expression of this generator's or opens a scope of its own.
         out.push_back(std::move(s));
-    }
-
-    void refuseSuspendingIterationBody(const std::vector<StmtPtr>& body, Span span,
-                                       const char* form) {
-        if (!containsYield(body)) return;
-        refuse(span, yieldFormsIn(body), std::string("inside the body of a `") + form +
-                         "` (the iteration record the loop is stepping is an intermediate with "
-                         "no name, so it cannot be held in the generator's frame across a "
-                         "suspension)");
     }
 
     // `while (yield c)` — the condition re-runs every iteration, so its lifted

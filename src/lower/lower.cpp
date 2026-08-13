@@ -296,6 +296,15 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
         // the await sites subscribe resumption through. Written once by the
         // factory (lowerAsyncTail), read at every await.
         if (isAsync) slots.emplace_back(asyncMachineSlotName());
+        // And one anonymous slot per level of nested `for-of`/`for-in` whose
+        // body suspends. The iteration record such a loop is stepping is the
+        // one live thing in a machine body that no NAME reaches — the source
+        // never spelled it — so `getGeneratorFrameNames` above cannot put it
+        // here and this asks for it separately.
+        const uint32_t iterLoops = ast::maxSuspendingIterationDepth(body);
+        for (uint32_t depth = 0; depth < iterLoops; ++depth) {
+            slots.emplace_back(loopIterSlotName(depth));
+        }
     }
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped

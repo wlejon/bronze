@@ -208,11 +208,32 @@ TEST_CASE("new.target is diagnosed by name") {
 // FIELD has, and the field diagnostic used to claim it. three.js contains
 // zero class fields and five async methods, so the message was wrong every
 // time it fired. `async` stays contextual: ECMA-262 15.8.1 makes it a
-// modifier only when a ClassElementName follows on the same line.
-TEST_CASE("an async class method is diagnosed as one, not as a field") {
+// modifier only when a ClassElementName follows on the same line — which is
+// what makes the two token shapes tellable apart at all, and why the field
+// case below still has to be pinned beside this one.
+TEST_CASE("an async class method parses as a method, not as a field") {
     const auto out = parseAndDump("class L { async loadAsync(url) { return 1; } }");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: async method in a class body") != std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    // The whole dump, because the trap this guards is a MISREADING of the token
+    // shape: it is not enough that the parse succeeded, the element has to have
+    // become a method whose value is an async function and whose name is
+    // `loadAsync` rather than `async`.
+    CHECK(out ==
+          "(module t\n"
+          "  (class L\n"
+          "    (method constructor\n"
+          "      (function-expr L.constructor () strict\n"
+          "      )\n"
+          "    )\n"
+          "    (method loadAsync\n"
+          "      (async-function-expr L.loadAsync (url) strict\n"
+          "        (return\n"
+          "          (number 1)\n"
+          "        )\n"
+          "      )\n"
+          "    )\n"
+          "  )\n"
+          ")\n");
     CHECK(out.find("class field") == std::string::npos);
 }
 

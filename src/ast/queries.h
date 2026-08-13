@@ -206,4 +206,18 @@ const char* yieldFormName(YieldForms forms);
 std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<StmtPtr>& stmts);
 std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<const Stmt*>& stmts);
 
+// How many `for-of`/`for-in` ITERATION RECORDS a machine body can have in
+// flight at once — the deepest nest of such loops whose body holds a
+// suspension, nested functions excluded.
+//
+// The record is the one thing a loop of that kind carries that is not a
+// binding: `getGeneratorFrameNames` above cannot name it, because the source
+// never did. It still has to be in the frame for the same reason every binding
+// is, so the frame reserves this many anonymous slots and lowering hands out
+// the one at its current nesting depth. A DEPTH rather than a count because
+// two sibling loops are never stepping at once and can share a slot; only
+// nesting makes two records live together.
+uint32_t maxSuspendingIterationDepth(const std::vector<StmtPtr>& stmts);
+uint32_t maxSuspendingIterationDepth(const std::vector<const Stmt*>& stmts);
+
 }  // namespace bronze::ast

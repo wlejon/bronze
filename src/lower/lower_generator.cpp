@@ -55,6 +55,9 @@ constexpr const char* kEnvSlot = "gen.env";
 // The third, present only in a body that delegates: see GeneratorContext's
 // `iterSlot` for why one slot serves every `yield*` in a body.
 constexpr const char* kIterSlot = "gen.iter";
+// One per level of nested `for-of`/`for-in` whose body suspends. Numbered by
+// DEPTH and not by loop, so a body with ten sibling loops reserves one slot.
+constexpr const char* kLoopIterPrefix = "loop.iter.";
 
 // The resume index that means "the walk is over". Never dispatched to: the
 // runtime latches [[GeneratorState]] the moment a result says `done`, so the
@@ -66,6 +69,9 @@ constexpr double kCompletedState = -1.0;
 const char* Lowerer::generatorStateSlotName() { return kStateSlot; }
 const char* Lowerer::generatorEnvSlotName() { return kEnvSlot; }
 const char* Lowerer::generatorIterSlotName() { return kIterSlot; }
+std::string Lowerer::loopIterSlotName(uint32_t depth) {
+    return std::string(kLoopIterPrefix) + std::to_string(depth);
+}
 
 Lowerer::Value Lowerer::emitConstF64(double value, il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
@@ -135,6 +141,22 @@ Lowerer::Value Lowerer::emitFrameSlotGet(uint32_t slot, il::Function& ilFn) {
     inst.envIndex = slot;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
+}
+
+// The write half, against the same `__env` parameter and for the same reason:
+// a frame slot is written from inside whatever scope lowering happens to be
+// in, and going through the scope chain would make the depth a fact about
+// where the write is rather than about which record holds the slot.
+void Lowerer::emitFrameSlotSet(uint32_t slot, Value val, il::Function& ilFn) {
+    Value boxed = boxValueIfNeeded(val, ilFn);
+    il::Instruction inst;
+    inst.op = il::Op::EnvSet;
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    inst.operands = {generator_->frameEnv, boxed.id};
+    inst.envDepth = 0;
+    inst.envIndex = slot;
+    emitInst(ilFn, inst);
 }
 
 void Lowerer::emitGeneratorResult(Value value, bool done, il::Function& ilFn) {
@@ -368,6 +390,14 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     if (auto it = envScopes_[frameScope].slotOf.find(kIterSlot);
         it != envScopes_[frameScope].slotOf.end()) {
         context.iterSlot = it->second;
+    }
+    // As many as the frame layout reserved, which is the deepest nest of
+    // suspending `for-of`/`for-in` loops the body has. Read by depth, so the
+    // list stops at the first name the frame does not carry.
+    for (uint32_t depth = 0;; ++depth) {
+        auto slot = envScopes_[frameScope].slotOf.find(loopIterSlotName(depth));
+        if (slot == envScopes_[frameScope].slotOf.end()) break;
+        context.loopIterSlots.push_back(slot->second);
     }
     // An async body is the same machine driven by a different caller: the
     // runtime's promise driver instead of a generator object. Await sites need

@@ -8,6 +8,7 @@
 // descended would attribute an inner suspension to the outer body and lift
 // bindings into a frame nothing reads.
 
+#include <algorithm>
 #include <string>
 
 #include "ast/queries.h"
@@ -336,6 +337,67 @@ std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<const S
         if (s) collectFrameNames(*s, out);
     }
     return out;
+}
+
+namespace {
+
+// The same walk shape as collectFrameNames — every statement form that can
+// hold another, nested functions excluded — answering a depth instead of a set.
+uint32_t iterationDepth(const Stmt& s);
+
+uint32_t iterationDepth(const std::vector<StmtPtr>& stmts) {
+    uint32_t deepest = 0;
+    for (const auto& s : stmts) {
+        if (s) deepest = std::max(deepest, iterationDepth(*s));
+    }
+    return deepest;
+}
+
+// A loop of this kind claims a slot only when its BODY can suspend: a for-of
+// whose body runs straight through never leaves the record in a place the
+// resume dispatch has to find it again, and pays nothing.
+uint32_t iterationLoopDepth(const std::vector<StmtPtr>& body) {
+    const uint32_t inner = iterationDepth(body);
+    return containsYield(body) ? inner + 1 : inner;
+}
+
+uint32_t iterationDepth(const Stmt& s) {
+    if (const auto* b = dynamic_cast<const BlockStmt*>(&s)) return iterationDepth(b->stmts);
+    if (const auto* i = dynamic_cast<const IfStmt*>(&s)) {
+        return std::max(iterationDepth(i->thenBody), iterationDepth(i->elseBody));
+    }
+    if (const auto* w = dynamic_cast<const WhileStmt*>(&s)) return iterationDepth(w->body);
+    if (const auto* d = dynamic_cast<const DoWhileStmt*>(&s)) return iterationDepth(d->body);
+    if (const auto* f = dynamic_cast<const ForStmt*>(&s)) return iterationDepth(f->body);
+    if (const auto* fo = dynamic_cast<const ForOfStmt*>(&s)) return iterationLoopDepth(fo->body);
+    if (const auto* fi = dynamic_cast<const ForInStmt*>(&s)) return iterationLoopDepth(fi->body);
+    if (const auto* sw = dynamic_cast<const SwitchStmt*>(&s)) {
+        uint32_t deepest = 0;
+        for (const auto& c : sw->cases) deepest = std::max(deepest, iterationDepth(c.body));
+        return deepest;
+    }
+    if (const auto* lb = dynamic_cast<const LabeledStmt*>(&s)) {
+        return lb->body ? iterationDepth(*lb->body) : 0;
+    }
+    if (const auto* tr = dynamic_cast<const TryStmt*>(&s)) {
+        return std::max({iterationDepth(tr->body), iterationDepth(tr->catchBody),
+                         iterationDepth(tr->finallyBody)});
+    }
+    return 0;
+}
+
+}  // namespace
+
+uint32_t maxSuspendingIterationDepth(const std::vector<StmtPtr>& stmts) {
+    return iterationDepth(stmts);
+}
+
+uint32_t maxSuspendingIterationDepth(const std::vector<const Stmt*>& stmts) {
+    uint32_t deepest = 0;
+    for (const auto* s : stmts) {
+        if (s) deepest = std::max(deepest, iterationDepth(*s));
+    }
+    return deepest;
 }
 
 }  // namespace bronze::ast

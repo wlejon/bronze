@@ -43,6 +43,30 @@ TEST_CASE("a generator body keeps its control flow, and its yields") {
     CHECK(inLoop.find("(for") != std::string::npos);
     CHECK(inLoop.find("(yield") != std::string::npos);
 
+    // The two loops that walk a container are ordinary statements too. Both
+    // were once refused, because the iteration record such a loop is stepping
+    // is the one live thing in a body that the source never named and so
+    // `yield_lift` cannot lift under a name. Lowering keeps it in a frame slot
+    // of its own instead (Lowerer::loopIterSlotName), which leaves the parser
+    // with nothing to say about it: the loop and its yields come through as
+    // written.
+    const auto inForOf = parseAndDump("class C { *g() { for (const v of xs) { yield v; } } }");
+    CHECK(inForOf.substr(0, 7) != "ERRORS:");
+    CHECK(inForOf.find("(for-of") != std::string::npos);
+    CHECK(inForOf.find("(yield") != std::string::npos);
+
+    const auto inForIn = parseAndDump("class C { *g() { for (const k in o) { yield k; } } }");
+    CHECK(inForIn.substr(0, 7) != "ERRORS:");
+    CHECK(inForIn.find("(for-in") != std::string::npos);
+    CHECK(inForIn.find("(yield") != std::string::npos);
+
+    // Both suspension forms in one such body, which is what the refusal used
+    // to have to name the form of.
+    const auto bothInForOf =
+        parseAndDump("class C { *g() { for (const v of xs) { yield v; yield* other(); } } }");
+    CHECK(bothInForOf.substr(0, 7) != "ERRORS:");
+    CHECK(bothInForOf.find("(yield*") != std::string::npos);
+
     const auto inIf = parseAndDump("class C { *g() { if (a) yield 1; } }");
     CHECK(inIf.substr(0, 7) != "ERRORS:");
     CHECK(inIf.find("(if") != std::string::npos);
@@ -205,9 +229,9 @@ TEST_CASE("a generator outside what bronze implements is refused by name") {
     CHECK(delegatingInFinally.find("unsupported construct: a `yield*` inside a `finally` block") !=
           std::string::npos);
     const auto bothForms =
-        parseAndDump("class C { *g() { for (const v of xs) { yield v; yield* other(); } } }");
-    CHECK(bothForms.find("unsupported construct: a `yield` or a `yield*` inside the body of a "
-                         "`for-of`") != std::string::npos);
+        parseAndDump("class C { *g() { try { f(); } finally { yield 1; yield* other(); } } }");
+    CHECK(bothForms.find("unsupported construct: a `yield` or a `yield*` inside a `finally` "
+                         "block") != std::string::npos);
 
     const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
     CHECK(objectLiteral.find("a generator method in an object literal") != std::string::npos);
@@ -215,12 +239,6 @@ TEST_CASE("a generator outside what bronze implements is refused by name") {
     // The lifter refuses what it cannot give a name to, and says which position.
     const auto inFinally = parseAndDump("class C { *g() { try { f(); } finally { yield 1; } } }");
     CHECK(inFinally.find("inside a `finally` block") != std::string::npos);
-
-    const auto forOfBody = parseAndDump("class C { *g() { for (const v of xs) { yield v; } } }");
-    CHECK(forOfBody.find("inside the body of a `for-of`") != std::string::npos);
-
-    const auto forInBody = parseAndDump("class C { *g() { for (const k in o) { yield k; } } }");
-    CHECK(forInBody.find("inside the body of a `for-in`") != std::string::npos);
 
     const auto caseTest = parseAndDump("class C { *g() { switch (a) { case yield 1: break; } } }");
     CHECK(caseTest.find("in the test of a `case` clause") != std::string::npos);

@@ -48,10 +48,36 @@ Value newBuffer(uint32_t byteLength) {
     return Value::fromObject(ArrayBufferHeader::create(rtHeap(), byteLength));
 }
 
+// An argument vector held across an ALLOCATION, and put back afterwards.
+//
+// Both helpers below look up their callee before they call it, and both
+// lookups intern a function object on first use — an allocation, and under
+// BRONZE_GC_STRESS every allocation moves the world. A `std::vector<Value>`
+// is ordinary C++ memory the collector has no view of, so a buffer passed in
+// one is a pre-collection address by the time the callee reads it, and the
+// symptom is `new DataView(buffer)` reporting that its first argument is not
+// an ArrayBuffer. `RootedBlock` is what the runtime uses for the same hazard
+// in `bronze_construct`; nothing between the copy-back and the call
+// allocates, so a plain block is safe from that line on.
+// A RootedBlock pushes pointers into its own storage, so it is built where it
+// is used and never moved; these two lines are spelled out at both sites for
+// that reason rather than hidden behind a factory that would have to return
+// one.
+void fillBlock(RootedBlock& block, const std::vector<Value>& args) {
+    for (uint32_t i = 0; i < args.size(); ++i) block.set(i, args[i]);
+}
+
+void refreshThroughRoots(std::vector<Value>& args, const RootedBlock& block) {
+    for (uint32_t i = 0; i < args.size(); ++i) args[i] = Value(block.data()[i]);
+}
+
 // `new DataView(...)` through the constructor the provided-global path hands
 // out, so these exercise the same code a compiled program reaches.
 Value newDataView(std::vector<Value> args) {
+    RootedBlock block(static_cast<uint32_t>(args.size()));
+    fillBlock(block, args);
     Rooted<Value> ctor{rtDataViewConstructor("DataView")};
+    refreshThroughRoots(args, block);
     return ctor.get().asObject<FunctionHeader>()->call(
         Value::fromUndefined(), static_cast<uint32_t>(args.size()), args.data());
 }
@@ -59,8 +85,11 @@ Value newDataView(std::vector<Value> args) {
 // `view.name(...)`, reached by the member path rather than by a C++ pointer, so
 // the table that answers a property read is the one under test.
 Value callAccessor(Rooted<Value>& view, const char* name, std::vector<Value> args) {
+    RootedBlock block(static_cast<uint32_t>(args.size()));
+    fillBlock(block, args);
     Rooted<Value> fn{rtDataViewMember(view.get(), name)};
     REQUIRE(fn.get().isObject());
+    refreshThroughRoots(args, block);
     return fn.get().asObject<FunctionHeader>()->call(view.get(), static_cast<uint32_t>(args.size()),
                                                      args.data());
 }
