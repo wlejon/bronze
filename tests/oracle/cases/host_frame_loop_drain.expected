@@ -1,0 +1,12 @@
+frame 0
+async 0
+main end
+frame 1
+async 1
+then 0
+caught boom
+frame 2
+async 2
+then 1
+frame 3
+then 2
