@@ -5,3 +5,6 @@
 # core.autocrlf on, a checkout would rewrite every line ending and "unmodified"
 # would stop being checkable.
 tests/oracle/threejs/three/** -text
+
+# The single-file renderer bundle, same rule and same reason as the tree above.
+tests/oracle/threejs/three.module.js -text
