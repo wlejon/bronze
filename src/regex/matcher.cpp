@@ -22,11 +22,19 @@
 // Everything here carries a DIRECTION, which is 22.2.2.6's `direction`
 // parameter and exists for exactly one production: a lookbehind matches its
 // Disjunction backward. Backward means three things and only three — an
-// Alternative's terms are taken last to first, an atom that consumes a unit
-// reads the one BEFORE the current position and continues one earlier, and a
-// group's capture range is ordered rather than assumed. Nothing else changes:
+// Alternative's terms are taken last to first, an atom that consumes a
+// character reads the one BEFORE the current position and continues there, and
+// a group's capture range is ordered rather than assumed. Nothing else changes:
 // a quantifier is still greedy, an assertion still consumes nothing, and the
 // continuation chain still names what is left to do.
+//
+// What a character IS comes from the `u` flag, and it enters here at exactly
+// two points: `characterAt` / `characterBefore`, which decode one code point in
+// each direction, and the quantifier scan, which walks the count back one
+// character at a time instead of subtracting it from the index. The direction
+// and the alphabet meet in the backward decode — a lookbehind over astral text
+// has to see a trailing surrogate at `pos - 1` and step over its LEAD — and
+// that meeting is why `codePointBefore` exists rather than a reversed loop.
 
 #include <cstdint>
 #include <string>
@@ -52,7 +60,7 @@ constexpr uint64_t kStepBudget = 20000000;
 // it: without that path, `/.*/` over a 10 kB string would need 10 000 levels.
 constexpr uint32_t kMaxDepth = 2000;
 
-bool isLineTerminator(uint16_t u) {
+bool isLineTerminator(uint32_t u) {
     return u == 0x000A || u == 0x000D || u == 0x2028 || u == 0x2029;
 }
 
@@ -81,7 +89,10 @@ struct Cont {
 class Matcher {
 public:
     Matcher(const Pattern& pattern, UnitsView input)
-        : pattern_(pattern), input_(input), ignoreCase_(pattern.flags.ignoreCase) {
+        : pattern_(pattern),
+          input_(input),
+          ignoreCase_(pattern.flags.ignoreCase),
+          unicode_(pattern.flags.unicode) {
         captures_.assign(static_cast<size_t>(pattern.groupCount + 1) * 2, MatchResult::kUnset);
     }
 
@@ -110,6 +121,7 @@ private:
     const Pattern& pattern_;
     UnitsView input_;
     bool ignoreCase_;
+    bool unicode_;
     std::vector<int64_t> captures_;
     size_t endPos_ = 0;
     uint64_t steps_ = 0;
@@ -125,23 +137,32 @@ private:
         return false;
     }
 
-    // ---- single-unit tests --------------------------------------------------
+    // ---- single-character tests ---------------------------------------------
 
-    bool charMatches(uint16_t patternUnit, uint16_t inputUnit) const {
-        // The pattern's unit was canonicalized when it was parsed, and a unit
+    // Canonicalize over the alphabet. `i` and `u` together are refused at the
+    // flags, so a character above 0xFFFF can only ever arrive here with
+    // `ignoreCase_` false — which is what makes the narrowing safe rather than
+    // a truncation waiting for an astral fold.
+    uint32_t canonical(uint32_t code) const {
+        if (!ignoreCase_) return code;
+        return canonicalize(static_cast<uint16_t>(code), true);
+    }
+
+    bool charMatches(uint32_t patternCode, uint32_t inputCode) const {
+        // The pattern's character was canonicalized when it was parsed, and one
         // the parser refused to canonicalize can never appear there — so one
         // canonicalization here is the whole comparison.
-        return canonicalize(inputUnit, ignoreCase_) == patternUnit;
+        return canonical(inputCode) == patternCode;
     }
 
     // 22.2.2.7.1: found is "the set holds SOME member whose canonicalization is
     // the input's", which is not "the input's canonicalization is in the set".
     // `/[µ]/i` matches U+039C because Canonicalize(U+00B5) is U+039C, and no
     // amount of canonicalizing the input alone finds that.
-    bool classMatches(const Node& node, uint16_t inputUnit) const {
-        bool found = rangesContain(node.ranges, inputUnit);
+    bool classMatches(const Node& node, uint32_t inputCode) const {
+        bool found = rangesContain(node.ranges, inputCode);
         if (!found && ignoreCase_) {
-            const uint16_t cc = canonicalize(inputUnit, true);
+            const uint16_t cc = static_cast<uint16_t>(canonical(inputCode));
             found = rangesContain(node.ranges, cc);
             if (!found) {
                 for (uint16_t candidate : caseCandidates(cc)) {
@@ -155,19 +176,31 @@ private:
         return node.negated ? !found : found;
     }
 
-    bool dotMatches(uint16_t inputUnit) const {
-        return pattern_.flags.dotAll || !isLineTerminator(inputUnit);
+    bool dotMatches(uint32_t inputCode) const {
+        return pattern_.flags.dotAll || !isLineTerminator(inputCode);
     }
 
-    bool singleUnitMatches(const Node& node, uint16_t inputUnit) const {
+    bool singleCharMatches(const Node& node, uint32_t inputCode) const {
         switch (node.kind) {
-            case NodeKind::Char: return charMatches(node.ch, inputUnit);
-            case NodeKind::Class: return classMatches(node, inputUnit);
-            case NodeKind::Dot: return dotMatches(inputUnit);
+            case NodeKind::Char: return charMatches(node.ch, inputCode);
+            case NodeKind::Class: return classMatches(node, inputCode);
+            case NodeKind::Dot: return dotMatches(inputCode);
             default: return false;
         }
     }
 
+    // The two decodes, in the matcher's own terms. Both take a position that is
+    // already known to be in range, which is the caller's test either way.
+    CodePointStep characterAt(size_t pos) const { return codePointAt(input_, pos, unicode_); }
+    CodePointStep characterBefore(size_t pos) const {
+        return codePointBefore(input_, pos, unicode_);
+    }
+
+    // 22.2.2.6 IsWordChar reads a CHARACTER under `u`, and this reads a unit in
+    // both modes on purpose: WordCharacters is the basic sixty-three, so no
+    // astral code point is one and neither surrogate half of one is either. The
+    // two readings therefore agree everywhere, and a decode here would cost a
+    // branch per `\b` to reach the same answer.
     bool isWordAt(int64_t at) const {
         if (at < 0 || at >= static_cast<int64_t>(input_.size())) return false;
         return rangesContain(wordRanges(ignoreCase_), input_[static_cast<size_t>(at)]);
@@ -280,45 +313,66 @@ private:
         }
     }
 
-    // A quantified atom that consumes exactly one unit and captures nothing.
-    // The repetition is then a COUNT, so the whole loop is a scan and the
-    // backtracking is a descending (or ascending, when lazy) walk over the
+    // A quantified atom that consumes exactly one character and captures
+    // nothing. The repetition is then a COUNT, so the whole loop is a scan and
+    // the backtracking is a descending (or ascending, when lazy) walk over the
     // counts — no recursion per iteration, which is the difference between
     // `/.*/` working on a 100 kB string and overflowing the stack on it.
     //
     // Backward it is the same scan run the other way. Without that, `(?<=a*)`
     // would be the one construct that reintroduced a frame per repetition —
     // the regression the forward path exists to prevent.
+    //
+    // Under `u` a repetition is one or two units, so `n` repetitions do NOT
+    // leave the index `n` away from where they started. The walk therefore
+    // carries a position and moves it one character per step, from the far end
+    // of the scan backwards for a greedy quantifier and from the start forwards
+    // for a lazy one — still constant work per backtrack, and still no
+    // allocation, where remembering every boundary would cost one per scan.
     bool matchSimpleRepeat(const Node& node, size_t pos, const Cont* k, bool backward) {
         const Node& atom = *node.children[0];
         size_t count = 0;
         size_t at = pos;
-        if (backward) {
-            while ((node.max == kUnbounded || count < node.max) && at > 0 &&
-                   singleUnitMatches(atom, input_[at - 1])) {
-                --at;
-                ++count;
+        while (node.max == kUnbounded || count < node.max) {
+            if (backward) {
+                if (at == 0) break;
+                const CodePointStep step = characterBefore(at);
+                if (!singleCharMatches(atom, step.code)) break;
+                at -= step.width;
+            } else {
+                if (at >= input_.size()) break;
+                const CodePointStep step = characterAt(at);
+                if (!singleCharMatches(atom, step.code)) break;
+                at += step.width;
             }
-        } else {
-            while ((node.max == kUnbounded || count < node.max) && at < input_.size() &&
-                   singleUnitMatches(atom, input_[at])) {
-                ++at;
-                ++count;
-            }
+            ++count;
         }
         if (count < node.min) return false;
-        // Where `n` repetitions leave the index. `count` was bounded by the
-        // scan above, so neither form can run off an end of the input.
-        const auto after = [&](size_t n) { return backward ? pos - n : pos + n; };
+
+        // One repetition given back (`shrink`) or taken (`grow`), as an index
+        // move. Both only ever run over boundaries the scan above established,
+        // so the decode they do is the same one that produced them.
+        const auto shrink = [&](size_t cur) {
+            return backward ? cur + characterAt(cur).width : cur - characterBefore(cur).width;
+        };
+        const auto grow = [&](size_t cur) {
+            return backward ? cur - characterBefore(cur).width : cur + characterAt(cur).width;
+        };
+
         if (node.greedy) {
+            size_t cur = at;
             for (size_t n = count;; --n) {
-                if (runCont(k, after(n))) return true;
+                if (runCont(k, cur)) return true;
                 if (failed_ || n == node.min) return false;
+                cur = shrink(cur);
             }
         }
+        size_t cur = pos;
+        for (uint32_t n = 0; n < node.min; ++n) cur = grow(cur);
         for (size_t n = node.min; n <= count; ++n) {
-            if (runCont(k, after(n))) return true;
+            if (runCont(k, cur)) return true;
             if (failed_) return false;
+            if (n < count) cur = grow(cur);
         }
         return false;
     }
@@ -381,6 +435,10 @@ private:
         // `/(a)?\1b/.test("b")` is true.
         if (start == MatchResult::kUnset || end == MatchResult::kUnset) return runCont(k, pos);
         const size_t length = static_cast<size_t>(end - start);
+        // Compared unit by unit in both modes: `i` and `u` together are refused,
+        // so under `u` a character comparison IS a unit comparison, and the
+        // captured extent is a whole number of characters either way.
+        //
         // Backward the captured text ENDS at `pos`, so the comparison begins
         // `length` units earlier and the continuation resumes there.
         size_t from = pos;
@@ -454,17 +512,24 @@ private:
         return result;
     }
 
-    // The one unit an atom consumes, on the side of `pos` the direction picks:
-    // forward reads input_[pos] and resumes at pos + 1, backward reads
-    // input_[pos - 1] and resumes at pos - 1. Char, Class and Dot differ only
-    // in the test, which `singleUnitMatches` already owns.
-    bool matchOneUnit(const Node& node, size_t pos, const Cont* k, bool backward) {
+    // The one character an atom consumes, on the side of `pos` the direction
+    // picks: forward reads the character starting at `pos` and resumes after
+    // it, backward reads the character ENDING at `pos` and resumes before it.
+    // Char, Class and Dot differ only in the test, which `singleCharMatches`
+    // already owns — and the two modes differ only in how wide the character
+    // is, which the two decodes own. Both facts live here and in no third
+    // place.
+    bool matchOneCharacter(const Node& node, size_t pos, const Cont* k, bool backward) {
         if (backward) {
-            if (pos == 0 || !singleUnitMatches(node, input_[pos - 1])) return false;
-            return runCont(k, pos - 1);
+            if (pos == 0) return false;
+            const CodePointStep step = characterBefore(pos);
+            if (!singleCharMatches(node, step.code)) return false;
+            return runCont(k, pos - step.width);
         }
-        if (pos >= input_.size() || !singleUnitMatches(node, input_[pos])) return false;
-        return runCont(k, pos + 1);
+        if (pos >= input_.size()) return false;
+        const CodePointStep step = characterAt(pos);
+        if (!singleCharMatches(node, step.code)) return false;
+        return runCont(k, pos + step.width);
     }
 
     bool matchNodeInner(const Node& node, size_t pos, const Cont* k, bool backward) {
@@ -480,7 +545,7 @@ private:
             case NodeKind::Char:
             case NodeKind::Class:
             case NodeKind::Dot:
-                return matchOneUnit(node, pos, k, backward);
+                return matchOneCharacter(node, pos, k, backward);
             case NodeKind::Assertion:
                 // An assertion consumes nothing whichever direction it ran, and
                 // `^`, `$` and `\b` all ask about the units either side of
@@ -525,10 +590,16 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
     if (from > input.size()) return ExecStatus::NoMatch;
     Matcher matcher(pattern, input);
     // The scan is the spec's own: 22.2.7.2 step 12 advances the start index by
-    // one and tries again, which is why a pattern anchored with `^` and no `m`
-    // still costs a walk over the string. `<= size()` because a pattern can
-    // match the empty string at the very end.
-    for (size_t at = from; at <= input.size(); ++at) {
+    // AdvanceStringIndex and tries again, which is why a pattern anchored with
+    // `^` and no `m` still costs a walk over the string. `<= size()` because a
+    // pattern can match the empty string at the very end.
+    //
+    // Under `u` that step is a CHARACTER, so no attempt ever begins between the
+    // halves of a surrogate pair: `/\uDE00/u` does not find the trailing half of
+    // an astral character, because index 1 of a two-unit character is not a
+    // position the scan visits.
+    const bool unicode = pattern.flags.unicode;
+    for (size_t at = from; at <= input.size(); at = advanceStringIndex(input, at, unicode)) {
         const ExecStatus status = matcher.run(at, out, error);
         if (status != ExecStatus::NoMatch) return status;
     }

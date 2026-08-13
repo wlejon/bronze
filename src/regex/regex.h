@@ -24,17 +24,25 @@
 namespace bronze::regex {
 
 // UTF-16 CODE UNITS, because that is what a JavaScript string is and because
-// every position a match reports is a code unit index.
+// every position a match reports is a code unit index — under `u` as well,
+// where the ALPHABET is the code point but the index never is.
 using Units = std::u16string;
 using UnitsView = std::u16string_view;
 
-// `g i m s y`, and nothing else — `u`, `v` and `d` are refused by name at
-// compile time.
+// 22.2.7.3 AdvanceStringIndex: the index after `index`, which is two units and
+// not one when `unicode` holds and a surrogate PAIR begins there. Every place a
+// cursor steps over a character it did not match — an empty match's `lastIndex`,
+// `split`'s walk past a non-separator, the scan `search` runs — is this.
+size_t advanceStringIndex(UnitsView input, size_t index, bool unicode);
+
+// `g i m s u y`, and nothing else — `v` and `d` are refused by name at compile
+// time, and so is `u` written together with `i`.
 struct Flags {
     bool global = false;
     bool ignoreCase = false;
     bool multiline = false;
     bool dotAll = false;
+    bool unicode = false;
     bool sticky = false;
 
     // The flags in the order 22.2.6.5 pins for `RegExp.prototype.flags`,
@@ -43,7 +51,9 @@ struct Flags {
 };
 
 // Parses a flags string. Returns false and fills `error` for an unknown
-// letter, a repeated one, or one bronze does not implement.
+// letter, a repeated one, one bronze does not implement, or the `u`+`i`
+// COMBINATION — which each implement alone and cannot together, because
+// 22.2.2.9 Canonicalize switches to simple case folding under both.
 bool parseFlags(std::string_view text, Flags& out, std::string& error);
 
 // A compiled pattern, opaque here. The tree it holds is 22.2.1's and belongs

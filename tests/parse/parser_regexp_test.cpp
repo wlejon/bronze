@@ -70,8 +70,15 @@ TEST_CASE("a construct bronze refuses is named at the literal, not at the run") 
     CHECK(fold.find("U+1E9E") != std::string::npos);
     const auto property = parseRegExp("const re = /\\p{L}/;\n");
     CHECK(property.find("unicode property escapes") != std::string::npos);
+    // `u` is a mode bronze implements, so the literal compiles; `u` together
+    // with `i` is the refusal, and it is named where the two letters meet.
     const auto unicode = parseRegExp("const re = /a/u;\n");
-    CHECK(unicode.find("`u` flag") != std::string::npos);
+    CHECK(unicode.substr(0, 7) != "ERRORS:");
+    const auto folding = parseRegExp("const re = /a/ui;\n");
+    CHECK(folding.find("`u` and `i` flags together") != std::string::npos);
+    // An Annex B leniency the `u` flag switches off, decided at the literal too.
+    const auto brace = parseRegExp("const re = /a{/u;\n");
+    CHECK(brace.find("does not begin a quantifier") != std::string::npos);
     // And a construct bronze implements is compiled at the literal without a
     // word about it: `(?<` is the prefix the lexer must NOT mistake for the
     // start of a named group's `>`-terminated name.

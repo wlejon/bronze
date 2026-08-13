@@ -1,21 +1,33 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
-// The character-level questions a pattern asks: which code units a class
-// escape stands for, and what `i` does to a comparison.
+// The character-level questions a pattern asks: which characters a class
+// escape stands for, what `i` does to a comparison, and — since the `u` flag —
+// where one character ends and the next begins.
 //
 // It is its own file because both halves of the module need it and neither
 // owns it: the parser turns `\d` into a range list here, and the matcher asks
-// here whether two units are the same under `i`. One answer, so the set the
-// parser builds and the set the matcher tests can never disagree.
+// here whether two characters are the same under `i`. One answer, so the set
+// the parser builds and the set the matcher tests can never disagree.
 
 namespace bronze::regex {
 
-// An inclusive range of UTF-16 CODE UNITS. bronze has no `u` flag, so a pattern
-// never speaks about code points above 0xFFFF and a surrogate is an ordinary
-// unit here, matched on its own.
+// An inclusive range of CODE POINTS, in both modes. 22.2.1 gives the two modes
+// different alphabets — the UTF-16 code unit without `u`, the code point with
+// it — but not different range arithmetic: a non-`u` pattern simply never
+// builds a range whose endpoint exceeds 0xFFFF, because nothing it can spell
+// denotes one. Carrying a single range set is what keeps `addRange`,
+// `normalizeRanges` and `rangesContain` mode-blind, and it is honest because
+// the two alphabets NEST — every code unit is a code point, and a surrogate
+// stays an ordinary member of the set either way.
+//
+// The one operation that cannot be mode-blind is the complement, because it is
+// the only one that means "everything else" and the two modes disagree about
+// how much that is. So the ceiling is a parameter there and nowhere else.
 struct Range {
     uint32_t lo = 0;
     uint32_t hi = 0;
@@ -24,23 +36,54 @@ struct Range {
 using RangeList = std::vector<Range>;
 
 constexpr uint32_t kMaxUnit = 0xFFFF;
+constexpr uint32_t kMaxCodePoint = 0x10FFFF;
+
+// The ceiling the alphabet of `unicode` reaches, which is what a complement is
+// taken over and what a `\u{...}` escape may name.
+constexpr uint32_t alphabetCeiling(bool unicode) { return unicode ? kMaxCodePoint : kMaxUnit; }
 
 void addRange(RangeList& list, uint32_t lo, uint32_t hi);
 // Sorts and merges. Every list a class holds is normalized before the matcher
 // sees it, so a membership test is a scan over disjoint ranges.
 void normalizeRanges(RangeList& list);
-// The complement over [0, 0xFFFF]. `\D` is built this way rather than being a
+// The complement over [0, ceiling]. `\D` is built this way rather than being a
 // flag, so a negated class escape inside a class (`[\D]`) is the same object
-// as one outside it.
-RangeList complementRanges(const RangeList& list);
-bool rangesContain(const RangeList& list, uint32_t unit);
+// as one outside it — and `ceiling` is `alphabetCeiling(unicode)`, because a
+// `\D` under `u` that stopped at 0xFFFF would silently exclude every astral
+// code point from a set whose whole meaning is "not a digit".
+RangeList complementRanges(const RangeList& list, uint32_t ceiling);
+bool rangesContain(const RangeList& list, uint32_t code);
+
+// One character read out of a UTF-16 sequence, and how many code units it
+// occupies. Without `u` that is always one unit and the two are the same
+// question; with `u` a surrogate PAIR is one character and everything that
+// steps over a character has to step two.
+//
+// An UNPAIRED surrogate is returned as itself, width one. It is a code point
+// for matching purposes — `/^.$/u` matches a lone lead surrogate — and turning
+// it into U+FFFD here would make the matcher answer about a character the
+// subject does not contain.
+struct CodePointStep {
+    uint32_t code = 0;
+    size_t width = 1;
+};
+
+// The character starting at `index`, which must be less than `input.size()`.
+CodePointStep codePointAt(std::u16string_view input, size_t index, bool unicode);
+// The character ENDING at `index`, which must be greater than zero: the
+// backward form a lookbehind reads with. Under `u` it recognises a trailing
+// surrogate at `index - 1` and steps back over its lead, so the two functions
+// agree about where every character boundary is.
+CodePointStep codePointBefore(std::u16string_view input, size_t index, bool unicode);
 
 // The three class escapes of 22.2.2.9. `\w` is 22.2.2.7.1 WordCharacters: the
 // basic sixty-three, plus every unit that is not one of them whose
 // `canonicalize` IS one of them — a set the specification asserts is EMPTY
-// unless `u` and `i` are both set. bronze has no `u`, so `\w` is the same
-// sixty-three in both modes, and `ignoreCase` still selects the set because it
-// selects which `canonicalize` derives it.
+// unless `u` and `i` are both set. bronze refuses `u` together with `i`
+// (22.2.2.9's Canonicalize switches to simple case folding there, a table it
+// does not carry), so `\w` is the same sixty-three in every mode it compiles,
+// and `ignoreCase` still selects the set because it selects which
+// `canonicalize` derives it.
 //
 // The derivation is what makes the two agree. U+017F and U+212A look like they
 // belong — each uppercases to a word character — but `canonicalize` returns

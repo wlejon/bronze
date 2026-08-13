@@ -203,6 +203,22 @@ regex::ExecStatus runMatch(const regex::Pattern& pattern, const regex::Units& in
 
 regex::Units toRegexUnits(const Units& units) { return regex::Units(units.begin(), units.end()); }
 
+// 22.2.7.3 AdvanceStringIndex, as the cursor step every member here shares. An
+// empty match, a separator that matched nothing, and the walk `split` takes
+// over a position it could not match at are all the same operation — and under
+// `u` all three step over a whole CHARACTER, so a cursor never lands between
+// the halves of a surrogate pair.
+size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
+    return regex::advanceStringIndex(haystack, index, unicode);
+}
+
+// The same step applied to a RegExp's own `lastIndex`.
+void advanceLastIndex(Value re, const regex::Units& haystack) {
+    const bool unicode = regex::patternFlags(rtRegExpPattern(re)).unicode;
+    const auto index = static_cast<size_t>(rtRegExpLastIndex(re));
+    rtRegExpSetLastIndex(re, static_cast<double>(advanceOver(haystack, index, unicode)));
+}
+
 // ---- search -----------------------------------------------------------------
 
 uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -269,6 +285,7 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (!flags.global) return rtRegExpExec(re, self).rawBits();
 
     rtRegExpSetLastIndex(re.get(), 0.0);
+    const regex::Units haystack = toRegexUnits(unitsOf(self.get()));
     // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
     // the length, so passing a capacity guess would leave trailing `undefined`
     // elements in the result.
@@ -281,9 +298,9 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         Rooted<Value> matched{result.asObject<ArrayHeader>()->getElem(0)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), count++, matched);
         // An empty match would leave `lastIndex` where it is and loop for
-        // ever; 22.2.6.8 step 8.f.iii advances it by one.
+        // ever; 22.2.6.8 step 8.f.iii advances it by AdvanceStringIndex.
         if (matched.get().asString<StringHeader>()->getLength() == 0) {
-            rtRegExpSetLastIndex(re.get(), rtRegExpLastIndex(re.get()) + 1);
+            advanceLastIndex(re.get(), haystack);
         }
     }
     // 22.1.3.13 step 5.g: `null`, not an empty array, when nothing matched.
@@ -335,11 +352,11 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         return iterResult(none, true).rawBits();
     }
     Rooted<Value> match{result};
-    // 22.2.9.2.1 step 8.e.iii: an empty match advances the cursor by one, or
-    // the iterator would yield it for ever.
+    // 22.2.9.2.1 step 8.e.iii: an empty match advances the cursor by
+    // AdvanceStringIndex, or the iterator would yield it for ever.
     Value first = match.get().asObject<ArrayHeader>()->getElem(0);
     if (first.isString() && first.asString<StringHeader>()->getLength() == 0) {
-        rtRegExpSetLastIndex(re.get(), rtRegExpLastIndex(re.get()) + 1);
+        advanceLastIndex(re.get(), toRegexUnits(unitsOf(input.get())));
     }
     return iterResult(match, false).rawBits();
 }
@@ -537,7 +554,11 @@ uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const 
             return Value::fromUndefined().rawBits();
         }
         at = pieces.end;
-        from = pieces.end == pieces.start ? pieces.end + 1 : pieces.end;
+        // 22.2.6.11 step 9.d: an empty match steps by AdvanceStringIndex, which
+        // is what keeps the loop moving and, under `u`, keeps it landing on
+        // character boundaries.
+        from = pieces.end == pieces.start ? advanceOver(haystack, pieces.end, flags.unicode)
+                                          : pieces.end;
         if (!everyMatch) break;
     }
     if (everyMatch) rtRegExpSetLastIndex(re.get(), 0.0);
@@ -588,12 +609,16 @@ uint64_t stringSplitPattern(uint64_t, uint64_t thisBits, uint32_t argc, const ui
         return out.get().rawBits();
     }
 
+    // 22.2.6.14's `q` walks the string by AdvanceStringIndex (steps 19.a and
+    // 19.d.i), so under `u` the separator is never tried between the halves of
+    // a surrogate pair and a piece never ends inside one.
+    const bool unicode = regex::patternFlags(pattern).unicode;
     size_t sliceStart = 0;
     size_t at = 0;
     while (at < input.size()) {
         regex::MatchResult match;
         if (runMatch(pattern, haystack, at, true, match) != regex::ExecStatus::Match) {
-            ++at;
+            at = advanceOver(haystack, at, unicode);
             continue;
         }
         const auto end = static_cast<size_t>(match.end());
@@ -601,7 +626,7 @@ uint64_t stringSplitPattern(uint64_t, uint64_t thisBits, uint32_t argc, const ui
         // would produce an infinite run of empty strings; 22.2.6.14 step 19.d
         // steps past it instead.
         if (end == sliceStart) {
-            ++at;
+            at = advanceOver(haystack, at, unicode);
             continue;
         }
         Rooted<Value> piece{stringOf(slice(input, sliceStart, at))};

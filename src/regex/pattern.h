@@ -20,14 +20,16 @@ enum class NodeKind : uint8_t {
     // An Alternative: the terms, in source order. An empty one matches the
     // empty string, which is what makes `(a|)` legal.
     Sequence,
-    // One code unit, already canonicalized when `i` is set.
+    // One character — a code unit without `u`, a code POINT with it — already
+    // canonicalized when `i` is set.
     Char,
     // A CharacterClass, or a class escape used on its own. `ranges` is
     // normalized; `negated` is `[^...]`, which is NOT the same as complementing
     // the ranges once `i` is in play (22.2.2.7.1 inverts the ANSWER, after the
     // canonicalizing membership test).
     Class,
-    // `.` — every unit but the four line terminators, unless `s` is set.
+    // `.` — every character but the four line terminators, unless `s` is set.
+    // Under `u` that is one code point, so `/^.$/u` matches an astral one.
     Dot,
     // `^`, `$`, `\b`, `\B`.
     Assertion,
@@ -59,7 +61,7 @@ using NodePtr = std::unique_ptr<Node>;
 struct Node {
     NodeKind kind = NodeKind::Sequence;
 
-    uint16_t ch = 0;                  // Char
+    uint32_t ch = 0;                  // Char
     RangeList ranges;                 // Class
     bool negated = false;             // Class
     AssertionKind assertion = AssertionKind::Start;
@@ -77,10 +79,12 @@ struct Node {
     // `/(?:(a)|b)*/.exec("ab")[1]` undefined rather than "a".
     uint32_t firstCapture = 0;
     uint32_t captureCount = 0;
-    // Whether the atom consumes exactly one unit and captures nothing, so the
-    // repetition can be counted and backtracked over ITERATIVELY. Without this
-    // every `.*` would recurse once per input unit and blow the stack on a
-    // string of any size.
+    // Whether the atom consumes exactly one CHARACTER and captures nothing, so
+    // the repetition can be counted and backtracked over ITERATIVELY. Without
+    // this every `.*` would recurse once per input character and blow the stack
+    // on a string of any size. A character is not a fixed number of units under
+    // `u`, so the count is walked back one character at a time rather than
+    // subtracted from the index.
     bool simpleAtom = false;
 
     std::vector<NodePtr> children;

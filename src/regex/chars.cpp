@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <map>
 
+#include "regex/regex.h"
+
 namespace bronze::regex {
 
 namespace {
@@ -317,26 +319,66 @@ void normalizeRanges(RangeList& list) {
     list.swap(merged);
 }
 
-RangeList complementRanges(const RangeList& list) {
+RangeList complementRanges(const RangeList& list, uint32_t ceiling) {
     RangeList sorted = list;
     normalizeRanges(sorted);
     RangeList out;
     uint32_t next = 0;
     for (const Range& r : sorted) {
+        // A member above the ceiling is outside the alphabet being complemented
+        // and cannot punch a hole in it. Tested before the gap is emitted, so
+        // the output can never name a code point the mode has no word for.
+        if (r.lo > ceiling) break;
         if (r.lo > next) out.push_back(Range{next, r.lo - 1});
+        if (r.hi >= ceiling) return out;
         next = r.hi + 1;
-        if (next > kMaxUnit) return out;
     }
-    if (next <= kMaxUnit) out.push_back(Range{next, kMaxUnit});
+    if (next <= ceiling) out.push_back(Range{next, ceiling});
     return out;
 }
 
-bool rangesContain(const RangeList& list, uint32_t unit) {
+bool rangesContain(const RangeList& list, uint32_t code) {
     for (const Range& r : list) {
-        if (unit < r.lo) return false;  // normalized: sorted and disjoint
-        if (unit <= r.hi) return true;
+        if (code < r.lo) return false;  // normalized: sorted and disjoint
+        if (code <= r.hi) return true;
     }
     return false;
+}
+
+namespace {
+
+bool isLeadSurrogate(uint32_t unit) { return unit >= 0xD800 && unit <= 0xDBFF; }
+bool isTrailSurrogate(uint32_t unit) { return unit >= 0xDC00 && unit <= 0xDFFF; }
+
+uint32_t combineSurrogates(uint32_t lead, uint32_t trail) {
+    return 0x10000 + ((lead - 0xD800) << 10) + (trail - 0xDC00);
+}
+
+}  // namespace
+
+CodePointStep codePointAt(std::u16string_view input, size_t index, bool unicode) {
+    const uint32_t first = input[index];
+    if (!unicode || !isLeadSurrogate(first) || index + 1 >= input.size()) return {first, 1};
+    const uint32_t second = input[index + 1];
+    if (!isTrailSurrogate(second)) return {first, 1};
+    return {combineSurrogates(first, second), 2};
+}
+
+CodePointStep codePointBefore(std::u16string_view input, size_t index, bool unicode) {
+    const uint32_t last = input[index - 1];
+    if (!unicode || !isTrailSurrogate(last) || index < 2) return {last, 1};
+    const uint32_t first = input[index - 2];
+    if (!isLeadSurrogate(first)) return {last, 1};
+    return {combineSurrogates(first, last), 2};
+}
+
+// 22.2.7.3 AdvanceStringIndex. Every cursor a global match moves — `lastIndex`
+// after an empty match, the scan in `search`, the step `split` takes past a
+// separator that matched nothing — is this one operation, so a program cannot
+// find one of them stepping by a unit and another by a character.
+size_t advanceStringIndex(UnitsView input, size_t index, bool unicode) {
+    if (index >= input.size()) return index + 1;
+    return index + codePointAt(input, index, unicode).width;
 }
 
 const RangeList& digitRanges() {

@@ -374,7 +374,7 @@ const RegExpMethod kRegExpMethods[] = {
 // string, and no string names one of them. They are refused a step earlier, at
 // `Symbol.match` itself, which is in builtin_symbol.cpp's unimplemented list.
 const char* const kRegExpMembers[] = {
-    "compile", "constructor", "hasIndices", "unicode", "unicodeSets",
+    "compile", "constructor", "hasIndices", "unicodeSets",
 };
 
 }  // namespace
@@ -407,6 +407,9 @@ Value rtRegExpMember(Value re, const std::string& key) {
     if (key == "ignoreCase") return Value::fromBool(flags.ignoreCase);
     if (key == "multiline") return Value::fromBool(flags.multiline);
     if (key == "dotAll") return Value::fromBool(flags.dotAll);
+    // 22.2.6.18: a real accessor now that the flag is a real mode, and the one
+    // way a program can ask which alphabet a pattern was compiled over.
+    if (key == "unicode") return Value::fromBool(flags.unicode);
     if (key == "sticky") return Value::fromBool(flags.sticky);
     Value method = rtRegExpMethod(key);
     if (!method.isUndefined()) return method;

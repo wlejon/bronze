@@ -39,6 +39,31 @@ bool isAlphanumeric(uint16_t c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDecimalDigit(c);
 }
 
+// 22.2.1 SyntaxCharacter. It is what `\` may precede under +UnicodeMode, and —
+// as PatternCharacter's exclusion list — what may NOT be written bare there.
+// Annex B's ~UnicodeMode productions widen both, which is why this list is
+// consulted only when `u` is set.
+bool isSyntaxCharacter(uint16_t c) {
+    switch (c) {
+        case '^': case '$': case '\\': case '.': case '*': case '+': case '?':
+        case '(': case ')': case '[': case ']': case '{': case '}': case '|':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool hexDigitValue(uint16_t c, uint32_t& out) {
+    if (c >= '0' && c <= '9') out = static_cast<uint32_t>(c - '0');
+    else if (c >= 'a' && c <= 'f') out = static_cast<uint32_t>(c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F') out = static_cast<uint32_t>(c - 'A' + 10);
+    else return false;
+    return true;
+}
+
+bool isLeadSurrogate(uint32_t c) { return c >= 0xD800 && c <= 0xDBFF; }
+bool isTrailSurrogate(uint32_t c) { return c >= 0xDC00 && c <= 0xDFFF; }
+
 // A group name is written back out in diagnostics and used as a property key,
 // so it is carried as UTF-8. Names are restricted to ASCII identifiers
 // (bronze's own identifier rule), which is narrower than the
@@ -140,10 +165,22 @@ private:
         const size_t at = pos_ + ahead;
         return at < src_.size() ? src_[at] : 0;
     }
+
     bool eat(uint16_t c) {
         if (atEnd() || src_[pos_] != c) return false;
         ++pos_;
         return true;
+    }
+
+    // One SourceCharacter of the PATTERN TEXT, which is one code POINT under
+    // `u`. A surrogate pair written between the slashes is a single atom there,
+    // so `/😀+/u` repeats the whole character rather than its trailing half —
+    // and without `u` the same text is two units and two atoms, which is what
+    // makes `/😀+/` repeat only the second of them.
+    uint32_t readSourceCharacter() {
+        const CodePointStep step = codePointAt(src_, pos_, flags_.unicode);
+        pos_ += step.width;
+        return step.code;
     }
 
     std::string describe(const std::string& what) const {
@@ -306,17 +343,35 @@ private:
                 return fail("a quantifier with nothing to repeat");
             case ')':
                 return fail("an atom was expected");
+            // The three characters Annex B B.1.2 lets a pattern write bare and
+            // 22.2.1's PatternCharacter does not. They reach here only after
+            // `readQuantifier` has already declined the `{`, so an incomplete
+            // quantifier — `/a{2/u` — is diagnosed here too rather than read as
+            // three literal characters.
+            case ']':
+                if (!flags_.unicode) break;
+                return fail("a lone `]`, which the `u` flag makes a syntax error "
+                            "(write `\\]` for the character)");
+            case '{':
+                if (!flags_.unicode) break;
+                return fail("a `{` that does not begin a quantifier, which the `u` flag "
+                            "makes a syntax error (write `\\{` for the character)");
+            case '}':
+                if (!flags_.unicode) break;
+                return fail("a lone `}`, which the `u` flag makes a syntax error "
+                            "(write `\\}` for the character)");
             default:
                 break;
         }
-        ++pos_;
-        return charNode(c);
+        return charNode(readSourceCharacter());
     }
 
-    NodePtr charNode(uint16_t unit) {
-        if (flags_.ignoreCase && isUnknownCasedUnit(unit)) return caseTableFailure(unit);
+    NodePtr charNode(uint32_t code) {
+        if (flags_.ignoreCase && isUnknownCasedUnit(code)) return caseTableFailure(code);
         NodePtr node = make(NodeKind::Char);
-        node->ch = canonicalize(unit, flags_.ignoreCase);
+        // `i` and `u` are refused together, so a character above 0xFFFF never
+        // reaches the case table and the narrowing below cannot lose one.
+        node->ch = flags_.ignoreCase ? canonicalize(static_cast<uint16_t>(code), true) : code;
         return node;
     }
 
@@ -382,12 +437,14 @@ private:
 
     // ---- Escapes ----------------------------------------------------------
 
-    // What an escape denotes: either one code unit, or a set of them. The two
+    // What an escape denotes: either one character, or a set of them. The two
     // are one return type because ClassAtom accepts both and the atom position
     // accepts both, and splitting them would duplicate the whole escape table.
+    // `code` is a code POINT under `u` — `\u{1F600}` is one of these — and a
+    // code unit without it.
     struct EscapeValue {
         bool isSet = false;
-        uint16_t unit = 0;
+        uint32_t code = 0;
         RangeList set;
     };
 
@@ -450,7 +507,7 @@ private:
             normalizeRanges(node->ranges);
             return node;
         }
-        return charNode(value.unit);
+        return charNode(value.code);
     }
 
     // The escapes that denote a character or a class set, shared by the atom
@@ -458,35 +515,51 @@ private:
     // backspace here and a word boundary there — the one production whose
     // meaning depends on where it is written.
     bool readEscapeValue(EscapeValue& out, bool inClass) {
+        const uint32_t ceiling = alphabetCeiling(flags_.unicode);
         const uint16_t c = peek();
         switch (c) {
             case 'd': ++pos_; out.isSet = true; out.set = digitRanges(); return true;
-            case 'D': ++pos_; out.isSet = true; out.set = complementRanges(digitRanges()); return true;
+            case 'D':
+                ++pos_;
+                out.isSet = true;
+                out.set = complementRanges(digitRanges(), ceiling);
+                return true;
             case 's': ++pos_; out.isSet = true; out.set = spaceRanges(); return true;
-            case 'S': ++pos_; out.isSet = true; out.set = complementRanges(spaceRanges()); return true;
+            case 'S':
+                ++pos_;
+                out.isSet = true;
+                out.set = complementRanges(spaceRanges(), ceiling);
+                return true;
             case 'w': ++pos_; out.isSet = true; out.set = wordRanges(flags_.ignoreCase); return true;
             case 'W':
                 ++pos_;
                 out.isSet = true;
-                out.set = complementRanges(wordRanges(flags_.ignoreCase));
+                out.set = complementRanges(wordRanges(flags_.ignoreCase), ceiling);
                 return true;
             case 'p':
             case 'P':
+                // Still refused WITH `u`, where real JavaScript accepts it. The
+                // honest answer is that bronze has no table, not that the flag
+                // is missing: 22.2.1's UnicodePropertyValueExpression is defined
+                // by reference to UAX #44, and reading `\p{L}` as the letter `p`
+                // — which is what the Annex B path below would do — is the
+                // silent wrong answer the refusal exists to prevent.
                 fail("unsupported: unicode property escapes `\\p{...}` are not implemented "
-                     "(they need the `u` flag, which bronze does not support)");
+                     "(they need a table of UAX #44 General Category and Script data, which "
+                     "bronze does not carry)");
                 return false;
-            case 'f': ++pos_; out.unit = 0x000C; return true;
-            case 'n': ++pos_; out.unit = 0x000A; return true;
-            case 'r': ++pos_; out.unit = 0x000D; return true;
-            case 't': ++pos_; out.unit = 0x0009; return true;
-            case 'v': ++pos_; out.unit = 0x000B; return true;
+            case 'f': ++pos_; out.code = 0x000C; return true;
+            case 'n': ++pos_; out.code = 0x000A; return true;
+            case 'r': ++pos_; out.code = 0x000D; return true;
+            case 't': ++pos_; out.code = 0x0009; return true;
+            case 'v': ++pos_; out.code = 0x000B; return true;
             case '0':
                 ++pos_;
                 if (!atEnd() && isDecimalDigit(peek())) {
                     fail("a legacy octal escape is not implemented");
                     return false;
                 }
-                out.unit = 0;
+                out.code = 0;
                 return true;
             case 'c': {
                 if (pos_ + 1 >= src_.size()) {
@@ -500,7 +573,7 @@ private:
                     return false;
                 }
                 pos_ += 2;
-                out.unit = static_cast<uint16_t>(letter % 32);
+                out.code = static_cast<uint32_t>(letter % 32);
                 return true;
             }
             case 'x': {
@@ -510,29 +583,16 @@ private:
                     return false;
                 }
                 pos_ += 3;
-                out.unit = static_cast<uint16_t>(v);
+                out.code = v;
                 return true;
             }
-            case 'u': {
-                if (pos_ + 1 < src_.size() && src_[pos_ + 1] == '{') {
-                    fail("unsupported: `\\u{...}` needs the `u` flag, which bronze "
-                         "does not support");
-                    return false;
-                }
-                uint32_t v = 0;
-                if (!readHex(pos_ + 1, 4, v)) {
-                    fail("four hexadecimal digits were expected after `\\u`");
-                    return false;
-                }
-                pos_ += 5;
-                out.unit = static_cast<uint16_t>(v);
-                return true;
-            }
+            case 'u':
+                return readUnicodeEscape(out);
             case 'b':
                 // Only reachable inside a class: the atom position took `\b`
                 // as a word boundary before it got here.
                 ++pos_;
-                out.unit = 0x0008;
+                out.code = 0x0008;
                 return true;
             default:
                 break;
@@ -546,9 +606,77 @@ private:
                  "` is not an escape sequence bronze implements");
             return false;
         }
-        (void)inClass;
+        // Under `u` the Annex B widening is gone entirely: IdentityEscape takes
+        // a SyntaxCharacter or `/`, and ClassEscape adds `-` inside a class so
+        // that `[\-]` stays writable. `/\-/u` is a syntax error where `/\-/` is
+        // a hyphen, which is the leniency switching off rather than a new rule.
+        if (flags_.unicode && !isSyntaxCharacter(c) && c != '/' && !(inClass && c == '-')) {
+            fail("`\\" + std::string(1, static_cast<char>(c)) +
+                 "` is not a valid escape under the `u` flag (an identity escape there may "
+                 "only precede a syntax character or `/`)");
+            return false;
+        }
         ++pos_;
-        out.unit = c;
+        out.code = c;
+        return true;
+    }
+
+    // 22.2.1 RegExpUnicodeEscapeSequence. Three productions, and which of them
+    // is available is the `u` flag's business: `\uHHHH` always, a LeadSurrogate
+    // escape immediately followed by a TrailSurrogate escape as ONE code point
+    // under `u`, and `\u{...}` under `u` alone.
+    bool readUnicodeEscape(EscapeValue& out) {
+        if (pos_ + 1 < src_.size() && src_[pos_ + 1] == '{') {
+            if (!flags_.unicode) {
+                // Annex B keeps this legal without `u` — `/\u{2}/` is `\u`
+                // quantified — and bronze has always refused it rather than
+                // implementing that reading. Refused still, and now for the
+                // reason that survives: the flag says which grammar is in play.
+                fail("unsupported: `\\u{...}` is a code point escape only under the `u` "
+                     "flag; without it, `\\u` takes exactly four hexadecimal digits and "
+                     "bronze does not implement Annex B's quantified reading");
+                return false;
+            }
+            size_t at = pos_ + 2;
+            uint64_t value = 0;
+            size_t digits = 0;
+            uint32_t digit = 0;
+            while (at < src_.size() && hexDigitValue(src_[at], digit)) {
+                value = value * 16 + digit;
+                // Capped rather than wrapped, so an absurd escape is refused
+                // below as out of range instead of becoming some other
+                // character entirely.
+                if (value > kMaxCodePoint) value = kMaxCodePoint + 1;
+                ++at;
+                ++digits;
+            }
+            if (digits == 0 || at >= src_.size() || src_[at] != '}') {
+                fail("`\\u{` must be closed by `}` around at least one hexadecimal digit");
+                return false;
+            }
+            if (value > kMaxCodePoint) {
+                fail("`\\u{...}` names a value above U+10FFFF, which is not a code point");
+                return false;
+            }
+            pos_ = at + 1;
+            out.code = static_cast<uint32_t>(value);
+            return true;
+        }
+        uint32_t v = 0;
+        if (!readHex(pos_ + 1, 4, v)) {
+            fail("four hexadecimal digits were expected after `\\u`");
+            return false;
+        }
+        pos_ += 5;
+        if (flags_.unicode && isLeadSurrogate(v) && pos_ + 1 < src_.size() && src_[pos_] == '\\' &&
+            src_[pos_ + 1] == 'u') {
+            uint32_t trail = 0;
+            if (readHex(pos_ + 2, 4, trail) && isTrailSurrogate(trail)) {
+                pos_ += 6;
+                v = 0x10000 + ((v - 0xD800) << 10) + (trail - 0xDC00);
+            }
+        }
+        out.code = v;
         return true;
     }
 
@@ -591,7 +719,7 @@ private:
                     // reading it as three members would be a guess.
                     return fail("a character class escape cannot be the end of a range");
                 }
-                if (lhs.unit > rhs.unit) {
+                if (lhs.code > rhs.code) {
                     return fail("a character class range whose start is after its end");
                 }
                 // Every unit the range CONTAINS, not just the two it spells.
@@ -603,20 +731,24 @@ private:
                 // range" cannot be acted on.
                 if (flags_.ignoreCase) {
                     uint32_t offender = 0;
-                    if (firstUnknownCasedUnitInRange(lhs.unit, rhs.unit, offender)) {
+                    if (firstUnknownCasedUnitInRange(lhs.code, rhs.code, offender)) {
                         return caseTableFailure(offender);
                     }
                 }
-                addRange(node->ranges, lhs.unit, rhs.unit);
+                // Under `u` the endpoints may be code POINTS, so this range can
+                // span above U+FFFF and `[\u{1F600}-\u{1F64F}]` is one interval
+                // rather than a set of surrogate halves that would also match
+                // every other astral character sharing a lead.
+                addRange(node->ranges, lhs.code, rhs.code);
                 continue;
             }
             if (lhs.isSet) {
                 node->ranges.insert(node->ranges.end(), lhs.set.begin(), lhs.set.end());
             } else {
-                if (flags_.ignoreCase && isUnknownCasedUnit(lhs.unit)) {
-                    return caseTableFailure(lhs.unit);
+                if (flags_.ignoreCase && isUnknownCasedUnit(lhs.code)) {
+                    return caseTableFailure(lhs.code);
                 }
-                addRange(node->ranges, lhs.unit, lhs.unit);
+                addRange(node->ranges, lhs.code, lhs.code);
             }
         }
         if (!eat(']')) return fail("`]` was expected to close a character class");
@@ -630,8 +762,7 @@ private:
             return false;
         }
         if (peek() != '\\') {
-            out.unit = src_[pos_];
-            ++pos_;
+            out.code = readSourceCharacter();
             return true;
         }
         ++pos_;  // '\'
@@ -648,12 +779,13 @@ private:
 std::string Flags::text() const {
     // 22.2.6.5's order, which is also the order `toString` prints and the
     // order `source`/`flags` round-trips through: d g i m s u v y, minus the
-    // four bronze does not have.
+    // three bronze does not have.
     std::string out;
     if (global) out += 'g';
     if (ignoreCase) out += 'i';
     if (multiline) out += 'm';
     if (dotAll) out += 's';
+    if (unicode) out += 'u';
     if (sticky) out += 'y';
     return out;
 }
@@ -667,13 +799,10 @@ bool parseFlags(std::string_view text, Flags& out, std::string& error) {
             case 'i': slot = &out.ignoreCase; break;
             case 'm': slot = &out.multiline; break;
             case 's': slot = &out.dotAll; break;
+            case 'u': slot = &out.unicode; break;
             case 'y': slot = &out.sticky; break;
             case 'd':
                 error = "unsupported: the RegExp `d` flag (match indices) is not implemented";
-                return false;
-            case 'u':
-                error = "unsupported: the RegExp `u` flag is not implemented (bronze matches "
-                        "per UTF-16 code unit)";
                 return false;
             case 'v':
                 error = "unsupported: the RegExp `v` flag is not implemented";
@@ -688,6 +817,20 @@ bool parseFlags(std::string_view text, Flags& out, std::string& error) {
             return false;
         }
         *slot = true;
+    }
+    // The COMBINATION, refused where the two letters meet rather than at either
+    // of them. 22.2.2.9 Canonicalize takes a different table under both flags:
+    // simple case folding (scf) instead of `toUppercase`, and the two disagree
+    // on characters bronze already folds — U+017F folds to `s` under scf and to
+    // itself under `toUppercase`, so `/ſ/ui` matches "s" where `/ſ/i` does not.
+    // Reusing the uppercase table here would be a wrong answer that only a test
+    // spelling one of those characters could catch, which is exactly the silent
+    // fallback this project rules out.
+    if (out.unicode && out.ignoreCase) {
+        error = "unsupported: the RegExp `u` and `i` flags together are not implemented "
+                "(22.2.2.9 canonicalizes by simple case folding under both, which is a "
+                "different table from the uppercase mapping bronze carries for `i`)";
+        return false;
     }
     return true;
 }
