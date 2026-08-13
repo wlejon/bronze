@@ -434,18 +434,17 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
 // The excluded keys arrive as an ARRAY rather than as a compile-time list
 // because a computed key is not known until the pattern runs.
 uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
-    Value srcVal(srcBits);
+    Rooted<Value> src{Value(srcBits)};
+    Rooted<Value> excluded{Value(excludedBits)};
     Rooted<Value> out{Value(bronze_create_object())};
-    if (srcVal.isUndefined() || srcVal.isNull()) return out.get().rawBits();
-    if (!isPlainObject(srcVal)) {
+    if (src.get().isUndefined() || src.get().isNull()) return out.get().rawBits();
+    if (!isPlainObject(src.get())) {
         fatal("object rest from a value that is not a plain object");
     }
 
     // The exclusions are compared as STRINGS, after the same ToPropertyKey
     // the pattern's own reads went through, so `{ [1]: v, ...rest }` excludes
     // the property `"1"` the read actually took.
-    Rooted<Value> excluded{Value(excludedBits)};
-    Rooted<Value> src{srcVal};
     for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         bool skip = false;
         if (isArray(excluded.get())) {
