@@ -516,7 +516,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     const auto* siteFnDecl = dynamic_cast<const ast::FunctionDecl*>(&site);
     const bool isGenerator = (siteFnExpr && siteFnExpr->isGenerator) ||
                              (siteFnDecl && siteFnDecl->isGenerator);
-    const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator);
+    const bool isAsync =
+        (siteFnExpr && siteFnExpr->isAsync) || (siteFnDecl && siteFnDecl->isAsync);
+    const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     if (isNamedFunctionExpr) namedFunctionExprs_.pop_back();
 
     generator_ = std::move(outerGenerator);

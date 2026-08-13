@@ -143,7 +143,8 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return value;
     }
     if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
-        analyzeNested(*f, f->name, f->params, f->body, f->span, f->isGenerator);
+        analyzeNested(*f, f->name, f->params, f->body, f->span,
+                      f->isGenerator || f->isAsync);
         return Type::function();
     }
     fail(e.span, "saw an unknown expression node kind");

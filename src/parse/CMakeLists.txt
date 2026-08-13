@@ -5,6 +5,7 @@ bronze_add_module(parse
         parser_literal.cpp
         parser_func.cpp
         parser_generator.cpp
+        parser_async.cpp
         parser_pattern.cpp
         parser_module.cpp
         parser_strict.cpp

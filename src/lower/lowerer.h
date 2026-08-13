@@ -327,6 +327,22 @@ private:
         // `yield*` of `yield* (yield* g())` into a statement of its own.
         uint32_t iterSlot = UINT32_MAX;
 
+        // An ASYNC function's machine: the same frame and resume function,
+        // driven by the promise runtime instead of by a generator object.
+        // One context type for both because every mechanism in it — the
+        // resume blocks, the state slot, the abrupt-mode dispatch, the
+        // cleanup routing through `finally` — is shared; what differs is the
+        // tail (lower_async.cpp vs lowerGeneratorTail) and what a suspension
+        // DOES (subscribe vs yield), and two context types would duplicate
+        // every shared field to say so.
+        bool isAsync = false;
+        // Where the machine value (runtime/builtin_async.cpp's object) lives
+        // in the frame, or UINT32_MAX in a generator. In the FRAME for the
+        // reason every binding is: an `await` site needs it to subscribe the
+        // resumption, and the site is re-entered from the resume dispatch,
+        // whose edge defines no SSA value.
+        uint32_t machineSlot = UINT32_MAX;
+
         // How `next`, `return` and `throw` reach the body. Mirrors
         // GeneratorResumeMode in src/runtime/generator.h — which lowering
         // cannot include, because `bronze::lower` depends on `ast il support
@@ -334,7 +350,9 @@ private:
         // it depend on the runtime too. Here rather than in either unit that
         // reads them, because both do; pinned against the runtime by
         // tests/lower/lower_generator_test.cpp and by every oracle case that
-        // drives a generator by hand.
+        // drives a generator by hand. An async resumption uses `kModeNext`
+        // and `kModeThrow` only — nothing external can `return` into an
+        // async body.
         static constexpr double kModeNext = 0.0;
         static constexpr double kModeReturn = 1.0;
         static constexpr double kModeThrow = 2.0;
@@ -349,6 +367,7 @@ private:
     static const char* generatorStateSlotName();
     static const char* generatorEnvSlotName();
     static const char* generatorIterSlotName();
+    static const char* asyncMachineSlotName();
     Value emitConstF64(double value, il::Function& ilFn);
     Value emitIterResult(Value value, bool done, il::Function& ilFn);
     Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
@@ -359,17 +378,33 @@ private:
     std::optional<Value> lowerYield(const ast::YieldExpr& yield, il::Function& ilFn);
     // --- lower_yield_star.cpp: `yield*`, the delegation protocol ---------
     std::optional<Value> lowerYieldStar(const ast::YieldExpr& yield, il::Function& ilFn);
-    bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn);
+    // `isAsync` selects which machine the context describes; everything the
+    // body itself needs — dispatch, resume blocks, cleanup routing — is one
+    // code path either way.
+    bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn,
+                         bool isAsync = false);
     bool lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
+
+    // --- lower_async.cpp: the async driver over the same machine ----------
+    // `await <v>`: subscribe the machine's resumption to v's settlement, then
+    // suspend exactly as a yield does.
+    std::optional<Value> lowerAwait(const ast::YieldExpr& await, il::Function& ilFn);
+    // The async function's own body: park the state, build the resume
+    // closure, hand it to the runtime driver, and return the promise the
+    // driver made.
+    bool lowerAsyncTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
 
     // --- lower.cpp: module skeleton and function bodies ------------------
     // The one rule for a function-level environment record, shared by real
     // function bodies and by the module top level lowered as `main`.
     // `isGenerator` widens the record to the whole FRAME and adds the machine's
     // own two slots; see lower_generator.cpp.
+    // `isAsync` rides beside `isGenerator` because an async body takes the
+    // generator's whole-frame rule — an await is a suspension — plus one slot
+    // of its own for the machine value.
     void enterFunctionEnv(const std::vector<ast::Param>& params,
                           const std::vector<const ast::Stmt*>& body, il::Function& ilFn,
-                          bool isGenerator = false);
+                          bool isGenerator = false, bool isAsync = false);
     // The module scope, in two halves: its layout (before any body) and its
     // record (in `main`, which is lowered last). Splitting them is the whole
     // point — the layout is what a module function needs, the record is what
@@ -381,7 +416,7 @@ private:
                              const std::vector<ast::StmtPtr>& body) const;
     bool lowerFunctionBody(const std::vector<ast::Param>& params,
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                           bool isGenerator = false);
+                           bool isGenerator = false, bool isAsync = false);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
     // --- lower_unresolved.cpp: names that resolve to nothing ---

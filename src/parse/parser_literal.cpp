@@ -349,6 +349,41 @@ ExprPtr Parser::parseObjectLit() {
                   "(a generator is supported as a class member and as a `function*`)");
             return nullptr;
         }
+        // `{ async m() {} }` — an async MethodDefinition (ECMA-262 15.8). The
+        // shape demanded is `async`, a property name ON THE SAME LINE, and a
+        // `(` — anything less and `async` stays the ordinary key it is:
+        // `{ async: 1 }`, `{ async }` and `{ async() {} }` all name a
+        // property called `async`.
+        if (check(TokenKind::Identifier) && peek().text == "async" && !peek(1).newlineBefore) {
+            if (peek(1).kind == TokenKind::Star) {
+                error("unsupported construct: an async generator method in an object literal "
+                      "(`async *m() {}`)");
+                return nullptr;
+            }
+            const bool namedMethod = (isIdentifierName(peek(1).kind) ||
+                                      peek(1).kind == TokenKind::StringLiteral) &&
+                                     peek(2).kind == TokenKind::LParen;
+            if (namedMethod) {
+                advance();  // `async`
+                const Token& nameTok = advance();
+                prop.key = nameTok.kind == TokenKind::StringLiteral
+                               ? decodeStringLiteral(
+                                     nameTok.text.substr(1, nameTok.text.size() - 2),
+                                     nameTok.span)
+                               : std::string(nameTok.text);
+                // clearSuper: an object literal's home object is the literal,
+                // so the enclosing class's `super` must not leak in — the
+                // same rule parseMethodTail applies to the plain shorthand.
+                auto method = parseAsyncMethodTail(methodName(prop.key), nameTok.span,
+                                                   /*clearSuper=*/true);
+                if (!method) return nullptr;
+                prop.isMethod = true;
+                prop.value = std::move(method);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
+            }
+        }
         if (check(TokenKind::LBracket)) {
             // `{ [e]: v }`. The key is not known here: ToPropertyKey runs on
             // whatever `e` evaluates to, at run time, and BEFORE `v` is

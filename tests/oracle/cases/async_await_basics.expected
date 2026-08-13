@@ -1,0 +1,9 @@
+sync start
+f: before await
+called f
+called g
+sync end
+f: after await 10
+g resolved 7
+boom caught kaboom
+f resolved 20

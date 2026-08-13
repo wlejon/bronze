@@ -30,9 +30,12 @@ public:
 
     void visit(const YieldExpr& y) override {
         found = true;
-        forms = forms | (y.delegate ? YieldForms::Delegating : YieldForms::Plain);
+        forms = forms | (y.isAwait     ? YieldForms::Await
+                         : y.delegate  ? YieldForms::Delegating
+                                       : YieldForms::Plain);
         // `yield* (yield x)` is two suspensions at one site, and the operand is
-        // this generator's code like any other.
+        // this generator's code like any other. `await (await x)` is the same
+        // shape in an async body.
         walk(y.argument);
     }
 
@@ -214,6 +217,11 @@ YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts) {
 }
 
 const char* yieldFormName(YieldForms forms) {
+    // Await first: the parser refuses async generators by name, so a body
+    // holds await bits or yield bits and never both — a mixed answer here
+    // would mean the parser's fence broke, and "an `await`" is still the
+    // honest half of what it would be naming.
+    if (hasAwait(forms)) return "an `await`";
     switch (forms) {
         case YieldForms::Delegating: return "a `yield*`";
         case YieldForms::Both: return "a `yield` or a `yield*`";

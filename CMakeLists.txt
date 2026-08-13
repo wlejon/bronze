@@ -1,10 +1,25 @@
 cmake_minimum_required(VERSION 3.24)
 
+# Is bronze the build, or a piece of someone else's? bro consumes it with
+# add_subdirectory, and the two things a subproject must not do are decide the
+# toolchain (the outer project already did) and register tests into the outer
+# project's ctest. `PROJECT_IS_TOP_LEVEL` cannot answer this: it is set by
+# project(), and the toolchain block below has to run before that call.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(BRONZE_IS_TOP_LEVEL ON)
+else()
+    set(BRONZE_IS_TOP_LEVEL OFF)
+endif()
+
 # vcpkg toolchain. Resolution order (same pattern as bro):
 #   1. -DCMAKE_TOOLCHAIN_FILE=... on the command line (respected as-is)
 #   2. $VCPKG_ROOT environment variable
 #   3. Known machine locations (D:/vcpkg is where bro builds from)
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+#
+# Skipped entirely for a subproject: a toolchain file takes effect at the
+# top-level project() call and nowhere else, so setting one here would either
+# be ignored or — worse, on a fresh cache — fight the host's own choice.
+if(BRONZE_IS_TOP_LEVEL AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     if(DEFINED ENV{VCPKG_ROOT})
         set(_bronze_vcpkg_root "$ENV{VCPKG_ROOT}")
     else()
@@ -37,8 +52,17 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/bronze_module.cmake)
 
-enable_testing()
-find_package(doctest CONFIG REQUIRED)
+# Every doctest binary, every add_test, and the oracle suite hang off this one
+# switch. Default is "am I the build" — a host embedding bronze wants the
+# libraries and neither the test executables nor doctest as a dependency, and
+# a bronze developer must never have to remember to turn its own ratchets on.
+option(BRONZE_BUILD_TESTS "Build bronze's test binaries and register its ctest tests"
+       ${BRONZE_IS_TOP_LEVEL})
+
+if(BRONZE_BUILD_TESTS)
+    enable_testing()
+    find_package(doctest CONFIG REQUIRED)
+endif()
 
 add_subdirectory(src/abi)
 add_subdirectory(src/support)
@@ -60,6 +84,6 @@ add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
 add_subdirectory(src/cli)
 
-if(BRONZE_WITH_LLVM)
+if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     add_subdirectory(tests/oracle)
 endif()

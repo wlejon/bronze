@@ -7,6 +7,7 @@
 
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/microtask.h"
 
 extern "C" void bronze_main();
 
@@ -22,5 +23,16 @@ int main() {
     // separately.
     bronze::ShadowStackFrame root_frame;
     bronze_main();
+    // The synchronous half of the program is over; the promise jobs it queued
+    // are the rest of it. bronze has no event loop — no timers, no IO — so ONE
+    // drain to quiescence here is the whole of HTML's "perform a microtask
+    // checkpoint", and running it inside the root frame is what keeps a
+    // suspended async frame rooted while its resumption allocates.
+    //
+    // The drain reports every rejection nothing ever handled, on STDERR, and
+    // the process still exits 0: a program that printed its output and dropped
+    // a promise exits the way it observably behaved (microtask.cpp says why at
+    // length, beside the report).
+    bronze::runtime::rtDrainMicrotasks();
     return 0;
 }

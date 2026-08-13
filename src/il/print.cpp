@@ -73,6 +73,9 @@ const char* opName(Op op) {
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
         case Op::CreateGeneratorObject: return "create.generator_object";
+        case Op::CreateAsyncMachine: return "create.async_machine";
+        case Op::AsyncStart: return "async.start";
+        case Op::AsyncAwait: return "async.await";
         case Op::ModuleNamespace: return "module.namespace";
         case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
@@ -167,6 +170,10 @@ bool canThrow(const Instruction& inst) {
         // continue past a heap that could not grow).
         case Op::CreateObject:
         case Op::CreateGeneratorObject:
+        // The machine is allocation only; starting it and subscribing an
+        // await are NOT here — the first runs the body and the second reads
+        // `.then` off whatever was awaited, and either can reach user code.
+        case Op::CreateAsyncMachine:
         case Op::ModuleNamespace:
         case Op::CreateArray:
         case Op::CreateFunction:
@@ -386,6 +393,8 @@ std::string print(const Module& module) {
                         break;
                     case Op::ModuleNamespace:
                     case Op::CreateGeneratorObject:
+                    case Op::CreateAsyncMachine:
+                    case Op::AsyncStart:
                     case Op::ForInKeys:
                     case Op::IterOpen:
                     case Op::IterStep:
@@ -412,6 +421,7 @@ std::string print(const Module& module) {
                                (inst.immI32 == 0 ? "abrupt" : "suppress");
                         break;
                     case Op::ClassExtend:
+                    case Op::AsyncAwait:
                     case Op::ArrayAppend:
                     case Op::ArraySpread:
                     case Op::ObjectSpread:

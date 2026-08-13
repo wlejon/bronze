@@ -442,17 +442,44 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         // `async` is contextual as well, and a ClassElementName on the SAME
         // line is what makes it a modifier (ECMA-262 15.8.1 forbids a line
         // terminator after it) — `async() {}` is a method named `async` and
-        // `async = 1` a field named `async`. Named here because the field
-        // diagnostic below fires on the identifier-then-identifier shape and
-        // would call an async method a field, which it never is.
+        // `async = 1` a field named `async`. Handled here, ahead of the field
+        // diagnostic below, which fires on the identifier-then-identifier
+        // shape and would call an async method a field.
         if (check(TokenKind::Identifier) && peek().text == "async" && !peek(1).newlineBefore &&
             (isIdentifierName(peek(1).kind) || peek(1).kind == TokenKind::Star ||
              peek(1).kind == TokenKind::LBracket ||
              peek(1).kind == TokenKind::StringLiteral ||
              peek(1).kind == TokenKind::NumberLiteral)) {
-            error("unsupported construct: async method in a class body");
-            ok = false;
-            break;
+            advance();  // `async`
+            if (check(TokenKind::Star)) {
+                error("unsupported construct: an async generator method in a class body "
+                      "(`async *m() {}`)");
+                ok = false;
+                break;
+            }
+            if (check(TokenKind::LBracket)) {
+                error("unsupported construct: a computed async method name in a class body");
+                ok = false;
+                break;
+            }
+            const Token* asyncName = expectPropertyName("async method name");
+            if (!asyncName) {
+                ok = false;
+                break;
+            }
+            member.name = std::string(asyncName->text);
+            // A class's own method keeps the enclosing `super` binding, which
+            // is why the tail is told not to clear it — the same split
+            // parseMethodTail and the inline `[Symbol.iterator]` above make.
+            auto fn = parseAsyncMethodTail(cls->name + "." + member.name, asyncName->span,
+                                           /*clearSuper=*/false);
+            if (!fn) {
+                ok = false;
+                break;
+            }
+            member.fn = std::move(fn);
+            cls->methods.push_back(std::move(member));
+            continue;
         }
         // `get`/`set` are contextual here too: `get() {}` is a method named
         // `get`, and only a following name makes this an accessor.

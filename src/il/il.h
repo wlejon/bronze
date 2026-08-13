@@ -151,6 +151,16 @@ enum class Op : uint8_t {
     // things that make it one is a property: the prototype lives on the shape,
     // and the resume closure is an internal slot.
     CreateGeneratorObject, // a = create.generator_object b
+    // The three edges of an ASYNC function (ECMA-262 27.7): make the machine
+    // the runtime driver holds (operand = the resume closure), start it (run
+    // the body synchronously to the first await, 27.7.5.1, and answer the
+    // promise), and subscribe one await (machine, awaited value). Their own
+    // ops rather than dynamic calls to named globals because — like
+    // `create.generator_object` — what they touch are internal slots the
+    // program can neither read nor forge.
+    CreateAsyncMachine, // a = create.async_machine b     (b = resume closure)
+    AsyncStart,         // a = async.start b              (b = machine; a = promise)
+    AsyncAwait,         // async.await machine, value     (no result; subscribes)
     // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
     // of getters the operand holds. Its own op for the reason
     // `create.generator_object` is one: what it produces is not an object

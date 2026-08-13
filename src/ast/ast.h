@@ -294,6 +294,17 @@ struct YieldExpr final : Expr {
     // `value` is then the value of this expression. So the operand is not what
     // gets yielded; it is what decides what gets yielded, several times over.
     bool delegate = false;
+    // `await <expr>` (ECMA-262 13.3, AwaitExpression). The SAME node as
+    // `yield`, deliberately: an await is a suspension exactly as a yield is —
+    // one operand evaluated here, one point the body re-enters at, one rule
+    // about where the lifter may leave it — and everything between the parser
+    // and lowering treats the two identically. They part company only in what
+    // the suspension DOES: a yield hands its operand out through an iterator
+    // result, an await subscribes the machine's resumption to the operand's
+    // settlement. `delegate` is never set alongside this (there is no
+    // `await*`), and the parser refuses async generators by name, so the two
+    // flags never meet in one body.
+    bool isAwait = false;
     void accept(Visitor& v) const override;
 };
 
@@ -410,6 +421,14 @@ struct FunctionExpr final : Expr {
     // strictness, its capture behaviour — is unchanged, and a second node would
     // duplicate every one of those rules to say so.
     bool isGenerator = false;
+    // `async function f() {}` / `async () => {}`. The same frame-plus-resume
+    // machine as a generator — an `await` suspends exactly as a `yield` does —
+    // with a different driver: calling it builds the machine AND a promise,
+    // runs the body to its first await synchronously, and settles the promise
+    // with however the walk ends (src/lower/lower_async.cpp). Never set
+    // together with `isGenerator`: async generators are refused by name in the
+    // parser.
+    bool isAsync = false;
     void accept(Visitor& v) const override;
 };
 
@@ -606,6 +625,7 @@ struct FunctionDecl final : Stmt {
     std::vector<StmtPtr> body;
     bool strict = false;  // see FunctionExpr::strict
     bool isGenerator = false;  // see FunctionExpr::isGenerator
+    bool isAsync = false;      // see FunctionExpr::isAsync
     void accept(Visitor& v) const override;
 };
 

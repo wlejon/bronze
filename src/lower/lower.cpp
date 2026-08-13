@@ -113,6 +113,13 @@ std::optional<il::Module> Lowerer::lower() {
             // `isGenerator` too. A convention only one side of the compiler
             // knows is not a convention.
             if (fnDecl->isGenerator) fn.returnType = il::Type::Dynamic;
+            // An async function returns the PROMISE, whatever its body
+            // returns — the body's `return v` is what the promise settles
+            // with (27.7.5.2), never this call's value. The same convention
+            // statement the generator line above makes, for the same reason:
+            // `returnsAValue` is false for `async function f() { await g(); }`
+            // and the factory still returns a value.
+            if (fnDecl->isAsync) fn.returnType = il::Type::Dynamic;
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));
@@ -222,7 +229,11 @@ std::optional<il::Module> Lowerer::lower() {
 // to: `emitEnvCreate` reads it as the parent link.
 void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
                                const std::vector<const ast::Stmt*>& body, il::Function& ilFn,
-                               bool isGenerator) {
+                               bool isGenerator, bool isAsync) {
+    // An async body IS a machine body for every rule below: an await is a
+    // suspension, so the whole frame takes the generator's treatment, plus
+    // one slot the generator does not have (the machine value).
+    const bool machineBody = isGenerator || isAsync;
     // Which of this function's own variables must live in an environment
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
@@ -242,7 +253,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // no SSA value at all. `this` and `arguments` join it unconditionally,
     // because the resume function reads both through the record exactly as an
     // arrow does and neither is a declaration anything above would find.
-    if (isGenerator) {
+    if (machineBody) {
         for (auto& name : ast::getGeneratorFrameNames(body)) memoryNames_.insert(std::move(name));
         // The parameters too, which no body query can see: they are bound by
         // the generator function and read by the resume function, so they cross
@@ -271,16 +282,20 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // The machine's own, ahead of every binding so that a dump of a generator's
     // frame reads with them first. Their names hold no source identifier, so
     // nothing can collide with them.
-    if (isGenerator) {
+    if (machineBody) {
         slots.emplace_back(generatorStateSlotName());
         slots.emplace_back(generatorEnvSlotName());
         // The third only where a `yield*` needs it. A generator with no
         // delegation gets the two-slot frame it always had, so its IL is
         // unchanged and a reader of one is not left asking what the empty
         // third word is for.
-        if (ast::hasDelegating(ast::yieldFormsIn(body))) {
+        if (isGenerator && ast::hasDelegating(ast::yieldFormsIn(body))) {
             slots.emplace_back(generatorIterSlotName());
         }
+        // An async body's third slot instead holds the MACHINE: the object
+        // the await sites subscribe resumption through. Written once by the
+        // factory (lowerAsyncTail), read at every await.
+        if (isAsync) slots.emplace_back(asyncMachineSlotName());
     }
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped
@@ -317,7 +332,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     EnvScopeInfo info;
     // The frame's own downward link is `gen.env`, placed at a fixed index by the
     // block above so that the machine's two slots read first.
-    if (isGenerator) info.childSlot = 1;
+    if (machineBody) info.childSlot = 1;
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
@@ -458,7 +473,7 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
 
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                                bool isGenerator) {
+                                bool isGenerator, bool isAsync) {
     ilFn.blocks.push_back(il::Block{.id = 0});
     currentBlockIdx_ = 0;
     varBindings_.clear();
@@ -488,7 +503,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     std::vector<const ast::Stmt*> stmts;
     stmts.reserve(body.size());
     for (const auto& s : body) stmts.push_back(s.get());
-    enterFunctionEnv(params, stmts, ilFn, isGenerator);
+    enterFunctionEnv(params, stmts, ilFn, isGenerator, isAsync);
 
     // An arrow in this body reads the receiver out of the environment, so
     // the receiver has to be IN it: copy `__this` across on entry, once,
@@ -535,9 +550,12 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // this function is to close the resume function over the frame the
     // prologue above has just filled in, and hand back the generator object.
     // Its lexical bindings are opened in the resume function's start block, for
-    // the reason recorded there.
-    if (isGenerator) {
-        const bool ok = lowerGeneratorTail(stmts, ilFn);
+    // the reason recorded there. An async function's tail differs in one
+    // fact — 27.7.5.1 runs the body synchronously to the first await — and
+    // that fact lives in the runtime driver its tail calls, not here.
+    if (isGenerator || isAsync) {
+        const bool ok = isGenerator ? lowerGeneratorTail(stmts, ilFn)
+                                    : lowerAsyncTail(stmts, ilFn);
         if (functionEnvScope_ != SIZE_MAX) {
             envScopes_.pop_back();
             currentEnvValue_ = savedEnvValues_.back();
@@ -627,7 +645,8 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
 // proof BEFORE the body is lowered, because the IL return type is part of the
 // calling convention.
 bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
-    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator);
+    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator,
+                             fnDecl.isAsync);
 }
 
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,

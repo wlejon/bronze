@@ -1,0 +1,7 @@
+await 1
+sync end
+await 2
+then 1
+await 3
+then 2
+then 3

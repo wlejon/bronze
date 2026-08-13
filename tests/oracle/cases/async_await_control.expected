@@ -1,0 +1,11 @@
+sync start
+sync end
+sum = 6
+caught: inner failure
+finally ran
+guarded = from catch
+cleanup ran
+propagated: inner failure
+while total = 6
+nested: done
+frames: 40 first=waiter-0:v0 last=waiter-39:v39 junk=junk-199

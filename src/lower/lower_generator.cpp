@@ -327,7 +327,7 @@ void Lowerer::emitGeneratorDispatch(il::Function& ilFn) {
 // that made the record — so its `envValue` is repointed at this function's
 // `__env` parameter for the duration and put back afterwards.
 bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
-                              il::Function& resumeFn) {
+                              il::Function& resumeFn, bool isAsync) {
     resumeFn.blocks.push_back(il::Block{.id = 0});
 
     const size_t outerBlockIdx = currentBlockIdx_;
@@ -368,6 +368,14 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     if (auto it = envScopes_[frameScope].slotOf.find(kIterSlot);
         it != envScopes_[frameScope].slotOf.end()) {
         context.iterSlot = it->second;
+    }
+    // An async body is the same machine driven by a different caller: the
+    // runtime's promise driver instead of a generator object. Await sites need
+    // the machine to subscribe resumption through, and it reaches them the way
+    // everything else does — through a frame slot (see asyncMachineSlotName).
+    context.isAsync = isAsync;
+    if (isAsync) {
+        context.machineSlot = envScopes_[frameScope].slotOf.at(asyncMachineSlotName());
     }
     auto outerGenerator = std::move(generator_);
     generator_ = std::move(context);

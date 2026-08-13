@@ -152,6 +152,20 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         }
         return one(out, parseFunctionDecl(/*isExported=*/false));
     }
+    // `async function f() {}` — a HoistableDeclaration like the plain form
+    // above, under the same strict block-position rule. The newline test
+    // inside `asyncModifiesFunction` is the ASI discipline: `async\nfunction`
+    // is the expression statement `async;` and then a declaration, so it
+    // falls through to the expression path below on purpose.
+    if (asyncModifiesFunction()) {
+        if (strict_ && !atBodyTop) {
+            error("unsupported construct: a function declaration inside a block in strict code "
+                  "(ECMA-262 14.1 makes it block-scoped, and bronze hoists it to the enclosing "
+                  "function); write `const f = async function () { ... }` instead");
+            return false;
+        }
+        return one(out, parseAsyncFunctionDecl(/*isExported=*/false));
+    }
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
         return parseVarDecl(out);
     }
@@ -363,6 +377,15 @@ bool Parser::parseForBindingHead(ForBindingHead& head) {
 
 StmtPtr Parser::parseFor() {
     const Token& kw = advance();
+    // `for await (const x of y)` — async iteration (ECMA-262 14.7.5), which
+    // is a second protocol (27.6, @@asyncIterator) over the machine and not a
+    // spelling of the sync one. Refused by name in EVERY position, async body
+    // or not: outside one it is a syntax error anyway, and inside one a
+    // silent sync reading would await nothing.
+    if (check(TokenKind::Identifier) && peek().text == "await") {
+        error("unsupported construct: for-await-of (async iteration is not built)");
+        return nullptr;
+    }
     if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
 
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {

@@ -17,6 +17,7 @@
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/promise.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -267,6 +268,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = global;
     } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
         resolved = ctor;
+    } else if (Value promise = rtPromiseConstructor(keyStr); promise.isObject()) {
+        resolved = promise;
     } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
         resolved = numeric;
     } else if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {

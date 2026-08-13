@@ -234,6 +234,13 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
             if (!fn) return false;
             spec.local = static_cast<const FunctionDecl*>(fn.get())->name;
             out.push_back(std::move(fn));
+        } else if (asyncModifiesFunction()) {
+            // `export default async function () {}` — 16.2.3.7 admits the
+            // async hoistable form exactly where it admits the plain one.
+            auto fn = parseAsyncFunctionDecl(/*isExported=*/true, "default");
+            if (!fn) return false;
+            spec.local = static_cast<const FunctionDecl*>(fn.get())->name;
+            out.push_back(std::move(fn));
         } else if (check(TokenKind::KwClass)) {
             auto cls = parseClass("default");
             if (!cls) return false;
@@ -267,6 +274,10 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     const size_t firstDecl = out.size();
     if (check(TokenKind::KwFunction)) {
         auto fn = parseFunctionDecl(/*isExported=*/true);
+        if (!fn) return false;
+        out.push_back(std::move(fn));
+    } else if (asyncModifiesFunction()) {
+        auto fn = parseAsyncFunctionDecl(/*isExported=*/true);
         if (!fn) return false;
         out.push_back(std::move(fn));
     } else if (check(TokenKind::KwClass)) {

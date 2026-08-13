@@ -54,11 +54,17 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // here: `new Function(src)` compiles source at run time, which an AOT
     // compiler cannot do, so the name stays an unresolved one that says so
     // where it is used rather than a value that lies about being callable.
+    // `Promise` joined with async/await: an async function RETURNS one, so a
+    // program must be able to name the class it is handed — `Promise.all`,
+    // `p instanceof Promise` — the same obligation the Error classes state.
+    // `AggregateError` rides beside the Error constructors because
+    // `Promise.any` raises one, and what bronze raises a program can catch by
+    // name.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
            name == "Array" || name == "String" || name == "Boolean" ||
-           name == "Symbol" || name == "RegExp" ||
+           name == "Symbol" || name == "RegExp" || name == "Promise" ||
            name == "Map" || name == "Set" || name == "WeakMap" || name == "WeakSet" ||
-           name == "Error" || name == "TypeError" ||
+           name == "Error" || name == "TypeError" || name == "AggregateError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
            name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat" ||
            name == "ArrayBuffer" || name == "Int8Array" || name == "Uint8Array" ||

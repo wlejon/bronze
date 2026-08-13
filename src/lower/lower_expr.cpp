@@ -225,6 +225,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* yield = dynamic_cast<const ast::YieldExpr*>(&expr)) {
+        if (yield->isAwait) return lowerAwait(*yield, ilFn);
         return yield->delegate ? lowerYieldStar(*yield, ilFn) : lowerYield(*yield, ilFn);
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {

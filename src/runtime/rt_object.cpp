@@ -22,6 +22,7 @@
 #include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -271,6 +272,18 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
                "` is unsupported (its instances are built by the runtime, so a "
                "subclass would not be one)")
                   .c_str());
+    }
+    // `Promise` is refused for a reason of its own, and it is load-bearing
+    // rather than defensive: the whole capability story in promise.h — no
+    // @@species, no NewPromiseCapability over an arbitrary constructor, `then`
+    // minting a plain intrinsic promise — rests on every promise in the
+    // program BEING the intrinsic. A subclass's instances are exactly the
+    // receiver that story has no answer for, and silently handing them
+    // intrinsic capabilities would be a wrong answer rather than a missing one.
+    if (rtIsPromiseConstructor(baseVal)) {
+        fatal("extending `Promise` is unsupported (bronze's promises are the intrinsic and "
+              "only the intrinsic: there is no @@species, so a subclass's `then` could not "
+              "produce a subclass)");
     }
 
     Rooted<Value> derived{derivedVal};

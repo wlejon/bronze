@@ -1,0 +1,12 @@
+sync end
+all: 1,2,3
+all rejected: boom
+settled length: 2
+fulfilled a
+rejected b
+race: fast
+any: yes
+any rejected: AggregateError
+errors: x,y
+is AggregateError: true
+is Error: true

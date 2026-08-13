@@ -22,7 +22,9 @@ bronze_add_module(embed
 # the runtime-gc-stress pattern. GC bugs in this module are systemic (a host
 # holds values across frames, which is exactly what a lazily collecting run
 # never exercises), so the stress run is the one that catches them.
-add_test(NAME embed-gc-stress COMMAND bronze_embed_tests)
-set_tests_properties(embed-gc-stress PROPERTIES
-    LABELS embed
-    ENVIRONMENT "BRONZE_GC_STRESS=1")
+if(BRONZE_BUILD_TESTS)
+    add_test(NAME embed-gc-stress COMMAND bronze_embed_tests)
+    set_tests_properties(embed-gc-stress PROPERTIES
+        LABELS embed
+        ENVIRONMENT "BRONZE_GC_STRESS=1")
+endif()

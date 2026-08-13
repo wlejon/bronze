@@ -148,10 +148,14 @@ bool returnsAValue(const std::vector<StmtPtr>& stmts);
 
 // --- what a SUSPENSION needs (queries_yield.cpp) ------------------------
 
-// Is there a `yield` anywhere under this node that belongs to THIS generator?
-// Stops at every nested function boundary: a `yield` written inside a nested
-// generator is that generator's suspension, and a non-generator function cannot
-// contain one at all — `yield` is an ordinary identifier there.
+// Is there a suspension — a `yield` or an `await` — anywhere under this node
+// that belongs to THIS body? Stops at every nested function boundary: a
+// `yield` written inside a nested generator is that generator's suspension,
+// an `await` inside a nested async function is that function's, and a body
+// that is neither cannot contain either at all — both words are ordinary
+// identifiers there. `await` answers here because it IS a `YieldExpr`
+// (ast.h says why), so every consumer of "where can this body re-enter"
+// covers both forms without a second walk.
 bool containsYield(const Node& node);
 bool containsYield(const std::vector<StmtPtr>& stmts);
 
@@ -160,19 +164,26 @@ bool containsYield(const std::vector<StmtPtr>& stmts);
 // message that says `yield` about a `yield*` sends the reader looking for a
 // restriction that is not the one they hit; and lowering gives a generator's
 // frame a slot for the delegated iteration only when the body has a delegation
-// to hold in it.
-enum class YieldForms : uint8_t { None = 0, Plain = 1, Delegating = 2, Both = 3 };
+// to hold in it. `Await` is a bit of the same set because the parser keeps
+// generators and async functions apart, so a body only ever holds Await bits
+// or yield bits — never both — and the form name below can stay one phrase.
+enum class YieldForms : uint8_t { None = 0, Plain = 1, Delegating = 2, Both = 3, Await = 4 };
 inline YieldForms operator|(YieldForms a, YieldForms b) {
     return static_cast<YieldForms>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
 }
 inline bool hasDelegating(YieldForms f) {
     return (static_cast<uint8_t>(f) & static_cast<uint8_t>(YieldForms::Delegating)) != 0;
 }
+inline bool hasAwait(YieldForms f) {
+    return (static_cast<uint8_t>(f) & static_cast<uint8_t>(YieldForms::Await)) != 0;
+}
 YieldForms yieldFormsIn(const Node& node);
 YieldForms yieldFormsIn(const std::vector<StmtPtr>& stmts);
 YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts);
-// The noun phrase a refusal names those forms by: "a `yield`", "a `yield*`", or
-// "a `yield` or a `yield*`" where the refused position holds both.
+// The noun phrase a refusal names those forms by: "a `yield`", "a `yield*`",
+// "an `await`", or "a `yield` or a `yield*`" where the refused position holds
+// both yield forms. Await never mixes with the others in one body (the parser
+// refuses async generators), so no phrase has to cover that.
 const char* yieldFormName(YieldForms forms);
 
 // Every binding a GENERATOR's frame must hold: each name declared anywhere under

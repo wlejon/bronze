@@ -23,6 +23,10 @@ bronze_add_module(runtime
         fn.cpp
         builtin_math.cpp
         builtin_generator.cpp
+        microtask.cpp
+        promise.cpp
+        builtin_promise.cpp
+        builtin_async.cpp
         builtin_array.cpp
         builtin_array_sort.cpp
         builtin_array_iterator.cpp
@@ -82,6 +86,8 @@ bronze_add_module(runtime
         ../../tests/runtime/fn_test.cpp
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp
+        ../../tests/runtime/microtask_test.cpp
+        ../../tests/runtime/promise_test.cpp
         ../../tests/runtime/map_test.cpp
         ../../tests/runtime/weak_collection_test.cpp
         ../../tests/runtime/bound_function_test.cpp
@@ -99,7 +105,9 @@ bronze_add_module(runtime
 # The same test binary, run again with per-allocation collection forced on.
 # This surfaces unrooted-pointer-across-allocation bugs that a lazily
 # collecting run can never catch.
-add_test(NAME runtime-gc-stress COMMAND bronze_runtime_tests)
-set_tests_properties(runtime-gc-stress PROPERTIES
-    LABELS runtime
-    ENVIRONMENT "BRONZE_GC_STRESS=1")
+if(BRONZE_BUILD_TESTS)
+    add_test(NAME runtime-gc-stress COMMAND bronze_runtime_tests)
+    set_tests_properties(runtime-gc-stress PROPERTIES
+        LABELS runtime
+        ENVIRONMENT "BRONZE_GC_STRESS=1")
+endif()

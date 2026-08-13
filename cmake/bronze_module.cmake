@@ -28,7 +28,10 @@ function(bronze_add_module name)
         target_link_libraries(bronze_${name} PUBLIC bronze::${dep})
     endforeach()
 
-    if(ARG_TEST_SOURCES)
+    # BRONZE_BUILD_TESTS is off when bronze is a subproject (top-level
+    # CMakeLists.txt), which is the one case where doctest is not a dependency
+    # the consumer asked for and the test binaries are not theirs to build.
+    if(ARG_TEST_SOURCES AND BRONZE_BUILD_TESTS)
         add_executable(bronze_${name}_tests ${ARG_TEST_SOURCES})
         target_link_libraries(bronze_${name}_tests PRIVATE bronze::${name} doctest::doctest)
         foreach(dep IN LISTS ARG_TEST_DEPS)

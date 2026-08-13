@@ -78,6 +78,15 @@ private:
     // the file qualification: two files' first generators must not name one
     // temporary.
     size_t generatorOrdinal_ = 0;
+    // Async state, the exact shape of the generator pair above: `await` is not
+    // a reserved word — it is contextual, and only inside an async function
+    // BODY — so this one flag decides whether the identifier spelled `await`
+    // is an operator here or an ordinary name. The ordinal numbers the
+    // temporaries the await lift declares, kept apart from the generators'
+    // (`async.N.` vs `gen.N.`) so a reader of a lifted body can tell which
+    // machine a temporary belongs to.
+    bool inAsyncBody_ = false;
+    size_t asyncOrdinal_ = 0;
     // Whether the code under the cursor is STRICT (ECMA-262 11.2.2).
     // Strictness is a property of a Script or a function body, decided by that
     // body's Directive Prologue and fixed for good at parse time — so a flag
@@ -199,22 +208,70 @@ private:
     // the KEY EXPRESSION with the cursor past the `]`, or null with the cursor
     // unmoved when the bracketed key is anything else.
     ast::ExprPtr matchSymbolIteratorKey();
-    // Saves and restores the generator state across a nested function body:
-    // a `yield` inside a function written inside a generator belongs to that
-    // function, which is not a generator, so it is an ordinary identifier
-    // there and `return` is an ordinary return.
+    // Saves and restores the generator AND async state across a nested
+    // function body: a `yield` inside a function written inside a generator
+    // belongs to that function, which is not a generator, so it is an ordinary
+    // identifier there and `return` is an ordinary return — and `await` inside
+    // a function written inside an async body follows the identical rule.
+    // One guard for both flags because every function boundary clears both,
+    // and a boundary that cleared only one would leak the other's operator
+    // into a body it does not belong to.
     struct GeneratorScopeGuard {
         Parser& p;
         bool savedInBody;
+        bool savedInAsync;
         explicit GeneratorScopeGuard(Parser& parser)
-            : p(parser), savedInBody(parser.inGeneratorBody_) {
+            : p(parser),
+              savedInBody(parser.inGeneratorBody_),
+              savedInAsync(parser.inAsyncBody_) {
             p.inGeneratorBody_ = false;
+            p.inAsyncBody_ = false;
         }
-        ~GeneratorScopeGuard() { p.inGeneratorBody_ = savedInBody; }
+        ~GeneratorScopeGuard() {
+            p.inGeneratorBody_ = savedInBody;
+            p.inAsyncBody_ = savedInAsync;
+        }
     };
     // `yield`, `yield <expr>` and `yield* <expr>` under the cursor.
     // Null on a diagnosed error.
     ast::ExprPtr parseYieldExpr();
+
+    // --- parser_async.cpp: async functions and `await` -------------------
+    // Is the cursor on the `async` that MODIFIES what follows? True for
+    // `async function`, `async x =>` and `async (…) =>` with no line
+    // terminator after `async` (ECMA-262 15.8.1 / 15.9.1 forbid one there);
+    // false for every other `async`, which stays the ordinary identifier it
+    // is — `async()`, `let async = 1`, `async` alone before a newline.
+    bool asyncModifiesFunction() const;
+    bool asyncModifiesArrow() const;
+    // `async function f() {}` as a declaration / an expression, with the
+    // cursor ON `async`. Null (or false) on a diagnosed error; `async
+    // function*` is refused by name inside.
+    ast::StmtPtr parseAsyncFunctionDecl(bool isExported, const std::string& defaultName = "");
+    ast::ExprPtr parseAsyncFunctionExpr();
+    // `async x => …` / `async (a, b) => …`, cursor on `async`.
+    ast::ExprPtr parseAsyncArrow();
+    // The parameter list and body shared by every async form: parses the
+    // body with `await` an operator, then lifts every await to a statement
+    // boundary exactly as parseGeneratorTail lifts yields. Cursor on `(`.
+    bool parseAsyncFnTail(ast::FunctionExpr& fn);
+    // The statement-boundary lift alone, for the async arrow whose body was
+    // parsed by the arrow production rather than by the tail above.
+    bool liftAsyncBody(std::vector<ast::StmtPtr>& body);
+    // `await <UnaryExpression>` with the cursor on `await`, inside an async
+    // body only. Null on a diagnosed error.
+    ast::ExprPtr parseAwaitExpr();
+    // The arrow lookahead `looksLikeArrow` runs, started `offset` tokens
+    // ahead of the cursor — which is what `async (…) =>` needs, since the
+    // `async` itself is still under the cursor when the question is asked.
+    bool looksLikeArrowFrom(size_t offset) const;
+    // `async m(params) { body }` with the NAME already consumed — the async
+    // MethodDefinition tail an object literal and a class body share, the
+    // same seam parseMethodTail is one method for. `clearSuper` is the
+    // object-literal half of that seam: a literal's method must not inherit
+    // the enclosing class's `super`, a class's must keep it.
+    std::unique_ptr<ast::FunctionExpr> parseAsyncMethodTail(const std::string& name,
+                                                            Span nameSpan, bool clearSuper);
 
     // --- parser_strict.cpp: the Directive Prologue and the early errors -----
     // Restores `strict_` on the way out of a body that may have raised it.

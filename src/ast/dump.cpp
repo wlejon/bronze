@@ -130,7 +130,7 @@ public:
     // of the node is not the operand's, it is whatever resumed the generator,
     // so a dump that showed only the operand would show a different tree.
     void visit(const YieldExpr& n) override {
-        emit(n.delegate ? "(yield*" : "(yield");
+        emit(n.isAwait ? "(await" : n.delegate ? "(yield*" : "(yield");
         indented([&] { n.argument->accept(*this); });
         emit(")");
     }
@@ -150,9 +150,11 @@ public:
         // is unchanged and a strict body is visibly a different tree — which
         // it is, because the flag selects a different meaning for the writes
         // inside it.
-        emit(std::string(n.isArrow      ? "(arrow-expr "
-                         : n.isGenerator ? "(generator-expr "
-                                         : "(function-expr ") +
+        emit(std::string(n.isArrow && n.isAsync ? "(async-arrow-expr "
+                         : n.isArrow            ? "(arrow-expr "
+                         : n.isGenerator        ? "(generator-expr "
+                         : n.isAsync            ? "(async-function-expr "
+                                                : "(function-expr ") +
              (n.name.empty() ? "<anon>" : n.name) + paramHead(n.params) +
              (n.returnType.empty() ? "" : ": " + n.returnType) + (n.strict ? " strict" : ""));
         indented([this, &n] {
@@ -374,8 +376,10 @@ public:
         emit(")");
     }
     void visit(const FunctionDecl& n) override {
-        std::string head =
-            (n.isGenerator ? "(generator " : "(function ") + n.name + paramHead(n.params);
+        std::string head = (n.isGenerator ? "(generator "
+                            : n.isAsync   ? "(async-function "
+                                          : "(function ") +
+                           n.name + paramHead(n.params);
         if (!n.returnType.empty()) head += ": " + n.returnType;
         if (n.isExported) head += " exported";
         if (n.strict) head += " strict";

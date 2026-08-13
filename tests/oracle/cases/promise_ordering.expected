@@ -1,0 +1,8 @@
+sync start
+executor
+sync end
+then A 1
+then B 1
+then C 2
+caught bad
+then D 3

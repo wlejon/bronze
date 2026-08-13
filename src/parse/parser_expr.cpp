@@ -134,6 +134,12 @@ ExprPtr Parser::parseAssign() {
     if (inGeneratorBody_ && check(TokenKind::Identifier) && peek().text == "yield") {
         return parseYieldExpr();
     }
+    // `async x =>` / `async (…) =>` — decided before the plain arrow test,
+    // because the plain test would read the `async` as a one-parameter arrow
+    // head (`async => …` is a legal arrow whose parameter is named `async`,
+    // and that reading survives exactly because this check demands an arrow
+    // AFTER the async).
+    if (asyncModifiesArrow()) return parseAsyncArrow();
     if (looksLikeArrow()) return parseArrowFunction();
     auto lhs = parseConditional();
     if (!lhs) return nullptr;
@@ -260,6 +266,39 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
 // UnaryExpression may not.
 ExprPtr Parser::parseUnaryPrefix() {
     const Token& t = peek();
+    if (check(TokenKind::Identifier) && t.text == "await") {
+        if (inAsyncBody_) {
+            // An AwaitExpression is a *UnaryExpression* (13.3), so it parses
+            // at exactly this rung — which is also what refuses it on the
+            // left of `**`, the same way every other unary operand is.
+            auto await = parseAwaitExpr();
+            lastOperandIsUnary_ = true;
+            return await;
+        }
+        // Outside an async body `await` is an ordinary identifier — `let
+        // await = 1`, `await(x)` a call — and stays one. What cannot be one
+        // is `await <operand>`: two adjacent expression heads are never a
+        // program, so the shape is named for what it is instead of dying as
+        // "expected ';'" three tokens later. Top-level await is the case
+        // that hits this.
+        const TokenKind next = peek(1).kind;
+        const bool operandFollows =
+            !peek(1).newlineBefore &&
+            (next == TokenKind::Identifier || next == TokenKind::NumberLiteral ||
+             next == TokenKind::StringLiteral || next == TokenKind::TemplateWhole ||
+             next == TokenKind::TemplateHead || next == TokenKind::KwNew ||
+             next == TokenKind::KwFunction || next == TokenKind::KwThis ||
+             next == TokenKind::KwNull || next == TokenKind::KwTrue ||
+             next == TokenKind::KwFalse || next == TokenKind::KwUndefined ||
+             next == TokenKind::LBrace);
+        // `[` is deliberately not in the list: `await[0]` indexes a binding
+        // named `await`, and `(` is a call of one — both stay programs.
+        if (operandFollows) {
+            error("unsupported construct: `await` outside an async function body "
+                  "(module top-level await is not built)");
+            return nullptr;
+        }
+    }
     if (check(TokenKind::KwNew)) {
         auto ne = parseNew();
         lastOperandIsUnary_ = false;
@@ -687,6 +726,11 @@ ExprPtr Parser::parsePrimary() {
             return self;
         }
         case TokenKind::Identifier: {
+            // `async function () {}` in expression position. Ahead of the
+            // generic identifier so `async` stays one everywhere else — the
+            // newline rule inside the test is what keeps `async\nfunction`
+            // reading as the identifier `async` and then a declaration.
+            if (asyncModifiesFunction()) return parseAsyncFunctionExpr();
             if (!checkStrictIdentifierReference(t.text, t.span)) return nullptr;
             advance();
             auto ident = std::make_unique<Ident>();

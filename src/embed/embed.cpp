@@ -19,6 +19,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/host_globals.h"
+#include "runtime/microtask.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 
@@ -157,5 +158,27 @@ bool isFunction(Value v) {
 }
 
 bool isObject(Value v) { return v.isObject(); }
+
+// ---- the microtask checkpoint ----------------------------------------------
+
+// The frame loop's half of the checkpoint. A host that keeps calling into
+// compiled code — a game loop invoking `update()` once a frame — has to pump
+// the queue between calls, or every promise the program made would settle only
+// at shutdown. It is the HOST's call rather than something `call()` does for
+// it, because where the checkpoint falls is the host's event-loop design and
+// not the runtime's: ECMA-262 9.5 leaves it to the host, and a drain hidden
+// inside every call would run jobs in the middle of a frame the host meant to
+// be atomic.
+//
+// Here rather than in embed_run.cpp, which is quarantined around its one
+// reference to `bronze_main` — a test binary pumping the queue must not have
+// to link the compiled program. Its own root frame, per this file's rooting
+// pattern, so a host may pump from a stack with no bronze frame on it.
+void drainMicrotasks() {
+    ShadowStackFrame frame;
+    runtime::rtDrainMicrotasks();
+}
+
+bool microtasksPending() { return runtime::rtMicrotasksPending(); }
 
 }  // namespace bronze::embed

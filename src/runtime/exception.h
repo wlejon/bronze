@@ -38,7 +38,12 @@ void rtClearException() noexcept;
 // the returned value into a GC root slot before it tests the cell, so a helper
 // that returned anything the collector cannot parse would put a bad word in a
 // live root.
-enum class ErrorKind { Error, TypeError, RangeError, SyntaxError, ReferenceError };
+// `AggregateError` (20.5.7) joined with the promise work: `Promise.any`
+// rejects with one, and what bronze raises a program must be able to catch
+// and name. Its constructor takes (errors, message) — one more leading
+// argument than the others — which its own ctor body handles; everything
+// else about it is the family pattern.
+enum class ErrorKind { Error, TypeError, RangeError, SyntaxError, ReferenceError, AggregateError };
 
 Value rtThrow(Value thrown) noexcept;
 Value rtThrowError(ErrorKind kind, const std::string& message);
@@ -58,6 +63,13 @@ Value rtThrowReferenceError(const std::string& message);
 // The constructor objects, by name, for the provided-global path. `undefined`
 // for a name that is not one of them.
 Value rtErrorConstructor(const std::string& name);
+
+// A fresh error instance WITHOUT raising it: the value, message set (or left
+// to the prototype's empty string when `message` is empty), nothing in the
+// pending cell. For an error that is a promise's REJECTION REASON — never
+// thrown, so `rtThrowError` is the wrong shape — and for the resolve-cycle
+// TypeError, which 27.2.1.3.2 rejects with rather than throws.
+Value rtNewErrorValue(ErrorKind kind, const std::string& message);
 
 // Is this value an Error instance — that is, does `Error.prototype` sit on its
 // prototype chain? Asked by `console.log`, which prints an error as `Name:

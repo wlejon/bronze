@@ -38,6 +38,7 @@
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/namespace.h"
+#include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -593,6 +594,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // ECMA-262 defines.
         if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(recv.get(), keyStr);
+        // The same step for `Promise`, whose statics live in the properties
+        // object read above — so a name 27.2.4 defines and bronze has not
+        // built (`withResolvers`, `try`) reaches here having missed, and is
+        // refused BY NAME rather than falling through to `undefined` the way
+        // every other unknown member of a function object does.
+        if (rtIsPromiseConstructor(recv.get())) rtCheckPromiseStaticMember(keyStr);
         // After the own properties above, because a static named `call` shadows
         // the inherited one — which is the ordinary rule, and the reason this
         // is not read first even though it is the cheaper lookup.

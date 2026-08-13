@@ -1,0 +1,7 @@
+start
+end
+thenable.then ran
+adopted value: adopted
+rejected with: thrown by then
+non-callable then survives: 42
+first settle wins: first

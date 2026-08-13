@@ -18,6 +18,7 @@
 #include "embed/embed.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/microtask.h"
 
 extern "C" void bronze_main();
 
@@ -40,11 +41,23 @@ void runMain() {
     // code registers its own contiguous slot frames separately.
     bronze::ShadowStackFrame root_frame;
     bronze_main();
+    // The same checkpoint src/rt/rt.cpp's `main` performs, and inside the same
+    // root frame for the same reason. A host with a frame loop pumps the queue
+    // again between frames (drainMicrotasks below); a host that only runs the
+    // program gets the standalone behaviour without asking for it, because a
+    // program whose top level queued a job has not finished running until the
+    // job has.
+    runtime::rtDrainMicrotasks();
 }
 
 void runProgram() {
     setupIo();
     runMain();
 }
+
+// `drainMicrotasks` and `microtasksPending` are deliberately NOT here: this
+// translation unit is the one that names `bronze_main`, and a test binary
+// calling either of them would pull this object in and fail to link (the
+// file header says why the reference is quarantined). They live in embed.cpp.
 
 }  // namespace bronze::embed

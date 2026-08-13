@@ -61,6 +61,26 @@ void runMain();
 // with no stdio opinions.
 void runProgram();
 
+// ---- the microtask checkpoint (embed_run.cpp) ------------------------------
+//
+// Promise reactions and async resumptions run as JOBS, and a job runs only
+// when something drains the queue. `runMain` drains once after the program's
+// top level, which is all a batch program needs; a host with a FRAME LOOP owns
+// the rest. The pair below is what it pumps with — typically
+// `drainMicrotasks()` once per frame, after the frame's calls into compiled
+// code and before presenting.
+//
+// Draining RUNS USER CODE and ALLOCATES, so every Value the host holds across
+// one must live in a Persistent. It is safe to call with an empty queue, and
+// safe to call from a stack with no bronze frame on it.
+void drainMicrotasks();
+
+// Is there anything queued? For a host that wants to know whether a frame's
+// work actually finished — and for a shutdown path that drains to quiescence
+// before tearing the runtime down. Never necessary before drainMicrotasks(),
+// which is a no-op on an empty queue.
+bool microtasksPending();
+
 // ---- host globals ----------------------------------------------------------
 
 // Provide `name` as a global of the compiled program. The compile side is

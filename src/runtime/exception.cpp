@@ -64,6 +64,7 @@ uint64_t errorCtorTypeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorRangeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorSyntaxError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorReferenceError(uint64_t, uint64_t, uint32_t, const uint64_t*);
+uint64_t errorCtorAggregateError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 
 // Order matters only in that `Error` is first: the other two chain their
 // prototypes to its, so it has to exist before they are built.
@@ -73,6 +74,7 @@ ErrorClass g_errorClasses[] = {
     {"RangeError", ErrorKind::RangeError, errorCtorRangeError},
     {"SyntaxError", ErrorKind::SyntaxError, errorCtorSyntaxError},
     {"ReferenceError", ErrorKind::ReferenceError, errorCtorReferenceError},
+    {"AggregateError", ErrorKind::AggregateError, errorCtorAggregateError},
 };
 
 ErrorClass& classFor(ErrorKind kind) {
@@ -161,6 +163,44 @@ uint64_t errorCtorSyntaxError(uint64_t, uint64_t thisBits, uint32_t argc, const 
 uint64_t errorCtorReferenceError(uint64_t, uint64_t thisBits, uint32_t argc,
                                  const uint64_t* argv) {
     return errorCtorImpl(ErrorKind::ReferenceError, thisBits, argc, argv);
+}
+
+// 20.5.7.1.1 AggregateError(errors, message): the family constructor with one
+// leading argument more. `message` is argv[1] where the others read argv[0],
+// and `errors` — the iterable, materialized to an array — becomes a
+// non-enumerable own property (step 5 is CreateNonEnumerableDataProperty), so
+// `Object.keys` of one is as empty as any other error's.
+uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
+                                 const uint64_t* argv) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!self.get().isObject() ||
+        self.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+        self.set(newErrorInstance(classFor(ErrorKind::AggregateError)));
+    }
+    RootedArgs args{argc, argv};
+    if (!args[1].isUndefined()) {
+        Rooted<Value> message{rtValueToString(args[1])};
+        setMessage(self, message);
+    }
+    // Step 4: CreateListFromIterable over `errors`. A non-iterable argument
+    // is the TypeError rtOpenIterator raises, left pending for the caller.
+    Rooted<Value> source{args[0]};
+    Rooted<Value> list{Value(bronze_create_array(0))};
+    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        bronze_array_append(list.get().rawBits(), item.get().rawBits());
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        return Value::fromUndefined().rawBits();
+    }
+    Rooted<Value> errorsKey{rtMakeString("errors")};
+    self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), errorsKey, list,
+                                                 /*ic=*/nullptr, /*enumerable=*/false);
+    return self.get().rawBits();
 }
 
 void ensureErrorClasses() {
@@ -297,6 +337,16 @@ Value rtErrorConstructor(const std::string& name) {
         if (name == cls.name) return cls.constructor;
     }
     return Value::fromUndefined();
+}
+
+Value rtNewErrorValue(ErrorKind kind, const std::string& message) {
+    ensureErrorClasses();
+    Rooted<Value> self{newErrorInstance(classFor(kind))};
+    if (!message.empty()) {
+        Rooted<Value> msg{rtMakeString(message)};
+        setMessage(self, msg);
+    }
+    return self.get();
 }
 
 bool rtIsErrorInstance(Value v) {

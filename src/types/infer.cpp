@@ -50,7 +50,8 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         const auto outcome =
             analyzeFunction(mod, /*parent=*/nullptr, fn.name, i, /*site=*/nullptr,
                             fn.directCallable, fn.decl->params, fn.signature.params, body,
-                            fn.decl->span, record, fn.decl->isGenerator);
+                            fn.decl->span, record,
+                            fn.decl->isGenerator || fn.decl->isAsync);
         if (!outcome.ok) return false;
         // Only a direct-callable function's return is a proof about its
         // callers; an escaping one is reached through the dynamic convention,

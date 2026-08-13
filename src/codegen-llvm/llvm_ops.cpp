@@ -108,6 +108,34 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_create_generator_object, {body});
             return true;
         }
+        case il::Op::CreateAsyncMachine: {
+            // The operand is the resume closure, exactly as it is for the
+            // generator object above — one machine body, two drivers.
+            if (!needs(1, false, "Invalid operands for CreateAsyncMachine")) return false;
+            llvm::Value* body =
+                operand(inst, 0, "Undefined operand in CreateAsyncMachine instruction");
+            if (!body) return false;
+            callWith(abi.bronze_async_machine, {body});
+            return true;
+        }
+        case il::Op::AsyncStart: {
+            if (!needs(1, false, "Invalid operands for AsyncStart")) return false;
+            llvm::Value* machine =
+                operand(inst, 0, "Undefined operand in AsyncStart instruction");
+            if (!machine) return false;
+            callWith(abi.bronze_async_start, {machine});
+            return true;
+        }
+        case il::Op::AsyncAwait: {
+            if (!needs(2, false, "Invalid operands for AsyncAwait")) return false;
+            llvm::Value* machine =
+                operand(inst, 0, "Undefined operand in AsyncAwait instruction");
+            llvm::Value* awaited =
+                operand(inst, 1, "Undefined operand in AsyncAwait instruction");
+            if (!machine || !awaited) return false;
+            builder_.CreateCall(abi.bronze_async_await, {machine, awaited});
+            return true;
+        }
         case il::Op::ModuleNamespace: {
             if (!needs(1, false, "Invalid operands for ModuleNamespace")) return false;
             llvm::Value* src = operand(inst, 0, "Undefined operand in ModuleNamespace instruction");
