@@ -22,7 +22,7 @@ Iterate with scoped module tests; run the full `ctest` before any commit.
 `-DBRONZE_WITH_LLVM=ON` is on the configure line and not in the preset,
 because the hard rule below keeps the default build free of LLVM. It is not
 optional for the pre-commit run: `tests/oracle` is only defined when the
-backend is built, so without it `ctest` silently runs 13 tests instead of 16
+backend is built, so without it `ctest` silently runs 14 tests instead of 17
 and the entire oracle ratchet — the thing that decides whether bronze is
 correct — is absent rather than failing.
 

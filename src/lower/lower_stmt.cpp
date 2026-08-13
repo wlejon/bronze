@@ -239,6 +239,10 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
 }
 
 bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn) {
+    // In a generator, `return` ends the WALK: 27.5.3.2 makes its value the
+    // `value` of the final `{ done: true }` result rather than this function's
+    // return value.
+    if (generator_) return lowerGeneratorReturn(retStmt, ilFn);
     if (retStmt->value) {
         auto val = lowerExpr(*retStmt->value, ilFn);
         if (!val) return false;

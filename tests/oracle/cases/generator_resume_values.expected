@@ -1,0 +1,16 @@
+{ value: 'ask', done: false }
+{ value: 'hi!', done: false }
+{ value: 'bye', done: true }
+{ value: undefined, done: true }
+[ 'one', 'two', 'held' ]
+0 1 11 111
+{ value: 1, done: false }
+{ value: 2, done: false }
+sum 30
+{ value: 3, done: false }
+arg <x>
+{ value: 4, done: false }
+{ value: 'yes', done: false }
+{ value: 5, done: false }
+{ value: 'fallback', done: false }
+{ value: undefined, done: true }

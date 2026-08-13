@@ -22,6 +22,7 @@ bronze_add_module(runtime
         builtin_data_view.cpp
         fn.cpp
         builtin_math.cpp
+        builtin_generator.cpp
         builtin_array.cpp
         builtin_string.cpp
         builtin_function.cpp

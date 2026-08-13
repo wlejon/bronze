@@ -143,9 +143,11 @@ private:
     Type newExpr(const ast::NewExpr& n);
     ShapeClassId constructorShape(const std::string& name);
     Type objectLit(const ast::ObjectLit& o);
+    // `isGenerator` travels with the body for the reason flow.h gives.
     void analyzeNested(const ast::Node& site, const std::string& declaredName,
                        const std::vector<ast::Param>& params,
-                       const std::vector<ast::StmtPtr>& body, Span span);
+                       const std::vector<ast::StmtPtr>& body, Span span,
+                       bool isGenerator);
 
     ModuleContext& mod_;
     Scope& scope_;

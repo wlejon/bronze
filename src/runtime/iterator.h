@@ -116,12 +116,16 @@ enum : uint32_t { IteratedArrayLike, NextIndex, kCount };
 namespace RegExpStringIteratorSlot {
 enum : uint32_t { IteratingRegExp, IteratedString, Done, kCount };
 }
+// A generator object's are GeneratorSlot, in runtime/generator.h — beside the
+// state machine that is the only thing that reads them.
 
 // A fresh iterator object of that kind: the kind's prototype, and the internal
 // slots above, all `undefined`. The caller fills the slots in and adds `next`.
 //
-// A generator object goes through here too, with no slots: its state is the
-// step variable in the closure the desugaring built, not a field.
+// A generator object goes through here too. It is the one kind whose `next` is
+// NOT added afterwards: 27.5.1 puts all three of its methods on
+// %GeneratorPrototype%, so the object comes back with its slots to fill and no
+// own property at all.
 Value rtNewIteratorObject(IteratorProto kind);
 
 // The brand. Both halves are needed: a prototype alone can be forged with

@@ -1,0 +1,19 @@
+finally ran
+[ 'a', 'b', 'c' ]
+{ value: 'a', done: false }
+finally ran
+{ value: 'stop', done: true }
+{ value: undefined, done: true }
+{ value: 1, done: false }
+finally on return
+{ value: 'from try', done: true }
+{ value: 1, done: false }
+finally on throw
+out: bang
+{ value: undefined, done: true }
+{ value: 'try', done: false }
+caught e1
+{ value: 'catch', done: false }
+finally
+{ value: 'end', done: false }
+{ value: undefined, done: true }

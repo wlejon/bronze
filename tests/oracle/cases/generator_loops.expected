@@ -1,0 +1,8 @@
+[ 0, 1, 2, 3 ]
+{ value: 0, done: false } { value: 1, done: false } { value: 2, done: false } { value: undefined, done: true }
+steps 4
+[ 10, 5, 2, 1 ]
+[ 0, 2, 4, 6, 'done' ]
+[ 0, 1, 2, 10, 11, 12, 20, 21, 22 ]
+0 0 1 1
+2 true 2 true

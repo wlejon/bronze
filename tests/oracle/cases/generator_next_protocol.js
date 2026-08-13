@@ -25,11 +25,12 @@
 //
 // The generator object's `[Symbol.iterator]` is INHERITED, exactly as 27.5.1.2
 // defines it: bronze builds the object against a %GeneratorPrototype% carrying
-// the self-hook, so its own keys are `next` and nothing else — which is why
+// the self-hook, so it has no own keys at all — which is why
 // `Object.getOwnPropertySymbols` of one is empty in cases/
-// collection_internal_slots.js. DELIBERATE DIVERGENCE: that prototype carries
-// no `return` and no `throw` method, so `typeof` its `next` is the only thing
-// about its identity this case may pin.
+// collection_internal_slots.js. `next`, `return` and `throw` are all inherited
+// from that prototype (27.5.3); the two abrupt ones are exercised in
+// cases/generator_abrupt_resume.js, and what this case pins about identity is
+// that `typeof it.next` is `function` when read through the object.
 
 class Pair {
     constructor(base) {

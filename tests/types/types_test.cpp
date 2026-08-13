@@ -641,3 +641,65 @@ TEST_CASE("an unresolved name is dynamic, and does not poison what surrounds it"
     // is lowering's, and the guard is an ordinary condition.
     CHECK(inferred.diags.all().empty());
 }
+
+TEST_CASE("a generator's signature is the generator object, not what its body returns") {
+    // ECMA-262 27.5.1.2: calling a generator function runs NONE of the body.
+    // It builds a generator object and returns that, so the `return` operand
+    // is the `value` of the final result (27.5.3.2) and says nothing about
+    // what the call evaluates to. A number is the operand that makes reading
+    // it visible: a caller told to expect one unboxes the object it actually
+    // gets. The plain function beside it is the control — the rule is about
+    // generators, and must not have cost every other function its return
+    // proof.
+    const auto inferred = infer(
+        "function* gen(x) { yield x; return 2; }\n"
+        "function plain(x) { return 2; }\n"
+        "const g = gen(1);\n"
+        "const p = plain(1);\n"
+        "console.log(g, p);\n");
+
+    const auto genIndex = inferred.result->functionIndexOf("gen");
+    const auto plainIndex = inferred.result->functionIndexOf("plain");
+    REQUIRE(genIndex.has_value());
+    REQUIRE(plainIndex.has_value());
+    CHECK(inferred.result->signatureOf(*genIndex).returnType == types::Type::dynamic());
+    CHECK(inferred.result->signatureOf(*plainIndex).returnType == types::Type::number());
+
+    // The PARAMETERS are a different fact and survive: the factory really is
+    // a function of them, and it really is called with them. Throwing them
+    // away with the return would cost the specialization for no reason.
+    CHECK(inferred.result->isDirectCallable(*genIndex));
+    REQUIRE(inferred.result->signatureOf(*genIndex).params.size() == 1);
+    CHECK(inferred.result->signatureOf(*genIndex).params[0] == types::Type::number());
+
+    // And the call site believes it. This is the assertion that was silently
+    // false: `g` was `number`, so lowering unboxed a generator object.
+    CHECK(inferred.dump().find("func gen(x: number) -> dynamic") != std::string::npos);
+    CHECK(inferred.dump().find("func plain(x: number) -> number") != std::string::npos);
+}
+
+TEST_CASE("a generator function expression reports the object as its closure return") {
+    // The same rule reached through the other path. `closureReturnAt` is a
+    // closure's whole proof surface, and it is what decides whether a
+    // `: number` annotation on the generator is endorsed or reported
+    // unprovable — endorsing it would be endorsing a wrong description of the
+    // call.
+    const auto inferred = infer(
+        "const gen = function* () { return 2; };\n"
+        "const plain = function () { return 2; };\n"
+        "console.log(gen, plain);\n");
+
+    const ast::FunctionExpr* genExpr = nullptr;
+    const ast::FunctionExpr* plainExpr = nullptr;
+    for (const auto& s : inferred.module->body) {
+        const auto* decl = dynamic_cast<const ast::VarDecl*>(s.get());
+        if (decl == nullptr || decl->init == nullptr) continue;
+        const auto* fn = dynamic_cast<const ast::FunctionExpr*>(decl->init.get());
+        if (fn == nullptr) continue;
+        (fn->isGenerator ? genExpr : plainExpr) = fn;
+    }
+    REQUIRE(genExpr != nullptr);
+    REQUIRE(plainExpr != nullptr);
+    CHECK(inferred.result->closureReturnAt(genExpr) == types::Type::dynamic());
+    CHECK(inferred.result->closureReturnAt(plainExpr) == types::Type::number());
+}

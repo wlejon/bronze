@@ -1,32 +1,28 @@
-// BLOCKED: `unsupported construct: a `yield` inside a loop; bronze implements
-// the straight-line subset only...`.
+// BLOCKED: ``unsupported construct: `yield*` (delegation to another
+// iterable)``, from case 2 below and from nothing else.
 //
-// Generators shipped as a DESUGARING rather than as a coroutine: a body that is
-// a straight line of `yield <expr>;` statements becomes an iterator object
-// whose `next` switches on a step index. This case is the receipt for that
-// trade — everything a real generator can do that an index switch cannot.
+// Everything else this case asks for is BUILT. Generators are a real state
+// machine now: the body becomes a resume function entered at its top on the
+// first `next` and just after a `yield` on every later one, every binding that
+// could cross a suspension lives in the frame's environment record, and the
+// generator object carries `[[GeneratorState]]` with `next`/`return`/`throw` on
+// %GeneratorPrototype% (27.5.3). Cases 1, 3, 4 and 5 are covered on the
+// unblocked side by cases/generator_loops.js, generator_resume_values.js,
+// generator_return_statement.js and generator_abrupt_resume.js. This file stays
+// here, unchanged, because it also asks for delegation, and one `yield*` is
+// enough to keep the whole file failing to compile — which is exactly what a
+// blocked case is for.
 //
-// The blocker is the shape of the transform, not the syntax. An index switch
-// re-enters the body FROM THE TOP on every `next`, so:
-//
-//  - a `yield` inside a loop would restart the loop rather than resume it,
-//    and the loop's own counter would not survive the return in between;
-//  - a binding declared between two yields cannot live in `next`'s frame,
-//    because that frame is gone by the time the next call arrives;
-//  - the VALUE of a `yield` is what `next(v)` was called with, which arrives
-//    on a call that has not happened yet, so there is nothing to substitute;
-//  - `yield*` is a nested walk suspended inside the outer one, which is two
-//    live positions where the index carries one;
-//  - `return <expr>` terminates the walk from wherever it is written and
-//    supplies the final result's `value`, and `done: true` in bronze carries
-//    no value at all.
-//
-// A general implementation is a state-machine transform: every binding that
-// crosses a yield is lifted into a state object, the body is cut into basic
-// blocks at each yield, and `next` becomes a dispatch over the block index
-// with the resumption value delivered as its parameter. That is an IL-level
-// transform, not a parser one, and it is why this is a chunk of its own
-// rather than three more cases in generator_function.js.
+// The remaining blocker is delegation, and it is a protocol rather than one
+// more entry in a state table. 27.5.3.7 makes `yield* x` a loop that
+// GetIterator's `x` and forwards every resumption to it: `next(v)` becomes
+// `innerNext.call(iterator, v)`, `throw(e)` looks for the inner iterator's
+// `throw` and calls IteratorClose with a TypeError if it has none, and
+// `return(v)` looks for its `return` and, if the inner result is not done,
+// keeps yielding. So there are two live positions, and the outer one's resume
+// point has to re-enter a loop whose state is an iterator object plus a
+// received completion — three more suspension shapes at one syntactic site.
+// That is a chunk of its own, not a line in `lowerYield`.
 //
 // What this case pins when it lands, from ECMA-262 27.5.3.2
 // (GeneratorResume: the argument of `next` becomes the value of the `yield`

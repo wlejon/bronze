@@ -382,10 +382,8 @@ std::string print(const Module& module) {
                     case Op::CreateObject:
                         out += "create.object";
                         break;
-                    case Op::CreateGeneratorObject:
-                        out += "create.generator_object";
-                        break;
                     case Op::ModuleNamespace:
+                    case Op::CreateGeneratorObject:
                     case Op::ForInKeys:
                     case Op::IterOpen:
                     case Op::IterStep:

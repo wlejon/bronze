@@ -13,6 +13,7 @@
 // record — so the loop's step is a switch on an integer rather than a
 // re-derivation per element.
 
+#include "runtime/generator.h"
 #include "runtime/iterator.h"
 
 #include <string>
@@ -227,22 +228,30 @@ constexpr uint32_t kInternalSlots[] = {
     MapIteratorSlot::kCount,
     ArrayIteratorSlot::kCount,
     RegExpStringIteratorSlot::kCount,
-    0,  // a generator object: its state is the step variable in the closure
+    GeneratorSlot::kCount,
 };
 
 Shape* iteratorObjectShape(IteratorProto kind) {
     ProtoEntry& entry = protoEntry(kind);
     if (entry.shape) return entry.shape;
-    // The kind's own prototype: an object with NO members of its own, whose
-    // whole content is the %IteratorPrototype% it inherits and the identity it
-    // gives the objects below it. bronze puts `next` on the iterator itself
-    // rather than here, which is a divergence recorded in
-    // cases/collection_internal_slots.js and not one this seam decides.
+    // The kind's own prototype. For three of the four it has NO members of its
+    // own: bronze puts their `next` on the iterator itself, which is a
+    // divergence recorded in cases/collection_internal_slots.js and not one
+    // this seam decides. %GeneratorPrototype% is the exception, and not by
+    // choice — 27.5.1 defines `next`, `return` and `throw` there, and a
+    // generator object with an own `next` would report one where a spec engine
+    // reports none.
     Rooted<Value> parent{iteratorPrototypeRoot()};
     Rooted<Value> proto{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(parent.get())))};
     entry.proto = proto.get();
     rtHeap().add_permanent_root(&entry.proto);
+    if (kind == IteratorProto::Generator) {
+        rtInstallGeneratorPrototype(proto);
+        // Re-read through the permanent root: installing the methods allocates,
+        // so the address `proto` was built at may already be stale.
+        entry.proto = proto.get();
+    }
     // The root shape holds the prototype, and `rtNewRootShape` hands it to the
     // collector — so the object above is reachable twice over, once for the
     // shape and once for the static this function reads it back from.

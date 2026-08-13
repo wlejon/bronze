@@ -273,6 +273,23 @@ struct SuperMember final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `yield` and `yield <expr>` (ECMA-262 15.5.1). An EXPRESSION, because that is
+// what the grammar makes it: its value is what the generator was resumed with,
+// which arrives on the `next(v)` that continues the walk, so `const x = yield 1`
+// reads a value that does not exist yet when the operand is evaluated.
+//
+// `argument` is never null: `yield;` has no operand in the grammar and means
+// `yield undefined`, and the parser writes that literal in rather than leaving a
+// hole every consumer would have to test for.
+//
+// `yield*` (delegation) has no node here. It is refused by name in the parser,
+// because a delegating yield is two live suspension points where this is one,
+// and an approximation of it would be a silent wrong answer.
+struct YieldExpr final : Expr {
+    ExprPtr argument;
+    void accept(Visitor& v) const override;
+};
+
 // `[a, b] = pair` — a destructuring ASSIGNMENT, which writes bindings that
 // already exist rather than making new ones. Its own node because it lowers
 // nothing like `Binary{Assign}`: there is no single target to evaluate, and the
@@ -317,24 +334,12 @@ struct ObjectProp {
 
 struct ObjectLit final : Expr {
     std::vector<ObjectProp> props;
-    // A GENERATOR OBJECT (ECMA-262 27.5.1): the object the generator
-    // desugaring returns, whose prototype is %GeneratorPrototype% rather than
-    // Object.prototype. That is the whole difference — the properties below are
-    // built exactly as any other literal's — and it is what makes the object
-    // iterable without an own `[Symbol.iterator]`, because 27.5.1.2 puts the
-    // self-hook on the prototype.
-    //
-    // A flag on the literal rather than a node of its own: only the prototype
-    // differs, and a second node would duplicate every property form to say so.
-    // Nothing but src/parse/parser_generator.cpp sets it, and no source syntax
-    // can.
-    bool isGeneratorObject = false;
     // A MODULE NAMESPACE (ECMA-262 10.4.6): the literal's properties are the
     // getters over an exported binding that `import * as ns` needs, and the
     // object built from them is the exotic one — sorted own keys, a [[Set]]
     // that always refuses, a `configurable: false` descriptor.
     //
-    // A flag for the reason `isGeneratorObject` is one, and for one more: the
+    // A flag rather than a node of its own, and for one more reason: the
     // getters have to be real CLOSURES over the exporting module's bindings,
     // and the only thing that can build a closure is the compiler. So the
     // literal is lowered exactly as any other and the conversion is a second
@@ -383,6 +388,13 @@ struct FunctionExpr final : Expr {
     // parser writes it once and lowering reads it, and no pass in between has
     // to reconstruct which enclosing body a node came from.
     bool strict = false;
+    // `function* g() {}`. The body may suspend, so it is not lowered as a
+    // straight function body at all: it becomes a frame plus a resume function
+    // (see src/lower/lower_generator.cpp). A flag rather than a node of its own
+    // because everything else about the function — its parameters, its
+    // strictness, its capture behaviour — is unchanged, and a second node would
+    // duplicate every one of those rules to say so.
+    bool isGenerator = false;
     void accept(Visitor& v) const override;
 };
 
@@ -578,6 +590,7 @@ struct FunctionDecl final : Stmt {
     std::string returnType;  // raw annotation text
     std::vector<StmtPtr> body;
     bool strict = false;  // see FunctionExpr::strict
+    bool isGenerator = false;  // see FunctionExpr::isGenerator
     void accept(Visitor& v) const override;
 };
 
@@ -675,6 +688,7 @@ public:
     virtual void visit(const NewExpr&) = 0;
     virtual void visit(const SuperCall&) = 0;
     virtual void visit(const SuperMember&) = 0;
+    virtual void visit(const YieldExpr&) = 0;
     virtual void visit(const DestructuringAssign&) = 0;
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;

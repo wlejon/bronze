@@ -70,17 +70,13 @@ private:
     // tell a module body from a block.
     bool atModuleTopLevel_ = false;
     // Generator state. `yield` is not a reserved word — it is contextual, and
-    // only inside a generator body — so these two decide whether the identifier
-    // spelled `yield` is a keyword here and, if it is, whether this POSITION is
-    // one bronze's straight-line subset admits. `yieldRefusal_` names the
-    // construct the yield would be inside of, and is what turns "not supported"
-    // into a message that says which of the things bronze refuses this is.
+    // only inside a generator BODY — so this one flag decides whether the
+    // identifier spelled `yield` is an operator here or an ordinary name.
     bool inGeneratorBody_ = false;
-    const char* yieldRefusal_ = nullptr;
-    // Ordinal of the next desugared generator, for the IL symbols its `next`
-    // compiles to and for the step variable it declares.
-    // Same reasoning as `objectMethodOrdinal_`, including the file
-    // qualification: two files' first generators must not name one symbol.
+    // Ordinal of the next generator, for the temporaries `ast::liftYields`
+    // declares in its body. Same reasoning as `objectMethodOrdinal_`, including
+    // the file qualification: two files' first generators must not name one
+    // temporary.
     size_t generatorOrdinal_ = 0;
     // Whether the code under the cursor is STRICT (ECMA-262 11.2.2).
     // Strictness is a property of a Script or a function body, decided by that
@@ -192,12 +188,11 @@ private:
     // what differs is what the caller does with the result.
     std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan);
 
-    // --- parser_generator.cpp: generators, desugared ----------- The parameter
+    // --- parser_generator.cpp: generators ---------------------- The parameter
     // list and body of a generator, with the cursor on the '(' and the `*`
-    // already consumed. `fn` comes back holding the DESUGARED body — an
-    // iterator object over a step index — so nothing downstream of the parser
-    // knows generators exist. False on a diagnosed error, which is every
-    // construct outside the straight-line subset.
+    // already consumed. `fn` comes back holding an ordinary body with `yield`
+    // nodes in it, lifted so that every suspension stands at a statement
+    // boundary. False on a diagnosed error.
     bool parseGeneratorTail(ast::FunctionExpr& fn);
     // `[ Symbol.iterator ]` as a class member name, the only computed key
     // bronze reads there, and the only one three.js's generators use. Returns
@@ -211,20 +206,15 @@ private:
     struct GeneratorScopeGuard {
         Parser& p;
         bool savedInBody;
-        const char* savedRefusal;
         explicit GeneratorScopeGuard(Parser& parser)
-            : p(parser), savedInBody(parser.inGeneratorBody_), savedRefusal(parser.yieldRefusal_) {
+            : p(parser), savedInBody(parser.inGeneratorBody_) {
             p.inGeneratorBody_ = false;
-            p.yieldRefusal_ = nullptr;
         }
-        ~GeneratorScopeGuard() {
-            p.inGeneratorBody_ = savedInBody;
-            p.yieldRefusal_ = savedRefusal;
-        }
+        ~GeneratorScopeGuard() { p.inGeneratorBody_ = savedInBody; }
     };
-    // Diagnoses the `yield` under the cursor, which is only ever reached from
-    // a position the subset refuses. Always returns null.
-    ast::ExprPtr refuseYield();
+    // `yield` / `yield <expr>` under the cursor, and the refusal for `yield*`.
+    // Null on a diagnosed error.
+    ast::ExprPtr parseYieldExpr();
 
     // --- parser_strict.cpp: the Directive Prologue and the early errors -----
     // Restores `strict_` on the way out of a body that may have raised it.

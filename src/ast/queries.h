@@ -146,4 +146,33 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
 // can settle, and `dynamic` is the sound type for the rest.
 bool returnsAValue(const std::vector<StmtPtr>& stmts);
 
+// --- what a SUSPENSION needs (queries_yield.cpp) ------------------------
+
+// Is there a `yield` anywhere under this node that belongs to THIS generator?
+// Stops at every nested function boundary: a `yield` written inside a nested
+// generator is that generator's suspension, and a non-generator function cannot
+// contain one at all — `yield` is an ordinary identifier there.
+bool containsYield(const Node& node);
+bool containsYield(const std::vector<StmtPtr>& stmts);
+
+// Every binding a GENERATOR's frame must hold: each name declared anywhere under
+// `stmts`, at any block depth, nested functions excluded.
+//
+// The third reason a binding cannot live in SSA, and a sibling of the other two:
+// `getCapturedNames` says a closure can reach it, `getTryAssignedNames` says a
+// handler is entered from a point no join can enumerate, and this one says a
+// SUSPENSION is such a point. Lowering re-enters a generator by jumping from the
+// resume function's entry block to the block after a `yield`, and that edge
+// defines no SSA value at all, so everything the resumed code reads has to come
+// out of the frame's environment record.
+//
+// Deliberately NOT a liveness analysis. "Which names cross a yield" is a
+// question about a control-flow graph that does not exist when this is asked,
+// and the honest over-approximation — the whole frame — costs a heap slot per
+// local in a generator and can never lose a value. A narrower answer that got
+// one binding wrong would not be a wrong answer, it would be a read of an SSA
+// value the entry edge never defined: a wrong PROGRAM.
+std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<StmtPtr>& stmts);
+std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<const Stmt*>& stmts);
+
 }  // namespace bronze::ast

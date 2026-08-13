@@ -25,6 +25,7 @@ ConsoleStream consoleStreamOf(const std::string& identName) {
     if (identName == "console.warn" || identName == "console.error") return ConsoleStream::Err;
     return ConsoleStream::None;
 }
+void YieldExpr::accept(Visitor& v) const { v.visit(*this); }
 void Unary::accept(Visitor& v) const { v.visit(*this); }
 void Binary::accept(Visitor& v) const { v.visit(*this); }
 void Ternary::accept(Visitor& v) const { v.visit(*this); }

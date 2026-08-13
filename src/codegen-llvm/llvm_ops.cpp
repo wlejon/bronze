@@ -98,9 +98,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::CreateObject:
             if (inst.result != il::kNoValue) callWith(abi.bronze_create_object, {});
             return true;
-        case il::Op::CreateGeneratorObject:
-            if (inst.result != il::kNoValue) callWith(abi.bronze_create_generator_object, {});
+        case il::Op::CreateGeneratorObject: {
+            // The operand is the RESUME FUNCTION: a generator object is the
+            // body it can be re-entered at, and nothing else.
+            if (!needs(1, false, "Invalid operands for CreateGeneratorObject")) return false;
+            llvm::Value* body =
+                operand(inst, 0, "Undefined operand in CreateGeneratorObject instruction");
+            if (!body) return false;
+            callWith(abi.bronze_create_generator_object, {body});
             return true;
+        }
         case il::Op::ModuleNamespace: {
             if (!needs(1, false, "Invalid operands for ModuleNamespace")) return false;
             llvm::Value* src = operand(inst, 0, "Undefined operand in ModuleNamespace instruction");

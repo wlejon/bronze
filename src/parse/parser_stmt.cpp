@@ -283,20 +283,6 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
 
 StmtPtr Parser::parseReturn() {
     const Token& kw = advance();
-    // A `return` in a generator body is not this function's return: it ends the
-    // WALK, and its value becomes the `value` of the final result object.
-    // bronze's step index only counts forwards and its `done` result carries no
-    // value, so both are refused by name wherever they are written — here for
-    // the ones nested inside a statement, and in `parseGeneratorTail` for the
-    // ones at the top level, where the message can also say which of the two
-    // forms it is.
-    if (inGeneratorBody_) {
-        diags_.error(kw.span,
-                     "unsupported construct: `return` inside a generator body (it ends the walk "
-                     "and supplies the final result's value); bronze implements the "
-                     "straight-line subset only: a sequence of `yield <expr>;` statements");
-        return nullptr;
-    }
     auto ret = std::make_unique<ReturnStmt>();
     ret->span = kw.span;
     // `return` is a restricted production: a line terminator after it ends the

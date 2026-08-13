@@ -95,6 +95,7 @@ public:
     }
     void visit(const ast::SuperMember&) override {}
     void visit(const ast::SpreadElement& n) override { n.argument->accept(*this); }
+    void visit(const ast::YieldExpr& n) override { n.argument->accept(*this); }
     void visit(const ast::DestructuringAssign& n) override {
         walkPattern(n.pattern.get());
         n.value->accept(*this);

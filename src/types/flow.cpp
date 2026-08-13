@@ -342,7 +342,8 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // declaration.
         declare(cd->name, Type::function());
         for (const auto& m : cd->methods) {
-            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span);
+            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                          m.fn->isGenerator);
         }
         return;
     }
@@ -350,7 +351,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // A nested declaration is a closure value, so it carries no module
         // function index and no direct call.
         declare(fd->name, Type::function());
-        analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span);
+        analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span, fd->isGenerator);
         return;
     }
     // Every statement kind `statementLabel` names has a case above, so this
@@ -575,7 +576,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record) {
+                                bool record, bool isGenerator) {
     Scope scope;
     scope.parent = parent;
     // The same union lowering builds: a name assigned inside a `try` lives in
@@ -636,7 +637,15 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     recorder.runBody(body);
     if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
 
-    const Type returnType = recorder.inferredReturn(body);
+    // A generator's body describes the WALK, not the call. 27.5.1.2 runs none
+    // of it at the call and hands back a generator object, so a `return 7` in
+    // there is the `value` of the final result and says nothing about what
+    // `f()` evaluates to. Reading it would be worse than imprecise: a caller
+    // told to expect a number coerces the object it actually gets, which is a
+    // ToNumber on an object and a hard error at runtime — and only for a
+    // numeric return, because the other types need no coercion to be wrong.
+    const Type returnType =
+        isGenerator ? Type::dynamic() : recorder.inferredReturn(body);
     facts.signature.returnType = returnType;
     // A closure's only queryable proof (signature specialization excludes it,
     // so its parameters stay dynamic — but what its body returns is a fact

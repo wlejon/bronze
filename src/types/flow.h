@@ -77,13 +77,18 @@ struct FunctionOutcome {
 // function (which `moduleIndex` names instead) and for the module top level.
 // It is the key `InferenceResult::closureReturnAt` answers on, which is the
 // only handle a closure has: it has no module function index.
+// `isGenerator` is not a detail of the body: ECMA-262 27.5.1.2 makes CALLING a
+// generator function build a generator object and run none of the body, so what
+// the body returns is the `value` of a final result and never the call's value.
+// Inference that read the `return` statements would hand every caller the wrong
+// type — see the note at the override in flow.cpp.
 FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::string& qualifiedName, uint32_t moduleIndex,
                                 const ast::Node* site, bool directCallable,
                                 const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record);
+                                bool record, bool isGenerator = false);
 
 // The `Type` of joining two program points: names in both are joined, names
 // in only one are dropped (they are block-scoped declarations that did not

@@ -78,14 +78,10 @@ public:
         emit(")");
     }
     void visit(const ObjectLit& n) override {
-        // A generator object dumps under its own head: it is the same property
-        // list with a different PROTOTYPE, and a form that printed it as
-        // `(object` would hide the one thing the desugaring decides.
-        // A module namespace dumps under its own head for the same reason: the
-        // property list is the same getters, and what the linker decided is
-        // that the object built from them is 10.4.6's exotic one.
-        emit(n.isGeneratorObject ? "(generator-object"
-                                 : n.isModuleNamespace ? "(module-namespace" : "(object");
+        // A module namespace dumps under its own head: the property list is the
+        // same getters, and what the linker decided is that the object built
+        // from them is 10.4.6's exotic one.
+        emit(n.isModuleNamespace ? "(module-namespace" : "(object");
         indented([&] {
             for (const auto& p : n.props) {
                 // A computed key is a runtime ToPropertyKey of an evaluated
@@ -130,6 +126,14 @@ public:
         indented([&] { n.argument->accept(*this); });
         emit(")");
     }
+    // A `yield` prints under its own head, and its operand under it: the value
+    // of the node is not the operand's, it is whatever resumed the generator,
+    // so a dump that showed only the operand would show a different tree.
+    void visit(const YieldExpr& n) override {
+        emit("(yield");
+        indented([&] { n.argument->accept(*this); });
+        emit(")");
+    }
     void visit(const DestructuringAssign& n) override {
         emit("(destructuring-assign");
         indented([&] {
@@ -146,7 +150,9 @@ public:
         // is unchanged and a strict body is visibly a different tree — which
         // it is, because the flag selects a different meaning for the writes
         // inside it.
-        emit(std::string(n.isArrow ? "(arrow-expr " : "(function-expr ") +
+        emit(std::string(n.isArrow      ? "(arrow-expr "
+                         : n.isGenerator ? "(generator-expr "
+                                         : "(function-expr ") +
              (n.name.empty() ? "<anon>" : n.name) + paramHead(n.params) +
              (n.returnType.empty() ? "" : ": " + n.returnType) + (n.strict ? " strict" : ""));
         indented([this, &n] {
@@ -368,7 +374,8 @@ public:
         emit(")");
     }
     void visit(const FunctionDecl& n) override {
-        std::string head = "(function " + n.name + paramHead(n.params);
+        std::string head =
+            (n.isGenerator ? "(generator " : "(function ") + n.name + paramHead(n.params);
         if (!n.returnType.empty()) head += ": " + n.returnType;
         if (n.isExported) head += " exported";
         if (n.strict) head += " strict";

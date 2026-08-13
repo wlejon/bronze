@@ -83,9 +83,27 @@ il::ValueId Lowerer::emitConstUndefined(il::Function& ilFn) {
     return res;
 }
 
+il::ValueId Lowerer::currentEnv(il::Function& ilFn) {
+    if (!generator_) return currentEnvValue_;
+    il::ValueId here = generator_->frameEnv;
+    for (size_t i = generator_->frameScope; i + 1 < envScopes_.size(); ++i) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::EnvGet;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {here};
+        inst.envDepth = 0;
+        inst.envIndex = envScopes_[i].childSlot;
+        emitInst(ilFn, inst);
+        here = res;
+    }
+    return here;
+}
+
 il::ValueId Lowerer::emitEnvCreate(uint32_t slotCount, il::Function& ilFn) {
-    il::ValueId parent =
-        currentEnvValue_ == il::kNoValue ? emitConstUndefined(ilFn) : currentEnvValue_;
+    const il::ValueId enclosing = currentEnv(ilFn);
+    il::ValueId parent = enclosing == il::kNoValue ? emitConstUndefined(ilFn) : enclosing;
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::EnvCreate;
@@ -139,7 +157,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
     inst.type = il::Type::Dynamic;
     inst.result = res;
-    inst.operands = {currentEnvValue_};
+    inst.operands = {currentEnv(ilFn)};
     inst.envDepth = depth;
     inst.envIndex = index;
     if (lexical) {
@@ -176,7 +194,7 @@ void Lowerer::openLexicalBindings(size_t scopeIndex,
         inst.op = il::Op::EnvInitTdz;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
-        inst.operands = {currentEnvValue_};
+        inst.operands = {currentEnv(ilFn)};
         inst.envDepth = depth;
         inst.envIndex = slot;
         emitInst(ilFn, inst);
@@ -203,7 +221,7 @@ void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function
     inst.op = il::Op::EnvSet;
     inst.type = il::Type::Void;
     inst.result = il::kNoValue;
-    inst.operands = {currentEnvValue_, boxed.id};
+    inst.operands = {currentEnv(ilFn), boxed.id};
     inst.envDepth = depth;
     inst.envIndex = index;
     emitInst(ilFn, inst);
@@ -283,10 +301,31 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
         return;
     }
     EnvScopeInfo info;
+    // One more slot, in a generator only, for the record of whatever scope opens
+    // inside this one. The chain of them is the only way down from the frame,
+    // and a suspension needs one — see `currentEnv`. Named, so a dump of the
+    // record says what the extra word is.
+    if (generator_) {
+        info.childSlot = static_cast<uint32_t>(slots.size());
+        slots.emplace_back(generatorEnvSlotName());
+    }
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
+    const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
+    const uint32_t parentChildSlot =
+        generator_ ? envScopes_.back().childSlot : UINT32_MAX;
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
+    if (generator_) {
+        il::Instruction link;
+        link.op = il::Op::EnvSet;
+        link.type = il::Type::Void;
+        link.result = il::kNoValue;
+        link.operands = {parentRecord, info.envValue};
+        link.envDepth = 0;
+        link.envIndex = parentChildSlot;
+        emitInst(ilFn, link);
+    }
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
     currentEnvValue_ = envScopes_.back().envValue;
@@ -412,6 +451,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // across the same boundary.
     auto outerCleanupStack = cleanupStack_;
     cleanupStack_.clear();
+    // A function written inside a generator body is not one: its `return` is an
+    // ordinary return and it has no frame of the enclosing machine's.
+    auto outerGenerator = std::move(generator_);
+    generator_.reset();
     auto outerHandler = currentHandler_;
     currentHandler_ = il::kNoBlock;
     auto outerEnvValue = currentEnvValue_;
@@ -452,9 +495,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     const bool isNamedFunctionExpr =
         !isArrow && !declaredName.empty() && dynamic_cast<const ast::FunctionExpr*>(&site);
     if (isNamedFunctionExpr) namedFunctionExprs_.push_back(declaredName);
-    const bool bodyOk = lowerFunctionBody(params, body, newFn);
+    const auto* siteFnExpr = dynamic_cast<const ast::FunctionExpr*>(&site);
+    const auto* siteFnDecl = dynamic_cast<const ast::FunctionDecl*>(&site);
+    const bool isGenerator = (siteFnExpr && siteFnExpr->isGenerator) ||
+                             (siteFnDecl && siteFnDecl->isGenerator);
+    const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator);
     if (isNamedFunctionExpr) namedFunctionExprs_.pop_back();
 
+    generator_ = std::move(outerGenerator);
     strictCode_ = outerStrict;
     varBindings_ = outerVarBindings;
     activeVarMap_ = outerActiveVarMap;
@@ -489,8 +537,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
 
     // The closure captures the environment that is innermost right
     // here, at its creation site.
+    const il::ValueId enclosingEnv = currentEnv(ilFn);
     il::ValueId envArg =
-        currentEnvValue_ == il::kNoValue ? emitConstUndefined(ilFn) : currentEnvValue_;
+        enclosingEnv == il::kNoValue ? emitConstUndefined(ilFn) : enclosingEnv;
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::CreateFunction;

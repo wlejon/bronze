@@ -127,6 +127,13 @@ ExprPtr Parser::parseExpr() {
 // `a = b = c` is `a = (b = c)` and `x = cond ? p : q` assigns the CONDITIONAL
 // rather than testing the assignment.
 ExprPtr Parser::parseAssign() {
+    // `yield` is not a reserved word: it is an ordinary identifier everywhere
+    // except inside a generator body, where it is an operator whose production
+    // is an AssignmentExpression (ECMA-262 15.5.1) — which is exactly this
+    // level. Anywhere lower and `yield a + 1` would yield `a` and then add.
+    if (inGeneratorBody_ && check(TokenKind::Identifier) && peek().text == "yield") {
+        return parseYieldExpr();
+    }
     if (looksLikeArrow()) return parseArrowFunction();
     auto lhs = parseConditional();
     if (!lhs) return nullptr;
@@ -680,13 +687,6 @@ ExprPtr Parser::parsePrimary() {
             return self;
         }
         case TokenKind::Identifier: {
-            // `yield` is not a reserved word: it is an ordinary identifier
-            // everywhere except inside a generator body, where it is the
-            // operator. Reaching it HERE means it is in an expression position,
-            // and the straight-line subset admits it only as a whole statement
-            // — so this is always a refusal, and which one it is depends on
-            // where the statement above put us.
-            if (inGeneratorBody_ && t.text == "yield") return refuseYield();
             if (!checkStrictIdentifierReference(t.text, t.span)) return nullptr;
             advance();
             auto ident = std::make_unique<Ident>();

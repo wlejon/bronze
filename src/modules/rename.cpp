@@ -333,6 +333,10 @@ private:
             rewrite(sm->baseName);
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
             expr(*spr->argument);
+        } else if (auto* y = dynamic_cast<ast::YieldExpr*>(&e)) {
+            // The operand is ordinary code of this module; the value the node
+            // produces comes from a caller and names nothing.
+            expr(*y->argument);
         } else if (auto* da = dynamic_cast<ast::DestructuringAssign*>(&e)) {
             // Every element of this pattern is an assignment TARGET — it
             // declares nothing — so each name it writes is refused like the

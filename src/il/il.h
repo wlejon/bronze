@@ -138,12 +138,12 @@ enum class Op : uint8_t {
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
-    // A GENERATOR OBJECT (ECMA-262 27.5.1): the same empty object with
-    // %GeneratorPrototype% in place of Object.prototype. Its own op rather than
-    // an immediate on `create.object`, because the prototype an object is born
-    // with is not a parameter of anything else here and naming it is what makes
-    // the desugaring's one divergence from a literal readable in the IL.
-    CreateGeneratorObject, // a = create.generator_object
+    // A GENERATOR OBJECT (ECMA-262 27.5.1): %GeneratorPrototype% for a
+    // prototype, and the RESUME FUNCTION its operand names for a body. Its own
+    // op and not `create.object` plus two writes, because neither of the two
+    // things that make it one is a property: the prototype lives on the shape,
+    // and the resume closure is an internal slot.
+    CreateGeneratorObject, // a = create.generator_object b
     // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
     // of getters the operand holds. Its own op for the reason
     // `create.generator_object` is one: what it produces is not an object

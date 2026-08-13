@@ -1,0 +1,20 @@
+{ value: 1, done: false }
+{ value: 99, done: true }
+{ value: undefined, done: true }
+{ value: 'never', done: true }
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+{ value: 'late', done: true }
+{ value: 'first', done: false }
+caught boom
+{ value: 'recovered', done: false }
+{ value: 'after', done: false }
+{ value: undefined, done: true }
+{ value: 1, done: false }
+escaped to the caller: escaped
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+threw late throw
+{ value: undefined, done: true }
+re-entry is a TypeError: true
+{ value: undefined, done: true }

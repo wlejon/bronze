@@ -38,10 +38,10 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->name = std::string(name->text);
     }
 
-    // `function* g() {}` is the same desugaring a generator METHOD gets, and
-    // takes the same route to it: a FunctionExpr is filled in and its pieces
-    // moved across, because a declaration and an expression differ in where the
-    // value lands and in nothing about the body.
+    // `function* g() {}` takes the same route a generator METHOD does: a
+    // FunctionExpr is filled in and its pieces moved across, because a
+    // declaration and an expression differ in where the value lands and in
+    // nothing about the body.
     if (isGenerator) {
         GeneratorScopeGuard guard(*this);
         ast::FunctionExpr shell;
@@ -52,6 +52,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->returnType = std::move(shell.returnType);
         fn->body = std::move(shell.body);
         fn->strict = shell.strict;
+        fn->isGenerator = true;
         fn->span.end = peek().span.begin;
         return fn;
     }

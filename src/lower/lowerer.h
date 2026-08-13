@@ -192,11 +192,26 @@ private:
         // and `arguments` slots are never among them.
         std::vector<bool> slotIsLexical;
         il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
+        // GENERATORS ONLY: the slot in THIS record that holds the record of the
+        // scope nested directly inside it. The environment chain runs upward —
+        // `env.get` walks parents — so from the frame there is no way down, and
+        // a generator needs one: a resume edge defines no SSA value, so the
+        // record innermost at that point cannot be a value carried in from
+        // wherever it was created. See `currentEnv`.
+        uint32_t childSlot = UINT32_MAX;
     };
     std::vector<EnvScopeInfo> envScopes_;
     std::vector<il::ValueId> savedEnvValues_;
     std::vector<bool> scopeHasEnv_;
     il::ValueId currentEnvValue_ = il::kNoValue;
+    // The record innermost right here, as a value usable in the block being
+    // emitted into. `currentEnvValue_` itself outside a generator, where a
+    // record's defining instruction dominates every use of it; inside one, a
+    // fresh walk DOWN from the resume function's frame parameter through the
+    // child links, because the resume dispatch's edge into the middle of the
+    // body dominates nothing. Costs one load per level of block nesting, in
+    // generators only.
+    il::ValueId currentEnv(il::Function& ilFn);
     // The `__this` parameter of the function being lowered, or kNoValue where
     // there is no receiver to speak of.
     il::ValueId currentThisValue_ = il::kNoValue;
@@ -278,11 +293,46 @@ private:
     bool checkAnnotation(const std::string& ann, Span span, const std::string& name,
                          types::Type proven);
 
+    // --- lower_generator.cpp: the generator state machine ----------------
+    // What the resume function needs to know about the frame it was closed
+    // over. Set only while a resume body is being lowered, and saved and
+    // restored across every nested closure exactly as the rest of the
+    // per-function state is: a function written inside a generator is not one.
+    struct GeneratorContext {
+        size_t frameScope = SIZE_MAX;         // index into envScopes_
+        il::ValueId frameEnv = il::kNoValue;  // the resume function's __env
+        il::ValueId modeParam = il::kNoValue;
+        il::ValueId sentParam = il::kNoValue;
+        uint32_t stateSlot = 0;
+        // One per suspension point, in the order they were lowered, with the
+        // body's first block at index 0. The entry block's dispatch is built
+        // from this once the whole body is done, because how many there are is
+        // not known until then.
+        std::vector<il::BlockId> resumeBlocks;
+    };
+    std::optional<GeneratorContext> generator_;
+
+    static const char* generatorStateSlotName();
+    static const char* generatorEnvSlotName();
+    Value emitConstF64(double value, il::Function& ilFn);
+    Value emitIterResult(Value value, bool done, il::Function& ilFn);
+    Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
+    void emitGeneratorResult(Value value, bool done, il::Function& ilFn);
+    void emitGeneratorFinish(Value value, il::Function& ilFn);
+    void emitGeneratorDispatch(il::Function& ilFn);
+    bool lowerGeneratorReturn(const ast::ReturnStmt* retStmt, il::Function& ilFn);
+    std::optional<Value> lowerYield(const ast::YieldExpr& yield, il::Function& ilFn);
+    bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn);
+    bool lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
+
     // --- lower.cpp: module skeleton and function bodies ------------------
     // The one rule for a function-level environment record, shared by real
     // function bodies and by the module top level lowered as `main`.
+    // `isGenerator` widens the record to the whole FRAME and adds the machine's
+    // own two slots; see lower_generator.cpp.
     void enterFunctionEnv(const std::vector<ast::Param>& params,
-                          const std::vector<const ast::Stmt*>& body, il::Function& ilFn);
+                          const std::vector<const ast::Stmt*>& body, il::Function& ilFn,
+                          bool isGenerator = false);
     // The module scope, in two halves: its layout (before any body) and its
     // record (in `main`, which is lowered last). Splitting them is the whole
     // point — the layout is what a module function needs, the record is what
@@ -293,7 +343,8 @@ private:
     bool referencesModuleEnv(const std::vector<ast::Param>& params,
                              const std::vector<ast::StmtPtr>& body) const;
     bool lowerFunctionBody(const std::vector<ast::Param>& params,
-                           const std::vector<ast::StmtPtr>& body, il::Function& ilFn);
+                           const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
+                           bool isGenerator = false);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
 
     // --- lower_unresolved.cpp: names that resolve to nothing ---

@@ -1,0 +1,13 @@
+[ 1, 'a', 'b', 2 ]
+1 a b 2
+{ value: undefined, done: true }
+[ [ 'x1', 'x2' ], [ 'y1', 'y2' ] ]
+created
+body
+{ value: undefined, done: true }
+{ value: undefined, done: true }
+body
+[]
+{ value: 7, done: true }
+[]
+[ 1, 2, 2 ]

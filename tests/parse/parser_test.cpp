@@ -285,21 +285,27 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     const auto computed = parseAndDump("class C { [k]() { return 1; } }");
     CHECK(computed.find("unsupported construct: computed method name") != std::string::npos);
 
-    // A generator method is BUILT for the straight-line subset, so what was
-    // pinned here as a refusal is now pinned as the desugaring: an ordinary
-    // method whose body returns an iterator object over a step index. No
-    // `yield` node reaches the AST.
+    // A generator method is BUILT, so what was once pinned here as a refusal —
+    // and later as a desugaring into an object literal — is now pinned as the
+    // tree the parser actually hands on: a class member whose function carries
+    // the generator flag, with the body as written and the `yield` still in it.
+    // The state machine is lowering's, not the parser's, and `next`/`return`/
+    // `throw` come from %GeneratorPrototype% (27.5.1.2) rather than from a
+    // literal the parser built.
     const auto gen = parseAndDump("class C { *each() { yield 1; } }");
     CHECK(gen.substr(0, 7) != "ERRORS:");
     CHECK(gen.find("(method each") != std::string::npos);
-    CHECK(gen.find("(let gen.0.step") != std::string::npos);
-    CHECK(gen.find("(arrow-expr gen.0.next") != std::string::npos);
-    // The object it returns is a GENERATOR OBJECT: 27.5.1.2 puts
-    // `[Symbol.iterator]` on %GeneratorPrototype%, so the literal carries `next`
-    // and nothing else, and the prototype is what the head names.
-    CHECK(gen.find("(generator-object") != std::string::npos);
-    CHECK(gen.find("(prop next") != std::string::npos);
+    CHECK(gen.find("(generator-expr C.each") != std::string::npos);
+    CHECK(gen.find("(yield") != std::string::npos);
+    CHECK(gen.find("(prop next") == std::string::npos);
     CHECK(gen.find("@@iterator") == std::string::npos);
+
+    // `static *each()` is one member with both flags, not a method named `each`
+    // in a class with a stray `*`.
+    const auto staticGen = parseAndDump("class C { static *each() { yield 1; } }");
+    CHECK(staticGen.substr(0, 7) != "ERRORS:");
+    CHECK(staticGen.find("(static-method each") != std::string::npos);
+    CHECK(staticGen.find("(generator-expr") != std::string::npos);
 
     // `*[Symbol.iterator]()` is the one computed member name bronze reads, and
     // it is an EXPRESSION: the key is whatever `Symbol.iterator` evaluates to,

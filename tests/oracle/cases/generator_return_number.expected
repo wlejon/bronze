@@ -1,0 +1,12 @@
+{ value: 7, done: true }
+{ value: undefined, done: true }
+{ value: 1, done: false }
+{ value: 2, done: true }
+[ 1 ]
+{ value: 42, done: true }
+{ value: 5, done: true }
+{ value: 42, done: true }
+0 1
+{ value: 99, done: true }
+{ value: undefined, done: true }
+8

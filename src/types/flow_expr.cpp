@@ -117,6 +117,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return Type::dynamic();
     }
     if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
+    // The value of a `yield` is the argument of the `next(v)` that resumed the
+    // generator, which comes from outside this compilation entirely. Its
+    // operand is still analysed: it is ordinary code that runs here.
+    if (const auto* y = dynamic_cast<const ast::YieldExpr*>(&e)) {
+        expr(*y->argument);
+        return Type::dynamic();
+    }
     // A spread contributes its argument's effects and nothing about the
     // container's element types — there is no element type here to prove.
     if (const auto* sp = dynamic_cast<const ast::SpreadElement*>(&e)) {
@@ -136,7 +143,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return value;
     }
     if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
-        analyzeNested(*f, f->name, f->params, f->body, f->span);
+        analyzeNested(*f, f->name, f->params, f->body, f->span, f->isGenerator);
         return Type::function();
     }
     fail(e.span, "saw an unknown expression node kind");
@@ -282,7 +289,7 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
 
 void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
                    const std::vector<ast::Param>& params,
-                   const std::vector<ast::StmtPtr>& body, Span span) {
+                   const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator) {
     std::string name = declaredName;
     if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
     std::vector<const ast::Stmt*> borrowed;
@@ -293,7 +300,8 @@ void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     // uniform dynamic convention.
     const std::vector<Type> paramTypes(params.size(), Type::dynamic());
     analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
-                    /*directCallable=*/false, params, paramTypes, borrowed, span, record_);
+                    /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
+                    isGenerator);
 }
 
 }  // namespace bronze::types

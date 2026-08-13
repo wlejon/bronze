@@ -483,6 +483,20 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
     // body needs no parameter: it is dominated by the header, so the header's
     // is the one it reads and the one every closure in it captures.
     const bool perIteration = forNeedsPerIterationEnv(*forStmt);
+    if (perIteration && generator_ && ast::containsYield(*forStmt)) {
+        // 14.7.4.9's copy is threaded through the loop's blocks as one more
+        // block argument, and a resume edge into the body hands over no
+        // arguments at all — so the copy a resumed iteration would read is a
+        // value nothing defined on the path it arrived by. Refused by name
+        // rather than approximated, because the approximation is one record
+        // shared by every iteration and a closure reading the wrong one.
+        diags_.error(forStmt->span,
+                     "unsupported construct: a `yield` in a `for` loop whose head binding a "
+                     "closure written inside the loop captures (ECMA-262 14.7.4.9 copies that "
+                     "binding once per iteration, and bronze carries the copy in a block "
+                     "argument that a resumption cannot supply)");
+        return false;
+    }
     const uint32_t headSlots =
         perIteration ? static_cast<uint32_t>(envScopes_.back().slotNames.size()) : 0;
     il::ValueId headEnvParent = il::kNoValue;

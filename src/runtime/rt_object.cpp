@@ -218,16 +218,6 @@ uint64_t bronze_create_object() {
     return Value::fromObject(obj).rawBits();
 }
 
-// A GENERATOR OBJECT (ECMA-262 27.5.1): `bronze_create_object` with
-// %GeneratorPrototype% in place of Object.prototype, and nothing else. The
-// prototype is where 27.5.1.2's `[Symbol.iterator]() { return this; }` lives, so
-// the object the generator desugaring fills in below is iterable without an own
-// symbol-keyed property — which is what `Object.getOwnPropertySymbols` of one
-// reports, and what a spec engine reports too.
-uint64_t bronze_create_generator_object() {
-    return rtNewIteratorObject(IteratorProto::Generator).rawBits();
-}
-
 uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < 4) ? 4 : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);

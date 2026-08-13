@@ -15,11 +15,7 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
                                                       il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    // 27.5.1: a generator object differs from a literal in its PROTOTYPE and in
-    // nothing else, so the property loop below is shared and only the creation
-    // splits. The prototype is what carries `[Symbol.iterator]`, which is why
-    // the object itself needs no such property.
-    inst.op = objLit->isGeneratorObject ? il::Op::CreateGeneratorObject : il::Op::CreateObject;
+    inst.op = il::Op::CreateObject;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     emitInst(ilFn, inst);
