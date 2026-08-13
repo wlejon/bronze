@@ -228,24 +228,26 @@ TEST_CASE("the nine future reserved words are refused in strict code only") {
     }
 }
 
-TEST_CASE("a function declaration inside a block is refused in strict code") {
-    // ECMA-262 14.1 makes it block-scoped there; Annex B.3.3 gives sloppy code
-    // the legacy hoisting bronze implements. bronze has not built the
-    // block-scoped form, so in strict code the construct is named rather than
-    // compiled with the other mode's scoping — a `typeof f` after the block
-    // would otherwise answer "function" where the language says "undefined".
-    CHECK(contains(parseErrors("\"use strict\";\nif (1) { function f() {} }\n"),
-                   "a function declaration inside a block in strict code"));
-    CHECK(contains(parseErrors("\"use strict\";\n{ function f() {} }\n"),
-                   "function declaration inside a block"));
-    CHECK(contains(parseErrors("class C { m() { if (1) { function f() {} } } }\n"),
-                   "function declaration inside a block"));
-    // Directly in a script or a function body is the position 14.1 admits.
+TEST_CASE("a function declaration inside a block parses in either mode") {
+    // ECMA-262 14.1 makes it a lexical declaration of the block, and 14.2.2
+    // initializes it on block entry — so it is a declaration wherever it is
+    // written and the parser makes no distinction by position. What that
+    // scoping actually MEANS at run time is pinned by
+    // tests/oracle/cases/block_function_decl.js; the assertion here is only
+    // that the grammar admits it, which is the half this file is about.
+    //
+    // Annex B.3.3's extra `var` binding for sloppy code is the one thing
+    // bronze does not do, and it is a divergence rather than a refusal:
+    // parser_stmt.cpp states it where the decision is.
+    CHECK_FALSE(contains(parseAndDump("\"use strict\";\nif (1) { function f() {} }\n"), "ERRORS"));
+    CHECK_FALSE(contains(parseAndDump("\"use strict\";\n{ function f() {} }\n"), "ERRORS"));
+    CHECK_FALSE(contains(parseAndDump("class C { m() { if (1) { function f() {} } } }\n"),
+                         "ERRORS"));
     CHECK_FALSE(contains(parseAndDump("\"use strict\";\nfunction f() {}\n"), "ERRORS"));
     CHECK_FALSE(
         contains(parseAndDump("\"use strict\";\nfunction f() { function g() {} }\n"), "ERRORS"));
-    // Sloppy code keeps the hoisting it always had.
     CHECK_FALSE(contains(parseAndDump("if (1) { function f() {} }\n"), "ERRORS"));
+    CHECK_FALSE(contains(parseAndDump("\"use strict\";\n{ async function f() {} }\n"), "ERRORS"));
 }
 
 TEST_CASE("a reserved word is still a property name in strict code") {

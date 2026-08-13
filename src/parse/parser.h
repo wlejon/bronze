@@ -95,15 +95,6 @@ private:
     // declared inside strict code is strict" means. Nothing later can ask the
     // question, which is why the answer is written onto the AST nodes here.
     bool strict_ = false;
-    // Whether the statement about to be parsed sits DIRECTLY in a script or
-    // function body, as opposed to inside a block, a switch clause or the body
-    // of an `if`. Those are the only positions ECMA-262 14.1 admits a
-    // HoistableDeclaration in strict code; everywhere else a function
-    // declaration is block-scoped (Annex B gives sloppy code the legacy
-    // hoisting bronze implements), and bronze has not built the block-scoped
-    // form. Cleared by parseStatement itself, exactly as `atModuleTopLevel_`
-    // is, so every nested production sees false.
-    bool atBodyTopLevel_ = false;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();

@@ -82,7 +82,6 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         // The flag is cleared by parseStatement itself, so every nested
         // production this reaches sees false.
         atModuleTopLevel_ = true;
-        atBodyTopLevel_ = true;
         if (!parseStatement(mod->body)) break;
     }
     if (diags_.hasErrors()) return nullptr;
@@ -115,8 +114,6 @@ bool one(std::vector<StmtPtr>& out, StmtPtr stmt) {
 bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     const bool atModuleTop = atModuleTopLevel_;
     atModuleTopLevel_ = false;
-    const bool atBodyTop = atBodyTopLevel_;
-    atBodyTopLevel_ = false;
     // ECMA-262 14.4: `;` on its own is the EmptyStatement, which evaluates to
     // empty and does nothing. It contributes no node — there is nothing for a
     // node to say — which is why this appends to a list instead of returning
@@ -137,33 +134,29 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         return check(TokenKind::KwExport) ? parseExportDecl(out) : parseImportDecl(out);
     }
     if (check(TokenKind::KwFunction)) {
-        // ECMA-262 14.1 / Annex B.3.3: in STRICT code a function declaration
-        // written anywhere but directly in a script or function body is
-        // block-scoped — visible inside its block and nowhere else. bronze
-        // hoists every declaration to the enclosing function, which is the
-        // sloppy-mode Annex B reading and a WRONG answer for strict code the
-        // moment the name is read outside the block. Named here rather than
-        // compiled into the other mode's scoping.
-        if (strict_ && !atBodyTop) {
-            error("unsupported construct: a function declaration inside a block in strict code "
-                  "(ECMA-262 14.1 makes it block-scoped, and bronze hoists it to the enclosing "
-                  "function); write `const f = function () { ... }` instead");
-            return false;
-        }
+        // ECMA-262 14.1: a function declaration written anywhere but directly
+        // in a script or function body is a LEXICAL declaration of its block —
+        // bound and initialized when the block is entered (14.2.2, so a call
+        // above the declaration works and there is no dead zone) and visible
+        // nowhere else. That is exactly what `Lowerer::lowerStmtList` does with
+        // every statement list it is handed, and a block is one, so the
+        // position needs no distinguishing here and none is made.
+        //
+        // Annex B.3.3 is the one thing this does not do: in SLOPPY code the
+        // web additionally gives the name a `var` binding in the enclosing
+        // function, so the block's function leaks out of it. bronze implements
+        // the 14.1 reading in both modes — cases/block_function_decl.js pins
+        // it — which makes sloppy code's answer the strict one rather than a
+        // legacy one. It is a divergence in a legacy annex, not a construct
+        // bronze cannot compile, so it is stated here and not diagnosed.
         return one(out, parseFunctionDecl(/*isExported=*/false));
     }
     // `async function f() {}` — a HoistableDeclaration like the plain form
-    // above, under the same strict block-position rule. The newline test
-    // inside `asyncModifiesFunction` is the ASI discipline: `async\nfunction`
+    // above and scoped by the same rule. The newline test inside
+    // `asyncModifiesFunction` is the ASI discipline: `async\nfunction`
     // is the expression statement `async;` and then a declaration, so it
     // falls through to the expression path below on purpose.
     if (asyncModifiesFunction()) {
-        if (strict_ && !atBodyTop) {
-            error("unsupported construct: a function declaration inside a block in strict code "
-                  "(ECMA-262 14.1 makes it block-scoped, and bronze hoists it to the enclosing "
-                  "function); write `const f = async function () { ... }` instead");
-            return false;
-        }
         return one(out, parseAsyncFunctionDecl(/*isExported=*/false));
     }
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {

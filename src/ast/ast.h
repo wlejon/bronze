@@ -45,6 +45,11 @@ struct PatternElement {
     // The target. Exactly one of these is meaningful.
     std::string name;
     PatternPtr pattern;
+    // `({ x: o.a } = src)` — a property REFERENCE as the target, which only a
+    // destructuring ASSIGNMENT can spell: a binding form declares names, and a
+    // member expression declares nothing. Always a MemberAccess or an
+    // IndexAccess, and never set at the same time as `name` or `pattern`.
+    ExprPtr target;
     // OBJECT patterns only: which property this element reads. `key` is a
     // written name and `keyExpr` a computed `[e]`; the two are never both
     // meaningful. An ARRAY pattern reads by position and uses neither.

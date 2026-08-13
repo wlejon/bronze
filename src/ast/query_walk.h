@@ -25,6 +25,9 @@ inline void visitPatternExprs(const BindingPattern* pattern, Visitor& v) {
     if (!pattern) return;
     for (const auto& elem : pattern->elements) {
         if (elem.keyExpr) elem.keyExpr->accept(v);
+        // A member target's base is code too — `({ a: obj[k()] } = src)` calls
+        // `k` where the pattern runs, and reads `obj` from the enclosing scope.
+        if (elem.target) elem.target->accept(v);
         if (elem.defaultValue) elem.defaultValue->accept(v);
         visitPatternExprs(elem.pattern.get(), v);
     }

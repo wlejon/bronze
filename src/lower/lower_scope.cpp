@@ -551,7 +551,16 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     }
 
     uint32_t createdFnIdx = static_cast<uint32_t>(ilModule_.functions.size());
-    functionIndices_[fnName] = createdFnIdx;
+    // NOT registered in `functionIndices_`. That map is the module's symbol
+    // table — the names a reference anywhere in the module may resolve to
+    // directly — and a nested function's name is not one of them: it is a
+    // binding of the scope that wrote it, reached through `activeVarMap_` or
+    // the environment chain like any other. Registering it put a scope-local
+    // name into a module-wide table, and the two ways that was wrong are the
+    // reason this line is a comment: an unrelated function's `f()` resolved to
+    // a closure it cannot see, and a nested `function f` OVERWROTE a top-level
+    // `f` of the same name, so every later call to the top-level one was
+    // redirected to the inner one.
     ilModule_.functions.push_back(std::move(newFn));
 
     // The closure captures the environment that is innermost right

@@ -469,10 +469,17 @@ private:
                 std::string head = elem.isRest ? "(elem ..." : "(elem ";
                 if (!elem.key.empty()) head += elem.key + ": ";
                 if (elem.keyExpr) head += "[computed]: ";
-                head += elem.pattern ? std::string("<pattern>") : elem.name;
+                if (elem.pattern) {
+                    head += "<pattern>";
+                } else if (elem.target) {
+                    head += "<target>";
+                } else {
+                    head += elem.name;
+                }
                 emit(head);
                 indented([&] {
                     if (elem.keyExpr) elem.keyExpr->accept(*this);
+                    if (elem.target) elem.target->accept(*this);
                     if (elem.pattern) dumpPattern(elem.pattern.get());
                     if (elem.defaultValue) {
                         emit("(default");

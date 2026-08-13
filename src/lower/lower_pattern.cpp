@@ -155,6 +155,63 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
     return false;
 }
 
+// The reference half of `({ k: o.a } = src)`, evaluated where the spec puts it:
+// before the element this target will receive is read. Nothing is stored yet —
+// `storePatternRef` does that once the value (and its default, if any) exists.
+std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& target,
+                                                           il::Function& ilFn) {
+    PatternRef ref;
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&target)) {
+        auto objVal = lowerExpr(*mem->object, ilFn);
+        if (!objVal) return std::nullopt;
+        ref.object = boxValueIfNeeded(*objVal, ilFn);
+        ref.keyIndex = getKeyConstantIndex(mem->property);
+        ref.hasKeyIndex = true;
+        return ref;
+    }
+    const auto* idx = dynamic_cast<const ast::IndexAccess*>(&target);
+    if (!idx) {
+        diags_.error(target.span, "internal: a destructuring target that is not a reference");
+        return std::nullopt;
+    }
+    auto objVal = lowerExpr(*idx->object, ilFn);
+    if (!objVal) return std::nullopt;
+    ref.object = boxValueIfNeeded(*objVal, ilFn);
+    // `o["a"] = v` is the same write as `o.a = v`, and taking the constant-key
+    // path here is what lets it share the inline cache rather than falling to
+    // the generic element helper.
+    if (const std::optional<uint32_t> literalKey = literalIndexKey(*idx->index)) {
+        ref.keyIndex = *literalKey;
+        ref.hasKeyIndex = true;
+        return ref;
+    }
+    auto indexVal = lowerExpr(*idx->index, ilFn);
+    if (!indexVal) return std::nullopt;
+    ref.index = boxValueIfNeeded(*indexVal, ilFn);
+    return ref;
+}
+
+void Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn) {
+    Value boxed = boxValueIfNeeded(value, ilFn);
+    il::Instruction inst;
+    if (ref.hasKeyIndex) {
+        inst.op = il::Op::PropSet;
+        inst.operands = {ref.object.id, boxed.id};
+        inst.keyIndex = ref.keyIndex;
+        inst.icIndex = icSiteCounter_++;
+    } else {
+        inst.op = il::Op::ElemSet;
+        inst.operands = {ref.object.id, ref.index.id, boxed.id};
+    }
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    // Same rule as an ordinary assignment (13.15.2 PutValue step 6.d): whether
+    // a refused Set throws is decided by the strictness of the code that wrote
+    // the pattern, not by anything about the pattern.
+    inst.immI32 = strictFlag();
+    emitInst(ilFn, inst);
+}
+
 bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
                            const PatternTarget& target, il::Function& ilFn) {
     Value checked = emitPatternCheck(source, pattern.isObject, ilFn);
@@ -185,6 +242,14 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
     bool sawRest = false;
     for (size_t i = 0; i < pattern.elements.size(); ++i) {
         const auto& elem = pattern.elements[i];
+
+        // 13.15.5.5 step 1: the target's reference is evaluated before the
+        // iterator is stepped for it.
+        std::optional<PatternRef> ref;
+        if (elem.target) {
+            ref = evalPatternRef(*elem.target, ilFn);
+            if (!ref) return false;
+        }
 
         il::ValueId readId = ilFn.valueCount++;
         if (elem.isRest) {
@@ -222,6 +287,8 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
         }
         if (elem.pattern) {
             if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
+        } else if (ref) {
+            storePatternRef(*ref, value, ilFn);
         } else if (!elem.name.empty()) {
             if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) return false;
         }
@@ -302,6 +369,15 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
                                 Value{keyStr, il::Type::Dynamic}, ilFn);
             }
         }
+        // 13.15.5.6 KeyedDestructuringAssignmentEvaluation step 1: the target's
+        // reference is evaluated after the computed key above and before the
+        // GetV below, so it is lowered between the two rather than at either.
+        std::optional<PatternRef> ref;
+        if (elem.target) {
+            ref = evalPatternRef(*elem.target, ilFn);
+            if (!ref) return false;
+        }
+
         readInst.type = il::Type::Dynamic;
         readInst.result = readId;
         emitInst(ilFn, readInst);
@@ -315,6 +391,8 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
         }
         if (elem.pattern) {
             if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
+        } else if (ref) {
+            storePatternRef(*ref, value, ilFn);
         } else if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) {
             return false;
         }

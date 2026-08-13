@@ -111,9 +111,11 @@ TEST_CASE("the syntax around patterns that ECMA-262 forbids is named") {
         {"let [a];", "a destructuring declaration requires an initializer"},
         {"const [a, , b] = x;", "unsupported construct: an elision (a hole) in an array pattern"},
         {"const c = [1, , 2];", "unsupported construct: an elision (a hole) in an array literal"},
-        {"[o.x] = y;",
-         "unsupported construct: a destructuring assignment target that is not a name or a "
-         "nested pattern"},
+        // 13.15.1: a DestructuringAssignmentTarget must be a SIMPLE assignment
+        // target. A call is not one, and neither is an optional chain (13.3.9)
+        // — the two shapes that reach the same check `o.x` passes.
+        {"[f()] = y;", "a destructuring assignment target must be a name"},
+        {"({ k: a?.b } = y);", "a destructuring assignment target must be a name"},
         {"[a] += b;", "a destructuring pattern may only be the target of '='"},
         {"const x = ...y;", "'...' is only allowed in an argument list"},
     };
@@ -121,6 +123,25 @@ TEST_CASE("the syntax around patterns that ECMA-262 forbids is named") {
         const auto out = parseAndDump(c.src);
         CHECK(out.substr(0, 7) == "ERRORS:");
         CHECK(out.find(c.expected) != std::string::npos);
+    }
+}
+
+TEST_CASE("a property reference is a destructuring assignment target") {
+    // The other half of the check above, and the reason it is a separate case:
+    // `o.x` is a simple assignment target, so 13.15.1 admits it wherever a
+    // pattern's element goes — array position, keyed, nested, and after a
+    // `...`. What each one MEANS at run time, evaluation order included, is
+    // tests/oracle/cases/destructuring_member_target.js; this is the grammar.
+    const char* const accepted[] = {
+        "[o.x] = y;",
+        "[o[i]] = y;",
+        "({ k: o.x } = y);",
+        "({ k: o[i] = 1 } = y);",
+        "[...o.rest] = y;",
+        "[{ k: o.x }] = y;",
+    };
+    for (const char* src : accepted) {
+        CHECK_MESSAGE(parseAndDump(src).substr(0, 7) != "ERRORS:", src);
     }
 }
 

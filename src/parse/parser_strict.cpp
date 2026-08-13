@@ -150,8 +150,6 @@ std::vector<ast::StmtPtr> Parser::parseFunctionBody(bool& outStrict) {
     if (prologueSelectsStrict()) strict_ = true;
     outStrict = strict_;
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        // The one position 14.1 admits a HoistableDeclaration in strict code.
-        atBodyTopLevel_ = true;
         if (!parseStatement(body)) return body;
     }
     expect(TokenKind::RBrace, "'}' to close block");

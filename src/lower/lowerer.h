@@ -570,6 +570,20 @@ private:
                             const PatternTarget& target, il::Function& ilFn);
     bool bindPatternName(const std::string& name, Value value, const PatternTarget& target,
                          Span span, il::Function& ilFn);
+    // A property reference used as a destructuring target, held open across the
+    // element read. 13.15.5.2 evaluates the reference BEFORE the source element
+    // it will receive, so `[o[i()]] = xs` calls `i` before the iterator steps —
+    // which means the base and the key have to be lowered at one point and the
+    // store emitted at another.
+    struct PatternRef {
+        Value object{il::kNoValue, il::Type::Dynamic};
+        // Exactly one of these: a constant key index, or a computed key value.
+        uint32_t keyIndex = 0;
+        bool hasKeyIndex = false;
+        Value index{il::kNoValue, il::Type::Dynamic};
+    };
+    std::optional<PatternRef> evalPatternRef(const ast::Expr& target, il::Function& ilFn);
+    void storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn);
     // `current === undefined ? <default>: current`, as a real branch rather
     // than a select: the default's side effects must happen only when it fires,
     // and only `undefined` fires it — `null` does not.

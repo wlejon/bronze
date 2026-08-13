@@ -36,6 +36,38 @@ root in generated code shows up.
 `.\dev.cmd ctest --preset dev -L threejs` runs only this;
 `.\dev.cmd ctest --preset dev -LE threejs` is the fast pre-existing loop.
 
+## `three.module.js`, which is NOT part of the milestone
+
+Beside `three/` sits `three.module.js`: r160's published single-file ESM
+**bundle**, byte-for-byte as released.
+
+```
+https://raw.githubusercontent.com/mrdoob/three.js/r160/build/three.module.js
+sha256  76dea8151bc9352aef3528b4262e249b2604f62543828328db978d060d61a495
+bytes   1272972
+```
+
+It is the same release as `three/`, and that is checked rather than assumed:
+r160's `src/math/Vector3.js` fetched from the same tag is byte-identical to
+`three/math/Vector3.js`.
+
+**No ctest test compiles it.** `oracle-threejs` builds `main.js` against the
+28-file tree and nothing here changes that — the milestone's subject, its cost
+and its pinned expectation are exactly what they were. This file exists for one
+thing the tree cannot do: it contains `WebGLRenderer`, whose import closure is
+~200 files (`bro/src/bronze_host/app/MISSING_MODULES.md` counts them), so a
+host-side app that wants to *draw* imports this and a host-side app that wants
+the scene graph imports the tree. bro's `src/bronze_host/app/main.js`,
+`main_lit.js` and `main_textured.js` are those apps.
+
+Vendoring the bundle rather than the closure is deliberate and costs the
+milestone nothing: the 28-file case is what proves module-graph resolution
+across relative specifiers, and it keeps proving it. What the bundle adds is
+compiler surface — 1.2 MB of it — reached by whoever compiles it.
+
+The same rule as the tree applies with no exceptions: byte-for-byte as
+released, never hand-edited. The MIT license in `three/LICENSE` covers it.
+
 ## Updating the vendored copy
 
 Re-copy from a pristine release tree, do not hand-edit. If a newer revision

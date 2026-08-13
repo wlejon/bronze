@@ -403,10 +403,11 @@ struct Function {
     // over — by the call wrapper on the uniform path, by the call site on a
     // direct one.
     bool hasRestParam = false;
-    // How many source arguments a call must supply: the parameters before the
-    // first one with a default. Fewer is a diagnosed arity error; anything
-    // between this and the fixed parameter count is filled with `undefined`
-    // at the call site, and the callee's prologue decides what that means.
+    // The parameters before the first one with a default. NOT a minimum a call
+    // has to meet — the language has no arity error, and a call short of this
+    // is filled with `undefined` at the call site exactly as one short of the
+    // fixed parameter count is, with the callee's prologue deciding what that
+    // means.
     //
     // It is also, exactly, ECMA-262 15.1.5 ExpectedArgumentCount — so it is
     // what 10.2.10 SetFunctionLength makes the function's `length` property,

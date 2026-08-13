@@ -11,6 +11,31 @@
 
 namespace bronze::lower {
 
+namespace {
+// Whether a call passing `argCount` source arguments can be spelled as a
+// direct call to `callee`, whose operand list is exactly its parameter list.
+//
+// ECMA-262 has no arity error, and neither does bronze: a call that passes
+// fewer arguments binds the missing parameters to `undefined` (10.2.11 gives
+// every parameter that treatment, which is why a default tests for exactly
+// that value), and one that passes more evaluates the extras and drops them.
+// So this is not a question about the PROGRAM — it is a question about which
+// of bronze's two call shapes can express it. What the direct shape cannot do
+// is invent a value for a parameter inference proved a native type for: there
+// is no `undefined` in an `f64`. Those calls, and the ones with arguments the
+// fixed operand list has nowhere to put, take the uniform path instead, where
+// the argument vector is a real array the runtime unpacks.
+bool directCallShapeFits(const il::Function& callee, size_t argCount) {
+    const size_t base = callee.firstSourceParam();
+    const size_t fixed = callee.callerParamCount();
+    if (!callee.hasRestParam && argCount > fixed) return false;
+    for (size_t i = argCount; i < fixed; ++i) {
+        if (callee.params[i + base].type != il::Type::Dynamic) return false;
+    }
+    return true;
+}
+}  // namespace
+
 std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objLit,
                                                       il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
@@ -517,24 +542,19 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             // target: the object is built from the caller's REAL argument list,
             // which only the uniform path's wrapper can see. The same exclusion
             // `needsEnv` carries.
-            if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments) {
+            if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments &&
+                directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
                 uint32_t calleeIdx = it->second;
                 const auto& calleeFn = ilModule_.functions[calleeIdx];
 
                 // Synthetic parameters are not source arguments; the arity the
-                // program has to match is the source one. Defaults widen the
-                // bottom of that range and a rest parameter removes its top:
-                // the operand list is still fixed, because the padding and the
-                // leftover array are both built HERE, where the argument count
-                // is a compile-time fact.
+                // program has to match is the source one. The operand list is
+                // fixed, because the padding and the leftover array are both
+                // built HERE, where the argument count is a compile-time fact —
+                // and `directCallShapeFits` above has already established that
+                // this call's count can be spelled that way.
                 const size_t base = calleeFn.firstSourceParam();
                 const size_t fixed = calleeFn.callerParamCount();
-                const bool tooFew = call->args.size() < calleeFn.requiredArgs;
-                const bool tooMany = !calleeFn.hasRestParam && call->args.size() > fixed;
-                if (tooFew || tooMany) {
-                    diags_.error(call->span, "argument count mismatch in call to " + calleeIdent->name);
-                    return std::nullopt;
-                }
 
                 std::vector<il::ValueId> argVals;
                 // A plain `f()` has no receiver, so a direct call supplies

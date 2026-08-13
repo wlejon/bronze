@@ -188,13 +188,28 @@ PatternPtr Parser::patternFromLiteral(ExprPtr expr) {
             elem.pattern = patternFromLiteral(std::move(value));
             return elem.pattern != nullptr;
         }
-        // A member or index target (`[o.a] = xs`) is legal JavaScript and is
-        // not built: every other target here introduces or rebinds a NAME,
-        // and a property write needs the receiver evaluated in the pattern's
-        // own left-to-right order, which is its own piece of work.
+        // `[o.a] = xs` and `({ k: o[i] } = src)`. 13.15.5.2 calls these a
+        // DestructuringAssignmentTarget that is neither literal, and evaluates
+        // the REFERENCE before the element is read — which is why the node is
+        // carried whole to lowering rather than flattened to a name here.
+        // An optional link (`a?.b = v`) is not a valid target in any position
+        // (13.3.9), so it is rejected with the rest.
+        if (auto* mem = dynamic_cast<MemberAccess*>(value.get()); mem && !mem->optional) {
+            elem.target = std::move(value);
+            return true;
+        }
+        if (auto* idx = dynamic_cast<IndexAccess*>(value.get()); idx && !idx->optional) {
+            elem.target = std::move(value);
+            return true;
+        }
+        // Not "unsupported construct" any more, because what is left here is
+        // not a construct bronze has yet to build: 13.15.1 makes a target that
+        // is not a simple assignment target — a call, a literal, an operator
+        // — an early SyntaxError, and 13.3.9 says the same of an optional
+        // chain. Every target the language admits is handled above.
         diags_.error(value->span,
-                     "unsupported construct: a destructuring assignment target that is "
-                     "not a name or a nested pattern");
+                     "a destructuring assignment target must be a name, a property reference "
+                     "or a nested pattern (ECMA-262 13.15.1)");
         return false;
     };
 
