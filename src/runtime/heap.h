@@ -118,6 +118,20 @@ public:
     void set_collection_hook(CollectionHook hook) { collection_hook_ = std::move(hook); }
     void collect();
 
+    // Invoked inside collect(), after the copy phase and before the semispace
+    // swap — the one moment liveness of an arbitrary heap pointer is decidable
+    // from outside: every reachable object's old header is Tag::Forwarded (new
+    // address in its payload) and a dead object's header is untouched. A moving
+    // semispace collector never visits dead objects, so a finalizer registry —
+    // pairs of (heap pointer, callback) that must run callbacks for the dead
+    // and re-point entries at survivors — has no other window to sweep in. One
+    // slot, like collection_hook_ above; the hook must not allocate on this
+    // heap (the collection is mid-flight).
+    using PostCollectionHook = std::function<void()>;
+    void set_post_collection_hook(PostCollectionHook hook) {
+        post_collection_hook_ = std::move(hook);
+    }
+
     // A root that outlives every frame: runtime-owned caches of heap
     // objects (lazily created builtins, and later the global object). The
     // slot must outlive the heap; registering the same slot twice is a
@@ -185,6 +199,7 @@ private:
     uint64_t collections_{0};
     uint64_t relocations_{0};
     CollectionHook collection_hook_;
+    PostCollectionHook post_collection_hook_;
 };
 
 class NonMovingArena {

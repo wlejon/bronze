@@ -321,6 +321,15 @@ void Heap::collect() {
         scan_ptr += obj_size;
     }
 
+    // Every reachable object has been copied: a from-space header now reads
+    // Tag::Forwarded if its object survived and its original tag if it did
+    // not, which is exactly the question a finalizer sweep has to ask. It runs
+    // BEFORE the swap because that is when "from-space" still names the space
+    // the registered pointers point into.
+    if (post_collection_hook_) {
+        post_collection_hook_();
+    }
+
     from_space_.bump_ptr = from_space_.base;
     std::swap(from_space_, to_space_);
 

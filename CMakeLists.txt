@@ -57,6 +57,7 @@ if(BRONZE_WITH_LLVM)
 endif()
 add_subdirectory(src/rt)
 add_subdirectory(src/runtime)
+add_subdirectory(src/embed)
 add_subdirectory(src/cli)
 
 if(BRONZE_WITH_LLVM)

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "ast/ast.h"
 #include "il/il.h"
@@ -24,7 +26,15 @@ namespace bronze::lower {
 // annotation in the file and report only which switch is on. Unreadable
 // annotation text is still the hard error it is in the other mode — this is a
 // bisection seam, not a laxer compiler.
+// `hostGlobals` is the `--host-globals` manifest, already read and validated
+// by the CLI: identifiers an EMBEDDING HOST promises to register with the
+// runtime before the program runs. Each joins the provided-globals set, so a
+// read lowers to the same `global.get` a builtin does instead of the
+// unresolved-name warning and runtime ReferenceError. Nullable like
+// `inference`, and independent of it — which set of names resolves is a
+// lowering-level fact, so `--no-infer` changes nothing about it.
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
-                                      const types::InferenceResult* inference = nullptr);
+                                      const types::InferenceResult* inference = nullptr,
+                                      const std::vector<std::string>* hostGlobals = nullptr);
 
 }  // namespace bronze::lower

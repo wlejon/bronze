@@ -10,10 +10,16 @@
 namespace bronze::lower {
 
 // The globals bronze provides, resolved by name because there is no global
-// object to look them up in. The list is closed: a free identifier that is not
-// on it stays a compile error, so adding a global is a deliberate act here and
-// never a program silently reading `undefined` at runtime.
+// object to look them up in. The builtin list is closed: a free identifier
+// that is not on it stays a compile error, so adding a builtin is a
+// deliberate act here and never a program silently reading `undefined` at
+// runtime. `hostGlobals_` is the one sanctioned opening in that fence — names
+// a `--host-globals` manifest admitted, still a deliberate act, just the
+// host's rather than this file's: the manifest is the host PROMISING the
+// runtime registry will hold the value (host_globals.h), so the name resolves
+// to the same `global.get` a builtin does.
 bool Lowerer::isProvidedGlobal(const std::string& name) const {
+    if (hostGlobals_.contains(name)) return true;
     // The Error constructors are globals for the same reason `Math` is: a free
     // identifier lowering can resolve, rather than a diagnosed unknown name.
     // They are also what the runtime raises its own spec'd TypeErrors with, so

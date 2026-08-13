@@ -631,8 +631,9 @@ bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& i
 }
 
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
-                                      const types::InferenceResult* inference) {
-    Lowerer lowerer(astModule, diags, inference);
+                                      const types::InferenceResult* inference,
+                                      const std::vector<std::string>* hostGlobals) {
+    Lowerer lowerer(astModule, diags, inference, hostGlobals);
     return lowerer.lower();
 }
 

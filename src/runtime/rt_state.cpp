@@ -14,6 +14,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/host_globals.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -160,7 +161,13 @@ static std::vector<Value> g_globalCache;
 // need it load it at entry.
 static Value g_moduleEnv = Value::fromUndefined();
 
-// All three hold heap Values, so all three are root SOURCES rather than fixed
+// Globals an embedding host registered (host_globals.h). A vector of pairs
+// rather than a map: registration happens a handful of times at host startup,
+// and a lookup is a read `bronze_global_get` reaches only for a name the
+// builtin ladder did not answer.
+static std::vector<std::pair<std::string, Value>> g_hostGlobals;
+
+// All four hold heap Values, so all four are root SOURCES rather than fixed
 // slots: the objects live in the moving heap and cached raw bits would go stale
 // at the first collection. The module environment is the one whose absence here
 // would be invisible until a collection ran with a closure alive over it, which
@@ -169,10 +176,31 @@ static const bool g_valueCachesRegistered = [] {
     g_heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
         for (Value& v : g_globalCache) visit(v);
+        for (auto& entry : g_hostGlobals) visit(entry.second);
         visit(g_moduleEnv);
     });
     return true;
 }();
+
+void rtRegisterHostGlobal(const std::string& name, Value value) {
+    for (auto& entry : g_hostGlobals) {
+        if (entry.first == name) {
+            entry.second = value;
+            return;
+        }
+    }
+    g_hostGlobals.emplace_back(name, value);
+}
+
+bool rtHostGlobalLookup(const std::string& name, Value& out) {
+    for (const auto& entry : g_hostGlobals) {
+        if (entry.first == name) {
+            out = entry.second;
+            return true;
+        }
+    }
+    return false;
+}
 
 // 10.2.9 and 10.2.10, as the one place a function object's two own data
 // properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
@@ -205,10 +233,12 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 }
 
 // An unknown name never reaches here. Lowering emits this instruction only for
-// a name on its closed provided-globals list; anything else becomes
-// `ref.error`, which raises the JS ReferenceError. So the miss below is a drift
-// between lowering's list and this one — an internal tripwire, not a program
-// error.
+// a name on its provided-globals list — the closed builtin set, plus whatever a
+// `--host-globals` manifest admitted; anything else becomes `ref.error`, which
+// raises the JS ReferenceError. A name in NEITHER the builtin ladder nor the
+// host registry is therefore still a drift between lowering's list and this
+// one — an internal tripwire, not a program error — and a manifest name the
+// host never registered is the same drift with the host on one side of it.
 uint64_t bronze_global_get(uint32_t keyIndex) {
     if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
         return g_globalCache[keyIndex].rawBits();
@@ -237,6 +267,15 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = ctor;
     } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
         resolved = numeric;
+    } else if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
+        // AFTER every builtin, so a host cannot swap out `Math` under code
+        // that was compiled against it — and BEFORE the fatal, because a
+        // host-registered name is a legitimate answer. Returned directly
+        // rather than through `resolved`, which the cache below would pin:
+        // rtRegisterHostGlobal replaces on re-registration, and a cached
+        // first answer would keep serving the old value. The registry scan
+        // per read is the price, paid only by host-global reads.
+        return host.rawBits();
     } else {
         fatal(("internal: no global named " + keyStr).c_str());
     }

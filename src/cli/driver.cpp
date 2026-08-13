@@ -92,6 +92,14 @@ constexpr const char* kUsage =
     "                                      is at fault. The oracle suite runs every\n"
     "                                      case both ways and requires the same bytes\n"
     "                                      from both.\n"
+    "  --host-globals <path>               Manifest of identifiers an embedding host\n"
+    "                                      will register with the runtime before the\n"
+    "                                      program runs: one name per line, `#`\n"
+    "                                      comments, blank lines ignored. Each joins\n"
+    "                                      the provided-globals set, so reads resolve\n"
+    "                                      like a builtin's instead of warning and\n"
+    "                                      throwing ReferenceError. A lowering-level\n"
+    "                                      fact: identical with --no-infer.\n"
     "\n"
     "Options (build):\n"
     "  --timings                           Print per-phase wall time to stderr. The\n"
@@ -99,6 +107,11 @@ constexpr const char* kUsage =
     "                                      bronze prints, which is why it is opt-in\n"
     "                                      and on stderr: no pinned output can\n"
     "                                      see it.\n"
+    "  --emit-obj                          Stop after object emission: -o names the\n"
+    "                                      object file, written exactly where given,\n"
+    "                                      and no linker runs. The embedding seam —\n"
+    "                                      the host build links the object against\n"
+    "                                      bronze's runtime and its own code.\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
     "discarded with a warning and the value stays dynamic.\n";
@@ -124,6 +137,49 @@ bool readFile(const std::string& path, std::string& out) {
     std::ostringstream ss;
     ss << in.rdbuf();
     out = ss.str();
+    return true;
+}
+
+// The `--host-globals` manifest: one JavaScript identifier per line, `#`
+// starts a comment, blank lines ignored. Validation is strict and ASCII —
+// IdentifierStart [A-Za-z_$], IdentifierPart adds digits — which is narrower
+// than the lexer's own identifier grammar on purpose: the manifest is a
+// contract between two builds (this one and the host's registration calls),
+// and a contract is the wrong place for Unicode spellings two editors can
+// disagree about. A name outside the envelope is a hard error naming the
+// line, never a silent skip.
+bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std::string& err) {
+    std::string text;
+    if (!readFile(path, text)) {
+        err = "error: cannot read host-globals manifest " + path + "\n";
+        return false;
+    }
+    std::istringstream lines(text);
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(lines, line)) {
+        ++lineNo;
+        if (auto hash = line.find('#'); hash != std::string::npos) line.erase(hash);
+        // Trim: the manifest is hand-written, and trailing whitespace (or a
+        // \r from a CRLF editor) must not turn a valid name into an error.
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos) continue;
+        const auto last = line.find_last_not_of(" \t\r");
+        std::string name = line.substr(first, last - first + 1);
+
+        auto isStart = [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
+        };
+        auto isPart = [&](char c) { return isStart(c) || (c >= '0' && c <= '9'); };
+        bool valid = isStart(name[0]);
+        for (size_t i = 1; valid && i < name.size(); ++i) valid = isPart(name[i]);
+        if (!valid) {
+            err = "error: " + path + ":" + std::to_string(lineNo) +
+                  ": not a valid identifier in host-globals manifest: '" + name + "'\n";
+            return false;
+        }
+        out.push_back(std::move(name));
+    }
     return true;
 }
 
@@ -279,7 +335,21 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
     return 0;
 }
 
-int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
+int runIl(const std::string& sourcePath, std::string* outString, bool infer,
+          const std::string& hostGlobalsPath) {
+    // The manifest is read before any compilation happens: an unreadable file
+    // or a bad line is a fact about the INVOCATION, and burying it after a
+    // long compile would report it as late as possible for no reason.
+    std::vector<std::string> hostGlobals;
+    if (!hostGlobalsPath.empty()) {
+        std::string err;
+        if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) {
+            if (outString) *outString = err;
+            else std::fputs(err.c_str(), stderr);
+            return 1;
+        }
+    }
+
     // The graph — resolution, loading, linking — is `src/modules`' job; the
     // CLI is a composition root and stays one. What comes back is the single
     // merged AST module every later stage already understands.
@@ -309,7 +379,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
     }
 
     auto ilModule = lower::lowerModule(*astModule, diags,
-                                       inferred ? &*inferred : nullptr);
+                                       inferred ? &*inferred : nullptr,
+                                       hostGlobals.empty() ? nullptr : &hostGlobals);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -328,10 +399,12 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer) {
 }
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
-             bool infer, bool timings) {
+             bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath) {
 #if !BRONZE_WITH_LLVM
     (void)infer;
     (void)timings;
+    (void)emitObj;
+    (void)hostGlobalsPath;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -341,6 +414,19 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // through `codegen::Backend`, which no debugging concern belongs in.
     support::setTimingsEnabled(timings);
     PhaseTimer timer(timings);
+
+    // Before any compilation, for the reason runIl gives: a bad manifest is a
+    // fact about the invocation.
+    std::vector<std::string> hostGlobals;
+    if (!hostGlobalsPath.empty()) {
+        std::string manifestErr;
+        if (!loadHostGlobals(hostGlobalsPath, hostGlobals, manifestErr)) {
+            if (errOut) *errOut = manifestErr;
+            else std::fputs(manifestErr.c_str(), stderr);
+            return 1;
+        }
+    }
+
     SourceSet sources;
     DiagnosticSink diags;
     auto astModule = modules::loadProgram(sourcePath, sources, diags);
@@ -365,7 +451,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     auto ilModule = lower::lowerModule(*astModule, diags,
-                                       inferred ? &*inferred : nullptr);
+                                       inferred ? &*inferred : nullptr,
+                                       hostGlobals.empty() ? nullptr : &hostGlobals);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -375,6 +462,25 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     reportWarnings(diags, sources);
+
+    // `--emit-obj`: same pipeline, stopped after object emission. The output
+    // path is used exactly as given — the host's build owns naming and layout
+    // — and neither linkExecutable nor the bronze_rt.lib search runs, because
+    // linking is the one step that belongs to the HOST's toolchain when the
+    // object is destined for embedding.
+    if (emitObj) {
+        LLVMBackend objBackend;
+        const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
+        timer.mark("codegen");
+        timer.total();
+        if (!emittedObj) {
+            std::string msg = diags.render(sources);
+            if (errOut) *errOut = msg;
+            else std::fputs(msg.c_str(), stderr);
+            return 1;
+        }
+        return 0;
+    }
 
     std::filesystem::path tempObj = std::filesystem::temp_directory_path() /
                                     (std::filesystem::path(sourcePath).stem().string() + "_temp.obj");
@@ -451,11 +557,18 @@ int runDriver(int argc, char** argv) {
     if (command == "il") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
+        std::string hostGlobalsPath;
         bool infer = true;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--host-globals") {
+                if (i + 1 < argc) {
+                    hostGlobalsPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --host-globals\n");
+                }
             } else if (sourcePath.empty()) {
                 sourcePath = arg;
             } else {
@@ -463,15 +576,17 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runIl(sourcePath, nullptr, infer);
+        return runIl(sourcePath, nullptr, infer, hostGlobalsPath);
     }
 
     if (command == "build") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string outputPath = "a.exe";
+        std::string hostGlobalsPath;
         bool infer = true;
         bool timings = false;
+        bool emitObj = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -479,6 +594,14 @@ int runDriver(int argc, char** argv) {
                 infer = false;
             } else if (arg == "--timings") {
                 timings = true;
+            } else if (arg == "--emit-obj") {
+                emitObj = true;
+            } else if (arg == "--host-globals") {
+                if (i + 1 < argc) {
+                    hostGlobalsPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --host-globals\n");
+                }
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -493,7 +616,8 @@ int runDriver(int argc, char** argv) {
         }
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runBuild(sourcePath, outputPath, nullptr, infer, timings);
+        return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
+                        hostGlobalsPath);
     }
 
     return fail(kUsage);

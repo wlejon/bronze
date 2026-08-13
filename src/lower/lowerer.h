@@ -22,9 +22,14 @@ class Lowerer {
 public:
     // `inference` may be null: that is the no-inference mode, and it
     // reproduces the pre-inference calling convention exactly (see lower.h).
+    // `hostGlobals` may be null too — no manifest — and is copied into a set
+    // here because isProvidedGlobal is asked once per free-identifier mention.
     Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
-            const types::InferenceResult* inference)
-        : astModule_(astModule), diags_(diags), inference_(inference) {}
+            const types::InferenceResult* inference,
+            const std::vector<std::string>* hostGlobals = nullptr)
+        : astModule_(astModule), diags_(diags), inference_(inference) {
+        if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+    }
 
     std::optional<il::Module> lower();
 
@@ -35,6 +40,10 @@ private:
     // accessors there, which answer "unproven" when this is null.
     const types::InferenceResult* inference_ = nullptr;
     il::Module ilModule_;
+    // Names a `--host-globals` manifest admitted: the open half of the
+    // provided-globals set. isProvidedGlobal consults it after the builtin
+    // list, so a read of one lowers to `global.get` like a builtin's does.
+    std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
     uint32_t icSiteCounter_ = 0;

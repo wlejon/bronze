@@ -130,6 +130,17 @@ bronze build <file> -o <exe> [--no-infer]
 `<file>` is the entry of a module graph: `import` and `export` with relative
 specifiers pull in the rest, each file parsed and evaluated once.
 
+Two flags exist for embedding a compiled program in a host process rather
+than shipping it as an executable. `--emit-obj` stops `build` after object
+emission — `-o` names the object file, written exactly where given, and no
+linker runs; the host's build links it against bronze's runtime and the
+host's own code. `--host-globals <path>` names a manifest (one identifier
+per line, `#` comments) of globals the host promises to register with the
+runtime before the program runs: each joins the provided-globals set, so a
+read lowers to the same `global.get` a builtin's does instead of the
+unresolved-name warning and runtime ReferenceError. Both are lowering- and
+link-level facts, so `--no-infer` changes nothing about either.
+
 `--no-infer` forces every inferred type to `dynamic` and lowers on the
 uniform dynamic convention. The annotation warnings go quiet with it —
 nothing is provable in that mode, so they would say only that the switch is
@@ -204,6 +215,7 @@ of bug that silently changes meaning.
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
 | `src/regex` | The RegExp pattern grammar (ECMA-262 22.2.1) and its backtracking matcher, on the same rule as `src/json`: a language of its own inside the source text, with its own parser and its own diagnostics. Reached from `src/lex`, which decides whether a `/` opens a pattern or divides, by what came before it. Its Unicode data — General_Category and simple case folding — is generated once by `tools/gen_unicode_tables.py` and checked in as ordinary sources (`unicode_data_*.cpp`); the build never runs Python |
 | `src/rt` | The static library compiled output links against |
+| `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames. Depends on the runtime and only calls it — the runtime never learns it exists |
 | `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
 | `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |

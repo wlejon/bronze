@@ -222,6 +222,13 @@ public:
         return i < slots_.size() ? slots_[i] : fallback;
     }
 
+    // The rooted slots themselves, for a caller that hands them onward as a
+    // contiguous view: the collector updates these in place, so a span over
+    // them stays CURRENT across anything the callee allocates — which a copy
+    // taken with operator[] would not. The embed module's host callbacks read
+    // their arguments through exactly this.
+    const Value* data() const noexcept { return slots_.data(); }
+
 private:
     std::vector<Value> slots_;
     ShadowStackFrame* frame_{nullptr};
