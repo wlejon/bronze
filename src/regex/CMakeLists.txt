@@ -3,6 +3,10 @@ bronze_add_module(regex
         chars.cpp
         parser.cpp
         matcher.cpp
+        unicode.cpp
+        unicode_data_gc.cpp
+        unicode_data_scf.cpp
     TEST_SOURCES
         ../../tests/regex/regex_test.cpp
+        ../../tests/regex/chars_test.cpp
 )

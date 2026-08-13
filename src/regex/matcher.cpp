@@ -139,13 +139,11 @@ private:
 
     // ---- single-character tests ---------------------------------------------
 
-    // Canonicalize over the alphabet. `i` and `u` together are refused at the
-    // flags, so a character above 0xFFFF can only ever arrive here with
-    // `ignoreCase_` false — which is what makes the narrowing safe rather than
-    // a truncation waiting for an astral fold.
+    // Canonicalize over the alphabet, which is the flags' business and not
+    // this file's: `chars.cpp` holds both tables and picks between them, so
+    // the matcher never learns that there are two.
     uint32_t canonical(uint32_t code) const {
-        if (!ignoreCase_) return code;
-        return canonicalize(static_cast<uint16_t>(code), true);
+        return canonicalize(code, ignoreCase_, unicode_);
     }
 
     bool charMatches(uint32_t patternCode, uint32_t inputCode) const {
@@ -162,10 +160,10 @@ private:
     bool classMatches(const Node& node, uint32_t inputCode) const {
         bool found = rangesContain(node.ranges, inputCode);
         if (!found && ignoreCase_) {
-            const uint16_t cc = static_cast<uint16_t>(canonical(inputCode));
+            const uint32_t cc = canonical(inputCode);
             found = rangesContain(node.ranges, cc);
             if (!found) {
-                for (uint16_t candidate : caseCandidates(cc)) {
+                for (uint32_t candidate : caseCandidates(cc, unicode_)) {
                     if (rangesContain(node.ranges, candidate)) {
                         found = true;
                         break;
@@ -196,14 +194,26 @@ private:
         return codePointBefore(input_, pos, unicode_);
     }
 
-    // 22.2.2.6 IsWordChar reads a CHARACTER under `u`, and this reads a unit in
-    // both modes on purpose: WordCharacters is the basic sixty-three, so no
-    // astral code point is one and neither surrogate half of one is either. The
-    // two readings therefore agree everywhere, and a decode here would cost a
+    // 22.2.2.6 IsWordChar reads a CHARACTER under `u`, and this reads a code
+    // UNIT in both modes — but the argument for that is no longer the one it
+    // used to be. "WordCharacters is the basic sixty-three" stopped being true
+    // the moment `u` and `i` could both be set: 22.2.2.7.1 step 3 grows the
+    // set there, so the reading has to survive a bigger one.
+    //
+    // It does, because of WHICH characters it grows by. Simple case folding
+    // sends exactly U+017F and U+212A into the basic sixty-three, and both are
+    // in the BMP and neither is a surrogate. So no astral character is a word
+    // character, no half of a surrogate pair is one, and a unit read and a
+    // character read agree at every position — where a decode would cost a
     // branch per `\b` to reach the same answer.
+    //
+    // That is a property of the generated fold table rather than of this file,
+    // so `tests/regex` walks the whole code space to hold it, and the
+    // generator refuses to emit a table that breaks it.
     bool isWordAt(int64_t at) const {
         if (at < 0 || at >= static_cast<int64_t>(input_.size())) return false;
-        return rangesContain(wordRanges(ignoreCase_), input_[static_cast<size_t>(at)]);
+        return rangesContain(wordRanges(ignoreCase_, unicode_),
+                             input_[static_cast<size_t>(at)]);
     }
 
     bool assertionHolds(const Node& node, size_t pos) const {
@@ -435,10 +445,6 @@ private:
         // `/(a)?\1b/.test("b")` is true.
         if (start == MatchResult::kUnset || end == MatchResult::kUnset) return runCont(k, pos);
         const size_t length = static_cast<size_t>(end - start);
-        // Compared unit by unit in both modes: `i` and `u` together are refused,
-        // so under `u` a character comparison IS a unit comparison, and the
-        // captured extent is a whole number of characters either way.
-        //
         // Backward the captured text ENDS at `pos`, so the comparison begins
         // `length` units earlier and the continuation resumes there.
         size_t from = pos;
@@ -448,20 +454,36 @@ private:
         } else if (pos + length > input_.size()) {
             return false;
         }
-        for (size_t i = 0; i < length; ++i) {
-            const uint16_t a = input_[static_cast<size_t>(start) + i];
-            const uint16_t b = input_[from + i];
-            if (a == b) continue;
-            if (ignoreCase_ && (isUnknownCasedUnit(a) || isUnknownCasedUnit(b))) {
-                // Both sides of a backreference are INPUT, so neither passed
-                // the parser's case-table check. Answering "different" here
-                // would be a guess about a case pair bronze cannot see.
-                return giveUp("unsupported: a case-insensitive backreference compared "
-                              "characters bronze has no case table for (only ASCII, "
-                              "Latin-1, Latin Extended-A, Greek, Cyrillic and Armenian "
-                              "fold under the `i` flag)");
+        // Compared CHARACTER by character, which under `u` and `i` is not the
+        // same as unit by unit: 282 astral code points have a simple case
+        // folding, and a surrogate has none, so a unit-wise fold would compare
+        // the halves of `𐐀` against those of `𐐨` unchanged and answer that a
+        // backreference does not match text it does. Without `u` the decode is
+        // a unit anyway, so this is one loop and not two.
+        size_t i = 0;
+        while (i < length) {
+            const CodePointStep a = codePointAt(input_, static_cast<size_t>(start) + i, unicode_);
+            const CodePointStep b = codePointAt(input_, from + i, unicode_);
+            if (a.code != b.code) {
+                // A character and its fold are always the same width — nothing
+                // folds across the BMP boundary — so a width disagreement is a
+                // pair that cannot be equal under any canonicalization.
+                if (a.width != b.width) return false;
+                if (ignoreCase_ && !unicode_ &&
+                    (isUnknownCasedUnit(a.code) || isUnknownCasedUnit(b.code))) {
+                    // Both sides of a backreference are INPUT, so neither
+                    // passed the parser's case-table check. Answering
+                    // "different" here would be a guess about a case pair
+                    // bronze cannot see — and only the uppercase table has
+                    // pairs it cannot see.
+                    return giveUp("unsupported: a case-insensitive backreference compared "
+                                  "characters bronze has no case table for without the `u` "
+                                  "flag (only ASCII, Latin-1, Latin Extended-A, Greek, "
+                                  "Cyrillic and Armenian fold under `i` alone)");
+                }
+                if (canonical(a.code) != canonical(b.code)) return false;
             }
-            if (canonicalize(a, ignoreCase_) != canonicalize(b, ignoreCase_)) return false;
+            i += a.width;
         }
         return runCont(k, backward ? pos - length : pos + length);
     }

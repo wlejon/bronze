@@ -1,4 +1,4 @@
-// What the `u` flag takes AWAY, and what bronze still refuses with it.
+// What the `u` flag takes AWAY, and what it hands back in the same breath.
 //
 // Two different things, pinned together because a reader who finds one will ask
 // about the other.
@@ -11,16 +11,19 @@
 // the hard-error rule and also the only way a program can tell which reading it
 // got.
 //
-// The second is bronze's. `\p{...}` is legal JavaScript under `u` and is still
-// refused here: 22.2.1's UnicodePropertyValueExpression is defined by reference
-// to UAX #44, and bronze carries no General Category or Script table. The
-// refusal names that, not the flag — reading `\p{L}` as the letter `p` is
-// exactly the silent wrong answer it exists to prevent. And `u` together with
-// `i` is refused as a COMBINATION: 22.2.2.9 Canonicalize switches to simple
-// case folding under both, a different table from the uppercase mapping bronze
-// carries for `i` alone (U+017F folds to `s` under one and to itself under the
-// other), so reusing it would be wrong in a way only a test spelling one of
-// those characters could catch.
+// The second is what the same flag switches ON, which is the half a reader
+// stops looking for once the first half has convinced them `u` only forbids
+// things. `\p{...}` is a +UnicodeMode production too, so it is legal ONLY with
+// the flag — and it reads a real General_Category table, because 22.2.1's
+// UnicodePropertyValueExpression is defined by reference to UAX #44 and
+// nothing less answers it. `u` together with `i` is legal as well, and means
+// 22.2.2.9 step 1: simple case folding rather than the uppercase mapping,
+// which is a second table and not a relaxed reading of the first (U+017F folds
+// to `s` under one and to itself under the other).
+//
+// Both appear below only as the answer to "and what does it enable?".
+// regexp_unicode_property and regexp_unicode_property_refusals are what the
+// properties mean; regexp_unicode_case_folding is what the fold means.
 
 function message(f) {
   try {
@@ -65,16 +68,17 @@ console.log(names(function () { return new RegExp("\\u{}", "u"); },
                   "at least one hexadecimal digit"));
 console.log(names(function () { return new RegExp("\\u{110000}", "u"); }, "above U+10FFFF"));
 
-// `\p{...}`: refused with `u` as well as without, and for the reason that
-// survives the flag.
-console.log(names(function () { return new RegExp("\\p{L}", "u"); }, "unicode property escapes"),
-            names(function () { return new RegExp("\\p{L}", "u"); }, "UAX #44"));
+// `\p{...}`: a set with the flag, and still a named refusal without it, since
+// the production does not exist there and Annex B would read it as the letter
+// `p`.
+console.log(new RegExp("\\p{L}", "u").test("a"), new RegExp("\\P{L}", "u").test("1"));
 console.log(names(function () { return new RegExp("\\P{L}"); }, "unicode property escapes"));
 
-// `u` with `i`: a refusal on the COMBINATION, which removes nothing, since `u`
-// was refused outright until now. Each flag on its own still compiles.
-console.log(names(function () { return new RegExp("a", "ui"); }, "`u` and `i` flags together"));
-console.log(names(function () { return new RegExp("a", "iu"); }, "simple case folding"));
+// `u` with `i`: a COMBINATION that compiles, and whose whole effect is which
+// table 22.2.2.9 reads. The second line is the difference in one character —
+// `/ſ/i` does not match "s" and `/ſ/iu` does.
+console.log(new RegExp("a", "ui").test("A"));
+console.log(new RegExp("\\u017f", "iu").test("s"));
 console.log(message(function () { return new RegExp("a", "u"); }),
             message(function () { return new RegExp("a", "i"); }));
 

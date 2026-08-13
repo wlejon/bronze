@@ -70,12 +70,16 @@ TEST_CASE("a construct bronze refuses is named at the literal, not at the run") 
     CHECK(fold.find("U+1E9E") != std::string::npos);
     const auto property = parseRegExp("const re = /\\p{L}/;\n");
     CHECK(property.find("unicode property escapes") != std::string::npos);
-    // `u` is a mode bronze implements, so the literal compiles; `u` together
-    // with `i` is the refusal, and it is named where the two letters meet.
+    // A property bronze has no table for is named at the literal too, and it
+    // names WHICH property rather than the escape in general.
+    const auto script = parseRegExp("const re = /\\p{Script=Greek}/u;\n");
+    CHECK(script.find("Script") != std::string::npos);
+    // `u` is a mode bronze implements and so is `u` with `i`, so both literals
+    // compile — the second reads a different Canonicalize, not a refusal.
     const auto unicode = parseRegExp("const re = /a/u;\n");
     CHECK(unicode.substr(0, 7) != "ERRORS:");
     const auto folding = parseRegExp("const re = /a/ui;\n");
-    CHECK(folding.find("`u` and `i` flags together") != std::string::npos);
+    CHECK(folding.substr(0, 7) != "ERRORS:");
     // An Annex B leniency the `u` flag switches off, decided at the literal too.
     const auto brace = parseRegExp("const re = /a{/u;\n");
     CHECK(brace.find("does not begin a quantifier") != std::string::npos);

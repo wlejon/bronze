@@ -15,6 +15,7 @@
 #include <string>
 
 #include "regex/pattern.h"
+#include "regex/unicode.h"
 
 namespace bronze::regex {
 
@@ -37,6 +38,14 @@ bool isIdentifierPart(uint16_t c) { return isIdentifierStart(c) || isDecimalDigi
 // plain `q` here. `$` and `_` are neither, so `\$` is the ordinary dollar sign.
 bool isAlphanumeric(uint16_t c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDecimalDigit(c);
+}
+
+// 22.2.1's UnicodePropertyNameCharacters is letters and `_`, and
+// UnicodePropertyValueCharacters adds the digits. One predicate serves both: a
+// digit written in a name position simply names no property, which is a better
+// message than "unexpected character" for the same mistake.
+bool isPropertyCharacter(uint16_t c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDecimalDigit(c) || c == '_';
 }
 
 // 22.2.1 SyntaxCharacter. It is what `\` may precede under +UnicodeMode, and —
@@ -367,11 +376,14 @@ private:
     }
 
     NodePtr charNode(uint32_t code) {
-        if (flags_.ignoreCase && isUnknownCasedUnit(code)) return caseTableFailure(code);
+        // The uppercase table's holes are refused only in the mode that reads
+        // it. Under `u` and `i` the fold is generated from the UCD and has
+        // none, so asking here would refuse patterns bronze answers exactly.
+        if (flags_.ignoreCase && !flags_.unicode && isUnknownCasedUnit(code)) {
+            return caseTableFailure(code);
+        }
         NodePtr node = make(NodeKind::Char);
-        // `i` and `u` are refused together, so a character above 0xFFFF never
-        // reaches the case table and the narrowing below cannot lose one.
-        node->ch = flags_.ignoreCase ? canonicalize(static_cast<uint16_t>(code), true) : code;
+        node->ch = canonicalize(code, flags_.ignoreCase, flags_.unicode);
         return node;
     }
 
@@ -381,8 +393,9 @@ private:
         for (int i = 0; i < 4; ++i) buf[3 - i] = kHex[(unit >> (i * 4)) & 0xF];
         buf[4] = '\0';
         return fail("unsupported: case-insensitive matching of U+" + std::string(buf) +
-                    " (bronze carries no Unicode case tables; only ASCII, Latin-1, Latin "
-                    "Extended-A, Greek, Cyrillic and Armenian fold under the `i` flag)");
+                    " without the `u` flag (only ASCII, Latin-1, Latin Extended-A, Greek, "
+                    "Cyrillic and Armenian fold under `i` alone; adding `u` switches "
+                    "22.2.2.9 to simple case folding, which bronze carries in full)");
     }
 
     NodePtr parseGroup() {
@@ -530,24 +543,19 @@ private:
                 out.isSet = true;
                 out.set = complementRanges(spaceRanges(), ceiling);
                 return true;
-            case 'w': ++pos_; out.isSet = true; out.set = wordRanges(flags_.ignoreCase); return true;
+            case 'w':
+                ++pos_;
+                out.isSet = true;
+                out.set = wordRanges(flags_.ignoreCase, flags_.unicode);
+                return true;
             case 'W':
                 ++pos_;
                 out.isSet = true;
-                out.set = complementRanges(wordRanges(flags_.ignoreCase), ceiling);
+                out.set = complementRanges(wordRanges(flags_.ignoreCase, flags_.unicode), ceiling);
                 return true;
             case 'p':
             case 'P':
-                // Still refused WITH `u`, where real JavaScript accepts it. The
-                // honest answer is that bronze has no table, not that the flag
-                // is missing: 22.2.1's UnicodePropertyValueExpression is defined
-                // by reference to UAX #44, and reading `\p{L}` as the letter `p`
-                // — which is what the Annex B path below would do — is the
-                // silent wrong answer the refusal exists to prevent.
-                fail("unsupported: unicode property escapes `\\p{...}` are not implemented "
-                     "(they need a table of UAX #44 General Category and Script data, which "
-                     "bronze does not carry)");
-                return false;
+                return readPropertyEscape(out, /*negated=*/c == 'P');
             case 'f': ++pos_; out.code = 0x000C; return true;
             case 'n': ++pos_; out.code = 0x000A; return true;
             case 'r': ++pos_; out.code = 0x000D; return true;
@@ -621,6 +629,64 @@ private:
         return true;
     }
 
+    // 22.2.1's `p{ UnicodePropertyValueExpression }`, and its negated twin.
+    //
+    // The production exists only under +UnicodeMode, and that is not a detail
+    // bronze can be lenient about: without `u`, Annex B would read `\p{L}` as
+    // the letter `p` quantified, so a pattern meant to match letters would
+    // match the letter p. Refused by name there rather than reinterpreted.
+    //
+    // The expression itself is two productions that look alike — `name=value`
+    // and a lone name-or-value — and they mean different things: the lone form
+    // may be a General_Category VALUE or a binary property, and may never be a
+    // Script. `unicodePropertySet` is where that is decided, because it is
+    // where the tables are; here the job is only to read the text exactly and
+    // hand on whatever a refusal says.
+    bool readPropertyEscape(EscapeValue& out, bool negated) {
+        if (!flags_.unicode) {
+            fail("unsupported: unicode property escapes `\\p{...}` are a +UnicodeMode "
+                 "production and this pattern has no `u` flag (bronze does not implement "
+                 "Annex B's reading of `\\p` as the letter `p`)");
+            return false;
+        }
+        ++pos_;  // `p` or `P`
+        if (!eat('{')) {
+            fail("`{` was expected after `\\p`, which begins a unicode property escape");
+            return false;
+        }
+        const size_t firstBegin = pos_;
+        while (!atEnd() && isPropertyCharacter(peek())) ++pos_;
+        std::string first = asciiOf(src_.substr(firstBegin, pos_ - firstBegin));
+        std::string name;
+        std::string value = first;
+        if (eat('=')) {
+            name = first;
+            const size_t valueBegin = pos_;
+            while (!atEnd() && isPropertyCharacter(peek())) ++pos_;
+            value = asciiOf(src_.substr(valueBegin, pos_ - valueBegin));
+        }
+        if (!eat('}')) {
+            fail("`}` was expected to close a unicode property escape");
+            return false;
+        }
+        if (value.empty()) {
+            fail("a unicode property escape names no property");
+            return false;
+        }
+        RangeList set;
+        std::string why;
+        if (!unicodePropertySet(name, value, set, why)) {
+            fail(why);
+            return false;
+        }
+        out.isSet = true;
+        // `\P` complements over the CODE POINT ceiling, not the code unit one.
+        // `u` is required to be here at all, so the ceiling is never in doubt —
+        // and a `\P{L}` that stopped at U+FFFF would silently exclude every
+        // astral character from a set whose whole meaning is "not a letter".
+        out.set = negated ? complementRanges(set, alphabetCeiling(true)) : std::move(set);
+        return true;
+    }
     // 22.2.1 RegExpUnicodeEscapeSequence. Three productions, and which of them
     // is available is the `u` flag's business: `\uHHHH` always, a LeadSurrogate
     // escape immediately followed by a TrailSurrogate escape as ONE code point
@@ -729,7 +795,7 @@ private:
                 // wrong answer this refusal exists to prevent. The offender is
                 // named, because a message that says only "somewhere in this
                 // range" cannot be acted on.
-                if (flags_.ignoreCase) {
+                if (flags_.ignoreCase && !flags_.unicode) {
                     uint32_t offender = 0;
                     if (firstUnknownCasedUnitInRange(lhs.code, rhs.code, offender)) {
                         return caseTableFailure(offender);
@@ -745,7 +811,7 @@ private:
             if (lhs.isSet) {
                 node->ranges.insert(node->ranges.end(), lhs.set.begin(), lhs.set.end());
             } else {
-                if (flags_.ignoreCase && isUnknownCasedUnit(lhs.code)) {
+                if (flags_.ignoreCase && !flags_.unicode && isUnknownCasedUnit(lhs.code)) {
                     return caseTableFailure(lhs.code);
                 }
                 addRange(node->ranges, lhs.code, lhs.code);
@@ -818,20 +884,12 @@ bool parseFlags(std::string_view text, Flags& out, std::string& error) {
         }
         *slot = true;
     }
-    // The COMBINATION, refused where the two letters meet rather than at either
-    // of them. 22.2.2.9 Canonicalize takes a different table under both flags:
-    // simple case folding (scf) instead of `toUppercase`, and the two disagree
-    // on characters bronze already folds — U+017F folds to `s` under scf and to
-    // itself under `toUppercase`, so `/ſ/ui` matches "s" where `/ſ/i` does not.
-    // Reusing the uppercase table here would be a wrong answer that only a test
-    // spelling one of those characters could catch, which is exactly the silent
-    // fallback this project rules out.
-    if (out.unicode && out.ignoreCase) {
-        error = "unsupported: the RegExp `u` and `i` flags together are not implemented "
-                "(22.2.2.9 canonicalizes by simple case folding under both, which is a "
-                "different table from the uppercase mapping bronze carries for `i`)";
-        return false;
-    }
+    // `u` and `i` together were refused here until bronze carried a second
+    // case table, and the refusal is gone rather than relaxed: 22.2.2.9 step 1
+    // canonicalizes by simple case folding under both flags, `chars.cpp` picks
+    // that table on exactly that condition, and the table is generated from
+    // the UCD instead of written from memory. Nothing here has to know which
+    // table is which — which is why there is no longer a rule at this level.
     return true;
 }
 

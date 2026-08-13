@@ -4,6 +4,7 @@
 #include <map>
 
 #include "regex/regex.h"
+#include "regex/unicode.h"
 
 namespace bronze::regex {
 
@@ -36,23 +37,32 @@ RangeList makeSpaces() {
     return list;
 }
 
-// 22.2.2.7.1 WordCharacters: the basic sixty-three, plus every unit that is not
-// one of them whose Canonicalize IS one of them.
+// 22.2.2.7.1 WordCharacters: the basic sixty-three, plus every character that
+// is not one of them whose Canonicalize IS one of them.
 //
 // The second set is DERIVED from `canonicalize` rather than written out, and
 // that is the whole point of the function. A hard-coded member is a second
 // opinion about the fold, and two opinions drift: the list here used to name
-// U+017F and U+212A, while `canonicalize` — correctly — returns both unchanged,
-// because 22.2.2.9 step 4 keeps a non-ASCII unit whose uppercase is ASCII. So
-// `/ſ/i.test("s")` answered false and `/\w/i.test("ſ")` answered true
-// in the same program, which is exactly the disagreement chars.h says cannot
-// happen.
+// U+017F and U+212A while `canonicalize` — correctly, for a pattern without
+// `u` — returns both unchanged, so `/ſ/i.test("s")` answered false and
+// `/\w/i.test("ſ")` answered true in the same program.
 //
-// Step 3 asserts the derived set is empty unless BOTH [[Unicode]] and
-// [[IgnoreCase]] hold, and bronze has no `u` flag — so it comes out empty here
-// in both modes. It is still computed, because "it comes out empty" is a
-// consequence of the table and has to keep being one as the table grows.
-RangeList makeWords(bool ignoreCase) {
+// Step 3 asserts the extra set is EMPTY unless both [[Unicode]] and
+// [[IgnoreCase]] hold. Now that both can, it comes out empty in three of the
+// four modes and holds exactly U+017F and U+212A in the fourth, where simple
+// case folding maps them to `s` and `k` and the uppercase table keeps them.
+// Neither answer is written down; both fall out of whichever table the flags
+// picked, which is what makes the set a pattern builds and the comparison the
+// matcher runs incapable of disagreeing.
+//
+// Under `u` the alphabet is the whole code space, and walking all 1114112 of
+// it per mode would be paid at the first `\w` in a program. It walks the fold
+// table's SOURCES instead: those are exactly the characters whose
+// canonicalization is not themselves, so every character skipped canonicalizes
+// to itself, and one that is not already basic cannot then be in `basic`.
+// Same derivation, same answer — and `tests/regex` walks the whole alphabet
+// against it, so "same answer" is checked rather than argued.
+RangeList makeWords(bool ignoreCase, bool unicode) {
     RangeList basic;
     addRange(basic, '0', '9');
     addRange(basic, 'A', 'Z');
@@ -61,19 +71,30 @@ RangeList makeWords(bool ignoreCase) {
     normalizeRanges(basic);
 
     RangeList list = basic;
-    for (uint32_t u = 0; u <= kMaxUnit; ++u) {
-        const uint16_t unit = static_cast<uint16_t>(u);
-        if (rangesContain(basic, unit)) continue;
-        if (rangesContain(basic, canonicalize(unit, ignoreCase))) addRange(list, unit, unit);
+    const auto consider = [&](uint32_t code) {
+        if (rangesContain(basic, code)) return;
+        if (rangesContain(basic, canonicalize(code, ignoreCase, unicode))) {
+            addRange(list, code, code);
+        }
+    };
+    if (unicode) {
+        for (uint32_t code : simpleCaseFoldSources()) consider(code);
+    } else {
+        for (uint32_t unit = 0; unit <= kMaxUnit; ++unit) consider(unit);
     }
     normalizeRanges(list);
     return list;
 }
 
-// Blocks whose members carry case mappings bronze has no table for. Being
+// Blocks whose members carry UPPERCASE mappings bronze has no table for, and
+// which a pattern under `i` alone therefore cannot be answered about. Being
 // generous here costs a hard error on a pattern that would have worked; being
 // stingy costs a silent wrong answer, which is the trade
 // hard-errors-over-silent-fallbacks already settled.
+//
+// It says nothing about `u` and `i` together: that mode folds from a generated
+// UCD table with no holes in it, so every block below is answerable there and
+// none of them is refused. The list is the shape of ONE of the two tables.
 //
 // The holes in this list are the blocks written out below: Latin Extended-A,
 // Greek and Coptic, Cyrillic with its supplement, and the two Armenian letter
@@ -165,8 +186,9 @@ uint16_t foldLatinExtendedA(uint16_t unit) {
         // uppercase of U+00FF, which is why it sits alone here.
         case 0x0178: return unit;
         // U+017F LATIN SMALL LETTER LONG S uppercases to ASCII `S`: step 4
-        // again, so `/ſ/i` does not match "s" — and, through `makeWords`,
-        // `\w` does not hold it either.
+        // again, so `/ſ/i` does not match "s" — and, through `makeWords`, `\w`
+        // does not hold it either. Under `u` and `i` both answers flip, and
+        // they flip together, because both come from `canonicalize`.
         case 0x017F: return unit;
         default: break;
     }
@@ -276,19 +298,23 @@ uint16_t foldCyrillic(uint16_t unit) {
     return unit;
 }
 
-// Canonicalize's reverse direction over the units bronze has data for. Built
-// once from `canonicalize` itself, so the two cannot drift. A unit that
+// The uppercase table's reverse direction, over the units it has data for.
+// Built once from `canonicalize` itself, so the two cannot drift. A unit that
 // canonicalizes to itself is left out: the caller has already tested the
-// canonicalization directly, so an identity entry would only make every
-// lookup carry a member that can never decide anything.
-const std::map<uint16_t, std::vector<uint16_t>>& reverseCaseTable() {
-    static const std::map<uint16_t, std::vector<uint16_t>> table = [] {
-        std::map<uint16_t, std::vector<uint16_t>> out;
+// canonicalization directly, so an identity entry would only make every lookup
+// carry a member that can never decide anything.
+//
+// This is the `i`-without-`u` half only. The fold's reverse direction is
+// generated with the fold, in `regex/unicode.cpp`, because building it by a
+// walk over 1114112 code points would be the same table at a thousand times
+// the cost.
+const std::map<uint32_t, std::vector<uint32_t>>& reverseUppercaseTable() {
+    static const std::map<uint32_t, std::vector<uint32_t>> table = [] {
+        std::map<uint32_t, std::vector<uint32_t>> out;
         for (uint32_t u = 0; u <= kMaxUnit; ++u) {
-            const uint16_t unit = static_cast<uint16_t>(u);
-            const uint16_t cc = canonicalize(unit, true);
-            if (cc == unit) continue;
-            out[cc].push_back(unit);
+            const uint32_t cc = canonicalize(u, /*ignoreCase=*/true, /*unicode=*/false);
+            if (cc == u) continue;
+            out[cc].push_back(u);
         }
         return out;
     }();
@@ -391,23 +417,35 @@ const RangeList& spaceRanges() {
     return list;
 }
 
-const RangeList& wordRanges(bool ignoreCase) {
-    static const RangeList plain = makeWords(false);
-    static const RangeList folded = makeWords(true);
-    return ignoreCase ? folded : plain;
+const RangeList& wordRanges(bool ignoreCase, bool unicode) {
+    static const RangeList plain = makeWords(false, false);
+    static const RangeList folded = makeWords(true, false);
+    static const RangeList plainUnicode = makeWords(false, true);
+    static const RangeList foldedUnicode = makeWords(true, true);
+    if (!unicode) return ignoreCase ? folded : plain;
+    return ignoreCase ? foldedUnicode : plainUnicode;
 }
 
-uint16_t canonicalize(uint16_t unit, bool ignoreCase) {
-    if (!ignoreCase) return unit;
+uint32_t canonicalize(uint32_t code, bool ignoreCase, bool unicode) {
+    if (!ignoreCase) return code;
+    // 22.2.2.9 step 1: with BOTH flags the table is simple case folding, which
+    // comes from the UCD and covers the whole code space — the one branch an
+    // astral character can reach, and the one that answers for U+017F, U+212A
+    // and every character above U+FFFF that has a case at all.
+    if (unicode) return simpleCaseFold(code);
+    // Step 3's toUppercase, over the blocks below. A code point above 0xFFFF
+    // cannot arrive here: without `u` the alphabet IS the code unit, so
+    // nothing a pattern or a subject can produce exceeds one.
+    const uint16_t unit = static_cast<uint16_t>(code);
     if (unit < 0x0100) return foldLatin1(unit);
     if (unit < 0x0180) return foldLatinExtendedA(unit);
     if (unit >= 0x0370 && unit <= 0x03FF) return foldGreek(unit);
     if (unit >= 0x0400 && unit <= 0x052F) return foldCyrillic(unit);
-    // Armenian: ա..ֆ at U+0561..U+0586 against Ա..Ֆ at U+0531..U+0556, an
-    // offset of 0x30 because the capitals are a run of 38 letters and the
-    // small letters begin one row further on. U+0587 ARMENIAN SMALL LIGATURE
-    // ECH YIWN is NOT part of it — its uppercase is two units — and it is
-    // refused rather than folded.
+    // Armenian: the small letters at U+0561..U+0586 against the capitals at
+    // U+0531..U+0556, an offset of 0x30 because the capitals are a run of 38
+    // letters and the small letters begin one row further on. U+0587 ARMENIAN
+    // SMALL LIGATURE ECH YIWN is NOT part of it — its uppercase is two units —
+    // and it is refused rather than folded.
     if (unit >= 0x0561 && unit <= 0x0586) return static_cast<uint16_t>(unit - 48);
     return unit;
 }
@@ -430,9 +468,13 @@ bool isUnknownCasedUnit(uint32_t unit) {
     return firstUnknownCasedUnitInRange(unit, unit, offender);
 }
 
-const std::vector<uint16_t>& caseCandidates(uint16_t cc) {
-    static const std::vector<uint16_t> none;
-    const auto& table = reverseCaseTable();
+const std::vector<uint32_t>& caseCandidates(uint32_t cc, bool unicode) {
+    // Whichever table `canonicalize` used going forward, read backwards. The
+    // two are never mixed: a candidate from the uppercase table would answer
+    // about a fold the matcher is not performing.
+    if (unicode) return simpleCaseFoldCandidates(cc);
+    static const std::vector<uint32_t> none;
+    const auto& table = reverseUppercaseTable();
     auto it = table.find(cc);
     return it == table.end() ? none : it->second;
 }

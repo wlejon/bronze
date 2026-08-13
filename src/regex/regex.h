@@ -36,7 +36,9 @@ using UnitsView = std::u16string_view;
 size_t advanceStringIndex(UnitsView input, size_t index, bool unicode);
 
 // `g i m s u y`, and nothing else — `v` and `d` are refused by name at compile
-// time, and so is `u` written together with `i`.
+// time. Every combination of the six compiles: `u` with `i` is the one that
+// changes what Canonicalize means (22.2.2.9 step 1 folds instead of
+// uppercasing) rather than what is legal.
 struct Flags {
     bool global = false;
     bool ignoreCase = false;
@@ -51,9 +53,8 @@ struct Flags {
 };
 
 // Parses a flags string. Returns false and fills `error` for an unknown
-// letter, a repeated one, one bronze does not implement, or the `u`+`i`
-// COMBINATION — which each implement alone and cannot together, because
-// 22.2.2.9 Canonicalize switches to simple case folding under both.
+// letter, a repeated one, or one bronze does not implement. No combination is
+// refused: the tables both readings of Canonicalize need are carried.
 bool parseFlags(std::string_view text, Flags& out, std::string& error);
 
 // A compiled pattern, opaque here. The tree it holds is 22.2.1's and belongs

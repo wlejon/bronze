@@ -77,41 +77,55 @@ CodePointStep codePointAt(std::u16string_view input, size_t index, bool unicode)
 CodePointStep codePointBefore(std::u16string_view input, size_t index, bool unicode);
 
 // The three class escapes of 22.2.2.9. `\w` is 22.2.2.7.1 WordCharacters: the
-// basic sixty-three, plus every unit that is not one of them whose
-// `canonicalize` IS one of them — a set the specification asserts is EMPTY
-// unless `u` and `i` are both set. bronze refuses `u` together with `i`
-// (22.2.2.9's Canonicalize switches to simple case folding there, a table it
-// does not carry), so `\w` is the same sixty-three in every mode it compiles,
-// and `ignoreCase` still selects the set because it selects which
-// `canonicalize` derives it.
+// basic sixty-three, plus every character that is not one of them whose
+// `canonicalize` IS one of them — a set step 3 asserts is EMPTY unless `u` and
+// `i` are BOTH set.
 //
-// The derivation is what makes the two agree. U+017F and U+212A look like they
-// belong — each uppercases to a word character — but `canonicalize` returns
-// both unchanged (22.2.2.9 step 4 keeps a non-ASCII unit whose uppercase is
-// ASCII), so `/ſ/i` does not match "s" and `\w` must not hold "ſ" either.
+// Both sides of that assertion are now live, which is why the extra set is
+// DERIVED and never written down. Without `u`, Canonicalize is the uppercase
+// mapping and step 4 keeps a non-ASCII character whose uppercase is ASCII, so
+// U+017F and U+212A canonicalize to themselves and the extra set comes out
+// empty. With `u` and `i` it is simple case folding, U+017F folds to `s` and
+// U+212A to `k`, and the extra set is exactly those two. The same two
+// characters, on opposite sides of the answer, decided by the table rather
+// than by a list — which is the only way `/\w/` and `/ſ/i` can be made to
+// agree about one.
 const RangeList& digitRanges();
 const RangeList& spaceRanges();
-const RangeList& wordRanges(bool ignoreCase);
+const RangeList& wordRanges(bool ignoreCase, bool unicode);
 
-// Canonicalize (22.2.2.9) for the units bronze has case data for. There is no
-// Unicode data file behind it: each block is written as the RULE that
-// generated that part of the Default Case Conversion table, plus the members
-// that break the rule, so every mapping in it can be read and checked without
-// one. The blocks are ASCII and Latin-1, Latin Extended-A, Greek and Coptic,
-// Cyrillic with its supplement, and the two Armenian letter runs. Everything
-// else is returned unchanged, which is correct for every unit
-// `isUnknownCasedUnit` rejects.
-uint16_t canonicalize(uint16_t unit, bool ignoreCase);
+// Canonicalize (22.2.2.9), whose whole content is that there are two tables
+// and the flags pick one.
+//
+// With `u` and `i` (step 1) it is simple case folding, which comes from the
+// UCD by way of the generated tables — see `regex/unicode.h` — and covers the
+// whole code space, astral characters included.
+//
+// With `i` alone (step 3) it is `toUppercase` plus step 4's guard, and there
+// bronze has no data file: each block is written in `chars.cpp` as the RULE
+// that generated that part of the Default Case Conversion table plus the
+// members that break the rule, so every mapping can be read and checked
+// without one. The blocks are ASCII and Latin-1, Latin Extended-A, Greek and
+// Coptic, Cyrillic with its supplement, and the two Armenian letter runs;
+// everything else is returned unchanged, which is correct for every unit
+// `isUnknownCasedUnit` rejects and is the reason that refusal exists.
+uint32_t canonicalize(uint32_t code, bool ignoreCase, bool unicode);
 
 // Does this unit live in a block that carries case mappings bronze has no
-// table for? A pattern that spells such a character under `i` is a named
-// error, because answering "no match" for `/Ω/i` against `ω` would
-// be a silent wrong answer — and answering it for CJK, Hebrew or an emoji
-// would be a hard error for nothing, since none of them has a case at all.
+// UPPERCASE table for? A pattern that spells such a character under `i`
+// WITHOUT `u` is a named error, because answering "no match" for a capital
+// omega against a small one would be a silent wrong answer — and answering it
+// for CJK, Hebrew or an emoji would be a hard error for nothing, since none of
+// them has a case at all.
 //
-// Shrinking this is what adding a block to `canonicalize` means. The two must
-// move together: a unit that is folded but still refused is a hard error for
-// nothing, and a unit that is neither is the silent wrong answer.
+// It has nothing to say about `u` and `i` together. Simple case folding is
+// generated from the UCD and has no holes, so a caller that consulted this
+// there would refuse patterns bronze can answer exactly — which is why every
+// caller guards it with the flag rather than asking it about every mode.
+//
+// Shrinking this is what adding a block to the uppercase table means. The two
+// must move together: a unit that is folded but still refused is a hard error
+// for nothing, and a unit that is neither is the silent wrong answer.
 bool isUnknownCasedUnit(uint32_t unit);
 
 // The lowest unit in [lo, hi] that `isUnknownCasedUnit` refuses, or false when
@@ -123,14 +137,14 @@ bool isUnknownCasedUnit(uint32_t unit);
 // costs the same as `[a-b]`, and is now correctly a named error.
 bool firstUnknownCasedUnitInRange(uint32_t lo, uint32_t hi, uint32_t& out);
 
-// Every unit whose canonicalization is `cc` and is not `cc` itself.
+// Every character whose canonicalization is `cc` and is not `cc` itself.
 // CharacterSetMatcher asks whether the SET holds any member that canonicalizes
 // to the input's canonicalization (22.2.2.7.1), which is not the same as
 // asking whether the input's canonicalization is in the set: `/[µ]/i` matches
 // U+039C, whose canonicalization no Latin-1 character equals, and
 // `/[α-ω]/i` matches "Γ" only because U+03B3 canonicalizes the same
 // way it does. Answering that needs the reverse direction of the table, which
-// is what this is.
-const std::vector<uint16_t>& caseCandidates(uint16_t cc);
+// is what this is — of whichever of the two tables the flags picked.
+const std::vector<uint32_t>& caseCandidates(uint32_t cc, bool unicode);
 
 }  // namespace bronze::regex
