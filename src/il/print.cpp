@@ -51,6 +51,7 @@ const char* opName(Op op) {
         case Op::RelLe: return "rel.le";
         case Op::RelGe: return "rel.ge";
         case Op::TypeOf: return "typeof";
+        case Op::ToStr: return "to.string";
         case Op::InstanceOf: return "instanceof";
         case Op::In: return "in";
         case Op::IsNullish: return "is.nullish";

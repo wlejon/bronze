@@ -237,6 +237,14 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
 // not implemented gets the SAME named refusal a read of it gets, because
 // answering `false` for a member ECMA-262 defines would be the silent wrong
 // answer the refusal exists to prevent.
+//
+// An arm that finds nothing FALLS OUT of the switch rather than returning
+// false, because the chain does not end at a member table: every one of these
+// receivers inherits from `Object.prototype`, and `'hasOwnProperty' in f` read
+// false while `f.toString` — a member of the prototype one link nearer — was
+// already a named error. The two returning arms are the two whose chain really
+// does end where they say: a module namespace has a null [[Prototype]]
+// (10.4.6.1), and a plain object was walking the whole chain already.
 bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
     HeapObjectHeader* hdr = objRoot.get().asObject<HeapObjectHeader>();
     uint32_t index = 0;
@@ -248,29 +256,37 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             // which is the whole reason `in` exists on an array. A HOLE is not
             // one either — `delete a[1]` takes index 1 out of the own keys
             // without moving `length`.
-            return rtIsIntegerLikeKey(key, index) && arr->hasElem(index);
+            if (rtIsIntegerLikeKey(key, index) && arr->hasElem(index)) return true;
+            break;
         }
         case HeapKind::TypedArray: {
             // The index first, and against the LENGTH: 10.4.5.2 makes a
             // canonical numeric string outside the range absent rather than
-            // inherited, so there is no member table to fall through to.
+            // INHERITED — so this arm returns for an index either way and is
+            // the one place the fall-through below must not be reached from.
             auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
             if (rtIsIntegerLikeKey(key, index)) return index < view->length;
-            return rtTypedArrayHasMember(view->kindName(), key);
+            if (rtTypedArrayHasMember(view->kindName(), key)) return true;
+            break;
         }
         case HeapKind::ArrayBuffer:
-            return rtArrayBufferHasMember(key);
+            if (rtArrayBufferHasMember(key)) return true;
+            break;
         // A DataView's members all live on its prototype, which bronze answers
         // on the property path — so `in`, which walks the chain, must ask the
         // same table the reads come from rather than report the object empty.
         case HeapKind::DataView:
-            return rtDataViewHasMember(key);
+            if (rtDataViewHasMember(key)) return true;
+            break;
         case HeapKind::Map:
-            return rtMapHasMember(/*isSetReceiver=*/false, key);
+            if (rtMapHasMember(/*isSetReceiver=*/false, key)) return true;
+            break;
         case HeapKind::Set:
-            return rtMapHasMember(/*isSetReceiver=*/true, key);
+            if (rtMapHasMember(/*isSetReceiver=*/true, key)) return true;
+            break;
         case HeapKind::RegExp:
-            return rtRegExpHasMember(key);
+            if (rtRegExpHasMember(key)) return true;
+            break;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.4 [[HasProperty]] is exactly "is this an export name":
             // [[Prototype]] is null (10.4.6.1), so nothing else can be true.
@@ -296,9 +312,11 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             }
             Rooted<Value> keyStr{rtMakeString(key)};
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
-            if (!props.isObject()) return false;
-            return plainObjectHas(props.asObject<ObjectHeader>(),
-                                  keyStr.get().asString<StringHeader>());
+            if (props.isObject() && plainObjectHas(props.asObject<ObjectHeader>(),
+                                                   keyStr.get().asString<StringHeader>())) {
+                return true;
+            }
+            break;
         }
         case HeapKind::Plain: {
             // A String exotic object's index properties are own properties that
@@ -321,24 +339,34 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                    ", a heap kind the operator has no arm for")
                       .c_str());
     }
+    // The rest of the chain, for every arm that fell out of the switch. Reached
+    // only after that receiver's own table has both answered and refused, so a
+    // member the prototype it stands in for defines still shadows this step —
+    // the same order the READ path takes (builtin_object_proto.cpp says why
+    // skipping the unbuilt intermediate is exact rather than approximate).
+    return rtObjectProtoHasMember(key);
 }
 
 // ToPrimitive with the NUMBER hint, for the two operands ECMA-262 13.10.1
 // step 1 asks for. A primitive is already one; a primitive WRAPPER answers
 // with its internal slot, which is what OrdinaryToPrimitive's `valueOf` call
 // would return, and is what makes `new String("a") < "b"` a string comparison
-// rather than a numeric one. Every other object needs the real algorithm —
-// a user `valueOf`, then `toString`, with the primitive test between them —
-// and it is not built; naming it is the honest answer, and it is the same
-// answer `rtToNumber` already gives such an object.
+// rather than a numeric one.
 //
-// Nothing here allocates, which is what lets the comparison below hold raw
-// StringHeader pointers across it.
+// Every other object is refused BY NAME, and what is missing is no longer the
+// algorithm: `rtToPrimitive` is built and takes this very hint. What is missing
+// is this function's licence to call it. Nothing here allocates, which is what
+// lets the comparison below hold raw StringHeader pointers across it, and
+// `rtToPrimitive` runs a user `valueOf` — it allocates, it collects, and it can
+// throw. Unblocking the four relational operators means re-rooting `isLessThan`
+// around both conversions, which is a change to the comparison and not to this
+// line.
 Value relationalToPrimitive(Value v) {
     if (!v.isObject()) return v;
     if (Value prim; rtWrapperPrimitive(v, prim)) return prim;
-    fatal("a relational operator ('<', '>', '<=', '>=') on an object needs ToPrimitive, "
-          "which is unsupported");
+    fatal("unsupported: a relational operator ('<', '>', '<=', '>=') on an object (13.10.1 "
+          "runs ToPrimitive, which bronze applies at `+` and `String(x)`; this comparison "
+          "holds raw string headers across the conversion and cannot yet call it)");
 }
 
 // ECMA-262 13.10.1 IsLessThan, whose result is a Boolean **or undefined**.
@@ -559,10 +587,14 @@ bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     if (Value prim; rtWrapperPrimitive(b, prim)) {
         return bronze_loose_eq(aBits, prim.rawBits());
     }
-    // Every other object still needs the algorithm — valueOf then toString,
-    // with the primitive test between them — and it is not built. Named rather
-    // than guessed at, on the same rule as ToString of an object.
-    fatal("'==' between an object and a primitive needs ToPrimitive, which is unsupported");
+    // Every other object is refused by name for the reason the relational
+    // operators are: the algorithm exists, and this function cannot call it.
+    // `bronze_loose_eq` recurses through raw bits — every restart above passes
+    // `aBits` and `bBits` back into itself — so a conversion that collects
+    // would leave the operand it did not convert pointing into dead space.
+    fatal("unsupported: '==' between an object and a primitive (7.2.14 step 11 runs "
+          "ToPrimitive, which bronze applies at `+` and `String(x)`; this comparison "
+          "restarts itself through raw bits and cannot yet call it)");
 }
 
 }  // extern "C"

@@ -91,9 +91,13 @@ bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 // the caller writes it.
 std::string rtInspect(Value v);
 
-// A heap string from UTF-8 bytes, and JS ToString / ToNumber. ToString on
-// an object and ToNumber on an object are hard errors: both need
-// ToPrimitive, which bronze has not built.
+// A heap string from UTF-8 bytes, and JS ToString / ToNumber for a value that
+// is ALREADY primitive — plus the objects whose answer is a pure function of
+// what they hold. Any other object is a hard error in both, and deliberately:
+// these two are reached from places that must not run user code, so ToPrimitive
+// is applied by the CALLER (`rtToStringValue` below, `bronze_dynamic_add`)
+// rather than folded in here. rt_convert.cpp's header says which sites those
+// are and which still refuse.
 Value rtMakeString(std::string_view utf8);
 Value rtValueToString(Value v);
 double rtToNumber(Value v);
@@ -315,6 +319,39 @@ Value rtFunctionMethod(const std::string& key);
 // the same name is found first and never reaches here.
 void rtObjectProtoCheckMissingMember(const std::string& key);
 
+// The rest of the chain for a receiver with NO SHAPE — a function, an array, a
+// Map, a Set, a RegExp, a typed array, an ArrayBuffer, a DataView, a number, a
+// symbol. Each answers its members from a C table standing in for a prototype
+// object bronze has not built, and before this step the search ended at that
+// table: `f.hasOwnProperty` read `undefined` while `f.toString`, one link
+// nearer, was diagnosed by name.
+//
+// Called at the TAIL of each receiver's own lookup, after its table has both
+// answered and refused, so a member the intermediate prototype defines still
+// shadows this object's. builtin_object_proto.cpp says why skipping the
+// intermediate is exact. `undefined` means the whole chain missed, and the
+// named refusal for an unimplemented 20.1.3 member has already fired.
+//
+// A module namespace is NOT a caller: 10.4.6.1 fixes its [[Prototype]] at null,
+// so its own exports really are the end of its chain.
+Value rtObjectProtoMember(Rooted<Value>& receiver, const std::string& key);
+bool rtObjectProtoHasMember(const std::string& key);
+
+// ECMA-262 7.1.1 ToPrimitive's hint. Default and Number ask `valueOf` before
+// `toString` and String asks the other way round, which is the ONLY thing the
+// hint decides — and the classic bug, since `'' + {}` is Default (13.15.3 asks
+// for no hint) where `String({})` is String.
+enum class ToPrimitiveHint { Default, Number, String };
+
+// ToPrimitive, and ToString with its step 1 attached. Both RUN USER CODE — a
+// `toString` or a `valueOf` on the input's chain — so a caller must have
+// everything it holds rooted, and must be reached from an IL op `il::canThrow`
+// marks, or a TypeError raised here propagates past the `catch` that should
+// have taken it. Today that means `+` (13.15.3) and `String(x)`; rt_convert.cpp
+// names the sites that still refuse an object and why.
+Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
+Value rtToStringValue(Rooted<Value>& v);
+
 // `[Symbol.toStringTag]: tag`, as the non-enumerable data property every clause
 // that defines one asks for (21.3.1.9 for `Math`, 25.5.3 for `JSON`, 27.5.1.5
 // for %GeneratorPrototype%, and the iterator prototypes' own clauses). It lives
@@ -425,11 +462,15 @@ bool rtThisBooleanValue(Value self, Value& out);
 // the value `s[i]` is. `undefined` past the end. ALLOCATES.
 Value rtStringCharAsString(Value str, uint32_t index);
 
-// ToPrimitive of a primitive WRAPPER, which is the one object kind bronze can
-// take 7.1.1's step for: OrdinaryToPrimitive would call `valueOf`, and for a
-// pristine wrapper that call answers exactly the internal slot. False for every
-// other object, so the caller's named error for the general algorithm stands.
-// Allocation-free, which two typed-array writes in rt_prop.cpp depend on.
+// 7.1.1's answer for a primitive WRAPPER, without running the algorithm:
+// OrdinaryToPrimitive would call `valueOf`, and for a pristine wrapper that
+// call answers exactly the internal slot. False for every other object, so the
+// caller's named error for the general algorithm stands.
+//
+// It is what a site that CANNOT call `rtToPrimitive` uses instead — the one
+// that is allocation-free, which two typed-array writes in rt_prop.cpp depend
+// on, and which `rtToNumber` needs for the same reason. `+` and `String(x)`
+// run the real algorithm and never reach here.
 bool rtWrapperPrimitive(Value v, Value& out);
 
 // An own property 10.4.3 gives a String, computed from the CHARACTERS rather

@@ -84,6 +84,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_rel_le,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_rel_ge,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_typeof,              BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_to_string,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_instanceof,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_has_property,        BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_to_int32,            BRONZE_ABI_I32,  (BRONZE_ABI_U64)) \

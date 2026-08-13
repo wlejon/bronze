@@ -243,7 +243,11 @@ uint64_t stringConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     // make `String(sym)` throw, which is a wrong answer rather than a missing
     // feature: the specification says this call is how you spell it.
     if (args[0].isSymbol()) return rtMakeString(rtSymbolDescriptiveString(args[0])).rawBits();
-    return rtValueToString(args[0]).rawBits();
+    // 7.1.17 ToString, step 1 included: an object is ToPrimitive'd with hint
+    // STRING, so `toString` is tried before `valueOf` — the opposite of what
+    // `'' + o` does, and observably so for an object that defines both.
+    Rooted<Value> value{args[0]};
+    return rtToStringValue(value).rawBits();
 }
 
 // 22.1.2.1. Each argument is ToUint16, so `String.fromCharCode(65, 66)` is

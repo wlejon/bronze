@@ -181,6 +181,69 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     }
 }
 
+// The step past the member table, which is the same step the READ path takes
+// and had to take at the same time: `'hasOwnProperty' in f` answered false
+// while `f.hasOwnProperty` answered `undefined`, and both were the search
+// stopping at a table that stands in for a prototype rather than IS the end of
+// a chain. Every receiver above inherits from `Object.prototype` (20.2.3,
+// 23.1.3, 24.1.3, 24.2.3, 22.2.6, 23.2.3, 25.1.6, 25.3.4), so 20.1.3's six
+// members are true on all of them.
+//
+// The module namespace is the one exception and belongs in this test rather
+// than beside it: 10.4.6.1 fixes its [[Prototype]] at null, so its exports
+// really are the end of its chain, and a step it did NOT gain is what makes the
+// step the others gained a chain walk rather than a blanket answer.
+TEST_CASE("`in` does not stop at the member table a shapeless receiver answers from") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> f{rtNativeFunction(nothing, 0)};
+    Rooted<Value> a{Value(bronze_create_array(0))};
+    Rooted<Value> v{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 1))};
+    Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
+    Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+    Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+    Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+    Rooted<Value> src{rtMakeString("a")};
+    Rooted<Value> re{rtRegExpFromParts(src, "g")};
+
+    // These four and not the other two of 20.1.3, because the step is a WALK
+    // and a nearer prototype gets there first: `Array.prototype`,
+    // `%TypedArray%.prototype` and `Function.prototype` each define `toString`,
+    // and bronze has built none of the three — so `'toString' in a` is that
+    // prototype's named refusal rather than this object's `true`, which is the
+    // shadowing rule working and not a gap in it.
+    for (const char* name :
+         {"hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "valueOf"}) {
+        CHECK(hasName(name, f));
+        CHECK(hasName(name, a));
+        CHECK(hasName(name, v));
+        CHECK(hasName(name, buf));
+        CHECK(hasName(name, view));
+        CHECK(hasName(name, m));
+        CHECK(hasName(name, s));
+        CHECK(hasName(name, re));
+    }
+
+    // A name that is on no prototype in the chain is still false, which is what
+    // keeps the step a walk rather than a yes.
+    CHECK_FALSE(hasName("missing", m));
+    CHECK_FALSE(hasName("missing", re));
+
+    // The other side of the shadowing rule: 24.1.3 gives `Map.prototype` no
+    // `toString`, so a Map reaches 20.1.3.6's, and 22.2.6.13 gives
+    // `RegExp.prototype` one bronze HAS built, so a RegExp stops there.
+    CHECK(hasName("toString", m));
+    CHECK(hasName("toString", re));
+
+    // An index OUTSIDE a typed array's length is absent and not inherited
+    // (10.4.5.2), so it must not be carried up to this step and answered there.
+    CHECK_FALSE(hasName("1", v));
+
+    Rooted<Value> ns{namespaceExporting("exported")};
+    CHECK_FALSE(hasName("hasOwnProperty", ns));
+    CHECK_FALSE(hasName("valueOf", ns));
+}
+
 // A symbol key takes its own dispatch, because ToString of one is a TypeError
 // and so the key can never be converted. It must be exhaustive for the same
 // reason the named one must, and it must AGREE with the property read path

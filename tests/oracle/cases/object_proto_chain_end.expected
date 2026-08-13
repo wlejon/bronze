@@ -1,0 +1,24 @@
+function true
+true
+true true false
+false false
+true
+true false
+true false
+function false true
+function true
+true false true false
+true false
+true true true
+false true 3
+false false 1
+[object Map] true true
+false [object Set] true
+true false false
+false /ab/g true
+true false false false
+true true true
+true false true
+true false
+false false false
+false false

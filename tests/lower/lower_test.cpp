@@ -549,3 +549,32 @@ TEST_CASE("a lowered function carries its spec name and its ExpectedArgumentCoun
     CHECK(jsName(getter) == "get g");
     CHECK(getter->requiredArgs == 0);
 }
+
+// 13.2.8.6 spells a template substitution as ToString, and 13.15.3 spells `+`
+// as ToPrimitive-then-decide. The two are not the same conversion: ToString
+// asks ToPrimitive for hint "string" and `+` asks for no hint at all, which
+// reverses the order `valueOf` and `toString` are tried in. So an object that
+// defines both gives `${o}` and `'' + o` different answers, and lowering a
+// substitution as a concatenation alone would have silently answered `valueOf`'s
+// for both.
+//
+// The empty leading piece stays: without it `${a}${b}` would be `a + b`, which
+// for two numbers is addition rather than concatenation.
+TEST_CASE("a template substitution lowers to to.string, not to a bare concatenation") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("const o = {};\nconst s = `x${o}y`;\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("= to.string ") != std::string::npos);
+    // One per substitution, and the pieces around it are still adds.
+    size_t occurrences = 0;
+    for (size_t at = printed.find("to.string"); at != std::string::npos;
+         at = printed.find("to.string", at + 1)) {
+        ++occurrences;
+    }
+    CHECK(occurrences == 1);
+    CHECK(printed.find("= add ") != std::string::npos);
+}

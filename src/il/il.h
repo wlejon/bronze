@@ -98,6 +98,13 @@ enum class Op : uint8_t {
     RelLe,
     RelGe,
     TypeOf,     // a: dynamic = typeof b      (one of six strings)
+    // ECMA-262 7.1.17 ToString, step 1 included: an OBJECT operand is
+    // ToPrimitive'd with hint STRING first, so `toString` is tried before
+    // `valueOf`. It is deliberately not spelled `"" + b`: 13.15.3 asks
+    // ToPrimitive for NO hint, which reverses that pair — so `+` and this
+    // give different answers for an object defining both, and a template
+    // substitution is ToString (13.2.8.6) rather than a concatenation.
+    ToStr,      // a: dynamic = to.string b
     InstanceOf, // a: bool = instanceof b, c
     In,         // a: bool = in b, c          (b: key, c: object)
     IsNullish,  // a: bool = is.nullish b

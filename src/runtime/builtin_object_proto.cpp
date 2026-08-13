@@ -32,6 +32,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -41,42 +42,190 @@
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
 
 namespace {
 
-bool isPlainObject(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN;
+// Steps 1 and 2 of every member here except `toString`: `null` and `undefined`
+// have no ToObject, and the TypeError that says so is the one thing these
+// clauses agree on before they diverge.
+bool requireNonNullish(Value self, const char* method) {
+    if (!self.isNull() && !self.isUndefined()) return true;
+    rtThrowTypeError(std::string("Object.prototype.") + method + " called on null or undefined");
+    return false;
 }
 
-// The receiver of an Object.prototype method, which reaches one only through an
-// ordinary call on a plain object or through `.call`. Three answers, and the
-// third is the house rule: a receiver bronze cannot answer for is refused BY
-// NAME rather than told that it has no own properties.
-bool requireProtoReceiver(Value self, const char* method) {
-    if (self.isNull() || self.isUndefined()) {
-        rtThrowTypeError(std::string("Object.prototype.") + method +
-                         " called on null or undefined");
-        return false;
+// ---- Own properties, kind by kind ------------------------------------------
+//
+// `hasOwnProperty` (20.1.3.2) and `propertyIsEnumerable` (20.1.3.4) are one
+// question asked twice — does the RECEIVER ITSELF define this key, and is that
+// definition enumerable — so they are one function here. Written twice they
+// would come to disagree about a kind, and then `propertyIsEnumerable`
+// answering false where `hasOwnProperty` answered true would mean "own and
+// non-enumerable" on some receivers and "this one has no arm" on others.
+//
+// It is NOT `in`'s dispatch (rt_operator.cpp) with the chain walk removed, and
+// the difference is the point: `in` asks own-OR-INHERITED and answers a
+// shapeless receiver out of its member table, because that table stands in for
+// the prototype object bronze has not built. Every entry in such a table is
+// therefore an INHERITED member, and none of them may be visible from here.
+// `'push' in arr` is true and `arr.hasOwnProperty('push')` is false, and that
+// is not a divergence between two copies of one answer — it is the two
+// questions giving their own.
+//
+// A receiver whose own keys bronze genuinely cannot enumerate is refused by
+// name rather than reported absent. There is exactly one: a String exotic
+// OBJECT, whose 10.4.3.4 index properties are synthesised on the property path
+// and live in no shape (rt_object.cpp carries the reasoning).
+static_assert(HeapKind::Count == 12,
+              "a HeapKind was added or removed: give the own-property switch below an arm for "
+              "it. `hasOwnProperty` and `propertyIsEnumerable` are reachable from EVERY "
+              "receiver now that the chain runs past the member tables, so a kind with no arm "
+              "is a receiver those two cannot answer about.");
+
+bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
+    enumerable = false;
+    // ToPropertyKey (7.1.19) FIRST: it runs ToString, which allocates, so no
+    // header below may be read across it. What it hands back is arena-interned
+    // and immortal, which is what lets the string be read again after the
+    // allocations further down.
+    PropertyKey name = rtInternPropertyKey(keyVal);
+    const std::string key = name.isString() ? rtAsciiChars(name.string()) : std::string();
+    uint32_t index = 0;
+
+    if (!self.get().isObject()) {
+        // Step 2 is ToObject(this). bronze builds no box for a number, a
+        // boolean or a symbol — and needs none: 21.1, 20.3 and 20.4 give those
+        // wrappers no own property, so the answer is false whatever the key was.
+        // A STRING is the one primitive whose box has own properties, and
+        // 10.4.3.4 and 10.4.3.5 make them exactly its `length` and its indices.
+        if (!self.get().isString() || !name.isString()) return false;
+        if (key == "length") return true;  // 10.4.3.4: non-enumerable
+        if (!rtIsIntegerLikeKey(key, index)) return false;
+        if (index >= self.get().asString<StringHeader>()->getLength()) return false;
+        enumerable = true;  // 10.4.3.5 gives each index [[Enumerable]]: true
+        return true;
     }
-    if (isPlainObject(self)) return true;
-    fatal((std::string("unsupported: Object.prototype.") + method +
-           " on a receiver that is not a plain object (an array, a function, a Map or a "
-           "primitive reaches its members through the property path rather than through a "
-           "prototype object, so bronze has no chain here to answer about)")
-              .c_str());
+
+    switch (self.get().asObject<HeapObjectHeader>()->flags) {
+        case HeapKind::Plain: {
+            rtCheckStringExoticOwnKeys(self.get(), "testing");
+            auto* obj = self.get().asObject<ObjectHeader>();
+            PropertyInfo info;
+            if (!obj->shape || !obj->shape->lookupProperty(name, info)) return false;
+            enumerable = info.enumerable;
+            return true;
+        }
+        case HeapKind::Function: {
+            // Three storage places, and 10.2 gives each its attributes.
+            // `prototype` (10.2.11) and the `length`/`name` pair (10.2.10,
+            // 10.2.9) are all non-enumerable and live outside the statics
+            // object; a static or an assigned property carries whatever
+            // attribute the shape recorded for it.
+            //
+            // `prototype` answers true for every function, which is the answer
+            // `in` already gives: bronze materialises the slot on demand for
+            // any function, so an arrow — which 10.2.11 gives no `prototype`
+            // at all — is over-reported by both spellings together rather than
+            // by one of them.
+            if (key == "prototype") return true;
+            if ((key == "length" || key == "name") &&
+                self.get().asObject<FunctionHeader>()->name != nullptr) {
+                return true;
+            }
+            Value props = self.get().asObject<FunctionHeader>()->properties;
+            if (!props.isObject()) return false;
+            // The statics object's OWN shape and not its chain: `extends` links
+            // it to the base class's statics, and a static a derived class
+            // INHERITS is not an own property of the derived constructor.
+            PropertyInfo info;
+            auto* holder = props.asObject<ObjectHeader>();
+            if (!holder->shape || !holder->shape->lookupProperty(name, info)) return false;
+            enumerable = info.enumerable;
+            return true;
+        }
+        case HeapKind::Array: {
+            // ArrayCreate's `length` (10.4.2.2) is own, writable and
+            // non-enumerable; an element is own and enumerable, because
+            // CreateDataProperty defines it so. A HOLE is a key that is not
+            // there at all, which is the whole difference `delete a[1]` makes.
+            if (key == "length") return true;
+            if (name.isString() && rtIsIntegerLikeKey(key, index)) {
+                if (!self.get().asObject<ArrayHeader>()->hasElem(index)) return false;
+                enumerable = true;
+                return true;
+            }
+            // A match array's `index`, `input` and `groups` (22.2.7.2), which
+            // are the only NAMED properties an array in bronze can carry.
+            Value props = self.get().asObject<ArrayHeader>()->properties;
+            if (!props.isObject()) return false;
+            PropertyInfo info;
+            auto* holder = props.asObject<ObjectHeader>();
+            if (!holder->shape || !holder->shape->lookupProperty(name, info)) return false;
+            enumerable = info.enumerable;
+            return true;
+        }
+        case HeapKind::TypedArray: {
+            // 10.4.5: an integer index within the length is the ONLY own
+            // property a typed array has. `length`, `buffer`, `byteLength`,
+            // `byteOffset` and `BYTES_PER_ELEMENT` all read like own properties
+            // on the property path and are not: 23.2.3 makes the first four
+            // accessors on `%TypedArray%.prototype` and 23.2.6.2 puts
+            // `BYTES_PER_ELEMENT` on the constructor's prototype.
+            if (!name.isString() || !rtIsIntegerLikeKey(key, index)) return false;
+            if (index >= self.get().asObject<TypedArrayHeader>()->length) return false;
+            enumerable = true;
+            return true;
+        }
+        case HeapKind::RegExp:
+            // 22.2.3.1 RegExpAlloc defines exactly one own property, and
+            // non-enumerably. Everything else 22.2.6 gives a RegExp — `source`,
+            // `flags`, `global` and the rest — is an accessor on the prototype,
+            // however much bronze's header-backed answers look like own data.
+            return key == "lastIndex";
+        case HeapKind::Map:
+        case HeapKind::Set:
+        case HeapKind::ArrayBuffer:
+        case HeapKind::DataView:
+            // 24.1.3, 24.2.3, 25.1.6 and 25.3.4 put every member on a
+            // prototype. These four carry internal slots and no own property at
+            // all — `size` and `byteLength` included, which are accessors.
+            return false;
+        case HeapKind::ModuleNamespace: {
+            // 10.4.6.1: an export is own, writable and ENUMERABLE, and
+            // `@@toStringTag` is the one own key that is not an export.
+            if (name.isSymbol()) {
+                Value tag;
+                return rtModuleNamespaceOwnSymbol(self.get(), name.toValue(), tag);
+            }
+            if (!rtModuleNamespaceHasExport(self.get(), name.string())) return false;
+            enumerable = true;
+            return true;
+        }
+        case HeapKind::Iterator:
+        case HeapKind::Env:
+            // Not JS values: nothing hands a program one, so reaching this is a
+            // lowering bug rather than something a program did.
+            fatal("internal: an own-property test on an environment or iteration record");
+        default:
+            fatal((std::string("internal: an own-property test on ") +
+                   rtObjectKindName(self.get()) + ", a heap kind this switch has no arm for")
+                      .c_str());
+    }
 }
 
 uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
                                    const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "hasOwnProperty")) {
+    if (!requireNonNullish(self.get(), "hasOwnProperty")) {
         return Value::fromUndefined().rawBits();
     }
-    return Value::fromBool(rtHasOwnPropertyNamed(self, args[0])).rawBits();
+    bool enumerable = false;
+    return Value::fromBool(ownProperty(self, args[0], enumerable)).rawBits();
 }
 
 // 20.1.3.4. Own AND enumerable — a name that is only inherited answers false
@@ -86,49 +235,81 @@ uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t a
                                          const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "propertyIsEnumerable")) {
+    if (!requireNonNullish(self.get(), "propertyIsEnumerable")) {
         return Value::fromUndefined().rawBits();
     }
-    rtCheckStringExoticOwnKeys(self.get(), "testing");
-    PropertyKey name = rtInternPropertyKey(args[0]);
-    auto* obj = self.get().asObject<ObjectHeader>();
-    PropertyInfo info;
-    if (!obj->shape || !obj->shape->lookupProperty(name, info)) {
-        return Value::fromBool(false).rawBits();
-    }
-    return Value::fromBool(info.enumerable).rawBits();
+    bool enumerable = false;
+    const bool own = ownProperty(self, args[0], enumerable);
+    return Value::fromBool(own && enumerable).rawBits();
 }
 
 // 20.1.3.3. Walks the ARGUMENT's chain looking for the receiver, so it answers
 // about ancestry rather than about identity: an object is not its own
 // prototype, and the walk starts one link up for that reason.
+//
+// The receiver may be ANY value — it is compared by identity and never read.
+// A PRIMITIVE one is false by construction: step 2's ToObject would make a
+// fresh box, and a box nothing else has ever seen is in no chain.
+//
+// The walk over the argument is where bronze's missing intrinsics would show,
+// and they do not stop it. Above a shapeless object the chain is
+// `<Kind>.prototype` and then `Object.prototype`, and bronze never hands the
+// first of those to a program — so it cannot be the receiver, and the whole
+// remaining question is whether the receiver is `Object.prototype`. That is how
+// `Object.prototype.isPrototypeOf([])` reaches its `true` without an
+// `Array.prototype` existing to walk through, where before this it answered a
+// silent `false`. A module namespace is the one object with no chain at all
+// (10.4.6.1 fixes [[Prototype]] at null).
 uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
                                   const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    if (!requireProtoReceiver(self.get(), "isPrototypeOf")) {
+    if (!requireNonNullish(self.get(), "isPrototypeOf")) {
         return Value::fromUndefined().rawBits();
     }
-    if (!isPlainObject(args[0])) return Value::fromBool(false).rawBits();
-    // No allocation in the loop, so the raw pointers stay valid throughout.
-    ObjectHeader* walker = args[0].asObject<ObjectHeader>();
-    ObjectHeader* target = self.get().asObject<ObjectHeader>();
+    if (!args[0].isObject() || !self.get().isObject()) {
+        return Value::fromBool(false).rawBits();
+    }
+    // Before any raw pointer is taken: the first call builds the intrinsic.
+    const uint64_t objectProto = rtObjectPrototype().rawBits();
+    const uint64_t target = self.get().rawBits();
+
+    Rooted<Value> walker{args[0]};
     for (uint32_t depth = 0; depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
-        walker = walker->protoAncestor(1);
-        if (!walker) return Value::fromBool(false).rawBits();
-        if (walker == target) return Value::fromBool(true).rawBits();
+        const uint16_t kind = walker.get().asObject<HeapObjectHeader>()->flags;
+        if (kind == HeapKind::ModuleNamespace) return Value::fromBool(false).rawBits();
+        if (kind != HeapKind::Plain) {
+            return Value::fromBool(target == objectProto).rawBits();
+        }
+        ObjectHeader* next = walker.get().asObject<ObjectHeader>()->protoAncestor(1);
+        if (!next) return Value::fromBool(false).rawBits();
+        const Value nextVal = Value::fromObject(next);
+        if (nextVal.rawBits() == target) return Value::fromBool(true).rawBits();
+        walker.set(nextVal);
     }
     fatal("prototype chain too deep (a cycle?)");
 }
 
-// 20.1.3.7 ToObject(this), which for an object is the object. It exists so that
-// the name is not a hole in the chain; it is NOT what makes `{} + 1` work,
-// because ToPrimitive is what calls valueOf and ToPrimitive is still unbuilt
-// (rt_convert.cpp names it).
+// 20.1.3.7 ToObject(this), which for an object is the object — whatever kind it
+// is, since an identity function needs nothing from its receiver.
+//
+// Answering with the receiver is what makes `'' + {}` "[object Object]" rather
+// than a TypeError: 7.1.1.1 calls this first under hint default, gets something
+// that is not a primitive, and carries on to `toString`. A `valueOf` that
+// answered a primitive here would stop that search, which is exactly what a
+// program's own override is for.
+//
+// A PRIMITIVE is where ToObject has work to do, and the box is what bronze does
+// not build. Refused by name rather than answered with the primitive itself,
+// which would make `x.valueOf() === x` true where the language says the wrapper
+// makes it false. Reachable only through `.call`: every primitive that has a
+// prototype of its own answers `valueOf` from it first.
 uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
-    if (!requireProtoReceiver(self, "valueOf")) return Value::fromUndefined().rawBits();
-    return self.rawBits();
+    if (!requireNonNullish(self, "valueOf")) return Value::fromUndefined().rawBits();
+    if (self.isObject()) return self.rawBits();
+    fatal("unsupported: Object.prototype.valueOf on a primitive receiver (20.1.3.7 is "
+          "ToObject, and bronze does not build the wrapper object it would return)");
 }
 
 // 20.1.3.6 steps 4 through 14: the BUILTIN TAG, chosen from what the receiver
@@ -283,6 +464,61 @@ void rtInstallObjectProtoMethods(Rooted<Value>& proto) {
 void rtObjectProtoCheckMissingMember(const std::string& key) {
     rtCheckUnimplementedMember("Object.prototype", kObjectProtoUnimplemented,
                                std::size(kObjectProtoUnimplemented), key);
+}
+
+// The rest of the chain, for a receiver whose members bronze answers from a C
+// table beside it rather than from a prototype object.
+//
+// Every object in the language inherits from this one, directly or through a
+// prototype in between. A receiver with no shape cannot be walked, so before
+// this step the search simply ENDED — and `hasOwnProperty`, `valueOf`,
+// `isPrototypeOf` and `propertyIsEnumerable` read `undefined` on a function, an
+// array, a Map, a Set and a RegExp. That is the silent fallback the house rules
+// rank below a refusal, and making this object real is what turned it from a
+// missing feature into a hole: `f.toString` was already diagnosed by name from
+// `Function.prototype`'s table one link BELOW here, while `f.valueOf` — one
+// link ABOVE — answered `undefined`.
+//
+// Skipping the intermediate prototype is exact rather than an approximation,
+// and the reason is a property of those tables rather than luck. A name
+// ECMA-262 puts on `Array.prototype`, `Function.prototype`, `Map.prototype`,
+// `Set.prototype`, `RegExp.prototype`, `%TypedArray%.prototype`,
+// `ArrayBuffer.prototype` or `DataView.prototype` is either answered by that
+// receiver's table or refused by name from it — which is why
+// `Array.prototype.toString` and `%TypedArray%.prototype.toLocaleString` are on
+// their unimplemented lists — so nothing that would SHADOW a member of this
+// object can reach this step. What arrives here is what the intermediate does
+// not define, which is what an ordinary walk would have brought here anyway.
+//
+// The receiver is threaded through so that an accessor found here would run
+// against the value the program wrote rather than against this object. No
+// member of `Object.prototype` is one today; passing it keeps that a fact about
+// the members rather than an assumption of the walk.
+Value rtObjectProtoMember(Rooted<Value>& receiver, const std::string& key) {
+    Rooted<Value> proto{rtObjectPrototype()};
+    Rooted<Value> keyStr{rtMakeString(key)};
+    const Value found = proto.get().asObject<ObjectHeader>()->getProp(
+        rtHeap(), keyStr, /*ic=*/nullptr, receiver.slot_ptr());
+    // A miss here is the END of the chain — 20.1.3 fixes this object's own
+    // [[Prototype]] at null — so it is also where a 20.1.3 member bronze has
+    // not built is named, exactly as it is for a plain object.
+    if (found.isUndefined()) rtObjectProtoCheckMissingMember(key);
+    return found;
+}
+
+// The same step for `in`, which asks whether the member is THERE rather than
+// what it is. One level and no walk: this object's [[Prototype]] is null, so
+// its own properties are the whole of what the chain has left to offer.
+bool rtObjectProtoHasMember(const std::string& key) {
+    Rooted<Value> proto{rtObjectPrototype()};
+    Rooted<Value> keyStr{rtMakeString(key)};
+    auto* obj = proto.get().asObject<ObjectHeader>();
+    uint32_t slot = 0;
+    if (obj->shape && obj->shape->lookupProperty(keyStr.get().asString<StringHeader>(), slot)) {
+        return true;
+    }
+    rtObjectProtoCheckMissingMember(key);
+    return false;
 }
 
 }  // namespace bronze::runtime

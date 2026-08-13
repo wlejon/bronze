@@ -524,6 +524,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_typeof, {v});
             return true;
         }
+        // 7.1.17, which can run a user `toString` and so can throw. It is on
+        // no cannot-throw list for that reason; the caller tests the pending
+        // cell right after, like every other helper that may raise.
+        case il::Op::ToStr: {
+            if (!needs(1, true, "Invalid operands for ToStr")) return false;
+            llvm::Value* v = operand(inst, 0, "Undefined operand in ToStr instruction");
+            if (!v) return false;
+            callWith(abi.bronze_to_string, {v});
+            return true;
+        }
         case il::Op::InstanceOf:
         case il::Op::In: {
             const bool isIn = inst.op == il::Op::In;

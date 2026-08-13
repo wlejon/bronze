@@ -1,0 +1,16 @@
+[object Object] [object Object] [object Object] [object Object]
+[object Object][object Object]
+7 T T 8
+S S S S1
+3 [object Object] [object Object] 4
+9
+X X
+Pt2 Pt3
+p valueOf,toString
+5 toString,valueOf
+[object Map] [object Set]
+/ab/g /ab/g
+ab ab
+true Cannot convert object to primitive value
+Cannot convert object to primitive value
+nope

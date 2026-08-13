@@ -116,13 +116,21 @@ Value rtElemKeyAsString(Value idxVal) {
         len = 4;
         std::memcpy(buf, "null", len);
     } else {
-        // An object key would need ToPrimitive, the same missing piece behind
-        // `String(obj)` and `==` between an object and a primitive. A SYMBOL
-        // never arrives here: it is ALREADY a property key, so every caller
-        // branches on it before conversion — converting one is the TypeError
-        // that would turn `o[sym]` into a throw.
-        fatal("a computed property key that is an object needs ToPrimitive, "
-              "which is unsupported");
+        // 7.1.19 ToPropertyKey runs ToPrimitive with hint string, which IS
+        // built (rt_convert.cpp) — what is missing is this function's licence
+        // to call it. It is documented as allocating and nothing more, and its
+        // callers hold raw headers across it; ToPrimitive runs a user
+        // `toString`, which can collect and can throw, and the write path
+        // reaches this from helpers `il::canThrow` does not mark. So the object
+        // key is refused by name here until those callers are re-rooted, rather
+        // than converted from under them.
+        //
+        // A SYMBOL never arrives here: it is ALREADY a property key, so every
+        // caller branches on it before conversion — converting one is the
+        // TypeError that would turn `o[sym]` into a throw.
+        fatal("unsupported: a computed property key that is an object (7.1.19 runs "
+              "ToPrimitive, which bronze applies at `+` and `String(x)` but not yet on the "
+              "property path, whose callers hold raw headers across the key conversion)");
     }
     return Value::fromString(
         StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
@@ -132,19 +140,21 @@ Value rtElemKeyAsString(Value idxVal) {
 // and `m[k]` reach it: a Map's keys are values and its members are names, so
 // the computed-index path cannot treat the key as an element the way it does
 // for an array.
-static Value mapMemberByName(HeapObjectHeader* hdr, const std::string& keyStr) {
-    const bool set = hdr->flags == MapHeader::kSetFlags;
+static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr) {
+    const bool set = recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags;
     // `size` is an ACCESSOR in the specification (24.1.3.10) and a plain read
     // here: bronze has no Map.prototype for a getter to live on, and the
     // observable difference — `Object.getOwnPropertyDescriptor` of it — is
     // unreachable, since a Map has no own properties at all.
     if (keyStr == "size") {
-        return Value::fromDouble(reinterpret_cast<MapHeader*>(hdr)->liveSize());
+        return Value::fromDouble(recv.get().asObject<MapHeader>()->liveSize());
     }
     Value method = rtMapMethod(set, keyStr);
     if (!method.isUndefined()) return method;
     rtCheckMapMember(set, keyStr);
-    return Value::fromUndefined();
+    // 24.1.3 / 24.2.3 name nothing else, and the chain does not stop there:
+    // `m.hasOwnProperty` and `m.toString` are `Object.prototype`'s, one link up.
+    return rtObjectProtoMember(recv, keyStr);
 }
 
 // What a WELL-KNOWN symbol names on a receiver that carries no shape.
@@ -370,7 +380,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     uint32_t idx = 0;
 
     if (hdr->flags == HeapKind::Array) {
-        ArrayHeader* arr = reinterpret_cast<ArrayHeader*>(hdr);
+        // Rooted for the tail: everything from the property-object walk onward
+        // can allocate, and the `Object.prototype` step below needs the
+        // receiver AFTER those allocations have possibly moved it. `arr` is
+        // read only above the first of them.
+        Rooted<Value> recv{objVal};
+        ArrayHeader* arr = recv.get().asObject<ArrayHeader>();
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
         if (rtKeyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
         // A named property, which only a match array has. Read BEFORE the
@@ -387,7 +402,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         Value method = rtArrayMethod(keyStr);
         if (!method.isUndefined()) return method.rawBits();
         rtCheckArrayMember(keyStr);
-        return Value::fromUndefined().rawBits();
+        // `Array.prototype`'s own members have all had their say — including
+        // the two that SHADOW this next step, `toString` and `toLocaleString`,
+        // which the table above refuses by name. So what is left is the chain
+        // above it.
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
         // The index is tried FIRST: `v[0]` is the whole point of a typed array
@@ -395,30 +414,45 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (rtKeyAsIndex(keyStr, idx)) {
             // Out of range is `undefined` and not an error — a typed array has
-            // no elements outside its length and no prototype chain to
-            // continue the search on (10.4.5.4 canonical numeric strings).
+            // no elements outside its length and nowhere to continue the search
+            // (10.4.5.4 makes a canonical numeric string absent rather than
+            // inherited, which is why this returns instead of falling through
+            // to the chain below).
             if (idx >= view->length) return Value::fromUndefined().rawBits();
             return Value::fromDouble(view->get(idx)).rawBits();
         }
-        return rtTypedArrayMember(objVal, keyStr).rawBits();
+        Rooted<Value> recv{objVal};
+        const Value found = rtTypedArrayMember(recv.get(), keyStr);
+        if (!found.isUndefined()) return found.rawBits();
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) {
-        return rtArrayBufferMember(objVal, keyStr).rawBits();
+        Rooted<Value> recv{objVal};
+        const Value found = rtArrayBufferMember(recv.get(), keyStr);
+        if (!found.isUndefined()) return found.rawBits();
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == DataViewHeader::kFlags) {
         // No index branch above this one, unlike a typed array's: 25.3 defines
         // no integer-indexed access at all, so `view[0]` is an ordinary
-        // property name that DataView does not define and reads `undefined`.
-        return rtDataViewMember(objVal, keyStr).rawBits();
+        // property name that DataView does not define and the chain answers.
+        Rooted<Value> recv{objVal};
+        const Value found = rtDataViewMember(recv.get(), keyStr);
+        if (!found.isUndefined()) return found.rawBits();
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
-        return mapMemberByName(hdr, keyStr).rawBits();
+        Rooted<Value> recv{objVal};
+        return mapMemberByName(recv, keyStr).rawBits();
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // Every member of a RegExp is computed from the header and the
         // compiled pattern; there is no shape and no slot to read, which is
         // why this is a branch here rather than properties on an object.
-        return rtRegExpMember(objVal, keyStr).rawBits();
+        Rooted<Value> recv{objVal};
+        const Value found = rtRegExpMember(recv.get(), keyStr);
+        if (!found.isUndefined()) return found.rawBits();
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == IterRecordHeader::kFlags) {
         // The record of a live for-of is not a JS value: nothing hands one to
@@ -438,13 +472,16 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         return found.rawBits();
     }
     if (hdr->flags == HeapKind::Function) {
+        // Rooted for the same reason the array branch is: the tail below walks
+        // `Object.prototype`, and everything between here and there allocates.
+        Rooted<Value> recv{objVal};
         // A GLOBAL CONSTRUCTOR's statics come first, ahead of the `prototype`
         // slot below. That order is the whole point: a FunctionHeader answers
         // `prototype` from a slot it creates on demand, so `Array.prototype`
         // would read as an empty object — a silent lie about an intrinsic
         // bronze does not have, and one a program could install a method on
         // that nothing would ever find.
-        if (Value ctorMember; rtGlobalConstructorMember(objVal, keyStr, ctorMember)) {
+        if (Value ctorMember; rtGlobalConstructorMember(recv.get(), keyStr, ctorMember)) {
             return ctorMember.rawBits();
         }
         // `prototype` lives in its own slot; every other own property lives in
@@ -461,29 +498,27 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // about every intrinsic that is not one of the three. Named here
             // rather than by adding `prototype` to nine more tables, because
             // the property is absent for the same one reason each time.
-            const char* intrinsic = rtMapConstructorName(objVal);
-            if (!intrinsic) intrinsic = rtTypedArrayConstructorName(objVal);
-            if (!intrinsic) intrinsic = rtDataViewConstructorName(objVal);
+            const char* intrinsic = rtMapConstructorName(recv.get());
+            if (!intrinsic) intrinsic = rtTypedArrayConstructorName(recv.get());
+            if (!intrinsic) intrinsic = rtDataViewConstructorName(recv.get());
             if (intrinsic) {
                 fatal((std::string("unsupported: ") + intrinsic +
                        ".prototype is not implemented (bronze has no prototype OBJECT for this "
                        "intrinsic; its methods are answered by the property path)")
                           .c_str());
             }
-            Rooted<Value> fnRoot{objVal};
-            rtEnsureFunctionPrototype(fnRoot);
-            return fnRoot.get().asObject<FunctionHeader>()->prototype.rawBits();
+            rtEnsureFunctionPrototype(recv);
+            return recv.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
-        Value props = objVal.asObject<FunctionHeader>()->properties;
+        Value props = recv.get().asObject<FunctionHeader>()->properties;
         if (props.isObject()) {
             // The receiver a `static get` sees is the CLASS, not the side
             // object its statics are kept in — which is the whole reason
             // getProp takes a receiver at all.
-            Rooted<Value> fnRoot{objVal};
             Rooted<Value> propsRoot{props};
             Rooted<Value> key(Value::fromString(keyHeader));
             Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(
-                rtHeap(), key, /*ic=*/nullptr, fnRoot.slot_ptr());
+                rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr());
             if (!found.isUndefined()) return found.rawBits();
         }
         // `length` and `name`, the two own data properties 10.2.10 and 10.2.9
@@ -499,7 +534,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // method wins. An assignment could not have put anything there, so the
         // only thing this order can find first is a definition that really did
         // replace the property.
-        if (const FunctionHeader* fn = objVal.asObject<FunctionHeader>(); fn->name) {
+        if (const FunctionHeader* fn = recv.get().asObject<FunctionHeader>(); fn->name) {
             if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
             if (keyStr == "name") return rtCopyKeyToHeap(fn->name).rawBits();
         } else if (keyStr == "length" || keyStr == "name") {
@@ -520,8 +555,8 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // Function.prototype table: a typed-array constructor really carries
         // it, so answering `undefined` would be a silent lie about a name
         // ECMA-262 defines.
-        if (Value stat; rtTypedArrayStatic(objVal, keyStr, stat)) return stat.rawBits();
-        rtSymbolCheckMissingMember(objVal, keyStr);
+        if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
+        rtSymbolCheckMissingMember(recv.get(), keyStr);
         // After the own properties above, because a static named `call` shadows
         // the inherited one — which is the ordinary rule, and the reason this
         // is not read first even though it is the cheaper lookup.
@@ -529,7 +564,13 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             return method.rawBits();
         }
         rtCheckFunctionMember(keyStr);
-        return Value::fromUndefined().rawBits();
+        // `Function.prototype` has had its say — `call` and `apply` answered
+        // above, `bind`, `constructor` and `toString` refused by name just now
+        // — so what is left is the object above it. That step is what makes
+        // `f.hasOwnProperty` a function rather than `undefined`, which is the
+        // one place bronze answered `undefined` for a member of a prototype it
+        // HAS: the nearer, unbuilt one was already diagnosed by name.
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
 
     // Interned arena key: no allocation on the property path.

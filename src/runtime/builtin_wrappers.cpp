@@ -315,7 +315,8 @@ bool rtWrapperPrimitive(Value v, Value& out) {
     if (!wrapperData(v, data)) return false;
     if (!data.isString() && !data.isBool()) return false;
     const bool isString = data.isString();
-    // 7.1.1 ToPrimitive is still unbuilt, and this is not it. What it is: for a
+    // This is not 7.1.1 ToPrimitive, which is built and lives in rt_convert.cpp.
+    // It is the SHORTCUT the sites that cannot run user code take instead: for a
     // PRISTINE wrapper the answer OrdinaryToPrimitive would produce is exactly
     // this slot, because the `valueOf` it would call is the builtin installed
     // above. So the answer is available without the algorithm — and only while
@@ -323,6 +324,11 @@ bool rtWrapperPrimitive(Value v, Value& out) {
     // program has replaced is refused by name rather than silently ignored,
     // because ignoring it is a wrong answer where changing this one was the
     // whole point of overriding it.
+    //
+    // `+` and `String(x)` no longer come through here at all: they run the real
+    // algorithm, which calls the override. What is left are `rel.lt` and
+    // friends, `==`, and ToNumber, each of which holds something the collector
+    // would move or sits under an op `il::canThrow` does not mark.
     const Value pristine = isString ? g_pristineStringValueOf : g_pristineBooleanValueOf;
     if (resolvedValueOf(v).rawBits() != pristine.rawBits()) {
         fatal((std::string("unsupported: ToPrimitive of a ") + (isString ? "String" : "Boolean") +

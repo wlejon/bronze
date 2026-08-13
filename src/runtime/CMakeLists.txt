@@ -68,6 +68,8 @@ bronze_add_module(runtime
         ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/shape_test.cpp
         ../../tests/runtime/object_test.cpp
+        ../../tests/runtime/object_proto_chain_test.cpp
+        ../../tests/runtime/to_primitive_test.cpp
         ../../tests/runtime/array_test.cpp
         ../../tests/runtime/typed_array_test.cpp
         ../../tests/runtime/data_view_test.cpp

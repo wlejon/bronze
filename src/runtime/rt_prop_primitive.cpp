@@ -39,14 +39,21 @@ namespace {
 // intrinsic it was found on. No member of either intrinsic is one today, and
 // passing the receiver anyway is what keeps that a fact about the intrinsics
 // rather than something this walk assumes.
-Value protoMember(Value intrinsic, Rooted<Value>& receiver, StringHeader* keyHeader,
+//
+// The intrinsic arrives as a Value and the KEY as a root, which is not
+// symmetry for its own sake: materialising either prototype the first time
+// allocates a great deal — two wrapper objects, a shape, and every method on
+// them — and the key `bronze_elem_get` hands down is an ordinary HEAP string.
+// A raw `StringHeader*` across that build is a pointer into dead from-space,
+// and the walk then looked up a garbage name and answered `undefined` for
+// `"ab"["indexOf"]` on the first computed string member read of a program.
+Value protoMember(Value intrinsic, Rooted<Value>& receiver, Rooted<Value>& key,
                   InlineCache* ic) {
     Rooted<Value> proto{intrinsic};
-    Rooted<Value> key{Value::fromString(keyHeader)};
     return proto.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic, receiver.slot_ptr());
 }
 
-Value stringMember(Value strVal, const std::string& keyStr, StringHeader* keyHeader,
+Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
                    InlineCache* ic) {
     // Rooted first: the single-code-unit string below allocates, and so can the
     // prototype walk's first touch of the lazily built intrinsic.
@@ -67,7 +74,7 @@ Value stringMember(Value strVal, const std::string& keyStr, StringHeader* keyHea
     if (keyStr == "length") {
         return Value::fromDouble(self.get().asString<StringHeader>()->getLength());
     }
-    const Value found = protoMember(rtStringPrototype(), self, keyHeader, ic);
+    const Value found = protoMember(rtStringPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
     // A full-chain miss, checked against the two holders that were on the chain
     // and in that order: `String.prototype` is the NEARER one, so a name 22.1.3
@@ -78,10 +85,10 @@ Value stringMember(Value strVal, const std::string& keyStr, StringHeader* keyHea
     return Value::fromUndefined();
 }
 
-Value booleanMember(Value boolVal, const std::string& keyStr, StringHeader* keyHeader,
+Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key,
                     InlineCache* ic) {
     Rooted<Value> self{boolVal};
-    const Value found = protoMember(rtBooleanPrototype(), self, keyHeader, ic);
+    const Value found = protoMember(rtBooleanPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
     // No nearer table: `Boolean.prototype` is three names (20.3.3) and bronze
     // now answers all three, so the only unimplemented holder left on this
@@ -94,8 +101,13 @@ Value booleanMember(Value boolVal, const std::string& keyStr, StringHeader* keyH
 
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                         InlineCache* ic) {
-    if (objVal.isString()) return stringMember(objVal, keyStr, keyHeader, ic);
-    if (objVal.isBool()) return booleanMember(objVal, keyStr, keyHeader, ic);
+    // The key becomes a ROOT before anything below can allocate. `keyHeader` is
+    // valid on entry and is a raw pointer for the rest of this call — the two
+    // prototype walks below build their intrinsic on first use, and that build
+    // moves a heap key out from under it.
+    Rooted<Value> key{Value::fromString(keyHeader)};
+    if (objVal.isString()) return stringMember(objVal, keyStr, key, ic);
+    if (objVal.isBool()) return booleanMember(objVal, keyStr, key, ic);
     // A primitive NUMBER. Answering `undefined` here is what made
     // `(1.5).toFixed(2)` die as "undefined is not a function" instead of naming
     // the member, which is the silent fallback the loud-member rule exists to
@@ -104,10 +116,23 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
         const Value method = rtNumberMethod(keyStr);
         if (!method.isUndefined()) return method;
         rtCheckNumberProtoMember(keyStr);
-        return Value::fromUndefined();
+        // `Number.prototype` is the table above, and 21.1.3 makes
+        // `Object.prototype` the next link. bronze has no object for the first,
+        // which is why the walk is one step here and two in the language — and
+        // it is exact, because a 21.1.3 member is either answered by the table
+        // or refused by it and so can never reach this line.
+        Rooted<Value> self{objVal};
+        return rtObjectProtoMember(self, keyStr);
     }
     // A primitive SYMBOL — `sym.toString()`, `sym.description`.
-    if (objVal.isSymbol()) return rtSymbolMember(objVal, keyStr);
+    if (objVal.isSymbol()) {
+        Rooted<Value> self{objVal};
+        const Value found = rtSymbolMember(self.get(), keyStr);
+        if (!found.isUndefined()) return found;
+        // 20.4.3's own members have answered or been refused by name; what is
+        // left is `Symbol.prototype`'s own next link.
+        return rtObjectProtoMember(self, keyStr);
+    }
     // Everything a program can name has a branch above; what is left is a tag
     // no program can hold — a hole sentinel that escaped an array. That is not
     // "a property that happens to be absent", so it may not answer `undefined`.

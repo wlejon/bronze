@@ -163,12 +163,28 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         };
+        // 13.2.8.6 spells a substitution as ToString, which is NOT the `+`
+        // below with a string on the left. Both reach ToPrimitive for an
+        // object operand and they ask it for different hints — ToString asks
+        // for "string" and 13.15.3 asks for none — so `${o}` and `'' + o`
+        // disagree for an object that defines both `toString` and `valueOf`,
+        // and the `+` chain alone would have answered `valueOf`'s.
+        auto emitToString = [&](Value v) {
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ToStr;
+            inst.type = il::Type::Dynamic;
+            inst.result = res;
+            inst.operands = {v.id};
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::Dynamic};
+        };
 
         Value acc = emitStr(tmpl->quasis.empty() ? std::string() : tmpl->quasis[0]);
         for (size_t i = 0; i < tmpl->exprs.size(); ++i) {
             auto sub = lowerExpr(*tmpl->exprs[i], ilFn);
             if (!sub) return std::nullopt;
-            acc = emitConcat(acc, boxValueIfNeeded(*sub, ilFn));
+            acc = emitConcat(acc, emitToString(boxValueIfNeeded(*sub, ilFn)));
             if (i + 1 < tmpl->quasis.size() && !tmpl->quasis[i + 1].empty()) {
                 acc = emitConcat(acc, emitStr(tmpl->quasis[i + 1]));
             }
