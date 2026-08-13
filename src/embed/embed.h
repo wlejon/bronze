@@ -260,6 +260,24 @@ struct ArrayBufferInfo {
 // one, and exposing it would be surface without a caller.
 ArrayBufferInfo arrayBufferInfo(Value v);
 
+// Allocate a fresh zero-filled ArrayBuffer of `byteLength` bytes. ALLOCATES.
+Value createArrayBuffer(size_t byteLength);
+
+// Allocate an ArrayBuffer initialized with a copy of `bytes`. ALLOCATES.
+Value createArrayBuffer(std::span<const uint8_t> bytes);
+
+// ---- promises (embed_promise.cpp) ------------------------------------------
+
+// A fresh pending intrinsic promise. ALLOCATES.
+Value createPromise();
+
+// Resolve/reject a promise with `value`/`reason`. Settling schedules reaction
+// jobs into the microtask queue (the same queue drainMicrotasks() drains).
+// First settle wins (the [[AlreadyResolved]] latch). ALLOCATES (may run user
+// thenable getters on resolve).
+void resolvePromise(Value promise, Value value);
+void rejectPromise(Value promise, Value reason);
+
 // ---- calling into compiled code (embed.cpp) --------------------------------
 
 // One call's outcome: the returned value, or the thrown one. `thrown` false
@@ -276,6 +294,11 @@ struct CallResult {
 // the host boundary is where propagation ends, the way `main`'s uncaught
 // handler ends it for a standalone program. ALLOCATES (roots the arguments).
 CallResult call(Value fn, Value thisValue, std::span<const Value> args);
+
+// Parse a UTF-8 JSON string into bronze heap values (objects, arrays, primitives).
+// Returns the parsed Value, or thrown=true with an Error instance on syntax error.
+// ALLOCATES.
+CallResult parseJson(std::string_view jsonUtf8);
 
 // ---- value conversions (embed.cpp) -----------------------------------------
 
@@ -306,5 +329,8 @@ bool isFunction(Value v);
 // `typeof v === "object" || typeof v === "function"` envelope a host binding
 // usually wants before reading properties.
 bool isObject(Value v);
+bool isPromise(Value v);
+bool isArrayBuffer(Value v);
+bool isTypedArray(Value v);
 
 }  // namespace bronze::embed

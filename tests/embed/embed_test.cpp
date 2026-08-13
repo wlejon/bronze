@@ -199,3 +199,181 @@ TEST_CASE("host-built objects take properties, elements and accessors") {
         CHECK(got.asNumber() == 7.0);
     }
 }
+
+TEST_CASE("promise create -> resolve -> then-callback-order") {
+    embed::Persistent p{embed::createPromise()};
+    CHECK(embed::isPromise(p.get()));
+
+    std::vector<std::string> order;
+
+    embed::Persistent fn1{embed::makeFunction(
+        [&order](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            order.push_back("then1:" + (args.empty() ? "" : embed::toUtf8(args[0])));
+            return embed::undefined();
+        },
+        1)};
+
+    embed::Persistent fn2{embed::makeFunction(
+        [&order](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            order.push_back("then2:" + (args.empty() ? "" : embed::toUtf8(args[0])));
+            return embed::undefined();
+        },
+        1)};
+
+    Value thenMethod = embed::getProperty(p.get(), "then");
+    CHECK(embed::isFunction(thenMethod));
+
+    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn1.get()});
+    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn2.get()});
+
+    // Before resolving: no callbacks run.
+    CHECK(order.empty());
+
+    // Resolve the promise.
+    embed::resolvePromise(p.get(), embed::fromUtf8("hello"));
+
+    // Before draining microtasks: no callbacks run yet.
+    CHECK(order.empty());
+    CHECK(embed::microtasksPending());
+
+    // Drain microtasks.
+    embed::drainMicrotasks();
+    CHECK(!embed::microtasksPending());
+
+    // Callbacks ran in exact registration order.
+    REQUIRE(order.size() == 2);
+    CHECK(order[0] == "then1:hello");
+    CHECK(order[1] == "then2:hello");
+
+    // Adding a then callback to an already settled promise also schedules reaction through the microtask queue.
+    embed::Persistent fn3{embed::makeFunction(
+        [&order](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            order.push_back("then3:" + (args.empty() ? "" : embed::toUtf8(args[0])));
+            return embed::undefined();
+        },
+        1)};
+    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn3.get()});
+    CHECK(order.size() == 2);
+    CHECK(embed::microtasksPending());
+
+    embed::drainMicrotasks();
+    REQUIRE(order.size() == 3);
+    CHECK(order[2] == "then3:hello");
+}
+
+TEST_CASE("promise reject -> catch") {
+    embed::Persistent p{embed::createPromise()};
+    CHECK(embed::isPromise(p.get()));
+
+    std::string caught;
+    embed::Persistent catchHandler{embed::makeFunction(
+        [&caught](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            caught = args.empty() ? "" : embed::toUtf8(args[0]);
+            return embed::undefined();
+        },
+        1)};
+
+    Value catchMethod = embed::getProperty(p.get(), "catch");
+    CHECK(embed::isFunction(catchMethod));
+    embed::call(catchMethod, p.get(), std::vector<embed::Value>{catchHandler.get()});
+
+    CHECK(caught.empty());
+
+    embed::rejectPromise(p.get(), embed::fromUtf8("bad error"));
+
+    CHECK(caught.empty());
+    CHECK(embed::microtasksPending());
+
+    embed::drainMicrotasks();
+    CHECK(!embed::microtasksPending());
+    CHECK(caught == "bad error");
+
+    // First settle wins: a subsequent resolve or reject on already settled promise is ignored.
+    embed::resolvePromise(p.get(), embed::fromUtf8("ignored"));
+    embed::rejectPromise(p.get(), embed::fromUtf8("also ignored"));
+    embed::drainMicrotasks();
+    CHECK(caught == "bad error");
+}
+
+TEST_CASE("promise settlement after GC pressure") {
+    embed::Persistent p{embed::createPromise()};
+    embed::Persistent payload{embed::fromUtf8("survived_gc_data")};
+
+    std::string received;
+    embed::Persistent fn{embed::makeFunction(
+        [&received](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            received = args.empty() ? "" : embed::toUtf8(args[0]);
+            return embed::undefined();
+        },
+        1)};
+
+    Value thenMethod = embed::getProperty(p.get(), "then");
+    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn.get()});
+
+    const uint64_t promiseBitsBefore = p.get().rawBits();
+    const uint64_t payloadBitsBefore = payload.get().rawBits();
+
+    // Force GC collection before settling.
+    runtime::rtHeap().collect();
+
+    // Moving semispace collector relocates objects.
+    CHECK(p.get().rawBits() != promiseBitsBefore);
+    CHECK(payload.get().rawBits() != payloadBitsBefore);
+    CHECK(embed::isPromise(p.get()));
+
+    // Force another collection.
+    runtime::rtHeap().collect();
+
+    // Settle with relocated values.
+    embed::resolvePromise(p.get(), payload.get());
+
+    // Force another collection while reaction is in the microtask queue.
+    runtime::rtHeap().collect();
+
+    embed::drainMicrotasks();
+    CHECK(received == "survived_gc_data");
+}
+
+TEST_CASE("createArrayBuffer and info helpers") {
+    embed::Persistent buf1{embed::createArrayBuffer(16)};
+    CHECK(embed::isArrayBuffer(buf1.get()));
+    CHECK(!embed::isTypedArray(buf1.get()));
+
+    embed::ArrayBufferInfo info1 = embed::arrayBufferInfo(buf1.get());
+    CHECK(info1.data != nullptr);
+    CHECK(info1.byteLength == 16);
+
+    uint8_t rawBytes[] = {1, 2, 3, 4, 5, 6, 7, 8};
+    embed::Persistent buf2{embed::createArrayBuffer(rawBytes)};
+    CHECK(embed::isArrayBuffer(buf2.get()));
+
+    embed::ArrayBufferInfo info2 = embed::arrayBufferInfo(buf2.get());
+    CHECK(info2.byteLength == 8);
+    CHECK(std::memcmp(info2.data, rawBytes, 8) == 0);
+
+    // GC keeps ArrayBuffer alive and payload intact.
+    runtime::rtHeap().collect();
+    embed::ArrayBufferInfo info2After = embed::arrayBufferInfo(buf2.get());
+    CHECK(info2After.byteLength == 8);
+    CHECK(std::memcmp(info2After.data, rawBytes, 8) == 0);
+}
+
+TEST_CASE("parseJson parses valid JSON and rejects invalid syntax") {
+    embed::CallResult ok = embed::parseJson("{\"name\": \"bronze\", \"count\": 42, \"flag\": true}");
+    CHECK(!ok.thrown);
+    CHECK(embed::isObject(ok.value));
+
+    embed::Persistent obj{ok.value};
+    embed::Value nameVal = embed::getProperty(obj.get(), "name");
+    CHECK(embed::toUtf8(nameVal) == "bronze");
+    embed::Value countVal = embed::getProperty(obj.get(), "count");
+    CHECK(embed::toDouble(countVal) == 42.0);
+    embed::Value flagVal = embed::getProperty(obj.get(), "flag");
+    CHECK(embed::toBool(flagVal) == true);
+
+    // Invalid JSON returns thrown=true with an Error object.
+    embed::CallResult bad = embed::parseJson("{invalid json}");
+    CHECK(bad.thrown);
+    CHECK(embed::isObject(bad.value));
+}
+

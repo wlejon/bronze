@@ -208,4 +208,17 @@ void rtJsonCheckMissingMember(Value obj, const std::string& key) {
     rtCheckUnimplementedMember("JSON", kJsonUnimplemented, std::size(kJsonUnimplemented), key);
 }
 
+Value rtJsonParse(std::string_view utf8) {
+    Rooted<Value> text{rtMakeString(utf8)};
+    const std::vector<uint16_t> units = rtStringUnits(text.get().asString<StringHeader>());
+    json::Units source(units.begin(), units.end());
+
+    std::string error;
+    json::ValuePtr tree = json::parse(source, error);
+    if (!tree) {
+        return rtThrowError(ErrorKind::Error, "SyntaxError: " + error);
+    }
+    return buildValue(*tree);
+}
+
 }  // namespace bronze::runtime

@@ -9,7 +9,10 @@
 // the caller consumes it synchronously or copies it out, never stores it.
 
 #include "embed/embed.h"
+#include "runtime/exception.h"
+#include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/rt_internal.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -33,6 +36,37 @@ ArrayBufferInfo arrayBufferInfo(Value v) {
     if (hdr->flags != HeapKind::ArrayBuffer) return {};
     auto* buf = reinterpret_cast<ArrayBufferHeader*>(hdr);
     return ArrayBufferInfo{buf->data(), buf->byteLength};
+}
+
+Value createArrayBuffer(size_t byteLength) {
+    if (byteLength > kMaxByteLength) {
+        ShadowStackFrame frame;
+        return runtime::rtThrowRangeError("ArrayBuffer: byte length exceeds maximum supported size");
+    }
+    ShadowStackFrame frame;
+    auto* buf = ArrayBufferHeader::create(runtime::rtHeap(), static_cast<uint32_t>(byteLength));
+    return Value::fromObject(buf);
+}
+
+Value createArrayBuffer(std::span<const uint8_t> bytes) {
+    if (bytes.size() > kMaxByteLength) {
+        ShadowStackFrame frame;
+        return runtime::rtThrowRangeError("ArrayBuffer: byte length exceeds maximum supported size");
+    }
+    ShadowStackFrame frame;
+    auto* buf = ArrayBufferHeader::create(runtime::rtHeap(), static_cast<uint32_t>(bytes.size()));
+    if (!bytes.empty()) {
+        std::memcpy(buf->data(), bytes.data(), bytes.size());
+    }
+    return Value::fromObject(buf);
+}
+
+bool isArrayBuffer(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::ArrayBuffer;
+}
+
+bool isTypedArray(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray;
 }
 
 }  // namespace bronze::embed

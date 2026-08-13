@@ -630,6 +630,7 @@ void rtCheckNumberProtoMember(const std::string& key);
 
 Value rtJsonNamespace();
 void rtJsonCheckMissingMember(Value obj, const std::string& key);
+Value rtJsonParse(std::string_view utf8);
 
 // 25.5.2 SerializeJSONProperty over the root, which is what `JSON.stringify`
 // is. Separate from the namespace object because it is a pinned BYTE FORMAT

@@ -159,6 +159,19 @@ bool isFunction(Value v) {
 
 bool isObject(Value v) { return v.isObject(); }
 
+// ---- json parsing ----------------------------------------------------------
+
+CallResult parseJson(std::string_view jsonUtf8) {
+    ShadowStackFrame frame;
+    Rooted<Value> result{runtime::rtJsonParse(jsonUtf8)};
+    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(bronze_exception_cell), /*thrown=*/true};
+        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+        return out;
+    }
+    return CallResult{result.get(), /*thrown=*/false};
+}
+
 // ---- the microtask checkpoint ----------------------------------------------
 
 // The frame loop's half of the checkpoint. A host that keeps calling into

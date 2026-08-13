@@ -206,11 +206,8 @@ void* handleData(Value handle) {
     if (hdr->flags != HeapKind::Plain) return nullptr;
     auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
     // The brand is the private root shape plus the slot count — the iterator
-    // objects' pattern. A program that writes a property on a handle
-    // transitions it off this shape and it stops answering here; the
-    // finalizer still runs (the registry tracks the header, not the shape),
-    // so opacity is a convention the host loses nothing by leaning on.
-    if (obj->shape != g_handleShape || obj->internalSlotCount() != 2) return nullptr;
+    // objects' pattern.
+    if (!obj->shape || obj->shape->root != g_handleShape || obj->internalSlotCount() != 2) return nullptr;
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(0).rawBits()));
 }
 

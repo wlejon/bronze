@@ -10,6 +10,7 @@ bronze_add_module(embed
         embed_object.cpp
         embed_handle.cpp
         embed_typed_array.cpp
+        embed_promise.cpp
     DEPS
         runtime
         abi
