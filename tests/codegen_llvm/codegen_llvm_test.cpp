@@ -1,3 +1,14 @@
+// Before doctest: its in-TU implementation includes windows.h, whose
+// IMAGE_FILE_MACHINE_* macros shred BinaryFormat/COFF.h's enum of the same
+// names if that header is seen second.
+#include <llvm/BinaryFormat/COFF.h>
+#include <llvm/Object/COFF.h>
+#include <llvm/Object/ObjectFile.h>
+
+// Captured here for the same reason: windows.h below redefines the name as a
+// macro, so spelling it at the use site no longer parses.
+constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
+
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
@@ -276,4 +287,86 @@ TEST_CASE("IL verification rejects a property site past the module's IC site cou
     LLVMBackend backend;
     CHECK_FALSE(backend.emitObject(module, outPath.string(), diags));
     CHECK(diags.hasErrors());
+}
+
+// The object exports bronze_main and NOTHING else. A program is compiled whole
+// into one object, so no other function has a caller outside it — and a JS
+// function's name is user-chosen text that must never meet the system linker's
+// namespace. three.js r160 defines module-local functions named `bind` and
+// `remove`; with external linkage they collided with ws2_32's and ucrt's
+// exports of those names and the app failed to link (LNK2005).
+TEST_CASE("LLVM backend exports only bronze_main") {
+    il::Module module;
+    module.name = "test_linkage";
+
+    il::Function bindFunc;
+    bindFunc.name = "bind";  // the ws2_32 collision, verbatim
+    bindFunc.params = {};
+    bindFunc.returnType = il::Type::F64;
+    bindFunc.isExported = false;
+    bindFunc.valueCount = 1;
+    bindFunc.blocks = {
+        {0, {}, {
+            {il::Op::ConstF64, il::Type::F64, 0, {}, 7.0, 0, 0},
+            {il::Op::Ret, il::Type::F64, il::kNoValue, {0}, 0.0, 0, 0}
+        }}
+    };
+    module.functions.push_back(bindFunc);
+
+    il::Function mainFunc;
+    mainFunc.name = "main";
+    mainFunc.params = {};
+    mainFunc.returnType = il::Type::F64;
+    mainFunc.isExported = true;
+    mainFunc.valueCount = 1;
+    mainFunc.blocks = {
+        {0, {}, {
+            {il::Op::Call, il::Type::F64, 0, {}, 0.0, 0, 0},
+            {il::Op::Ret, il::Type::F64, il::kNoValue, {0}, 0.0, 0, 0}
+        }}
+    };
+    module.functions.push_back(mainFunc);
+
+    std::filesystem::path outPath =
+        std::filesystem::temp_directory_path() / "bronze_test_linkage.obj";
+    std::filesystem::remove(outPath);
+
+    DiagnosticSink diags;
+    LLVMBackend backend;
+    REQUIRE(backend.emitObject(module, outPath.string(), diags));
+    REQUIRE_FALSE(diags.hasErrors());
+
+    auto binOrErr = llvm::object::ObjectFile::createObjectFile(outPath.string());
+    REQUIRE(static_cast<bool>(binOrErr));
+    auto* coff = llvm::dyn_cast<llvm::object::COFFObjectFile>(binOrErr->getBinary());
+    REQUIRE(coff != nullptr);
+    bool sawMain = false;
+    for (const llvm::object::SymbolRef& sym : coff->symbols()) {
+        auto flagsOrErr = sym.getFlags();
+        REQUIRE(static_cast<bool>(flagsOrErr));
+        if (!(*flagsOrErr & llvm::object::SymbolRef::SF_Global)) continue;
+        auto nameOrErr = sym.getName();
+        REQUIRE(static_cast<bool>(nameOrErr));
+        // External references (the ABI helpers `Call @0` may lean on) are
+        // fine; a global DEFINITION other than the entry is the bug. Absolute
+        // symbols are linker metadata (COFF's @feat.00), not exports.
+        if (*flagsOrErr & llvm::object::SymbolRef::SF_Undefined) continue;
+        if (*flagsOrErr & llvm::object::SymbolRef::SF_Absolute) continue;
+        // COMDAT globals (constant pools like __real@…) deduplicate by
+        // design; they are not in the linker's flat namespace the way a
+        // plain global definition is.
+        auto secOrErr = sym.getSection();
+        REQUIRE(static_cast<bool>(secOrErr));
+        if (*secOrErr != coff->section_end()) {
+            const llvm::object::coff_section* cs = coff->getCOFFSection(**secOrErr);
+            if (cs->Characteristics & kCoffComdatFlag) continue;
+        }
+        const std::string symName(nameOrErr->str());
+        CAPTURE(symName);
+        CHECK(symName == "bronze_main");
+        if (*nameOrErr == "bronze_main") sawMain = true;
+    }
+    CHECK(sawMain);
+
+    std::filesystem::remove(outPath);
 }

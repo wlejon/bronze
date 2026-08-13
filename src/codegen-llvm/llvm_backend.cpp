@@ -72,11 +72,17 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
             paramTys.push_back(pTy);
         }
         // `main` is the runtime's entry point by name, so the IL function of
-        // that name gets the runtime's spelling.
-        std::string symbol = (func.name == "main") ? "bronze_main" : func.name;
+        // that name gets the runtime's spelling — and it is the ONLY function
+        // the object exports. A program is compiled whole into one object, so
+        // every other function is internal; external linkage here handed a JS
+        // function named `bind` to the system linker, where it collided with
+        // ws2_32's export of the same name.
+        const bool isEntry = (func.name == "main");
+        const std::string symbol = isEntry ? "bronze_main" : func.name;
         out.push_back(llvm::Function::Create(llvm::FunctionType::get(retTy, paramTys, false),
-                                             llvm::Function::ExternalLinkage, symbol,
-                                             &llvmModule));
+                                             isEntry ? llvm::Function::ExternalLinkage
+                                                     : llvm::Function::InternalLinkage,
+                                             symbol, &llvmModule));
     }
     return true;
 }
