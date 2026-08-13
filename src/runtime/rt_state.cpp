@@ -257,6 +257,8 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         resolved = regexp;
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
         resolved = collection;
+    } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {
+        resolved = weak;
     } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
         resolved = typed;
     } else if (Value dataView = rtDataViewConstructor(keyStr); dataView.isObject()) {

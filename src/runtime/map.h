@@ -56,6 +56,13 @@ struct MapHeader {
 
     static constexpr uint16_t kMapFlags = HeapKind::Map;
     static constexpr uint16_t kSetFlags = HeapKind::Set;
+    // A WeakMap and a WeakSet reuse this table wholesale — brand-checked by
+    // their own kinds, so nothing that dispatches on a Map's flags ever sees
+    // one. The entries are STRONG references for now; builtin_weak_map.cpp's
+    // header says why that is observably correct and where true weakness
+    // would hang.
+    static constexpr uint16_t kWeakMapFlags = HeapKind::WeakMap;
+    static constexpr uint16_t kWeakSetFlags = HeapKind::WeakSet;
 
     static MapHeader* create(Heap& heap, uint16_t flags);
 

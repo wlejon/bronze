@@ -203,6 +203,11 @@ private:
                 return collection(reinterpret_cast<MapHeader*>(hdr), false, depth);
             case MapHeader::kSetFlags:
                 return collection(reinterpret_cast<MapHeader*>(hdr), true, depth);
+            // node's spelling, and the CONTENTS are withheld on purpose: a
+            // WeakMap is non-iterable, so a console.log that listed its
+            // entries would be the one place in the language they leak.
+            case MapHeader::kWeakMapFlags: return "WeakMap { <items unknown> }";
+            case MapHeader::kWeakSetFlags: return "WeakSet { <items unknown> }";
             // node prints a RegExp as its source form, and so does bronze:
             // `/ab+/gi`, with no quotes, which is what distinguishes it in
             // output from the string of the same characters.

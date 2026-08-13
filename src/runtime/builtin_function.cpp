@@ -1,5 +1,5 @@
-// `Function.prototype.call` and `.apply` — the two members that make a function
-// value usable as a function of its receiver.
+// `Function.prototype.call`, `.apply` and `.bind` — the three members that
+// make a function value usable as a function of its receiver.
 //
 // They are answered by the property path, beside a function rather than found
 // on a `Function.prototype` object a program can hold: a FunctionHeader is not
@@ -9,12 +9,10 @@
 // `Object.getPrototypeOf({})` no longer is — an intrinsic bronze hands out
 // but cannot hand over is not one a program may claim to hold.
 //
-// `bind` is deliberately absent and stays diagnosed by name in rt_members.cpp.
-// It is not a third member of this file: it has to MAKE a function — an exotic
-// object with [[BoundTargetFunction]], [[BoundThis]] and [[BoundArguments]],
-// whose `length` is the target's less the bound count — and bronze has one
-// function representation, which holds a code pointer and an environment and no
-// place to put any of that.
+// `bind` is a row here and a body elsewhere: it has to MAKE a function, and
+// the making — the trampoline, the cell that holds [[BoundTargetFunction]],
+// [[BoundThis]] and [[BoundArguments]], and the construct-path unwrapping —
+// is builtin_function_bind.cpp's whole subject.
 
 #include <cstdint>
 #include <string>
@@ -102,6 +100,7 @@ struct FunctionMethod {
 
 const FunctionMethod kFunctionMethods[] = {
     {"apply", functionApply, 2},
+    {"bind", rtFunctionBindBuiltin, 1},
     {"call", functionCall, 1},
 };
 

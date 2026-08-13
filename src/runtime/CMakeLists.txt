@@ -24,8 +24,12 @@ bronze_add_module(runtime
         builtin_math.cpp
         builtin_generator.cpp
         builtin_array.cpp
+        builtin_array_sort.cpp
+        builtin_array_iterator.cpp
         builtin_string.cpp
+        builtin_string_iterator.cpp
         builtin_function.cpp
+        builtin_function_bind.cpp
         builtin_constructors.cpp
         builtin_wrappers.cpp
         inspect.cpp
@@ -42,6 +46,7 @@ bronze_add_module(runtime
         iterator_delegate.cpp
         map.cpp
         builtin_map.cpp
+        builtin_weak_map.cpp
         builtin_object.cpp
         builtin_object_descriptor.cpp
         builtin_object_proto.cpp
@@ -78,6 +83,9 @@ bronze_add_module(runtime
         ../../tests/runtime/inspect_test.cpp
         ../../tests/runtime/exception_test.cpp
         ../../tests/runtime/map_test.cpp
+        ../../tests/runtime/weak_collection_test.cpp
+        ../../tests/runtime/bound_function_test.cpp
+        ../../tests/runtime/array_sort_test.cpp
         ../../tests/runtime/relational_test.cpp
         ../../tests/runtime/has_property_test.cpp
         ../../tests/runtime/exact_decimal_test.cpp

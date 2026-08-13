@@ -23,10 +23,10 @@ namespace {
 
 // Array.prototype. What is NOT here is either implemented — the table in
 // builtin_array.cpp answers first — or `length` and `constructor`, which are
-// real. `sort` and `splice` are the two a real program misses first.
+// real. `sort`, `splice` and the three iterator methods left when they landed.
 const char* const kArrayMembers[] = {
-    "copyWithin", "entries", "flat", "flatMap", "keys", "sort", "splice",
-    "toLocaleString", "toReversed", "toSorted", "toSpliced", "toString", "values", "with",
+    "copyWithin", "flat", "flatMap",
+    "toLocaleString", "toReversed", "toSorted", "toSpliced", "toString", "with",
 };
 
 // String.prototype, on the same rule — and the answering side is the
@@ -54,14 +54,14 @@ const char* const kStringMembers[] = {
 // where a name leaves the list when it lands and the two halves must be read
 // together.
 
-// Function.prototype, minus `prototype`, which is real, and minus `call` and
-// `apply`, which builtin_function.cpp answers.
+// Function.prototype, minus `prototype`, which is real, and minus `call`,
+// `apply` and `bind`, which builtin_function.cpp answers.
 // `length` and `name` have LEFT this table: every function bronze compiles now
 // carries both as own properties (rt_prop.cpp reads them off the header), and a
 // function bronze did not compile refuses them there with a message about its
 // own missing answer rather than about an unimplemented prototype member.
 const char* const kFunctionMembers[] = {
-    "bind", "constructor", "toString",
+    "constructor", "toString",
 };
 
 }  // namespace

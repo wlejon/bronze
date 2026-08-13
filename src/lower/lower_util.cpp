@@ -49,14 +49,16 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     //
     // `Array`, `String` and `Boolean` joined later, through exactly the
     // mechanism the line above describes — the list, an interned function
-    // object, and no special case anywhere. `Function` is deliberately NOT
+    // object, and no special case anywhere — and `WeakMap` / `WeakSet` joined
+    // beside `Map` and `Set` the same way. `Function` is deliberately NOT
     // here: `new Function(src)` compiles source at run time, which an AOT
     // compiler cannot do, so the name stays an unresolved one that says so
     // where it is used rather than a value that lies about being callable.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
            name == "Array" || name == "String" || name == "Boolean" ||
            name == "Symbol" || name == "RegExp" ||
-           name == "Map" || name == "Set" || name == "Error" || name == "TypeError" ||
+           name == "Map" || name == "Set" || name == "WeakMap" || name == "WeakSet" ||
+           name == "Error" || name == "TypeError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
            name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat" ||
            name == "ArrayBuffer" || name == "Int8Array" || name == "Uint8Array" ||

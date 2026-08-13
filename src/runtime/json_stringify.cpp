@@ -341,6 +341,8 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             // engine.
             case HeapKind::Map:
             case HeapKind::Set:
+            case HeapKind::WeakMap:
+            case HeapKind::WeakSet:
             case HeapKind::RegExp:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:

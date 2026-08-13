@@ -125,7 +125,7 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
 // fails the BUILD when a kind is added, at the one place that has to have an
 // opinion about it, which is the property a runtime `default:` alone cannot
 // give.
-static_assert(HeapKind::Count == 12,
+static_assert(HeapKind::Count == 14,
               "a HeapKind was added or removed: give `in` an arm for it in the two switches "
               "below, or refuse it there by name. A kind with no arm used to fall through to "
               "a cast that read its payload's first word as a Shape*.");
@@ -158,10 +158,13 @@ bool shapelessHasSymbol(uint16_t kind, Value key) {
     if (key.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
         switch (kind) {
             // 24.1.3.13, 24.2.3.12, 23.2.3.35, 25.1.6.6, 25.3.4.25 put it on
-            // the prototype; 10.4.6.1 puts it on the namespace itself, which is
-            // the one of these that is an OWN property.
+            // the prototype — 24.3.3.6 and 24.4.3.5 for the weak pair;
+            // 10.4.6.1 puts it on the namespace itself, which is the one of
+            // these that is an OWN property.
             case HeapKind::Map:
             case HeapKind::Set:
+            case HeapKind::WeakMap:
+            case HeapKind::WeakSet:
             case HeapKind::TypedArray:
             case HeapKind::ArrayBuffer:
             case HeapKind::DataView:
@@ -181,9 +184,11 @@ bool shapelessHasSymbol(uint16_t kind, Value key) {
         case HeapKind::Map:
         case HeapKind::Set:
             return true;
-        // An ArrayBuffer, a DataView and a RegExp are not iterable, and a
-        // module namespace exports no name that could be one (10.4.6.4 is
-        // "is this an export", and @@toStringTag above is its only other key).
+        // An ArrayBuffer, a DataView, a RegExp, a WeakMap and a WeakSet are
+        // not iterable — non-iterability is half of what makes the weak pair
+        // weak — and a module namespace exports no name that could be one
+        // (10.4.6.4 is "is this an export", and @@toStringTag above is its
+        // only other key).
         default:
             return false;
     }
@@ -213,6 +218,8 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::DataView:
         case HeapKind::Map:
         case HeapKind::Set:
+        case HeapKind::WeakMap:
+        case HeapKind::WeakSet:
         case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
             return shapelessHasSymbol(kind, key);
@@ -283,6 +290,12 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             break;
         case HeapKind::Set:
             if (rtMapHasMember(/*isSetReceiver=*/true, key)) return true;
+            break;
+        case HeapKind::WeakMap:
+            if (rtWeakCollectionHasMember(/*isWeakSetReceiver=*/false, key)) return true;
+            break;
+        case HeapKind::WeakSet:
+            if (rtWeakCollectionHasMember(/*isWeakSetReceiver=*/true, key)) return true;
             break;
         case HeapKind::RegExp:
             if (rtRegExpHasMember(key)) return true;

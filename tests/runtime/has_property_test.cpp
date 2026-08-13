@@ -45,7 +45,7 @@ using namespace bronze::runtime;
 // about the kind you happened to run. Pinning the registry's SIZE in both
 // places is what makes adding a kind a build failure at the dispatch AND at the
 // test that covers it, rather than a segfault a year later.
-static_assert(HeapKind::Count == 12,
+static_assert(HeapKind::Count == 14,
               "a HeapKind was added or removed: give `in` an arm for it in rt_operator.cpp, "
               "and give it a receiver in `everyKind` below — a kind with no arm is exactly "
               "what used to read its payload's first word as a Shape*");
@@ -296,6 +296,48 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
         // has no own symbol-keyed property to find there.
         CHECK_FALSE(has(iterator, ns.get()));
     }
+}
+
+// The two kinds that joined with the weak collections, covered the way the
+// TEST_CASEs above cover the other ten: an arm that answers rather than
+// crashes, agreement with the read path's tables, and the chain past them.
+TEST_CASE("`in` answers a WeakMap and a WeakSet") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> wm{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakMapFlags))};
+    Rooted<Value> ws{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakSetFlags))};
+
+    CHECK(hasName("get", wm));
+    CHECK(hasName("set", wm));
+    CHECK(hasName("has", wm));
+    CHECK(hasName("delete", wm));
+    // 24.3.3 defines no `size` accessor and no iteration members — the absence
+    // is the language's, so `in` must answer false rather than borrowing a
+    // Map's yes.
+    CHECK_FALSE(hasName("size", wm));
+    CHECK_FALSE(hasName("forEach", wm));
+    CHECK_FALSE(hasName("keys", wm));
+    CHECK_FALSE(hasName("missing", wm));
+
+    CHECK(hasName("add", ws));
+    CHECK(hasName("has", ws));
+    CHECK(hasName("delete", ws));
+    CHECK_FALSE(hasName("get", ws));
+    CHECK_FALSE(hasName("missing", ws));
+
+    // The chain continues past the member table, as it does for every other
+    // shapeless receiver.
+    CHECK(hasName("hasOwnProperty", wm));
+    CHECK(hasName("toString", ws));
+
+    // @@toStringTag is on both prototypes (24.3.3.6, 24.4.3.5); @@iterator is
+    // on neither — a WeakMap is not iterable, and that is half of the type.
+    const Value tag = Value::fromSymbol(rtSymbolToStringTag());
+    const Value iterator = Value::fromSymbol(rtSymbolIterator());
+    CHECK(has(tag, wm.get()));
+    CHECK(has(tag, ws.get()));
+    CHECK_FALSE(has(iterator, wm.get()));
+    CHECK_FALSE(has(iterator, ws.get()));
 }
 
 // 13.10.2 step 5 throws for a primitive right-hand side rather than answering

@@ -212,6 +212,12 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         fatal("named property writes on a Map or a Set are unsupported "
               "(use .set(key, value); a Map's keys are not properties)");
     }
+    if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
+        // The same refusal for the same storage: a WeakMap's entries are not
+        // properties, and it has no shape for a named one either.
+        fatal("named property writes on a WeakMap or a WeakSet are unsupported "
+              "(use .set(key, value) / .add(value); its entries are not properties)");
+    }
     if (hdr->flags == IterRecordHeader::kFlags) {
         fatal("internal: a property write on an iteration record");
     }
@@ -272,6 +278,18 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // which this refusal keeps from ever running for such a key, so no wrapper
     // shape carries an index or `length` for it to have matched.
     if (stringExoticRefusesWrite(objVal, keyStr, strict)) return;
+
+    // The `Array.prototype` OBJECT is a plain object no array's chain runs
+    // through (builtin_array.cpp), so a method installed on it would be found
+    // by reads of `Array.prototype` and by nothing an array does — a property
+    // that exists and changes nothing, which is the silent lie the refusal
+    // exists to prevent.
+    if (rtIsArrayPrototypeObject(objVal)) {
+        fatal(("decorating Array.prototype is unsupported (an array answers its members "
+               "beside the value, so a member written here would never be found on one; "
+               "tried to write `" + keyStr + "`)")
+                  .c_str());
+    }
 
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("property write with an unregistered key index");

@@ -65,6 +65,13 @@ enum : uint16_t {
     DataView,
     Map,
     Set,
+    // A WeakMap and a WeakSet are the Map/Set LAYOUT under their own kinds,
+    // never the same kind with a bit: every dispatch in the runtime is an exact
+    // flags compare, and a WeakMap that answered as a Map would be iterable,
+    // report a `size`, and print its entries — three answers 24.3 and 24.4
+    // define it not to have.
+    WeakMap,
+    WeakSet,
     Iterator,
     RegExp,
     Env,

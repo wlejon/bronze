@@ -195,6 +195,10 @@ void ensureWrapperIntrinsics() {
 
     rtInstallStringMethods(stringProto);
     rtInstallStringPatternMethods(stringProto);
+    // 22.1.3.36's `[Symbol.iterator]`, the one symbol-keyed member of the
+    // object — installed with the same define-own, non-enumerable terms as
+    // every string method (builtin_string_iterator.cpp).
+    rtInstallStringIterator(stringProto);
     rtDefineMethods(booleanProto, kBooleanProtoMethods, std::size(kBooleanProtoMethods));
     rtInstallNumberMethods(numberProto);
 

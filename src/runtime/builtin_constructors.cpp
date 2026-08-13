@@ -307,13 +307,14 @@ const StaticFn kStringStatics[] = {
 };
 
 // Real static members of each constructor that bronze has not built.
-// `prototype` is on `Array` alone, and the asymmetry is the point: an array's
-// members are still handed out by the property path BESIDE the value, so there
-// is no object to hand over, and the empty one a FunctionHeader would otherwise
-// answer with is worse than an error — a method installed on it would be found
-// by nothing. `String.prototype`, `Boolean.prototype` and `Number.prototype`
-// are real objects and are answered from the constructor's own prototype slot.
-const char* const kArrayCtorUnimplemented[] = {"fromAsync", "prototype"};
+// `Array.prototype` left this list when it became an object of its own
+// (builtin_array.cpp): an array still answers its members BESIDE the value,
+// but the VALUE the expression denotes is real now — the same method objects,
+// off the same table, with a write to it refused by name so nothing can be
+// installed there that no array would find. `String.prototype`,
+// `Boolean.prototype` and `Number.prototype` are answered from the
+// constructor's own prototype slot.
+const char* const kArrayCtorUnimplemented[] = {"fromAsync"};
 const char* const kStringCtorUnimplemented[] = {"fromCodePoint", "raw"};
 
 struct CtorEntry {
@@ -440,6 +441,15 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
         // legible beside the two that now answer.
         if (entry.prototype && key == "prototype") {
             out = entry.prototype();
+            return true;
+        }
+        // 23.1.3.4's holder, answered HERE and not through the entry's
+        // prototype slot: filling that slot would put `Array` on
+        // `rtPrimitiveWrapperConstructorName`'s list — it reports any entry
+        // with a prototype — and `new Array` would build a wrapper instead of
+        // running 23.1.1.1.
+        if (key == "prototype" && entry.code == arrayConstructor) {
+            out = rtArrayPrototypeObject();
             return true;
         }
         for (size_t i = 0; i < entry.staticCount; ++i) {

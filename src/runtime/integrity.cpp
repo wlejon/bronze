@@ -269,6 +269,8 @@ const char* rtObjectKindName(Value v) {
         case HeapKind::Function: return "a function";
         case MapHeader::kMapFlags: return "a Map";
         case MapHeader::kSetFlags: return "a Set";
+        case MapHeader::kWeakMapFlags: return "a WeakMap";
+        case MapHeader::kWeakSetFlags: return "a WeakSet";
         case TypedArrayHeader::kFlags: return "a typed array";
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         case DataViewHeader::kFlags: return "a DataView";

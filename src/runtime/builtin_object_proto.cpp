@@ -80,7 +80,7 @@ bool requireNonNullish(Value self, const char* method) {
 // name rather than reported absent. There is exactly one: a String exotic
 // OBJECT, whose 10.4.3.4 index properties are synthesised on the property path
 // and live in no shape (rt_object.cpp carries the reasoning).
-static_assert(HeapKind::Count == 12,
+static_assert(HeapKind::Count == 14,
               "a HeapKind was added or removed: give the own-property switch below an arm for "
               "it. `hasOwnProperty` and `propertyIsEnumerable` are reachable from EVERY "
               "receiver now that the chain runs past the member tables, so a kind with no arm "
@@ -188,11 +188,14 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             return key == "lastIndex";
         case HeapKind::Map:
         case HeapKind::Set:
+        case HeapKind::WeakMap:
+        case HeapKind::WeakSet:
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView:
-            // 24.1.3, 24.2.3, 25.1.6 and 25.3.4 put every member on a
-            // prototype. These four carry internal slots and no own property at
-            // all — `size` and `byteLength` included, which are accessors.
+            // 24.1.3, 24.2.3, 24.3.3, 24.4.3, 25.1.6 and 25.3.4 put every
+            // member on a prototype. These six carry internal slots and no own
+            // property at all — `size` and `byteLength` included, which are
+            // accessors.
             return false;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and

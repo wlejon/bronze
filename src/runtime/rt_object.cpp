@@ -304,6 +304,29 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
             .rawBits();
     }
 
+    // A BOUND function constructs its TARGET (10.4.1.2): the bound arguments
+    // are prepended, [[BoundThis]] is IGNORED — `new` supplies the receiver —
+    // and the instance's prototype is the target's, which is why this unwraps
+    // BEFORE the ordinary path below could materialise a prototype on the
+    // bound function itself. One layer per recursion, so `f.bind(a).bind(b)`
+    // flattens through the chain exactly as 10.4.1.2's delegation does.
+    if (Value target, boundThis, boundArgs;
+        rtBoundFunctionState(fnVal, target, boundThis, boundArgs)) {
+        (void)boundThis;
+        Rooted<Value> targetRoot{target};
+        Rooted<Value> argsRoot{boundArgs};
+        const uint32_t bound = argsRoot.get().asObject<ArrayHeader>()->length;
+        // The combined block is a RootedBlock because the recursion allocates
+        // before it reads its block — the exact contract the comment further
+        // down names, satisfied the way bronze_construct_spread satisfies it.
+        RootedBlock block(bound + argc);
+        for (uint32_t i = 0; i < bound; ++i) {
+            block.set(i, argsRoot.get().asObject<ArrayHeader>()->getElem(i));
+        }
+        for (uint32_t i = 0; i < argc; ++i) block.set(bound + i, Value(argvBits[i]));
+        return bronze_construct(targetRoot.get().rawBits(), bound + argc, block.data());
+    }
+
     // `new String(x)` and `new Boolean(x)` build the wrapper INSTEAD of the
     // ordinary instance, and cannot be left to run their bodies below: a native
     // constructor cannot see NewTarget through the uniform calling convention,
@@ -455,6 +478,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         return out.get().rawBits();
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags ||
+        hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags ||
         hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
         hdr->flags == DataViewHeader::kFlags) {
         // None of these has an own enumerable string-keyed property, and that

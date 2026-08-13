@@ -191,7 +191,7 @@ uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t
     return thisBits;
 }
 
-// The four per-kind prototypes plus the %IteratorPrototype% they share, in one
+// The five per-kind prototypes plus the %IteratorPrototype% they share, in one
 // table indexed by `IteratorProto`. Permanent roots: the collector moves plain
 // objects, and a `static Value` it has not been told about would be an address
 // recorded before a collection and read after one.
@@ -201,7 +201,7 @@ struct ProtoEntry {
 };
 
 ProtoEntry& protoEntry(IteratorProto kind) {
-    static ProtoEntry table[4];
+    static ProtoEntry table[5];
     return table[static_cast<uint32_t>(kind)];
 }
 
@@ -229,13 +229,14 @@ constexpr uint32_t kInternalSlots[] = {
     ArrayIteratorSlot::kCount,
     RegExpStringIteratorSlot::kCount,
     GeneratorSlot::kCount,
+    StringIteratorSlot::kCount,
 };
 
 Shape* iteratorObjectShape(IteratorProto kind) {
     ProtoEntry& entry = protoEntry(kind);
     if (entry.shape) return entry.shape;
-    // The kind's own prototype. For three of the four it has NO members of its
-    // own: bronze puts their `next` on the iterator itself, which is a
+    // The kind's own prototype. For all but the generator's it has NO members
+    // of its own: bronze puts their `next` on the iterator itself, which is a
     // divergence recorded in cases/collection_internal_slots.js and not one
     // this seam decides. %GeneratorPrototype% is the exception, and not by
     // choice — 27.5.1 defines `next`, `return` and `throw` there, and a
@@ -256,7 +257,7 @@ Shape* iteratorObjectShape(IteratorProto kind) {
     // step 15) and the only reason these objects have any own property beyond
     // the generator's three methods.
     //
-    // Three of the four kinds get one. The MAP kind does not, and the reason is
+    // Every kind but one gets a tag. The MAP kind does not, and the reason is
     // that bronze uses one prototype object where ECMA-262 has two:
     // %MapIteratorPrototype%'s tag is "Map Iterator" (24.1.5.2.2) and
     // %SetIteratorPrototype%'s is "Set Iterator" (24.2.5.2.2), and this single
@@ -276,6 +277,9 @@ Shape* iteratorObjectShape(IteratorProto kind) {
             break;
         case IteratorProto::Generator:
             rtDefineToStringTag(proto, "Generator");  // 27.5.1.5
+            break;
+        case IteratorProto::String:
+            rtDefineToStringTag(proto, "String Iterator");  // 22.1.5.1.2
             break;
         case IteratorProto::Map:
             break;

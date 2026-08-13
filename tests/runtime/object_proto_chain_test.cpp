@@ -101,7 +101,7 @@ Value aRegExp() {
 // compiler checks can prove that switch total — and `hasOwnProperty` is now
 // reachable from EVERY receiver, so a kind with no arm there is a receiver
 // those clauses cannot answer about.
-static_assert(HeapKind::Count == 12,
+static_assert(HeapKind::Count == 14,
               "a HeapKind was added or removed: give it an arm in the own-property switch in "
               "builtin_object_proto.cpp, and a receiver in the subcases below");
 
@@ -327,4 +327,32 @@ TEST_CASE("isPrototypeOf walks past the prototypes bronze has not built") {
     // chain, because the only other link there is one bronze never hands out.
     CHECK_FALSE(invoke(plain, "isPrototypeOf", a.get()).asBool());
     CHECK_FALSE(invoke(f, "isPrototypeOf", f.get()).asBool());
+}
+
+// The two kinds that joined with the weak collections: the chain reaches
+// `Object.prototype` from both, the members found are the SAME function
+// objects a plain object finds, and the own-property switch answers rather
+// than crashes — a WeakMap keeps everything in internal slots, so it has no
+// own property of any kind (24.3.3).
+TEST_CASE("a WeakMap and a WeakSet reach Object.prototype") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> hasOwnProperty{protoMember("hasOwnProperty")};
+    Rooted<Value> valueOf{protoMember("valueOf")};
+    REQUIRE(isFunction(hasOwnProperty.get()));
+
+    Rooted<Value> wm{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakMapFlags))};
+    Rooted<Value> ws{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakSetFlags))};
+
+    CHECK(member(wm, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
+    CHECK(member(ws, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
+    CHECK(member(wm, "valueOf").rawBits() == valueOf.get().rawBits());
+    CHECK(member(ws, "valueOf").rawBits() == valueOf.get().rawBits());
+
+    // No own properties: the methods a read answers come from the stand-in
+    // table, not from the object, so `hasOwnProperty` says no.
+    CHECK_FALSE(hasOwn(wm, "get"));
+    CHECK_FALSE(hasOwn(wm, "has"));
+    CHECK_FALSE(hasOwn(ws, "add"));
+    CHECK_FALSE(enumerableOwn(wm, "get"));
 }

@@ -86,17 +86,17 @@ Value rtIteratorKey();
 // ECMA-262 gives each built-in iterator a prototype of its own —
 // %MapIteratorPrototype% (24.1.5.2), %ArrayIteratorPrototype% (23.1.5.2, which
 // a typed array's iterator shares by 23.2.5.2), %RegExpStringIteratorPrototype%
-// (22.2.9.1) and %GeneratorPrototype% (27.5.1) — and all four inherit
-// %IteratorPrototype% (27.1.2), whose ONE member is
-// `[Symbol.iterator]() { return this; }` (27.1.2.1). That is where the self-hook
-// belongs, and putting it there rather than on each iterator is what keeps
-// `Object.getOwnPropertySymbols(m.entries())` at zero: an inherited property is
-// not an own one, and `getOwnPropertySymbols` reports own keys.
+// (22.2.9.1), %StringIteratorPrototype% (22.1.5.1) and %GeneratorPrototype%
+// (27.5.1) — and all five inherit %IteratorPrototype% (27.1.2), whose ONE
+// member is `[Symbol.iterator]() { return this; }` (27.1.2.1). That is where
+// the self-hook belongs, and putting it there rather than on each iterator is
+// what keeps `Object.getOwnPropertySymbols(m.entries())` at zero: an inherited
+// property is not an own one, and `getOwnPropertySymbols` reports own keys.
 //
-// The kinds are kept apart even though bronze puts no member on any of them,
+// The kinds are kept apart even though bronze puts no member on most of them,
 // because the prototype is what an iterator's `next` recognises its own
-// receiver by. A brand check needs the four to be four objects.
-enum class IteratorProto : uint32_t { Map, Array, RegExpString, Generator };
+// receiver by. A brand check needs the five to be five objects.
+enum class IteratorProto : uint32_t { Map, Array, RegExpString, Generator, String };
 
 // The INTERNAL SLOTS each kind carries, named after ECMA-262's. They are real
 // fields on the object (`ObjectHeader::internalSlot`) and not properties under
@@ -110,11 +110,20 @@ enum class IteratorProto : uint32_t { Map, Array, RegExpString, Generator };
 namespace MapIteratorSlot {
 enum : uint32_t { IteratedMap, NextIndex, Kind, kCount };
 }
+// [[Kind]] joined when `keys` and `entries` did (23.1.5.1 names all three
+// slots). A typed array's iterator shares the layout and leaves the slot
+// `undefined`: bronze exposes only its `values`, and its `next` never reads it.
 namespace ArrayIteratorSlot {
-enum : uint32_t { IteratedArrayLike, NextIndex, kCount };
+enum : uint32_t { IteratedArrayLike, NextIndex, Kind, kCount };
 }
 namespace RegExpStringIteratorSlot {
 enum : uint32_t { IteratingRegExp, IteratedString, Done, kCount };
+}
+// 22.1.5.1: [[IteratedString]] and [[StringNextIndex]]. The cursor counts CODE
+// UNITS while the iterator steps code POINTS, which is why a step can advance
+// it by two.
+namespace StringIteratorSlot {
+enum : uint32_t { IteratedString, NextIndex, kCount };
 }
 // A generator object's are GeneratorSlot, in runtime/generator.h — beside the
 // state machine that is the only thing that reads them.
@@ -131,7 +140,8 @@ Value rtNewIteratorObject(IteratorProto kind);
 // The brand. Both halves are needed: a prototype alone can be forged with
 // `Object.create(Object.getPrototypeOf(m.keys()))`, and that object was not
 // allocated with the slots, so reading them off it would read past its end; a
-// slot count alone does not say WHOSE slots they are, and two kinds have three.
+// slot count alone does not say WHOSE slots they are, and three kinds have
+// three.
 bool rtIsIteratorObject(Value v, IteratorProto kind);
 
 // That kind's prototype object. `rtNewIteratorObject` builds one on first use;

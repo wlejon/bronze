@@ -27,6 +27,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
+#include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -285,6 +286,110 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Value* data = arr->elementsData();
     for (uint32_t i = start; i < end; ++i) data[i] = fillVal;
     return self.rawBits();
+}
+
+// `Array.prototype.splice` (23.1.3.31): removal and insertion in one move,
+// answering the removed elements as a fresh array. The MUTATION phases run in
+// the clause's own order — reads, then the element moves, then the tail
+// deletes, then the inserts — because the order is observable through a
+// refusal: a frozen array's first Set throws with nothing yet moved, while a
+// sealed array's shrink lands its moves and then throws at the first refused
+// delete, exactly as DeletePropertyOrThrow does.
+uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireArray(self.get(), "splice")) return Value::fromUndefined().rawBits();
+    const uint32_t len = lengthOf(self.get());
+    const uint32_t start =
+        args.count() > 0 ? relativeIndex(toInteger(rtToNumber(args[0])), len) : 0;
+    // Steps 5-7: no second argument deletes to the end; a given one is clamped
+    // into [0, len - start]. The two cases are distinct — `splice(1)` empties
+    // the tail and `splice(1, undefined)` deletes nothing, because
+    // ToIntegerOrInfinity(undefined) is 0.
+    uint32_t deleteCount = 0;
+    if (args.count() == 1) {
+        deleteCount = len - start;
+    } else if (args.count() > 1) {
+        double dc = toInteger(rtToNumber(args[1]));
+        if (dc < 0) dc = 0;
+        const double most = static_cast<double>(len - start);
+        deleteCount = static_cast<uint32_t>(dc < most ? dc : most);
+    }
+    const uint32_t insertCount = args.count() > 2 ? args.count() - 2 : 0;
+    const uint32_t newLen = len - deleteCount + insertCount;
+    // Elements past the removed range, which are what shifts.
+    const uint32_t moveCount = len - start - deleteCount;
+
+    // Steps 9-12: the removed elements, read before anything moves. A hole in
+    // the removed range is a hole in the answer — CreateDataProperty is only
+    // reached under a HasProperty test.
+    Rooted<Value> removed{newArray()};
+    for (uint32_t i = 0; i < deleteCount; ++i) {
+        if (!hasIndex(self.get(), start + i)) {
+            appendHole(removed);
+            continue;
+        }
+        Rooted<Value> elem{elemOf(self.get(), start + i)};
+        appendTo(removed, elem);
+    }
+
+    if (newLen > len) {
+        // Growth: the first Set of the down-shift is a CREATE at the new top
+        // index, so a non-extensible array — frozen included — refuses HERE,
+        // before any element has moved (10.1.6.3 step 2.b).
+        if (!requireExtensible(self.get(), "splice")) return Value::fromUndefined().rawBits();
+        // Every slot the shift needs is made to exist first, so the move below
+        // is straight-line code with no allocation in it — unshift's
+        // arrangement, for unshift's reason.
+        for (uint32_t i = len; i < newLen; ++i) {
+            Rooted<Value> filler{Value::fromUndefined()};
+            appendTo(self, filler);
+        }
+        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+        Value* data = arr->elementsData();
+        for (uint32_t i = moveCount; i > 0; --i) {
+            // Raw copies carry a HOLE sentinel with the element, which is the
+            // HasProperty/Set/Delete triple of step 15.b collapsed into one
+            // move.
+            data[start + insertCount + i - 1] = data[start + deleteCount + i - 1];
+        }
+    } else if (newLen < len) {
+        // Shrink: the up-shift's Sets land on existing indices, so only a
+        // FROZEN array refuses them — and with no elements to move there is
+        // no Set to refuse, which is how a frozen `splice(len - n, n)` reaches
+        // the delete refusal below instead.
+        if (moveCount > 0 && !requireWritableElements(self.get(), "splice")) {
+            return Value::fromUndefined().rawBits();
+        }
+        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+        Value* data = arr->elementsData();
+        for (uint32_t i = 0; i < moveCount; ++i) {
+            data[start + insertCount + i] = data[start + deleteCount + i];
+        }
+        // Step 15.d: the tail indices are DELETED, after the moves — so a
+        // sealed array's moves have landed by the time this refuses, which is
+        // the order DeletePropertyOrThrow runs in.
+        if (!requireConfigurableElements(self.get(), "splice")) {
+            return Value::fromUndefined().rawBits();
+        }
+        arr->length = newLen;
+    } else if (insertCount > 0) {
+        // Equal counts: the inserts below are the only writes, all to existing
+        // indices, so frozen is the one level that refuses (and refuses before
+        // the first of them).
+        if (!requireWritableElements(self.get(), "splice")) {
+            return Value::fromUndefined().rawBits();
+        }
+    }
+
+    // Step 16: the inserted items. The block cannot move under this loop —
+    // nothing in it allocates — and `args` slots are updated in place by any
+    // collection the phases above ran.
+    if (insertCount > 0) {
+        Value* data = self.get().asObject<ArrayHeader>()->elementsData();
+        for (uint32_t i = 0; i < insertCount; ++i) data[start + i] = args[i + 2];
+    }
+    return removed.get().rawBits();
 }
 
 // ---- searches -------------------------------------------------------------
@@ -605,9 +710,15 @@ struct ArrayMethod {
 // from the IL, and a NATIVE builtin has no key index to name it with — so
 // `[].map.length` is a diagnosed refusal rather than the padding count, which
 // would be a wrong number given confidently (runtime/fn.h).
+// `sort` lives in builtin_array_sort.cpp and the three iterator methods in
+// builtin_array_iterator.cpp — each a seam with a name — but every one of them
+// is a row HERE, because this table is the single answer to "what does
+// Array.prototype implement" and a second list would be how the read path,
+// `in`, and the prototype object below came to disagree.
 const ArrayMethod kArrayMethods[] = {
     {"at", arrayAt, 1},
     {"concat", arrayConcat, 0},
+    {"entries", rtArrayEntriesBuiltin, 0},
     {"every", arrayEvery, 1},
     {"fill", arrayFill, 0},
     {"filter", arrayFilter, 1},
@@ -619,6 +730,7 @@ const ArrayMethod kArrayMethods[] = {
     {"includes", arrayIncludes, 1},
     {"indexOf", arrayIndexOf, 1},
     {"join", arrayJoin, 0},
+    {"keys", rtArrayKeysBuiltin, 0},
     {"lastIndexOf", arrayLastIndexOf, 1},
     {"map", arrayMap, 1},
     {"pop", arrayPop, 0},
@@ -629,10 +741,79 @@ const ArrayMethod kArrayMethods[] = {
     {"shift", arrayShift, 0},
     {"slice", arraySlice, 0},
     {"some", arraySome, 1},
+    {"sort", rtArraySortBuiltin, 1},
+    {"splice", arraySplice, 0},
     {"unshift", arrayUnshift, 0},
+    {"values", rtArrayValuesBuiltin, 0},
 };
 
+// The one `Array.prototype` OBJECT, built on first demand. An array still
+// answers its members BESIDE the value — it has no shape for a chain walk —
+// so this object is not on any array's chain; what it is for is the VALUE the
+// expression `Array.prototype` denotes: `Array.prototype.values` handed to a
+// call, and the identity 23.1.3.41 pins (`a[Symbol.iterator] ===
+// Array.prototype.values`), which holds because both sides intern on the same
+// code pointer. Its members come from the ONE table above, so the two answers
+// cannot drift; a name the table lacks is diagnosed on the miss path by
+// `rtArrayPrototypeCheckMissingMember`, and a WRITE to the object is refused
+// by name (rt_prop_write.cpp) — a method installed here would be found by
+// reads of `Array.prototype` and by nothing an array does, which is the
+// silent lie the refusal exists to prevent.
+Value g_arrayPrototype = Value::fromUndefined();
+
 }  // namespace
+
+Value rtArrayPrototypeObject() {
+    if (g_arrayPrototype.isObject()) return g_arrayPrototype;
+    // Its [[Prototype]] is `Object.prototype` (23.1.3.1) on a root shape of
+    // its own, so decorating sites do not share a transition tree with `{}`
+    // literals. Published as a permanent root BEFORE the installs below, which
+    // allocate.
+    Rooted<Value> objectProto{rtObjectPrototype()};
+    Rooted<Value> obj{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(objectProto.get())))};
+    g_arrayPrototype = obj.get();
+    rtHeap().add_permanent_root(&g_arrayPrototype);
+
+    for (const ArrayMethod& m : kArrayMethods) {
+        Rooted<Value> key{rtMakeString(m.name)};
+        Rooted<Value> fn{rtNativeFunction(m.code, m.arity)};
+        // A DEFINITION with `enumerable: false`, which is what 23.1.3 says
+        // every one of these is — an enumerable member here would surface in
+        // nothing (no array's for-in walks this object), but the descriptor is
+        // what `Object.keys(Array.prototype)` reports.
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        // 23.1.3.4: `Array.prototype.constructor` is the `Array` constructor —
+        // the same interned object the bare name resolves to.
+        Rooted<Value> key{rtMakeString("constructor")};
+        Rooted<Value> ctor{rtArrayConstructorObject()};
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor,
+                                                    /*ic=*/nullptr, /*enumerable=*/false,
+                                                    /*defineOwn=*/true);
+    }
+    {
+        // 23.1.3.41: `[Symbol.iterator]` IS `values` — the same function
+        // object, because both reach the intern table with the same code
+        // pointer.
+        Rooted<Value> key{rtIteratorKey()};
+        Rooted<Value> fn{rtNativeFunction(rtArrayValuesBuiltin, 0)};
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    g_arrayPrototype = obj.get();
+    return g_arrayPrototype;
+}
+
+bool rtIsArrayPrototypeObject(Value v) {
+    return g_arrayPrototype.isObject() && v.rawBits() == g_arrayPrototype.rawBits();
+}
+
+void rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key) {
+    if (rtIsArrayPrototypeObject(obj)) rtCheckArrayMember(key);
+}
 
 Value rtArrayMethod(const std::string& key) {
     for (const ArrayMethod& m : kArrayMethods) {

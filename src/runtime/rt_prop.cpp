@@ -136,6 +136,18 @@ Value rtElemKeyAsString(Value idxVal) {
         StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
 }
 
+// A member of a WeakMap or a WeakSet, by name. The Map arrangement below with
+// the `size` line missing — 24.3.3 and 24.4.3 define no such accessor, so its
+// absence is the language's answer and not a gap.
+static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& keyStr) {
+    const bool weakSet =
+        recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kWeakSetFlags;
+    Value method = rtWeakCollectionMethod(weakSet, keyStr);
+    if (!method.isUndefined()) return method;
+    rtCheckWeakCollectionMember(weakSet, keyStr);
+    return rtObjectProtoMember(recv, keyStr);
+}
+
 // A member of a Map or a Set, by name. Its own function because BOTH `m.get`
 // and `m[k]` reach it: a Map's keys are values and its members are names, so
 // the computed-index path cannot treat the key as an element the way it does
@@ -206,6 +218,12 @@ Value toStringTagOf(Value objVal, bool& handled) {
         case MapHeader::kSetFlags:
             handled = true;
             return rtMakeString("Set");
+        case MapHeader::kWeakMapFlags:
+            handled = true;
+            return rtMakeString("WeakMap");  // 24.3.3.6
+        case MapHeader::kWeakSetFlags:
+            handled = true;
+            return rtMakeString("WeakSet");  // 24.4.3.5
         case TypedArrayHeader::kFlags: {
             // 23.2.3.35 is an ACCESSOR whose answer is [[TypedArrayName]], so
             // nine views give nine tags rather than one shared "TypedArray".
@@ -238,25 +256,19 @@ Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
         return toStringTagOf(objVal, handled);
     }
     if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
-    if (objVal.isString()) {
-        // 22.1.3.32 String.prototype[@@iterator] exists; bronze steps a string
-        // by code point inside the for-of and has no string-iterator OBJECT for
-        // a program to drive by hand, so this is diagnosed by name rather than
-        // read as `undefined`.
-        handled = true;
-        fatal("unsupported: String.prototype[Symbol.iterator] is not implemented "
-              "(a string is iterable, but its iterator object is not built)");
-    }
+    // A STRING is not this function's business: 22.1.3.36 puts its
+    // `[Symbol.iterator]` on the real `String.prototype` object
+    // (builtin_string_iterator.cpp), and the ordinary symbol-keyed walk below
+    // this dispatch finds it there — `handled` stays false, exactly as it does
+    // for every other member a string reaches through its intrinsic.
     if (!objVal.isObject()) return Value::fromUndefined();
     switch (objVal.asObject<HeapObjectHeader>()->flags) {
         case 1:
-            // 23.1.3.34 makes it the same function object as
-            // `Array.prototype.values`, which is itself on the unimplemented
-            // list — so the two agree instead of one of them being `undefined`.
+            // 23.1.3.41 makes it the same function object as
+            // `Array.prototype.values` — an IDENTITY, not a twin, and it holds
+            // because both routes intern on the one code pointer.
             handled = true;
-            fatal("unsupported: Array.prototype[Symbol.iterator] is not implemented "
-                  "(neither is Array.prototype.values, which 23.1.3.34 makes the same "
-                  "function object)");
+            return rtNativeFunction(rtArrayValuesBuiltin, 0);
         case TypedArrayHeader::kFlags:
             handled = true;
             return rtTypedArrayIteratorMethod();
@@ -464,6 +476,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         Rooted<Value> recv{objVal};
         return mapMemberByName(recv, keyStr).rawBits();
     }
+    if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
+        Rooted<Value> recv{objVal};
+        return weakCollectionMemberByName(recv, keyStr).rawBits();
+    }
     if (hdr->flags == RegExpHeader::kFlags) {
         // Every member of a RegExp is computed from the header and the
         // compiled pattern; there is no shape and no slot to read, which is
@@ -506,8 +522,8 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // `prototype` lives in its own slot; every other own property lives in
         // the function's property object and is found through ITS prototype
         // chain, which `extends` linked to the base class's. Reading
-        // `prototype` first is what keeps `call`, `bind` and `name` diagnosed
-        // rather than answered as undefined.
+        // `prototype` first is what keeps `call`, `bind` and `name` answered
+        // or diagnosed rather than read as undefined.
         if (keyStr == "prototype") {
             // The guard above only covers `kCtors`. Map, Set, ArrayBuffer and
             // the nine views are interned function singletons of their own, so
@@ -518,6 +534,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // rather than by adding `prototype` to nine more tables, because
             // the property is absent for the same one reason each time.
             const char* intrinsic = rtMapConstructorName(recv.get());
+            if (!intrinsic) intrinsic = rtWeakCollectionConstructorName(recv.get());
             if (!intrinsic) intrinsic = rtTypedArrayConstructorName(recv.get());
             if (!intrinsic) intrinsic = rtDataViewConstructorName(recv.get());
             if (intrinsic) {
@@ -583,8 +600,8 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             return method.rawBits();
         }
         rtCheckFunctionMember(keyStr);
-        // `Function.prototype` has had its say — `call` and `apply` answered
-        // above, `bind`, `constructor` and `toString` refused by name just now
+        // `Function.prototype` has had its say — `call`, `apply` and `bind`
+        // answered above, `constructor` and `toString` refused by name just now
         // — so what is left is the object above it. That step is what makes
         // `f.hasOwnProperty` a function rather than `undefined`, which is the
         // one place bronze answered `undefined` for a member of a prototype it
@@ -626,6 +643,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         rtMathCheckMissingMember(objRoot.get(), keyStr);
         rtObjectCheckMissingMember(objRoot.get(), keyStr);
         rtJsonCheckMissingMember(objRoot.get(), keyStr);
+        // The `Array.prototype` object, whose misses are Array's table: a name
+        // 23.1.3 defines and bronze has not built must be as loud read off the
+        // object as it is read off an array.
+        rtArrayPrototypeCheckMissingMember(objRoot.get(), keyStr);
         // And the chain's own end: a 20.1.3 member of `Object.prototype` that
         // bronze has not built. Applied to every plain object because every
         // plain object inherits from it — an own or nearer property of the same

@@ -650,6 +650,18 @@ bool rtMapHasMember(bool isSetReceiver, const std::string& key);
 // and a Set's is `values` (24.1.3.12, 24.2.3.11).
 Value rtMapDefaultIterator(bool isSetReceiver);
 
+// `WeakMap` / `WeakSet` (builtin_weak_map.cpp), in exactly the Map/Set
+// arrangement: a constructor by name for the global ladder, the constructor's
+// name back from the function object, a method by name for the property path,
+// `in`'s predicate off the same tables, and the named refusal for a member
+// ECMA-262 defines and bronze has not built. No default iterator, because
+// 24.3 and 24.4 define none — a WeakMap is not iterable.
+Value rtWeakCollectionConstructor(const std::string& name);
+const char* rtWeakCollectionConstructorName(Value fn);
+Value rtWeakCollectionMethod(bool isWeakSetReceiver, const std::string& key);
+bool rtWeakCollectionHasMember(bool isWeakSetReceiver, const std::string& key);
+void rtCheckWeakCollectionMember(bool isWeakSetReceiver, const std::string& key);
+
 // ---- typed arrays ----------------------------------------------
 
 // `ArrayBuffer` and the nine views, by the name lowering resolved; `undefined`
@@ -761,6 +773,44 @@ uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_
 // are still answered BESIDE the value this way; a string's moved onto
 // `String.prototype` and are found by the ordinary prototype walk.
 Value rtArrayMethod(const std::string& key);
+
+// Rows of builtin_array.cpp's method table whose bodies live in a translation
+// unit of their own — `sort` (builtin_array_sort.cpp) and the three iterator
+// methods (builtin_array_iterator.cpp). Declared here so the table stays the
+// ONE list of what Array.prototype implements; rt_prop.cpp also hands
+// `rtArrayValuesBuiltin` out as `[Symbol.iterator]`, which 23.1.3.41 makes
+// the SAME function object — an identity the code-pointer intern table gives
+// for free.
+uint64_t rtArraySortBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtArrayValuesBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                              const uint64_t* argv);
+uint64_t rtArrayKeysBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtArrayEntriesBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                               const uint64_t* argv);
+
+// The `Array.prototype` OBJECT — the value the expression denotes, built from
+// the same method table an array answers beside itself, never a link on any
+// array's chain (builtin_array.cpp's comment above it says why both halves
+// hold). The identity test and the miss check exist for the two paths a plain
+// object takes: a write to it is refused by name (rt_prop_write.cpp), and a
+// full-chain read miss on it is diagnosed against the Array unimplemented
+// table rather than read as `undefined` (rt_prop.cpp).
+Value rtArrayPrototypeObject();
+bool rtIsArrayPrototypeObject(Value v);
+void rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key);
+
+// `String.prototype[Symbol.iterator]` (22.1.3.36), installed by
+// builtin_wrappers.cpp's intrinsic initializer beside the string methods.
+void rtInstallStringIterator(Rooted<Value>& proto);
+
+// `Function.prototype.bind` (20.2.3.2) and the bound function's brand
+// (builtin_function_bind.cpp). The state accessor is what `bronze_construct`
+// unwraps a bound layer with: 10.4.1.2 constructs the TARGET — bound args
+// prepended, [[BoundThis]] ignored — so the instance's prototype is the
+// ultimate target's.
+uint64_t rtFunctionBindBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                               const uint64_t* argv);
+bool rtBoundFunctionState(Value fn, Value& target, Value& boundThis, Value& boundArgs);
 
 // ---- the global constructor objects -----------------------------
 
