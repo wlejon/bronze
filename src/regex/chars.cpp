@@ -34,19 +34,35 @@ RangeList makeSpaces() {
     return list;
 }
 
+// 22.2.2.7.1 WordCharacters: the basic sixty-three, plus every unit that is not
+// one of them whose Canonicalize IS one of them.
+//
+// The second set is DERIVED from `canonicalize` rather than written out, and
+// that is the whole point of the function. A hard-coded member is a second
+// opinion about the fold, and two opinions drift: the list here used to name
+// U+017F and U+212A, while `canonicalize` — correctly — returns both unchanged,
+// because 22.2.2.9 step 4 keeps a non-ASCII unit whose uppercase is ASCII. So
+// `/ſ/i.test("s")` answered false and `/\w/i.test("ſ")` answered true
+// in the same program, which is exactly the disagreement chars.h says cannot
+// happen.
+//
+// Step 3 asserts the derived set is empty unless BOTH [[Unicode]] and
+// [[IgnoreCase]] hold, and bronze has no `u` flag — so it comes out empty here
+// in both modes. It is still computed, because "it comes out empty" is a
+// consequence of the table and has to keep being one as the table grows.
 RangeList makeWords(bool ignoreCase) {
-    RangeList list;
-    addRange(list, '0', '9');
-    addRange(list, 'A', 'Z');
-    addRange(list, '_', '_');
-    addRange(list, 'a', 'z');
-    if (ignoreCase) {
-        // 22.2.2.7.1 step 4: a unit whose canonicalization is already a word
-        // character is one too. Without `u` that is exactly these two, and
-        // they are here rather than in `canonicalize` because they are a fact
-        // about the SET and not about the comparison.
-        addRange(list, 0x017F, 0x017F);
-        addRange(list, 0x212A, 0x212A);
+    RangeList basic;
+    addRange(basic, '0', '9');
+    addRange(basic, 'A', 'Z');
+    addRange(basic, '_', '_');
+    addRange(basic, 'a', 'z');
+    normalizeRanges(basic);
+
+    RangeList list = basic;
+    for (uint32_t u = 0; u <= kMaxUnit; ++u) {
+        const uint16_t unit = static_cast<uint16_t>(u);
+        if (rangesContain(basic, unit)) continue;
+        if (rangesContain(basic, canonicalize(unit, ignoreCase))) addRange(list, unit, unit);
     }
     normalizeRanges(list);
     return list;
@@ -84,6 +100,23 @@ constexpr Range kUnknownCasedBlocks[] = {
     {0xFB00, 0xFB17},  // Latin and Armenian ligatures
     {0xFF21, 0xFF5A},  // fullwidth Latin
 };
+
+constexpr size_t kUnknownCasedBlockCount =
+    sizeof(kUnknownCasedBlocks) / sizeof(kUnknownCasedBlocks[0]);
+
+// The order is load-bearing, not cosmetic: a class range reports the LOWEST
+// refused unit it contains, and the scan stops at the first block it overlaps.
+// Written out ascending and disjoint above, and checked here so that adding a
+// block in the wrong place is a compile error rather than a diagnostic naming
+// the wrong code point.
+constexpr bool unknownCasedBlocksAscend() {
+    for (size_t i = 1; i < kUnknownCasedBlockCount; ++i) {
+        if (kUnknownCasedBlocks[i - 1].hi >= kUnknownCasedBlocks[i].lo) return false;
+    }
+    return true;
+}
+static_assert(unknownCasedBlocksAscend(),
+              "kUnknownCasedBlocks must be sorted and disjoint");
 
 // ---- the case table, block by block ---------------------------------------
 //
@@ -130,7 +163,8 @@ uint16_t foldLatinExtendedA(uint16_t unit) {
         // uppercase of U+00FF, which is why it sits alone here.
         case 0x0178: return unit;
         // U+017F LATIN SMALL LETTER LONG S uppercases to ASCII `S`: step 4
-        // again. It is why `wordRanges` has to name it separately.
+        // again, so `/ſ/i` does not match "s" — and, through `makeWords`,
+        // `\w` does not hold it either.
         case 0x017F: return unit;
         default: break;
     }
@@ -336,11 +370,22 @@ uint16_t canonicalize(uint16_t unit, bool ignoreCase) {
     return unit;
 }
 
-bool isUnknownCasedUnit(uint32_t unit) {
+bool firstUnknownCasedUnitInRange(uint32_t lo, uint32_t hi, uint32_t& out) {
+    if (lo > hi) return false;
     for (const Range& r : kUnknownCasedBlocks) {
-        if (unit >= r.lo && unit <= r.hi) return true;
+        if (r.lo > hi) return false;  // ascending: no later block can overlap
+        if (r.hi < lo) continue;
+        out = lo > r.lo ? lo : r.lo;
+        return true;
     }
     return false;
+}
+
+// The one-unit case of the range question, and written as it so the two cannot
+// answer differently about the same unit.
+bool isUnknownCasedUnit(uint32_t unit) {
+    uint32_t offender = 0;
+    return firstUnknownCasedUnitInRange(unit, unit, offender);
 }
 
 const std::vector<uint16_t>& caseCandidates(uint16_t cc) {

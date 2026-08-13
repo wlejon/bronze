@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "regex/chars.h"
 #include "regex/regex.h"
 
 using namespace bronze;
@@ -245,11 +246,89 @@ TEST_CASE("a range folds through the reverse direction of the table") {
     // A negated class inverts the ANSWER, after that membership test — not the
     // ranges before it.
     CHECK_FALSE(matches(*compileOk("[^\\u03b1-\\u03c9]", "i"), unitsOf({0x0393})));
-    // `\w` grows by exactly the two units whose canonicalization is already a
-    // word character, and only under `i`.
-    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x017F})));
-    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x212A})));
+    // 22.2.2.7.1's extra word characters are the units whose CANONICALIZATION
+    // is already a word character, and step 3 asserts there are none without
+    // `u`. U+017F and U+212A look like members and are not: 22.2.2.9 keeps a
+    // non-ASCII unit whose uppercase is ASCII, so neither canonicalizes to
+    // anything. The pair below is the equivalence — `\w` holds `ſ` exactly
+    // when `/ſ/i` matches an `s` — and it is what the set and the comparison
+    // used to answer differently.
+    CHECK_FALSE(matches(*compileOk("\\w", "i"), unitsOf({0x017F})));
+    CHECK_FALSE(matches(*compileOk("\\u017f", "i"), unitsOf({0x0073})));
+    CHECK_FALSE(matches(*compileOk("\\w", "i"), unitsOf({0x212A})));
+    CHECK_FALSE(matches(*compileOk("\\w"), unitsOf({0x017F})));
     CHECK_FALSE(matches(*compileOk("\\w"), unitsOf({0x212A})));
+    // `\W` is the complement of the same set, so it follows rather than being
+    // decided separately.
+    CHECK(matches(*compileOk("\\W", "i"), unitsOf({0x017F})));
+    CHECK(matches(*compileOk("\\W", "i"), unitsOf({0x212A})));
+    CHECK_FALSE(matches(*compileOk("\\W", "i"), unitsOf({0x006B})));
+    // The basic sixty-three are still there, and `i` still folds within them.
+    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x004B})));
+    CHECK(matches(*compileOk("\\w", "i"), unitsOf({0x006B})));
+}
+
+// The set the parser builds and the comparison the matcher runs are one
+// answer (chars.h), and this is that sentence as a test: `\w` holds a unit
+// exactly when the unit is one of the basic sixty-three or `canonicalize`
+// makes it one. Driven over every code unit, because the two agreed for all
+// but two of them and it was those two that were wrong.
+TEST_CASE("wordRanges is derived from canonicalize and cannot disagree with it") {
+    regex::RangeList basic;
+    regex::addRange(basic, '0', '9');
+    regex::addRange(basic, 'A', 'Z');
+    regex::addRange(basic, '_', '_');
+    regex::addRange(basic, 'a', 'z');
+    regex::normalizeRanges(basic);
+
+    for (bool ignoreCase : {false, true}) {
+        const regex::RangeList& words = regex::wordRanges(ignoreCase);
+        size_t disagreements = 0;
+        for (uint32_t u = 0; u <= regex::kMaxUnit; ++u) {
+            const uint16_t unit = static_cast<uint16_t>(u);
+            const bool derived = regex::rangesContain(basic, unit) ||
+                                 regex::rangesContain(basic, regex::canonicalize(unit, ignoreCase));
+            if (regex::rangesContain(words, unit) != derived) ++disagreements;
+        }
+        CHECK(disagreements == 0);
+    }
+    // And the derivation comes out empty, which is 22.2.2.7.1 step 3 for an
+    // engine with no `u` flag: the two sets are the same sixty-three.
+    CHECK(regex::wordRanges(true).size() == regex::wordRanges(false).size());
+    CHECK(regex::wordRanges(true).size() == 4);
+}
+
+// The refused-block query a class range asks. It is an interval overlap over a
+// short sorted list, so the cost does not grow with the range — and it reports
+// the LOWEST refused unit, which is why the list's order is checked at compile
+// time.
+TEST_CASE("the refused-case blocks are queried as intervals, not per unit") {
+    uint32_t offender = 0;
+    // A range that spells no refused unit but contains a whole block of them.
+    CHECK(regex::firstUnknownCasedUnitInRange(0x00FF, 0x2000, offender));
+    CHECK(offender == 0x0180);  // Latin Extended-B, the first block above U+00FF
+    // The whole plane reports the first block of all.
+    CHECK(regex::firstUnknownCasedUnitInRange(0x0000, 0xFFFF, offender));
+    CHECK(offender == 0x0180);
+    // An endpoint inside a block reports that endpoint, not the block's start.
+    CHECK(regex::firstUnknownCasedUnitInRange(0x0200, 0x0210, offender));
+    CHECK(offender == 0x0200);
+    // Ranges that thread the holes: the blocks bronze DOES fold are untouched,
+    // and each of these sits exactly between two refused blocks.
+    CHECK_FALSE(regex::firstUnknownCasedUnitInRange(0x0391, 0x03A9, offender));
+    CHECK_FALSE(regex::firstUnknownCasedUnitInRange(0x0430, 0x044F, offender));
+    CHECK_FALSE(regex::firstUnknownCasedUnitInRange(0x0561, 0x0586, offender));
+    CHECK_FALSE(regex::firstUnknownCasedUnitInRange('a', 'z', offender));
+    // One unit either side of a block boundary, so an off-by-one shows up.
+    CHECK_FALSE(regex::firstUnknownCasedUnitInRange(0x017F, 0x017F, offender));
+    CHECK(regex::firstUnknownCasedUnitInRange(0x0180, 0x0180, offender));
+    // The single-unit question is the same function, so the two cannot drift.
+    for (uint32_t u = 0; u <= regex::kMaxUnit; ++u) {
+        uint32_t ignored = 0;
+        if (regex::isUnknownCasedUnit(u) != regex::firstUnknownCasedUnitInRange(u, u, ignored)) {
+            FAIL("isUnknownCasedUnit disagrees with the range query at U+", u);
+        }
+    }
 }
 
 TEST_CASE("a case fold bronze has no table for is a named error, never a guess") {
@@ -265,6 +344,16 @@ TEST_CASE("a case fold bronze has no table for is a named error, never a guess")
     CHECK(compileError("\\u01C5", "i").find("U+01C5") != std::string::npos);
     CHECK(compileError("\\u10A0", "i").find("U+10A0") != std::string::npos);
     CHECK(compileError("\\u037A", "i").find("U+037A") != std::string::npos);
+    // A class RANGE is refused for what it CONTAINS and not for what it
+    // spells. Neither endpoint below is refused, and everything from U+0180 to
+    // U+02FF between them is — so the endpoint-only check compiled this and
+    // then answered plain containment for U+1E9E, silently skipping the fold.
+    CHECK(compileError("[\\u00ff-\\u2000]", "i").find("U+0180") != std::string::npos);
+    CHECK(compileError("[\\u0000-\\uffff]", "i").find("U+0180") != std::string::npos);
+    // Without `i` there is no fold to be wrong about, so the same class is an
+    // ordinary one.
+    CHECK(compileOk("[\\u00ff-\\u2000]") != nullptr);
+    CHECK(matches(*compileOk("[\\u00ff-\\u2000]"), unitsOf({0x1E9E})));
     // The blocks that DO fold are not refused — a refusal that outlived its
     // table would be a hard error for nothing.
     CHECK(compileOk("\\u03A9", "i") != nullptr);

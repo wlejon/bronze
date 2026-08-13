@@ -31,9 +31,15 @@ console.log(/š/i.test("Š"), /ı/i.test("I"));
 // Armenian: U+0561..U+0586 against U+0531..U+0556, an offset of 0x30.
 console.log(/ա/i.test("Ա"), /[ա-ֆ]/i.test("Ֆ"));
 
-// `\w` under `i` is the one place the flag changes a SET rather than a
-// comparison: U+017F LATIN SMALL LETTER LONG S and U+212A KELVIN SIGN join it,
-// because each canonicalizes to a character already in it.
+// `\w` under `i` is the one place the flag could change a SET rather than a
+// comparison -- and, without `u`, does not: 22.2.2.7.1 step 3 asserts the
+// extra word characters are empty unless [[Unicode]] and [[IgnoreCase]] are
+// BOTH true. U+017F LATIN SMALL LETTER LONG S and U+212A KELVIN SIGN are the
+// two that look like members, and step 4 of Canonicalize is exactly why they
+// are not: it keeps a non-ASCII character whose uppercase is ASCII, so neither
+// canonicalizes to a word character at all -- and the set therefore agrees
+// with the comparison two lines above, which refuses to fold the dotless i for
+// the same reason. `cases/regexp_word_class_i` is the whole set question.
 console.log(/^\w+$/i.test("ſk"), /^\w+$/.test("ſk"));
 console.log(/\w/i.test("K"), /\w/.test("K"));
 

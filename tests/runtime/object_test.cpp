@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -241,8 +242,6 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     CHECK_THROWS_WITH_AS(call("defineProperties", arr, 1),
                          doctest::Contains("Object.defineProperties on an array"),
                          std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("hasOwn", arr, 1), doctest::Contains("Object.hasOwn on an array"),
-                         std::runtime_error);
     CHECK_THROWS_WITH_AS(call("assign", arr, 0), doctest::Contains("Object.assign on an array"),
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", arr, 0),
@@ -276,6 +275,48 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
         call("assign", number, 1),
         doctest::Contains("Object.assign with a number or a symbol as the target"),
         std::runtime_error);
+
+    // `Object.hasOwn` was on the list above and has come off it. The refusal's
+    // REASON was accurate — an array's own keys are its elements and a `length`
+    // that lives outside the shape — but that is the reason bronze cannot
+    // DESCRIBE them, not the reason it cannot test for one. An existence test
+    // needs `hasElem` and nothing else, and `length` is an own property of
+    // every array (10.4.2), so the language's answer to `Object.hasOwn([1,2],
+    // 0)` is `true` and refusing it was a wrong answer given loudly.
+    // `getOwnPropertyNames` above stays refused: listing the keys is the part
+    // that needs somewhere to put them.
+    auto hasOwn = [&](Rooted<Value>& recv, Rooted<Value>& key) {
+        Rooted<Value> name{runtime::rtMakeString("hasOwn")};
+        Rooted<Value> target{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), name)};
+        REQUIRE(target.get().isObject());
+        // A plain block, and safe for the reason `FunctionHeader::call`'s
+        // arity vector is: nothing between here and the callee allocates, and
+        // `objectHasOwn`'s first statement is the RootedArgs copy.
+        Value args[2] = {recv.get(), key.get()};
+        return Value(
+            target.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, args));
+    };
+
+    // `arr` is two units long, so it can answer both of the questions an index
+    // has here. The HOLE — which is not an own key — is reachable only through
+    // `delete`, so it is pinned end to end in `cases/object_own_keys_array`.
+    {
+        Rooted<Value> element{Value::fromDouble(7)};
+        arr.get().asObject<ArrayHeader>()->setElem(runtime::rtHeap(), 0, element);
+    }
+    Rooted<Value> keyZero{Value::fromDouble(0)};
+    Rooted<Value> keyOne{Value::fromDouble(1)};
+    Rooted<Value> keyTwo{Value::fromDouble(2)};
+    Rooted<Value> keyLength{runtime::rtMakeString("length")};
+    Rooted<Value> keyName{runtime::rtMakeString("nope")};
+    CHECK(hasOwn(arr, keyZero).asBool());
+    // An element that holds `undefined` is still an own key: the question is
+    // about the KEY, and answering it from the value is how `a[1] = undefined`
+    // and `delete a[1]` would come to look alike.
+    CHECK(hasOwn(arr, keyOne).asBool());
+    CHECK_FALSE(hasOwn(arr, keyTwo).asBool());   // past `length`
+    CHECK(hasOwn(arr, keyLength).asBool());      // 10.4.2's own `length`
+    CHECK_FALSE(hasOwn(arr, keyName).asBool());  // a name an array cannot hold
 
     setFatalHandler(nullptr);
     bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;

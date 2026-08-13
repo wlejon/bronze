@@ -421,6 +421,21 @@ bool rtStringDataHasOwnKey(Value str, const std::string& key);
 // ALLOCATES.
 bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out);
 
+// Is `key` an own property of this [[StringData]], and therefore one a write
+// cannot change? 10.4.3 makes every one of them — each index (10.4.3.5) and
+// `length` (10.4.3.4) — non-writable and non-configurable, so the write is a
+// no-op in sloppy code and a TypeError in strict (13.15.2 PutValue step 6.d,
+// through 10.1.9.2's false). CopyDataProperties passes `strict` true whatever
+// mode its caller is in, because 7.3.25 step 5.c.ii spells `Set(to, key, v,
+// true)`.
+//
+// True means the write is REFUSED, whether or not it threw. It has to be asked
+// ahead of the ordinary property path: a wrapper is a plain object with a
+// shape, so `setProp` would store a slot under "0" happily — and every read
+// consults 10.4.3.5 first, so nothing could ever observe it. A property that
+// exists and cannot be read is the worse half of a wrong answer.
+bool rtStringDataWriteRefused(Value stringData, const std::string& key, bool strict);
+
 // Refuse `operation` by name when `v` is a String object with characters in it.
 // 10.4.3.3 OwnPropertyKeys puts index properties ahead of the ordinary own
 // keys, and bronze answers those on the property path only — so every

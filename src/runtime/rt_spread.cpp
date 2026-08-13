@@ -117,20 +117,49 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     }
 }
 
-// A copy into a String exotic TARGET that 10.4.3 forbids.
-//
-// Every own property of one — each index (10.4.3.5) and `length` (10.4.3.4) —
-// is non-writable, so the `Set(to, key, value, true)` that CopyDataProperties
-// performs (7.3.25 step 5.c.ii, and 20.1.2.1 step 3.c.iii for `Object.assign`)
-// throws for one. It has to be raised HERE: the copy below writes through
-// `setProp`, which sees a plain object with a shape and has no view of the
-// wrapped characters — so without this the write would land as a shadow
-// property no read could ever reach, since the property path consults 10.4.3.5
-// first. A silently unreachable property is the worse half of a wrong answer.
+// A copy into a String exotic TARGET that 10.4.3 forbids. `strict` is true
+// because CopyDataProperties spells `Set(to, key, value, true)` (7.3.25 step
+// 5.c.ii, and 20.1.2.1 step 3.c.iii for `Object.assign`), so this throws
+// whatever mode the code performing the spread was written in — which is the
+// one thing that separates it from the same refusal on the assignment path.
 bool stringTargetRefuses(Value stringData, const std::string& key) {
-    if (!rtStringDataHasOwnKey(stringData, key)) return false;
-    rtThrowTypeError("Cannot assign to read only property '" + key + "' of a String object");
-    return true;
+    return rtStringDataWriteRefused(stringData, key, /*strict=*/true);
+}
+
+// One own property of a [[StringData]], copied into `target` if 10.4.3 makes
+// it enumerable. False means the copy stopped — the target refused the key, or
+// a write raised — and the caller must not go on to the next one.
+//
+// The attributes are READ off the property rather than restated here, which is
+// what keeps `length` out of the result: 10.4.3.4 defines it non-enumerable and
+// 10.4.3.5 defines an index enumerable, so `Object.assign({}, "ab")` is two
+// properties and not three, and it is one place that decides that.
+bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
+                           Rooted<Value>& stringTarget, const std::string& keyText) {
+    StringOwnProperty own;
+    if (!rtStringDataOwnProperty(stringData.get(), keyText, own)) return true;
+    Rooted<Value> val{own.value};
+    if (!own.enumerable) return true;
+    if (stringTarget.get().isString() && stringTargetRefuses(stringTarget.get(), keyText)) {
+        return false;
+    }
+    Rooted<Value> key{rtMakeString(keyText)};
+    bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                    /*strict=*/false);
+    return !rtExceptionPending();
+}
+
+// Every own property a string contributes as a spread SOURCE, in 10.4.3.3's
+// order: the indices ascending, then `length`. Both a primitive string and the
+// object ToObject would box it into answer from the same characters, which is
+// why this takes the [[StringData]] and never a wrapper.
+void spreadStringSource(Rooted<Value>& target, Rooted<Value>& stringData,
+                        Rooted<Value>& stringTarget) {
+    const uint32_t length = stringData.get().asString<StringHeader>()->getLength();
+    for (uint32_t i = 0; i < length; ++i) {
+        if (!copyStringOwnProperty(target, stringData, stringTarget, std::to_string(i))) return;
+    }
+    copyStringOwnProperty(target, stringData, stringTarget, "length");
 }
 
 // One own enumerable property, copied into `target` under the same key. The
@@ -249,11 +278,19 @@ void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
 // keys overwrite earlier ones because this is an ordinary property write into
 // the object being built.
 //
-// `null` and `undefined` contribute nothing, which the spec says and which
-// `{ ...maybeOptions }` relies on. Every other non-object source is a named
-// hard error rather than the spec's silent empty result: bronze has no
-// wrapper objects to read index properties off a primitive, and a quiet `{}`
-// is the shape of bug that hides longest.
+// The SOURCE is put through ToObject (7.3.25 step 3, and 20.1.2.1 step 3.b for
+// `Object.assign`), so what a primitive contributes is what its box's own
+// enumerable properties are:
+//
+// - `null` and `undefined` contribute nothing and do not raise, which is step
+//   3.a and what `{ ...maybeOptions }` relies on.
+// - A STRING contributes its index properties — `{ ..."ab" }` is
+//   `{ 0: "a", 1: "b" }` — because 10.4.3 makes them own and enumerable.
+// - A number, a boolean or a symbol contributes nothing, because its box has
+//   no own property at all. The box is not built, for the reason
+//   builtin_object.cpp's `ownKeysOf` does not build one: nothing is the
+//   COMPLETE answer rather than the one bronze can reach, and a Number object
+//   would need the `Number.prototype` bronze has not got.
 void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     Value srcVal(srcBits);
     if (srcVal.isUndefined() || srcVal.isNull()) return;
@@ -270,6 +307,11 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         if (rtStringWrapperData(target.get(), data)) stringTarget.set(data);
     }
 
+    if (srcVal.isString()) {
+        spreadStringSource(target, src, stringTarget);
+        return;
+    }
+    if (!srcVal.isObject()) return;  // a number, a boolean or a symbol: nothing to copy
     if (isArray(srcVal)) {
         // An array's own enumerable keys are its indices; `length` is not
         // enumerable and is deliberately not copied. A HOLE is not an own key
@@ -289,14 +331,26 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         }
         return;
     }
+    // Every PRIMITIVE now has an answer, so what is left is an object kind
+    // whose own keys are not in a shape. It is named rather than reported
+    // empty, because "no properties" is a wrong answer about a Map with
+    // entries in it and not a missing one.
     if (!isPlainObject(srcVal)) {
-        fatal("object spread of a value that is not a plain object, an array, null or "
-              "undefined");
+        fatal((std::string("object spread of ") + rtObjectKindName(srcVal) +
+               " (its own keys are not in a property table a spread could read)")
+                  .c_str());
     }
     // Own enumerable keys of BOTH kinds: 7.3.25 CopyDataProperties takes
     // OwnPropertyKeys, not the string half of it, so `{ ...o }` and
     // `Object.assign` carry a symbol-keyed property across. That is the one
     // enumeration in the language that does.
+    //
+    // A String exotic object reaches here as an ordinary plain object, and its
+    // synthesised index properties are NOT among the keys below — 10.4.3.3
+    // puts them ahead of the shape's and bronze answers them on the property
+    // path alone, which is the gap `cases/blocked/string_object_own_keys.js`
+    // is waiting on. So `{ ...new String("ab") }` is `{}` where `{ ..."ab" }`
+    // is two properties; closing it is that case's work and not this one's.
     for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         // A symbol is never an own key of a String exotic object (10.4.3.3
         // reports the indices and `length`), so only a string key can collide.

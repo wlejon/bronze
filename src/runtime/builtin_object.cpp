@@ -402,11 +402,47 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     fatal("internal: a plain object whose root shape names no prototype");
 }
 
+// An array's own keys, for the one question that does not need them written
+// down: does this key name one?
+//
+// `requirePropertyTable` refused an array for every member alike, and its
+// reason — an array's own keys are its ELEMENTS and a `length` that lives
+// outside the shape — is true of DESCRIBING them and not of testing for one.
+// `hasElem` already answers for an index, and `length` is an own property of
+// every array (10.4.2). So this is the same three lines `in` runs
+// (rt_operator.cpp), which is deliberate: `Object.hasOwn(a, k)` and `k in a`
+// differ over the PROTOTYPE chain, and an array's own keys are not where they
+// are allowed to differ. `getOwnPropertyNames` of an array stays refused,
+// because listing the keys is the part that needs somewhere to put them.
+bool arrayHasOwnKey(Value arrVal, const std::string& key) {
+    if (key == "length") return true;
+    uint32_t index = 0;
+    if (!rtIsIntegerLikeKey(key, index)) return false;
+    auto* arr = arrVal.asObject<ArrayHeader>();
+    // A HOLE is not an own key: `delete a[1]` takes index 1 out of them without
+    // moving `length`, which is the same set `Object.keys` and `for-in` report.
+    return arr->hasElem(index);
+}
+
+bool isArray(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
+}
+
 // 20.1.2.13 Object.hasOwn(O, P) — `hasOwnProperty` with the receiver moved into
 // the argument list, and the reason the method form is not the idiom: the
 // method can be shadowed by an own property of the object being asked about.
 uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    if (isArray(args[0])) {
+        // A symbol is never an own key of an array: bronze has nowhere on one
+        // to put a symbol-keyed property (rt_prop_write.cpp refuses the write),
+        // so the indices and `length` are the complete set.
+        if (args[1].isSymbol()) return Value::fromBool(false).rawBits();
+        const std::string key = keyTextOf(args[1]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        // args[0] re-read through RootedArgs: `keyTextOf` allocates.
+        return Value::fromBool(arrayHasOwnKey(args[0], key)).rawBits();
+    }
     switch (ownKeysOf(args[0], "hasOwn")) {
         case OwnKeys::Threw:
             return Value::fromUndefined().rawBits();

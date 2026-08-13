@@ -1,0 +1,10 @@
+a b 2
+past name 2
+true TypeError
+true TypeError
+strict also past
+TypeError
+TypeError
+no error
+a b 2 past also past strict 1
+ab a ab

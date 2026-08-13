@@ -77,6 +77,24 @@ static void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::strin
     }
 }
 
+bool rtStringDataWriteRefused(Value stringData, const std::string& key, bool strict) {
+    if (!rtStringDataHasOwnKey(stringData, key)) return false;
+    if (strict) {
+        rtThrowTypeError("Cannot assign to read only property '" + key + "' of a String object");
+    }
+    return true;
+}
+
+// The same question asked of the WRAPPER rather than of the characters, which
+// is the form the two assignment paths below have: they hold a receiver, and
+// only a String exotic object among plain objects can refuse a write for a
+// reason its shape does not record.
+static bool stringExoticRefusesWrite(Value objVal, const std::string& key, bool strict) {
+    Value data;
+    if (!rtStringWrapperData(objVal, data)) return false;
+    return rtStringDataWriteRefused(data, key, strict);
+}
+
 extern "C" {
 
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry,
@@ -229,6 +247,14 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         fn->instance_shape = rtNewRootShape(valVal);
         return;
     }
+
+    // The last receiver kind that answers a write from something other than its
+    // shape, and the only one that is a plain object: `s.length = 9` and
+    // `s[0] = "z"` on a String exotic object are refused, not stored. The IC
+    // above cannot have short-circuited one — an entry is filled by `setProp`,
+    // which this refusal keeps from ever running for such a key, so no wrapper
+    // shape carries an index or `length` for it to have matched.
+    if (stringExoticRefusesWrite(objVal, keyStr, strict)) return;
 
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("property write with an unregistered key index");
@@ -448,13 +474,17 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         Rooted<Value> objRoot{objVal};
         Rooted<Value> val{Value(valBits)};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
+        // `s[0] = "z"`, the spelling this bug actually arrives in. Same answer
+        // as `bronze_prop_set`'s, for the reason the two TypeErrors above are
+        // the same: one operation, two spellings.
+        if (stringExoticRefusesWrite(objRoot.get(), keyText, strict)) return;
         SetRefusal refusal = SetRefusal::None;
         objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                         /*ic=*/nullptr, /*enumerable=*/true,
                                                         /*defineOwn=*/false,
                                                         /*receiver=*/nullptr, &refusal);
-        rtReportSetRefusal(refusal, strict,
-                           rtUtf8Chars(key.get().asString<StringHeader>()));
+        rtReportSetRefusal(refusal, strict, keyText);
         return;
     }
     fatal("computed index writes are only supported on arrays, plain objects "

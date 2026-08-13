@@ -594,9 +594,18 @@ private:
                 if (lhs.unit > rhs.unit) {
                     return fail("a character class range whose start is after its end");
                 }
-                if (flags_.ignoreCase &&
-                    (isUnknownCasedUnit(lhs.unit) || isUnknownCasedUnit(rhs.unit))) {
-                    return caseTableFailure(isUnknownCasedUnit(lhs.unit) ? lhs.unit : rhs.unit);
+                // Every unit the range CONTAINS, not just the two it spells.
+                // Testing the endpoints alone let `[ÿ- ]` through, and
+                // the pattern then answered plain containment for U+1E9E — the
+                // fold skipped rather than diagnosed, which is the exact silent
+                // wrong answer this refusal exists to prevent. The offender is
+                // named, because a message that says only "somewhere in this
+                // range" cannot be acted on.
+                if (flags_.ignoreCase) {
+                    uint32_t offender = 0;
+                    if (firstUnknownCasedUnitInRange(lhs.unit, rhs.unit, offender)) {
+                        return caseTableFailure(offender);
+                    }
                 }
                 addRange(node->ranges, lhs.unit, rhs.unit);
                 continue;

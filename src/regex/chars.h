@@ -35,10 +35,17 @@ void normalizeRanges(RangeList& list);
 RangeList complementRanges(const RangeList& list);
 bool rangesContain(const RangeList& list, uint32_t unit);
 
-// The three class escapes of 22.2.2.9. `\w` grows two members when `i` is set
-// and `u` is not — U+017F LATIN SMALL LETTER LONG S and U+212A KELVIN SIGN,
-// whose canonicalizations are `s` and `k` — which is the one place the flag
-// changes a SET rather than a comparison (22.2.2.7.1 WordCharacters).
+// The three class escapes of 22.2.2.9. `\w` is 22.2.2.7.1 WordCharacters: the
+// basic sixty-three, plus every unit that is not one of them whose
+// `canonicalize` IS one of them — a set the specification asserts is EMPTY
+// unless `u` and `i` are both set. bronze has no `u`, so `\w` is the same
+// sixty-three in both modes, and `ignoreCase` still selects the set because it
+// selects which `canonicalize` derives it.
+//
+// The derivation is what makes the two agree. U+017F and U+212A look like they
+// belong — each uppercases to a word character — but `canonicalize` returns
+// both unchanged (22.2.2.9 step 4 keeps a non-ASCII unit whose uppercase is
+// ASCII), so `/ſ/i` does not match "s" and `\w` must not hold "ſ" either.
 const RangeList& digitRanges();
 const RangeList& spaceRanges();
 const RangeList& wordRanges(bool ignoreCase);
@@ -63,6 +70,15 @@ uint16_t canonicalize(uint16_t unit, bool ignoreCase);
 // move together: a unit that is folded but still refused is a hard error for
 // nothing, and a unit that is neither is the silent wrong answer.
 bool isUnknownCasedUnit(uint32_t unit);
+
+// The lowest unit in [lo, hi] that `isUnknownCasedUnit` refuses, or false when
+// the range holds none. A class RANGE has to ask this rather than test its two
+// endpoints: `[ÿ- ]` names every refused unit between them without
+// spelling one, and skipping the fold there is the silent wrong answer the
+// refusal exists to prevent. The refused set is a short sorted list of blocks,
+// so this is an interval overlap and not a walk over the range — `[\0-￿]`
+// costs the same as `[a-b]`, and is now correctly a named error.
+bool firstUnknownCasedUnitInRange(uint32_t lo, uint32_t hi, uint32_t& out);
 
 // Every unit whose canonicalization is `cc` and is not `cc` itself.
 // CharacterSetMatcher asks whether the SET holds any member that canonicalizes
