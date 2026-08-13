@@ -134,7 +134,7 @@ Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
     // every map iterator, so the `next` read inside a loop is a monomorphic
     // cache hit.
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::Map)};
-    Rooted<Value> nextFn{Value(bronze_function_singleton(mapIterNext, 0))};
+    Rooted<Value> nextFn{rtNativeFunction(mapIterNext, 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     // Written AFTER the property above, which is the only thing here that can
@@ -324,8 +324,8 @@ const char* const kSetUnimplemented[] = {
 }  // namespace
 
 Value rtMapConstructor(const std::string& name) {
-    if (name == "Map") return Value(bronze_function_singleton(mapConstructor, 0));
-    if (name == "Set") return Value(bronze_function_singleton(setConstructor, 0));
+    if (name == "Map") return rtNativeFunction(mapConstructor, 0);
+    if (name == "Set") return rtNativeFunction(setConstructor, 0);
     return Value::fromUndefined();
 }
 
@@ -342,12 +342,12 @@ const char* rtMapConstructorName(Value fn) {
 Value rtMapMethod(bool isSetReceiver, const std::string& key) {
     if (isSetReceiver) {
         for (const Method& m : kSetMethods) {
-            if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+            if (key == m.name) return rtNativeFunction(m.code, m.arity);
         }
         return Value::fromUndefined();
     }
     for (const Method& m : kMapMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
 }
@@ -390,7 +390,7 @@ void rtCheckMapMember(bool isSetReceiver, const std::string& key) {
 }
 
 Value rtMapDefaultIterator(bool isSetReceiver) {
-    return Value(bronze_function_singleton(isSetReceiver ? mapValues : mapEntries, 0));
+    return rtNativeFunction(isSetReceiver ? mapValues : mapEntries, 0);
 }
 
 }  // namespace bronze::runtime

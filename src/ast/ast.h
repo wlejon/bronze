@@ -332,6 +332,14 @@ struct ObjectProp {
     // right. `value` is then the `x = 1` assignment the cover grammar parsed,
     // which is exactly what the refinement needs and what lowering must refuse.
     bool coverInitialized = false;
+    // `{ m() {} }` — a MethodDefinition rather than `m: <function>`. The
+    // difference is not the property it defines, which is the same one; it is
+    // the function's NAME. A shorthand method's `FunctionExpr::name` is the IL
+    // symbol the parser synthesized (`obj.0.m`), deliberately unlike its
+    // property key, while `m: function g() {}` really did write `g` — and
+    // 10.2.9 makes the first one's `.name` the key and the second one's `g`.
+    // Nothing downstream can tell the two apart from the FunctionExpr alone.
+    bool isMethod = false;
     // `get k() {}` / `set k(v) {}`. The property is then an ACCESSOR whose
     // `value` is the getter or the setter function; the two halves of one name
     // are one property, which is a fact only the runtime can enforce.

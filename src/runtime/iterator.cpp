@@ -214,7 +214,7 @@ Value iteratorPrototypeRoot() {
     Rooted<Value> obj{
         Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
     Rooted<Value> key{rtIteratorKey()};
-    Rooted<Value> self{Value(bronze_function_singleton(iteratorProtoSelf, 0))};
+    Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
     root = obj.get();
     rtHeap().add_permanent_root(&root);
@@ -252,6 +252,37 @@ Shape* iteratorObjectShape(IteratorProto kind) {
         // so the address `proto` was built at may already be stale.
         entry.proto = proto.get();
     }
+    // `@@toStringTag`, which is what `Object.prototype.toString` reads (20.1.3.6
+    // step 15) and the only reason these objects have any own property beyond
+    // the generator's three methods.
+    //
+    // Three of the four kinds get one. The MAP kind does not, and the reason is
+    // that bronze uses one prototype object where ECMA-262 has two:
+    // %MapIteratorPrototype%'s tag is "Map Iterator" (24.1.5.2.2) and
+    // %SetIteratorPrototype%'s is "Set Iterator" (24.2.5.2.2), and this single
+    // object stands in for both — so no value here is right for both receivers.
+    // Left absent rather than guessed: an object with no tag reads
+    // "[object Object]", which is a MISSING answer, where "Map Iterator" on a
+    // Set's iterator would be a wrong one.
+    // (cases/blocked/set_iterator_tostringtag.js pins the day that is fixed.)
+    switch (kind) {
+        case IteratorProto::Array:
+            // 23.1.5.2.2 — and a typed array's iterator shares this prototype
+            // by 23.2.5.2, so the one object really is the one ECMA-262 has.
+            rtDefineToStringTag(proto, "Array Iterator");
+            break;
+        case IteratorProto::RegExpString:
+            rtDefineToStringTag(proto, "RegExp String Iterator");  // 22.2.9.1.2
+            break;
+        case IteratorProto::Generator:
+            rtDefineToStringTag(proto, "Generator");  // 27.5.1.5
+            break;
+        case IteratorProto::Map:
+            break;
+    }
+    // Defining the tag allocates, for the same reason installing the generator
+    // methods above does.
+    entry.proto = proto.get();
     // The root shape holds the prototype, and `rtNewRootShape` hands it to the
     // collector — so the object above is reachable twice over, once for the
     // shape and once for the static this function reads it back from.

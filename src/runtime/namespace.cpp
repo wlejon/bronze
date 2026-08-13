@@ -31,6 +31,7 @@
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze {
@@ -118,11 +119,27 @@ bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out) {
     return true;
 }
 
+// 10.4.6.1: the one own SYMBOL-keyed property a namespace has, and the only own
+// key of one that is not an export. It is a fixed data property — the string
+// "Module", non-writable, non-enumerable, non-configurable — installed at
+// creation in the specification; here it is answered rather than stored,
+// because the object has no shape a property could go in and there is nothing
+// about it that could ever differ between two namespaces.
+bool rtModuleNamespaceOwnSymbol(Value nsVal, Value keyVal, Value& out) {
+    if (!asNamespace(nsVal)) return false;
+    if (!keyVal.isSymbol() || keyVal.asSymbol<SymbolHeader>() != rtSymbolToStringTag()) {
+        return false;
+    }
+    out = rtMakeString("Module");
+    return true;
+}
+
 bool rtModuleNamespaceOwnProperty(Value nsVal, Value keyVal, Value& outValue) {
     if (!asNamespace(nsVal)) return false;
-    // 10.4.6.5 step 1: a SYMBOL falls through to OrdinaryGetOwnProperty, and a
-    // namespace bronze builds carries no own symbol-keyed property — so no
-    // symbol is ever one of its own keys.
+    // 10.4.6.5 step 1: a SYMBOL falls through to OrdinaryGetOwnProperty, whose
+    // whole answer for a namespace is the `@@toStringTag` above — asked for by
+    // the caller, since only it knows whether it wants the descriptor's
+    // attributes or its value.
     if (keyVal.isSymbol()) return false;
     Rooted<Value> self{nsVal};
     Rooted<Value> key{rtValueToString(keyVal)};

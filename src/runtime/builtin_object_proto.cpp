@@ -1,5 +1,5 @@
 // `Object.prototype` (ECMA-262 20.1.3) — the intrinsic every plain object
-// inherits from, and the four members bronze answers on it.
+// inherits from, and the six members bronze answers on it.
 //
 // It is a real object on the real chain, found by the ordinary prototype walk —
 // not a table consulted beside it, which is what every other builtin receiver
@@ -39,6 +39,8 @@
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
+#include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -129,29 +131,147 @@ uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_
     return self.rawBits();
 }
 
+// 20.1.3.6 steps 4 through 14: the BUILTIN TAG, chosen from what the receiver
+// is rather than from anything it carries.
+//
+// It is a fixed list and an ordered one. `Array` comes before `Arguments` and
+// `Arguments` before `Function` because an arguments object is an array in
+// bronze (10.2.11 is stood in for by an ordinary array with a `callee`
+// accessor) and the specification's steps are tried in that order too — step 4
+// asks IsArray, step 5 asks for [[ParameterMap]]. Reversing them would tag
+// every arguments object "Array".
+//
+// The clause's remaining entries are internal slots, and bronze answers each
+// from the nearest thing it has to one:
+//
+//   - [[ErrorData]] is `rtIsErrorInstance`, a walk to `Error.prototype`. bronze
+//     builds every error from one of five constructors whose prototypes all
+//     chain to it, so the walk is the brand.
+//   - [[BooleanData]] and [[StringData]] are the wrappers' internal slots, read
+//     through the same accessors `valueOf` uses.
+//   - [[NumberData]] has no object to hold it — bronze has no `Number.prototype`
+//     and so no Number wrapper — but a PRIMITIVE number still reaches this with
+//     `.call(5)`, and its tag is fixed whether or not the box is built.
+//   - [[DateValue]] cannot occur: bronze has no `Date`, so no receiver can have
+//     one, and a branch for it would name a kind nothing can produce.
+const char* builtinTag(Value self) {
+    if (self.isNumber()) return "Number";   // step 9, via the box that is not built
+    if (self.isString()) return "String";   // step 10
+    if (self.isBool()) return "Boolean";    // step 8
+    if (!self.isObject()) return "Object";  // a symbol: its tag comes from @@toStringTag
+    switch (self.asObject<HeapObjectHeader>()->flags) {
+        case HeapKind::Array:
+            return rtIsArgumentsObject(self) ? "Arguments" : "Array";
+        case HeapKind::Function:
+            return "Function";
+        case HeapKind::RegExp:
+            return "RegExp";
+        default:
+            break;
+    }
+    if (rtIsErrorInstance(self)) return "Error";
+    if (Value data; rtStringWrapperData(self, data)) return "String";
+    if (Value data; rtBooleanWrapperData(self, data)) return "Boolean";
+    // Everything else — a plain object, a Map, a Set, a typed array, a module
+    // namespace — is step 14's "Object", and reads as something else only if
+    // step 15's @@toStringTag says so.
+    return "Object";
+}
+
+// 20.1.3.6 Object.prototype.toString.
+//
+// Its receiver rule is the one thing here that is not the ordinary one: steps 1
+// and 2 answer for `undefined` and `null` BEFORE step 3's ToObject, which is
+// why those two have an answer at all where every other member of this file
+// raises for them. So this does not go through `requireProtoReceiver`.
+//
+// Nor does it refuse a receiver bronze cannot walk. The other members of
+// 20.1.3 need the receiver's own property table and refuse a kind that has
+// none; this one needs a tag, and every kind has one — which is exactly why
+// `Object.prototype.toString.call(x)` is the type probe real code uses it as,
+// and why making it die on a Map would be worse than useless.
+uint64_t objectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self(thisBits);
+    if (self.isUndefined()) return rtMakeString("[object Undefined]").rawBits();
+    if (self.isNull()) return rtMakeString("[object Null]").rawBits();
+
+    // Step 4 onward wants O = ToObject(this). bronze does not build the box:
+    // every question below is about what the value IS, and a wrapper's answer
+    // to each is the wrapped primitive's — `builtinTag` names the two places
+    // that would have differed, and neither does.
+    std::string tag = builtinTag(self);
+
+    // Steps 15-17. An ordinary property GET, so a user-installed
+    // `[Symbol.toStringTag]` — own or inherited — is found by the ordinary
+    // prototype walk and WINS over the tag above. A non-string one is ignored
+    // rather than coerced: step 17 keeps the builtin tag unless step 16 found a
+    // String, which is what makes `{ [Symbol.toStringTag]: 42 }` read
+    // "[object Object]" and not "[object 42]".
+    //
+    // For a receiver with no shape the walk has nowhere to go, and the answer
+    // comes from rt_prop.cpp's `toStringTagOf` — the switch over heap kinds
+    // that stands in for the `Map.prototype` and `%TypedArray%.prototype`
+    // objects bronze does not have. The order is what makes that sound: this
+    // read runs first and unconditionally, so anything a program installed is
+    // consulted before any stand-in can be.
+    Rooted<Value> receiver{self};
+    Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
+    Rooted<Value> found{
+        Value(bronze_elem_get(receiver.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (found.get().isString()) tag = rtUtf8Chars(found.get().asString<StringHeader>());
+
+    return rtMakeString("[object " + tag + "]").rawBits();
+}
+
+// 20.1.3.5 Object.prototype.toLocaleString: `Invoke(O, "toString")` with no
+// arguments, and nothing else. No locale is consulted — the name is a hook the
+// subclasses of 21.1.3.4, 23.1.3.32 and friends override, and the base
+// definition is a forwarding call — so this breaks no determinism rule.
+//
+// It reads `toString` off the RECEIVER rather than calling the function above,
+// because that is the observable difference the clause exists for: an object
+// with its own `toString` gets its own, and that is the whole point of
+// `toLocaleString` being specified as an Invoke.
+uint64_t objectProtoToLocaleString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    Rooted<Value> key{rtMakeString("toString")};
+    Rooted<Value> method{Value(bronze_elem_get(self.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!method.get().isObject() ||
+        method.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return rtThrowTypeError("Object.prototype.toLocaleString called on a receiver whose "
+                                "`toString` is not a function")
+            .rawBits();
+    }
+    return bronze_dynamic_call(method.get().rawBits(), self.get().rawBits(), 0, nullptr);
+}
+
 const NativeMethod kObjectProtoMethods[] = {
     {"hasOwnProperty", objectProtoHasOwnProperty, 1},
     {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
     {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1},
+    {"toLocaleString", objectProtoToLocaleString, 0},
+    {"toString", objectProtoToString, 0},
     {"valueOf", objectProtoValueOf, 0},
 };
 
 // 20.1.3 members bronze has not built, diagnosed by name on a plain object's
-// full-chain miss.
-//
-// `toString` is deliberately here rather than answered with "[object Object]".
-// 20.1.3.6 is a tag lookup — Array, Function, Error, Arguments, each of the
-// wrapper kinds — and bronze cannot ask the question for all of them: an error
-// object here is an ordinary plain object with no [[ErrorData]] to find, so a
-// toString written today would answer "[object Object]" for one and be
-// confidently wrong at exactly the place `Object.prototype.toString.call(x)` is
-// used. `toLocaleString` is 20.1.3.5, which calls toString.
+// full-chain miss. `__defineGetter__` and its three siblings are Annex B
+// (B.2.2) and are deliberately absent from this list as well as from bronze:
+// nothing in it is a name a program should be reaching for.
 const char* const kObjectProtoUnimplemented[] = {
-    "toLocaleString",
-    "toString",
+    "__proto__",
 };
 
 }  // namespace
+
+void rtDefineToStringTag(Rooted<Value>& obj, const char* tag) {
+    Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
+    Rooted<Value> val{rtMakeString(tag)};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr,
+                                                /*enumerable=*/false, /*defineOwn=*/true);
+}
 
 void rtInstallObjectProtoMethods(Rooted<Value>& proto) {
     // `rtDefineMethods` is a DefineOwnProperty with `enumerable: false`, which

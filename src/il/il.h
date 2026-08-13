@@ -390,7 +390,25 @@ struct Function {
     // first one with a default. Fewer is a diagnosed arity error; anything
     // between this and the fixed parameter count is filled with `undefined`
     // at the call site, and the callee's prologue decides what that means.
+    //
+    // It is also, exactly, ECMA-262 15.1.5 ExpectedArgumentCount — so it is
+    // what 10.2.10 SetFunctionLength makes the function's `length` property,
+    // and the backend passes it through as such. Two facts, one count, and
+    // deliberately not two fields: a program that could see them disagree would
+    // be seeing a bug.
     uint32_t requiredArgs = 0;
+    // 10.2.9 SetFunctionName's answer for this function, as an index into
+    // `Module::keyConstants`. It is NOT `name` above: that is the IL's own
+    // identifier, synthesized as `__anon_fn_N` for a function the source did
+    // not name, while this is the string the language says `f.name` is — "" for
+    // a genuinely anonymous function, the binding's name under NamedEvaluation
+    // (8.6.2), and "get x" / "set x" for an accessor.
+    //
+    // `BRONZE_ABI_FN_NAME_NONE` means the name was never recorded, which a
+    // program can only reach for a function whose name is computed at runtime
+    // (`class C { [k]() {} }`); reading `.name` off one is then a diagnosed
+    // refusal rather than a wrong answer.
+    uint32_t nameKeyIndex = 0xFFFFFFFFu;
 
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {

@@ -29,6 +29,7 @@ constexpr int32_t kPatternKindObject = 1;
 // two already-evaluated operands would run them every time.
 std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
                                                               const ast::Expr& defaultExpr,
+                                                              const std::string& bindingName,
                                                               il::Function& ilFn) {
     Value cur = boxValueIfNeeded(current, ilFn);
 
@@ -47,7 +48,11 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     auto statePre = snapshotVarStates();
 
     setCurrentBlock(bDefault);
-    auto defOpt = lowerExpr(defaultExpr, ilFn);
+    // 8.6.2 through 14.3.3.3 / 15.1.3: the initializer of a SingleNameBinding
+    // is a NamedEvaluation position, so an anonymous function here takes the
+    // binding's name rather than "".
+    auto defOpt = bindingName.empty() ? lowerExpr(defaultExpr, ilFn)
+                                      : lowerNamedEvaluation(defaultExpr, bindingName, ilFn);
     if (!defOpt) return std::nullopt;
     auto stateDefault = snapshotVarStates();
     const bool defaultReaches = !currentBlockIsTerminated(ilFn);
@@ -210,7 +215,8 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
 
         Value value{readId, il::Type::Dynamic};
         if (elem.defaultValue) {
-            auto withDefault = emitDefaultIfUndefined(value, *elem.defaultValue, ilFn);
+            auto withDefault = emitDefaultIfUndefined(
+                value, *elem.defaultValue, elem.pattern ? std::string{} : elem.name, ilFn);
             if (!withDefault) return false;
             value = *withDefault;
         }
@@ -302,7 +308,8 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
 
         Value value{readId, il::Type::Dynamic};
         if (elem.defaultValue) {
-            auto withDefault = emitDefaultIfUndefined(value, *elem.defaultValue, ilFn);
+            auto withDefault = emitDefaultIfUndefined(
+                value, *elem.defaultValue, elem.pattern ? std::string{} : elem.name, ilFn);
             if (!withDefault) return false;
             value = *withDefault;
         }
@@ -402,7 +409,8 @@ bool Lowerer::lowerParamBindings(const std::vector<ast::Param>& params, uint32_t
         // A rest parameter never takes a default and never omits: it arrives as
         // an array the calling convention built.
         if (param.defaultValue) {
-            auto withDefault = emitDefaultIfUndefined(value, *param.defaultValue, ilFn);
+            auto withDefault = emitDefaultIfUndefined(
+                value, *param.defaultValue, param.pattern ? std::string{} : param.name, ilFn);
             if (!withDefault) return false;
             value = *withDefault;
         }

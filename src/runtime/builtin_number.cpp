@@ -217,7 +217,7 @@ Value g_numberNamespace = Value::fromUndefined();
 
 Value rtGlobalNumericFunction(const std::string& name) {
     for (const NamespaceFn& fn : kGlobalFunctions) {
-        if (name == fn.name) return Value(bronze_function_singleton(fn.code, fn.arity));
+        if (name == fn.name) return rtNativeFunction(fn.code, fn.arity);
     }
     return Value::fromUndefined();
 }
@@ -229,7 +229,7 @@ Value rtNumberNamespace() {
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kNumberFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     for (const NamespaceConst& c : kNumberConstants) {

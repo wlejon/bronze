@@ -98,19 +98,29 @@ TEST_CASE("three bodies in one module, three answers") {
     // A class method (strict by 15.7 with no directive anywhere), a function
     // with its own directive, a function without one, and the module's own top
     // level. Nothing but a per-instruction flag can express this module.
-    const std::string il = lowerToIl(
+    DiagnosticSink diags;
+    SourceBuffer buf("test.js", "");
+    const auto mod = parseAndLower(
         "const o = { k: 0 };\n"
         "class C {\n"
         "  m() { o.k = 1; }\n"
         "}\n"
         "o.k = 2;\n"
         "function s() { \"use strict\"; o.k = 3; }\n"
-        "function t() { o.k = 4; }\n");
+        "function t() { o.k = 4; }\n",
+        diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod.has_value());
+    const std::string il = il::print(*mod);
 
-    CHECK(has(functionBody(il, "func C.m"), "prop.set %1, 2, %3, 4, 1\n"));
-    CHECK(has(functionBody(il, "func s()"), "prop.set %2, 2, %4, 0, 1\n"));
-    CHECK(has(functionBody(il, "func t()"), "prop.set %1, 2, %3, 1, 0\n"));
-    CHECK(has(functionBody(il, "func main()"), "prop.set %8, 2, %10, 5, 0\n"));
+    // This is the one test in the file whose source declares functions, so it
+    // is the one whose key indices are not a fixed prefix — `k` sits behind
+    // whatever the function names interned. Spelled through the lookup.
+    const std::string k = std::to_string(bronze::lower_test::keyIndex(*mod, "k"));
+    CHECK(has(functionBody(il, "func C.m"), ("prop.set %1, " + k + ", %3, 4, 1\n").c_str()));
+    CHECK(has(functionBody(il, "func s()"), ("prop.set %2, " + k + ", %4, 0, 1\n").c_str()));
+    CHECK(has(functionBody(il, "func t()"), ("prop.set %1, " + k + ", %3, 1, 0\n").c_str()));
+    CHECK(has(functionBody(il, "func main()"), ("prop.set %8, " + k + ", %10, 5, 0\n").c_str()));
 }
 
 TEST_CASE("an ordinary call passes undefined as its this value") {

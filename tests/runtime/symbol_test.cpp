@@ -210,3 +210,44 @@ TEST_CASE("The symbol registry answers by content and reverses by identity") {
     CHECK(rtSymbolKeyFor(impostor.get()).isUndefined());
     CHECK(rtSymbolKeyFor(Value::fromDouble(1.0)).isUndefined());
 }
+
+// ---- the well-known symbols -------------------------------------------------
+//
+// 20.4.2.5 and 20.4.2.14 make `Symbol.iterator` and `Symbol.toStringTag` two
+// values in the specification's Well-Known Symbols table, and the table's whole
+// content is that each name is ONE value everywhere it appears. Every property
+// of a symbol above is identity, so the only thing that could go wrong here is
+// a second interning — a reader and a writer of the same hook holding two
+// symbols that describe themselves identically and match nothing.
+//
+// The oracle cases see the consequence (`cases/to_string_tag` pins
+// `Symbol.toStringTag === Symbol.toStringTag`); this sees the cause.
+
+TEST_CASE("a well-known symbol is one interned identity, described by its name") {
+    ShadowStackFrame frame;
+
+    SymbolHeader* tag = rtSymbolToStringTag();
+    REQUIRE(tag != nullptr);
+    CHECK(rtSymbolToStringTag() == tag);
+    CHECK(rtSymbolIterator() == rtSymbolIterator());
+    // Two names, two symbols. They are told apart by ADDRESS, so this is the
+    // assertion that would fail if one stood in for the other.
+    CHECK(rtSymbolIterator() != tag);
+
+    REQUIRE(tag->description != nullptr);
+    CHECK(rtUtf8Chars(tag->description) == "Symbol.toStringTag");
+    CHECK(rtUtf8Chars(rtSymbolIterator()->description) == "Symbol.iterator");
+    CHECK(rtSymbolDescriptiveString(Value::fromSymbol(tag)) == "Symbol(Symbol.toStringTag)");
+
+    // A symbol built with the same description is a DIFFERENT key, which is
+    // what stops a program reaching a well-known hook by spelling it.
+    Rooted<Value> impostor{symbolNamed("Symbol.toStringTag")};
+    CHECK(impostor.get().asSymbol<SymbolHeader>() != tag);
+    CHECK_FALSE(PropertyKey::fromValue(impostor.get())
+                    .matches(PropertyKey::fromValue(Value::fromSymbol(tag))));
+
+    // And it is not in the `Symbol.for` registry: 20.4.2.2 answers `undefined`
+    // for a well-known symbol, which is the observable half of "the table and
+    // the registry are two different tables".
+    CHECK(rtSymbolKeyFor(Value::fromSymbol(tag)).isUndefined());
+}

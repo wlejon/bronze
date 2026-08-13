@@ -164,7 +164,7 @@ void rtInstallGeneratorPrototype(Rooted<Value>& proto) {
         {"throw", generatorThrow, 1},
     };
     for (const auto& method : methods) {
-        Rooted<Value> fn{Value(bronze_function_singleton(method.code, method.arity))};
+        Rooted<Value> fn{rtNativeFunction(method.code, method.arity)};
         Rooted<Value> key{rtMakeString(method.key)};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn);
     }

@@ -168,7 +168,7 @@ void ensureErrorClasses() {
     ensureExceptionRoots();
 
     for (ErrorClass& cls : g_errorClasses) {
-        Rooted<Value> ctor{Value(bronze_function_singleton(cls.code, 1))};
+        Rooted<Value> ctor{rtNativeFunction(cls.code, 1)};
         // `Error.prototype` and `TypeError.prototype` must be distinct objects
         // with the second's prototype pointing at the first, which is exactly
         // what `class TypeError extends Error` would build — so it is built the

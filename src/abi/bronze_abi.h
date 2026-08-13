@@ -47,6 +47,18 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * they can disagree. */
 #define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
 
+/* A function object whose `name` was never recorded, as the key index
+ * `bronze_create_function` and `bronze_function_singleton` take.
+ *
+ * Every function the COMPILER creates has one — 10.2.9 SetFunctionName gives
+ * even an anonymous function expression the empty string — so this is not
+ * "anonymous". It is the runtime's own native builtins, which are function
+ * objects made from a C function pointer and have no key index to name: for
+ * those `f.name` and `f.length` stay the named hard error they have always
+ * been, rather than answering "" and 0, which would be two wrong facts about
+ * `Object.keys`. */
+#define BRONZE_ABI_FN_NAME_NONE 0xFFFFFFFFu
+
 /* The uninitialized-binding singleton (runtime/value.h Tag::Uninitialized):
  * what an environment slot holds for a `let`, `const` or `class` binding
  * between the moment its scope is entered and the moment its declaration is
@@ -101,7 +113,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_arg_at,              BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_class_extends,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_create_array,        BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
-    X(bronze_create_function,     BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    X(bronze_create_function,     BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_env_create,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
@@ -129,7 +141,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_dynamic_call,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_construct,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
-    X(bronze_function_singleton,  BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32)) \
+    X(bronze_function_singleton,  BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_string_concat,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_print_value,         BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \

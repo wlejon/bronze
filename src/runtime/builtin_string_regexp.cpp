@@ -395,7 +395,7 @@ uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     // `[Symbol.iterator]` self-hook lives — inherited from %IteratorPrototype%,
     // so this object has no own symbol-keyed property.
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::RegExpString)};
-    Rooted<Value> nextFn{Value(bronze_function_singleton(matchAllNext, 0))};
+    Rooted<Value> nextFn{rtNativeFunction(matchAllNext, 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, RegExpStringIteratorSlot::IteratingRegExp, re.get());

@@ -174,18 +174,32 @@ static const bool g_valueCachesRegistered = [] {
     return true;
 }();
 
+// 10.2.9 and 10.2.10, as the one place a function object's two own data
+// properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
+// is what a native builtin gets — the header's comment says why that is not the
+// same as an empty name.
+void rtSetFunctionNameAndLength(FunctionHeader* fn, uint32_t nameKey, uint32_t length) {
+    if (nameKey == BRONZE_ABI_FN_NAME_NONE) return;
+    StringHeader* header = rtKeyHeader(nameKey);
+    if (!header) fatal("a function created with an unregistered name key index");
+    fn->name = header;
+    fn->length = length;
+}
+
 extern "C" {
 
 void bronze_module_env_set(uint64_t envBits) { g_moduleEnv = Value(envBits); }
 
 uint64_t bronze_module_env_get() { return g_moduleEnv.rawBits(); }
 
-uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity) {
+uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
+                                   uint32_t nameKey) {
     for (const auto& entry : g_functionSingletons) {
         if (entry.first == code) return entry.second.rawBits();
     }
     FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
     fn->header.flags = HeapKind::Function;
+    rtSetFunctionNameAndLength(fn, nameKey, length);
     g_functionSingletons.emplace_back(code, Value::fromObject(fn));
     return g_functionSingletons.back().second.rawBits();
 }

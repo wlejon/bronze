@@ -285,7 +285,7 @@ Value rtMathObject() {
 
     for (const MathFn& fn : kMathFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     for (const MathConst& c : kMathConstants) {
@@ -293,6 +293,11 @@ Value rtMathObject() {
         Rooted<Value> val{Value::fromDouble(c.value)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
+
+    // 21.3.1.9: `Math[@@toStringTag]` is the string "Math", which is what makes
+    // `Object.prototype.toString.call(Math)` read "[object Math]". An own
+    // property of this object in the specification, so it is one here too.
+    rtDefineToStringTag(obj, "Math");
 
     g_mathObject = obj.get();
     rtHeap().add_permanent_root(&g_mathObject);

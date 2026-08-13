@@ -418,12 +418,12 @@ const FlagMember kRegExpFlagMembers[] = {
 
 Value rtRegExpConstructor(const std::string& name) {
     if (name != "RegExp") return Value::fromUndefined();
-    return Value(bronze_function_singleton(regexpConstructor, 2));
+    return rtNativeFunction(regexpConstructor, 2);
 }
 
 Value rtRegExpMethod(const std::string& key) {
     for (const RegExpMethod& m : kRegExpMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
 }

@@ -1,0 +1,32 @@
+decl 2
+expr 0
+inner 1
+arrow 2
+reassigned 0
+true
+fromProperty fromArrow
+shorthand 2
+tag
+Klass 1
+method 2
+stat 0
+get value 0
+set value 1
+1
+1
+0
+0
+3
+true
+true
+true true
+true true
+true false
+decl 2
+function
+method
+fromKey
+fromIndex
+param
+nested
+written

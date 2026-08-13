@@ -281,13 +281,13 @@ const char* const kTypedArraySlotMembers[] = {
 }  // namespace
 
 Value rtTypedArrayConstructor(const std::string& name) {
-    if (name == "ArrayBuffer") return Value(bronze_function_singleton(arrayBufferCtor, 0));
+    if (name == "ArrayBuffer") return rtNativeFunction(arrayBufferCtor, 0);
     for (const CtorEntry& entry : kCtors) {
         if (name == elementKindInfo(entry.kind).name) {
             // Arity 0: a variadic native must not be padded, or
             // `new Float32Array(buf)` would arrive with two extra undefined
  // arguments and take the three-argument branch.
-            return Value(bronze_function_singleton(entry.code, 0));
+            return rtNativeFunction(entry.code, 0);
         }
     }
     return Value::fromUndefined();
@@ -307,7 +307,7 @@ const char* rtTypedArrayConstructorName(Value fn) {
 
 Value rtTypedArrayConstructorFor(ElementKind kind) {
     for (const CtorEntry& entry : kCtors) {
-        if (entry.kind == kind) return Value(bronze_function_singleton(entry.code, 0));
+        if (entry.kind == kind) return rtNativeFunction(entry.code, 0);
     }
     fatal("internal: no constructor for this typed-array element kind");
 }

@@ -308,8 +308,21 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                    ? builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS)
                                    : operand(inst, 0, "Undefined environment in CreateFunction");
             if (!env) return false;
+            if (!require(inst.calleeIndex < shared_.module.functions.size(),
+                         "CreateFunction of an out-of-range function index")) {
+                return false;
+            }
+            // The two OWN data properties every function object has (10.2.9,
+            // 10.2.10) come off the IL function rather than off the
+            // instruction: they are facts about the callee, exactly as the
+            // adaptation arity in `FunctionRef` below already is, and one
+            // instruction carrying a copy of a callee's fact is one more place
+            // for the two to disagree.
+            const auto& created = shared_.module.functions[inst.calleeIndex];
             callWith(abi.bronze_create_function,
-                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32), env});
+                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32),
+                      builder_.getInt32(created.requiredArgs),
+                      builder_.getInt32(created.nameKeyIndex), env});
             return true;
         }
         case il::Op::FunctionRef: {
@@ -324,7 +337,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // put an `undefined` in the rest array.
             uint32_t arity = target.adaptArity();
             callWith(abi.bronze_function_singleton,
-                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity)});
+                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity),
+                      builder_.getInt32(target.requiredArgs),
+                      builder_.getInt32(target.nameKeyIndex)});
             return true;
         }
 

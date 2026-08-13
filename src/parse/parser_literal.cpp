@@ -362,6 +362,7 @@ ExprPtr Parser::parseObjectLit() {
             if (check(TokenKind::LParen)) {
                 auto method = parseMethodTail(methodName("computed"), openBracket.span);
                 if (!method) return nullptr;
+                prop.isMethod = true;
                 prop.value = std::move(method);
             } else {
                 if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
@@ -402,6 +403,7 @@ ExprPtr Parser::parseObjectLit() {
                 // with.
                 auto method = parseMethodTail(methodName(prop.key), nameTok.span);
                 if (!method) return nullptr;
+                prop.isMethod = true;
                 prop.value = std::move(method);
                 obj->props.push_back(std::move(prop));
                 if (!match(TokenKind::Comma)) break;
@@ -450,6 +452,7 @@ ExprPtr Parser::parseObjectLit() {
             if (check(TokenKind::LParen)) {
                 auto method = parseMethodTail(methodName(prop.key), sTok.span);
                 if (!method) return nullptr;
+                prop.isMethod = true;
                 prop.value = std::move(method);
             } else {
                 if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;

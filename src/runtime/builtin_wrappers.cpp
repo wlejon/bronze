@@ -248,7 +248,7 @@ Value rtBooleanPrototype() {
 void rtDefineMethods(Rooted<Value>& proto, const NativeMethod* methods, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         Rooted<Value> key{rtMakeString(methods[i].name)};
-        Rooted<Value> val{Value(bronze_function_singleton(methods[i].code, methods[i].arity))};
+        Rooted<Value> val{rtNativeFunction(methods[i].code, methods[i].arity)};
         // `defineOwn`, because this is DefineOwnProperty and not an assignment,
         // and `enumerable: false`, because that is what 22.1.3 and 20.3.3 say
         // every one of these is — see the file header for why that is the load-

@@ -417,7 +417,7 @@ uint64_t taValues(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // every typed-array iterator has the same hidden class and the `next` read
     // inside a loop is a monomorphic cache hit.
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::Array)};
-    Rooted<Value> nextFn{Value(bronze_function_singleton(taIterNext, 0))};
+    Rooted<Value> nextFn{rtNativeFunction(taIterNext, 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, ArrayIteratorSlot::IteratedArrayLike, self.get());
@@ -444,11 +444,11 @@ const Method kMethods[] = {
 // same function object as `values`. Reached by KEY rather than by name now
 // that the key is a symbol, so it is handed out here instead of sitting in the
 // string table above — where it only ever was because the key used to be one.
-Value rtTypedArrayIteratorMethod() { return Value(bronze_function_singleton(taValues, 0)); }
+Value rtTypedArrayIteratorMethod() { return rtNativeFunction(taValues, 0); }
 
 Value rtTypedArrayMethod(const std::string& key) {
     for (const Method& m : kMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
 }

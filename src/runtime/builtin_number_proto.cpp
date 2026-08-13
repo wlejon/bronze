@@ -285,7 +285,7 @@ const char* const kNumberProtoMembers[] = {
 
 Value rtNumberMethod(const std::string& key) {
     for (const NumberMethod& m : kNumberMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
 }

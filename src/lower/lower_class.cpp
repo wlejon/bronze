@@ -59,8 +59,11 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
 
     // The class IS its constructor function, and the binding the declaration
     // introduces holds exactly that value.
-    auto ctorVal = lowerClosure(*ctor->fn, cls->name, ctor->fn->params, ctor->fn->returnType,
-                                ctor->fn->body, cls->span, ilFn);
+    // 15.7.14 step 15: the constructor's `name` is the CLASS's name, not the
+    // parser's synthesized `constructor`, and its `length` is the constructor's
+    // own parameter list.
+    auto ctorVal = lowerClosure(*ctor->fn, cls->name, cls->name, ctor->fn->params,
+                                ctor->fn->returnType, ctor->fn->body, cls->span, ilFn);
     if (!ctorVal) return false;
     if (!declareVariable(cls->name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
                          /*isVar=*/false, /*isInitialized=*/true, ctorVal->id, cls->span)) {
@@ -116,8 +119,15 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
             keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
         }
 
-        auto fnVal = lowerClosure(*m.fn, m.fn->name, m.fn->params, m.fn->returnType, m.fn->body,
-                                  m.fn->span, ilFn);
+        // A method's `name` is its PROPERTY KEY (15.4.5 through
+        // MethodDefinitionEvaluation's SetFunctionName). A COMPUTED key has
+        // none until it is evaluated and ToPropertyKey'd at run time, which is
+        // a fact this compilation does not have — so it is recorded as absent
+        // rather than as "".
+        auto fnVal = lowerClosure(
+            *m.fn, m.fn->name,
+            m.keyExpr ? std::optional<std::string>{} : std::optional<std::string>{m.name},
+            m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
         if (!fnVal) return false;
 
         if (keyBoxed) {

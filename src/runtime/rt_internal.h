@@ -159,6 +159,24 @@ void rtCheckTypedArrayMember(const char* kindName, const std::string& key);
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal);
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal);
 
+// 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength, filled in from the key
+// index the creator was given. `BRONZE_ABI_FN_NAME_NONE` leaves both absent.
+void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uint32_t length);
+
+// A NATIVE builtin as a function object, interned by code pointer.
+//
+// It records NO `name` and NO `length`, and that is a decision rather than an
+// omission: `arity` in the tables these are built from is the count a short
+// call is padded to, which is not 10.2.10's `length` (`Object.assign` pads to 0
+// and has length 2), and a `length` copied from it would be a wrong answer
+// where none is a diagnosed missing one. So `Object.keys.name` stays the named
+// hard error it has always been while a function bronze COMPILED answers, which
+// is the split rt_members.cpp's tables already draw everywhere else.
+inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
+    return Value(bronze_function_singleton(code, arity, /*length=*/0,
+                                           BRONZE_ABI_FN_NAME_NONE));
+}
+
 // A native builtin's prologue. bronze_dynamic_call hands a builtin an argument
 // block that is rooted only as long as the CALLER's frame is — generated code's
 // block lives in its GC root frame, but FunctionHeader::call's arity-adaptation
@@ -297,6 +315,18 @@ Value rtFunctionMethod(const std::string& key);
 // the same name is found first and never reaches here.
 void rtObjectProtoCheckMissingMember(const std::string& key);
 
+// `[Symbol.toStringTag]: tag`, as the non-enumerable data property every clause
+// that defines one asks for (21.3.1.9 for `Math`, 25.5.3 for `JSON`, 27.5.1.5
+// for %GeneratorPrototype%, and the iterator prototypes' own clauses). It lives
+// beside `Object.prototype.toString`, which is the only thing that reads it,
+// so an object that carries a tag and the code that consults one cannot drift
+// about what the property is called or how it is defined.
+//
+// Non-enumerable is not tidiness: these are prototype and namespace objects,
+// and `for-in` walks a chain — an enumerable tag on %IteratorPrototype% would
+// appear in every for-in over every iterator in the program.
+void rtDefineToStringTag(Rooted<Value>& obj, const char* tag);
+
 // A property read on a PRIMITIVE receiver (rt_prop_primitive.cpp): a string
 // reaches `String.prototype` and a boolean `Boolean.prototype` by the ordinary
 // prototype walk, while a number's and a symbol's members are still handed out
@@ -329,6 +359,13 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out);
 // ToPropertyKey (7.1.19) as a heap string, for a computed key that named no
 // element. ALLOCATES, so the caller must have the receiver rooted.
 Value rtElemKeyAsString(Value idxVal);
+
+// Is this array the one an `arguments` binding holds (ECMA-262 10.2.11)? bronze
+// stands an ordinary array in for the object, so this is the brand: the `callee`
+// accessor is the one own named property it is ever given, and nothing a program
+// can write puts a named property on an array. `Object.prototype.toString`'s
+// step 5 asks it; nothing else can tell the two receivers apart.
+bool rtIsArgumentsObject(Value v);
 
 // The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
 // for a function — the side object its statics live in. Null for every receiver
@@ -472,10 +509,18 @@ bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out);
 // between asking whether a property is there and reading it.
 bool rtModuleNamespaceHasExport(Value nsVal, const StringHeader* key);
 
+// 10.4.6.1's one own SYMBOL-keyed property: `@@toStringTag`, whose value is the
+// string "Module". It is the only own key of a namespace that is not an export,
+// and it is ANSWERED rather than stored — the object has no shape to keep a
+// property in, and nothing about this one can differ between two namespaces.
+// False for any other symbol, for a string key, and for a receiver that is not
+// a namespace. ALLOCATES (the answer is a fresh string).
+bool rtModuleNamespaceOwnSymbol(Value nsVal, Value keyVal, Value& out);
+
 // 10.4.6.5 [[GetOwnProperty]] minus the descriptor OBJECT, which the caller
 // builds: is `key` one of the exports, and what is its value NOW. False for a
-// symbol, for a name the module does not export, and for a receiver that is not
-// a namespace — the three ways 10.4.6.5 answers `undefined`. The attributes it
+// symbol — the symbol half is the question above — for a name the module does
+// not export, and for a receiver that is not a namespace. The attributes it
 // would have reported are constants and so are written at the one call site
 // that needs them.
 //

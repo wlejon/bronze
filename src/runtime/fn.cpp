@@ -15,7 +15,9 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->prototype = Value::fromUndefined();
     fn->properties = Value::fromUndefined();
     fn->instance_shape = nullptr;
+    fn->name = nullptr;
     fn->arity = arity;
+    fn->length = 0;
     return fn;
 }
 

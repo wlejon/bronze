@@ -220,6 +220,18 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // because the specification names the error: strict code catches it.
     if (rtModuleNamespaceWriteRefused(objVal, keyStr, strict)) return;
     if (hdr->flags == HeapKind::Function) {
+        // `length` and `name` are own properties of every function and are
+        // NON-WRITABLE (10.2.10, 10.2.9), so `f.name = "x"` is discarded in
+        // sloppy code and a TypeError in strict — never a store. Without this
+        // the write would land in the statics table, which the read consults
+        // first, and the program would see a `name` the language says it cannot
+        // set. `Object.defineProperty(f, 'name', ...)` is a different operation
+        // (they are configurable) and is still refused by kind.
+        if (reinterpret_cast<FunctionHeader*>(hdr)->name != nullptr &&
+            (keyStr == "length" || keyStr == "name")) {
+            rtReportSetRefusal(SetRefusal::NotWritable, strict, keyStr);
+            return;
+        }
         if (keyStr != "prototype") {
             // A static member: an own property of the function object itself.
             Rooted<Value> fnRoot{objVal};

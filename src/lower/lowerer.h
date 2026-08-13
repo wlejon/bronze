@@ -465,11 +465,32 @@ private:
     // one path). It is how inference is asked about a function with no module
     // index. `isArrow` decides one thing only: where `this` inside the body
     // comes from.
+    //
+    // `declaredName` and `jsName` are two different names and every caller has
+    // to say both. The first is the IL's identifier, synthesized when the
+    // source wrote none; the second is what 10.2.9 SetFunctionName makes
+    // `f.name`, which for an anonymous function expression is "" unless the
+    // surrounding syntax supplies one (8.6.2 NamedEvaluation), and for an
+    // accessor is "get x" / "set x". `std::nullopt` means the name is not a
+    // fact this compilation has — a member whose key is computed at runtime —
+    // and reading `.name` off such a function is a diagnosed refusal.
     std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
+                                      const std::optional<std::string>& jsName,
                                       const std::vector<ast::Param>& params,
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
                                       il::Function& ilFn, bool isArrow = false);
+
+    // ECMA-262 8.6.2 NamedEvaluation: an ANONYMOUS function expression in one
+    // of the positions where the surrounding syntax names it — `const f = () =>
+    // {}`, `f = function () {}`, `{ m: function () {} }`, a destructuring
+    // default. Anything else is lowered as the ordinary expression it is.
+    //
+    // A parameter here rather than a `pendingName_` member, because a member
+    // would leak: `const x = f(function () {});` would hand the argument the
+    // binding's name, and nothing about the shape of the code would say so.
+    std::optional<Value> lowerNamedEvaluation(const ast::Expr& expr, const std::string& name,
+                                              il::Function& ilFn);
 
     // --- lower_pattern.cpp: binding patterns, defaults, spread -- How a
     // pattern's names reach their bindings. A declaration MAKES them and an
@@ -492,7 +513,15 @@ private:
     // `current === undefined ? <default>: current`, as a real branch rather
     // than a select: the default's side effects must happen only when it fires,
     // and only `undefined` fires it — `null` does not.
+    //
+    // `bindingName` is the SingleNameBinding this default belongs to, when it
+    // is one: 14.3.3.3 and 15.1.3 both run their Initializer through 8.6.2
+    // NamedEvaluation, so `const { a = () => {} } = o` and
+    // `function f(a = () => {})` each give the function the name `a`. It is
+    // empty when the target is a nested pattern instead, which is not a
+    // BindingIdentifier and gets no name from anywhere.
     std::optional<Value> emitDefaultIfUndefined(Value current, const ast::Expr& defaultExpr,
+                                                const std::string& bindingName,
                                                 il::Function& ilFn);
     Value emitPatternCheck(Value source, bool isObject, il::Function& ilFn);
     std::optional<Value> lowerDestructuringAssign(const ast::DestructuringAssign* node,

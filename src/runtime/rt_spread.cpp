@@ -93,8 +93,8 @@ void installArgumentsCallee(Rooted<Value>& args) {
     ArrayHeader::ensureProperties(rtHeap(), rtArena(), args);
     Rooted<Value> props{args.get().asObject<ArrayHeader>()->properties};
     Rooted<Value> key{Value::fromString(calleeKey())};
-    Rooted<Value> pill{Value(bronze_function_singleton(
-        reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0))};
+    Rooted<Value> pill{rtNativeFunction(
+        reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0)};
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
                                  /*enumerable=*/false);
 }
@@ -102,6 +102,28 @@ void installArgumentsCallee(Rooted<Value>& args) {
 bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
+
+}  // namespace
+
+// The brand, asked from outside: is this array the one an `arguments` binding
+// holds? `callee` is the discriminator for the reason the comment above
+// `installArgumentsCallee` gives — it is the one own named property bronze ever
+// puts on an array that is not a match array, and a program cannot add one
+// (rt_prop_write.cpp refuses a named write to an array by name). So a hit here
+// really is 10.2.11's object and not something that resembles it.
+//
+// It is what `Object.prototype.toString` needs for step 5's "[[ParameterMap]]",
+// and it costs a shape lookup on the side object rather than a walk.
+bool rtIsArgumentsObject(Value v) {
+    if (!isArray(v)) return false;
+    Value props = v.asObject<ArrayHeader>()->properties;
+    if (!props.isObject()) return false;
+    uint32_t slot = 0;
+    ObjectHeader* holder = props.asObject<ObjectHeader>();
+    return holder->shape && holder->shape->lookupProperty(calleeKey(), slot);
+}
+
+namespace {
 
 // Every element of `src`, appended to `out`, through the iterator protocol — so
 // `[...someSet]` and `f(...someMap)` walk the same way `for-of` does, which is

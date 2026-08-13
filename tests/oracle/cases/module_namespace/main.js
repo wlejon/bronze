@@ -5,9 +5,9 @@
 //
 // The rest of what 10.4.6 makes that object — sorted own keys, a [[Set]] that
 // always refuses, a `configurable: false` descriptor, a null prototype — is
-// `cases/module_namespace_object` and `cases/module_namespace_exotic`. What is
-// still missing is `Symbol.toStringTag`, which 10.4.6.1 gives the value
-// 'Module' and bronze does not carry.
+// `cases/module_namespace_object` and `cases/module_namespace_exotic`, and its
+// one own symbol key — the `Symbol.toStringTag` of 'Module' that 10.4.6.1
+// creates it with — is `cases/module_namespace_tag`.
 import * as lib from './lib.js';
 
 console.log(lib.name);

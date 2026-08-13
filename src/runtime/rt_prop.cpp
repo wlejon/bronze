@@ -160,8 +160,78 @@ static Value mapMemberByName(HeapObjectHeader* hdr, const std::string& keyStr) {
 // `handled` separates "this receiver kind has no answer here" from "the answer
 // is undefined", which are the same bits and different facts: only the first
 // may fall through to the shape.
+// 20.4.2.14 `@@toStringTag` for a receiver that has NO PROTOTYPE OBJECT to
+// carry it.
+//
+// This is an approximation of the MECHANISM and not of the bytes. ECMA-262
+// puts the tag on a prototype — `Map.prototype[@@toStringTag]` is "Map"
+// (24.1.3.13), `Set.prototype`'s is "Set" (24.2.3.12),
+// `%TypedArray%.prototype`'s is an accessor over [[TypedArrayName]]
+// (23.2.3.35), `ArrayBuffer.prototype`'s is "ArrayBuffer" (25.1.6.6),
+// `DataView.prototype`'s is "DataView" (25.3.4.25) — and bronze has none of
+// those objects, so the property a walk would find is answered from the heap
+// kind at the one place that sees both the receiver and the key. The VALUE is
+// the one the specification's property holds, so
+// `Object.prototype.toString.call(new Map())` is the spec's bytes.
+//
+// Nothing a program installs is overridden by this, because it answers only for
+// receivers that have no shape to install anything on: a plain object's and a
+// function's own `[Symbol.toStringTag]` is a slot, found by the ordinary walk
+// that this function declines (`handled` stays false) to intercept.
+//
+// Two of the answers are not approximations at all. A module namespace's is an
+// OWN property that 10.4.6.1 defines on the object itself, and a symbol's is
+// `Symbol.prototype[@@toStringTag]` (20.4.3.5) reached the way every other
+// member of a symbol is — beside the value, since bronze has no
+// `Symbol.prototype`.
+Value toStringTagOf(Value objVal, bool& handled) {
+    if (objVal.isSymbol()) {
+        handled = true;
+        return rtMakeString("Symbol");
+    }
+    // Every other primitive reaches a real prototype object (`String.prototype`,
+    // `Boolean.prototype`) or, for a number, a member table that 21.1.3 gives no
+    // tag — and neither carries one, so this declines and the walk answers
+    // `undefined`.
+    if (!objVal.isObject()) return Value::fromUndefined();
+    switch (objVal.asObject<HeapObjectHeader>()->flags) {
+        case MapHeader::kMapFlags:
+            handled = true;
+            return rtMakeString("Map");
+        case MapHeader::kSetFlags:
+            handled = true;
+            return rtMakeString("Set");
+        case TypedArrayHeader::kFlags: {
+            // 23.2.3.35 is an ACCESSOR whose answer is [[TypedArrayName]], so
+            // nine views give nine tags rather than one shared "TypedArray".
+            const char* kind =
+                reinterpret_cast<TypedArrayHeader*>(objVal.asObject<HeapObjectHeader>())
+                    ->kindName();
+            handled = true;
+            return rtMakeString(kind);
+        }
+        case ArrayBufferHeader::kFlags:
+            handled = true;
+            return rtMakeString("ArrayBuffer");
+        case DataViewHeader::kFlags:
+            handled = true;
+            return rtMakeString("DataView");
+        case ModuleNamespaceHeader::kFlags:
+            handled = true;
+            return rtMakeString("Module");
+        default:
+            // An array, a function, a RegExp and a plain object: 23.1.3, 20.2.3,
+            // 22.2.6 and 20.1.3 define no `@@toStringTag` at all, which is
+            // exactly why 20.1.3.6 keeps a builtin-tag list for them.
+            return Value::fromUndefined();
+    }
+}
+
 Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
     handled = false;
+    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
+        return toStringTagOf(objVal, handled);
+    }
     if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
     if (objVal.isString()) {
         // 22.1.3.32 String.prototype[@@iterator] exists; bronze steps a string
@@ -415,6 +485,33 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(
                 rtHeap(), key, /*ic=*/nullptr, fnRoot.slot_ptr());
             if (!found.isUndefined()) return found.rawBits();
+        }
+        // `length` and `name`, the two own data properties 10.2.10 and 10.2.9
+        // give every function object. Both are non-writable and non-enumerable,
+        // and both live in the header rather than in the statics table above:
+        // they are created by OrdinaryFunctionCreate before any `static` can be
+        // written, and a program cannot overwrite either (rt_prop_write.cpp
+        // refuses the assignment).
+        //
+        // They are read AFTER the statics all the same, and that order is the
+        // language's: `class C { static name() {} }` DEFINES a `name` property
+        // over the one 15.7.14 step 15 had just given the constructor, so the
+        // method wins. An assignment could not have put anything there, so the
+        // only thing this order can find first is a definition that really did
+        // replace the property.
+        if (const FunctionHeader* fn = objVal.asObject<FunctionHeader>(); fn->name) {
+            if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
+            if (keyStr == "name") return rtCopyKeyToHeap(fn->name).rawBits();
+        } else if (keyStr == "length" || keyStr == "name") {
+            // A function bronze did not compile: a native builtin, or a method
+            // whose key is computed at run time. rt_members.cpp's table would
+            // report the member "not implemented", which is the wrong sentence
+            // now that it is — what is missing is this function's own answer.
+            fatal((std::string("unsupported: `") + keyStr +
+                   "` of a function whose name bronze never recorded (a built-in, or a member "
+                   "whose key is computed at run time; a function the compiler created answers "
+                   "both)")
+                      .c_str());
         }
         // `Symbol` is a function object so that `Symbol("tag")` names bronze
         // rather than reporting that an object is not callable, which means its

@@ -72,7 +72,7 @@ uint64_t nothing(uint64_t, uint64_t, uint32_t, const uint64_t*) {
 // this needs is a namespace that really is one.
 Value namespaceExporting(const char* name) {
     Rooted<Value> obj{Value(bronze_create_object())};
-    Rooted<Value> getter{Value(bronze_function_singleton(nothing, 0))};
+    Rooted<Value> getter{rtNativeFunction(nothing, 0)};
     Rooted<Value> absent{Value::fromUndefined()};
     Rooted<Value> key{rtMakeString(name)};
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), obj, key, getter, absent,
@@ -108,7 +108,7 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     }
 
     SUBCASE("a function") {
-        Rooted<Value> f{Value(bronze_function_singleton(nothing, 0))};
+        Rooted<Value> f{rtNativeFunction(nothing, 0)};
         CHECK(hasName("prototype", f));
         CHECK_FALSE(hasName("missing", f));
     }
@@ -202,7 +202,7 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
         CHECK_FALSE(has(other.get(), o.get()));
         CHECK_FALSE(has(iterator, o.get()));
 
-        Rooted<Value> f{Value(bronze_function_singleton(nothing, 0))};
+        Rooted<Value> f{rtNativeFunction(nothing, 0)};
         CHECK_FALSE(has(other.get(), f.get()));
     }
 

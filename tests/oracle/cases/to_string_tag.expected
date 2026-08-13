@@ -1,0 +1,22 @@
+[object Widget]
+[object Base]
+[object Derived]
+[object Callable]
+[object Object]
+[object Object]
+[object Object]
+[object Function]
+[object Object]
+symbol
+Symbol.toStringTag
+Symbol(Symbol.toStringTag)
+true
+false
+false
+1
+true
+0
+0
+true
+true
+false

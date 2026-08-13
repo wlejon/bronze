@@ -73,14 +73,16 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // table in rt_members.cpp: membership is ECMA-262's "does this exist?", never
 // "have we got round to it?".
 //
-// `iterator` is NOT here because it is BUILT: it is the well-known symbol
-// `rtSymbolIterator()` (runtime/symbol.h), read by every iteration bronze
-// opens. The other twelve are names ECMA-262 defines and bronze has not, so
-// `Symbol.toPrimitive` is a diagnosed missing member rather than `undefined`.
+// `iterator` and `toStringTag` are NOT here because they are BUILT: they are
+// the well-known symbols `rtSymbolIterator()` and `rtSymbolToStringTag()`
+// (runtime/symbol.h), read by every iteration bronze opens and by 20.1.3.6's
+// tag lookup. The other eleven are names ECMA-262 defines and bronze has not,
+// so `Symbol.toPrimitive` is a diagnosed missing member rather than
+// `undefined`.
 const char* const kSymbolUnimplemented[] = {
     "asyncIterator", "hasInstance", "isConcatSpreadable", "match",       "matchAll",
     "replace",       "search",      "species",            "split",       "toPrimitive",
-    "toStringTag",   "unscopables",
+    "unscopables",
 };
 
 Value g_symbolFunction = Value::fromUndefined();
@@ -100,22 +102,29 @@ const SymbolStatic kSymbolStatics[] = {
 
 Value rtSymbolFunction() {
     if (g_symbolFunction.isObject()) return g_symbolFunction;
-    Rooted<Value> fn{Value(bronze_function_singleton(symbolCall, 1))};
+    Rooted<Value> fn{rtNativeFunction(symbolCall, 1)};
     rtEnsureFunctionProperties(fn);
     Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
     for (const SymbolStatic& s : kSymbolStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(s.code, s.arity))};
+        Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
-    // 20.4.2.5 `Symbol.iterator`: the well-known symbol itself, as an ordinary
-    // property of this object. A property and not a compile-time constant,
-    // because that is what ECMA-262 makes it — `[Symbol.iterator]` is a member
-    // expression, and evaluating it is what makes a program that rebinds
-    // `Symbol` get its own answer.
-    Rooted<Value> key{rtMakeString("iterator")};
-    Rooted<Value> val{rtIteratorKey()};
-    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    // 20.4.2.5 `Symbol.iterator` and 20.4.2.14 `Symbol.toStringTag`: the
+    // well-known symbols themselves, as ordinary properties of this object.
+    // Properties and not compile-time constants, because that is what ECMA-262
+    // makes them — `[Symbol.iterator]` is a member expression, and evaluating
+    // it is what makes a program that rebinds `Symbol` get its own answer.
+    {
+        Rooted<Value> key{rtMakeString("iterator")};
+        Rooted<Value> val{rtIteratorKey()};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    }
+    {
+        Rooted<Value> key{rtMakeString("toStringTag")};
+        Rooted<Value> val{Value::fromSymbol(rtSymbolToStringTag())};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    }
     g_symbolFunction = fn.get();
     rtHeap().add_permanent_root(&g_symbolFunction);
     return g_symbolFunction;

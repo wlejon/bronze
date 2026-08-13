@@ -7,6 +7,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <string>
+
 #include "il/print.h"
 #include "lower_fixture.h"
 
@@ -280,10 +283,13 @@ TEST_CASE("a class lowers to a constructor, a prototype and property writes") {
     REQUIRE(extend != std::string::npos);
     const size_t protoRead = printed.find("prop.get", extend);
     REQUIRE(protoRead != std::string::npos);
-    // Key constant 1 is "prototype", and the read is on the same line: this is
+    // The key read is "prototype", and the read is on the same line: this is
     // the object `class.extend` has just replaced, not some other property.
+    // The index is looked up, not spelled — see `keyIndex`.
+    const std::string protoKey =
+        ", " + std::to_string(bronze::lower_test::keyIndex(*optMod, "prototype")) + ", ";
     const size_t lineEnd = printed.find('\n', protoRead);
-    CHECK(printed.find(", 1, ", protoRead) < lineEnd);
+    CHECK(printed.find(protoKey, protoRead) < lineEnd);
     // The methods land on it, so they come after.
     CHECK(printed.find("method.def", protoRead) != std::string::npos);
     // And the base class's own prototype read happened earlier, under its own
@@ -473,4 +479,73 @@ TEST_CASE("loose equality on two proven numbers is the same compare as strict") 
     const std::string printed = il::print(*optMod);
     CHECK(printed.find("cmp.eq") != std::string::npos);
     CHECK(printed.find("loose.eq") == std::string::npos);
+}
+
+// ---- 10.2.9 and 10.2.10, as far as lowering carries them --------------------
+//
+// The two own properties of a function object are decided here and passed to
+// the runtime as numbers: `nameKeyIndex` into the module's key table, and
+// `requiredArgs`, which IS 15.1.5 ExpectedArgumentCount and therefore is the
+// `length`. What a program sees is pinned by `cases/function_name_length`; what
+// this holds is the part a passing oracle case could not distinguish — that
+// `length` is a DIFFERENT count from the arity a call is padded to, and that
+// the name comes from the surrounding syntax rather than from the IL symbol.
+
+TEST_CASE("a lowered function carries its spec name and its ExpectedArgumentCount") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.js", "");
+    const auto optMod = parseAndLower(
+        "function decl(a, b = 1, ...rest) {}\n"
+        "const bound = function () {};\n"
+        "const holder = {};\n"
+        "holder.slot = function () {};\n"
+        "const obj = { key: () => {}, get g() { return 1; } };\n",
+        diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    // Keyed by the IL symbol, which is the thing that is NOT the name.
+    auto find = [&](const char* ilName) -> const il::Function* {
+        const auto it =
+            std::find_if(optMod->functions.begin(), optMod->functions.end(),
+                         [&](const il::Function& f) { return f.name == ilName; });
+        return it == optMod->functions.end() ? nullptr : &*it;
+    };
+    auto jsName = [&](const il::Function* f) -> std::string {
+        if (!f || f->nameKeyIndex >= optMod->keyConstants.size()) return "<none>";
+        return optMod->keyConstants[f->nameKeyIndex];
+    };
+
+    const il::Function* decl = find("decl");
+    REQUIRE(decl != nullptr);
+    CHECK(jsName(decl) == "decl");
+    // Three parameters, a `length` of 1, and a padding arity of 2: the two
+    // counts disagree here, which is the whole reason they are two numbers.
+    CHECK(decl->requiredArgs == 1);
+    CHECK(decl->adaptArity() == 2);
+    CHECK(decl->callerParamCount() == 2);
+
+    // 8.6.2 NamedEvaluation: an anonymous function expression in a binding's
+    // initializer takes the binding's name, even though the IL called it
+    // something else entirely.
+    const il::Function* bound = find("__anon_fn_1");
+    REQUIRE(bound != nullptr);
+    CHECK(jsName(bound) == "bound");
+    CHECK(bound->requiredArgs == 0);
+
+    // A member expression is NOT one of 8.6.2's positions, so this one is
+    // genuinely anonymous — the empty string, and not the property it lands on.
+    const il::Function* slot = find("__anon_fn_2");
+    REQUIRE(slot != nullptr);
+    CHECK(jsName(slot) == "");
+
+    // 13.2.5.5 PropertyDefinitionEvaluation, and 10.2.9's third argument: the
+    // accessor's name carries the prefix, and it is applied to the KEY.
+    const il::Function* arrow = find("__anon_fn_3");
+    REQUIRE(arrow != nullptr);
+    CHECK(jsName(arrow) == "key");
+    const il::Function* getter = find("get g");
+    REQUIRE(getter != nullptr);
+    CHECK(jsName(getter) == "get g");
+    CHECK(getter->requiredArgs == 0);
 }

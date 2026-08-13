@@ -24,6 +24,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -41,7 +42,7 @@ uint64_t constantSeven(uint64_t, uint64_t, uint32_t, const uint64_t*) {
 // get-only accessor per name, defined in the order given.
 Value gettersFor(const std::vector<std::string>& names) {
     Rooted<Value> obj{Value(bronze_create_object())};
-    Rooted<Value> getter{Value(bronze_function_singleton(constantSeven, 0))};
+    Rooted<Value> getter{rtNativeFunction(constantSeven, 0)};
     Rooted<Value> absent{Value::fromUndefined()};
     for (const std::string& name : names) {
         Rooted<Value> key{rtMakeString(name)};
@@ -138,4 +139,36 @@ TEST_CASE("a namespace refuses every write, exported name or not") {
     // refusal from leaking onto every write in the program.
     Rooted<Value> plain{Value(bronze_create_object())};
     CHECK_FALSE(rtModuleNamespaceWriteRefused(plain.get(), "a", /*strict=*/true));
+}
+
+TEST_CASE("a namespace's one own symbol key is the tag 10.4.6.1 creates it with") {
+    ShadowStackFrame frame;
+    Rooted<Value> ns{Value(bronze_module_namespace(gettersFor({"b", "a"}).rawBits()))};
+
+    // 10.4.6.1: the object is created with `@@toStringTag` already on it, so an
+    // export list of any length has exactly one symbol key and it is this one.
+    Rooted<Value> tag{Value::fromSymbol(rtSymbolToStringTag())};
+    Value out;
+    REQUIRE(rtModuleNamespaceOwnSymbol(ns.get(), tag.get(), out));
+    Rooted<Value> tagValue{out};
+    REQUIRE(tagValue.get().isString());
+    CHECK(rtUtf8Chars(tagValue.get().asString<StringHeader>()) == "Module");
+
+    // Any other symbol is not an own key — the tag is a fixed property of the
+    // KIND, not a lookup that would answer for whatever it is handed.
+    Rooted<Value> desc{rtMakeString("Symbol.toStringTag")};
+    Rooted<Value> impostor{rtMakeSymbol(desc.get())};
+    Value ignored;
+    CHECK_FALSE(rtModuleNamespaceOwnSymbol(ns.get(), impostor.get(), ignored));
+    CHECK_FALSE(rtModuleNamespaceOwnSymbol(ns.get(), Value::fromSymbol(rtSymbolIterator()),
+                                           ignored));
+    // A STRING key never reaches this answer either: 10.4.6.2 keeps the two
+    // halves of the key list apart, and the exports are the string half.
+    Rooted<Value> spelled{rtMakeString("Symbol(Symbol.toStringTag)")};
+    CHECK_FALSE(rtModuleNamespaceOwnSymbol(ns.get(), spelled.get(), ignored));
+
+    // And the receiver has to be a namespace, which is what stops the tag
+    // appearing on every object in the program.
+    Rooted<Value> plain{Value(bronze_create_object())};
+    CHECK_FALSE(rtModuleNamespaceOwnSymbol(plain.get(), tag.get(), ignored));
 }

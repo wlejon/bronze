@@ -138,18 +138,41 @@ static_assert(HeapKind::Count == 12,
                                     : "internal: 'in' on an iteration record");
 }
 
-// `Symbol.iterator` is the ONE well-known symbol bronze has (runtime/symbol.h);
-// every other symbol a program can hold is one it made with `Symbol()`, and
-// nothing puts one of those on a receiver that has no shape. So for the kinds
-// below the whole symbol question is: does this prototype carry @@iterator.
+// `Symbol.iterator` and `Symbol.toStringTag` are the two well-known symbols
+// bronze has (runtime/symbol.h); every other symbol a program can hold is one it
+// made with `Symbol()`, and nothing puts one of those on a receiver that has no
+// shape. So for the kinds below the whole symbol question is: does this
+// prototype carry one of those two.
 //
 // `in` can say yes even where a READ of it is a named hard error — an array's
-// is, because 23.1.3.34 makes it the same function object as
+// @@iterator is, because 23.1.3.34 makes it the same function object as
 // `Array.prototype.values` and neither is built. That split is the one
 // `rtDataViewHasMember` already makes: the member exists, and its value is what
 // bronze has not got. Answering `false` instead is what this used to do, and it
 // contradicted `m[Symbol.iterator]`, which hands back `Map.prototype.entries`.
+//
+// Both halves answer from the same place their READ answers from — the
+// @@iterator table in rt_prop.cpp's `wellKnownSymbolMember` and the tag switch
+// beside it — which is the rule every other arm of these switches follows.
 bool shapelessHasSymbol(uint16_t kind, Value key) {
+    if (key.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
+        switch (kind) {
+            // 24.1.3.13, 24.2.3.12, 23.2.3.35, 25.1.6.6, 25.3.4.25 put it on
+            // the prototype; 10.4.6.1 puts it on the namespace itself, which is
+            // the one of these that is an OWN property.
+            case HeapKind::Map:
+            case HeapKind::Set:
+            case HeapKind::TypedArray:
+            case HeapKind::ArrayBuffer:
+            case HeapKind::DataView:
+            case HeapKind::ModuleNamespace:
+                return true;
+            // An array and a RegExp: 23.1.3 and 22.2.6 define none, which is
+            // why 20.1.3.6 keeps a builtin-tag list for them.
+            default:
+                return false;
+        }
+    }
     if (key.asSymbol<SymbolHeader>() != rtSymbolIterator()) return false;
     switch (kind) {
         // 23.1.3.34, 23.2.3.34, 24.1.3.12, 24.2.3.11.
@@ -159,8 +182,8 @@ bool shapelessHasSymbol(uint16_t kind, Value key) {
         case HeapKind::Set:
             return true;
         // An ArrayBuffer, a DataView and a RegExp are not iterable, and a
-        // module namespace's own keys are its exports alone (10.4.6.5 sends a
-        // symbol to OrdinaryGetOwnProperty, and a namespace has none).
+        // module namespace exports no name that could be one (10.4.6.4 is
+        // "is this an export", and @@toStringTag above is its only other key).
         default:
             return false;
     }
@@ -262,6 +285,15 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             // the walk below cannot see it — but the PROPERTY is there either
             // way, which is what `in` asks.
             if (key == "prototype") return true;
+            // `length` and `name` (10.2.10, 10.2.9) live in the header for the
+            // same reason and answer the same way. Asked of the header rather
+            // than of the statics table, which is where the READ asks — a
+            // `static name() {}` is found by the walk below either way, and
+            // both spellings then agree that the property is there.
+            if ((key == "length" || key == "name") &&
+                objRoot.get().asObject<FunctionHeader>()->name != nullptr) {
+                return true;
+            }
             Rooted<Value> keyStr{rtMakeString(key)};
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
             if (!props.isObject()) return false;

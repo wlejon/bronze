@@ -52,6 +52,10 @@ std::optional<il::Module> Lowerer::lower() {
                                      il::Type::Dynamic});
             }
             applyParamShape(fnDecl->params, fn);
+            // 10.2.9: a declaration's `name` is the name it declares. The
+            // `length` is `requiredArgs`, which `applyParamShape` has just set
+            // to 15.1.5's ExpectedArgumentCount.
+            fn.nameKeyIndex = getKeyConstantIndex(fnDecl->name);
             fn.returnType = il::Type::Void;
             // The module function index: the position among the top-level
             // declarations, which is exactly how inference numbers them.

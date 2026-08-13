@@ -1,0 +1,25 @@
+[object Map]
+[object Set]
+[object Uint8Array]
+[object Int16Array]
+[object Float64Array]
+[object ArrayBuffer]
+[object DataView]
+[object Math]
+[object JSON]
+[object Symbol]
+Map
+Set
+Uint8Array
+Math
+JSON
+true
+true
+true
+true
+true
+false
+false
+undefined
+undefined
+[object Generator]

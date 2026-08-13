@@ -191,9 +191,13 @@ Value rtJsonNamespace() {
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kJsonFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{Value(bronze_function_singleton(fn.code, fn.arity))};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
+    // 25.5.3: `JSON[@@toStringTag]` is the string "JSON", an own property of
+    // this object — the same arrangement `Math` has, and the reason
+    // `Object.prototype.toString.call(JSON)` reads "[object JSON]".
+    rtDefineToStringTag(obj, "JSON");
     g_jsonNamespace = obj.get();
     rtHeap().add_permanent_root(&g_jsonNamespace);
     return g_jsonNamespace;

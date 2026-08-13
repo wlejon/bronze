@@ -16,8 +16,8 @@ bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Func
     for (const auto* stmt : stmts) {
         const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt);
         if (!fnDecl) continue;
-        auto closure = lowerClosure(*fnDecl, fnDecl->name, fnDecl->params, fnDecl->returnType,
-                                    fnDecl->body, fnDecl->span, ilFn);
+        auto closure = lowerClosure(*fnDecl, fnDecl->name, fnDecl->name, fnDecl->params,
+                                    fnDecl->returnType, fnDecl->body, fnDecl->span, ilFn);
         if (!closure) return false;
         if (!declareVariable(fnDecl->name, il::Type::Dynamic, /*isConst=*/false,
                              /*isLet=*/true, /*isVar=*/false, /*isInitialized=*/true,
@@ -164,7 +164,10 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
     }
 
     if (varDecl->init) {
-        auto initVal = lowerExpr(*varDecl->init, ilFn);
+        // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a binding
+        // takes the binding's name, which is what makes `const f = () => {}`
+        // report `f.name === "f"`.
+        auto initVal = lowerNamedEvaluation(*varDecl->init, varDecl->name, ilFn);
         if (!initVal) return false;
         declType = initVal->type;
 

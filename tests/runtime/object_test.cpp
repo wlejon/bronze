@@ -194,6 +194,10 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
 // so telling them they are not was a false statement, and what they get now is
 // a hard error that names the kind and the storage reason. A hard error ends
 // the process, so it can only be observed here.
+//
+// The one member that has stopped refusing is `hasOwn` on a function, because
+// only a refusal that is still TRUE is a ratchet: `length` and `name` now have
+// somewhere to live, so the question has an answer.
 
 TEST_CASE("an Object member that needs a property table names the receiver it refuses") {
     ShadowStackFrame frame;
@@ -249,11 +253,9 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
                          std::runtime_error);
 
     // A function is the other receiver the old message lied about, and its
-    // reason is a different one: the storage is a slot and a side object.
-    CHECK_THROWS_WITH_AS(call("hasOwn", fn, 1), doctest::Contains("Object.hasOwn on a function"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("hasOwn", fn, 1), doctest::Contains("`prototype` slot"),
-                         std::runtime_error);
+    // reason is a different one: the storage is a slot and a side object. Every
+    // member that would have to WRITE one still refuses on it; `hasOwn`, which
+    // only tests, no longer does — see the bottom of this case.
 
     // And a kind with no property table at all says exactly that.
     CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
@@ -317,6 +319,22 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     CHECK_FALSE(hasOwn(arr, keyTwo).asBool());   // past `length`
     CHECK(hasOwn(arr, keyLength).asBool());      // 10.4.2's own `length`
     CHECK_FALSE(hasOwn(arr, keyName).asBool());  // a name an array cannot hold
+
+    // A FUNCTION has come off the same list, and for the same shape of reason:
+    // the refusal said its own keys live in a `prototype` slot and a side
+    // object, which is where they are, and testing for one needs neither a
+    // shape nor anywhere to list them.
+    Rooted<Value> keyPrototype{runtime::rtMakeString("prototype")};
+    CHECK(hasOwn(fn, keyPrototype).asBool());   // 10.2.4, the slot
+    CHECK_FALSE(hasOwn(fn, keyName).asBool());  // "nope", in neither place
+    // `Object.keys` is a NATIVE builtin: no key index ever named it, so its
+    // header carries neither `name` nor `length`, and answering `true` here
+    // would be the plausible-but-wrong kind of answer. A function the COMPILER
+    // created has both — pinned by the `function_name_length` oracle case,
+    // which is where JS can actually run.
+    Rooted<Value> keyFnName{runtime::rtMakeString("name")};
+    CHECK_FALSE(hasOwn(fn, keyFnName).asBool());
+    CHECK_FALSE(hasOwn(fn, keyLength).asBool());
 
     setFatalHandler(nullptr);
     bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;

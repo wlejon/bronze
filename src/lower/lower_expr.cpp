@@ -199,8 +199,13 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&expr)) {
-        return lowerClosure(*fnExpr, fnExpr->name, fnExpr->params, fnExpr->returnType,
-                            fnExpr->body, fnExpr->span, ilFn, fnExpr->isArrow);
+        // Reached only where NO surrounding syntax named it — every
+        // NamedEvaluation position goes through `lowerNamedEvaluation` instead —
+        // so an anonymous function here really has `name === ""` (10.2.9 step 4
+        // via OrdinaryFunctionCreate's default).
+        return lowerClosure(*fnExpr, fnExpr->name, fnExpr->name, fnExpr->params,
+                            fnExpr->returnType, fnExpr->body, fnExpr->span, ilFn,
+                            fnExpr->isArrow);
     }
 
     if (const auto* yield = dynamic_cast<const ast::YieldExpr*>(&expr)) {
@@ -597,7 +602,13 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                              : emitEnvGet(depth, index, ilFn);
         }
 
-        auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+        // 13.15.2 step 1.d: a SIMPLE assignment whose target is an identifier
+        // and whose value is an anonymous function is a NamedEvaluation, so
+        // `f = function () {}` reports `f.name === "f"`. A compound assignment
+        // is not one — 13.15.4 has no such step, and `f += function () {}` is
+        // a string concatenation rather than a binding.
+        auto rhsVal = compound ? lowerExpr(*bin->rhs, ilFn)
+                               : lowerNamedEvaluation(*bin->rhs, ident->name, ilFn);
         if (!rhsVal) return std::nullopt;
 
         // The combine decides numeric-vs-dynamic, and `+=` is numeric only

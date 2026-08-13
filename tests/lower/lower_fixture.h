@@ -6,6 +6,7 @@
 // disagree about what "the --no-infer path" is — which is the one distinction
 // these tests exist to hold.
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,6 +47,20 @@ inline std::optional<il::Module> inferAndLower(std::string_view src, DiagnosticS
     auto inferred = types::inferModule(*astMod, diags);
     if (diags.hasErrors() || !inferred) return std::nullopt;
     return lower::lowerModule(*astMod, diags, &*inferred);
+}
+
+// The index a printed instruction carries for a property name. Looked up rather
+// than written as a literal, because the table is an INTERNING ORDER and not a
+// fact about the program: anything that interns a name ahead of this one — a
+// function's own `name` property, for instance — shifts every index after it
+// without changing what a single instruction does. A test that spelled the
+// number would then fail for a reason it is not about.
+//
+// Returns the table's size when the name was never interned, which no index can
+// equal, so the assertion using it fails rather than silently matching key 0.
+inline size_t keyIndex(const il::Module& mod, std::string_view name) {
+    const auto it = std::find(mod.keyConstants.begin(), mod.keyConstants.end(), name);
+    return static_cast<size_t>(it - mod.keyConstants.begin());
 }
 
 }  // namespace bronze::lower_test

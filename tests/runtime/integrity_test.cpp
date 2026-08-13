@@ -180,7 +180,7 @@ TEST_CASE("an element write is refused for the reason the level gives") {
 
 TEST_CASE("a function's level reaches its statics and its prototype slot") {
     ShadowStackFrame frame;
-    Rooted<Value> fn{Value(bronze_function_singleton(dummyCode, 0))};
+    Rooted<Value> fn{rtNativeFunction(dummyCode, 0)};
 
     CHECK(rtFunctionPrototypeWritable(fn.get()));
     CHECK(rtIsExtensible(fn.get()));
@@ -208,7 +208,7 @@ TEST_CASE("a function's level reaches its statics and its prototype slot") {
 
 TEST_CASE("a sealed function keeps its prototype writable") {
     ShadowStackFrame frame;
-    Rooted<Value> fn{Value(bronze_function_singleton(otherCode, 0))};
+    Rooted<Value> fn{rtNativeFunction(otherCode, 0)};
     seal(fn.get());
     CHECK(rtFunctionPrototypeWritable(fn.get()));
     // …which is exactly why 7.3.15 answers false for the frozen question: the

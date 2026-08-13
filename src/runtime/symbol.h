@@ -58,10 +58,11 @@ Value rtMakeSymbol(Value description);
 Value rtSymbolFor(Rooted<Value>& keyString);
 Value rtSymbolKeyFor(Value symbol);
 
-// `Symbol.iterator` (ECMA-262 6.1.5.1 / 20.4.2.5): the ONE well-known symbol
-// bronze has, as the one interned identity every reader and every writer of the
-// iterator hook must agree on. Its [[Description]] is "Symbol.iterator", so
-// `String(Symbol.iterator)` is "Symbol(Symbol.iterator)".
+// `Symbol.iterator` (ECMA-262 6.1.5.1 / 20.4.2.5) and `Symbol.toStringTag`
+// (20.4.2.14): the two well-known symbols bronze has, each the one interned
+// identity every reader and every writer of its hook must agree on. The
+// [[Description]] is the symbol's own name, so `String(Symbol.iterator)` is
+// "Symbol(Symbol.iterator)".
 //
 // A well-known symbol is a permanent root by construction rather than by
 // registration: it lives in the arena like every other symbol, the collector
@@ -69,11 +70,13 @@ Value rtSymbolKeyFor(Value symbol);
 // stale (runtime/symbol.h's opening note). Nothing about GC changes by adding
 // one, which is exactly why the arena was the right home for symbols.
 //
-// The other twelve names 20.4.2 defines are NOT here and are not stand-ins
+// The other eleven names 20.4.2 defines are NOT here and are not stand-ins
 // either: they are in `kSymbolUnimplemented` (builtin_symbol.cpp), so
 // `Symbol.asyncIterator` is a diagnosed missing member rather than
-// `undefined`. This one exists because the iterator protocol is built.
+// `undefined`. These two exist because the hooks they name are built — the
+// iterator protocol, and 20.1.3.6's tag lookup.
 SymbolHeader* rtSymbolIterator();
+SymbolHeader* rtSymbolToStringTag();
 
 // SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
 // description spelled `Symbol()` — the description of a `Symbol()` and of a

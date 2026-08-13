@@ -77,13 +77,27 @@ Value rtMakeSymbol(Value description) {
     return Value::fromSymbol(allocateSymbol(internDescription(description)));
 }
 
+namespace {
+
+// A well-known symbol, built on FIRST USE and not at load time: interning the
+// description goes through the heap, so this must not run before the heap
+// exists. The earliest anything can ask for one is a program evaluating
+// `Symbol.iterator` or opening an iteration, both of which are long past that
+// point.
+SymbolHeader* wellKnownSymbol(std::string_view description) {
+    return allocateSymbol(StringHeader::internToArena(
+        rtArena(), StringHeader::createFromUTF8(rtHeap(), description)));
+}
+
+}  // namespace
+
 SymbolHeader* rtSymbolIterator() {
-    // Built on FIRST USE, not at load time: interning the description goes
-    // through the heap, so this must not run before the heap exists. The
-    // earliest anything can ask for it is a program evaluating `Symbol.iterator`
-    // or opening an iteration, both of which are long past that point.
-    static SymbolHeader* sym = allocateSymbol(StringHeader::internToArena(
-        rtArena(), StringHeader::createFromUTF8(rtHeap(), std::string_view("Symbol.iterator"))));
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.iterator");
+    return sym;
+}
+
+SymbolHeader* rtSymbolToStringTag() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.toStringTag");
     return sym;
 }
 
@@ -164,10 +178,10 @@ Value rtSymbolMember(Value symbol, const std::string& key) {
         return rtCopyKeyToHeap(desc);
     }
     if (key == "toString") {
-        return Value(bronze_function_singleton(symbolProtoToString, 0));
+        return rtNativeFunction(symbolProtoToString, 0);
     }
     if (key == "valueOf") {
-        return Value(bronze_function_singleton(symbolProtoValueOf, 0));
+        return rtNativeFunction(symbolProtoValueOf, 0);
     }
     // 20.4.3.1's back-pointer, as the same object the bare name `Symbol`
     // resolves to. A primitive has no chain here to find it on, which is why

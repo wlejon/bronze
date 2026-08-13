@@ -367,8 +367,21 @@ void Lowerer::exitScope() {
 
 // Shared by function expressions and nested function declarations: both produce
 // a closure value over the environment that is innermost at the creation site.
+std::optional<Lowerer::Value> Lowerer::lowerNamedEvaluation(const ast::Expr& expr,
+                                                            const std::string& name,
+                                                            il::Function& ilFn) {
+    const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&expr);
+    // A function expression that wrote its OWN name keeps it: 15.2.5 binds that
+    // name inside the body and 8.6.2 does not apply, so `const f = function g()
+    // {}` has `f.name === "g"`.
+    if (!fn || !fn->name.empty()) return lowerExpr(expr, ilFn);
+    return lowerClosure(*fn, /*declaredName=*/"", name, fn->params, fn->returnType, fn->body,
+                        fn->span, ilFn, fn->isArrow);
+}
+
 std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::string& declaredName,
+                                                    const std::optional<std::string>& jsName,
                                                     const std::vector<ast::Param>& params,
                                                     const std::string& returnTypeAnn,
                                                     const std::vector<ast::StmtPtr>& body,
@@ -379,6 +392,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     }
     il::Function newFn;
     newFn.name = fnName;
+    // The key constant is allocated here even for the empty name, because "" is
+    // a real answer — 10.2.9 gives an anonymous function expression exactly that
+    // — and the runtime has to be able to tell it from "no name recorded".
+    if (jsName) newFn.nameKeyIndex = getKeyConstantIndex(*jsName);
     newFn.returnType = il::Type::Dynamic;
     // Every function expression is a closure: it gets the synthetic environment
     // parameter whether or not it turns out to capture anything. An unused one

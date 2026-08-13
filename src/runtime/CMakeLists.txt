@@ -43,6 +43,7 @@ bronze_add_module(runtime
         map.cpp
         builtin_map.cpp
         builtin_object.cpp
+        builtin_object_descriptor.cpp
         builtin_object_proto.cpp
         builtin_number.cpp
         builtin_number_proto.cpp

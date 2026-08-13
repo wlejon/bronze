@@ -37,7 +37,29 @@ struct FunctionHeader {
     // the object above. Non-moving, created with it, and reset if
     // `.prototype` is reassigned.
     class Shape* instance_shape{nullptr};
+    // 10.2.9 SetFunctionName's answer: this function's own `name` property,
+    // ARENA-interned so it is immortal and non-moving — the same bargain a
+    // shape key makes, and the reason a raw pointer here is invisible to the
+    // collector's payload scan (which forwards only Values that point INTO the
+    // semispace) exactly as `instance_shape` above already is.
+    //
+    // NULL means the name was never recorded, which is not the same as the
+    // empty string: an anonymous function expression really has `name === ""`
+    // (10.2.9 via NamedEvaluation), while a native builtin has no key index to
+    // name it with and so answers neither. `length` below shares that one flag,
+    // because the two properties are created together by OrdinaryFunctionCreate
+    // and a function that has one always has the other.
+    struct StringHeader* name{nullptr};
+    // The arity a short call is PADDED to, which is a fact about the calling
+    // convention and NOT the `length` property: it counts every formal
+    // parameter but the rest one, and is zero for a function that owns an
+    // `arguments` object.
     uint32_t arity{0};
+    // 10.2.10 SetFunctionLength's answer: the number of formal parameters
+    // BEFORE the first one with a default or the rest one, which is a different
+    // count from `arity` above and is why it is a second field rather than a
+    // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
+    uint32_t length{0};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0);

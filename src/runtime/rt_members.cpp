@@ -56,8 +56,12 @@ const char* const kStringMembers[] = {
 
 // Function.prototype, minus `prototype`, which is real, and minus `call` and
 // `apply`, which builtin_function.cpp answers.
+// `length` and `name` have LEFT this table: every function bronze compiles now
+// carries both as own properties (rt_prop.cpp reads them off the header), and a
+// function bronze did not compile refuses them there with a message about its
+// own missing answer rather than about an unimplemented prototype member.
 const char* const kFunctionMembers[] = {
-    "bind", "constructor", "length", "name", "toString",
+    "bind", "constructor", "toString",
 };
 
 }  // namespace

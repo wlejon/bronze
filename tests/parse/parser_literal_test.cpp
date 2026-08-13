@@ -176,3 +176,39 @@ TEST_CASE("the computed and string spellings of a numeric key still parse") {
     CHECK(parseAndDump("const o = { [0]: 1 };").substr(0, 7) != "ERRORS:");
     CHECK(parseAndDump("const o = { \"0\": 1 };").substr(0, 7) != "ERRORS:");
 }
+
+TEST_CASE("a method shorthand is flagged as one, and a function-valued property is not") {
+    // The two forms define the SAME property and dump alike, which is what the
+    // case above pins. The one thing that differs is 10.2.9's answer: a
+    // shorthand method's `.name` is its property KEY, while `m: function g(){}`
+    // really is named `g`. A shorthand's FunctionExpr carries the synthesized
+    // IL symbol (`obj.0.m`) rather than an empty name, so nothing downstream
+    // can tell the two apart from the function alone — hence the flag, and
+    // hence this test, since the AST dump does not print it.
+    SourceBuffer buf("t.ts", std::string("const o = { m() {}, p: function () {}, "
+                                         "q: function g() {}, \"s\"() {}, [k]() {} };\n"));
+    DiagnosticSink diags;
+    auto tokens = Lexer(buf, diags).lex();
+    REQUIRE_FALSE(diags.hasErrors());
+    auto mod = Parser(std::move(tokens), diags).parseModule("t");
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod != nullptr);
+
+    REQUIRE(mod->body.size() == 1);
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(mod->body[0].get());
+    REQUIRE(decl != nullptr);
+    const auto* lit = dynamic_cast<const ast::ObjectLit*>(decl->init.get());
+    REQUIRE(lit != nullptr);
+    REQUIRE(lit->props.size() == 5);
+
+    CHECK(lit->props[0].isMethod);        // { m() {} }
+    CHECK_FALSE(lit->props[1].isMethod);  // { p: function () {} }
+    CHECK_FALSE(lit->props[2].isMethod);  // { q: function g() {} }
+    CHECK(lit->props[3].isMethod);        // { "s"() {} } — a string-literal key
+    CHECK(lit->props[4].isMethod);        // { [k]() {} } — a computed one
+    // And the flag really is about the SYNTAX rather than the value: every one
+    // of these five holds a function expression.
+    for (const auto& prop : lit->props) {
+        CHECK(dynamic_cast<const ast::FunctionExpr*>(prop.value.get()) != nullptr);
+    }
+}

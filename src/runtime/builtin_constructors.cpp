@@ -350,7 +350,7 @@ const CtorEntry kCtors[] = {
 // what `instanceof` would compare against, so a wrapper would not be an
 // `instanceof String`. Filling it here makes those one answer.
 Value ctorObject(const CtorEntry& entry) {
-    Rooted<Value> fn{Value(bronze_function_singleton(entry.code, 0))};
+    Rooted<Value> fn{rtNativeFunction(entry.code, 0)};
     if (entry.prototype && !fn.get().asObject<FunctionHeader>()->prototype.isObject()) {
         Rooted<Value> proto{entry.prototype()};
         FunctionHeader* live = fn.get().asObject<FunctionHeader>();
@@ -424,8 +424,8 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
         }
         for (size_t i = 0; i < entry.staticCount; ++i) {
             if (key == entry.statics[i].name) {
-                out = Value(bronze_function_singleton(entry.statics[i].code,
-                                                       entry.statics[i].arity));
+                out = rtNativeFunction(entry.statics[i].code,
+                                                       entry.statics[i].arity);
                 return true;
             }
         }

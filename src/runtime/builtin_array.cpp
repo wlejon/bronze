@@ -601,8 +601,10 @@ struct ArrayMethod {
 
 // Arity is the count a short call is PADDED to with undefined, so the variadic
 // entries declare 0 to see their real argc. It is not the ECMA-262 `length` of
-// these functions, which bronze does not expose — `Function.prototype.length`
-// is a diagnosed unimplemented member.
+// these functions: 10.2.10 is carried in a separate header field, filled in
+// from the IL, and a NATIVE builtin has no key index to name it with — so
+// `[].map.length` is a diagnosed refusal rather than the padding count, which
+// would be a wrong number given confidently (runtime/fn.h).
 const ArrayMethod kArrayMethods[] = {
     {"at", arrayAt, 1},
     {"concat", arrayConcat, 0},
@@ -634,7 +636,7 @@ const ArrayMethod kArrayMethods[] = {
 
 Value rtArrayMethod(const std::string& key) {
     for (const ArrayMethod& m : kArrayMethods) {
-        if (key == m.name) return Value(bronze_function_singleton(m.code, m.arity));
+        if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
 }

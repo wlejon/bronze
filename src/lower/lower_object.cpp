@@ -68,7 +68,25 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
             keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
         }
 
-        auto valOpt = lowerExpr(*prop.value, ilFn);
+        // 13.2.5.5 PropertyDefinitionEvaluation: an anonymous function value
+        // takes the property's name. Only for a name the source WROTE — a
+        // computed key is not known here, and 8.6.2 would take it from the
+        // evaluated key rather than from anything this pass can see.
+        //
+        // A shorthand METHOD takes the key too, and needs saying separately:
+        // its function already carries a name — the IL symbol the parser
+        // synthesized — so NamedEvaluation, which fires only for an anonymous
+        // one, would leave `{ m() {} }.m.name` reading "obj.0.m".
+        std::optional<Value> valOpt;
+        if (prop.computed()) {
+            valOpt = lowerExpr(*prop.value, ilFn);
+        } else if (prop.isMethod) {
+            const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
+            valOpt = lowerClosure(fn, fn.name, prop.key, fn.params, fn.returnType, fn.body,
+                                  fn.span, ilFn, fn.isArrow);
+        } else {
+            valOpt = lowerNamedEvaluation(*prop.value, prop.key, ilFn);
+        }
         if (!valOpt) return std::nullopt;
         auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
 
@@ -114,7 +132,13 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
 
 bool Lowerer::emitAccessorDef(Value target, const std::string& key, ast::AccessorKind kind,
                               const ast::FunctionExpr& fn, bool enumerable, il::Function& ilFn) {
-    auto fnVal = lowerClosure(fn, fn.name, fn.params, fn.returnType, fn.body, fn.span, ilFn);
+    // 10.2.9's `prefix` argument: an accessor's `name` is "get x" / "set x",
+    // which is what distinguishes the two halves of one property in a stack
+    // trace and in `Object.getOwnPropertyDescriptor(o, 'x').get.name`.
+    const std::string accessorName =
+        (kind == ast::AccessorKind::Getter ? "get " : "set ") + key;
+    auto fnVal = lowerClosure(fn, fn.name, accessorName, fn.params, fn.returnType, fn.body,
+                              fn.span, ilFn);
     if (!fnVal) return false;
     const il::ValueId absent = emitConstUndefined(ilFn);
     const bool isGetter = kind == ast::AccessorKind::Getter;

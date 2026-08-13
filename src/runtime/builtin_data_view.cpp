@@ -371,7 +371,7 @@ Value rtDataViewConstructor(const std::string& name) {
     // native must not be padded, or `new DataView(buffer)` would arrive with
     // two extra `undefined`s and take the explicit-length branch. Interned by
     // code pointer, so the bare name and `v.constructor` are the SAME object.
-    return Value(bronze_function_singleton(dataViewCtor, 0));
+    return rtNativeFunction(dataViewCtor, 0);
 }
 
 const char* rtDataViewConstructorName(Value fn) {
@@ -392,7 +392,7 @@ Value rtDataViewMember(Value viewVal, const std::string& key) {
     // read again.
     if (key == "constructor") return rtDataViewConstructor("DataView");
     for (const Accessor& a : kAccessors) {
-        if (key == a.name) return Value(bronze_function_singleton(a.code, a.arity));
+        if (key == a.name) return rtNativeFunction(a.code, a.arity);
     }
     for (const char* name : kBigIntAccessors) {
         if (key != name) continue;
