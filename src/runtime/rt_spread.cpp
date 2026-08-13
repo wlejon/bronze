@@ -34,7 +34,6 @@ constexpr uint32_t kPatternObject = 1;
 
 Value newArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr);
 }

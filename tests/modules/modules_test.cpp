@@ -571,3 +571,13 @@ TEST_CASE("both halves of a computed new callee are renamed") {
     CHECK_FALSE(contains(r.dump, "(ident table)"));
     CHECK_FALSE(contains(r.dump, "(ident which)"));
 }
+
+TEST_CASE("an entry module with strict early error is diagnosed as strict") {
+    Sandbox box("entrystrict");
+    const std::string entry =
+        box.write("main.js", "export function f(a, a) {}\n");
+    Loaded r = load(entry);
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "duplicate parameter name 'a'"));
+}
+

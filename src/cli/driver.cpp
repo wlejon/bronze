@@ -1,5 +1,6 @@
 #include "cli/driver.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "ast/dump.h"
@@ -305,6 +308,22 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
     return false;
 }
 
+std::atomic<uint64_t> g_tempObjCounter{0};
+
+std::filesystem::path uniqueTempObjPath(const std::string& sourcePath) {
+    uint64_t pid = 0;
+#ifdef _WIN32
+    pid = static_cast<uint64_t>(GetCurrentProcessId());
+#else
+    pid = static_cast<uint64_t>(getpid());
+#endif
+    uint64_t count = g_tempObjCounter.fetch_add(1, std::memory_order_relaxed);
+    std::string stem = std::filesystem::path(sourcePath).stem().string();
+    std::string filename =
+        stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + "_temp.obj";
+    return std::filesystem::temp_directory_path() / filename;
+}
+
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString) {
@@ -482,8 +501,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 0;
     }
 
-    std::filesystem::path tempObj = std::filesystem::temp_directory_path() /
-                                    (std::filesystem::path(sourcePath).stem().string() + "_temp.obj");
+    std::filesystem::path tempObj = uniqueTempObjPath(sourcePath);
 
     LLVMBackend backend;
     const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);

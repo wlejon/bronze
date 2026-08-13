@@ -222,7 +222,6 @@ uint64_t bronze_create_object() {
 uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < 4) ? 4 : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
-    arr->header.flags = HeapKind::Array;
     arr->length = length;
     return Value::fromObject(arr).rawBits();
 }
@@ -417,7 +416,6 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         Rooted<Value> src{objVal};
         uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
         Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
-        out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
         uint32_t at = 0;
         for (uint32_t i = 0; i < length; ++i) {
             if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
@@ -516,7 +514,6 @@ uint64_t bronze_object_keys(uint64_t objBits) {
 
     const uint32_t total = static_cast<uint32_t>(ordered.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-    out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
 
     uint32_t at = 0;
     for (StringHeader* name : ordered) {

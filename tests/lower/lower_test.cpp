@@ -357,6 +357,20 @@ TEST_CASE("a destructuring assignment reads the whole right side before writing"
     CHECK(printed.find("iter.close %6, abrupt") != std::string::npos);
 }
 
+TEST_CASE("object rest into a property reference lowers to object.rest and prop.set") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.js", "");
+    const auto optMod =
+        parseAndLower("const o = {};\n({ ...o.rest } = { a: 1, b: 2 });\n", diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("pattern.check") != std::string::npos);
+    CHECK(printed.find("object.rest") != std::string::npos);
+    CHECK(printed.find("prop.set") != std::string::npos);
+}
+
 TEST_CASE("a default parameter is a branch, and only undefined takes it") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");

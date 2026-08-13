@@ -88,7 +88,6 @@ ObjectHeader* namedPropertyHolder(Value v) {
 // throwing, and a program that writes `for (const k in maybe)` depends on it.
 uint64_t emptyKeyArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr).rawBits();
 }
@@ -124,7 +123,6 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
             src.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         Rooted<Value> out{Value::fromObject(
             ArrayHeader::create(rtHeap(), indexCount ? indexCount : 4))};
-        out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
         uint32_t at = 0;
         for (uint32_t i = 0; i < indexCount; ++i) {
             if (isArray && !src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
@@ -184,7 +182,6 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
 
     const auto total = static_cast<uint32_t>(keys.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-    out.get().asObject<ArrayHeader>()->header.flags = HeapKind::Array;
     uint32_t at = 0;
     for (StringHeader* key : keys) {
         Rooted<Value> copy{rtCopyKeyToHeap(key)};

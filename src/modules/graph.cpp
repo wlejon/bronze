@@ -92,20 +92,47 @@ public:
         // parameter name, an octal literal, `delete x` — and those are raised
         // during the parse that has already happened. It costs one extra parse
         // of one file per build.
-        auto parse = [&](bool forceStrict) {
-            auto tokens = Lexer(buffer, diags_).lex();
-            if (diags_.hasErrors()) return std::unique_ptr<ast::Module>();
-            return Parser(std::move(tokens), diags_, file->id)
+        auto parse = [&](bool forceStrict, DiagnosticSink& sink) {
+            auto tokens = Lexer(buffer, sink).lex();
+            if (sink.hasErrors()) return std::unique_ptr<ast::Module>();
+            return Parser(std::move(tokens), sink, file->id)
                 .parseModule(file->displayName, forceStrict);
         };
 
         const bool nonEntryFile = buffer.fileId() != 0;
-        file->ast = parse(/*forceStrict=*/nonEntryFile);
-        if (!file->ast || diags_.hasErrors()) return false;
-
-        if (!nonEntryFile && !file->ast->strict && hasModuleDeclaration(*file->ast)) {
-            file->ast = parse(/*forceStrict=*/true);
+        if (nonEntryFile) {
+            file->ast = parse(/*forceStrict=*/true, diags_);
             if (!file->ast || diags_.hasErrors()) return false;
+        } else {
+            DiagnosticSink sloppySink;
+            file->ast = parse(/*forceStrict=*/false, sloppySink);
+            if (file->ast && !sloppySink.hasErrors()) {
+                if (!file->ast->strict && hasModuleDeclaration(*file->ast)) {
+                    file->ast = parse(/*forceStrict=*/true, diags_);
+                    if (!file->ast || diags_.hasErrors()) return false;
+                } else {
+                    for (const auto& d : sloppySink.all()) {
+                        if (d.severity == Severity::Error) diags_.error(d.span, d.message);
+                        else if (d.severity == Severity::Warning) diags_.warning(d.span, d.message);
+                    }
+                }
+            } else {
+                // An entry file that fails its sloppy parse is retried strict
+                // into a scratch sink before reporting: a module whose
+                // strictness matters to an early error must be parsed in module mode.
+                DiagnosticSink strictSink;
+                auto strictAst = parse(/*forceStrict=*/true, strictSink);
+                if (strictAst && !strictSink.hasErrors()) {
+                    file->ast = std::move(strictAst);
+                } else {
+                    const auto& reportSink = strictSink.hasErrors() ? strictSink : sloppySink;
+                    for (const auto& d : reportSink.all()) {
+                        if (d.severity == Severity::Error) diags_.error(d.span, d.message);
+                        else if (d.severity == Severity::Warning) diags_.warning(d.span, d.message);
+                    }
+                    return false;
+                }
+            }
         }
 
         for (const auto& stmt : file->ast->body) {

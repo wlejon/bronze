@@ -37,6 +37,7 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
 ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
     size_t payload_bytes = sizeof(ArrayHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
+    raw_hdr->flags = HeapKind::Array;
     auto* arr = reinterpret_cast<ArrayHeader*>(raw_hdr);
     arr->length = 0;
     arr->capacity = 0;

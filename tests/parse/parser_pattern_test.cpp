@@ -138,6 +138,8 @@ TEST_CASE("a property reference is a destructuring assignment target") {
         "({ k: o.x } = y);",
         "({ k: o[i] = 1 } = y);",
         "[...o.rest] = y;",
+        "({ ...o.rest } = y);",
+        "({ ...o[i] } = y);",
         "[{ k: o.x }] = y;",
     };
     for (const char* src : accepted) {

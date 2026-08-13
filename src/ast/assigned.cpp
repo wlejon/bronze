@@ -217,6 +217,7 @@ private:
     void visitPatternExprs(const BindingPattern& pattern) {
         for (const auto& elem : pattern.elements) {
             if (elem.keyExpr) elem.keyExpr->accept(*this);
+            if (elem.target) elem.target->accept(*this);
             if (elem.defaultValue) elem.defaultValue->accept(*this);
             if (elem.pattern) visitPatternExprs(*elem.pattern);
         }

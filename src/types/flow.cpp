@@ -91,6 +91,7 @@ void FlowAnalyzer::declare(const std::string& name, Type t) {
 void FlowAnalyzer::patternDefaults(const ast::BindingPattern& pattern) {
     for (const auto& elem : pattern.elements) {
         if (elem.keyExpr) expr(*elem.keyExpr);
+        if (elem.target) expr(*elem.target);
         if (elem.defaultValue) expr(*elem.defaultValue);
         if (elem.pattern) patternDefaults(*elem.pattern);
     }

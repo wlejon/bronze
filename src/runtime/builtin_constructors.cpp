@@ -48,7 +48,6 @@ bool isCallable(Value v) {
 
 Value newEmptyArray() {
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->header.flags = HeapKind::Array;
     arr->length = 0;
     return Value::fromObject(arr);
 }
@@ -78,7 +77,6 @@ Value arrayOfLength(uint32_t n) {
         return Value::fromUndefined();
     }
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), n > 0 ? n : 4);
-    arr->header.flags = HeapKind::Array;
     arr->length = n;
     // Nothing between `create` and here allocates, so the raw pointer is live.
     Value* slots = arr->elementsData();

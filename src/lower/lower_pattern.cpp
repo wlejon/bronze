@@ -327,6 +327,12 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
 
     for (const auto& elem : pattern.elements) {
         if (elem.isRest) {
+            std::optional<PatternRef> ref;
+            if (elem.target) {
+                ref = evalPatternRef(*elem.target, ilFn);
+                if (!ref) return false;
+            }
+
             il::ValueId res = ilFn.valueCount++;
             il::Instruction inst;
             inst.op = il::Op::ObjectRest;
@@ -334,9 +340,16 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
             inst.result = res;
             inst.operands = {source.id, excluded.id};
             emitInst(ilFn, inst);
-            if (!bindPatternName(elem.name, Value{res, il::Type::Dynamic}, target, elem.span,
-                                 ilFn)) {
-                return false;
+
+            Value restVal{res, il::Type::Dynamic};
+            if (elem.pattern) {
+                if (!lowerPattern(*elem.pattern, restVal, target, ilFn)) return false;
+            } else if (ref) {
+                storePatternRef(*ref, restVal, ilFn);
+            } else if (!elem.name.empty()) {
+                if (!bindPatternName(elem.name, restVal, target, elem.span, ilFn)) {
+                    return false;
+                }
             }
             break;
         }

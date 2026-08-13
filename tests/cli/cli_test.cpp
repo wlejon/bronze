@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <string>
 
 #include "cli/driver.h"
@@ -105,3 +106,41 @@ TEST_CASE("CLI driver build command compiles and links executable") {
 
     std::filesystem::remove(jsPath, ec);
 }
+
+#if BRONZE_WITH_LLVM
+TEST_CASE("CLI driver concurrent builds do not collide on temp object path") {
+    std::filesystem::path dirA = std::filesystem::temp_directory_path() / "bronze_test_cli_a";
+    std::filesystem::path dirB = std::filesystem::temp_directory_path() / "bronze_test_cli_b";
+    std::error_code ec;
+    std::filesystem::create_directories(dirA, ec);
+    std::filesystem::create_directories(dirB, ec);
+
+    std::filesystem::path jsPathA = dirA / "main.js";
+    std::filesystem::path jsPathB = dirB / "main.js";
+    std::filesystem::path exePathA = dirA / "main.exe";
+    std::filesystem::path exePathB = dirB / "main.exe";
+
+    writeTestFile(jsPathA, "console.log(101);\n");
+    writeTestFile(jsPathB, "console.log(202);\n");
+
+    std::string errA, errB;
+    auto futA = std::async(std::launch::async, [&] {
+        return bronze::cli::runBuild(jsPathA.string(), exePathA.string(), &errA);
+    });
+    auto futB = std::async(std::launch::async, [&] {
+        return bronze::cli::runBuild(jsPathB.string(), exePathB.string(), &errB);
+    });
+
+    int statusA = futA.get();
+    int statusB = futB.get();
+
+    REQUIRE_MESSAGE(statusA == 0, errA);
+    REQUIRE_MESSAGE(statusB == 0, errB);
+    CHECK(runAndCaptureOutput(exePathA) == "101\n");
+    CHECK(runAndCaptureOutput(exePathB) == "202\n");
+
+    std::filesystem::remove_all(dirA, ec);
+    std::filesystem::remove_all(dirB, ec);
+}
+#endif
+

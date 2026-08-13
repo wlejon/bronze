@@ -265,12 +265,7 @@ PatternPtr Parser::patternFromLiteral(ExprPtr expr) {
                              "a rest element must be the last element of an object pattern");
                 return nullptr;
             }
-            auto* ident = dynamic_cast<Ident*>(spread->argument.get());
-            if (!ident) {
-                diags_.error(elem.span, "the target of '...' in an object pattern must be a name");
-                return nullptr;
-            }
-            elem.name = ident->name;
+            if (!takeTarget(std::move(spread->argument), elem)) return nullptr;
             pat->elements.push_back(std::move(elem));
             continue;
         }

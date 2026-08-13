@@ -15,6 +15,7 @@ TEST_CASE("ArrayHeader element access and bounds") {
 
     Rooted<ArrayHeader*> arr(ArrayHeader::create(heap, 4));
     REQUIRE(arr.get() != nullptr);
+    CHECK(arr.get()->header.flags == HeapKind::Array);
     CHECK(arr.get()->length == 0);
     CHECK(arr.get()->capacity == 4);
 
