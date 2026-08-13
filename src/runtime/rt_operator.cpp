@@ -482,6 +482,9 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
     // allocate points into dead from-space.
     Rooted<Value> objRoot{Value(objBits)};
     Rooted<Value> ctorRoot{Value(ctorBits)};
+    if (ctorRoot.get().rawBits() == rtObjectNamespace().rawBits()) {
+        return objRoot.get().isObject();
+    }
     if (!isCallable(ctorRoot.get())) {
         rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
         return false;

@@ -47,6 +47,16 @@ sha256  76dea8151bc9352aef3528b4262e249b2604f62543828328db978d060d61a495
 bytes   1272972
 ```
 
+Beside `three.module.js` sits `OrbitControls.js`: r160's published `examples/jsm/controls/OrbitControls.js`,
+byte-for-byte as released.
+
+```
+https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/jsm/controls/OrbitControls.js
+sha256  5a44a9e86a2a0fb11933eed69bc2cd33c76a496854c1aed6ed776efa87d7b064
+bytes   29868
+```
+
+
 It is the same release as `three/`, and that is checked rather than assumed:
 r160's `src/math/Vector3.js` fetched from the same tag is byte-identical to
 `three/math/Vector3.js`.
