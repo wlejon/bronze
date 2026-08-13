@@ -1,0 +1,184 @@
+// The module namespace exotic object: how one is built, and the four questions
+// a program can ask it.
+//
+// It is built from the object literal of getters `src/modules/link.cpp`
+// synthesizes, rather than from a list the linker hands over directly. The
+// reason is that the getters have to be real closures over the exporting
+// module's bindings, and the one thing that can build a closure is the compiler
+// — so the literal is lowered exactly as any other, and this converts the
+// result. What the conversion adds is everything 10.4.6 says an ordinary object
+// is not: a sorted key list, a [[Set]] that always refuses, and a descriptor
+// that says `configurable: false`.
+//
+// The SORT is 10.4.6.2 and it is also the house determinism rule met head-on: a
+// namespace's key order must be a function of the export names, and never of
+// the order a shape's transition tree or a hash table happens to hold them in.
+// `StringHeader::lessThan` is 7.2.13 IsStringLessThan — UTF-16 code unit by
+// code unit — which is exactly the order 10.4.6.2 names.
+
+#include "runtime/namespace.h"
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
+#include "runtime/exception.h"
+#include "runtime/fatal.h"
+#include "runtime/gc.h"
+#include "runtime/object.h"
+#include "runtime/rt_internal.h"
+#include "runtime/shape.h"
+#include "runtime/string.h"
+#include "runtime/value.h"
+
+namespace bronze {
+
+ModuleNamespaceHeader* ModuleNamespaceHeader::create(Heap& heap, uint32_t count) {
+    const size_t payload =
+        sizeof(ModuleNamespaceHeader) - sizeof(HeapObjectHeader) + 2 * size_t(count) * sizeof(Value);
+    HeapObjectHeader* raw = heap.allocate(payload, Tag::Object);
+    auto* ns = reinterpret_cast<ModuleNamespaceHeader*>(raw);
+    ns->header.flags = kFlags;
+    ns->count = count;
+    ns->reserved = 0;
+    for (uint32_t i = 0; i < 2 * count; ++i) ns->entries()[i] = Value::fromUndefined();
+    return ns;
+}
+
+int32_t ModuleNamespaceHeader::indexOf(const StringHeader* key) const {
+    if (!key) return -1;
+    for (uint32_t i = 0; i < count; ++i) {
+        Value stored = name(i);
+        if (!stored.isString()) continue;
+        if (stored.asString<StringHeader>()->equals(*key)) return static_cast<int32_t>(i);
+    }
+    return -1;
+}
+
+namespace runtime {
+
+namespace {
+
+ModuleNamespaceHeader* asNamespace(Value v) {
+    if (!v.isObject()) return nullptr;
+    auto* hdr = v.asObject<HeapObjectHeader>();
+    if (hdr->flags != ModuleNamespaceHeader::kFlags) return nullptr;
+    return reinterpret_cast<ModuleNamespaceHeader*>(hdr);
+}
+
+}  // namespace
+
+bool rtIsModuleNamespace(Value v) { return asNamespace(v) != nullptr; }
+
+std::vector<StringHeader*> rtModuleNamespaceKeys(Value nsVal) {
+    std::vector<StringHeader*> out;
+    ModuleNamespaceHeader* ns = asNamespace(nsVal);
+    if (!ns) return out;
+    out.reserve(ns->count);
+    // Already in 10.4.6.2 order: the sort happened once, at construction, over
+    // arena strings that never move. Nothing here can reorder them.
+    for (uint32_t i = 0; i < ns->count; ++i) out.push_back(ns->name(i).asString<StringHeader>());
+    return out;
+}
+
+bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out) {
+    ModuleNamespaceHeader* ns = asNamespace(nsVal);
+    if (!ns) return false;
+    const int32_t at = ns->indexOf(key);
+    // A name the module does not export is NOT an error: 10.4.6.7 step 3 falls
+    // through to `undefined`, exactly as an ordinary object does for a name it
+    // does not carry. `import { missing }` is the early error; `ns.missing` is
+    // this.
+    if (at < 0) {
+        out = Value::fromUndefined();
+        return true;
+    }
+    Rooted<Value> receiver{nsVal};
+    // The getter is read before the call and through the header, which is safe
+    // because nothing between here and `callGetter` allocates; `callGetter`
+    // itself takes the receiver through a root, as its contract requires.
+    Value getter = ns->getter(static_cast<uint32_t>(at));
+    out = callGetter(getter, receiver);
+    return true;
+}
+
+bool rtModuleNamespaceOwnProperty(Value nsVal, Value keyVal, Value& outValue) {
+    if (!asNamespace(nsVal)) return false;
+    // 10.4.6.5 step 1: a SYMBOL falls through to OrdinaryGetOwnProperty, and a
+    // namespace bronze builds carries no own symbol-keyed property — so no
+    // symbol is ever one of its own keys.
+    if (keyVal.isSymbol()) return false;
+    Rooted<Value> self{nsVal};
+    Rooted<Value> key{rtValueToString(keyVal)};
+    if (rtExceptionPending()) return false;
+    ModuleNamespaceHeader* ns = asNamespace(self.get());
+    if (ns->indexOf(key.get().asString<StringHeader>()) < 0) return false;
+    // Step 4 reads the value through [[Get]], which is what makes the
+    // descriptor's `value` the binding's CURRENT one rather than the one
+    // linking saw.
+    return rtModuleNamespaceGet(self.get(), key.get().asString<StringHeader>(), outValue);
+}
+
+bool rtModuleNamespaceWriteRefused(Value nsVal, const std::string& key, bool strict) {
+    if (!asNamespace(nsVal)) return false;
+    // 10.4.6.9 [[Set]] returns false for EVERY key, whether or not the module
+    // exports it, and 13.15.2 PutValue step 6.d turns a false from a strict
+    // reference into a TypeError. Module code is always strict (11.2.2), so the
+    // sloppy half of this is unreachable from a module — it is written anyway,
+    // because a namespace object can be passed into a function bronze compiled
+    // from a sloppy script and the refusal has to mean the same thing there.
+    if (strict) {
+        rtThrowTypeError("Cannot assign to read only property '" + key +
+                         "' of a module namespace object");
+    }
+    return true;
+}
+
+extern "C" {
+
+// The literal of getters in, the exotic object out. Called once per
+// `import * as` binding, at the point the linker put the declaration, so
+// nothing here is on a hot path and the sort costs what it costs.
+uint64_t bronze_module_namespace(uint64_t sourceBits) {
+    Value sourceVal(sourceBits);
+    if (!sourceVal.isObject() ||
+        sourceVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: a module namespace built from something that is not an object literal");
+    }
+    Rooted<Value> source{sourceVal};
+
+    // Phase one reads the shape only. The keys are arena-interned and immortal,
+    // so they survive the allocation in phase two; the getters are ordinary
+    // heap values and are therefore read AFTER it, off the re-derived object.
+    std::vector<StringHeader*> keys =
+        rtOwnStringKeysOrdered(source.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
+    // 10.4.6.2, and the whole reason this object exists rather than the literal.
+    std::sort(keys.begin(), keys.end(),
+              [](const StringHeader* a, const StringHeader* b) { return a->lessThan(*b); });
+
+    const uint32_t count = static_cast<uint32_t>(keys.size());
+    Rooted<Value> nsRoot{Value::fromObject(ModuleNamespaceHeader::create(rtHeap(), count))};
+
+    auto* obj = source.get().asObject<ObjectHeader>();
+    auto* ns = reinterpret_cast<ModuleNamespaceHeader*>(nsRoot.get().asObject<HeapObjectHeader>());
+    for (uint32_t i = 0; i < count; ++i) {
+        PropertyInfo info;
+        if (!obj->shape || !obj->shape->lookupProperty(keys[i], info) || !info.accessor) {
+            // The literal is generated by the linker and every property in it is
+            // a getter. Anything else here is a drift between that generator and
+            // this reader, which is an internal error and not something a
+            // program did.
+            fatal("internal: a module namespace entry that is not a getter");
+        }
+        ns->entries()[2 * i] = Value::fromString(keys[i]);
+        ns->entries()[2 * i + 1] = obj->getSlot(info.slot);
+    }
+    return nsRoot.get().rawBits();
+}
+
+}  // extern "C"
+
+}  // namespace runtime
+}  // namespace bronze

@@ -66,9 +66,13 @@ bool Parser::consumeSemicolon(const char* what) {
     return false;
 }
 
-std::unique_ptr<Module> Parser::parseModule(std::string name) {
+std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
+    // 11.2.2 first, because it is not a property of the text: module code is
+    // strict whether or not it says so, and the caller is the only thing that
+    // knows this file is module code.
+    if (forceStrict) strict_ = true;
     // The Script's own Directive Prologue, read before the first statement so
     // that every early error below is decided in the mode the file asked for.
     if (prologueSelectsStrict()) strict_ = true;

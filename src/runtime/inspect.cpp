@@ -18,6 +18,7 @@
 #include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
@@ -175,6 +176,20 @@ private:
                 return object(reinterpret_cast<ObjectHeader*>(hdr), depth);
             case HeapKind::Array: return array(reinterpret_cast<ArrayHeader*>(hdr), depth);
             case HeapKind::Function: return "[Function]";
+            // A module namespace shows its kind and its EXPORT NAMES, in
+            // 10.4.6.2's order, and not its values. Reading a value here means
+            // calling the getter that closes over the exporting binding, and
+            // this walk deliberately runs no user code and allocates nothing —
+            // the same rule that prints an accessor as `[Getter]` a few lines
+            // below. The names are the whole of what the object IS, so this is
+            // a complete rendering rather than a shortened one.
+            case ModuleNamespaceHeader::kFlags: {
+                std::string out;
+                for (StringHeader* name : rtModuleNamespaceKeys(v)) {
+                    out += (out.empty() ? ": " : " ") + utf8Of(name);
+                }
+                return "[Module" + out + "]";
+            }
             case TypedArrayHeader::kFlags:
                 return typedArray(reinterpret_cast<TypedArrayHeader*>(hdr), depth);
             case ArrayBufferHeader::kFlags:

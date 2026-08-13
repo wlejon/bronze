@@ -28,6 +28,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
@@ -226,6 +227,7 @@ const char* rtObjectKindName(Value v) {
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         case DataViewHeader::kFlags: return "a DataView";
         case RegExpHeader::kFlags: return "a RegExp";
+        case ModuleNamespaceHeader::kFlags: return "a module namespace object";
         default: return "this object";
     }
 }

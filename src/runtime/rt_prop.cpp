@@ -37,6 +37,7 @@
 #include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -354,6 +355,17 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // a program, so reaching this is a lowering bug rather than something
         // a program did.
         fatal("internal: a property read on an iteration record");
+    }
+    if (hdr->flags == ModuleNamespaceHeader::kFlags) {
+        // 10.4.6.7. A namespace has no prototype (10.4.6.1 fixes [[Prototype]]
+        // at null), so there is no chain to continue on and a name it does not
+        // export is `undefined` here rather than a step further up.
+        Value found = Value::fromUndefined();
+        // Cannot answer false — the flags word above is what it tests — so this
+        // returns unconditionally rather than falling through to a cast that
+        // would read a namespace's payload as an ObjectHeader's shape word.
+        rtModuleNamespaceGet(objVal, keyHeader, found);
+        return found.rawBits();
     }
     if (hdr->flags == HeapKind::Function) {
         // A GLOBAL CONSTRUCTOR's statics come first, ahead of the `prototype`

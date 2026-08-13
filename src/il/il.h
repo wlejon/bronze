@@ -144,6 +144,12 @@ enum class Op : uint8_t {
     // with is not a parameter of anything else here and naming it is what makes
     // the desugaring's one divergence from a literal readable in the IL.
     CreateGeneratorObject, // a = create.generator_object
+    // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
+    // of getters the operand holds. Its own op for the reason
+    // `create.generator_object` is one: what it produces is not an object
+    // literal with a different attribute set, it is a receiver KIND whose
+    // own-key order, [[Set]] and [[GetOwnProperty]] are each its own.
+    ModuleNamespace, // a = module.namespace b
     ObjectKeys, // a = object.keys b
     // The keys a `for-in` will visit, as one array built before the first
     // iteration: own AND inherited enumerable string keys, each once.

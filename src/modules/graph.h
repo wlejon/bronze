@@ -56,10 +56,19 @@ bool linkGraph(Graph& graph, SourceSet& sources, DiagnosticSink& diags, ast::Mod
 // Renames every reference that resolves to the file's MODULE scope, per
 // `renames`, and stamps `fileId` onto every span the walk reaches.
 //
-// `namespaceLocals` are the local names bound to an imported module namespace;
-// a property write through one is refused by name, because the object bronze
-// synthesizes for a namespace has getters and no setters and would swallow the
-// write.
+// `importedBindings` are this file's import bindings — every `import { x }`,
+// `import d`, `import * as ns` local — mapped to the module each names. An
+// ASSIGNMENT to one is refused here, because 16.2.1.6.1 CreateImportBinding
+// makes an import an immutable indirect binding: the local is a view of another
+// module's slot, and linking has renamed it to that slot, so a write bronze let
+// through would silently store into the exporting module's binding.
+//
+// A property write THROUGH a namespace local — `ns.z = 5` — is deliberately not
+// refused here, and the two are not the same operation. That one assigns to a
+// property of an ordinary object VALUE; ECMA-262 10.4.6.9 makes it a [[Set]]
+// that returns false, which is a runtime TypeError in strict code and nothing
+// the compiler can decide. Refusing it here is what kept a whole correct
+// program from building (`tests/oracle/cases/module_namespace_object`).
 //
 // A node kind the walk does not know is an internal error, not a subtree left
 // alone: leaving one alone is a reference that keeps a name the linker has
@@ -67,7 +76,7 @@ bool linkGraph(Graph& graph, SourceSet& sources, DiagnosticSink& diags, ast::Mod
 // both silent.
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
-                       const std::map<std::string, std::string>& namespaceLocals,
+                       const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags);
 
 }  // namespace bronze::modules

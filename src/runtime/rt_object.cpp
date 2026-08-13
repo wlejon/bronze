@@ -20,6 +20,7 @@
 #include "runtime/gc.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/namespace.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
@@ -419,6 +420,22 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         for (uint32_t i = 0; i < length; ++i) {
             Rooted<Value> key{indexName(i)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+        }
+        return out.get().rawBits();
+    }
+    // A module namespace: 10.4.6.2's export names, SORTED by code unit, and
+    // every one of them enumerable (10.4.6.5), so `Object.keys` and
+    // `getOwnPropertyNames` report the same list. The sort happened once at
+    // construction — this only copies it out, which is what makes the order a
+    // function of the export names rather than of any table walked here.
+    if (hdr->flags == ModuleNamespaceHeader::kFlags) {
+        Rooted<Value> src{objVal};
+        const std::vector<StringHeader*> names = rtModuleNamespaceKeys(src.get());
+        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(names.size())))};
+        uint32_t at = 0;
+        for (StringHeader* name : names) {
+            Rooted<Value> key{rtCopyKeyToHeap(name)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
     }

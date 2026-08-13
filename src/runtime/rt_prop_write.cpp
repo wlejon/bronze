@@ -34,6 +34,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -214,6 +215,10 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == IterRecordHeader::kFlags) {
         fatal("internal: a property write on an iteration record");
     }
+    // 10.4.6.9 [[Set]] returns false for every key, exported or not — so this
+    // is a refusal and never a store, and it is a THROW rather than a `fatal`
+    // because the specification names the error: strict code catches it.
+    if (rtModuleNamespaceWriteRefused(objVal, keyStr, strict)) return;
     if (hdr->flags == HeapKind::Function) {
         if (keyStr != "prototype") {
             // A static member: an own property of the function object itself.
@@ -418,6 +423,9 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             rtReportSetRefusal(refusal, strict, "<symbol>");
             return;
         }
+        // A namespace refuses a SYMBOL key on the same terms as a string one:
+        // 10.4.6.9 returns false without ever looking at the key.
+        if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
         // A receiver with no shape has nowhere to put one, and discarding the
         // write would leave the program believing it stored something.
         fatal("a symbol-keyed property write is only supported on a plain object or a "
@@ -486,6 +494,18 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                                                         /*receiver=*/nullptr, &refusal);
         rtReportSetRefusal(refusal, strict, keyText);
         return;
+    }
+    {
+        // `ns[k] = v` is the same operation as `ns.k = v` and gets the same
+        // answer, for the reason the two TypeErrors above are shared: one
+        // operation, two spellings. The key is only needed for the message.
+        Rooted<Value> nsRoot{objVal};
+        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+        if (rtModuleNamespaceWriteRefused(nsRoot.get(),
+                                          rtUtf8Chars(key.get().asString<StringHeader>()),
+                                          strict)) {
+            return;
+        }
     }
     fatal("computed index writes are only supported on arrays, plain objects "
           "and typed arrays");

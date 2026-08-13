@@ -36,7 +36,11 @@ std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet
                                          DiagnosticSink& diags);
 
 // A specifier as written, and the file it was written in, to the file it names.
-// Relative only; everything else is a named error. False on a diagnosed error.
+// Relative (`./x.js`) or BARE (`lib`, `@scope/pkg/sub.js`, resolved by walking
+// `node_modules` upward and reading the package's `package.json`); an absolute
+// path, a URL and a `#` import are each a named error, as is every step of
+// package resolution that has more than one answer — see `resolve.h`. False on
+// a diagnosed error.
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
                       Span span, DiagnosticSink& diags, std::filesystem::path& out);
 

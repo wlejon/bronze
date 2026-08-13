@@ -81,7 +81,11 @@ public:
         // A generator object dumps under its own head: it is the same property
         // list with a different PROTOTYPE, and a form that printed it as
         // `(object` would hide the one thing the desugaring decides.
-        emit(n.isGeneratorObject ? "(generator-object" : "(object");
+        // A module namespace dumps under its own head for the same reason: the
+        // property list is the same getters, and what the linker decided is
+        // that the object built from them is 10.4.6's exotic one.
+        emit(n.isGeneratorObject ? "(generator-object"
+                                 : n.isModuleNamespace ? "(module-namespace" : "(object");
         indented([&] {
             for (const auto& p : n.props) {
                 // A computed key is a runtime ToPropertyKey of an evaluated

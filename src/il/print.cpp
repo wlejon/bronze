@@ -72,6 +72,7 @@ const char* opName(Op op) {
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
         case Op::CreateGeneratorObject: return "create.generator_object";
+        case Op::ModuleNamespace: return "module.namespace";
         case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
         case Op::MethodDef: return "method.def";
@@ -164,6 +165,7 @@ bool canThrow(const Instruction& inst) {
         // continue past a heap that could not grow).
         case Op::CreateObject:
         case Op::CreateGeneratorObject:
+        case Op::ModuleNamespace:
         case Op::CreateArray:
         case Op::CreateFunction:
         case Op::FunctionRef:
@@ -383,6 +385,7 @@ std::string print(const Module& module) {
                     case Op::CreateGeneratorObject:
                         out += "create.generator_object";
                         break;
+                    case Op::ModuleNamespace:
                     case Op::ForInKeys:
                     case Op::IterOpen:
                     case Op::IterStep:

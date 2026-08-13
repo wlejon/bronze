@@ -52,6 +52,7 @@ bronze_add_module(runtime
         rt_enumerate.cpp
         rt_spread.cpp
         rt_print.cpp
+        namespace.cpp
     DEPS
         abi
         json
@@ -77,6 +78,7 @@ bronze_add_module(runtime
         ../../tests/runtime/arguments_test.cpp
         ../../tests/runtime/integrity_test.cpp
         ../../tests/runtime/math_random_test.cpp
+        ../../tests/runtime/namespace_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

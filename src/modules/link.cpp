@@ -352,6 +352,17 @@ ast::StmtPtr Linker::synthesizeNamespace(uint16_t owner, const std::string& loca
         return nullptr;
     }
     if (!renameModuleScope(parsed->body, renames, buffer.fileId(), {}, diags_)) return nullptr;
+    // The literal is 10.4.6's exotic object, not an object with getters. The
+    // flag is set on the parsed node rather than spelled in the generated
+    // source because no source syntax can say it — which is the point: nothing
+    // a program writes can forge a module namespace.
+    auto* decl = dynamic_cast<ast::VarDecl*>(parsed->body[0].get());
+    auto* literal = decl ? dynamic_cast<ast::ObjectLit*>(decl->init.get()) : nullptr;
+    if (!literal) {
+        diags_.error(Span{}, "internal error: synthesized module namespace is not a literal");
+        return nullptr;
+    }
+    literal->isModuleNamespace = true;
     return std::move(parsed->body[0]);
 }
 
@@ -401,37 +412,44 @@ bool Linker::run(ast::Module& out) {
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         ModuleInfo& mi = info_[id];
-        std::map<std::string, std::string> namespaceLocals;
-        for (const auto& ns : mi.namespaceLocals) {
-            namespaceLocals[ns.first] = graph_.modules[ns.second]->displayName;
+        // Every import binding this file has, namespace locals included: each
+        // is an immutable view of another module's slot, and the rename has
+        // just made it literally that slot, so an assignment through one is
+        // refused rather than silently stored (graph.h says why, and why a
+        // property write through a namespace is NOT the same question).
+        std::map<std::string, std::string> importedBindings;
+        for (const auto& entry : mi.imports) {
+            importedBindings[entry.first] = graph_.modules[entry.second.module]->displayName;
         }
-        if (!renameModuleScope(file.ast->body, mi.renames, id, namespaceLocals, diags_)) {
+        if (!renameModuleScope(file.ast->body, mi.renames, id, importedBindings, diags_)) {
             return false;
         }
     }
 
-    // Strictness is a property of a SCRIPT (ECMA-262 11.2.2), and the merge
-    // below produces exactly one: N files' top levels become one `main`. So
-    // the linked program has one mode, and it is the entry's.
+    // The merge below produces exactly one top level: N files' statements
+    // become one `main`, which has one mode. That mode is the entry's, and for
+    // a graph of more than one file it is always STRICT — 11.2.2 makes module
+    // code strict, and the loader has already parsed every file that way (a
+    // non-entry file because being reached through a specifier is what makes it
+    // module code, the entry because it turned out to hold an `import` or an
+    // `export`). A single-file entry with neither is a Script and keeps
+    // whatever its own Directive Prologue asked for.
     //
-    // A file whose own Directive Prologue disagrees is diagnosed by name rather
-    // than quietly compiled in the other mode. That is the whole point of the
-    // flag — the two modes differ, and a top-level write in a `"use strict"`
-    // file that was linked as sloppy would silently discard where it should
-    // throw. A FUNCTION in such a file is unaffected either way: the parser
-    // stamped the mode onto the function node, and lowering reads it there.
+    // So a disagreement here is no longer something a program can write; it is
+    // the loader and this file having drifted apart about which files are
+    // module code, and a merged program compiled half in the wrong mode
+    // discards a top-level write where it should throw. A tripwire, not a
+    // diagnosis of the source.
     out.strict = graph_.modules[0]->ast->strict;
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         if (file.ast->strict == out.strict) continue;
         diags_.error(Span{},
-                     "unsupported construct: a module graph whose files disagree about strict "
-                     "mode — '" + file.displayName + "' is " +
+                     "internal error: '" + file.displayName + "' was parsed " +
                          (file.ast->strict ? "strict" : "sloppy") + " and the entry '" +
-                         graph_.modules[0]->displayName + "' is " +
+                         graph_.modules[0]->displayName + "' was parsed " +
                          (out.strict ? "strict" : "sloppy") +
-                         ". The linker merges every file's top level into one script, which has "
-                         "one mode; write the same `\"use strict\"` in both, or in neither");
+                         ", but every file of a module graph is strict (ECMA-262 11.2.2)");
         return false;
     }
 

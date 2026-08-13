@@ -3,9 +3,11 @@
 // not the one linking saw (ECMA-262 10.4.6.7: the namespace's [[Get]] reads
 // the binding out of the module's environment record).
 //
-// What bronze's namespace object is NOT — a module namespace exotic object with
-// sorted keys, non-writable properties and Symbol.toStringTag 'Module' — is
-// `cases/blocked/module_namespace_object/`.
+// The rest of what 10.4.6 makes that object — sorted own keys, a [[Set]] that
+// always refuses, a `configurable: false` descriptor, a null prototype — is
+// `cases/module_namespace_object` and `cases/module_namespace_exotic`. What is
+// still missing is `Symbol.toStringTag`, which 10.4.6.1 gives the value
+// 'Module' and bronze does not carry.
 import * as lib from './lib.js';
 
 console.log(lib.name);

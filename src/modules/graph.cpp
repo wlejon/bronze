@@ -25,6 +25,18 @@ bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+// Is this file MODULE CODE by its own text? Every `export` form leaves an
+// `ExportNamesDecl` beside whatever it exports, so the two node kinds below are
+// the complete list of what makes a file a Module rather than a Script — which
+// is what 11.2.2 hangs strictness on.
+bool hasModuleDeclaration(const ast::Module& mod) {
+    for (const auto& stmt : mod.body) {
+        if (dynamic_cast<const ast::ImportDecl*>(stmt.get())) return true;
+        if (dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) return true;
+    }
+    return false;
+}
+
 // The depth-first walk. Meeting an id that is already known is the same answer
 // whether it is a diamond or a cycle: the module is loaded, and the edge needs
 // nothing from this walk but its id. What separates the two is the POST-order
@@ -67,10 +79,34 @@ public:
         file->path = path;
         file->displayName = path.generic_string();
 
-        auto tokens = Lexer(buffer, diags_).lex();
-        if (diags_.hasErrors()) return false;
-        file->ast = Parser(std::move(tokens), diags_, file->id).parseModule(file->displayName);
+        // ECMA-262 11.2.2: module code is always strict mode code. Every file
+        // but the entry is module code by construction — it was REACHED through
+        // a specifier, which is what makes it one — so it is parsed strict
+        // without asking. The entry is the only ambiguous file: pointed at a
+        // program with no `import` and no `export`, bronze compiles a Script,
+        // and 121 pinned single-file cases are sloppy-by-default programs.
+        //
+        // So the entry is parsed, asked whether it turned out to be a module,
+        // and parsed AGAIN when it did. A second parse and not a flag flipped
+        // afterwards, because strictness decides EARLY ERRORS — a duplicate
+        // parameter name, an octal literal, `delete x` — and those are raised
+        // during the parse that has already happened. It costs one extra parse
+        // of one file per build.
+        auto parse = [&](bool forceStrict) {
+            auto tokens = Lexer(buffer, diags_).lex();
+            if (diags_.hasErrors()) return std::unique_ptr<ast::Module>();
+            return Parser(std::move(tokens), diags_, file->id)
+                .parseModule(file->displayName, forceStrict);
+        };
+
+        const bool nonEntryFile = buffer.fileId() != 0;
+        file->ast = parse(/*forceStrict=*/nonEntryFile);
         if (!file->ast || diags_.hasErrors()) return false;
+
+        if (!nonEntryFile && !file->ast->strict && hasModuleDeclaration(*file->ast)) {
+            file->ast = parse(/*forceStrict=*/true);
+            if (!file->ast || diags_.hasErrors()) return false;
+        }
 
         for (const auto& stmt : file->ast->body) {
             if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {

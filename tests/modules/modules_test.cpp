@@ -138,13 +138,177 @@ TEST_CASE("a file imported twice is one module") {
     CHECK(r.dump.find("const mod2.S", first + 1) == std::string::npos);
 }
 
-TEST_CASE("a bare specifier is a named error") {
-    Sandbox box("bare");
+// ---- bare specifiers -------------------------------------------------------
+//
+// `cases/module_bare_specifier` pins that a package resolves and runs. What it
+// cannot show is the WALK — one package in one node_modules is the same answer
+// under any rule — nor any of the refusals, since a case that refuses does not
+// print. Both are here.
+
+TEST_CASE("a bare specifier resolves through the package's \"main\"") {
+    Sandbox box("bare_main");
+    box.write("node_modules/lib/package.json", "{ \"name\": \"lib\", \"main\": \"index.js\" }\n");
+    box.write("node_modules/lib/index.js", "export const k = 1;\n");
+    const std::string entry =
+        box.write("main.js", "import { k } from 'lib';\nconsole.log(k);\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "mod1.k"));
+}
+
+TEST_CASE("a bare specifier resolves through a string \"exports\"") {
+    Sandbox box("bare_exports");
+    box.write("node_modules/lib/package.json", "{ \"exports\": \"./entry.js\" }\n");
+    box.write("node_modules/lib/entry.js", "export const k = 1;\n");
+    const std::string entry = box.write("main.js", "import { k } from 'lib';\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "mod1.k"));
+}
+
+TEST_CASE("a bare specifier resolves through an \"exports\" subpath map") {
+    Sandbox box("bare_subpath");
+    box.write("node_modules/lib/package.json",
+              "{ \"exports\": { \".\": \"./root.js\", \"./extra\": \"./extra.js\" } }\n");
+    box.write("node_modules/lib/root.js", "export const root = 1;\n");
+    box.write("node_modules/lib/extra.js", "export const extra = 2;\n");
+    const std::string entry =
+        box.write("main.js", "import { root } from 'lib';\nimport { extra } from 'lib/extra';\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, ".root"));
+    CHECK(contains(r.dump, ".extra"));
+}
+
+TEST_CASE("the NEAREST node_modules wins") {
+    // The one step of the algorithm with a single answer, and the only one
+    // worth implementing rather than refusing. Two packages of the same name,
+    // and which one an importer gets is decided by where the importer IS —
+    // getting this backwards is a program that builds and is not the one on
+    // disk, which is what every refusal in this file exists to avoid.
+    Sandbox box("bare_nearest");
+    box.write("node_modules/lib/package.json", "{ \"main\": \"index.js\" }\n");
+    box.write("node_modules/lib/index.js", "export const who = 'outer';\n");
+    box.write("sub/node_modules/lib/package.json", "{ \"main\": \"index.js\" }\n");
+    box.write("sub/node_modules/lib/index.js", "export const who = 'inner';\n");
+    box.write("sub/inner.js", "import { who } from 'lib';\nexport const seen = who;\n");
+    const std::string entry =
+        box.write("main.js", "import { who } from 'lib';\nimport { seen } from './sub/inner.js';\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    // Three files past the entry: the outer package, sub/inner.js and the
+    // inner package. If the walk stopped at the first `node_modules` it found
+    // for both importers, there would be one package and one fewer module.
+    CHECK(contains(r.dump, "mod3."));
+}
+
+TEST_CASE("a package that is nowhere on the way up is a named error listing where it looked") {
+    Sandbox box("bare_missing");
     const std::string entry = box.write("main.js", "import x from 'three';\n");
     Loaded r = load(entry);
     CHECK_FALSE(r.ok);
-    CHECK(contains(r.errors, "unsupported module specifier \"three\""));
-    CHECK(contains(r.errors, "relative specifiers only"));
+    CHECK(contains(r.errors, "no package named \"three\""));
+    CHECK(contains(r.errors, "node_modules"));
+}
+
+TEST_CASE("a conditional exports object is refused by name") {
+    // The refusal this whole feature is shaped around. Reading the map means
+    // choosing a condition set, and a condition chosen differently from the way
+    // the package was written resolves to a different entry point WITHOUT any
+    // error — a different program, silently.
+    Sandbox box("bare_conditional");
+    box.write("node_modules/lib/package.json",
+              "{ \"exports\": { \"import\": \"./esm.js\", \"require\": \"./cjs.js\" } }\n");
+    box.write("node_modules/lib/esm.js", "export const k = 1;\n");
+    box.write("node_modules/lib/cjs.js", "export const k = 2;\n");
+    const std::string entry = box.write("main.js", "import { k } from 'lib';\n");
+    Loaded r = load(entry);
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "CONDITIONAL exports object"));
+
+    // The same refusal one level down, where a subpath maps to conditions.
+    Sandbox nested("bare_conditional_sub");
+    nested.write("node_modules/lib/package.json",
+                 "{ \"exports\": { \".\": { \"import\": \"./esm.js\" } } }\n");
+    nested.write("node_modules/lib/esm.js", "export const k = 1;\n");
+    Loaded r2 = load(nested.write("main.js", "import { k } from 'lib';\n"));
+    CHECK_FALSE(r2.ok);
+    CHECK(contains(r2.errors, "CONDITIONAL object"));
+}
+
+TEST_CASE("an exports pattern and a fallback array are refused by name") {
+    Sandbox box("bare_pattern");
+    box.write("node_modules/lib/package.json", "{ \"exports\": { \"./*\": \"./src/*.js\" } }\n");
+    Loaded r = load(box.write("main.js", "import { k } from 'lib/thing';\n"));
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "PATTERN key"));
+
+    Sandbox arr("bare_fallback");
+    arr.write("node_modules/lib/package.json",
+              "{ \"exports\": { \".\": [\"./a.js\", \"./b.js\"] } }\n");
+    Loaded r2 = load(arr.write("main.js", "import { k } from 'lib';\n"));
+    CHECK_FALSE(r2.ok);
+    CHECK(contains(r2.errors, "FALLBACK ARRAY"));
+}
+
+TEST_CASE("a package.json that will not parse is a named error") {
+    Sandbox box("bare_badjson");
+    box.write("node_modules/lib/package.json", "{ \"main\": 'index.js' }\n");
+    Loaded r = load(box.write("main.js", "import x from 'lib';\n"));
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "is not valid JSON"));
+}
+
+TEST_CASE("a package.json with neither exports nor main is a named error") {
+    // Not a fall back to index.js: that is a file the program never named, and
+    // it exists here to prove the fallback is refused rather than absent.
+    Sandbox box("bare_noentry");
+    box.write("node_modules/lib/package.json", "{ \"name\": \"lib\" }\n");
+    box.write("node_modules/lib/index.js", "export const k = 1;\n");
+    Loaded r = load(box.write("main.js", "import { k } from 'lib';\n"));
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "neither \"exports\" nor \"main\""));
+    CHECK(contains(r.errors, "does not fall back to index.js"));
+}
+
+TEST_CASE("a main that names no file is a named error, and two candidates name both") {
+    Sandbox box("bare_nofile");
+    box.write("node_modules/lib/package.json", "{ \"main\": \"./nope.js\" }\n");
+    Loaded r = load(box.write("main.js", "import x from 'lib';\n"));
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "is no file"));
+    CHECK(contains(r.errors, "does not guess an extension or a directory index"));
+
+    // The ambiguity itself: `./lib` could be `lib.js` or `lib/index.js`, and a
+    // precedence rule would silently compile one of the two.
+    Sandbox amb("bare_ambiguous");
+    amb.write("node_modules/lib/package.json", "{ \"main\": \"./thing\" }\n");
+    amb.write("node_modules/lib/thing.js", "export const k = 1;\n");
+    amb.write("node_modules/lib/thing/index.js", "export const k = 2;\n");
+    Loaded r2 = load(amb.write("main.js", "import { k } from 'lib';\n"));
+    CHECK_FALSE(r2.ok);
+    CHECK(contains(r2.errors, "ambiguous which file was meant"));
+    CHECK(contains(r2.errors, "thing.js"));
+    CHECK(contains(r2.errors, "index.js"));
+}
+
+TEST_CASE("an absolute path, a URL and a `#` import are each refused by their own name") {
+    Sandbox box("bare_kinds");
+    Loaded abs = load(box.write("a.js", "import x from '/etc/passwd.js';\n"));
+    CHECK_FALSE(abs.ok);
+    CHECK(contains(abs.errors, "an absolute path"));
+
+    Loaded url = load(box.write("b.js", "import x from 'https://cdn.example/m.js';\n"));
+    CHECK_FALSE(url.ok);
+    CHECK(contains(url.errors, "a URL"));
+
+    Loaded builtin = load(box.write("c.js", "import x from 'node:fs';\n"));
+    CHECK_FALSE(builtin.ok);
+    CHECK(contains(builtin.errors, "URL scheme"));
+
+    Loaded imports = load(box.write("d.js", "import x from '#internal';\n"));
+    CHECK_FALSE(imports.ok);
+    CHECK(contains(imports.errors, "\"imports\" map"));
 }
 
 TEST_CASE("a missing file is a named error naming the path") {
@@ -259,14 +423,88 @@ TEST_CASE("default and namespace imports resolve") {
     CHECK(contains(r.dump, "(ident mod1.k)"));
 }
 
-TEST_CASE("a write through a namespace binding is refused by name") {
+// ---- the two writes, which are not one question ----------------------------
+//
+// `ns.k = 2` and `k = 2` were once the same refusal here, and that is why
+// `cases/module_namespace_object` could not be built at all. They are different
+// operations: one writes a PROPERTY of an ordinary object value, which nothing
+// at compile time can decide (10.4.6.9 makes it a runtime TypeError); the other
+// writes the immutable import BINDING, which linking has already renamed to the
+// exporting module's own slot, so letting it through would store there and
+// report nothing.
+
+TEST_CASE("a property write through a namespace local LINKS, and is the runtime's question") {
     Sandbox box("nswrite");
     box.write("lib.js", "export let k = 1;\n");
     const std::string entry =
         box.write("main.js", "import * as ns from './lib.js';\nns.k = 2;\n");
     Loaded r = load(entry);
-    CHECK_FALSE(r.ok);
-    CHECK(contains(r.errors, "read-only"));
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    // The namespace is the exotic object and not a plain literal, which is what
+    // gives the runtime somewhere to refuse the write from.
+    CHECK(contains(r.dump, "(module-namespace"));
+}
+
+TEST_CASE("an assignment to an import binding is refused by name") {
+    Sandbox box("importwrite");
+    box.write("lib.js", "export let k = 1;\n");
+    Loaded named = load(box.write("main.js", "import { k } from './lib.js';\nk = 2;\n"));
+    CHECK_FALSE(named.ok);
+    CHECK(contains(named.errors, "cannot assign to 'k'"));
+    CHECK(contains(named.errors, "import binding"));
+
+    // `export let` and not `export const` on purpose: the exporting module may
+    // still assign, so nothing about `k`'s own declaration says immutable. What
+    // makes it immutable is that the importer's `k` is an IMPORT.
+    Loaded compound = load(box.write("compound.js", "import { k } from './lib.js';\nk += 1;\n"));
+    CHECK_FALSE(compound.ok);
+    CHECK(contains(compound.errors, "cannot assign to 'k'"));
+
+    Loaded update = load(box.write("update.js", "import { k } from './lib.js';\nk++;\n"));
+    CHECK_FALSE(update.ok);
+    CHECK(contains(update.errors, "cannot assign to 'k'"));
+
+    Loaded destructured =
+        load(box.write("destructure.js", "import { k } from './lib.js';\n[k] = [2];\n"));
+    CHECK_FALSE(destructured.ok);
+    CHECK(contains(destructured.errors, "cannot assign to 'k'"));
+
+    // `for (k of [1])` is not here because the parser refuses an iteration head
+    // that assigns an existing binding, whatever the binding is; the renamer
+    // covers it anyway, for the day that head lands.
+
+    // The NAMESPACE local is an import binding too, so rebinding it is the same
+    // error — and this is the line that shows `ns = x` and `ns.k = x` are
+    // separated by which one they write, not by whether a namespace is involved.
+    Loaded rebind =
+        load(box.write("rebind.js", "import * as ns from './lib.js';\nns = 5;\n"));
+    CHECK_FALSE(rebind.ok);
+    CHECK(contains(rebind.errors, "cannot assign to 'ns'"));
+
+    // A local of the same name inside a function shadows the import and is an
+    // ordinary variable: refusing there would reject a correct program.
+    Loaded shadowed = load(box.write("shadow.js",
+                                     "import { k } from './lib.js';\n"
+                                     "function f() { let k = 1; k = 2; return k; }\n"
+                                     "console.log(f());\n"));
+    REQUIRE_MESSAGE(shadowed.ok, shadowed.errors);
+}
+
+TEST_CASE("a file with an import or an export is strict whether it says so or not") {
+    // ECMA-262 11.2.2. Without it `ns.z = 5` is a sloppy assignment, which
+    // 10.4.6.9 refuses and 13.15.2 then DISCARDS — three lines of output where
+    // the second is wrong and nothing says so.
+    Sandbox box("alwaysmodule");
+    box.write("lib.js", "export let k = 1;\n");
+    Loaded r = load(box.write("main.js", "import { k } from './lib.js';\nconsole.log(k);\n"));
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "strict"));
+
+    // A file with neither is a Script, and a Script's mode is its own business
+    // — which is what keeps every single-file oracle case compiling as it did.
+    Loaded script = load(box.write("script.js", "let x = 1;\nconsole.log(x);\n"));
+    REQUIRE_MESSAGE(script.ok, script.errors);
+    CHECK_FALSE(contains(script.dump, "strict"));
 }
 
 TEST_CASE("export * from re-exports every name but default") {

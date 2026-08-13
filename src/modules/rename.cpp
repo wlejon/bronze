@@ -29,8 +29,8 @@ namespace {
 class Renamer {
 public:
     Renamer(const std::map<std::string, std::string>& renames, uint16_t fileId,
-            const std::map<std::string, std::string>& namespaceLocals, DiagnosticSink& diags)
-        : renames_(renames), namespaceLocals_(namespaceLocals), diags_(diags), fileId_(fileId) {}
+            const std::map<std::string, std::string>& importedBindings, DiagnosticSink& diags)
+        : renames_(renames), importedBindings_(importedBindings), diags_(diags), fileId_(fileId) {}
 
     bool run(std::vector<ast::StmtPtr>& stmts) {
         // The module's own top level pushes NO scope: its declarations are
@@ -257,8 +257,14 @@ private:
             } else {
                 scope.insert(name);
             }
-        } else if (!name.empty()) {
-            rewrite(name);
+        } else {
+            // No declaration keyword: the head ASSIGNS on every iteration, so
+            // an import binding in it is refused exactly as `x = ...` is.
+            if (pat) refuseImportedWrites(*pat, pat->span);
+            if (!name.empty()) {
+                refuseImportedWrite(name, Span{});
+                rewrite(name);
+            }
         }
         shadow_.push_back(std::move(scope));
         if (pat) pattern(*pat);
@@ -282,9 +288,21 @@ private:
         } else if (auto* tpl = dynamic_cast<ast::TemplateLit*>(&e)) {
             for (auto& sub : tpl->exprs) expr(*sub);
         } else if (auto* un = dynamic_cast<ast::Unary*>(&e)) {
+            // `x++` writes `x` exactly as `x = x + 1` does (13.4.2.1 step 5
+            // PutValue), so an import binding is refused under both spellings.
+            if (un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec ||
+                un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
+                if (const auto* target = dynamic_cast<const ast::Ident*>(un->operand.get())) {
+                    refuseImportedWrite(target->name, un->span);
+                }
+            }
             expr(*un->operand);
         } else if (auto* bin = dynamic_cast<ast::Binary*>(&e)) {
-            if (ast::isAssignOp(bin->op)) refuseNamespaceWrite(*bin->lhs);
+            if (ast::isAssignOp(bin->op)) {
+                if (const auto* target = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
+                    refuseImportedWrite(target->name, bin->span);
+                }
+            }
             expr(*bin->lhs);
             expr(*bin->rhs);
         } else if (auto* ter = dynamic_cast<ast::Ternary*>(&e)) {
@@ -316,6 +334,10 @@ private:
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
             expr(*spr->argument);
         } else if (auto* da = dynamic_cast<ast::DestructuringAssign*>(&e)) {
+            // Every element of this pattern is an assignment TARGET — it
+            // declares nothing — so each name it writes is refused like the
+            // left side of an `=`.
+            refuseImportedWrites(*da->pattern, da->span);
             pattern(*da->pattern);
             expr(*da->value);
         } else if (auto* obj = dynamic_cast<ast::ObjectLit*>(&e)) {
@@ -338,30 +360,39 @@ private:
         }
     }
 
-    // A module namespace object is exotic and its properties are non-writable;
-    // bronze's stand-in is an object literal of getters, which would swallow a
-    // write instead of throwing. Where the write is visible the refusal is too.
-    void refuseNamespaceWrite(const ast::Expr& target) {
-        const ast::Ident* base = nullptr;
-        std::string key;
-        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&target)) {
-            base = dynamic_cast<const ast::Ident*>(m->object.get());
-            key = m->property;
-        } else if (const auto* i = dynamic_cast<const ast::IndexAccess*>(&target)) {
-            base = dynamic_cast<const ast::Ident*>(i->object.get());
-            key = "<computed>";
-        }
-        if (!base || shadowed(base->name)) return;
-        auto it = namespaceLocals_.find(base->name);
-        if (it == namespaceLocals_.end()) return;
+    // An assignment to an IMPORT BINDING. 16.2.1.6.1 CreateImportBinding makes
+    // one an immutable indirect binding — the local is a second name for
+    // another module's slot — and linking has renamed it to exactly that slot.
+    // So a write bronze let through would not fail: it would succeed, into the
+    // exporting module's binding, which is the silent wrong answer the house
+    // rules rank worst.
+    //
+    // What this deliberately does NOT cover is `ns.z = 5`. That is a write to a
+    // PROPERTY of an ordinary object value, not to the binding `ns`; ECMA-262
+    // 10.4.6.9 answers it with a [[Set]] that returns false, which strict code
+    // turns into a runtime TypeError. Conflating the two refused a whole
+    // correct program at compile time.
+    void refuseImportedWrite(const std::string& name, Span span) {
+        if (name.empty() || shadowed(name)) return;
+        auto it = importedBindings_.find(name);
+        if (it == importedBindings_.end()) return;
+        if (!ok_) return;
         ok_ = false;
-        diags_.error(target.span, "cannot assign to '" + base->name + "." + key +
-                                      "': it is a binding of the imported module namespace " +
-                                      it->second + ", which is read-only");
+        diags_.error(span, "cannot assign to '" + name +
+                               "': it is an import binding of " + it->second +
+                               ", and an import is an immutable view of that module's binding "
+                               "(ECMA-262 16.2.1.6.1). Assign in the module that declares it.");
+    }
+
+    // Every name a destructuring TARGET writes. `patternBoundNames` is the same
+    // walk a declaration uses to find what it binds, which is what keeps the
+    // two spellings of "these names are written" from drifting.
+    void refuseImportedWrites(const ast::BindingPattern& pat, Span span) {
+        for (const auto& name : ast::patternBoundNames(pat)) refuseImportedWrite(name, span);
     }
 
     const std::map<std::string, std::string>& renames_;
-    const std::map<std::string, std::string>& namespaceLocals_;
+    const std::map<std::string, std::string>& importedBindings_;
     DiagnosticSink& diags_;
     uint16_t fileId_ = 0;
     bool ok_ = true;
@@ -372,9 +403,9 @@ private:
 
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
-                       const std::map<std::string, std::string>& namespaceLocals,
+                       const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags) {
-    return Renamer(renames, fileId, namespaceLocals, diags).run(stmts);
+    return Renamer(renames, fileId, importedBindings, diags).run(stmts);
 }
 
 }  // namespace bronze::modules

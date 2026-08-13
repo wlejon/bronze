@@ -22,6 +22,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -133,6 +134,12 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
+
+    // A module namespace has no prototype at all (10.4.6.1), so a `for-in` over
+    // one visits exactly its exports — in 10.4.6.2's sorted order, which is the
+    // same list and the same order `Object.keys` reports and is answered by the
+    // same function so the two cannot drift.
+    if (rtIsModuleNamespace(v)) return bronze_object_keys(objBits);
 
     // A number, a boolean, an ArrayBuffer: no own enumerable properties, and
     // no prototype bronze models as an object, so nothing to visit.

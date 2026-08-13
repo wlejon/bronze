@@ -30,7 +30,14 @@ public:
     // parser that returns what it managed and stays quiet loses the rest of
     // the file silently. Pinned by "a module is never returned with input
     // left unconsumed" in tests/parse.
-    std::unique_ptr<ast::Module> parseModule(std::string name);
+    //
+    // `forceStrict` is ECMA-262 11.2.2, "module code is always strict mode
+    // code". The parser cannot decide that for itself — what makes a file
+    // module code is how it was REACHED, and the first `import` is a statement
+    // in, far too late for the early errors that depend on the mode — so the
+    // module loader decides and says so here. A `"use strict"` prologue still
+    // selects strict on its own; this only takes away the option of sloppy.
+    std::unique_ptr<ast::Module> parseModule(std::string name, bool forceStrict = false);
 
 private:
     std::vector<Token> tokens_;

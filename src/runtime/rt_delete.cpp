@@ -26,6 +26,7 @@
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -124,6 +125,17 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
         return reportRefusedDelete(
             deleteElementByIndex(objVal, Value::fromString(keyHeader), idx), strict,
             rtKeyString(keyIndex));
+    }
+
+    // 10.4.6.10: deleting an EXPORTED name answers false — a namespace property
+    // is non-configurable — and deleting anything else answers true, because it
+    // was never there. The `!owner` fall-through below would answer true for
+    // both, which is the wrong half of the pair.
+    if (rtIsModuleNamespace(objVal)) {
+        const bool exported =
+            reinterpret_cast<ModuleNamespaceHeader*>(objVal.asObject<HeapObjectHeader>())
+                ->indexOf(keyHeader) >= 0;
+        return reportRefusedDelete(!exported, strict, rtKeyString(keyIndex));
     }
 
     ObjectHeader* owner = namedPropertyOwner(objVal);

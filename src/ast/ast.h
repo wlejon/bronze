@@ -329,6 +329,18 @@ struct ObjectLit final : Expr {
     // Nothing but src/parse/parser_generator.cpp sets it, and no source syntax
     // can.
     bool isGeneratorObject = false;
+    // A MODULE NAMESPACE (ECMA-262 10.4.6): the literal's properties are the
+    // getters over an exported binding that `import * as ns` needs, and the
+    // object built from them is the exotic one — sorted own keys, a [[Set]]
+    // that always refuses, a `configurable: false` descriptor.
+    //
+    // A flag for the reason `isGeneratorObject` is one, and for one more: the
+    // getters have to be real CLOSURES over the exporting module's bindings,
+    // and the only thing that can build a closure is the compiler. So the
+    // literal is lowered exactly as any other and the conversion is a second
+    // instruction over its result. Nothing but src/modules/link.cpp sets it,
+    // and no source syntax can.
+    bool isModuleNamespace = false;
     void accept(Visitor& v) const override;
 };
 

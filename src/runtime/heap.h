@@ -68,6 +68,12 @@ enum : uint16_t {
     Iterator,
     RegExp,
     Env,
+    // A module namespace exotic object (ECMA-262 10.4.6). Its own kind because
+    // three of its internal methods are not the ordinary ones — sorted own
+    // keys, a [[Set]] that always refuses, a non-configurable descriptor — and
+    // none of the three is expressible as an attribute on a plain object's
+    // property. See runtime/namespace.h.
+    ModuleNamespace,
 };
 }  // namespace HeapKind
 

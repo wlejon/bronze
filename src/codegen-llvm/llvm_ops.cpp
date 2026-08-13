@@ -101,6 +101,13 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::CreateGeneratorObject:
             if (inst.result != il::kNoValue) callWith(abi.bronze_create_generator_object, {});
             return true;
+        case il::Op::ModuleNamespace: {
+            if (!needs(1, false, "Invalid operands for ModuleNamespace")) return false;
+            llvm::Value* src = operand(inst, 0, "Undefined operand in ModuleNamespace instruction");
+            if (!src) return false;
+            callWith(abi.bronze_module_namespace, {src});
+            return true;
+        }
         case il::Op::CreateArray:
             if (inst.result != il::kNoValue) {
                 callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});

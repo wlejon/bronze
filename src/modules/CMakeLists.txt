@@ -1,9 +1,10 @@
 bronze_add_module(modules
     SOURCES
         resolve.cpp
+        package.cpp
         graph.cpp
         link.cpp
         rename.cpp
-    DEPS parse lex ast support
+    DEPS parse lex ast support json
     TEST_SOURCES ../../tests/modules/modules_test.cpp
 )

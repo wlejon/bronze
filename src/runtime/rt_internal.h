@@ -443,6 +443,47 @@ bool rtStringDataWriteRefused(Value stringData, const std::string& key, bool str
 // answer rather than a missing one (cases/blocked/string_object_own_keys.js).
 void rtCheckStringExoticOwnKeys(Value v, const char* operation);
 
+// ---- the module namespace exotic object (ECMA-262 10.4.6) ------------------
+//
+// One receiver kind, four questions, and they are gathered here rather than
+// spread over the files that ask them because every one of the four differs
+// from the ordinary answer in a way no property attribute can express. The
+// object itself is runtime/namespace.h.
+
+bool rtIsModuleNamespace(Value v);
+
+// The exported names in 10.4.6.2 [[OwnPropertyKeys]] order: SORTED by code
+// unit, so `z` declared first still comes back after `a`. The strings are
+// arena-interned and immortal, like every other own-key answer here.
+std::vector<StringHeader*> rtModuleNamespaceKeys(Value nsVal);
+
+// 10.4.6.7 [[Get]]. False means the receiver is not a namespace at all; true
+// with `out` undefined is the answer for a name the module does not export,
+// which is NOT an error — `import { missing }` is the early error, `ns.missing`
+// is this. ALLOCATES and RUNS USER CODE: the value comes from the getter that
+// closes over the exporting module's binding, which is what makes it live.
+bool rtModuleNamespaceGet(Value nsVal, const StringHeader* key, Value& out);
+
+// 10.4.6.5 [[GetOwnProperty]] minus the descriptor OBJECT, which the caller
+// builds: is `key` one of the exports, and what is its value NOW. False for a
+// symbol, for a name the module does not export, and for a receiver that is not
+// a namespace — the three ways 10.4.6.5 answers `undefined`. The attributes it
+// would have reported are constants and so are written at the one call site
+// that needs them.
+//
+// ALLOCATES (ToString on the key, and the getter behind the value).
+bool rtModuleNamespaceOwnProperty(Value nsVal, Value keyVal, Value& outValue);
+
+// 10.4.6.9 [[Set]], which returns false for EVERY key. True means the write was
+// refused, whether or not it threw; 13.15.2 PutValue step 6.d makes it a
+// TypeError for a strict reference, and module code is always strict.
+//
+// The same shape as `rtStringDataWriteRefused` above, deliberately: both are a
+// receiver kind saying "this write cannot happen" ahead of the ordinary
+// property path, and a namespace's shapeless storage would otherwise have no
+// way to say so.
+bool rtModuleNamespaceWriteRefused(Value nsVal, const std::string& key, bool strict);
+
 // `new String(x)` / `new Boolean(x)`. True — with `out` set — when `fn` is one
 // of the two; `bronze_construct` has nothing else to do for them, since the
 // wrapper IS the instance rather than something a body fills in.

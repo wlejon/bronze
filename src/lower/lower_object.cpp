@@ -98,6 +98,21 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         setInst.result = il::kNoValue;
         emitInst(ilFn, setInst);
     }
+    // `import * as ns`: the getters are built exactly as any literal's, and the
+    // exotic object is made from them here. A second instruction and not a
+    // different creation op, because the conversion needs the properties to
+    // already be there — a namespace's own-key order is 10.4.6.2's sort over
+    // them, so there is nothing to sort until the last one is defined.
+    if (objLit->isModuleNamespace) {
+        il::ValueId ns = ilFn.valueCount++;
+        il::Instruction wrap;
+        wrap.op = il::Op::ModuleNamespace;
+        wrap.type = il::Type::Dynamic;
+        wrap.result = ns;
+        wrap.operands = {res};
+        emitInst(ilFn, wrap);
+        return Value{ns, il::Type::Dynamic};
+    }
     return Value{res, il::Type::Dynamic};
 }
 

@@ -37,6 +37,7 @@
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/namespace.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -154,6 +155,7 @@ bool requirePropertyTable(Value v, const char* member) {
 enum class OwnKeys {
     Shape,        // a plain object: its own keys are in its shape
     StringChars,  // a primitive string: 10.4.3 synthesises them from the characters
+    Namespace,    // a module namespace: 10.4.6.2's sorted export names
     None,         // a number, a boolean, a symbol: the box has no own property
     Threw,        // null or undefined: ToObject has no answer, and this raised it
 };
@@ -170,6 +172,7 @@ OwnKeys ownKeysOf(Value v, const char* member) {
     if (v.isString()) return OwnKeys::StringChars;
     if (!v.isObject()) return OwnKeys::None;
     if (isPlainObject(v)) return OwnKeys::Shape;
+    if (rtIsModuleNamespace(v)) return OwnKeys::Namespace;
     refuseObjectKind(v, member);
 }
 
@@ -314,6 +317,31 @@ uint64_t objectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             putField(out, "configurable", c);
             return out.get().rawBits();
         }
+        case OwnKeys::Namespace: {
+            Value found;
+            // False is 10.4.6.5's `undefined` — a name the module does not
+            // export has no descriptor at all, which is not the same as a
+            // descriptor of `undefined`.
+            if (!rtModuleNamespaceOwnProperty(args[0], args[1], found)) {
+                return Value::fromUndefined().rawBits();
+            }
+            Rooted<Value> value{found};
+            Rooted<Value> out{Value(bronze_create_object())};
+            putField(out, "value", value);
+            // `writable: true` is 10.4.6.5's own answer and is not a slip: the
+            // EXPORTING module may still assign to the binding, and 6.1.7.3
+            // forbids a non-writable non-configurable property whose value
+            // changes. What refuses `ns.x = 1` is [[Set]] (10.4.6.9), which
+            // returns false whatever this descriptor says — the two are
+            // different internal methods and only one of them is an attribute.
+            Rooted<Value> w{Value::fromBool(true)};
+            putField(out, "writable", w);
+            Rooted<Value> e{Value::fromBool(true)};
+            putField(out, "enumerable", e);
+            Rooted<Value> c{Value::fromBool(false)};
+            putField(out, "configurable", c);
+            return out.get().rawBits();
+        }
         case OwnKeys::Shape:
             break;
     }
@@ -382,6 +410,10 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         }
         if (args[0].isString()) return rtStringPrototype().rawBits();
         if (args[0].isBool()) return rtBooleanPrototype().rawBits();
+        // 10.4.6.1 fixes a module namespace's [[Prototype]] at null, and it is
+        // immutable — so this is the language's own answer and not the "no
+        // prototype object exists" that an array's `null` would have been.
+        if (rtIsModuleNamespace(args[0])) return Value::fromNull().rawBits();
         if (!args[0].isObject()) {
             // A number's and a symbol's members are still handed out beside the
             // value, so there is no object to return and no honest way to
@@ -456,6 +488,14 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             // args[0] re-read through RootedArgs: `keyTextOf` allocates.
             return Value::fromBool(rtStringDataHasOwnKey(args[0], key)).rawBits();
+        }
+        case OwnKeys::Namespace: {
+            // The exports are the complete list of own keys (10.4.6.2), and
+            // "is this an own property" is the same question 10.4.6.5 answers —
+            // asked through the same helper, so the two cannot drift.
+            Value ignored;
+            return Value::fromBool(rtModuleNamespaceOwnProperty(args[0], args[1], ignored))
+                .rawBits();
         }
         case OwnKeys::Shape:
             break;
@@ -630,6 +670,11 @@ uint64_t objectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint
             // and `length` is here where `Object.keys` drops it, because this
             // member is OwnPropertyKeys without the enumerable filter.
             return rtStringOwnKeyNames(args[0], /*enumerableOnly=*/false).rawBits();
+        case OwnKeys::Namespace:
+            // Every export is enumerable (10.4.6.5), so dropping the filter
+            // changes nothing and this is the same list `Object.keys` gives —
+            // answered by the same function, so the two cannot drift.
+            return bronze_object_keys(args[0].rawBits());
         case OwnKeys::Shape:
             break;
     }
