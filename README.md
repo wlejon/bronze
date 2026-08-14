@@ -220,3 +220,8 @@ of bug that silently changes meaning.
 | `tests/<module>` | doctest suites, one per module |
 | `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
 | `tools` | Generators whose OUTPUT is committed. Run by hand, never by the build, so that no build step depends on a language bronze does not already require |
+
+
+## License
+
+[MIT](LICENSE)
