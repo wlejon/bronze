@@ -31,6 +31,7 @@ FunctionEmitter::FunctionEmitter(const Context& shared, const il::Function& func
       i64Ty_(llvm::Type::getInt64Ty(shared.ctx)),
       ptrTy_(llvm::PointerType::getUnqual(shared.ctx)),
       values_(func.valueCount, nullptr),
+      propGetKey_(func.valueCount, UINT32_MAX),
       slotOf_(func.valueCount, kNoSlot) {}
 
 bool FunctionEmitter::require(bool condition, const char* message) {

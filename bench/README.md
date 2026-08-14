@@ -91,6 +91,69 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 8: The dispatch-churn loop's caches, inlined — and Math dispatched direct**:
+  > [!NOTE]
+  > `BRONZE_PROFILE=1` re-verified Chunk 7's named bill at HEAD before building
+  > (churn: 3M each of `bronze_function_singleton` / depth>0 `bronze_prop_get` /
+  > shape-transition `bronze_prop_set` / `bronze_construct`; crunch: 1.37M
+  > `bronze_global_get` of `Math` + 1.53M `bronze_dynamic_call`, 1.37M of them
+  > to Math natives). Four mechanisms, each keeping its helper's committed
+  > semantics and falling back to it on every guard miss:
+  > 1. **Depth > 0 proto-hit reads inline** (`llvm_prop.cpp`): the IC entry's
+  >    epoch word is checked against the prototype-mutation epoch (now the ABI
+  >    data symbol `bronze_proto_epoch`) and the shape→root→prototype chain is
+  >    walked in generated code, mirroring `cachedProtoHolder` exactly —
+  >    dictionary on the path, non-plain link, stale epoch, overflow slot all
+  >    fall back. The Shape fields the walk reads moved ahead of the
+  >    transitions vector and are ABI-pinned (`shape.h` static_asserts).
+  > 2. **Shape-transition write IC** (`object.cpp` + inline arm in
+  >    `llvm_prop.cpp`): a set-site entry whose cached shape is `parent ==
+  >    receiver shape` and whose own node carries the site's key (slot
+  >    uniqueness makes `slot_index == cached_slot` that check) takes the
+  >    recorded transition — no own-miss walk, no inherited-setter walk, no
+  >    transition scan. Guarded by the same epoch discipline the read entries
+  >    use; `used_as_prototype` receivers keep the helper (it owes the bump).
+  > 3. **Rooted-table caches read inline** (`llvm_cache.cpp`, new):
+  >    `bronze_function_singleton` swapped its linear scan (every native
+  >    builtin ever interned was on it) for a by-code-pointer map, plus a
+  >    published `{code, value}` slot table generated code checks first —
+  >    self-validating by code-pointer compare, so embed-style slot collisions
+  >    refill rather than break identity. `global.get` reads the published
+  >    `g_globalCache` table the same way. Both tables' cells are GC roots
+  >    forwarded in place, which is what makes an inline read of a moving-heap
+  >    cache sound.
+  > 4. **Math direct dispatch** (`llvm_math.cpp`, new): a dynamic call whose
+  >    callee was read as `sqrt`/`sin`/`cos`/`abs`/`min`/`max` guards the
+  >    callee's `FunctionHeader::code` against the intrinsic's exported symbol
+  >    (`bronze_math_*` in the ABI registry) and number-checks the arguments;
+  >    sqrt/abs inline as llvm.sqrt/llvm.fabs (IEEE-exact), sin/cos/min/max
+  >    call the exact scalar kernels the helper path itself runs. No
+  >    fast-math anywhere; `Math.sqrt = f` misses the pointer compare.
+  > Helper invocations: churn 12.0M → 3.0M (only `bronze_construct` remains
+  > — the inline-allocation fast path was deliberately NOT built this chunk;
+  > any inline allocation can move every live value and is gated on the
+  > GC-stress milestones), crunch 2.9M → 0.2M. Three new oracle cases pin the
+  > guards' invalidation behavior (`ic_proto_depth_epoch`,
+  > `ic_transition_setter_shadow`, `math_direct_dispatch`), each byte-equal
+  > in both modes and under BRONZE_GC_STRESS=1. Full suite 19/19 including
+  > both GC-stress milestone runs. Node-baseline standing:
+  > `proto_dispatch_churn` 7.6x → **3.3x** behind (124.98 vs 38.14),
+  > `typed_array_crunch` 2.3x → **2.1x** (117.78 vs 56.27; its residual is
+  > now the 155k closure calls and raw loop code, not Math). `mesh_churn_2k`
+  > shows ±20 ms run-to-run variance on this machine (241–263 ms across
+  > re-runs, no-infer 232–258); treat its delta as noise.
+  - `three_math.js`: **39.17ms** (infer) vs 38.12ms (no-infer) — **0.97x** (checksum=405000, node 48.40ms → bronze wins)
+  - `object_graph.js`: **175.67ms** (infer) vs 178.82ms (no-infer) — **1.02x** (checksum=-32601148, down from 195.69ms)
+  - `typed_array_crunch.js`: **117.78ms** (infer) vs 130.55ms (no-infer) — **1.11x** (checksum=78849652, down from 127.54ms)
+  - `mesh_churn_2k.js`: **253.13ms** (infer) vs 232.36ms (no-infer) — **0.92x** (checksum=-2112298; see variance note)
+  - `instanced_mesh_churn.js`: **277.86ms** (infer) vs 298.07ms (no-infer) — **1.07x** (checksum=1260786, down from 286.52ms)
+  - `fib.js`: **8.55ms** (infer) vs 15.89ms (no-infer) — **1.86x**
+  - `numeric_loop.js`: **36.54ms** (infer) vs 58.00ms (no-infer) — **1.59x**
+  - `property_access.js`: **11.15ms** (infer) vs 11.97ms (no-infer) — **1.07x**
+  - `proto_dispatch.js`: **22.29ms** (infer) vs 26.06ms (no-infer) — **1.17x** (down from 28.29ms)
+  - `proto_dispatch_churn.js`: **124.98ms** (infer) vs 129.64ms (no-infer) — **1.04x** (down from 290.56ms)
+  - `typed_array_loop.js`: **34.47ms** (infer) vs 36.16ms (no-infer) — **1.05x** (node 40.75ms → bronze wins)
+
 - **Chunk 7: GC/Allocation Pass — measurement first, then helper inlining**:
   > [!NOTE]
   > The pass opened with measurement (`BRONZE_GC_LOG=1`, a new env-gated stderr

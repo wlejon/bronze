@@ -10,10 +10,14 @@ namespace bronze {
 // current epoch". A depth > 0 entry with a null shape would miss on the
 // shape compare anyway; this makes it miss twice over rather than rely on
 // that one guard staying first.
-static uint64_t g_protoMutationEpoch = 1;
+//
+// An ABI data symbol rather than a static, because generated code now reads
+// it: the inline proto-hit and shape-transition fast paths compare an entry's
+// fill epoch against it, which is the same question `describes` asks here.
+extern "C" uint64_t bronze_proto_epoch = 1;
 
-uint64_t protoMutationEpoch() noexcept { return g_protoMutationEpoch; }
-void bumpProtoMutationEpoch() noexcept { ++g_protoMutationEpoch; }
+uint64_t protoMutationEpoch() noexcept { return bronze_proto_epoch; }
+void bumpProtoMutationEpoch() noexcept { ++bronze_proto_epoch; }
 
 namespace {
 
@@ -245,6 +249,52 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (ic && ic->describesOwn(shape)) {
         setSlot(ic->cached_slot, val.get());
         return this;
+    }
+
+    // The shape-transition hit: the receiver is one property short of the
+    // shape this site cached, and that missing property is this site's key —
+    // which is what a constructor body's `this.x = x` is on every `new` after
+    // the first. Taking the recorded transition skips the own-miss walk, the
+    // inherited-setter walk and the transition scan, and each guard is one of
+    // those walks' conclusions:
+    //  - `cached_shape->parent == shape`: one add above the receiver, on the
+    //    same chain (chains are immutable, so the fill-time layout still
+    //    holds).
+    //  - `slot_index == cached_slot`: the cached shape's OWN node is where
+    //    the fill found this site's key — slots are unique along a chain, so
+    //    this is the key-identity check — and `key.matches` restates it
+    //    directly because a guard whose soundness is an inference deserves
+    //    the direct form beside it.
+    //  - the attribute bytes: an assignment creates an enumerable, writable,
+    //    configurable DATA property; a node recording anything else belongs
+    //    to a definition and must not be reused by one.
+    //  - the epoch: the fill-time walk proved no inherited setter shadows
+    //    this key. Every way one could have appeared since — an add to any
+    //    marked-prototype shape, a dictionary define, a prototype swap —
+    //    bumps the epoch, exactly the discipline the depth > 0 read entries
+    //    already lean on.
+    if (ic && ic->cached_shape && ic->cached_depth == 0 && shape && !shape->isDictionary() &&
+        ic->cached_shape->parent == shape &&
+        ic->cached_shape->slot_index == ic->cached_slot &&
+        ic->cached_shape->enumerable && !ic->cached_shape->accessor &&
+        ic->cached_shape->writable && ic->cached_shape->configurable &&
+        enumerable && writable && configurable &&
+        ic->cached_epoch == protoMutationEpoch() &&
+        ic->cached_shape->key.matches(prop_name)) {
+        Shape* next = ic->cached_shape;
+        const uint32_t slot = ic->cached_slot;
+        // Same bump the slow path performs: if this object is somebody's
+        // prototype, the add shadows what depth > 0 entries below it point at.
+        if (shape->used_as_prototype) bumpProtoMutationEpoch();
+        Rooted<Value> self{Value::fromObject(this)};
+        ObjectHeader* live = ensureSlots(heap, self, slot + 1);
+        live->shape = next;
+        // Refill rather than leave alone: the bump above (or an epoch the
+        // entry outlived) would otherwise expire an entry that has just
+        // proven itself.
+        ic->fill(next, slot, /*depth=*/0);
+        live->setSlot(slot, val.get());
+        return live;
     }
 
     PropertyInfo own;

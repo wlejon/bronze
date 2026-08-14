@@ -28,9 +28,10 @@ std::optional<uint32_t> parseIndexKey(std::string_view key) {
 
 }  // namespace
 
-void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::GlobalVariable* icTable,
-                 llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex,
-                 bool strict, bool monomorphic, std::string_view keyStr) {
+void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
+                 llvm::GlobalVariable* icTable, llvm::Value* objBits, uint32_t keyIndex,
+                 llvm::Value* valBits, uint32_t icIndex, bool strict, bool monomorphic,
+                 std::string_view keyStr) {
     (void)monomorphic;
     llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
 
@@ -133,7 +134,93 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::GlobalVari
     llvm::Value* depthOk = builder.CreateICmpEQ(depth, builder.getInt64(0));
 
     llvm::Value* hit = builder.CreateAnd(builder.CreateAnd(isPlain, shapeOk), depthOk, "ic.set.hit.cond");
-    builder.CreateCondBr(hit, hitBb, slowBb);
+
+    // 3b. The shape-transition arm: the entry's cached shape is one property
+    // above the receiver's, and that property is this site's key — the state
+    // a constructor body's `this.x = v` leaves behind on every `new` after
+    // the first. The guards are the slow path's conclusions, checked in the
+    // order that keeps every load safe (see ObjectHeader::setProp, whose
+    // transition fast path this mirrors exactly):
+    //   cached != null, cached->parent == receiver shape (same immutable
+    //   chain, one add short), slotword < kInlineSlots (depth 0 AND an inline
+    //   slot in one compare, so no overflow-growth allocation can be needed),
+    //   cached->slot_index == cached_slot (the cached node OWNS the site's
+    //   key — slot uniqueness along a chain makes that the key check),
+    //   the four attribute bytes spell plain-data (an assignment creates
+    //   nothing else), the receiver's shape is not somebody's prototype (the
+    //   helper owns the epoch bump that add would owe), and the entry's fill
+    //   epoch is current (the fill-time walk proved no inherited setter; every
+    //   way one can appear bumps the epoch).
+    //
+    // Not emitted for `length` or index-spelled keys: those are the two names
+    // a String exotic receiver refuses, and the refusal lives in the helper.
+    const bool transitionArm = !keyStr.empty() && keyStr != "length" && !optIdx.has_value();
+    if (transitionArm) {
+        llvm::BasicBlock* transNullBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.null", fn);
+        llvm::BasicBlock* transParentBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.parent", fn);
+        llvm::BasicBlock* transNodeBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.node", fn);
+        llvm::BasicBlock* transHitBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.hit", fn);
+
+        builder.CreateCondBr(hit, hitBb, transNullBb);
+
+        builder.SetInsertPoint(transNullBb);
+        llvm::Value* cachedNonNull = builder.CreateICmpNE(
+            cachedShape, llvm::Constant::getNullValue(ptrTy), "trans.cached");
+        builder.CreateCondBr(builder.CreateAnd(isPlain, cachedNonNull), transParentBb, slowBb);
+
+        builder.SetInsertPoint(transParentBb);
+        llvm::Value* parentPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, cachedShape, BRONZE_ABI_SHAPE_PARENT_OFFSET);
+        llvm::Value* parent =
+            builder.CreateAlignedLoad(ptrTy, parentPtr, llvm::Align(8), "trans.parent");
+        llvm::Value* parentOk = builder.CreateICmpEQ(parent, shape);
+        llvm::Value* slotSmall = builder.CreateICmpULT(
+            slotWord, builder.getInt64(BRONZE_ABI_OBJ_INLINE_SLOTS), "trans.slotsmall");
+        builder.CreateCondBr(builder.CreateAnd(parentOk, slotSmall), transNodeBb, slowBb);
+
+        builder.SetInsertPoint(transNodeBb);
+        llvm::Value* transSlot32 = builder.CreateTrunc(slotWord, i32Ty, "trans.slot32");
+        llvm::Value* nodeSlotPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, cachedShape, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET);
+        llvm::Value* nodeSlot =
+            builder.CreateAlignedLoad(i32Ty, nodeSlotPtr, llvm::Align(4), "trans.nodeslot");
+        llvm::Value* slotIsNode = builder.CreateICmpEQ(nodeSlot, transSlot32);
+        llvm::Value* attrsPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, cachedShape, BRONZE_ABI_SHAPE_ATTRS_OFFSET);
+        llvm::Value* attrs =
+            builder.CreateAlignedLoad(i32Ty, attrsPtr, llvm::Align(4), "trans.attrs");
+        llvm::Value* attrsOk = builder.CreateICmpEQ(
+            attrs, builder.getInt32(BRONZE_ABI_SHAPE_ATTRS_PLAIN_DATA));
+        llvm::Value* usedPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
+        llvm::Value* used =
+            builder.CreateAlignedLoad(i8Ty, usedPtr, llvm::Align(1), "trans.usedproto");
+        llvm::Value* notPrototype = builder.CreateICmpEQ(used, builder.getInt8(0));
+        llvm::Value* epochPtr = builder.CreateConstInBoundsGEP1_32(
+            i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
+        llvm::Value* fillEpoch =
+            builder.CreateAlignedLoad(i64Ty, epochPtr, llvm::Align(8), "trans.fillepoch");
+        llvm::Value* curEpoch = builder.CreateAlignedLoad(
+            i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "trans.epoch");
+        llvm::Value* epochOk = builder.CreateICmpEQ(fillEpoch, curEpoch);
+        llvm::Value* nodeOk = builder.CreateAnd(
+            builder.CreateAnd(slotIsNode, attrsOk),
+            builder.CreateAnd(notPrototype, epochOk), "trans.nodeok");
+        builder.CreateCondBr(nodeOk, transHitBb, slowBb);
+
+        builder.SetInsertPoint(transHitBb);
+        llvm::Value* shapeSlotPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        builder.CreateAlignedStore(cachedShape, shapeSlotPtr, llvm::Align(8));
+        llvm::Value* transSlotsBase =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+        llvm::Value* transSlotPtr =
+            builder.CreateInBoundsGEP(i64Ty, transSlotsBase, {transSlot32});
+        builder.CreateAlignedStore(valBits, transSlotPtr, llvm::Align(8));
+        builder.CreateBr(doneBb);
+    } else {
+        builder.CreateCondBr(hit, hitBb, slowBb);
+    }
 
     // 4. Hit: inline slot or overflow slot
     builder.SetInsertPoint(hitBb);
@@ -184,8 +271,9 @@ static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& ab
 }
 
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                         llvm::GlobalVariable* icTable, llvm::Value* objBits, uint32_t keyIndex,
-                         uint32_t icIndex, bool monomorphic, std::string_view keyStr) {
+                         const AbiGlobals& globals, llvm::GlobalVariable* icTable,
+                         llvm::Value* objBits, uint32_t keyIndex, uint32_t icIndex,
+                         bool monomorphic, std::string_view keyStr) {
     (void)monomorphic;
     llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
 
@@ -302,8 +390,107 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* depth = builder.CreateLShr(slotWord, 32);
     llvm::Value* depthOk = builder.CreateICmpEQ(depth, builder.getInt64(0));
 
-    llvm::Value* hit = builder.CreateAnd(builder.CreateAnd(isPlain, shapeOk), depthOk, "ic.hit.cond");
-    builder.CreateCondBr(hit, hitBb, slowBb);
+    llvm::Value* shapeHit = builder.CreateAnd(isPlain, shapeOk, "ic.shape.cond");
+    llvm::BasicBlock* depthSplitBb = llvm::BasicBlock::Create(ctx, "ic.depth.split", fn);
+    builder.CreateCondBr(shapeHit, depthSplitBb, slowBb);
+
+    // 3b. Depth 0 is the own-property hit below; depth > 0 is a PROTO hit,
+    // which generated code now walks itself — the epoch check and the chain
+    // walk mirror InlineCache::describes and ObjectHeader::cachedProtoHolder
+    // exactly, and every guard miss (stale epoch, a non-object or non-plain
+    // link, a dictionary on the path, an overflow slot on the holder) falls
+    // back to the helper, which still owns the fatal tripwires.
+    builder.SetInsertPoint(depthSplitBb);
+    llvm::BasicBlock* protoCheckBb = llvm::BasicBlock::Create(ctx, "ic.proto.check", fn);
+    llvm::BasicBlock* protoLoopBb = llvm::BasicBlock::Create(ctx, "ic.proto.loop", fn);
+    llvm::BasicBlock* protoStepBb = llvm::BasicBlock::Create(ctx, "ic.proto.step", fn);
+    llvm::BasicBlock* protoDictBb = llvm::BasicBlock::Create(ctx, "ic.proto.dict", fn);
+    llvm::BasicBlock* protoResBb = llvm::BasicBlock::Create(ctx, "ic.proto.res", fn);
+    builder.CreateCondBr(depthOk, hitBb, protoCheckBb);
+
+    builder.SetInsertPoint(protoCheckBb);
+    llvm::Value* protoSlot32 = builder.CreateTrunc(slotWord, i32Ty, "proto.slot32");
+    llvm::Value* protoSlotInline = builder.CreateICmpULT(
+        protoSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
+    llvm::Value* epochPtr = builder.CreateConstInBoundsGEP1_32(
+        i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
+    llvm::Value* fillEpoch =
+        builder.CreateAlignedLoad(i64Ty, epochPtr, llvm::Align(8), "proto.fillepoch");
+    llvm::Value* curEpoch = builder.CreateAlignedLoad(
+        i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "proto.epoch");
+    llvm::Value* epochOk = builder.CreateICmpEQ(fillEpoch, curEpoch);
+    builder.CreateCondBr(builder.CreateAnd(protoSlotInline, epochOk), protoLoopBb, slowBb);
+
+    // The walk: `depth` steps of shape -> root -> prototype, each link
+    // object-tagged, Plain, and not a dictionary.
+    builder.SetInsertPoint(protoLoopBb);
+    llvm::PHINode* curShape = builder.CreatePHI(ptrTy, 2, "proto.curshape");
+    llvm::PHINode* stepIdx = builder.CreatePHI(i64Ty, 2, "proto.i");
+    curShape->addIncoming(shape, protoCheckBb);
+    stepIdx->addIncoming(builder.getInt64(0), protoCheckBb);
+    llvm::Value* rootPtr = builder.CreateConstInBoundsGEP1_32(
+        i8Ty, curShape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
+    llvm::Value* rootShape =
+        builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), "proto.root");
+    llvm::Value* rootNonNull =
+        builder.CreateICmpNE(rootShape, llvm::Constant::getNullValue(ptrTy));
+    llvm::BasicBlock* protoLoadBb = llvm::BasicBlock::Create(ctx, "ic.proto.load", fn);
+    builder.CreateCondBr(rootNonNull, protoLoadBb, slowBb);
+
+    builder.SetInsertPoint(protoLoadBb);
+    llvm::Value* protoValPtr = builder.CreateConstInBoundsGEP1_32(
+        i8Ty, rootShape, BRONZE_ABI_SHAPE_PROTO_OFFSET);
+    llvm::Value* protoVal =
+        builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), "proto.val");
+    llvm::Value* protoTag = builder.CreateLShr(protoVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* protoIsObj =
+        builder.CreateICmpEQ(protoTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    builder.CreateCondBr(protoIsObj, protoStepBb, slowBb);
+
+    builder.SetInsertPoint(protoStepBb);
+    llvm::Value* protoAddr =
+        builder.CreateAnd(protoVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* protoHdr = builder.CreateIntToPtr(protoAddr, ptrTy, "proto.hdr");
+    llvm::Value* protoFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    llvm::Value* protoFlags =
+        builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), "proto.flags");
+    llvm::Value* protoPlain =
+        builder.CreateICmpEQ(protoFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
+    builder.CreateCondBr(protoPlain, protoDictBb, slowBb);
+
+    builder.SetInsertPoint(protoDictBb);
+    llvm::Value* protoShapePtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    llvm::Value* protoShape =
+        builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), "proto.shape");
+    llvm::Value* protoShapeNonNull =
+        builder.CreateICmpNE(protoShape, llvm::Constant::getNullValue(ptrTy));
+    llvm::BasicBlock* protoDictLoadBb = llvm::BasicBlock::Create(ctx, "ic.proto.dictload", fn);
+    builder.CreateCondBr(protoShapeNonNull, protoDictLoadBb, slowBb);
+
+    builder.SetInsertPoint(protoDictLoadBb);
+    llvm::Value* dictPtr = builder.CreateConstInBoundsGEP1_32(
+        i8Ty, protoShape, BRONZE_ABI_SHAPE_DICT_OFFSET);
+    llvm::Value* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), "proto.dict");
+    llvm::Value* notDict = builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy));
+    llvm::Value* stepNext = builder.CreateAdd(stepIdx, builder.getInt64(1), "proto.inext");
+    llvm::Value* walked = builder.CreateICmpEQ(stepNext, depth);
+    llvm::BasicBlock* protoLatchBb = llvm::BasicBlock::Create(ctx, "ic.proto.latch", fn);
+    builder.CreateCondBr(notDict, protoLatchBb, slowBb);
+
+    builder.SetInsertPoint(protoLatchBb);
+    curShape->addIncoming(protoShape, protoLatchBb);
+    stepIdx->addIncoming(stepNext, protoLatchBb);
+    builder.CreateCondBr(walked, protoResBb, protoLoopBb);
+
+    builder.SetInsertPoint(protoResBb);
+    llvm::Value* holderSlots =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* holderSlotPtr = builder.CreateInBoundsGEP(i64Ty, holderSlots, {protoSlot32});
+    llvm::Value* protoHitVal =
+        builder.CreateAlignedLoad(i64Ty, holderSlotPtr, llvm::Align(8), "proto.hit.val");
+    builder.CreateBr(doneBb);
 
     // 4. Hit: inline slot or overflow slot
     builder.SetInsertPoint(hitBb);
@@ -345,7 +532,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    unsigned phiCount = 3;  // inlineHitBb, overflowAccessBb, slowBb
+    unsigned phiCount = 4;  // inlineHitBb, overflowAccessBb, slowBb, protoResBb
     if (arrLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
     if (arrPayloadBb) phiCount++;
@@ -354,6 +541,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     result->addIncoming(inlineVal, inlineHitBb);
     result->addIncoming(overflowValLoaded, overflowAccessBb);
     result->addIncoming(slowVal, slowBb);
+    result->addIncoming(protoHitVal, protoResBb);
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);

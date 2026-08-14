@@ -5,6 +5,7 @@
 // initialization order (rt_internal.h).
 
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -144,14 +145,54 @@ const KeyInfo& rtKeyInfo(uint32_t index) {
 // otherwise `Foo.prototype.m =...` would decorate one object and `new Foo()`
 // would read another. Keyed on the code pointer, which is 1:1 with the
 // declaration; closures never come here, since their identity is per-evaluation
-// and they carry an environment.
+// and they carry an environment. The map is an index into the vector rather
+// than holding Values itself so the ROOT SOURCE below stays one flat walk;
+// nothing iterates the map, so its ordering never reaches output.
 static std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
+static std::unordered_map<void*, size_t> g_functionSingletonIndex;
+
+// The slot cache generated code reads inline: one {code, value} entry per
+// slot index the backend numbered (one per IL function). A CACHE and not the
+// authority — an entry answers only when its code word matches the mention's
+// own function pointer, so a second program in the process (the embed API)
+// colliding on a slot evicts and refills, never breaks identity.
+struct FnSingletonSlot {
+    bronze_fn_code code{nullptr};
+    Value value{Value::fromUndefined()};
+};
+static_assert(sizeof(FnSingletonSlot) == BRONZE_ABI_FNSLOT_SIZE);
+static_assert(offsetof(FnSingletonSlot, code) == BRONZE_ABI_FNSLOT_CODE_OFFSET);
+static_assert(offsetof(FnSingletonSlot, value) == BRONZE_ABI_FNSLOT_VALUE_OFFSET);
+static std::vector<FnSingletonSlot> g_fnSingletonSlots;
 
 // The free identifiers lowering is allowed to resolve, cached per key index:
 // every mention of `Math` in the source is one lookup, including one inside a
 // loop, so a string compare per reference is not a thing to leave in a hot
 // path.
 static std::vector<Value> g_globalCache;
+
+// The published views of the two tables above, for the inline fast paths.
+// Republished after every resize; the CELLS need no republication, because
+// the collector forwards them in place through the root source below.
+extern "C" {
+uint64_t* bronze_global_cache_tbl = nullptr;
+uint64_t bronze_global_cache_len = 0;
+uint64_t* bronze_fn_singleton_tbl = nullptr;
+uint64_t bronze_fn_singleton_len = 0;
+}
+
+static_assert(sizeof(Value) == sizeof(uint64_t),
+              "the published cache tables are read as raw u64 cells");
+
+static void publishGlobalCache() {
+    bronze_global_cache_tbl = reinterpret_cast<uint64_t*>(g_globalCache.data());
+    bronze_global_cache_len = g_globalCache.size();
+}
+
+static void publishFnSingletonSlots() {
+    bronze_fn_singleton_tbl = reinterpret_cast<uint64_t*>(g_fnSingletonSlots.data());
+    bronze_fn_singleton_len = g_fnSingletonSlots.size();
+}
 
 // The module scope's environment record. The top level runs exactly once, so
 // this scope has exactly one activation and its record is a singleton — which
@@ -177,6 +218,7 @@ static std::vector<std::pair<std::string, Value>> g_hostGlobals;
 static const bool g_valueCachesRegistered = [] {
     g_heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
+        for (FnSingletonSlot& slot : g_fnSingletonSlots) visit(slot.value);
         for (Value& v : g_globalCache) visit(v);
         for (auto& entry : g_hostGlobals) visit(entry.second);
         visit(g_moduleEnv);
@@ -223,17 +265,35 @@ void bronze_module_env_set(uint64_t envBits) { g_moduleEnv = Value(envBits); }
 uint64_t bronze_module_env_get() { return g_moduleEnv.rawBits(); }
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
-                                   uint32_t nameKey) {
+                                   uint32_t nameKey, uint32_t slot) {
     recordHelperCall("bronze_function_singleton");
-    for (const auto& entry : g_functionSingletons) {
-        if (entry.first == code) return entry.second.rawBits();
+    // The by-code-pointer map is the authority; it replaced a linear scan
+    // that every native builtin ever interned lengthened for every mention of
+    // every top-level declaration.
+    Value result = Value::fromUndefined();
+    if (auto it = g_functionSingletonIndex.find(reinterpret_cast<void*>(code));
+        it != g_functionSingletonIndex.end()) {
+        result = g_functionSingletons[it->second].second;
+    } else {
+        FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
+        fn->env_record = Value::fromObject(fn);
+        fn->header.flags = HeapKind::Function;
+        rtSetFunctionNameAndLength(fn, nameKey, length);
+        result = Value::fromObject(fn);
+        g_functionSingletons.emplace_back(code, result);
+        g_functionSingletonIndex.emplace(reinterpret_cast<void*>(code),
+                                         g_functionSingletons.size() - 1);
     }
-    FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
-    fn->env_record = Value::fromObject(fn);
-    fn->header.flags = HeapKind::Function;
-    rtSetFunctionNameAndLength(fn, nameKey, length);
-    g_functionSingletons.emplace_back(code, Value::fromObject(fn));
-    return g_functionSingletons.back().second.rawBits();
+    // Fill the slot cache so the NEXT mention at this slot needs no call at
+    // all. The runtime's own native interning has no slot to fill.
+    if (slot != BRONZE_ABI_FN_SLOT_NONE) {
+        if (slot >= g_fnSingletonSlots.size()) {
+            g_fnSingletonSlots.resize(slot + 1);
+            publishFnSingletonSlots();
+        }
+        g_fnSingletonSlots[slot] = FnSingletonSlot{code, result};
+    }
+    return result.rawBits();
 }
 
 // An unknown name never reaches here. Lowering emits this instruction only for
@@ -326,6 +386,7 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
     }
     if (keyIndex >= g_globalCache.size()) {
         g_globalCache.resize(keyIndex + 1, Value::fromUndefined());
+        publishGlobalCache();
     }
     g_globalCache[keyIndex] = resolved;
     return resolved.rawBits();

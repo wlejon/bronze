@@ -206,7 +206,8 @@ void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uin
 // is the split rt_members.cpp's tables already draw everywhere else.
 inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
     return Value(bronze_function_singleton(code, arity, /*length=*/0,
-                                           BRONZE_ABI_FN_NAME_NONE));
+                                           BRONZE_ABI_FN_NAME_NONE,
+                                           BRONZE_ABI_FN_SLOT_NONE));
 }
 
 // A native builtin's prologue. bronze_dynamic_call hands a builtin an argument

@@ -4,12 +4,15 @@
 
 #include <string>
 
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Constants.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_cache.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
+#include "codegen-llvm/llvm_math.h"
 #include "codegen-llvm/llvm_prop.h"
 
 namespace bronze::codegen_llvm {
@@ -318,7 +321,11 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         }
         case il::Op::GlobalGet:
             if (inst.result != il::kNoValue) {
-                callWith(abi.bronze_global_get, {builder_.getInt32(inst.keyIndex)});
+                // The helper's committed fast path — a cached, non-undefined
+                // cell — read inline off the published rooted table; the
+                // helper keeps every fill and every fallthrough.
+                values_[inst.result] =
+                    emitGlobalGetCached(builder_, abi, shared_.globals, inst.keyIndex);
             }
             return true;
         // The result is `undefined` and nothing reads it: the exception check
@@ -510,10 +517,12 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // A rest parameter is not one of them — padding argv up to it would
             // put an `undefined` in the rest array.
             uint32_t arity = target.adaptArity();
-            callWith(abi.bronze_function_singleton,
-                     {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity),
-                      builder_.getInt32(target.requiredArgs),
-                      builder_.getInt32(target.nameKeyIndex)});
+            // The slot is the IL function index: dense, stable, and shared by
+            // every mention of one declaration, which is exactly what a
+            // singleton's cache line wants to be keyed by.
+            values_[inst.result] = emitFunctionSingletonCached(
+                builder_, abi, shared_.globals, shared_.wrappers[inst.calleeIndex], arity,
+                target.requiredArgs, target.nameKeyIndex, inst.calleeIndex);
             if (target.isGenerator && inst.result != il::kNoValue) {
                 builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
             }
@@ -620,8 +629,10 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
-            values_[inst.result] = emitPropGet(builder_, abi, shared_.icTable, obj, inst.keyIndex,
-                                               inst.icIndex, inst.icMonomorphic, keyStr);
+            values_[inst.result] =
+                emitPropGet(builder_, abi, shared_.globals, shared_.icTable, obj, inst.keyIndex,
+                            inst.icIndex, inst.icMonomorphic, keyStr);
+            if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }
         case il::Op::PropSet: {
@@ -632,8 +643,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
-            emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex,
-                        inst.immI32 != 0, inst.icMonomorphic, keyStr);
+            emitPropSet(builder_, abi, shared_.globals, shared_.icTable, obj, inst.keyIndex, val,
+                        inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, keyStr);
             return true;
         }
         case il::Op::ElemGet: {
@@ -665,6 +676,25 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             bool ok = false;
             llvm::Value* argv = emitArgv(inst, 2, argc, ok);
             if (!ok) return false;
+            // A callee read as `sqrt`/`sin`/`cos`/`abs`/`min`/`max` gets the
+            // code-pointer-guarded Math dispatch; the provenance only decides
+            // WHERE to spend the guard, never what it may assume.
+            const uint32_t calleeKey = inst.operands[0] < propGetKey_.size()
+                                           ? propGetKey_[inst.operands[0]]
+                                           : UINT32_MAX;
+            if (inst.result != il::kNoValue &&
+                calleeKey < shared_.module.keyConstants.size()) {
+                if (auto kind =
+                        mathIntrinsicFor(shared_.module.keyConstants[calleeKey], argc)) {
+                    llvm::SmallVector<llvm::Value*, 2> args;
+                    for (uint32_t a = 0; a < argc; ++a) {
+                        args.push_back(values_[inst.operands[2 + a]]);
+                    }
+                    values_[inst.result] = emitMathDirectCall(builder_, abi, *kind, callee,
+                                                              thisVal, argc, argv, args);
+                    return true;
+                }
+            }
             callWith(abi.bronze_dynamic_call,
                      {callee, thisVal, builder_.getInt32(argc), argv});
             return true;

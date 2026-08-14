@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -76,7 +78,6 @@ public:
     bool configurable{true};
     Shape* root{nullptr};  // self, for a root shape
     Value prototype;       // meaningful on a root shape only
-    std::vector<ShapeTransition> transitions;
     // Non-null on a DICTIONARY shape: a private, unshared shape belonging to
     // exactly one object, whose own properties live in the table rather than in
     // this chain. `parent` is null and `transitions` stays empty on one — a
@@ -94,6 +95,11 @@ public:
     // not be, a prototype whose shape is unmarked, is what `addProperty`'s
     // propagation and `createRoot`'s marking exist to rule out.
     bool used_as_prototype{false};
+    // LAST, and that position is load-bearing: generated code reads every
+    // field above this one (the ABI offsets in bronze_abi.h, pinned below),
+    // and a standard-library type's size may differ between build
+    // configurations — so nothing the backend reads may sit after one.
+    std::vector<ShapeTransition> transitions;
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
     Shape(Shape* parent_shape, PropertyKey prop_key, uint32_t slot, Shape* root_shape,
@@ -162,5 +168,24 @@ public:
 
     Value prototypeValue() const noexcept { return root ? root->prototype : Value::fromUndefined(); }
 };
+
+// Part of the generated-code ABI: the depth > 0 proto-hit read walks
+// shape -> root -> prototype and refuses a dictionary inline, and the
+// shape-transition write hit reads parent, slot_index, the attribute bytes
+// and the prototype mark. Pinned HERE, beside the type that owns the layout,
+// so a reorder breaks the build instead of miscompiling every cached access.
+static_assert(offsetof(Shape, parent) == BRONZE_ABI_SHAPE_PARENT_OFFSET);
+static_assert(offsetof(Shape, slot_index) == BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET);
+static_assert(offsetof(Shape, enumerable) == BRONZE_ABI_SHAPE_ATTRS_OFFSET);
+static_assert(offsetof(Shape, accessor) == BRONZE_ABI_SHAPE_ATTRS_OFFSET + 1 &&
+              offsetof(Shape, writable) == BRONZE_ABI_SHAPE_ATTRS_OFFSET + 2 &&
+              offsetof(Shape, configurable) == BRONZE_ABI_SHAPE_ATTRS_OFFSET + 3,
+              "the write fast path reads the four attribute bools as one little-endian u32");
+static_assert(sizeof(Shape::enumerable) == 1 && sizeof(Shape::accessor) == 1 &&
+              sizeof(Shape::writable) == 1 && sizeof(Shape::configurable) == 1);
+static_assert(offsetof(Shape, root) == BRONZE_ABI_SHAPE_ROOT_OFFSET);
+static_assert(offsetof(Shape, prototype) == BRONZE_ABI_SHAPE_PROTO_OFFSET);
+static_assert(offsetof(Shape, dict) == BRONZE_ABI_SHAPE_DICT_OFFSET);
+static_assert(offsetof(Shape, used_as_prototype) == BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
 
 }  // namespace bronze

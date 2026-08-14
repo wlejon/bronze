@@ -47,6 +47,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * they can disagree. */
 #define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
 
+/* A singleton mention with no cache slot: what the RUNTIME's own callers pass
+ * for `bronze_function_singleton`'s slot index. Generated code always numbers
+ * its mentions (one slot per IL function, so every mention of one declaration
+ * shares one cache line); the runtime's native-builtin interning has no module
+ * to number slots in, and the sentinel keeps it on the by-code-pointer map. */
+#define BRONZE_ABI_FN_SLOT_NONE 0xFFFFFFFFu
+
 /* A function object whose `name` was never recorded, as the key index
  * `bronze_create_function` and `bronze_function_singleton` take.
  *
@@ -157,7 +164,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_dynamic_call,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_construct,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
-    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
+    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_set_function_generator,     BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_string_concat,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -169,7 +176,28 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_spread_err,    BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_register_key_string, BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_CSTR)) \
-    X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS))
+    X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    /* The six Math members generated code can dispatch directly: exported so a
+     * call site can compare a callee's FunctionHeader::code against the symbol
+     * — the code pointer is the one identity a GC that moves the function
+     * OBJECT can never disturb, and comparing it is what keeps
+     * `Math.sqrt = f` honest: an overwritten member has a different code
+     * pointer and the site falls back to bronze_dynamic_call. The first six
+     * are the function objects' own code (bronze_fn_code-shaped); the last
+     * four are the scalar kernels the inline fast path calls, each the SAME C
+     * runtime function the helper path runs, so the two paths cannot differ
+     * by a bit (the determinism rule: llvm.sqrt/llvm.fabs are IEEE-exact and
+     * inlined; sin/cos/min/max are not and stay C calls). */ \
+    X(bronze_math_sqrt,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_sin,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_cos,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_abs,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_min,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_max,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
+    X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
+    X(bronze_math_min2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
+    X(bronze_math_max2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64))
 
 /*
  * Data symbols generated code links against. Same single-source-of-truth
@@ -179,7 +207,28 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  */
 #define BRONZE_ABI_GLOBALS(X) \
     X(bronze_gc_frame_top,   BRONZE_ABI_FRAMEPTR) \
-    X(bronze_exception_cell, BRONZE_ABI_U64)
+    X(bronze_exception_cell, BRONZE_ABI_U64) \
+    /* The prototype-mutation epoch (runtime/object.h): what makes a cached
+     * depth > 0 property hit sound, read inline by the proto-hit fast path. */ \
+    X(bronze_proto_epoch,    BRONZE_ABI_U64) \
+    /* The provided-globals cache (rt_state.cpp g_globalCache), published as a
+     * raw table so a `global.get` can read its own committed fast path — a
+     * cached, non-undefined Value IS the answer — without the call. The
+     * pointer is republished on every resize, and the cells are GC ROOTS the
+     * collector forwards in place, so a load through the live pointer is
+     * always current bits. Undefined marks an unfilled cell; the helper owns
+     * filling, and the two host-registry/globalThis fallthroughs it never
+     * caches keep their scan-per-read semantics by never appearing here. */ \
+    X(bronze_global_cache_tbl, BRONZE_ABI_MU64) \
+    X(bronze_global_cache_len, BRONZE_ABI_U64) \
+    /* The function-singleton slot cache: one 16-byte {code, value} entry per
+     * slot index generated code numbered (one per IL function). An entry
+     * answers a mention only when its code word matches the mention's own
+     * function pointer, so two programs in one process (the embed API) can
+     * collide on a slot and cost a refill, never an identity break — the
+     * by-code-pointer map in rt_state.cpp stays the authority. */ \
+    X(bronze_fn_singleton_tbl, BRONZE_ABI_MU64) \
+    X(bronze_fn_singleton_len, BRONZE_ABI_U64)
 
 /*
  * ---- the inline property cache contract ---------------------------------
@@ -286,6 +335,42 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_OBJ_OVERFLOW_OFFSET  16
 #define BRONZE_ABI_OBJ_SLOTS_OFFSET     24
 #define BRONZE_ABI_OBJ_INLINE_SLOTS      4
+
+/* Shape (runtime/shape.h): the fields the two inline IC fast paths read, all
+ * deliberately laid out BEFORE the transitions vector so no standard-library
+ * type's size can shift them between build configurations. Shapes are immortal
+ * and non-moving, so generated code may chase these pointers freely.
+ *
+ * The depth > 0 READ walk needs root -> prototype (the chain step) and dict
+ * (a dictionary on the path is the miss `cachedProtoHolder` answers). The
+ * shape-transition WRITE hit needs parent (is the cached shape one add above
+ * the receiver's?), slot_index (does the cached shape's own node carry the
+ * site's key? — slot uniqueness along a chain makes `slot_index ==
+ * cached_slot` that exact question), the four attribute bytes as one word
+ * (an assignment creates enumerable/writable/configurable data properties
+ * and nothing else may be cached into one), and used_as_prototype (a marked
+ * receiver must bump the epoch, which is the helper's job). Pinned by
+ * static_asserts in runtime/shape.h. */
+#define BRONZE_ABI_SHAPE_PARENT_OFFSET      0
+#define BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET  16
+#define BRONZE_ABI_SHAPE_ATTRS_OFFSET      20
+/* enumerable=1, accessor=0, writable=1, configurable=1 as the one
+ * little-endian u32 the four adjacent bool bytes spell. */
+#define BRONZE_ABI_SHAPE_ATTRS_PLAIN_DATA  0x01010001u
+#define BRONZE_ABI_SHAPE_ROOT_OFFSET       24
+#define BRONZE_ABI_SHAPE_PROTO_OFFSET      32
+#define BRONZE_ABI_SHAPE_DICT_OFFSET       40
+#define BRONZE_ABI_SHAPE_USEDPROTO_OFFSET  48
+
+/* FunctionHeader::code — the identity the Math direct-dispatch guard compares
+ * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */
+#define BRONZE_ABI_OBJ_FLAGS_FUNCTION    2
+#define BRONZE_ABI_FN_CODE_OFFSET        8
+
+/* One bronze_fn_singleton_tbl entry: the code pointer, then the Value. */
+#define BRONZE_ABI_FNSLOT_SIZE          16
+#define BRONZE_ABI_FNSLOT_CODE_OFFSET    0
+#define BRONZE_ABI_FNSLOT_VALUE_OFFSET   8
 
 /* Every Object-tagged heap allocation has at least this many payload bytes,
  * which is what makes the fast path's unconditional load of the shape word

@@ -100,6 +100,11 @@ private:
     std::vector<llvm::BasicBlock*> blocks_;
     std::vector<std::vector<llvm::PHINode*>> blockPhis_;
     std::vector<llvm::Value*> values_;
+    // The key a PropGet result was read by (UINT32_MAX otherwise): what lets
+    // a DynamicCall recognize `Math.sqrt(x)`-shaped callees and emit the
+    // code-pointer-guarded direct dispatch (llvm_math.h). Provenance only —
+    // soundness lives entirely in the emitted guard.
+    std::vector<uint32_t> propGetKey_;
 
     std::vector<uint32_t> slotOf_;
     uint32_t argvBase_ = 0;

@@ -112,11 +112,9 @@ uint64_t mathUnary(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return Value::fromDouble(F(argAt(argc, argv, 0))).rawBits();
 }
 
-double unaryAbs(double x) { return std::abs(x); }
 double unaryFloor(double x) { return std::floor(x); }
 double unaryCeil(double x) { return std::ceil(x); }
 double unaryTrunc(double x) { return std::trunc(x); }
-double unarySqrt(double x) { return std::sqrt(x); }
 double unaryCbrt(double x) { return std::cbrt(x); }
 double unaryExp(double x) { return std::exp(x); }
 double unaryExpm1(double x) { return std::expm1(x); }
@@ -124,8 +122,6 @@ double unaryLog(double x) { return std::log(x); }
 double unaryLog1p(double x) { return std::log1p(x); }
 double unaryLog2(double x) { return std::log2(x); }
 double unaryLog10(double x) { return std::log10(x); }
-double unarySin(double x) { return std::sin(x); }
-double unaryCos(double x) { return std::cos(x); }
 double unaryTan(double x) { return std::tan(x); }
 double unaryAsin(double x) { return std::asin(x); }
 double unaryAcos(double x) { return std::acos(x); }
@@ -256,14 +252,17 @@ struct MathConst {
 };
 
 const MathFn kMathFunctions[] = {
-    {"abs", mathUnary<unaryAbs>, 1},     {"floor", mathUnary<unaryFloor>, 1},
+    // The six with exported code pointers (bronze_abi.h) are the ones a call
+    // site can dispatch directly; the registration here is what makes the
+    // guard's pointer compare mean "still the intrinsic".
+    {"abs", bronze_math_abs, 1},         {"floor", mathUnary<unaryFloor>, 1},
     {"ceil", mathUnary<unaryCeil>, 1},   {"trunc", mathUnary<unaryTrunc>, 1},
     {"round", mathUnary<jsRound>, 1},    {"sign", mathUnary<jsSign>, 1},
-    {"sqrt", mathUnary<unarySqrt>, 1},   {"cbrt", mathUnary<unaryCbrt>, 1},
+    {"sqrt", bronze_math_sqrt, 1},       {"cbrt", mathUnary<unaryCbrt>, 1},
     {"exp", mathUnary<unaryExp>, 1},     {"expm1", mathUnary<unaryExpm1>, 1},
     {"log", mathUnary<unaryLog>, 1},     {"log1p", mathUnary<unaryLog1p>, 1},
     {"log2", mathUnary<unaryLog2>, 1},   {"log10", mathUnary<unaryLog10>, 1},
-    {"sin", mathUnary<unarySin>, 1},     {"cos", mathUnary<unaryCos>, 1},
+    {"sin", bronze_math_sin, 1},         {"cos", bronze_math_cos, 1},
     {"tan", mathUnary<unaryTan>, 1},     {"asin", mathUnary<unaryAsin>, 1},
     {"acos", mathUnary<unaryAcos>, 1},   {"atan", mathUnary<unaryAtan>, 1},
     {"sinh", mathUnary<unarySinh>, 1},   {"cosh", mathUnary<unaryCosh>, 1},
@@ -278,7 +277,7 @@ const MathFn kMathFunctions[] = {
     // call padded to two undefineds is NaN. The three below are the
     // variadic ones; the rest declare their real parameter count so a short
     // call reaches them as the language says, with undefined.
-    {"min", mathMin, 0},                 {"max", mathMax, 0},
+    {"min", bronze_math_min, 0},         {"max", bronze_math_max, 0},
     {"hypot", mathHypot, 0},             {"random", mathRandom, 0},
 };
 
@@ -301,6 +300,61 @@ const char* const kMathUnimplemented[] = {
 Value g_mathObject = Value::fromUndefined();
 
 }  // namespace
+
+// ---- The direct-dispatch surface (bronze_abi.h) -----------------------------
+//
+// The scalar kernels first: each is the one C function BOTH paths run for a
+// member whose result is not IEEE-pinned. Generated code's fast path calls
+// them on already-unboxed doubles; the helper path reaches the same functions
+// through the trampolines below, so the two paths are the same instructions
+// and cannot drift by a bit. `sqrt` and `abs` have no kernel because
+// llvm.sqrt.f64 and llvm.fabs.f64 are IEEE-exact — the same licence the
+// inferred-arithmetic path has always used.
+
+extern "C" double bronze_math_sin_f64(double x) { return std::sin(x); }
+extern "C" double bronze_math_cos_f64(double x) { return std::cos(x); }
+
+// Exactly ECMA-262 21.3.2.25/21.3.2.24 for two number arguments, phrased so a
+// pass over {a, b} matches the variadic natives' fold: NaN anywhere wins, and
+// -0 sorts below +0.
+extern "C" double bronze_math_min2_f64(double a, double b) {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    return lessForMinMax(b, a) ? b : a;
+}
+
+extern "C" double bronze_math_max2_f64(double a, double b) {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    return lessForMinMax(a, b) ? b : a;
+}
+
+// The function objects' code pointers. Same bodies the anonymous statics had;
+// exported names, because the call-site guard compares against the symbol.
+
+extern "C" uint64_t bronze_math_sqrt(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(std::sqrt(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_sin(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_sin_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_cos(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_cos_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_abs(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(std::abs(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_min(uint64_t e, uint64_t t, uint32_t argc, const uint64_t* argv) {
+    return mathMin(e, t, argc, argv);
+}
+
+extern "C" uint64_t bronze_math_max(uint64_t e, uint64_t t, uint32_t argc, const uint64_t* argv) {
+    return mathMax(e, t, argc, argv);
+}
 
 Value rtMathObject() {
     if (g_mathObject.isObject()) return g_mathObject;

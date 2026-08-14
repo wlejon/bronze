@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -67,5 +68,11 @@ struct FunctionHeader {
 
     Value call(Value thisArg, uint32_t argc, Value* argv) const;
 };
+
+// The Math direct-dispatch guard in generated code loads the code pointer to
+// compare it against the intrinsic's exported symbol, so this one field's
+// position — and the Function kind's number — are ABI facts.
+static_assert(offsetof(FunctionHeader, code) == BRONZE_ABI_FN_CODE_OFFSET);
+static_assert(HeapKind::Function == BRONZE_ABI_OBJ_FLAGS_FUNCTION);
 
 }  // namespace bronze
