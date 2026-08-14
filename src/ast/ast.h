@@ -102,7 +102,14 @@ struct StringLit final : Expr {
 // other string literal.
 struct TemplateLit final : Expr {
     std::vector<std::string> quasis;
+    std::vector<std::string> rawQuasis;
     std::vector<ExprPtr> exprs;
+    void accept(Visitor& v) const override;
+};
+
+struct TaggedTemplate final : Expr {
+    ExprPtr tag;
+    std::unique_ptr<TemplateLit> templateLit;
     void accept(Visitor& v) const override;
 };
 
@@ -256,6 +263,10 @@ bool containsOptionalLink(const Expr& expr);
 struct NewExpr final : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    void accept(Visitor& v) const override;
+};
+
+struct NewTargetExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
@@ -606,6 +617,8 @@ struct ClassMethod {
     bool computed() const { return keyExpr != nullptr; }
     bool isStatic = false;
     bool isConstructor = false;
+    bool isField = false;
+    ExprPtr init;
     // A class accessor, which differs from an object literal's in exactly
     // one attribute: ECMA-262 15.7.14 defines it non-enumerable, the same
  // rule that already keeps a method out of `for-in`.
@@ -717,6 +730,7 @@ public:
     virtual void visit(const SpreadElement&) = 0;
     virtual void visit(const StringLit&) = 0;
     virtual void visit(const TemplateLit&) = 0;
+    virtual void visit(const TaggedTemplate&) = 0;
     virtual void visit(const RegExpLit&) = 0;
     virtual void visit(const BoolLit&) = 0;
     virtual void visit(const NullLit&) = 0;
@@ -733,6 +747,7 @@ public:
     // visitors get the correct Call-style behavior without an override.
     // Visitors that render or transform the node must override it.
     virtual void visit(const NewExpr&) = 0;
+    virtual void visit(const NewTargetExpr&) = 0;
     virtual void visit(const SuperCall&) = 0;
     virtual void visit(const SuperMember&) = 0;
     virtual void visit(const YieldExpr&) = 0;

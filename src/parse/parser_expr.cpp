@@ -525,12 +525,13 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             call->span.end = peek().span.begin;
             expr = std::move(call);
         } else if (check(TokenKind::TemplateWhole) || check(TokenKind::TemplateHead)) {
-            // `tag`...`` — a template in suffix position is a TAGGED template,
-            // which is not the cooked-pieces path: the tag receives the raw
-            // strings and the substitutions as arguments. Named here so it does
-            // not read as a missing semicolon.
-            error("unsupported construct: tagged template literal");
-            return nullptr;
+            auto tmpl = parseTemplateLiteral();
+            if (!tmpl) return nullptr;
+            auto tagged = std::make_unique<TaggedTemplate>();
+            tagged->span = {expr->span.begin, tmpl->span.end};
+            tagged->tag = std::move(expr);
+            tagged->templateLit.reset(static_cast<TemplateLit*>(tmpl.release()));
+            expr = std::move(tagged);
         } else if ((check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) &&
                    !atLineBreak() && ast::containsOptionalLink(*expr)) {
             // An UpdateExpression's operand must be a valid assignment target,
@@ -605,13 +606,6 @@ ExprPtr Parser::parseNewCallee() {
     // `new NewExpression`: the operand of a `new` may itself be one, so
     // `new new F()()` constructs the result of `new F()`.
     if (check(TokenKind::KwNew)) return parseNewCore();
-    if (check(TokenKind::Dot)) {
-        // `new.target` is a MetaProperty, not a construction at all: it asks
-        // how the enclosing function was invoked. Named so it does not read
-        // as a missing constructor.
-        error("unsupported construct: new.target");
-        return nullptr;
-    }
     auto expr = parsePrimary();
     if (!expr) return nullptr;
     for (;;) {
@@ -637,6 +631,17 @@ ExprPtr Parser::parseNewCallee() {
 // inner one would have made it a call on `new F()` instead.
 ExprPtr Parser::parseNewCore() {
     const Token& kw = advance();  // 'new'
+    if (check(TokenKind::Dot)) {
+        advance();  // '.'
+        if (!check(TokenKind::Identifier) || peek().text != "target") {
+            error("expected 'target' after 'new.'");
+            return nullptr;
+        }
+        const Token& targetTok = advance();
+        auto nt = std::make_unique<NewTargetExpr>();
+        nt->span = {kw.span.begin, targetTok.span.end};
+        return nt;
+    }
     auto callee = parseNewCallee();
     if (!callee) return nullptr;
     auto ne = std::make_unique<NewExpr>();

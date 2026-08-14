@@ -226,6 +226,7 @@ private:
                 // The computed member name is an expression of this file's
                 // module scope, so the names in it move with everything else.
                 if (m.keyExpr) expr(*m.keyExpr);
+                if (m.init) expr(*m.init);
                 if (!m.fn) continue;
                 m.fn->span.file = fileId_;
                 functionBody(m.fn->params, m.fn->body, std::string());
@@ -363,10 +364,16 @@ private:
             rewrite(ce->superName);
             for (auto& m : ce->methods) {
                 if (m.keyExpr) expr(*m.keyExpr);
+                if (m.init) expr(*m.init);
                 if (!m.fn) continue;
                 m.fn->span.file = fileId_;
                 functionBody(m.fn->params, m.fn->body, std::string());
             }
+        } else if (auto* tt = dynamic_cast<ast::TaggedTemplate*>(&e)) {
+            expr(*tt->tag);
+            for (auto& exp : tt->templateLit->exprs) expr(*exp);
+        } else if (dynamic_cast<ast::NewTargetExpr*>(&e)) {
+            // new.target carries no identifier bindings
         } else {
             fail(typeid(e));
         }

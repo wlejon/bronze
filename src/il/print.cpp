@@ -83,6 +83,12 @@ const char* opName(Op op) {
         case Op::MethodDef: return "method.def";
         case Op::MethodDefComputed: return "method.def.computed";
         case Op::AccessorDef: return "accessor.def";
+        case Op::AccessorDefComputed: return "accessor.def.computed";
+        case Op::GetNewTarget: return "get.new_target";
+        case Op::SuperCall: return "call.super";
+        case Op::SuperCallSpread: return "call.super.spread";
+        case Op::TemplateObject: return "template.object";
+        case Op::ArrayAppendHole: return "array.append.hole";
         case Op::PropDelete: return "prop.delete";
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
@@ -331,6 +337,51 @@ std::string print(const Module& module) {
                                ", %" +
                                std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
                                ", " + (inst.immI32 ? "enumerable" : "non-enumerable");
+                        break;
+                    case Op::AccessorDefComputed:
+                        out += "accessor.def.computed %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 3 ? inst.operands[3] : 0) +
+                               ", " + (inst.immI32 ? "enumerable" : "non-enumerable");
+                        break;
+                    case Op::GetNewTarget:
+                        out += "get.new_target";
+                        break;
+                    case Op::ArrayAppendHole:
+                        out += "array.append.hole %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::TemplateObject:
+                        out += "template.object %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::SuperCall: {
+                        out += "call.super";
+                        if (!inst.operands.empty()) {
+                            out += " %" + std::to_string(inst.operands[0]);
+                            if (inst.operands.size() > 1) {
+                                out += ", %" + std::to_string(inst.operands[1]);
+                            }
+                        }
+                        size_t argc = inst.operands.size() >= 2 ? inst.operands.size() - 2 : 0;
+                        out += ", " + std::to_string(argc);
+                        for (size_t i = 2; i < inst.operands.size(); ++i) {
+                            out += ", %" + std::to_string(inst.operands[i]);
+                        }
+                        break;
+                    }
+                    case Op::SuperCallSpread:
+                        out += "call.super.spread %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
                         break;
                     case Op::SuperGet:
                         out += "super.get %" +

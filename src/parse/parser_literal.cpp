@@ -280,29 +280,45 @@ bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) 
 // decided where each piece ends. The delimiters are stripped by span
 // arithmetic: a head is `...${ (backtick plus two), a middle is }...${ and
 // a tail is }...` — so every piece drops one leading and two-or-one
-// trailing characters, and what is left is decoded like any string literal.
+// trailing characters, and what is left is decoded like any string.
 ExprPtr Parser::parseTemplateLiteral() {
     auto lit = std::make_unique<TemplateLit>();
     const Token& headTok = peek();
     lit->span = headTok.span;
 
+    auto raw = [&](const Token& tok, size_t trailing) {
+        return std::string(tok.text.substr(1, tok.text.size() - 1 - trailing));
+    };
     auto cook = [&](const Token& tok, size_t trailing) {
         return decodeStringLiteral(tok.text.substr(1, tok.text.size() - 1 - trailing), tok.span);
     };
 
-    lit->quasis.push_back(cook(advance(), 2));  // strips the `${`
+    if (check(TokenKind::TemplateWhole)) {
+        const Token& whole = advance();
+        lit->quasis.push_back(cook(whole, 1));
+        lit->rawQuasis.push_back(raw(whole, 1));
+        lit->span = whole.span;
+        return lit;
+    }
+
+    const Token& head = advance();
+    lit->quasis.push_back(cook(head, 2));  // strips the `${`
+    lit->rawQuasis.push_back(raw(head, 2));
     for (;;) {
         auto expr = parseExpr();
         if (!expr) return nullptr;
         lit->exprs.push_back(std::move(expr));
 
         if (check(TokenKind::TemplateMiddle)) {
-            lit->quasis.push_back(cook(advance(), 2));
+            const Token& mid = advance();
+            lit->quasis.push_back(cook(mid, 2));
+            lit->rawQuasis.push_back(raw(mid, 2));
             continue;
         }
         if (check(TokenKind::TemplateTail)) {
             const Token& tail = advance();
             lit->quasis.push_back(cook(tail, 1));  // strips the closing backtick
+            lit->rawQuasis.push_back(raw(tail, 1));
             lit->span = {lit->span.begin, tail.span.end};
             return lit;
         }
@@ -320,16 +336,6 @@ ExprPtr Parser::parseObjectLit() {
     auto obj = std::make_unique<ObjectLit>();
     obj->span.begin = openToken.span.begin;
 
-    // The IL symbol a method's body compiles to. It carries the dots on
-    // purpose: lowering registers every function it creates in
-    // `functionIndices_` under this name, and a method called `next` that was
-    // named `next` there would answer a free `next(...)` elsewhere in the
-    // module — a method name is a property key, not a binding. The ordinal
-    // keeps two literals in one module from naming the same symbol. The ordinal
-    // is per parser, which is per FILE, so a graph needs the file in the name
-    // too or two files' first object methods collide on one IL symbol. File 0
-    // keeps the unqualified spelling, which is what every pinned single-file
-    // dump holds.
     auto methodName = [this](const std::string& key) {
         std::string prefix = fileId_ == 0 ? "obj." : "obj." + std::to_string(fileId_) + ".";
         return prefix + std::to_string(objectMethodOrdinal_++) + "." + key;
@@ -338,16 +344,29 @@ ExprPtr Parser::parseObjectLit() {
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
         ObjectProp prop;
         if (check(TokenKind::Star)) {
-            // A generator SHORTHAND in an object literal. Named rather than
-            // built: the desugaring is the class body's, but its home is the
-            // literal, and three.js's six generators are all class members — so
-            // this is surface with no evidence behind it, and an unpinned
-            // construct is how a predecessor's wrong answers got in.
-            // `{ [Symbol.iterator]: function () {...} }` is the spelling that
-            // works today.
-            error("unsupported construct: a generator method in an object literal "
-                  "(a generator is supported as a class member and as a `function*`)");
-            return nullptr;
+            const Token& star = advance();
+            if (check(TokenKind::LBracket)) {
+                advance();  // '['
+                prop.keyExpr = parseAssign();
+                if (!prop.keyExpr ||
+                    !expect(TokenKind::RBracket, "']' after computed generator key")) {
+                    return nullptr;
+                }
+                prop.key.clear();
+            } else {
+                const Token* genName = expectPropertyName("generator method name");
+                if (!genName) return nullptr;
+                prop.key = std::string(genName->text);
+            }
+            auto fn = std::make_unique<FunctionExpr>();
+            fn->span.begin = star.span.begin;
+            fn->name = methodName(prop.key.empty() ? "computed" : prop.key);
+            if (!parseGeneratorTail(*fn)) return nullptr;
+            prop.isMethod = true;
+            prop.value = std::move(fn);
+            obj->props.push_back(std::move(prop));
+            if (!match(TokenKind::Comma)) break;
+            continue;
         }
         // `{ async m() {} }` — an async MethodDefinition (ECMA-262 15.8). The
         // shape demanded is `async`, a property name ON THE SAME LINE, and a
@@ -356,9 +375,48 @@ ExprPtr Parser::parseObjectLit() {
         // property called `async`.
         if (check(TokenKind::Identifier) && peek().text == "async" && !peek(1).newlineBefore) {
             if (peek(1).kind == TokenKind::Star) {
-                error("unsupported construct: an async generator method in an object literal "
-                      "(`async *m() {}`)");
-                return nullptr;
+                advance();  // `async`
+                const Token& star = advance();  // `*`
+                if (check(TokenKind::LBracket)) {
+                    advance();  // `[`
+                    prop.keyExpr = parseAssign();
+                    if (!prop.keyExpr ||
+                        !expect(TokenKind::RBracket, "']' after computed async generator key")) {
+                        return nullptr;
+                    }
+                    prop.key.clear();
+                } else {
+                    const Token* genName = expectPropertyName("async generator method name");
+                    if (!genName) return nullptr;
+                    prop.key = std::string(genName->text);
+                }
+                auto method = parseAsyncMethodTail(
+                    methodName(prop.key.empty() ? "computed" : prop.key), star.span,
+                    /*clearSuper=*/true);
+                if (!method) return nullptr;
+                prop.isMethod = true;
+                prop.value = std::move(method);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
+            }
+            if (peek(1).kind == TokenKind::LBracket) {
+                advance();  // `async`
+                const Token& openBracket = peek();
+                advance();  // `[`
+                prop.keyExpr = parseAssign();
+                if (!prop.keyExpr ||
+                    !expect(TokenKind::RBracket, "']' after computed async method key")) {
+                    return nullptr;
+                }
+                auto method = parseAsyncMethodTail(methodName("computed"), openBracket.span,
+                                                   /*clearSuper=*/true);
+                if (!method) return nullptr;
+                prop.isMethod = true;
+                prop.value = std::move(method);
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
             const bool namedMethod = (isIdentifierName(peek(1).kind) ||
                                       peek(1).kind == TokenKind::StringLiteral) &&
@@ -399,10 +457,12 @@ ExprPtr Parser::parseObjectLit() {
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
+                obj->props.push_back(std::move(prop));
             } else {
                 if (!expect(TokenKind::Colon, "':' after a computed property key")) return nullptr;
                 prop.value = parseAssign();
                 if (!prop.value) return nullptr;
+                obj->props.push_back(std::move(prop));
             }
         } else if (isIdentifierName(peek().kind)) {
             // A PropertyName is an IdentifierName (13.2.5), so a reserved word
@@ -421,7 +481,7 @@ ExprPtr Parser::parseObjectLit() {
                 // FOLLOWING property name makes this an accessor.
                 const AccessorKind kind =
                     prop.key == "get" ? AccessorKind::Getter : AccessorKind::Setter;
-                auto accessorFn = parseAccessorMember(kind, prop.key);
+                auto accessorFn = parseAccessorMember(kind, prop.key, &prop.keyExpr);
                 if (!accessorFn) return nullptr;
                 prop.accessor = kind;
                 prop.value = std::move(accessorFn);
@@ -481,29 +541,24 @@ ExprPtr Parser::parseObjectLit() {
                 prop.value = parseAssign();
                 if (!prop.value) return nullptr;
             }
+            obj->props.push_back(std::move(prop));
         } else if (check(TokenKind::StringLiteral)) {
-            auto sTok = advance();
-            prop.key = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+            const Token& nameTok = advance();
+            prop.key = decodeStringLiteral(nameTok.text.substr(1, nameTok.text.size() - 2),
+                                           nameTok.span);
             if (check(TokenKind::LParen)) {
-                auto method = parseMethodTail(methodName(prop.key), sTok.span);
+                auto method = parseMethodTail(methodName(prop.key), nameTok.span);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
-            } else {
-                if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
-                prop.value = parseAssign();
-                if (!prop.value) return nullptr;
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
-        } else if (check(TokenKind::Ellipsis)) {
-            // `{ ...src }` — a property definition with no key of its own: it
-            // contributes every own enumerable property of `src`, in own
-            // enumerable order, at the position it is written.
-            const Token& dots = advance();
-            auto spread = std::make_unique<SpreadElement>();
-            spread->argument = parseAssign();
-            if (!spread->argument) return nullptr;
-            spread->span = {dots.span.begin, spread->argument->span.end};
-            prop.value = std::move(spread);
+            if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+            prop.value = parseAssign();
+            if (!prop.value) return nullptr;
+            obj->props.push_back(std::move(prop));
         } else if (check(TokenKind::NumberLiteral)) {
             const Token& numTok = advance();
             auto lit = std::make_unique<NumberLit>();
@@ -515,19 +570,26 @@ ExprPtr Parser::parseObjectLit() {
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
-            } else {
-                if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
-                prop.value = parseAssign();
-                if (!prop.value) return nullptr;
+                obj->props.push_back(std::move(prop));
+                if (!match(TokenKind::Comma)) break;
+                continue;
             }
+            if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+            prop.value = parseAssign();
+            if (!prop.value) return nullptr;
+            obj->props.push_back(std::move(prop));
+        } else if (check(TokenKind::Ellipsis)) {
+            advance();
+            auto spread = std::make_unique<SpreadElement>();
+            spread->argument = parseAssign();
+            if (!spread->argument) return nullptr;
+            spread->span = {openToken.span.begin, spread->argument->span.end};
+            prop.value = std::move(spread);
+            obj->props.push_back(std::move(prop));
         } else {
-            error("expected a property key: an identifier, a string literal, "
-                  "a number literal, or a computed '[expr]'");
+            error("expected a property definition in an object literal");
             return nullptr;
         }
-
-        obj->props.push_back(std::move(prop));
-
         if (!match(TokenKind::Comma)) break;
     }
 
@@ -542,13 +604,9 @@ ExprPtr Parser::parseArrayLit() {
     arr->span.begin = openToken.span.begin;
 
     while (!check(TokenKind::RBracket) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
-        if (check(TokenKind::Comma)) {
-            // `[1, , 2]` — an ElementList elision, which denotes a HOLE and
-            // not `undefined`: the two differ under `in` and under the array
-            // methods that skip holes. bronze has no sparse arrays, so this
-            // is named rather than quietly filled in.
-            error("unsupported construct: an elision (a hole) in an array literal");
-            return nullptr;
+        if (match(TokenKind::Comma)) {
+            arr->elements.push_back(nullptr);
+            continue;
         }
         // AssignmentExpression, for the same reason the argument list is:
         // a comma operator here would make `[1, 2, 3]` one element long.

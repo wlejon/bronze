@@ -321,6 +321,10 @@ bool rtFunctionPrototypeWritable(Value fnVal) {
     return rtIntegrityLevel(fnVal) != IntegrityLevel::Frozen;
 }
 
+void rtFreezeObject(Value receiver) {
+    setIntegrity(receiver, IntegrityLevel::Frozen, "freeze");
+}
+
 uint64_t rtObjectFreeze(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     return setIntegrity(args[0], IntegrityLevel::Frozen, "freeze");

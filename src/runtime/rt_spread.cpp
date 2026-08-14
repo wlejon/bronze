@@ -308,6 +308,15 @@ void bronze_array_append(uint64_t arrBits, uint64_t valBits) {
     appendTo(arr, val);
 }
 
+void bronze_array_append_hole(uint64_t arrBits) {
+    recordHelperCall("bronze_array_append_hole");
+    Rooted<Value> arr{Value(arrBits)};
+    if (!arr.get().isObject() || arr.get().asObject<HeapObjectHeader>()->flags != HeapKind::Array) return;
+    auto* header = arr.get().asObject<ArrayHeader>();
+    const uint32_t at = header->length;
+    header->setLength(rtHeap(), arr, at + 1);
+}
+
 void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
     recordHelperCall("bronze_array_spread");
     Rooted<Value> arr{Value(arrBits)};

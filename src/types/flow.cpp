@@ -343,11 +343,16 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // declaration.
         declare(cd->name, Type::function());
         for (const auto& m : cd->methods) {
-            // `|| isAsync` at every site: an async function's call value is
-            // the PROMISE (27.7.5.1), not what its body returns, which is
-            // exactly the generator's reason for forcing dynamic.
-            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                          m.fn->isGenerator || m.fn->isAsync);
+            if (m.keyExpr) expr(*m.keyExpr);
+            if (m.fn) {
+                // `|| isAsync` at every site: an async function's call value is
+                // the PROMISE (27.7.5.1), not what its body returns, which is
+                // exactly the generator's reason for forcing dynamic.
+                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                              m.fn->isGenerator || m.fn->isAsync);
+            } else if (m.init) {
+                expr(*m.init);
+            }
         }
         return;
     }

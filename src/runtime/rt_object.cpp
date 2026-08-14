@@ -19,6 +19,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/namespace.h"
@@ -33,6 +34,20 @@
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+
+thread_local NewTargetScope* g_topNewTarget = nullptr;
+
+NewTargetScope::NewTargetScope(Value target) : targetRoot_(target), prev_(g_topNewTarget) {
+    g_topNewTarget = this;
+}
+
+NewTargetScope::~NewTargetScope() {
+    g_topNewTarget = prev_;
+}
+
+Value NewTargetScope::current() {
+    return g_topNewTarget ? g_topNewTarget->targetRoot_.get() : Value::fromUndefined();
+}
 
 // The kind of a value, named. Diagnostics print this rather than raw bits:
 // "attempted to call undefined" bisects to a construct, `fff6000000000000`
@@ -332,6 +347,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
     }
+    NewTargetScope targetScope(fnVal);
 
     // A BOUND function constructs its TARGET (10.4.1.2): the bound arguments
     // are prepended, [[BoundThis]] is IGNORED — `new` supplies the receiver —
@@ -620,6 +636,7 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,
                              const uint64_t* argvBits) {
     recordCallSite("bronze_dynamic_call", calleeBits);
+    NewTargetScope targetScope(Value::fromUndefined());
     Value calleeVal(calleeBits);
     if (!calleeVal.isObject()) {
         return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
@@ -639,6 +656,55 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
     // build an *unrooted* duplicate and cost a malloc per call.
     Value* argv = reinterpret_cast<Value*>(const_cast<uint64_t*>(argvBits));
     return fn->call(Value(thisBits), argc, argv).rawBits();
+}
+
+uint64_t bronze_get_new_target() {
+    recordHelperCall("bronze_get_new_target");
+    return NewTargetScope::current().rawBits();
+}
+
+uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc,
+                           const uint64_t* argvBits) {
+    recordHelperCall("bronze_super_call");
+    Value baseVal(baseBits);
+    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
+    }
+    auto* fn = baseVal.asObject<FunctionHeader>();
+    return fn->call(Value(thisBits), argc,
+                    const_cast<Value*>(reinterpret_cast<const Value*>(argvBits))).rawBits();
+}
+
+uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t argsBits) {
+    recordHelperCall("bronze_super_call_spread");
+    Value baseVal(baseBits);
+    Value argsVal(argsBits);
+    if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
+    }
+    auto* fn = baseVal.asObject<FunctionHeader>();
+    if (!argsVal.isObject() || argsVal.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
+        return fn->call(Value(thisBits), 0, nullptr).rawBits();
+    }
+    auto* arr = argsVal.asObject<ArrayHeader>();
+    return fn->call(Value(thisBits), arr->length, arr->elementsData()).rawBits();
+}
+
+uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits) {
+    recordHelperCall("bronze_template_object");
+    Rooted<Value> cooked{Value(cookedBits)};
+    Rooted<Value> raw{Value(rawBits)};
+    if (raw.get().isObject()) {
+        rtFreezeObject(raw.get());
+    }
+    if (cooked.get().isObject()) {
+        Rooted<Value> keyRaw(Value::fromString(StringHeader::createFromUTF8(rtHeap(), "raw")));
+        ObjectHeader* props = ArrayHeader::ensureProperties(rtHeap(), rtArena(), cooked);
+        props->setProp(rtHeap(), rtArena(), keyRaw, raw, /*ic=*/nullptr, /*enumerable=*/false,
+                       /*defineOwn=*/true);
+        rtFreezeObject(cooked.get());
+    }
+    return cooked.get().rawBits();
 }
 
 }  // extern "C"

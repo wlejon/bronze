@@ -1,0 +1,8 @@
+Eval order: k1,k2
+Static k2: static value 2
+Static sym: static symbol field value
+Static lit: 200
+Ctor constructed
+Inst k1: instance value 1
+Inst sym: symbol field value
+Inst lit: 100

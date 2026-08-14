@@ -150,14 +150,16 @@ public:
             // the free-mention one exactly. Over-approximating "free" costs an
             // environment slot; the other direction is a wrong capture.
             if (m.keyExpr) m.keyExpr->accept(*this);
-            if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+            if (m.fn && functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+            if (m.init) m.init->accept(*this);
         }
     }
     void visit(const ClassExpr& c) override {
         if (c.superName == name_) found = true;
         for (const auto& m : c.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
-            if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+            if (m.fn && functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+            if (m.init) m.init->accept(*this);
         }
     }
 

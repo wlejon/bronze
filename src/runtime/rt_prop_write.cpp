@@ -387,18 +387,28 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
 void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
     recordElemCall("bronze_method_def_computed");
     Value objVal(objBits);
-    if (!objVal.isObject() ||
-        objVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (!objVal.isObject()) {
+        fatal("internal: a computed class method defined on a receiver that is not an object");
+    }
+    Value keyVal(keyBits);
+    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    Rooted<Value> val{Value(valBits)};
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == HeapKind::Function) {
+        Rooted<Value> fnRoot{objVal};
+        rtEnsureFunctionProperties(fnRoot);
+        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                        /*ic=*/nullptr, /*enumerable=*/false,
+                                                        /*defineOwn=*/true);
+        return;
+    }
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         fatal("internal: a computed class method defined on a receiver that is not a plain "
               "object");
     }
-    Value keyVal(keyBits);
-    if (!keyVal.isString() && !keyVal.isSymbol()) {
-        fatal("internal: a computed class method name that is neither a string nor a symbol");
-    }
     Rooted<Value> objRoot{objVal};
-    Rooted<Value> key{keyVal};
-    Rooted<Value> val{Value(valBits)};
     objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                     /*ic=*/nullptr, /*enumerable=*/false,
                                                     /*defineOwn=*/true);
@@ -428,6 +438,34 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {  // `static get k()`: an own property of the function
+        Rooted<Value> fnRoot{objVal};
+        rtEnsureFunctionProperties(fnRoot);
+        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
+                                     enumerable);
+        return;
+    }
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("an accessor property on an array or a typed array is unsupported");
+    }
+    Rooted<Value> objRoot{objVal};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
+}
+
+void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t getterBits,
+                                  uint64_t setterBits, bool enumerable) {
+    recordElemCall("bronze_accessor_def_computed");
+    Value objVal(objBits);
+    if (!objVal.isObject()) {
+        fatal("internal: an accessor defined on a value that is not an object");
+    }
+    Value keyVal(keyBits);
+    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    Rooted<Value> getter{Value(getterBits)};
+    Rooted<Value> setter{Value(setterBits)};
+
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
         rtEnsureFunctionProperties(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
@@ -621,6 +659,29 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (idx < view->length) view->set(idx, num);
         return;  // out-of-bounds typed-array writes are discarded, per spec
+    }
+    if (hdr->flags == HeapKind::Function) {
+        Rooted<Value> fnRoot{objVal};
+        Rooted<Value> val{Value(valBits)};
+        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
+        if (keyText == "prototype") {
+            if (!rtFunctionPrototypeWritable(objVal)) {
+                fatal("assigning a non-object to a function's `prototype` is unsupported");
+            }
+            auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+            fn->prototype = val.get();
+            return;
+        }
+        rtEnsureFunctionProperties(fnRoot);
+        Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
+        SetRefusal refusal = SetRefusal::None;
+        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                         /*ic=*/nullptr, /*enumerable=*/true,
+                                                         /*defineOwn=*/false,
+                                                         /*receiver=*/nullptr, &refusal);
+        rtReportSetRefusal(refusal, strict, keyText);
+        return;
     }
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         Rooted<Value> objRoot{objVal};

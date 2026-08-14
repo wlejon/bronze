@@ -234,7 +234,8 @@ TEST_CASE("a generator outside what bronze implements is refused by name") {
                          "block") != std::string::npos);
 
     const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
-    CHECK(objectLiteral.find("a generator method in an object literal") != std::string::npos);
+    CHECK(objectLiteral.substr(0, 7) != "ERRORS:");
+    CHECK(objectLiteral.find("(generator-expr") != std::string::npos);
 
     // The lifter refuses what it cannot give a name to, and says which position.
     const auto inFinally = parseAndDump("class C { *g() { try { f(); } finally { yield 1; } } }");

@@ -1,0 +1,22 @@
+Length: 5
+0 in a: true
+1 in a: false
+2 in a: true
+3 in a: false
+4 in a: true
+5 in a: false
+a[1]: undefined
+Keys: 0,2,4
+ForEach seen: 0:1;2:3;4:5;
+Doubled length: 5
+1 in doubled: false
+Doubled values: 2 undefined 6 undefined 10
+b length: 4
+0 in b: false
+1 in b: false
+2 in b: true
+3 in b: false
+b[2]: 42
+Densified length: 5
+1 in densified: true
+Densified [1]: undefined

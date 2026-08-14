@@ -103,9 +103,17 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* c = dynamic_cast<const ast::Call*>(&e)) return call(*c);
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&e)) return newExpr(*n);
+    if (dynamic_cast<const ast::NewTargetExpr*>(&e)) return Type::dynamic();
+    if (const auto* tt = dynamic_cast<const ast::TaggedTemplate*>(&e)) {
+        expr(*tt->tag);
+        for (const auto& el : tt->templateLit->exprs) expr(*el);
+        return Type::dynamic();
+    }
     if (const auto* o = dynamic_cast<const ast::ObjectLit*>(&e)) return objectLit(*o);
     if (const auto* a = dynamic_cast<const ast::ArrayLit*>(&e)) {
-        for (const auto& el : a->elements) expr(*el);
+        for (const auto& el : a->elements) {
+            if (el) expr(*el);
+        }
         // An array is an object with no property-name identity; there is
         // no shape class to prove about it.
         return Type::object();
@@ -119,8 +127,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
     if (const auto* ce = dynamic_cast<const ast::ClassExpr*>(&e)) {
         for (const auto& m : ce->methods) {
-            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                          m.fn->isGenerator || m.fn->isAsync);
+            if (m.keyExpr) expr(*m.keyExpr);
+            if (m.fn) {
+                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                              m.fn->isGenerator || m.fn->isAsync);
+            } else if (m.init) {
+                expr(*m.init);
+            }
         }
         return Type::function();
     }

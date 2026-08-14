@@ -25,7 +25,7 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
         }
     }
     for (; i < new_capacity; ++i) {
-        slots[i] = Value::fromUndefined();
+        slots[i] = Value::fromHole();
     }
 
     arr->elements = Value::fromObject(block);

@@ -243,6 +243,24 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                       builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
+        case il::Op::AccessorDefComputed: {
+            if (!needs(4, false, "Invalid operands for AccessorDefComputed")) return false;
+            const char* what = "Undefined operand in AccessorDefComputed instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* key = operand(inst, 1, what);
+            llvm::Value* getter = operand(inst, 2, what);
+            llvm::Value* setter = operand(inst, 3, what);
+            if (!target || !key || !getter || !setter) return false;
+            builder_.CreateCall(abi.bronze_accessor_def_computed,
+                                {target, key, getter, setter,
+                                 builder_.getInt1(inst.immI32 != 0)});
+            return true;
+        }
+        case il::Op::GetNewTarget:
+            if (inst.result != il::kNoValue) {
+                callWith(abi.bronze_get_new_target, {});
+            }
+            return true;
         case il::Op::SuperGet: {
             if (!needs(2, false, "Invalid operands for SuperGet")) return false;
             const char* what = "Undefined operand in SuperGet instruction";
@@ -361,6 +379,22 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             builder_.CreateCall(fn, {container, value});
             return true;
         }
+        case il::Op::ArrayAppendHole: {
+            if (!needs(1, false, "Invalid operands for ArrayAppendHole")) return false;
+            llvm::Value* container = operand(inst, 0, "Undefined operand in ArrayAppendHole");
+            if (!container) return false;
+            builder_.CreateCall(abi.bronze_array_append_hole, {container});
+            return true;
+        }
+        case il::Op::TemplateObject: {
+            if (!needs(2, true, "Invalid operands for TemplateObject")) return false;
+            const char* what = "Undefined operand in TemplateObject instruction";
+            llvm::Value* cooked = operand(inst, 0, what);
+            llvm::Value* raw = operand(inst, 1, what);
+            if (!cooked || !raw) return false;
+            callWith(abi.bronze_template_object, {cooked, raw});
+            return true;
+        }
         case il::Op::ObjectRest: {
             if (!needs(2, true, "Invalid operands for ObjectRest")) return false;
             const char* what = "Undefined operand in ObjectRest instruction";
@@ -378,6 +412,31 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* args = operand(inst, 2, what);
             if (!callee || !thisVal || !args) return false;
             callWith(abi.bronze_dynamic_call_spread, {callee, thisVal, args});
+            return true;
+        }
+        case il::Op::SuperCall: {
+            if (!needs(2, false, "Invalid operands for SuperCall")) return false;
+            llvm::Value* base =
+                operand(inst, 0, "Undefined base in SuperCall instruction");
+            llvm::Value* thisVal =
+                operand(inst, 1, "Undefined this in SuperCall instruction");
+            if (!base || !thisVal) return false;
+            uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
+            bool ok = false;
+            llvm::Value* argv = emitArgv(inst, 2, argc, ok);
+            if (!ok) return false;
+            callWith(abi.bronze_super_call,
+                     {base, thisVal, builder_.getInt32(argc), argv});
+            return true;
+        }
+        case il::Op::SuperCallSpread: {
+            if (!needs(3, true, "Invalid operands for SuperCallSpread")) return false;
+            const char* what = "Undefined operand in SuperCallSpread instruction";
+            llvm::Value* base = operand(inst, 0, what);
+            llvm::Value* thisVal = operand(inst, 1, what);
+            llvm::Value* args = operand(inst, 2, what);
+            if (!base || !thisVal || !args) return false;
+            callWith(abi.bronze_super_call_spread, {base, thisVal, args});
             return true;
         }
         case il::Op::ConstructSpread: {

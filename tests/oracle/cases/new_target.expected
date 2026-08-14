@@ -1,0 +1,12 @@
+PlainFunc called without new: true
+PlainFunc constructed with: true
+--- new Base ---
+Base ctor new.target is Base: true
+Base ctor new.target is Derived: false
+--- new Derived ---
+Base ctor new.target is Base: false
+Base ctor new.target is Derived: true
+Derived ctor new.target is Derived: true
+Constructed instance with kind: explicit
+Constructed instance with kind: implicit
+explicit implicit

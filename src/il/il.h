@@ -186,12 +186,9 @@ enum class Op : uint8_t {
     // key constant to name. The key is whatever the expression evaluated to,
     // which for the one spelling bronze admits is the well-known symbol.
     MethodDefComputed,  // method.def.computed obj, key, v
-    // An accessor property: one property with two halves, either of which may
-    // be `undefined` here because the source wrote only one of them. `immI32`
-    // is the enumerable attribute — 1 for an object literal's accessor, 0 for a
-    // class's, the same split methods already have. No IC index, for the reason
-    // `method.def` has none.
     AccessorDef,  // accessor.def obj, <key_const_index>, getter, setter, <enumerable>
+    AccessorDefComputed, // accessor.def.computed obj, key, getter, setter, <enumerable>
+    GetNewTarget, // a = get.new_target
     // `delete o.k` and `delete o[i]`. A reference operation, not a read:
     // the operand's property is never loaded, and the result is the boolean
     // ECMA-262 13.5.1 defines rather than the property's value.
@@ -256,6 +253,7 @@ enum class Op : uint8_t {
     // Appending rather than indexing is the point — a literal with a spread in
     // it has no length until it is built.
     ArrayAppend,  // array.append arr, v
+    ArrayAppendHole, // array.append.hole arr
     ArraySpread,  // array.spread arr, iterable
     ObjectSpread, // object.spread obj, source
     // `{ a, ...others }`: a fresh object of `source`'s own enumerable
@@ -266,6 +264,9 @@ enum class Op : uint8_t {
     // runtime fact: the arguments are built into an array and the callee is
     // entered through the uniform convention over it.
     DynamicCallSpread,  // a = call.dynamic.spread callee, thisArg, args
+    SuperCall,          // a = call.super base, thisArg, args...
+    SuperCallSpread,    // a = call.super.spread base, thisArg, args
+    TemplateObject,     // a = template.object cookedArray, rawArray
     ConstructSpread,    // a = new.spread callee, args
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env

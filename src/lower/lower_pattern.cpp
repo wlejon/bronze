@@ -477,6 +477,11 @@ std::optional<Lowerer::Value> Lowerer::lowerListToArray(const std::vector<ast::E
     Value container{arr, il::Type::Dynamic};
 
     for (const auto& elemPtr : list) {
+        if (!elemPtr) {
+            il::ValueId undef = emitConstUndefined(ilFn);
+            emitContainerOp(il::Op::ArrayAppend, container, Value{undef, il::Type::Dynamic}, ilFn);
+            continue;
+        }
         const auto* spread = dynamic_cast<const ast::SpreadElement*>(elemPtr.get());
         const ast::Expr& source = spread ? *spread->argument : *elemPtr;
         auto valOpt = lowerExpr(source, ilFn);

@@ -109,7 +109,6 @@ TEST_CASE("the syntax around patterns that ECMA-262 forbids is named") {
         {"const { ...r, a } = x;", "a rest property must be the last element of an object pattern"},
         {"const { ...[a] } = x;", "expected a name after '...' in an object pattern"},
         {"let [a];", "a destructuring declaration requires an initializer"},
-        {"const c = [1, , 2];", "unsupported construct: an elision (a hole) in an array literal"},
         // 13.15.1: a DestructuringAssignmentTarget must be a SIMPLE assignment
         // target. A call is not one, and neither is an optional chain (13.3.9)
         // — the two shapes that reach the same check `o.x` passes.
@@ -123,6 +122,10 @@ TEST_CASE("the syntax around patterns that ECMA-262 forbids is named") {
         CHECK(out.substr(0, 7) == "ERRORS:");
         CHECK(out.find(c.expected) != std::string::npos);
     }
+
+    const auto elision = parseAndDump("const c = [1, , 2];");
+    CHECK(elision.substr(0, 7) != "ERRORS:");
+    CHECK(elision.find("(hole)") != std::string::npos);
 }
 
 TEST_CASE("a property reference is a destructuring assignment target") {

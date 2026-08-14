@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "ast/clone.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -60,13 +61,83 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
     }
 
+    // Instance fields injection:
+    // Build the constructor body with instance fields injected.
+    std::vector<ast::StmtPtr> fieldStmts;
+    for (const auto& m : methods) {
+        if (m.isField && !m.isStatic) {
+            auto thisExpr = std::make_unique<ast::ThisExpr>();
+            thisExpr->span = m.fn ? m.fn->span : span;
+
+            ast::ExprPtr target;
+            if (m.keyExpr) {
+                auto idx = std::make_unique<ast::IndexAccess>();
+                idx->span = thisExpr->span;
+                idx->object = std::move(thisExpr);
+                idx->index = ast::cloneExpr(*m.keyExpr);
+                target = std::move(idx);
+            } else {
+                auto mem = std::make_unique<ast::MemberAccess>();
+                mem->span = thisExpr->span;
+                mem->object = std::move(thisExpr);
+                mem->property = m.name;
+                target = std::move(mem);
+            }
+
+            auto bin = std::make_unique<ast::Binary>();
+            bin->span = target->span;
+            bin->op = ast::BinaryOp::Assign;
+            bin->lhs = std::move(target);
+            if (m.init) {
+                bin->rhs = ast::cloneExpr(*m.init);
+            } else {
+                auto undef = std::make_unique<ast::UndefinedLit>();
+                undef->span = bin->span;
+                bin->rhs = std::move(undef);
+            }
+
+            auto stmt = std::make_unique<ast::ExprStmt>();
+            stmt->span = bin->span;
+            stmt->expr = std::move(bin);
+            fieldStmts.push_back(std::move(stmt));
+        }
+    }
+
+    std::vector<ast::StmtPtr> ctorBody;
+    if (fieldStmts.empty()) {
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
+    } else if (superName.empty()) {
+        // Base class: fields run at the start of constructor
+        for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
+    } else {
+        // Derived class: fields run after super(...)
+        bool inserted = false;
+        for (const auto& s : ctor->fn->body) {
+            ctorBody.push_back(ast::cloneStmt(*s));
+            if (!inserted) {
+                if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s.get())) {
+                    if (dynamic_cast<const ast::SuperCall*>(es->expr.get())) {
+                        for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
+                        inserted = true;
+                    }
+                }
+            }
+        }
+        if (!inserted) {
+            for (size_t i = 0; i < fieldStmts.size(); ++i) {
+                ctorBody.insert(ctorBody.begin() + i, std::move(fieldStmts[i]));
+            }
+        }
+    }
+
     // The class IS its constructor function, and the binding the declaration
     // introduces holds exactly that value.
     // 15.7.14 step 15: the constructor's `name` is the CLASS's name, not the
     // parser's synthesized `constructor`, and its `length` is the constructor's
     // own parameter list.
     auto ctorVal = lowerClosure(*ctor->fn, name, name, ctor->fn->params,
-                                ctor->fn->returnType, ctor->fn->body, span, ilFn);
+                                ctor->fn->returnType, ctorBody, span, ilFn);
     if (!ctorVal) return std::nullopt;
 
     // `extends` REPLACES the prototype object (the prototype lives on the
@@ -82,31 +153,39 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
 
     bool needsPrototype = false;
     for (const auto& m : methods) {
-        if (!m.isConstructor && !m.isStatic) needsPrototype = true;
+        if (!m.isConstructor && !m.isStatic && !m.isField) needsPrototype = true;
     }
     Value protoVal{il::kNoValue, il::Type::Dynamic};
     if (needsPrototype) protoVal = emitPrototypeOf(*ctorVal, ilFn);
 
     for (const auto& m : methods) {
-        if (m.isConstructor) continue;
+        if (m.isConstructor || m.isField) continue;
         const il::ValueId homeObject = m.isStatic ? ctorVal->id : protoVal.id;
 
         // A class accessor is NON-enumerable — ECMA-262 15.7.14 defines it
         // exactly as it defines a method, and the two therefore share the rule
         // that keeps them out of `for-in`.
         if (m.accessor != ast::AccessorKind::None) {
-            if (!emitAccessorDef(Value{homeObject, il::Type::Dynamic}, m.name, m.accessor, *m.fn,
-                                 /*enumerable=*/false, ilFn)) {
-                return std::nullopt;
+            if (m.keyExpr) {
+                auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
+                if (!keyOpt) return std::nullopt;
+                auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+                if (!emitAccessorDefComputed(Value{homeObject, il::Type::Dynamic}, keyBoxed,
+                                             m.accessor, *m.fn, /*enumerable=*/false, ilFn)) {
+                    return std::nullopt;
+                }
+            } else {
+                if (!emitAccessorDef(Value{homeObject, il::Type::Dynamic}, m.name, m.accessor, *m.fn,
+                                     /*enumerable=*/false, ilFn)) {
+                    return std::nullopt;
+                }
             }
             continue;
         }
 
-        // A COMPUTED member name — `[Symbol.iterator]() {}` — is an expression
-        // evaluated where the class is defined, and BEFORE the method it names
-        // (15.7.14 evaluates the ClassElementName first). It is the same
-        // ordering an object literal's computed key already follows, and it is
-        // observable the moment the key expression has an effect.
+        // A COMPUTED member name is an expression evaluated where the class is
+        // defined, and BEFORE the method it names (15.7.14 evaluates the
+        // ClassElementName first).
         std::optional<Value> keyBoxed;
         if (m.keyExpr) {
             auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
@@ -114,11 +193,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
         }
 
-        // A method's `name` is its PROPERTY KEY (15.4.5 through
-        // MethodDefinitionEvaluation's SetFunctionName). A COMPUTED key has
-        // none until it is evaluated and ToPropertyKey'd at run time, which is
-        // a fact this compilation does not have — so it is recorded as absent
-        // rather than as "".
         auto fnVal = lowerClosure(
             *m.fn, m.fn->name,
             m.keyExpr ? std::optional<std::string>{} : std::optional<std::string>{m.name},
@@ -126,9 +200,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         if (!fnVal) return std::nullopt;
 
         if (keyBoxed) {
-            // `method.def.computed` and not `elem.set`: 15.7.14 defines a
-            // method with `enumerable: false` whatever spelled its name, and an
-            // assignment cannot say that.
             il::Instruction computedInst;
             computedInst.op = il::Op::MethodDefComputed;
             computedInst.type = il::Type::Void;
@@ -138,15 +209,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             continue;
         }
 
-        // An instance method belongs to the prototype, shared by every
-        // instance; a `static` one belongs to the constructor itself, which is
-        // an own property of the function object.
-        //
-        // `method.def` rather than `prop.set`, because ECMA-262 15.7.14 defines
-        // a method with `enumerable: false` and an assignment cannot say that.
-        // It is what keeps a method out of `Object.keys`, out of an object
-        // spread, and out of `for-in` — where it would otherwise show up on
-        // every instance of the class.
         il::Instruction setInst;
         setInst.op = il::Op::MethodDef;
         setInst.type = il::Type::Void;
@@ -155,6 +217,49 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         setInst.keyIndex = getKeyConstantIndex(m.name);
         emitInst(ilFn, setInst);
     }
+
+    // Static fields evaluation:
+    for (const auto& m : methods) {
+        if (!m.isField || !m.isStatic) continue;
+        if (m.keyExpr) {
+            auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
+            if (!keyOpt) return std::nullopt;
+            auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+            std::optional<Value> initVal;
+            if (m.init) {
+                initVal = lowerExpr(*m.init, ilFn);
+            } else {
+                initVal = Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+            }
+            if (!initVal) return std::nullopt;
+            auto initBoxed = boxValueIfNeeded(*initVal, ilFn);
+            il::Instruction setInst;
+            setInst.op = il::Op::ElemSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {ctorVal->id, keyBoxed.id, initBoxed.id};
+            setInst.immI32 = 0;
+            emitInst(ilFn, setInst);
+        } else {
+            std::optional<Value> initVal;
+            if (m.init) {
+                initVal = lowerExpr(*m.init, ilFn);
+            } else {
+                initVal = Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+            }
+            if (!initVal) return std::nullopt;
+            auto initBoxed = boxValueIfNeeded(*initVal, ilFn);
+            il::Instruction setInst;
+            setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {ctorVal->id, initBoxed.id};
+            setInst.keyIndex = getKeyConstantIndex(m.name);
+            setInst.icIndex = icSiteCounter_++;
+            emitInst(ilFn, setInst);
+        }
+    }
+
     return ctorVal;
 }
 
@@ -241,7 +346,7 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = spreadArgs ? il::Op::DynamicCallSpread : il::Op::DynamicCall;
+    inst.op = spreadArgs ? il::Op::SuperCallSpread : il::Op::SuperCall;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);

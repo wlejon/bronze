@@ -921,4 +921,12 @@ bool rtIsArrayConstructor(Value fn);
 // of the instance, not after it.
 const char* rtPrimitiveWrapperConstructorName(Value fn);
 
+struct NewTargetScope {
+    Rooted<Value> targetRoot_;
+    NewTargetScope* prev_{nullptr};
+    explicit NewTargetScope(Value target);
+    ~NewTargetScope();
+    static Value current();
+};
+
 }  // namespace bronze::runtime

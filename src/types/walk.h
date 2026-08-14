@@ -84,11 +84,21 @@ public:
         n.callee->accept(*this);
         for (const auto& a : n.args) a->accept(*this);
     }
+    void visit(const ast::NewTargetExpr&) override {}
+    void visit(const ast::TaggedTemplate& n) override {
+        n.tag->accept(*this);
+        for (const auto& a : n.templateLit->exprs) a->accept(*this);
+    }
     void visit(const ast::ObjectLit& n) override {
-        for (const auto& p : n.props) p.value->accept(*this);
+        for (const auto& p : n.props) {
+            if (p.keyExpr) p.keyExpr->accept(*this);
+            if (p.value) p.value->accept(*this);
+        }
     }
     void visit(const ast::ArrayLit& n) override {
-        for (const auto& e : n.elements) e->accept(*this);
+        for (const auto& e : n.elements) {
+            if (e) e->accept(*this);
+        }
     }
     void visit(const ast::SuperCall& n) override {
         for (const auto& a : n.args) a->accept(*this);
@@ -103,13 +113,15 @@ public:
     void visit(const ast::ClassDecl& n) override {
         for (const auto& m : n.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
-            m.fn->accept(*this);
+            if (m.fn) m.fn->accept(*this);
+            if (m.init) m.init->accept(*this);
         }
     }
     void visit(const ast::ClassExpr& n) override {
         for (const auto& m : n.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
-            m.fn->accept(*this);
+            if (m.fn) m.fn->accept(*this);
+            if (m.init) m.init->accept(*this);
         }
     }
     void visit(const ast::FunctionExpr& n) override {

@@ -30,10 +30,12 @@ void Unary::accept(Visitor& v) const { v.visit(*this); }
 void Binary::accept(Visitor& v) const { v.visit(*this); }
 void Ternary::accept(Visitor& v) const { v.visit(*this); }
 void TemplateLit::accept(Visitor& v) const { v.visit(*this); }
+void TaggedTemplate::accept(Visitor& v) const { v.visit(*this); }
 void MemberAccess::accept(Visitor& v) const { v.visit(*this); }
 void IndexAccess::accept(Visitor& v) const { v.visit(*this); }
 void Call::accept(Visitor& v) const { v.visit(*this); }
 void NewExpr::accept(Visitor& v) const { v.visit(*this); }
+void NewTargetExpr::accept(Visitor& v) const { v.visit(*this); }
 void SuperCall::accept(Visitor& v) const { v.visit(*this); }
 void SuperMember::accept(Visitor& v) const { v.visit(*this); }
 void DestructuringAssign::accept(Visitor& v) const { v.visit(*this); }

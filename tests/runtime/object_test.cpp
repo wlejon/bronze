@@ -313,6 +313,8 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     {
         Rooted<Value> element{Value::fromDouble(7)};
         arr.get().asObject<ArrayHeader>()->setElem(runtime::rtHeap(), 0, element);
+        Rooted<Value> undefVal{Value::fromUndefined()};
+        arr.get().asObject<ArrayHeader>()->setElem(runtime::rtHeap(), 1, undefVal);
     }
     Rooted<Value> keyZero{Value::fromDouble(0)};
     Rooted<Value> keyOne{Value::fromDouble(1)};

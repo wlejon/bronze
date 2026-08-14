@@ -184,7 +184,8 @@ private:
     // the syntax is identical, including the arity rules ECMA-262 15.4.1 puts
     // on each half. Null on error.
     std::unique_ptr<ast::FunctionExpr> parseAccessorMember(ast::AccessorKind kind,
-                                                           std::string& outName);
+                                                           std::string& outName,
+                                                           ast::ExprPtr* outKeyExpr = nullptr);
     // `m(params) { body }`, with the NAME already consumed and the cursor on
     // the '('. The tail is the same production in an object literal and in a
     // class body (ECMA-262 15.4 MethodDefinition), so there is one copy;

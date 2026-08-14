@@ -252,9 +252,10 @@ TEST_CASE("a derived class with no constructor forwards every argument") {
           ")\n");
 }
 
-TEST_CASE("class members bronze has not built are named, not mis-parsed") {
+TEST_CASE("class members parse into their respective AST nodes") {
     const auto field = parseAndDump("class C { x = 1; }");
-    CHECK(field.find("unsupported construct: class field") != std::string::npos);
+    CHECK(field.substr(0, 7) != "ERRORS:");
+    CHECK(field.find("(field x") != std::string::npos);
 
     // A class accessor is BUILT, so what is pinned here is that it parses as
     // one member with an accessor head rather than as a method named `get`, and
@@ -273,8 +274,8 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     CHECK(namedGet.find("(method get") != std::string::npos);
 
     const auto computedAccessor = parseAndDump("class C { get [k]() { return 1; } }");
-    CHECK(computedAccessor.find("unsupported construct: a computed getter name") !=
-          std::string::npos);
+    CHECK(computedAccessor.substr(0, 7) != "ERRORS:");
+    CHECK(computedAccessor.find("(get-computed") != std::string::npos);
 
     // ECMA-262 15.4.1 fixes the arity of each half; both are early errors.
     const auto getterArity = parseAndDump("class C { get x(a) { return a; } }");
@@ -283,7 +284,8 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     CHECK(setterArity.find("a setter must take exactly one parameter") != std::string::npos);
 
     const auto computed = parseAndDump("class C { [k]() { return 1; } }");
-    CHECK(computed.find("unsupported construct: computed method name") != std::string::npos);
+    CHECK(computed.substr(0, 7) != "ERRORS:");
+    CHECK(computed.find("(method-computed") != std::string::npos);
 
     // A generator method is BUILT, so what was once pinned here as a refusal —
     // and later as a desugaring into an object literal — is now pinned as the
@@ -322,8 +324,9 @@ TEST_CASE("class members bronze has not built are named, not mis-parsed") {
     CHECK(handWritten.find("(member .iterator") != std::string::npos);
 
     const auto otherComputedGen = parseAndDump("class C { *[k]() { yield 1; } }");
-    CHECK(otherComputedGen.find("unsupported construct: a computed generator name") !=
-          std::string::npos);
+    CHECK(otherComputedGen.substr(0, 7) != "ERRORS:");
+    CHECK(otherComputedGen.find("(method-computed") != std::string::npos);
+    CHECK(otherComputedGen.find("(generator-expr") != std::string::npos);
 }
 
 TEST_CASE("super is legal only in a class method, and only with a parent") {

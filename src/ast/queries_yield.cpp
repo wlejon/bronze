@@ -67,6 +67,10 @@ public:
     void visit(const TemplateLit& n) override {
         for (const auto& e : n.exprs) walk(e);
     }
+    void visit(const TaggedTemplate& n) override {
+        walk(n.tag);
+        for (const auto& e : n.templateLit->exprs) walk(e);
+    }
     void visit(const Ternary& n) override {
         walk(n.condition);
         walk(n.thenExpr);
@@ -85,6 +89,7 @@ public:
         walk(n.callee);
         for (const auto& a : n.args) walk(a);
     }
+    void visit(const NewTargetExpr&) override {}
     void visit(const SuperCall& n) override {
         for (const auto& a : n.args) walk(a);
     }

@@ -104,7 +104,8 @@ TEST_CASE("an object literal accessor is one property with two halves") {
     CHECK(strKey.substr(0, 7) != "ERRORS:");
     CHECK(strKey.find("(prop-get a b") != std::string::npos);
     const auto computed = parseAndDump("const o = { set [k](v) {} };\n");
-    CHECK(computed.find("unsupported construct: a computed setter name") != std::string::npos);
+    CHECK(computed.substr(0, 7) != "ERRORS:");
+    CHECK(computed.find("(prop-set-computed") != std::string::npos);
 }
 
 TEST_CASE("numeric literal radix forms denote their digits") {

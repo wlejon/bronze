@@ -192,6 +192,109 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return acc;
     }
 
+    if (const auto* tagged = dynamic_cast<const ast::TaggedTemplate*>(&expr)) {
+        const auto& tpl = *tagged->templateLit;
+        il::ValueId cookedArr = ilFn.valueCount++;
+        il::Instruction createCooked;
+        createCooked.op = il::Op::CreateArray;
+        createCooked.type = il::Type::Dynamic;
+        createCooked.result = cookedArr;
+        createCooked.immI32 = static_cast<int32_t>(tpl.quasis.size());
+        emitInst(ilFn, createCooked);
+
+        for (size_t i = 0; i < tpl.quasis.size(); ++i) {
+            uint32_t keyIdx = getKeyConstantIndex(tpl.quasis[i]);
+            il::ValueId strId = ilFn.valueCount++;
+            il::Instruction sInst;
+            sInst.op = il::Op::Box;
+            sInst.type = il::Type::Dynamic;
+            sInst.boxType = il::Type::Str;
+            sInst.result = strId;
+            sInst.keyIndex = keyIdx;
+            emitInst(ilFn, sInst);
+
+            il::Instruction setInst;
+            setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {cookedArr, strId};
+            setInst.keyIndex = getKeyConstantIndex(std::to_string(i));
+            setInst.icIndex = icSiteCounter_++;
+            emitInst(ilFn, setInst);
+        }
+
+        il::ValueId rawArr = ilFn.valueCount++;
+        il::Instruction createRaw;
+        createRaw.op = il::Op::CreateArray;
+        createRaw.type = il::Type::Dynamic;
+        createRaw.result = rawArr;
+        createRaw.immI32 = static_cast<int32_t>(tpl.rawQuasis.size());
+        emitInst(ilFn, createRaw);
+
+        for (size_t i = 0; i < tpl.rawQuasis.size(); ++i) {
+            uint32_t keyIdx = getKeyConstantIndex(tpl.rawQuasis[i]);
+            il::ValueId strId = ilFn.valueCount++;
+            il::Instruction sInst;
+            sInst.op = il::Op::Box;
+            sInst.type = il::Type::Dynamic;
+            sInst.boxType = il::Type::Str;
+            sInst.result = strId;
+            sInst.keyIndex = keyIdx;
+            emitInst(ilFn, sInst);
+
+            il::Instruction setInst;
+            setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {rawArr, strId};
+            setInst.keyIndex = getKeyConstantIndex(std::to_string(i));
+            setInst.icIndex = icSiteCounter_++;
+            emitInst(ilFn, setInst);
+        }
+
+        il::ValueId templateObj = ilFn.valueCount++;
+        il::Instruction tplInst;
+        tplInst.op = il::Op::TemplateObject;
+        tplInst.type = il::Type::Dynamic;
+        tplInst.result = templateObj;
+        tplInst.operands = {cookedArr, rawArr};
+        emitInst(ilFn, tplInst);
+
+        auto tagVal = lowerExpr(*tagged->tag, ilFn);
+        if (!tagVal) return std::nullopt;
+        auto tagBoxed = boxValueIfNeeded(*tagVal, ilFn);
+
+        std::vector<il::ValueId> callOperands;
+        callOperands.push_back(tagBoxed.id);
+        callOperands.push_back(emitConstUndefined(ilFn));
+        callOperands.push_back(templateObj);
+
+        for (const auto& subExpr : tpl.exprs) {
+            auto subVal = lowerExpr(*subExpr, ilFn);
+            if (!subVal) return std::nullopt;
+            callOperands.push_back(boxValueIfNeeded(*subVal, ilFn).id);
+        }
+
+        il::ValueId callRes = ilFn.valueCount++;
+        il::Instruction callInst;
+        callInst.op = il::Op::DynamicCall;
+        callInst.type = il::Type::Dynamic;
+        callInst.result = callRes;
+        callInst.operands = std::move(callOperands);
+        emitInst(ilFn, callInst);
+        return Value{callRes, il::Type::Dynamic};
+    }
+
+    if (dynamic_cast<const ast::NewTargetExpr*>(&expr)) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::GetNewTarget;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
+
     if (const auto* objLit = dynamic_cast<const ast::ObjectLit*>(&expr)) {
         return lowerObjectLit(objLit, ilFn);
     }

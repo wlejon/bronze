@@ -75,9 +75,19 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
                 diags_.error(prop.value->span, "internal: an accessor property with no function");
                 return std::nullopt;
             }
-            if (!emitAccessorDef(Value{res, il::Type::Dynamic}, prop.key, prop.accessor, *fn,
-                                 /*enumerable=*/true, ilFn)) {
-                return std::nullopt;
+            if (prop.computed()) {
+                auto keyOpt = lowerExpr(*prop.keyExpr, ilFn);
+                if (!keyOpt) return std::nullopt;
+                auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+                if (!emitAccessorDefComputed(Value{res, il::Type::Dynamic}, keyBoxed,
+                                             prop.accessor, *fn, /*enumerable=*/true, ilFn)) {
+                    return std::nullopt;
+                }
+            } else {
+                if (!emitAccessorDef(Value{res, il::Type::Dynamic}, prop.key, prop.accessor, *fn,
+                                     /*enumerable=*/true, ilFn)) {
+                    return std::nullopt;
+                }
             }
             continue;
         }
@@ -118,24 +128,28 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         // No strict flag on either spelling: a literal DEFINES a property
         // on an object it has just created (13.2.5.5 CreateDataProperty),
         // which cannot be refused and is not a reference at all — so there is
-        // no reference for 13.15.2's strictness to be a property of.
-        il::Instruction setInst;
+        // no strict-mode refusal that could fire here.
         if (keyBoxed) {
-            // `elem.set` is the write whose key is a VALUE, which is what a
-            // computed key is: ToPropertyKey runs in the runtime, where the
-            // number-to-string rule already lives. No inline cache — there is
-            // no per-site key for one to be about.
+            il::Instruction setInst;
             setInst.op = il::Op::ElemSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
             setInst.operands = {res, keyBoxed->id, valBoxed.id};
+            setInst.immI32 = 0;
+            emitInst(ilFn, setInst);
         } else {
+            uint32_t keyIdx = getKeyConstantIndex(prop.key);
+            uint32_t icIdx = icSiteCounter_++;
+
+            il::Instruction setInst;
             setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
             setInst.operands = {res, valBoxed.id};
-            setInst.keyIndex = getKeyConstantIndex(prop.key);
-            setInst.icIndex = icSiteCounter_++;
+            setInst.keyIndex = keyIdx;
+            setInst.icIndex = icIdx;
+            emitInst(ilFn, setInst);
         }
-        setInst.type = il::Type::Void;
-        setInst.result = il::kNoValue;
-        emitInst(ilFn, setInst);
     }
     // `import * as ns`: the getters are built exactly as any literal's, and the
     // exotic object is made from them here. A second instruction and not a
@@ -177,6 +191,26 @@ bool Lowerer::emitAccessorDef(Value target, const std::string& key, ast::Accesso
     // is exactly how ECMA-262 6.1.7.1 describes a get-only property.
     inst.operands = {target.id, isGetter ? fnVal->id : absent, isGetter ? absent : fnVal->id};
     inst.keyIndex = getKeyConstantIndex(key);
+    inst.immI32 = enumerable ? 1 : 0;
+    emitInst(ilFn, inst);
+    return true;
+}
+
+bool Lowerer::emitAccessorDefComputed(Value target, Value key, ast::AccessorKind kind,
+                                      const ast::FunctionExpr& fn, bool enumerable,
+                                      il::Function& ilFn) {
+    auto fnVal = lowerClosure(fn, fn.name, std::nullopt, fn.params, fn.returnType, fn.body,
+                              fn.span, ilFn);
+    if (!fnVal) return false;
+    const il::ValueId absent = emitConstUndefined(ilFn);
+    const bool isGetter = kind == ast::AccessorKind::Getter;
+
+    il::Instruction inst;
+    inst.op = il::Op::AccessorDefComputed;
+    inst.type = il::Type::Void;
+    inst.result = il::kNoValue;
+    inst.operands = {target.id, key.id, isGetter ? fnVal->id : absent,
+                     isGetter ? absent : fnVal->id};
     inst.immI32 = enumerable ? 1 : 0;
     emitInst(ilFn, inst);
     return true;
@@ -295,6 +329,7 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
     emitInst(ilFn, inst);
 
     for (size_t i = 0; i < arrLit->elements.size(); ++i) {
+        if (!arrLit->elements[i]) continue;  // Hole (elision) in array literal
         auto elemOpt = lowerExpr(*arrLit->elements[i], ilFn);
         if (!elemOpt) return std::nullopt;
         auto elemBoxed = boxValueIfNeeded(*elemOpt, ilFn);

@@ -198,10 +198,10 @@ TEST_CASE("an optional chain may not be a new callee") {
     CHECK(out.find("an optional chain may not be the callee of 'new'") != std::string::npos);
 }
 
-TEST_CASE("new.target is diagnosed by name") {
+TEST_CASE("new.target parses as meta-property") {
     const auto out = parseAndDump("function f() { return new.target; }");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: new.target") != std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(new.target)") != std::string::npos);
 }
 
 // `async m() {}` is identifier-then-identifier, the same token shape a class
@@ -242,10 +242,10 @@ TEST_CASE("a class member named async is still an ordinary method") {
     CHECK(out.find("(method async") != std::string::npos);
 }
 
-TEST_CASE("a class field is still diagnosed as a field") {
+TEST_CASE("a class field parses as a field") {
     const auto out = parseAndDump("class L { x = 1; }");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: class field") != std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(field x") != std::string::npos);
 }
 
 // `new super.x()` reaches parsePrimary because a `new` callee is a full

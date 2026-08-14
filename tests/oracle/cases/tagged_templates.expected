@@ -1,0 +1,9 @@
+Strings length: 3
+Values count: 2
+Is frozen strings: true
+Is frozen raw: true
+Raw strings: Hello |! The answer is |.
+Result: Hello World! The answer is 42.
+Raw length: 17
+Raw includes backslash n: true
+Total sum: 60

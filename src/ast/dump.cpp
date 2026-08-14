@@ -77,6 +77,9 @@ public:
         });
         emit(")");
     }
+    void visit(const NewTargetExpr&) override {
+        emit("(new.target)");
+    }
     void visit(const ObjectLit& n) override {
         // A module namespace dumps under its own head: the property list is the
         // same getters, and what the linker decided is that the object built
@@ -98,6 +101,8 @@ public:
                 // indistinguishable from an ordinary property written twice.
                 emit(spread                ? std::string("(prop-spread")
                      : p.coverInitialized  ? "(prop-cover-init " + p.key
+                     : (p.computed() && p.accessor == AccessorKind::Getter) ? std::string("(prop-get-computed")
+                     : (p.computed() && p.accessor == AccessorKind::Setter) ? std::string("(prop-set-computed")
                      : p.computed()        ? std::string("(prop-computed")
                      : p.accessor == AccessorKind::Getter ? "(prop-get " + p.key
                      : p.accessor == AccessorKind::Setter ? "(prop-set " + p.key
@@ -114,7 +119,10 @@ public:
     void visit(const ArrayLit& n) override {
         emit("(array");
         indented([&] {
-            for (const auto& e : n.elements) e->accept(*this);
+            for (const auto& e : n.elements) {
+                if (!e) emit("(hole)");
+                else e->accept(*this);
+            }
         });
         emit(")");
     }
@@ -177,13 +185,25 @@ public:
         emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
-                // A computed key is a runtime ToPropertyKey of an evaluated
-                // expression and a written one is a compile-time constant, so
-                // the two must not dump the same — the rule an object
-                // literal's property already follows.
+                if (m.isField) {
+                    const char* head = m.computed()
+                                           ? (m.isStatic ? "(static-field-computed"
+                                                         : "(field-computed")
+                                           : (m.isStatic ? "(static-field " : "(field ");
+                    emit(std::string(head) + m.name);
+                    indented([&] {
+                        if (m.keyExpr) m.keyExpr->accept(*this);
+                        if (m.init) m.init->accept(*this);
+                    });
+                    emit(")");
+                    continue;
+                }
                 const char* head = m.computed()
-                                       ? (m.isStatic ? "(static-method-computed"
-                                                     : "(method-computed")
+                                       ? (m.accessor == AccessorKind::Getter
+                                              ? (m.isStatic ? "(static-get-computed" : "(get-computed")
+                                              : m.accessor == AccessorKind::Setter
+                                                    ? (m.isStatic ? "(static-set-computed" : "(set-computed")
+                                                    : (m.isStatic ? "(static-method-computed" : "(method-computed"))
                                    : m.accessor == AccessorKind::Getter
                                        ? (m.isStatic ? "(static-get " : "(get ")
                                    : m.accessor == AccessorKind::Setter
@@ -192,7 +212,7 @@ public:
                 emit(std::string(head) + m.name);
                 indented([&] {
                     if (m.keyExpr) m.keyExpr->accept(*this);
-                    m.fn->accept(*this);
+                    if (m.fn) m.fn->accept(*this);
                 });
                 emit(")");
             }
@@ -204,9 +224,25 @@ public:
              (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
+                if (m.isField) {
+                    const char* head = m.computed()
+                                           ? (m.isStatic ? "(static-field-computed"
+                                                         : "(field-computed")
+                                           : (m.isStatic ? "(static-field " : "(field ");
+                    emit(std::string(head) + m.name);
+                    indented([&] {
+                        if (m.keyExpr) m.keyExpr->accept(*this);
+                        if (m.init) m.init->accept(*this);
+                    });
+                    emit(")");
+                    continue;
+                }
                 const char* head = m.computed()
-                                       ? (m.isStatic ? "(static-method-computed"
-                                                     : "(method-computed")
+                                       ? (m.accessor == AccessorKind::Getter
+                                              ? (m.isStatic ? "(static-get-computed" : "(get-computed")
+                                              : m.accessor == AccessorKind::Setter
+                                                    ? (m.isStatic ? "(static-set-computed" : "(set-computed")
+                                                    : (m.isStatic ? "(static-method-computed" : "(method-computed"))
                                    : m.accessor == AccessorKind::Getter
                                        ? (m.isStatic ? "(static-get " : "(get ")
                                    : m.accessor == AccessorKind::Setter
@@ -215,7 +251,7 @@ public:
                 emit(std::string(head) + m.name);
                 indented([&] {
                     if (m.keyExpr) m.keyExpr->accept(*this);
-                    m.fn->accept(*this);
+                    if (m.fn) m.fn->accept(*this);
                 });
                 emit(")");
             }
@@ -238,6 +274,14 @@ public:
                 emit("(quasi \"" + n.quasis[i] + "\")");
                 if (i < n.exprs.size()) n.exprs[i]->accept(*this);
             }
+        });
+        emit(")");
+    }
+    void visit(const TaggedTemplate& n) override {
+        emit("(tagged-template");
+        indented([&] {
+            n.tag->accept(*this);
+            n.templateLit->accept(*this);
         });
         emit(")");
     }

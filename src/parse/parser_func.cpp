@@ -207,18 +207,26 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
 // getter that took a parameter could never be given one, and a setter that
 // took none would silently discard every write.
 std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind kind,
-                                                               std::string& outName) {
+                                                               std::string& outName,
+                                                               ast::ExprPtr* outKeyExpr) {
     const bool isGetter = kind == ast::AccessorKind::Getter;
     const char* word = isGetter ? "getter" : "setter";
 
-    if (check(TokenKind::LBracket)) {
-        error((std::string("unsupported construct: a computed ") + word +
-               " name (`get [e]() {}`)")
-                  .c_str());
-        return nullptr;
-    }
     Span nameSpan = peek().span;
-    if (check(TokenKind::StringLiteral)) {
+    if (check(TokenKind::LBracket)) {
+        if (!outKeyExpr) {
+            error((std::string("unsupported construct: a computed ") + word +
+                   " name (`get [e]() {}`)")
+                      .c_str());
+            return nullptr;
+        }
+        advance();  // '['
+        *outKeyExpr = parseAssign();
+        if (!*outKeyExpr || !expect(TokenKind::RBracket, "']' after computed accessor name")) {
+            return nullptr;
+        }
+        outName = isGetter ? "get computed" : "set computed";
+    } else if (check(TokenKind::StringLiteral)) {
         const Token& sTok = advance();
         outName = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
     } else if (isIdentifierName(peek().kind)) {
@@ -235,7 +243,9 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
 
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = nameSpan.begin;
-    fn->name = std::string(isGetter ? "get " : "set ") + outName;
+    fn->name = (outKeyExpr && *outKeyExpr)
+                   ? outName
+                   : (std::string(isGetter ? "get " : "set ") + outName);
     if (!expect(TokenKind::LParen, "'(' after an accessor name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after accessor parameters")) return nullptr;
@@ -330,33 +340,26 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
 
         ClassMethod member;
         // `static` is not a reserved word: it names a member when something
-        // follows it, and is an ordinary method name in `static() {}`.
+        // follows it, and is an ordinary method/field name in `static() {}` or `static = 1`.
         if (check(TokenKind::Identifier) && peek().text == "static" &&
-            peek(1).kind != TokenKind::LParen) {
+            peek(1).kind != TokenKind::LParen && peek(1).kind != TokenKind::Assign &&
+            peek(1).kind != TokenKind::Semicolon && peek(1).kind != TokenKind::RBrace) {
             advance();
             member.isStatic = true;
         }
-        // `*m() {}` / `*[Symbol.iterator]() {}` — a generator method, which the
-        // parser desugars into an ordinary method returning an iterator object.
-        // The name is taken here because a generator's is spelled the two ways
-        // a method's is, and `[Symbol.iterator]` is the only computed one
-        // bronze reads.
+        // `*m() {}` / `*[expr]() {}` — a generator method
         if (check(TokenKind::Star)) {
             const Token& star = advance();
-            member.keyExpr = matchSymbolIteratorKey();
-            if (member.keyExpr) {
-                // `name` and `keyExpr` are never both meaningful, the same rule
-                // an object literal's property follows: a computed key has no
-                // name until it is evaluated. The FUNCTION still needs an IL
-                // symbol, and that is what `kIteratorMethodSymbol` spells.
-                member.name.clear();
-            } else {
-                if (check(TokenKind::LBracket)) {
-                    error("unsupported construct: a computed generator name in a class body "
-                          "(only `*[Symbol.iterator]()` is read)");
+            if (check(TokenKind::LBracket)) {
+                advance();  // '['
+                member.keyExpr = parseAssign();
+                if (!member.keyExpr ||
+                    !expect(TokenKind::RBracket, "']' after computed generator name")) {
                     ok = false;
                     break;
                 }
+                member.name.clear();
+            } else {
                 const Token* genName = expectPropertyName("generator method name");
                 if (!genName) {
                     ok = false;
@@ -366,10 +369,10 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             }
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = star.span.begin;
-            fn->name = name.empty()
-                           ? (member.keyExpr ? std::string(kIteratorMethodSymbol) : member.name)
-                           : (name + "." + (member.keyExpr ? std::string(kIteratorMethodSymbol)
-                                                           : member.name));
+            const std::string sym = member.computed()
+                                        ? (member.isStatic ? "static.computed" : "computed")
+                                        : member.name;
+            fn->name = name.empty() ? sym : (name + "." + sym);
             if (!parseGeneratorTail(*fn)) {
                 ok = false;
                 break;
@@ -379,27 +382,20 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             continue;
         }
         if (check(TokenKind::LBracket)) {
-            // The same one computed key, without the `*`: an iterator written
-            // out by hand rather than as a generator. One rule for what a
-            // computed class member name may be, not a generator-only one.
             const Span keySpan = peek().span;
-            member.keyExpr = matchSymbolIteratorKey();
-            if (member.keyExpr) {
-                member.name.clear();
-                if (!check(TokenKind::LParen)) {
-                    error("unsupported construct: a `[Symbol.iterator]` class field "
-                          "(only methods are supported)");
-                    ok = false;
-                    break;
-                }
-                // Parsed inline rather than through `parseMethodTail`, which
-                // clears the enclosing class's `super` binding because an
-                // object literal's home object is the literal. This IS a
-                // class method and its `super` is the class's.
+            advance();  // '['
+            member.keyExpr = parseAssign();
+            if (!member.keyExpr ||
+                !expect(TokenKind::RBracket, "']' after computed class member name")) {
+                ok = false;
+                break;
+            }
+            member.name.clear();
+            if (check(TokenKind::LParen)) {
                 auto fn = std::make_unique<FunctionExpr>();
                 fn->span.begin = keySpan.begin;
-                fn->name = name.empty() ? std::string(kIteratorMethodSymbol)
-                                        : (name + "." + kIteratorMethodSymbol);
+                const std::string sym = member.isStatic ? "static.computed" : "computed";
+                fn->name = name.empty() ? sym : (name + "." + sym);
                 advance();  // '('
                 if (!parseParams(fn->params)) return false;
                 if (!expect(TokenKind::RParen, "')' after parameters")) return false;
@@ -415,9 +411,18 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                 methods.push_back(std::move(member));
                 continue;
             }
-            error("unsupported construct: computed method name in a class body");
-            ok = false;
-            break;
+            // Computed field: `[expr] = val;` or `[expr];`
+            member.isField = true;
+            if (match(TokenKind::Assign)) {
+                member.init = parseAssign();
+                if (!member.init) {
+                    ok = false;
+                    break;
+                }
+            }
+            match(TokenKind::Semicolon);
+            methods.push_back(std::move(member));
+            continue;
         }
         // `async` is contextual as well, and a ClassElementName on the SAME
         // line is what makes it a modifier (ECMA-262 15.8.1 forbids a line
@@ -432,27 +437,61 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
              peek(1).kind == TokenKind::NumberLiteral)) {
             advance();  // `async`
             if (check(TokenKind::Star)) {
-                error("unsupported construct: an async generator method in a class body "
-                      "(`async *m() {}`)");
-                ok = false;
-                break;
+                const Token& star = advance();
+                if (check(TokenKind::LBracket)) {
+                    advance();  // '['
+                    member.keyExpr = parseAssign();
+                    if (!member.keyExpr ||
+                        !expect(TokenKind::RBracket, "']' after computed async generator name")) {
+                        ok = false;
+                        break;
+                    }
+                    member.name.clear();
+                } else {
+                    const Token* genName = expectPropertyName("async generator method name");
+                    if (!genName) {
+                        ok = false;
+                        break;
+                    }
+                    member.name = std::string(genName->text);
+                }
+                const std::string sym = member.computed()
+                                            ? (member.isStatic ? "static.computed" : "computed")
+                                            : member.name;
+                const std::string fnName = name.empty() ? sym : (name + "." + sym);
+                auto fn = parseAsyncMethodTail(fnName, star.span, /*clearSuper=*/false);
+                if (!fn) {
+                    ok = false;
+                    break;
+                }
+                member.fn = std::move(fn);
+                methods.push_back(std::move(member));
+                continue;
             }
+            Span asyncSpan = peek().span;
             if (check(TokenKind::LBracket)) {
-                error("unsupported construct: a computed async method name in a class body");
-                ok = false;
-                break;
+                advance();  // '['
+                member.keyExpr = parseAssign();
+                if (!member.keyExpr ||
+                    !expect(TokenKind::RBracket, "']' after computed async method name")) {
+                    ok = false;
+                    break;
+                }
+                member.name.clear();
+            } else {
+                const Token* asyncName = expectPropertyName("async method name");
+                if (!asyncName) {
+                    ok = false;
+                    break;
+                }
+                member.name = std::string(asyncName->text);
+                asyncSpan = asyncName->span;
             }
-            const Token* asyncName = expectPropertyName("async method name");
-            if (!asyncName) {
-                ok = false;
-                break;
-            }
-            member.name = std::string(asyncName->text);
-            const std::string fnName = name.empty() ? member.name : (name + "." + member.name);
-            // A class's own method keeps the enclosing `super` binding, which
-            // is why the tail is told not to clear it — the same split
-            // parseMethodTail and the inline `[Symbol.iterator]` above make.
-            auto fn = parseAsyncMethodTail(fnName, asyncName->span,
+            const std::string sym = member.computed()
+                                        ? (member.isStatic ? "static.computed" : "computed")
+                                        : member.name;
+            const std::string fnName = name.empty() ? sym : (name + "." + sym);
+            auto fn = parseAsyncMethodTail(fnName, asyncSpan,
                                            /*clearSuper=*/false);
             if (!fn) {
                 ok = false;
@@ -470,7 +509,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             const ast::AccessorKind kind =
                 peek().text == "get" ? ast::AccessorKind::Getter : ast::AccessorKind::Setter;
             advance();  // 'get' / 'set'
-            auto accessorFn = parseAccessorMember(kind, member.name);
+            auto accessorFn = parseAccessorMember(kind, member.name, &member.keyExpr);
             if (!accessorFn) {
                 ok = false;
                 break;
@@ -490,11 +529,18 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
         }
         member.name = std::string(memberName->text);
         if (!check(TokenKind::LParen)) {
-            // `x = 1;` or `x;` - a field, which runs in the constructor and
-            // is not built yet. Named rather than read as a broken method.
-            error("unsupported construct: class field (only methods are supported)");
-            ok = false;
-            break;
+            // Field: `name = val;` or `name;`
+            member.isField = true;
+            if (match(TokenKind::Assign)) {
+                member.init = parseAssign();
+                if (!member.init) {
+                    ok = false;
+                    break;
+                }
+            }
+            match(TokenKind::Semicolon);
+            methods.push_back(std::move(member));
+            continue;
         }
         member.isConstructor = !member.isStatic && member.name == "constructor";
 

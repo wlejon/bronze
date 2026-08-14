@@ -95,6 +95,7 @@ bool rtArrayElementsConfigurable(Value arrVal);
 // half away — it lives in a slot rather than in the statics table, so nothing
 // in that table can answer for it.
 bool rtFunctionPrototypeWritable(Value fnVal);
+void rtFreezeObject(Value receiver);
 
 // The six `Object` members that are SetIntegrityLevel and TestIntegrityLevel
 // (20.1.2.6, 20.1.2.7, 20.1.2.16, 20.1.2.19, 20.1.2.20, 20.1.2.22). They live

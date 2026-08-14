@@ -88,6 +88,11 @@ public:
         n.callee->accept(*this);
         for (const auto& arg : n.args) arg->accept(*this);
     }
+    void visit(const NewTargetExpr&) override {}
+    void visit(const TaggedTemplate& t) override {
+        t.tag->accept(*this);
+        for (const auto& e : t.templateLit->exprs) e->accept(*this);
+    }
     void visit(const SuperCall& c) override {
         names.insert(c.baseName);
         for (const auto& arg : c.args) arg->accept(*this);
@@ -108,14 +113,16 @@ public:
             // evaluated where the class is defined rather than where the method
             // is called, so what it mentions belongs here and not in the body.
             if (m.keyExpr) m.keyExpr->accept(*this);
-            m.fn->accept(*this);
+            if (m.fn) m.fn->accept(*this);
+            if (m.init) m.init->accept(*this);
         }
     }
     void visit(const ClassExpr& c) override {
         if (!c.superName.empty()) names.insert(c.superName);
         for (const auto& m : c.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
-            m.fn->accept(*this);
+            if (m.fn) m.fn->accept(*this);
+            if (m.init) m.init->accept(*this);
         }
     }
     void visit(const ObjectLit& o) override {
@@ -125,7 +132,9 @@ public:
         }
     }
     void visit(const ArrayLit& a) override {
-        for (const auto& elem : a.elements) elem->accept(*this);
+        for (const auto& elem : a.elements) {
+            if (elem) elem->accept(*this);
+        }
     }
     // A parameter's default is code that runs inside this function, so what
     // it mentions is mentioned here; the parameter NAMES are declarations,
@@ -279,6 +288,11 @@ public:
         n.callee->accept(*this);
         for (const auto& arg : n.args) arg->accept(*this);
     }
+    void visit(const NewTargetExpr&) override {}
+    void visit(const TaggedTemplate& t) override {
+        t.tag->accept(*this);
+        for (const auto& e : t.templateLit->exprs) e->accept(*this);
+    }
     void visit(const SuperCall& c) override {
         for (const auto& arg : c.args) arg->accept(*this);
     }
@@ -293,14 +307,44 @@ public:
     // `super` inside it resolves against.
     void visit(const ClassDecl& c) override {
         for (const auto& m : c.methods) {
-            if (m.keyExpr) m.keyExpr->accept(*this);
-            addFunctionBody(m.fn->body, &m.fn->params);
+            if (m.keyExpr) {
+                m.keyExpr->accept(*this);
+                if (m.isField && !m.isStatic) {
+                    IdentVisitor idents;
+                    m.keyExpr->accept(idents);
+                    captured.insert(idents.names.begin(), idents.names.end());
+                }
+            }
+            if (m.fn) addFunctionBody(m.fn->body, &m.fn->params);
+            if (m.init) {
+                m.init->accept(*this);
+                if (m.isField && !m.isStatic) {
+                    IdentVisitor idents;
+                    m.init->accept(idents);
+                    captured.insert(idents.names.begin(), idents.names.end());
+                }
+            }
         }
     }
     void visit(const ClassExpr& c) override {
         for (const auto& m : c.methods) {
-            if (m.keyExpr) m.keyExpr->accept(*this);
-            addFunctionBody(m.fn->body, &m.fn->params);
+            if (m.keyExpr) {
+                m.keyExpr->accept(*this);
+                if (m.isField && !m.isStatic) {
+                    IdentVisitor idents;
+                    m.keyExpr->accept(idents);
+                    captured.insert(idents.names.begin(), idents.names.end());
+                }
+            }
+            if (m.fn) addFunctionBody(m.fn->body, &m.fn->params);
+            if (m.init) {
+                m.init->accept(*this);
+                if (m.isField && !m.isStatic) {
+                    IdentVisitor idents;
+                    m.init->accept(idents);
+                    captured.insert(idents.names.begin(), idents.names.end());
+                }
+            }
         }
     }
     void visit(const ObjectLit& o) override {
@@ -310,7 +354,9 @@ public:
         }
     }
     void visit(const ArrayLit& a) override {
-        for (const auto& elem : a.elements) elem->accept(*this);
+        for (const auto& elem : a.elements) {
+            if (elem) elem->accept(*this);
+        }
     }
     void visit(const FunctionExpr& f) override {
         addFunctionBody(f.body, &f.params);

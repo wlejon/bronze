@@ -1,0 +1,16 @@
+--- Class computed members ---
+static method called with: staticArg
+instance method called with: instArg
+Getter: 20
+Getter after set: 100
+Gen 1: 50
+Gen 2: 51
+Gen done: true
+Sym method: symbol method result
+--- Object literal computed members ---
+obj method: objArg
+Obj getter: 105
+Obj getter after set: 205
+Obj Gen 1: 200
+Obj Gen 2: 400
+Obj Gen done: true

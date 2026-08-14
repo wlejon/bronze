@@ -73,6 +73,13 @@ public:
         for (const auto& arg : n.args) arg->accept(*this);
     }
 
+    void visit(const NewTargetExpr&) override {}
+
+    void visit(const TaggedTemplate& t) override {
+        t.tag->accept(*this);
+        for (const auto& e : t.templateLit->exprs) e->accept(*this);
+    }
+
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) {
             if (prop.keyExpr) prop.keyExpr->accept(*this);
@@ -81,7 +88,9 @@ public:
     }
 
     void visit(const ArrayLit& a) override {
-        for (const auto& elem : a.elements) elem->accept(*this);
+        for (const auto& elem : a.elements) {
+            if (elem) elem->accept(*this);
+        }
     }
 
     void visit(const FunctionExpr&) override {

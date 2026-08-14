@@ -230,6 +230,12 @@ private:
             liftList(tpl->exprs, pre);
             return e;
         }
+        if (auto* tt = dynamic_cast<TaggedTemplate*>(e.get())) {
+            std::vector<ExprPtr*> slots{&tt->tag};
+            for (auto& exp : tt->templateLit->exprs) slots.push_back(&exp);
+            liftSlots(slots, pre);
+            return e;
+        }
         if (auto* spread = dynamic_cast<SpreadElement*>(e.get())) {
             spread->argument = lift(std::move(spread->argument), pre);
             return e;
