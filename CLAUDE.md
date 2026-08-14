@@ -11,26 +11,31 @@ out of scope.
 ```
 .\dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON   # configure
 .\dev.cmd cmake --build --preset dev      # build (incremental ~2s)
-.\dev.cmd ctest --preset dev              # all tests (~7 min)
+.\dev.cmd ctest --preset dev              # all tests (~1 min)
 .\dev.cmd ctest --preset dev -L lex       # one module's tests
-.\dev.cmd ctest --preset dev -LE threejs  # everything but the milestone (~4.5 min)
-.\dev.cmd ctest --preset dev -L threejs   # the milestone alone (~2.5 min)
+.\dev.cmd ctest --preset dev -LE threejs  # everything but the milestone (~45 s)
+.\dev.cmd ctest --preset dev -L threejs   # the milestone alone (~10 s)
 ```
 
 Iterate with scoped module tests; run the full `ctest` before any commit.
 
+The `dev` preset builds **Release**, deliberately: this test suite compiles
+hundreds of JS programs, and a Debug bronze links debug LLVM, which is ~20x
+slower at object emission (the three.js graph: ~3.4 s Release, ~72 s Debug).
+Wall time is the loop; don't switch the working build to Debug.
+
 `-DBRONZE_WITH_LLVM=ON` is on the configure line and not in the preset,
 because the hard rule below keeps the default build free of LLVM. It is not
 optional for the pre-commit run: `tests/oracle` is only defined when the
-backend is built, so without it `ctest` silently runs 14 tests instead of 17
+backend is built, so without it `ctest` silently runs 14 tests instead of 18
 and the entire oracle ratchet — the thing that decides whether bronze is
 correct — is absent rather than failing.
 
 `oracle-threejs` compiles unmodified three.js r160 from vendored source and
 checks the scene graph it builds (`tests/oracle/threejs/README.md`).
-It is ~145 s of the run because the 28-file graph is compiled once per inference
-mode. **It stays in the pre-commit run** — it is the only test that proves the
-project's stated bar — but `-LE threejs` is the loop to iterate against.
+The 28-file graph is compiled once per inference mode. **It stays in the
+pre-commit run** — it is the only test that proves the project's stated bar —
+but `-LE threejs` is the loop to iterate against.
 
 ## Hard rules
 
