@@ -179,6 +179,7 @@ find_bro_dir() {
 BRO_PATH="$(find_bro_dir)"
 BRO_HOST_SCENEGRAPH=""
 BRO_HOST_WILD=""
+BRO_HOST_INSTANCED=""
 BRO_HEADLESS=""
 
 if [[ -n "$BRO_PATH" ]]; then
@@ -187,6 +188,9 @@ if [[ -n "$BRO_PATH" ]]; then
     done
     for cand in "$BRO_PATH/build/Release/bro-bronze-host-wild.exe" "$BRO_PATH/build/bro-bronze-host-wild"; do
         [[ -f "$cand" ]] && BRO_HOST_WILD="$cand" && break
+    done
+    for cand in "$BRO_PATH/build/Release/bro-bronze-host-instanced.exe" "$BRO_PATH/build/bro-bronze-host-instanced"; do
+        [[ -f "$cand" ]] && BRO_HOST_INSTANCED="$cand" && break
     done
     for cand in "$BRO_PATH/build/Release/bro-headless.exe" "$BRO_PATH/build/bro-headless"; do
         [[ -f "$cand" ]] && BRO_HEADLESS="$cand" && break
@@ -266,6 +270,7 @@ PURE_BENCHMARKS=(
     "object_graph.js:Object-graph traversal, search, mutation, and cloning"
     "typed_array_crunch.js:Float64Array/Float32Array N-body physics & FFT crunch"
     "mesh_churn_2k.js:2k animated meshes scene graph updates & geometry churn"
+    "instanced_mesh_churn.js:Three.js InstancedMesh 5,000 instances churn and color updates"
     "fib.js:Recursive fib(30) call overhead on dynamic function"
     "numeric_loop.js:10M-iteration float loop (proven-f64 arithmetic)"
     "property_access.js:1M iterations shape lookup & own-property IC dispatch"
@@ -447,7 +452,36 @@ print(json.dumps(record))
         fi
     fi
 
-    # 3. Bro Headless Interpreted (QuickJS)
+    # 3. Bro Bronze Host Instanced Mesh (compiled)
+    if [[ -f "$BRO_HOST_INSTANCED" ]]; then
+        appdir="$BRO_PATH/tests/bronze_host/appdir_instanced"
+        win_appdir="$(to_win_path "$appdir")"
+        cmd_inst_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_INSTANCED" "$win_appdir")"
+        stats_inst="$(time_command_json "$cmd_inst_json" "$RUNS")"
+
+        record_json="$(python3 -c '
+import sys, json
+st = json.loads(sys.argv[1])
+btype = sys.argv[2]
+record = {
+    "name": "render_instanced_host",
+    "description": "bro-bronze-host-instanced 2,500 instances under load (30 frames)",
+    "category": "render-compiled",
+    "build_type": btype,
+    "infer": st,
+    "noinfer": None,
+    "infer_speedup": 1.0,
+    "output_match": True
+}
+print(json.dumps(record))
+' "$stats_inst" "$BUILD_TYPE")"
+        echo "$record_json" >> "$JSONL_OUT"
+        if [[ $JSON_ONLY -eq 1 ]]; then
+            echo "$record_json"
+        fi
+    fi
+
+    # 4. Bro Headless Interpreted (QuickJS)
     if [[ -f "$BRO_HEADLESS" && -f "$SCRIPT_DIR/render_bench_interpreted.js" ]]; then
         smoke_dir="$BRO_PATH/tests/_smoke_app"
         script_file="$SCRIPT_DIR/render_bench_interpreted.js"
