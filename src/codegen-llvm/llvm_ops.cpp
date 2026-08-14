@@ -7,6 +7,8 @@
 #include <llvm/IR/Constants.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_elem.h"
+#include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_prop.h"
 
@@ -531,17 +533,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, true, "Invalid operands for EnvGet")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGet");
             if (!env) return false;
-            callWith(abi.bronze_env_get, {env, builder_.getInt32(inst.envDepth),
-                                          builder_.getInt32(inst.envIndex)});
+            values_[inst.result] = emitEnvGet(builder_, abi, env, inst.envDepth, inst.envIndex,
+                                              /*tdz=*/false, inst.keyIndex);
             return true;
         }
         case il::Op::EnvGetTdz: {
             if (!needs(1, true, "Invalid operands for EnvGetTdz")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGetTdz");
             if (!env) return false;
-            callWith(abi.bronze_env_get_tdz,
-                     {env, builder_.getInt32(inst.envDepth), builder_.getInt32(inst.envIndex),
-                      builder_.getInt32(inst.keyIndex)});
+            values_[inst.result] = emitEnvGet(builder_, abi, env, inst.envDepth, inst.envIndex,
+                                              /*tdz=*/true, inst.keyIndex);
             return true;
         }
         // The marker goes in as a plain constant: it has no helper of its own,
@@ -561,9 +562,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* env = operand(inst, 0, "Undefined operand in EnvSet");
             llvm::Value* val = operand(inst, 1, "Undefined operand in EnvSet");
             if (!env || !val) return false;
-            builder_.CreateCall(abi.bronze_env_set,
-                                {env, builder_.getInt32(inst.envDepth),
-                                 builder_.getInt32(inst.envIndex), val});
+            emitEnvSet(builder_, abi, env, inst.envDepth, inst.envIndex, val);
             return true;
         }
 
@@ -642,7 +641,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGet instruction");
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGet instruction");
             if (!obj || !idx) return false;
-            callWith(abi.bronze_elem_get, {obj, idx});
+            values_[inst.result] = emitElemGet(builder_, abi, obj, idx);
             return true;
         }
         case il::Op::ElemSet: {
@@ -651,8 +650,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSet instruction");
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSet instruction");
             if (!obj || !idx || !val) return false;
-            builder_.CreateCall(abi.bronze_elem_set,
-                                {obj, idx, val, builder_.getInt1(inst.immI32 != 0)});
+            emitElemSet(builder_, abi, obj, idx, val, inst.immI32 != 0);
             return true;
         }
 

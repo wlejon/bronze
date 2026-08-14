@@ -1,0 +1,32 @@
+#pragma once
+
+// Dynamic-index element access in generated code: the inline fast paths for
+// `o[i]` where `i` is a value rather than a constant key. The compile-time
+// constant-key form lives with the property caches in llvm_prop.h; this is
+// the loop form — `v[i]` over an Array or a float typed array — whose whole
+// cost was a helper call per element until it was inlined.
+
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Value.h>
+
+#include "codegen-llvm/llvm_abi.h"
+
+namespace bronze::codegen_llvm {
+
+// Emits `o[i]` and returns its i64 (NaN-boxed) result. The inline path covers
+// an in-bounds numeric index on an Array (hole answers undefined) and on a
+// Float32/Float64 typed array; everything else — out of bounds, other element
+// kinds, string or symbol keys, non-objects — falls through to
+// bronze_elem_get, whose behavior this path mirrors exactly.
+llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                         llvm::Value* idxBits);
+
+// Emits `o[i] = v`. The inline path covers an in-bounds numeric index on an
+// Array with no named-properties side object, and a numeric value into a
+// Float32/Float64 typed array — where an out-of-bounds index discards the
+// write, as the spec and the helper both do. Everything else falls through to
+// bronze_elem_set.
+void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                 llvm::Value* idxBits, llvm::Value* valBits, bool strict);
+
+}  // namespace bronze::codegen_llvm

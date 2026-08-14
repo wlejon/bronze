@@ -26,6 +26,90 @@ llvm::Value* widenBool(llvm::IRBuilder<>& builder, llvm::Value* v) {
     return v->getType()->isIntegerTy(1) ? builder.CreateUIToFP(v, builder.getDoubleTy()) : v;
 }
 
+// The both-operands-are-numbers test a NaN-boxed pair answers with two
+// unsigned compares: every number's bits are at or below NUMBER_MAX, and
+// every non-number's are above it. Splits the current block; on the true
+// edge the builder is in a fresh block.
+llvm::Value* branchIfBothNumbers(llvm::IRBuilder<>& builder, llvm::Value* lhs, llvm::Value* rhs,
+                                 llvm::BasicBlock* slowBb, const char* name) {
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Value* lhsNum =
+        builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+    llvm::Value* rhsNum =
+        builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(builder.getContext(), name, fn);
+    builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum), fastBb, slowBb);
+    builder.SetInsertPoint(fastBb);
+    return nullptr;
+}
+
+// `a + b` over boxed operands: the number/number case — the loop-carried case
+// in every allocation-free numeric loop — is an fadd and the canonicalizing
+// re-box, mirroring the fast path at the top of bronze_dynamic_add; anything
+// involving a string, an object or a symbol keeps the helper, which owns
+// ToPrimitive and the concat/TypeError ladder.
+llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* lhs,
+                            llvm::Value* rhs) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* dblTy = builder.getDoubleTy();
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "dadd.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dadd.done", fn);
+
+    branchIfBothNumbers(builder, lhs, rhs, slowBb, "dadd.fast");
+    llvm::Value* sum =
+        builder.CreateFAdd(builder.CreateBitCast(lhs, dblTy), builder.CreateBitCast(rhs, dblTy));
+    // inf + -inf is NaN from two finite-looking inputs, so the sum needs the
+    // same canonicalizing select the Box instruction emits.
+    llvm::Value* isNan = builder.CreateFCmpUNO(sum, sum);
+    llvm::Value* fastVal =
+        builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
+                             builder.CreateBitCast(sum, builder.getInt64Ty()));
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "dadd.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
+// The four relational operators over boxed operands: two numbers are one
+// ORDERED fcmp — false for a NaN on either side, which is exactly 13.10's
+// "undefined becomes false" for all four members of the family. Everything
+// else (strings compare by code unit, objects unwrap) keeps the helper.
+llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, llvm::Function* helper,
+                            llvm::CmpInst::Predicate pred, llvm::Value* lhs, llvm::Value* rhs) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* dblTy = builder.getDoubleTy();
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "drel.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "drel.done", fn);
+
+    branchIfBothNumbers(builder, lhs, rhs, slowBb, "drel.fast");
+    llvm::Value* fastVal = builder.CreateFCmp(pred, builder.CreateBitCast(lhs, dblTy),
+                                              builder.CreateBitCast(rhs, dblTy), "drel.cmp");
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 2, "drel.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
 }  // namespace
 
 bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
@@ -79,20 +163,24 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
             values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_loose_eq, {lhs, rhs});
             return true;
 
-        // The relational operators over boxed operands: the runtime owns
-        // ECMA-262 13.10.1 entire, string branch included, so there is nothing
-        // for a compare instruction to do here.
+        // The relational operators over boxed operands: the number/number
+        // case is inlined; the runtime keeps ECMA-262 13.10.1's string branch
+        // and the object unwrap.
         case il::Op::RelLt:
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_lt, {lhs, rhs});
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_lt,
+                                                  llvm::CmpInst::FCMP_OLT, lhs, rhs);
             return true;
         case il::Op::RelGt:
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_gt, {lhs, rhs});
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_gt,
+                                                  llvm::CmpInst::FCMP_OGT, lhs, rhs);
             return true;
         case il::Op::RelLe:
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_le, {lhs, rhs});
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_le,
+                                                  llvm::CmpInst::FCMP_OLE, lhs, rhs);
             return true;
         case il::Op::RelGe:
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_rel_ge, {lhs, rhs});
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_ge,
+                                                  llvm::CmpInst::FCMP_OGE, lhs, rhs);
             return true;
         case il::Op::Pow:
             values_[inst.result] = builder_.CreateCall(
@@ -143,7 +231,7 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::Add:
             if (inst.type == il::Type::Dynamic) {
                 values_[inst.result] =
-                    builder_.CreateCall(shared_.abi.bronze_dynamic_add, {lhs, rhs});
+                    emitDynamicAdd(builder_, shared_.abi.bronze_dynamic_add, lhs, rhs);
                 return true;
             }
             if (inst.type == il::Type::Str) {

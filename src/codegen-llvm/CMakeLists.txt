@@ -6,6 +6,8 @@ bronze_add_module(codegen_llvm
     SOURCES
         llvm_abi.cpp
         llvm_prop.cpp
+        llvm_elem.cpp
+        llvm_env.cpp
         llvm_func.cpp
         llvm_ops.cpp
         llvm_arith.cpp

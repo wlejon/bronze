@@ -251,6 +251,35 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_ARRAY_ELEMS_OFFSET    16
 #define BRONZE_ABI_ARRAY_PROPS_OFFSET    24
 
+/* Environment records (runtime/env.h EnvHeader): the parent link, then the
+ * slot array. Generated code inlines captured-variable reads and writes —
+ * a load per depth step and a load or store of the slot — with every guard
+ * failure (wrong tag, wrong kind, short chain, slot out of range) routed to
+ * the helper, which still owns the fatal that names the lowering bug.
+ * Pinned by static_asserts in runtime/env.h. */
+#define BRONZE_ABI_OBJ_FLAGS_ENV        12
+#define BRONZE_ABI_ENV_PARENT_OFFSET     8
+#define BRONZE_ABI_ENV_SLOTS_OFFSET     16
+
+/* HeapObjectHeader::size — total object bytes, header included. The inline
+ * environment path reads it to keep the helper's slot-range tripwire: a slot
+ * index past the record is a lowering bug and must still reach the fatal
+ * rather than a load past the object. Pinned in runtime/object.h. */
+#define BRONZE_ABI_HDR_SIZE_OFFSET       4
+
+/* TypedArrayHeader (runtime/typed_array.h): the buffer Value, the window,
+ * and the element kind. BUF_DATA_OFFSET is sizeof(ArrayBufferHeader) — the
+ * first byte of a buffer's storage. The two float kinds are the ones the
+ * dynamic-index element fast path inlines; every other kind keeps the
+ * helper's conversion ladder. Pinned in runtime/typed_array.h. */
+#define BRONZE_ABI_TA_BUFFER_OFFSET      8
+#define BRONZE_ABI_TA_BYTEOFFSET_OFFSET 16
+#define BRONZE_ABI_TA_LENGTH_OFFSET     20
+#define BRONZE_ABI_TA_KIND_OFFSET       24
+#define BRONZE_ABI_TA_KIND_FLOAT32       7
+#define BRONZE_ABI_TA_KIND_FLOAT64       8
+#define BRONZE_ABI_BUF_DATA_OFFSET      24
+
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then
  * kInlineSlots inline Values. */
 #define BRONZE_ABI_OBJ_SHAPE_OFFSET      8

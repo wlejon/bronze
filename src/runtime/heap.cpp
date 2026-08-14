@@ -19,12 +19,50 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <stdexcept>
 
 namespace bronze {
+
+// Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
+// the collector actually was — collections, bytes copied vs bytes allocated,
+// and wall time inside collect(). It exists because "allocation-heavy loop"
+// names two different bills (copying survivors, and the per-object allocation
+// path itself) and only a number says which one a benchmark is paying.
+namespace {
+struct GcLogStats {
+    bool enabled{false};
+    uint64_t alloc_bytes{0};
+    uint64_t alloc_count{0};
+    uint64_t collections{0};
+    uint64_t copied_bytes{0};
+    uint64_t gc_nanos{0};
+    std::chrono::steady_clock::time_point start;
+};
+GcLogStats g_gcLog;
+
+void dumpGcLog() {
+    if (!g_gcLog.enabled) return;
+    auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - g_gcLog.start)
+                        .count();
+    std::fprintf(stderr, "\n=== Bronze GC Log (BRONZE_GC_LOG=1) ===\n");
+    std::fprintf(stderr, "collections      : %llu\n",
+                 static_cast<unsigned long long>(g_gcLog.collections));
+    std::fprintf(stderr, "allocations      : %llu (%.2f MB)\n",
+                 static_cast<unsigned long long>(g_gcLog.alloc_count),
+                 g_gcLog.alloc_bytes / (1024.0 * 1024.0));
+    std::fprintf(stderr, "bytes copied     : %.2f MB\n",
+                 g_gcLog.copied_bytes / (1024.0 * 1024.0));
+    std::fprintf(stderr, "time in collect(): %.3f ms\n", g_gcLog.gc_nanos / 1e6);
+    std::fprintf(stderr, "process wall     : %.3f ms\n", total_ns / 1e6);
+    std::fflush(stderr);
+}
+}  // namespace
 
 constexpr uintptr_t kMaxLowAddressLimit = 1ULL << 47;
 
@@ -109,6 +147,13 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
                        std::strcmp(env_stress, "ON") == 0)) {
         gc_stress_mode_ = true;
     }
+
+    const char* env_log = std::getenv("BRONZE_GC_LOG");
+    if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
+        g_gcLog.enabled = true;
+        g_gcLog.start = std::chrono::steady_clock::now();
+        std::atexit(dumpGcLog);
+    }
 }
 
 Heap::~Heap() {
@@ -186,6 +231,10 @@ void* Heap::allocate_raw(size_t bytes) {
 
     uint8_t* ptr = from_space_.bump_ptr;
     from_space_.bump_ptr += aligned_bytes;
+    if (g_gcLog.enabled) {
+        g_gcLog.alloc_bytes += aligned_bytes;
+        ++g_gcLog.alloc_count;
+    }
     return ptr;
 }
 
@@ -268,6 +317,9 @@ void Heap::collect() {
 
     in_gc_ = true;
 
+    std::chrono::steady_clock::time_point gc_t0;
+    if (g_gcLog.enabled) gc_t0 = std::chrono::steady_clock::now();
+
     if (collection_hook_) {
         collection_hook_(*this);
     }
@@ -328,6 +380,14 @@ void Heap::collect() {
     // the registered pointers point into.
     if (post_collection_hook_) {
         post_collection_hook_();
+    }
+
+    if (g_gcLog.enabled) {
+        ++g_gcLog.collections;
+        g_gcLog.copied_bytes += to_space_.bump_ptr - to_space_.base;
+        g_gcLog.gc_nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - gc_t0)
+                                .count();
     }
 
     from_space_.bump_ptr = from_space_.base;

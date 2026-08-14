@@ -91,6 +91,54 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 7: GC/Allocation Pass — measurement first, then helper inlining**:
+  > [!NOTE]
+  > The pass opened with measurement (`BRONZE_GC_LOG=1`, a new env-gated stderr
+  > report in `runtime/heap.cpp`: collections, bytes allocated, bytes copied,
+  > wall time inside `collect()`), and the measurement killed the working
+  > hypothesis: **the semispace GC is a non-factor on every losing benchmark**.
+  > `proto_dispatch_churn.js` spends 0.017 ms of a 306 ms run in `collect()`
+  > (5 collections, 0.02 MB copied of 160 MB allocated — the live set is
+  > tiny); `object_graph.js`, `mesh_churn_2k.js` and `typed_array_crunch.js`
+  > run to exit with **zero** collections. A generational nursery was
+  > therefore not built. `BRONZE_PROFILE=1` named the real bill — helper
+  > calls per loop iteration — and the pass inlined the four biggest:
+  > 1. Environment slot access (`llvm_env.cpp`, new): `env.get` /
+  >    `env.get.tdz` / `env.set` become inline loads/stores — parent-chain
+  >    walk unrolled at the compile-time depth, brand and slot-range guards
+  >    kept, every failure edge still reaching the helper's fatal or
+  >    ReferenceError. `typed_array_crunch.js` alone made 44.5M of these
+  >    calls (49% of its helper total).
+  > 2. Dynamic-index element access (`llvm_elem.cpp`, new): `v[i]` on an
+  >    Array (hole→undefined) and on Float32/Float64 typed arrays, load and
+  >    store, mirroring the `bronze_elem_get`/`_set` fast paths exactly —
+  >    35.1M calls in crunch, 12.3M in `typed_array_loop.js`.
+  > 3. `bronze_dynamic_add`: the number/number case becomes an inline fadd
+  >    with the canonicalizing re-box (19M calls across the losing set).
+  > 4. `bronze_rel_lt/gt/le/ge`: the number/number case becomes one ordered
+  >    fcmp (NaN→false on all four, which is 13.10's undefined→false).
+  > New ABI layout constants (`EnvHeader`, `TypedArrayHeader`,
+  > `ArrayBufferHeader`, header size word) pinned by static_asserts in the
+  > runtime headers. `typed_array_crunch.js` helper invocations: 90.8M →
+  > 2.9M. Node-baseline standing: `typed_array_loop` and `three_math` flip
+  > to **wins** (0.85x / 0.88x of node), crunch improves 5.8x→2.3x,
+  > `object_graph` 3.4x→2.8x, `proto_dispatch_churn` 8.5x→7.6x. Churn's
+  > remaining bill is named for the next pass: `bronze_construct` +
+  > `bronze_function_singleton` + shape-transition `prop_set` + depth>0
+  > `prop_get` at 3M each. (results.jsonl is rewritten by each runner
+  > invocation; this run used `--pure-only`.)
+  - `three_math.js`: **42.47ms** (infer) vs 42.67ms (no-infer) — **1.00x** (checksum=405000, node 48.40ms → bronze wins)
+  - `object_graph.js`: **195.69ms** (infer) vs 200.82ms (no-infer) — **1.03x** (checksum=-32601148)
+  - `typed_array_crunch.js`: **127.54ms** (infer) vs 136.07ms (no-infer) — **1.07x** (checksum=78849652, down from 329.04ms)
+  - `mesh_churn_2k.js`: **241.06ms** (infer) vs 234.83ms (no-infer) — **0.97x** (checksum=-2112298)
+  - `instanced_mesh_churn.js`: **286.52ms** (infer) vs 280.50ms (no-infer) — **0.98x** (checksum=1260786)
+  - `fib.js`: **8.96ms** (infer) vs 14.22ms (no-infer) — **1.59x**
+  - `numeric_loop.js`: **34.82ms** (infer) vs 53.19ms (no-infer) — **1.53x**
+  - `property_access.js`: **10.58ms** (infer) vs 11.22ms (no-infer) — **1.06x**
+  - `proto_dispatch.js`: **28.29ms** (infer) vs 33.66ms (no-infer) — **1.19x**
+  - `proto_dispatch_churn.js`: **290.56ms** (infer) vs 289.38ms (no-infer) — **1.00x** (down from 324.99ms)
+  - `typed_array_loop.js`: **34.69ms** (infer) vs 36.86ms (no-infer) — **1.06x** (node 40.75ms → bronze wins, down from 90.18ms)
+
 - **Chunk 6: Real-Library Shape Optimization & IC Performance**:
   > [!NOTE]
   > Shape specialization, dynamic inline cache (IC) activation, array element/length fast paths, and overflow slot inline caching:

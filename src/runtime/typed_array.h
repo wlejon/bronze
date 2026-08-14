@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/value.h"
@@ -132,6 +134,17 @@ struct TypedArrayHeader {
                                               Rooted<Value>& buffer_val, uint32_t byteOffset,
                                               uint32_t length);
 };
+
+// Generated code inlines dynamic-index element access on float views
+// (llvm_elem.cpp), so this layout — and the two float kinds' numbers — is ABI.
+static_assert(offsetof(TypedArrayHeader, buffer) == BRONZE_ABI_TA_BUFFER_OFFSET);
+static_assert(offsetof(TypedArrayHeader, byteOffset) == BRONZE_ABI_TA_BYTEOFFSET_OFFSET);
+static_assert(offsetof(TypedArrayHeader, length) == BRONZE_ABI_TA_LENGTH_OFFSET);
+static_assert(offsetof(TypedArrayHeader, kind) == BRONZE_ABI_TA_KIND_OFFSET);
+static_assert(static_cast<uint32_t>(ElementKind::Float32) == BRONZE_ABI_TA_KIND_FLOAT32);
+static_assert(static_cast<uint32_t>(ElementKind::Float64) == BRONZE_ABI_TA_KIND_FLOAT64);
+static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,
+              "data() is `this + 1`, so a buffer's bytes begin at sizeof(ArrayBufferHeader)");
 
 // ECMA-262 25.3's DataView. A second view over the same `ArrayBufferHeader`,
 // and deliberately not a tenth ElementKind: an element kind fixes a width and a
