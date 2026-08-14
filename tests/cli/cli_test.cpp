@@ -142,5 +142,100 @@ TEST_CASE("CLI driver concurrent builds do not collide on temp object path") {
     std::filesystem::remove_all(dirA, ec);
     std::filesystem::remove_all(dirB, ec);
 }
+
+TEST_CASE("CLI driver --infer-stats produces deterministic stats output") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.js";
+    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.exe";
+    std::error_code ec;
+    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+
+    writeTestFile(jsPath,
+        "function add(a, b) {\n"
+        "  return a + b;\n"
+        "}\n"
+        "const obj = { x: 1, y: 2 };\n"
+        "const k = 'x';\n"
+        "const r = obj.x + obj[k];\n"
+        "add(r, 10);\n"
+    );
+
+    std::string err;
+    std::string statsOut;
+    int status = bronze::cli::runBuild(jsPath.string(), exePath.string(), &err,
+                                       /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+                                       /*hostGlobalsPath=*/{}, /*inferStats=*/true,
+                                       &statsOut);
+
+    REQUIRE_MESSAGE(status == 0, err);
+    CHECK(statsOut.find("=== Inference Statistics ===") != std::string::npos);
+    CHECK(statsOut.find("Property Accesses:") != std::string::npos);
+    CHECK(statsOut.find("Calls:") != std::string::npos);
+    CHECK(statsOut.find("Element Operations:") != std::string::npos);
+    CHECK(statsOut.find("Total:") != std::string::npos);
+
+    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    std::filesystem::remove(jsPath, ec);
+}
+
+static std::string runAndCaptureStderr(const std::filesystem::path& exePath, const char* envVar = nullptr) {
+#ifdef _WIN32
+    if (envVar) {
+        _putenv(envVar);
+    } else {
+        _putenv("BRONZE_PROFILE=");
+    }
+    std::string cmd = "\"" + exePath.string() + "\" 2>&1";
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    if (envVar) {
+        putenv(const_cast<char*>(envVar));
+    } else {
+        unsetenv("BRONZE_PROFILE");
+    }
+    std::string cmd = exePath.string() + " 2>&1";
+    FILE* pipe = popen(cmd.c_str(), "r");
 #endif
+    std::string result;
+    if (!pipe) return result;
+    char buffer[128];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+#ifdef _WIN32
+    _pclose(pipe);
+    _putenv("BRONZE_PROFILE=");
+#else
+    pclose(pipe);
+    unsetenv("BRONZE_PROFILE");
+#endif
+    return result;
+}
+
+TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_profile.js";
+    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_profile.exe";
+    std::error_code ec;
+    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+
+    writeTestFile(jsPath,
+        "const o = { a: 1 };\n"
+        "console.log(o.a);\n"
+    );
+
+    std::string err;
+    int status = bronze::cli::runBuild(jsPath.string(), exePath.string(), &err);
+    REQUIRE_MESSAGE(status == 0, err);
+
+    std::string stderrOutput = runAndCaptureStderr(exePath, "BRONZE_PROFILE=1");
+    CHECK(stderrOutput.find("=== Bronze Runtime Profile (BRONZE_PROFILE=1) ===") != std::string::npos);
+    CHECK(stderrOutput.find("Total Dynamic ABI Helper Invocations:") != std::string::npos);
+
+    std::string normalStderr = runAndCaptureStderr(exePath, nullptr);
+    CHECK(normalStderr.find("Bronze Runtime Profile") == std::string::npos);
+
+    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    std::filesystem::remove(jsPath, ec);
+}
+#endif
+
 

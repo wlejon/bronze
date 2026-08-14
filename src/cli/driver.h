@@ -30,7 +30,8 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // code, so bronze must not insist on producing an executable.
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
-             bool emitObj = false, const std::string& hostGlobalsPath = {});
+             bool emitObj = false, const std::string& hostGlobalsPath = {},
+             bool inferStats = false, std::string* statsOut = nullptr);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

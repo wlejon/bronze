@@ -22,6 +22,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/namespace.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -97,6 +98,7 @@ uint64_t emptyKeyArray() {
 extern "C" {
 
 uint64_t bronze_for_in_keys(uint64_t objBits) {
+    recordHelperCall("bronze_for_in_keys");
     Value v(objBits);
     if (v.isNull() || v.isUndefined()) return emptyKeyArray();
 

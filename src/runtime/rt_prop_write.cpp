@@ -39,6 +39,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
@@ -105,6 +106,7 @@ extern "C" {
 
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry,
                      bool strict) {
+    recordPropCall("bronze_prop_set", keyIndex, icEntry);
     Value objVal(objBits);
     Value valVal(valBits);
     InlineCache* ic = rtAsCache(icEntry);
@@ -329,6 +331,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
 // is cold by construction, and giving it a cache entry would spend a slot in
 // the module's IC table on a write that never repeats.
 void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
+    recordPropCall("bronze_method_def", keyIndex, nullptr);
     Value objVal(objBits);
     if (!objVal.isObject()) {
         fatal("internal: a class method defined on a value that is not an object");
@@ -374,6 +377,7 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
 // of any other type is a bug in that grammar rather than a program error, so it
 // is fatal by name rather than converted.
 void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
+    recordElemCall("bronze_method_def_computed");
     Value objVal(objBits);
     if (!objVal.isObject() ||
         objVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -402,6 +406,7 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
 // class body defines each accessor once, so there is no repeat to cache.
 void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBits,
                          uint64_t setterBits, bool enumerable) {
+    recordPropCall("bronze_accessor_def", keyIndex, nullptr);
     Value objVal(objBits);
     if (!objVal.isObject()) {
         fatal("internal: an accessor defined on a value that is not an object");
@@ -430,6 +435,7 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
+    recordElemCall("bronze_elem_set");
     Value objVal(objBits);
     if (Value(idxBits).isSymbol()) {
         if (objVal.isNull() || objVal.isUndefined()) {

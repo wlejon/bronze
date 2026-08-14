@@ -25,6 +25,7 @@
 #include "runtime/fn.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
 #include "runtime/symbol.h"
@@ -373,9 +374,13 @@ namespace bronze::runtime {
 
 extern "C" {
 
-uint64_t bronze_iter_open(uint64_t srcBits) { return rtOpenIterator(Value(srcBits)).rawBits(); }
+uint64_t bronze_iter_open(uint64_t srcBits) {
+    recordHelperCall("bronze_iter_open");
+    return rtOpenIterator(Value(srcBits)).rawBits();
+}
 
 bool bronze_iter_step(uint64_t recBits) {
+    recordHelperCall("bronze_iter_step");
     Value recVal(recBits);
     if (!recVal.isObject() ||
         recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
@@ -473,6 +478,7 @@ bool bronze_iter_step(uint64_t recBits) {
 }
 
 uint64_t bronze_iter_value(uint64_t recBits) {
+    recordHelperCall("bronze_iter_value");
     Value recVal(recBits);
     if (!recVal.isObject() ||
         recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
@@ -490,6 +496,7 @@ uint64_t bronze_iter_value(uint64_t recBits) {
 // that passes true has already taken the pending value with `exc.take`, so
 // "already on its way out" is not something this can see for itself.
 void bronze_iter_close(uint64_t recBits, bool suppress) {
+    recordHelperCall("bronze_iter_close");
     Value recVal(recBits);
     if (!recVal.isObject() ||
         recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
@@ -513,6 +520,7 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
 // what makes `const [a,...rest] = someSet` see the elements after `a` rather
 // than restarting the iteration.
 uint64_t bronze_iter_rest(uint64_t recBits) {
+    recordHelperCall("bronze_iter_rest");
     Rooted<Value> recRoot{Value(recBits)};
     Rooted<Value> out{Value(bronze_create_array(0))};
     while (bronze_iter_step(recRoot.get().rawBits())) {

@@ -33,6 +33,7 @@
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
+#include "lower/infer_stats.h"
 #include "lower/lower.h"
 #include "modules/modules.h"
 #include "parse/parser.h"
@@ -116,6 +117,10 @@ constexpr const char* kUsage =
     "                                      bronze prints, which is why it is opt-in\n"
     "                                      and on stderr: no pinned output can\n"
     "                                      see it.\n"
+    "  --infer-stats                       Print deterministic compile-time inference\n"
+    "                                      statistics per module to stdout (property\n"
+    "                                      accesses, calls, and element operations\n"
+    "                                      native vs dynamic, with top bail reasons).\n"
     "  --emit-obj                          Stop after object emission: -o names the\n"
     "                                      object file, written exactly where given,\n"
     "                                      and no linker runs. The embedding seam —\n"
@@ -475,7 +480,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 }
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
-             bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath) {
+             bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
+             bool inferStats, std::string* statsOut) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -483,6 +489,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)timings;
     (void)emitObj;
     (void)hostGlobalsPath;
+    (void)inferStats;
+    (void)statsOut;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -528,15 +536,27 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
+    lower::InferStatsCollector statsCollector;
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals);
+                                       hostGlobals.empty() ? nullptr : &hostGlobals,
+                                       &sources,
+                                       inferStats ? &statsCollector : nullptr);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
+    }
+
+    if (inferStats) {
+        std::string statsStr = statsCollector.format();
+        if (statsOut) {
+            *statsOut = statsStr;
+        } else {
+            std::fputs(statsStr.c_str(), stdout);
+        }
     }
 
     reportWarnings(diags, sources);
@@ -664,6 +684,7 @@ int runDriver(int argc, char** argv) {
         bool infer = true;
         bool timings = false;
         bool emitObj = false;
+        bool inferStats = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -671,6 +692,8 @@ int runDriver(int argc, char** argv) {
                 infer = false;
             } else if (arg == "--timings") {
                 timings = true;
+            } else if (arg == "--infer-stats") {
+                inferStats = true;
             } else if (arg == "--emit-obj") {
                 emitObj = true;
             } else if (arg == "--host-globals") {
@@ -694,7 +717,7 @@ int runDriver(int argc, char** argv) {
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath);
+                        hostGlobalsPath, inferStats);
     }
 
     return fail(kUsage);

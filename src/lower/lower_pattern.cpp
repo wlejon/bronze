@@ -357,6 +357,7 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
         il::ValueId readId = ilFn.valueCount++;
         il::Instruction readInst;
         if (elem.keyExpr) {
+            recordElementOp(elem.span.file, false, "computed dynamic index");
             auto keyOpt = lowerExpr(*elem.keyExpr, ilFn);
             if (!keyOpt) return false;
             Value keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
@@ -364,6 +365,7 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
             readInst.operands = {source.id, keyBoxed.id};
             if (hasRest) emitContainerOp(il::Op::ArrayAppend, excluded, keyBoxed, ilFn);
         } else {
+            recordPropertyAccess(elem.span.file, false, "destructuring read");
             readInst.op = il::Op::PropGet;
             readInst.operands = {source.id};
             readInst.keyIndex = getKeyConstantIndex(elem.key);

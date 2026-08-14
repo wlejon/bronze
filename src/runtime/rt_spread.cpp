@@ -20,6 +20,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -208,6 +209,7 @@ extern "C" {
 // stores this result into a GC root slot before it tests the pending cell, and
 // the slot has to hold something the collector can parse.
 uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
+    recordHelperCall("bronze_pattern_check");
     Value v(vBits);
     if (v.isUndefined() || v.isNull()) {
         rtThrowTypeError(kind == kPatternArray
@@ -229,6 +231,7 @@ uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
 // Called from the generated call wrapper, which is the only place that can see
 // the caller's real argument count.
 uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
+    recordHelperCall("bronze_rest_args");
     // The copy comes FIRST, before `newArray` — this is RootedArgs' contract
     // ("read arguments from HERE and never from `argv` again"), and allocating
     // ahead of it broke exactly the case that contract is written for. `argv`
@@ -265,6 +268,7 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
 // accessor pair whose halves are %ThrowTypeError%, so the shape of what is
 // installed is the specification's; only the pill's contents differ.
 uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
+    recordHelperCall("bronze_arguments_object");
     Rooted<Value> args{Value(bronze_rest_args(argc, argv, 0))};
     installArgumentsCallee(args);
     return args.get().rawBits();
@@ -277,17 +281,20 @@ uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
 // happen, since `f(1)` and `f(1, undefined)` must give `arguments.length` 1 and
 // 2. Guarding the read is what that costs.
 uint64_t bronze_arg_at(uint32_t argc, const uint64_t* argv, uint32_t index) {
+    recordHelperCall("bronze_arg_at");
     if (index >= argc) return BRONZE_ABI_UNDEFINED_BITS;
     return argv[index];
 }
 
 void bronze_array_append(uint64_t arrBits, uint64_t valBits) {
+    recordHelperCall("bronze_array_append");
     Rooted<Value> arr{Value(arrBits)};
     Rooted<Value> val{Value(valBits)};
     appendTo(arr, val);
 }
 
 void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
+    recordHelperCall("bronze_array_spread");
     Rooted<Value> arr{Value(arrBits)};
     Rooted<Value> src{Value(srcBits)};
     appendIterable(arr, src);
@@ -312,6 +319,7 @@ void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
 //   not build one: nothing is the COMPLETE answer rather than the one bronze
 //   can reach, so allocating an object to read no keys off it buys nothing.
 void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
+    recordHelperCall("bronze_object_spread");
     Value srcVal(srcBits);
     if (srcVal.isUndefined() || srcVal.isNull()) return;
 
@@ -434,6 +442,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
 // The excluded keys arrive as an ARRAY rather than as a compile-time list
 // because a computed key is not known until the pattern runs.
 uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
+    recordHelperCall("bronze_object_rest");
     Rooted<Value> src{Value(srcBits)};
     Rooted<Value> excluded{Value(excludedBits)};
     Rooted<Value> out{Value(bronze_create_object())};
@@ -470,6 +479,7 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
 // `FunctionHeader::call`'s arity-adaptation vector is: the callee's prologue
 // roots its parameters before it can allocate.
 uint64_t bronze_dynamic_call_spread(uint64_t calleeBits, uint64_t thisBits, uint64_t argsBits) {
+    recordCallSite("bronze_dynamic_call_spread", calleeBits);
     Value argsVal(argsBits);
     if (!isArray(argsVal)) {
         fatal("internal: spread call arguments are not an array");
@@ -481,6 +491,7 @@ uint64_t bronze_dynamic_call_spread(uint64_t calleeBits, uint64_t thisBits, uint
 }
 
 uint64_t bronze_construct_spread(uint64_t calleeBits, uint64_t argsBits) {
+    recordCallSite("bronze_construct_spread", calleeBits);
     Value argsVal(argsBits);
     if (!isArray(argsVal)) {
         fatal("internal: spread constructor arguments are not an array");

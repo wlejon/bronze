@@ -121,7 +121,9 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     getInst.operands = {objBoxed.id};
     getInst.keyIndex = keyIdx;
     getInst.icIndex = icSiteCounter_++;
-    getInst.icMonomorphic = monomorphicPropSite(*mem.object);
+    const bool mono = monomorphicPropSite(*mem.object);
+    recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
+    getInst.icMonomorphic = mono;
     emitInst(ilFn, getInst);
 
     Value numOld = unboxValueIfNeeded(Value{cur, il::Type::Dynamic}, il::Type::F64, ilFn);
@@ -135,6 +137,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.operands = {objBoxed.id, storedBoxed.id};
     setInst.keyIndex = keyIdx;
     setInst.icIndex = icSiteCounter_++;
+    recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
     setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
@@ -169,8 +172,11 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         getInst.operands = {objBoxed.id};
         getInst.keyIndex = *literalKey;
         getInst.icIndex = icSiteCounter_++;
-        getInst.icMonomorphic = monomorphicPropSite(*idxAccess.object);
+        const bool mono = monomorphicPropSite(*idxAccess.object);
+        recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
+        getInst.icMonomorphic = mono;
     } else {
+        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         getInst.op = il::Op::ElemGet;
         getInst.operands = {objBoxed.id, idxBoxed->id};
     }
@@ -184,11 +190,14 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
 
     il::Instruction setInst;
     if (literalKey) {
+        const bool mono = monomorphicPropSite(*idxAccess.object);
+        recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
         setInst.op = il::Op::PropSet;
         setInst.operands = {objBoxed.id, storedBoxed.id};
         setInst.keyIndex = *literalKey;
         setInst.icIndex = icSiteCounter_++;
     } else {
+        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         setInst.op = il::Op::ElemSet;
         setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
     }

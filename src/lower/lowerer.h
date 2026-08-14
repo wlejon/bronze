@@ -10,7 +10,9 @@
 
 #include "ast/ast.h"
 #include "il/il.h"
+#include "lower/infer_stats.h"
 #include "support/diagnostics.h"
+#include "support/source.h"
 #include "types/result.h"
 
 namespace bronze::lower {
@@ -26,9 +28,13 @@ public:
     // here because isProvidedGlobal is asked once per free-identifier mention.
     Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
             const types::InferenceResult* inference,
-            const std::vector<std::string>* hostGlobals = nullptr)
-        : astModule_(astModule), diags_(diags), inference_(inference) {
+            const std::vector<std::string>* hostGlobals = nullptr,
+            const SourceSet* sources = nullptr,
+            InferStatsCollector* stats = nullptr)
+        : astModule_(astModule), diags_(diags), inference_(inference),
+          sources_(sources), stats_(stats) {
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+        if (stats_ && sources_) stats_->setSourceSet(sources_);
     }
 
     std::optional<il::Module> lower();
@@ -306,6 +312,14 @@ private:
     // warning and compilation continues.
     bool checkAnnotation(const std::string& ann, Span span, const std::string& name,
                          types::Type proven);
+
+    std::string propBailReason(const ast::Expr& expr) const;
+    void recordPropertyAccess(uint16_t fileId, bool isNative, const std::string& bailReason = "");
+    void recordCall(uint16_t fileId, bool isNative, const std::string& bailReason = "");
+    void recordElementOp(uint16_t fileId, bool isNative, const std::string& bailReason = "");
+
+    const SourceSet* sources_ = nullptr;
+    InferStatsCollector* stats_ = nullptr;
 
     // --- lower_generator.cpp: the generator state machine ----------------
     // What the resume function needs to know about the frame it was closed

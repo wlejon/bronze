@@ -1,5 +1,5 @@
 bronze_add_module(lower
-    SOURCES lower.cpp lower_infer.cpp lower_util.cpp lower_scope.cpp lower_stmt.cpp
+    SOURCES lower.cpp lower_infer.cpp infer_stats.cpp lower_util.cpp lower_scope.cpp lower_stmt.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
             lower_update.cpp
             lower_object.cpp lower_pattern.cpp

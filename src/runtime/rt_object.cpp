@@ -22,6 +22,7 @@
 #include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
@@ -214,12 +215,14 @@ Value rtCopyKeyToHeap(const StringHeader* key) {
 extern "C" {
 
 uint64_t bronze_create_object() {
+    recordHelperCall("bronze_create_object");
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
     obj->header.flags = HeapKind::Plain;
     return Value::fromObject(obj).rawBits();
 }
 
 uint64_t bronze_create_array(uint32_t length) {
+    recordHelperCall("bronze_create_array");
     uint32_t cap = (length < 4) ? 4 : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
     arr->length = length;
@@ -228,6 +231,7 @@ uint64_t bronze_create_array(uint32_t length) {
 
 uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
                                 uint32_t nameKey, uint64_t envBits) {
+    recordHelperCall("bronze_create_function");
     Rooted<Value> env{Value(envBits)};
     FunctionHeader* fn = FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity);
     // Read the environment through the root only AFTER allocating: the
@@ -310,6 +314,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
 }
 
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
+    recordCallSite("bronze_construct", fnBits);
     Value fnVal(fnBits);
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
@@ -388,6 +393,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
 // message said which receivers were "supported", which names bronze's coverage
 // where the reader needs the receiver's storage.
 uint64_t bronze_object_keys(uint64_t objBits) {
+    recordHelperCall("bronze_object_keys");
     Value objVal(objBits);
     // Step 1 is ToObject, whose only two failures are these (7.1.18). Thrown
     // rather than fatal: the language names this TypeError, so a `catch` may
@@ -529,6 +535,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
 // ---- Environment records: `depth` parent hops, then `index` ----
 
 uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
+    recordHelperCall("bronze_env_create");
     Rooted<Value> parent{Value(parentBits)};
     return Value::fromObject(EnvHeader::create(rtHeap(), parent, slotCount)).rawBits();
 }
@@ -546,6 +553,7 @@ static EnvHeader* resolveEnv(uint64_t envBits, uint32_t depth) {
 }
 
 uint64_t bronze_env_get(uint64_t envBits, uint32_t depth, uint32_t index) {
+    recordHelperCall("bronze_env_get");
     EnvHeader* env = resolveEnv(envBits, depth);
     if (index >= env->slotCount()) {
         fatal("environment slot index out of range (lowering bug)");
@@ -570,6 +578,7 @@ static_assert(Value::fromUninitialized().rawBits() == BRONZE_ABI_UNINITIALIZED_B
 // slot before the pending cell is tested.
 uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
                             uint32_t keyIndex) {
+    recordHelperCall("bronze_env_get_tdz");
     const uint64_t bits = bronze_env_get(envBits, depth, index);
     if (bits != BRONZE_ABI_UNINITIALIZED_BITS) return bits;
     // A binding name reaching here can be a FLATTENED one — the module linker
@@ -585,6 +594,7 @@ uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
 }
 
 void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t valBits) {
+    recordHelperCall("bronze_env_set");
     EnvHeader* env = resolveEnv(envBits, depth);
     if (index >= env->slotCount()) {
         fatal("environment slot index out of range (lowering bug)");
@@ -594,6 +604,7 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
 
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,
                              const uint64_t* argvBits) {
+    recordCallSite("bronze_dynamic_call", calleeBits);
     Value calleeVal(calleeBits);
     if (!calleeVal.isObject() ||
         calleeVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {

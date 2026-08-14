@@ -28,6 +28,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/profile.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -342,6 +343,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
                               InlineCache* ic);
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    recordPropCall("bronze_prop_get", keyIndex, icEntry);
     Value objVal(objBits);
     InlineCache* ic = rtAsCache(icEntry);
 
@@ -687,6 +689,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
 // running it against the prototype would read the prototype's fields on every
 // instance, silently.
 uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits) {
+    recordPropCall("bronze_super_get", keyIndex, nullptr);
     Value protoVal(protoBits);
     if (!protoVal.isObject() ||
         protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -707,6 +710,7 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
 }
 
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
+    recordElemCall("bronze_elem_get");
     Value objVal(objBits);
     if (Value(idxBits).isSymbol()) {
         // Reading a property of null or undefined is the TypeError of 7.3.2

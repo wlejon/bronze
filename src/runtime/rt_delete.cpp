@@ -26,6 +26,7 @@
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/namespace.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -148,6 +149,7 @@ static bool reportRefusedDelete(bool removed, bool strict, const std::string& ke
 }
 
 bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
+    recordPropCall("bronze_prop_delete", keyIndex, nullptr);
     Value objVal(objBits);
     // ToObject first, exactly as a read does: `delete null.x` is the
     // TypeError of 13.5.1 step 5.
@@ -190,6 +192,7 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
 }
 
 bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
+    recordElemCall("bronze_elem_delete");
     Value objVal(objBits);
     Value idxVal(idxBits);
     if (objVal.isNull() || objVal.isUndefined()) {

@@ -33,8 +33,12 @@ namespace bronze::lower {
 // unresolved-name warning and runtime ReferenceError. Nullable like
 // `inference`, and independent of it — which set of names resolves is a
 // lowering-level fact, so `--no-infer` changes nothing about it.
+class InferStatsCollector;
+
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference = nullptr,
-                                      const std::vector<std::string>* hostGlobals = nullptr);
+                                      const std::vector<std::string>* hostGlobals = nullptr,
+                                      const SourceSet* sources = nullptr,
+                                      InferStatsCollector* stats = nullptr);
 
 }  // namespace bronze::lower

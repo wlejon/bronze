@@ -25,6 +25,7 @@
 #include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -459,9 +460,13 @@ int32_t bronze_to_int32(uint64_t bits) {
     return toInt32(rtToNumber(Value(bits)));
 }
 
-double bronze_pow(double base, double exponent) { return rtExponentiate(base, exponent); }
+double bronze_pow(double base, double exponent) {
+    recordHelperCall("bronze_pow");
+    return rtExponentiate(base, exponent);
+}
 
 uint64_t bronze_typeof(uint64_t bits) {
+    recordHelperCall("bronze_typeof");
     Value v(bits);
     // `null` first, and reported as "object": ECMA-262's oldest wart, kept
     // because every engine keeps it and programs test for it.
@@ -476,6 +481,7 @@ uint64_t bronze_typeof(uint64_t bits) {
 }
 
 bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
+    recordHelperCall("bronze_instanceof");
     // Both operands are rooted before anything below allocates, and every
     // header is derived from a root AFTER the last allocation: the collector
     // moves objects, so a raw HeapObjectHeader* held across a call that can
@@ -556,6 +562,7 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
 }
 
 bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
+    recordHelperCall("bronze_has_property");
     Rooted<Value> objRoot{Value(objBits)};
     if (!objRoot.get().isObject()) {
         rtThrowTypeError("Cannot use 'in' operator: the right-hand side is not an object");
@@ -581,18 +588,22 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
 // true exactly one of them, so the undefined a NaN produces lands on false
 // where a negation of the boolean would have put it on true.
 bool bronze_rel_lt(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_rel_lt");
     return isLessThan(Value(aBits), Value(bBits)) == LessThan::True;
 }
 
 bool bronze_rel_gt(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_rel_gt");
     return isLessThan(Value(bBits), Value(aBits)) == LessThan::True;
 }
 
 bool bronze_rel_le(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_rel_le");
     return isLessThan(Value(bBits), Value(aBits)) == LessThan::False;
 }
 
 bool bronze_rel_ge(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_rel_ge");
     return isLessThan(Value(aBits), Value(bBits)) == LessThan::False;
 }
 
@@ -601,6 +612,7 @@ bool bronze_rel_ge(uint64_t aBits, uint64_t bBits) {
 // answers before any ToNumber can run, and reordering the coercions would
 // make it true.
 bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_loose_eq");
     Value a(aBits);
     Value b(bBits);
 

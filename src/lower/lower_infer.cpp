@@ -314,4 +314,30 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
     return true;
 }
 
+std::string Lowerer::propBailReason(const ast::Expr& expr) const {
+    if (inference_ == nullptr) return "inference disabled";
+    const types::Type t = inferredType(expr);
+    if (t.is(types::TypeKind::Dynamic)) return "receiver is dynamic";
+    if (!t.is(types::TypeKind::Object)) {
+        return std::string("receiver is ") + types::typeKindName(t.kind());
+    }
+    if (t.shapeClass() == types::kNoShapeClass) return "receiver shape class not proven";
+    return "unknown";
+}
+
+void Lowerer::recordPropertyAccess(uint16_t fileId, bool isNative,
+                                   const std::string& bailReason) {
+    if (stats_) stats_->recordPropertyAccess(fileId, isNative, bailReason);
+}
+
+void Lowerer::recordCall(uint16_t fileId, bool isNative,
+                         const std::string& bailReason) {
+    if (stats_) stats_->recordCall(fileId, isNative, bailReason);
+}
+
+void Lowerer::recordElementOp(uint16_t fileId, bool isNative,
+                              const std::string& bailReason) {
+    if (stats_) stats_->recordElementOp(fileId, isNative, bailReason);
+}
+
 }  // namespace bronze::lower

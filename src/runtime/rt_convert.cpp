@@ -34,6 +34,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/number_format.h"
+#include "runtime/profile.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -356,6 +357,7 @@ extern "C" {
 // — which is why it is a helper of its own rather than an `Add` with an empty
 // string on the left.
 uint64_t bronze_to_string(uint64_t bits) {
+    recordHelperCall("bronze_to_string");
     Rooted<Value> v{Value(bits)};
     return rtToStringValue(v).rawBits();
 }
@@ -438,6 +440,7 @@ bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
 }
 
 uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_string_concat");
     // BOTH operands are rooted before EITHER conversion runs. `valueToString`
     // of a number allocates, and an allocation moves every other live object
     // — including the second operand, whose raw bits are just a pointer until
@@ -465,6 +468,7 @@ uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
 // `valueOf` first — so `'' + o` and `String(o)` really do disagree, and they
 // are meant to.
 uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
+    recordHelperCall("bronze_dynamic_add");
     Rooted<Value> aRoot{Value(aBits)};
     Rooted<Value> bRoot{Value(bBits)};
     // Both are rooted before either conversion runs: ToPrimitive can call user

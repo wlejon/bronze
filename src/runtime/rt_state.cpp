@@ -17,6 +17,7 @@
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/promise.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -227,6 +228,7 @@ uint64_t bronze_module_env_get() { return g_moduleEnv.rawBits(); }
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
                                    uint32_t nameKey) {
+    recordHelperCall("bronze_function_singleton");
     for (const auto& entry : g_functionSingletons) {
         if (entry.first == code) return entry.second.rawBits();
     }
@@ -245,6 +247,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 // one — an internal tripwire, not a program error — and a manifest name the
 // host never registered is the same drift with the host on one side of it.
 uint64_t bronze_global_get(uint32_t keyIndex) {
+    recordPropCall("bronze_global_get", keyIndex, nullptr);
     if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
         return g_globalCache[keyIndex].rawBits();
     }

@@ -374,7 +374,9 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     inst.operands = {objBoxed.id};
     inst.keyIndex = keyIdx;
     inst.icIndex = icIdx;
-    inst.icMonomorphic = monomorphicPropSite(*mem->object);
+    const bool mono = monomorphicPropSite(*mem->object);
+    recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
+    inst.icMonomorphic = mono;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
@@ -416,6 +418,7 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess.index);
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
+        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         auto indexVal = lowerExpr(*idxAccess.index, ilFn);
         if (!indexVal) return std::nullopt;
         auto idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
@@ -438,7 +441,9 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     inst.operands = {objBoxed.id};
     inst.keyIndex = *literalKey;
     inst.icIndex = icIdx;
-    inst.icMonomorphic = monomorphicPropSite(*idxAccess.object);
+    const bool mono = monomorphicPropSite(*idxAccess.object);
+    recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
+    inst.icMonomorphic = mono;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }
@@ -544,6 +549,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             // `needsEnv` carries.
             if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments &&
                 directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
+                recordCall(call->span.file, true, "");
                 uint32_t calleeIdx = it->second;
                 const auto& calleeFn = ilModule_.functions[calleeIdx];
 
@@ -643,6 +649,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // different objects: the function is found on the PARENT prototype, and it
     // runs on the current receiver.
     if (const auto* superMem = dynamic_cast<const ast::SuperMember*>(call->callee.get())) {
+        recordCall(call->span.file, false, "callee is super member");
         auto fnVal = lowerSuperMember(superMem, ilFn);
         if (!fnVal) return std::nullopt;
         auto thisVal = lowerThisValue(call->span, ilFn);
@@ -670,7 +677,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         inst.operands = {thisArgVal.id};
         inst.keyIndex = keyIdx;
         inst.icIndex = icIdx;
-        inst.icMonomorphic = monomorphicPropSite(*mem->object);
+        const bool mono = monomorphicPropSite(*mem->object);
+        recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
+        recordCall(call->span.file, false, "callee is method / property access");
+        inst.icMonomorphic = mono;
         emitInst(ilFn, inst);
         calleeVal = Value{getRes, il::Type::Dynamic};
     } else if (const auto* idx = dynamic_cast<const ast::IndexAccess*>(call->callee.get())) {
@@ -680,6 +690,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         // `lowerIndexAccess` here would evaluate `o` twice, and passing no
         // receiver at all (which is what this branch used to fall through to)
         // made `v[Symbol.iterator]()` run with `this` undefined.
+        recordCall(call->span.file, false, "callee is computed / index access");
         auto objVal = lowerChainBase(*idx->object, ilFn, onSpine);
         if (!objVal) return std::nullopt;
         thisArgVal = boxValueIfNeeded(*objVal, ilFn);
@@ -687,7 +698,44 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         auto fnVal = emitIndexRead(*idx, thisArgVal, ilFn);
         if (!fnVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*fnVal, ilFn);
+    } else if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
+        if (spreadArgs) {
+            recordCall(call->span.file, false, "call has spread argument");
+        } else if (call->optional) {
+            recordCall(call->span.file, false, "optional call (?.)");
+        } else {
+            uint32_t shadowDepth = 0;
+            uint32_t shadowIndex = 0;
+            auto envIt = activeVarMap_.find(calleeIdent->name);
+            if (envIt != activeVarMap_.end() ||
+                findEnclosingEnvVar(calleeIdent->name, shadowDepth, shadowIndex)) {
+                recordCall(call->span.file, false, "callee is local or captured variable");
+            } else {
+                auto it = functionIndices_.find(calleeIdent->name);
+                if (it == functionIndices_.end()) {
+                    recordCall(call->span.file, false, "callee not a module function");
+                } else if (ilModule_.functions[it->second].needsArguments) {
+                    recordCall(call->span.file, false, "callee uses arguments object");
+                } else if (!directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
+                    recordCall(call->span.file, false, "callee arity mismatch");
+                } else {
+                    recordCall(call->span.file, false, "callee is dynamic");
+                }
+            }
+        }
+        auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
+        if (!cVal) return std::nullopt;
+        calleeVal = boxValueIfNeeded(*cVal, ilFn);
+
+        il::ValueId undefRes = ilFn.valueCount++;
+        il::Instruction undefInst;
+        undefInst.op = il::Op::ConstUndefined;
+        undefInst.type = il::Type::Dynamic;
+        undefInst.result = undefRes;
+        emitInst(ilFn, undefInst);
+        thisArgVal = Value{undefRes, il::Type::Dynamic};
     } else {
+        recordCall(call->span.file, false, "callee is an expression");
         auto cVal = lowerChainBase(*call->callee, ilFn, onSpine);
         if (!cVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*cVal, ilFn);

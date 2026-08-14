@@ -1,4 +1,5 @@
 #include "runtime/fatal.h"
+#include "runtime/profile.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@ void setFatalHandler(FatalHandler handler) {
 }
 
 void disableCrashDialogs() noexcept {
+    runtime::initProfile();
 #ifdef _WIN32
     // No "abort() has been called" box, no Watson report.
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
