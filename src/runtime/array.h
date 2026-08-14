@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/value.h"
@@ -90,5 +91,10 @@ struct ArrayHeader {
         return elements.asObject<HeapObjectHeader>()->payload<Value>();
     }
 };
+
+static_assert(offsetof(ArrayHeader, length) == BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
 
 }  // namespace bronze

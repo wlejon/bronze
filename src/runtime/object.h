@@ -306,7 +306,10 @@ static_assert(offsetof(HeapObjectHeader, flags) == BRONZE_ABI_OBJ_FLAGS_OFFSET);
 // kind's number is part of the ABI and the registry in heap.h must agree with
 // it. The other kinds are runtime-internal and free to move.
 static_assert(HeapKind::Plain == BRONZE_ABI_OBJ_FLAGS_PLAIN);
+static_assert(HeapKind::Array == BRONZE_ABI_OBJ_FLAGS_ARRAY);
+static_assert(HeapKind::TypedArray == BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY);
 static_assert(offsetof(ObjectHeader, shape) == BRONZE_ABI_OBJ_SHAPE_OFFSET);
+static_assert(offsetof(ObjectHeader, overflow) == BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
 static_assert(sizeof(ObjectHeader) == BRONZE_ABI_OBJ_SLOTS_OFFSET,
               "inline slots start immediately after ObjectHeader");
 static_assert(ObjectHeader::kInlineSlots == BRONZE_ABI_OBJ_INLINE_SLOTS);

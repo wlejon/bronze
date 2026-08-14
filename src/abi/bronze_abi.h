@@ -231,20 +231,30 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_TAG_BOOL             0xFFF4
 #define BRONZE_ABI_TAG_NULL             0xFFF5
 #define BRONZE_ABI_TAG_UNDEFINED        0xFFF6
+#define BRONZE_ABI_TAG_HOLE             0xFFF7
 #define BRONZE_ABI_CANONICAL_NAN_BITS   0x7FF8000000000000ull
 #define BRONZE_ABI_NUMBER_MAX_BITS      0xFFF0000000000000ull
+#define BRONZE_ABI_HOLE_BITS            0xFFF7000000000000ull
 
-/* HeapObjectHeader::flags, and the value that means "a plain object" as
+/* HeapObjectHeader::flags, and the values that mean "a plain object" as
  * opposed to an array (1), a function (2), a typed-array view (3) or an
  * ArrayBuffer (4). All of them reach bronze_prop_get, so the fast path has
  * to discriminate on this before it believes anything else. */
 #define BRONZE_ABI_OBJ_FLAGS_OFFSET      2
 #define BRONZE_ABI_OBJ_FLAGS_PLAIN       0
+#define BRONZE_ABI_OBJ_FLAGS_ARRAY       1
+#define BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY 3
+
+/* ArrayHeader field offsets */
+#define BRONZE_ABI_ARRAY_LENGTH_OFFSET   8
+#define BRONZE_ABI_ARRAY_CAPACITY_OFFSET 12
+#define BRONZE_ABI_ARRAY_ELEMS_OFFSET    16
+#define BRONZE_ABI_ARRAY_PROPS_OFFSET    24
 
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then
- * kInlineSlots inline Values. Slots at or past kInlineSlots live in the
- * overflow block and are NOT covered by the inline fast path. */
+ * kInlineSlots inline Values. */
 #define BRONZE_ABI_OBJ_SHAPE_OFFSET      8
+#define BRONZE_ABI_OBJ_OVERFLOW_OFFSET  16
 #define BRONZE_ABI_OBJ_SLOTS_OFFSET     24
 #define BRONZE_ABI_OBJ_INLINE_SLOTS      4
 

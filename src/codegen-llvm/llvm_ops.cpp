@@ -618,8 +618,11 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // an unproven one keeps the plain call, so the inline form never
             // grows into a polymorphic guard chain in the object file. This may
             // SPLIT the current block.
+            const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
+                                            ? shared_.module.keyConstants[inst.keyIndex]
+                                            : "";
             values_[inst.result] = emitPropGet(builder_, abi, shared_.icTable, obj, inst.keyIndex,
-                                               inst.icIndex, inst.icMonomorphic);
+                                               inst.icIndex, inst.icMonomorphic, keyStr);
             return true;
         }
         case il::Op::PropSet: {
@@ -627,8 +630,11 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* obj = operand(inst, 0, "Undefined operand in PropSet instruction");
             llvm::Value* val = operand(inst, 1, "Undefined operand in PropSet instruction");
             if (!obj || !val) return false;
+            const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
+                                            ? shared_.module.keyConstants[inst.keyIndex]
+                                            : "";
             emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex,
-                        inst.immI32 != 0, inst.icMonomorphic);
+                        inst.immI32 != 0, inst.icMonomorphic, keyStr);
             return true;
         }
         case il::Op::ElemGet: {
