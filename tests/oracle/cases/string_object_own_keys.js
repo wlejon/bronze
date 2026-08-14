@@ -1,36 +1,16 @@
-// BLOCKED: `unsupported: enumerating the own keys of a String object is not
-// implemented` — and the same message with "testing" and "describing", from the
-// four other operations that ask an object what its own keys are.
+// The own keys of a String exotic object (ECMA-262 10.4.3.3, 10.4.3.4,
+// 10.4.3.5).
 //
-// `cases/primitive_wrapper_objects` built the String exotic object and
-// `cases/string_index` pinned reading an index off one. Both go through the
-// PROPERTY PATH, which consults 10.4.3.5 StringGetOwnProperty and answers a
-// fresh one-code-unit string. What is missing is the other direction: 10.4.3.3
-// OwnPropertyKeys, which reports those same index properties as own keys and
-// puts them AHEAD of the ordinary ones.
-//
-// Refused rather than approximated because the approximation is silent and
-// unanimous: a wrapper's shape carries no index properties, so `Object.keys`,
-// `for-in`, `getOwnPropertyNames`, `hasOwnProperty`, `in` and
-// `getOwnPropertyDescriptor` would every one of them report a String object as
-// having no indices at all, which is a wrong answer rather than a missing one.
-//
-// What blocks it is one fact about `rtOwnKeysOrdered` (src/runtime/rt_object.cpp):
-// it is handed a RAW ObjectHeader* and its whole contract is that it allocates
-// nothing while walking, because shape keys are arena-interned and immortal. An
-// index key for a wrapper is neither — interning one goes through a heap string,
-// which allocates, which moves the header the walk is holding. Materialising
-// these keys therefore means changing that function to take a rooted receiver,
-// at every one of its call sites; that is the work this case is waiting for.
-//
-// What this pins when it lands, from 10.4.3.3 (OwnPropertyKeys), 10.4.3.4
-// (StringCreate's `length`) and 10.4.3.5 (StringGetOwnProperty):
+// `cases/primitive_wrapper_objects` built the wrapper and `cases/string_index`
+// pinned reading an index off one through 10.4.3.5 StringGetOwnProperty. This
+// case pins the other direction — 10.4.3.3 OwnPropertyKeys — across every
+// operation that asks an object what its own keys are:
 //
 // 1. The own keys are the indices in ascending order and then `length`, which
 //    is the order 10.4.3.3 states rather than creation order.
 // 2. `Object.keys` sees the indices and not `length`, because 10.4.3.4 defines
-//    `length` non-enumerable and 10.4.3.5 defines an index enumerable. That one
-//    difference is why both lines below are here.
+//    `length` non-enumerable and 10.4.3.5 defines an index enumerable. That
+//    one difference is why both lines below are here.
 // 3. An index is a real own property, so `hasOwnProperty` and `in` answer true
 //    for one inside the length and false for one past it.
 // 4. Its descriptor is non-writable and non-configurable and enumerable — the

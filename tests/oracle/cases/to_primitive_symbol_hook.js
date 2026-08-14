@@ -1,22 +1,17 @@
-// BLOCKED: 7.1.1 step 2, the one part of ToPrimitive bronze does not perform.
+// ToPrimitive step 2: the `Symbol.toPrimitive` hook (ECMA-262 7.1.1,
+// 20.4.2.1).
 //
-// The rest of the clause is built (`cases/to_primitive`), and step 2 is skipped
-// rather than answered because its key cannot exist here: `Symbol.toPrimitive`
-// is on builtin_symbol.cpp's unimplemented list, so asking for it is a named
-// hard error, and 20.4.2.1's registry hands back a symbol that is NOT the
-// well-known one — `Symbol.for("Symbol.toPrimitive")` is a different key that
-// nothing in the language consults. So no object in a bronze program can carry
-// the property, and the lookup provably finds undefined.
+// `Symbol.toPrimitive` is a real well-known symbol, so an object can carry the
+// method and 7.1.1 step 2 finds it — and when it does, the hook is the WHOLE
+// answer: it is called with the hint as its one argument ("string", "number",
+// or "default"), its primitive result is used directly, and the
+// `valueOf`/`toString` search of step 3 never runs.
 //
-// That makes this case the ratchet on the argument rather than on the feature:
-// the day `Symbol.toPrimitive` becomes a real well-known symbol, the premise
-// stops holding and step 2 has to be performed, and this starts passing.
-//
-// Unblocking this means interning a third well-known symbol beside
-// `Symbol.iterator` and `Symbol.toStringTag` (runtime/symbol.h), taking
-// "toPrimitive" off the unimplemented list, and running GetMethod for it at the
-// top of `rtToPrimitive` — with 7.1.1 step 2.d's TypeError for a hook that
-// answers with an Object, and the hint passed as its one argument.
+// The four lines pin the three hints: `String()` and a template substitution
+// pass "string" (7.1.17 ToString), while `+` in both its concatenation and
+// addition readings passes "default" (13.15.3 asks ToPrimitive for NO hint,
+// which 7.1.1 step 2.b turns into "default") — which is why `'' + money` is
+// "10" and not "ten".
 const money = {
     [Symbol.toPrimitive](hint) {
         return hint === 'string' ? 'ten' : 10;
