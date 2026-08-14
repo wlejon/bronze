@@ -73,14 +73,14 @@ ctest --preset dev          # run all module tests
 That is the light configure, and it does not build a compiler that can emit
 an executable: the LLVM backend is opt-in, and `tests/oracle` is only defined
 when it is on. Working on the front half — lexer, parser, inference, lowering,
-IL — that is the loop you want, and its 13 tests are the whole suite.
+IL — that is the loop you want, and its 15 tests are the whole suite.
 
 ```
 cmake --preset dev -DBRONZE_WITH_LLVM=ON
 ```
 
 is the other one, and it is what `bronze build`, the oracle suite and the
-three.js milestone need — 16 tests. **It is the configure the pre-commit run
+three.js milestone need — 19 tests. **It is the configure the pre-commit run
 means.** Without it `ctest` does not fail, it runs a smaller suite, which is
 the more dangerous of the two.
 
