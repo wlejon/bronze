@@ -138,6 +138,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.keyIndex = keyIdx;
     setInst.icIndex = icSiteCounter_++;
     recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
+    setInst.icMonomorphic = mono;
     setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
@@ -196,6 +197,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         setInst.operands = {objBoxed.id, storedBoxed.id};
         setInst.keyIndex = *literalKey;
         setInst.icIndex = icSiteCounter_++;
+        setInst.icMonomorphic = mono;
     } else {
         recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         setInst.op = il::Op::ElemSet;

@@ -353,27 +353,54 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     // overflow-slot case.
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
-        if (fastHdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
-            auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
-            if (ic->describes(fastObj->shape)) {
-                // Depth 0 is an own property — the common case, straight to the
-                // slot. Anything else was found up the prototype chain, so the
-                // cached slot belongs to an ancestor and reading it off the
-                // receiver would return an unrelated property.
-                if (ic->cached_depth == 0) {
-                    return fastObj->getSlot(ic->cached_slot).rawBits();
+        if (fastHdr->flags == HeapKind::Plain) {
+            if (ic && ic->cached_shape) {
+                auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
+                if (ic->describes(fastObj->shape)) {
+                    // Depth 0 is an own property — the common case, straight to the
+                    // slot. Anything else was found up the prototype chain, so the
+                    // cached slot belongs to an ancestor and reading it off the
+                    // receiver would return an unrelated property.
+                    if (ic->cached_depth == 0) {
+                        return fastObj->getSlot(ic->cached_slot).rawBits();
+                    }
+                    // An ancestor's slot numbering is stable while every link on
+                    // the way to it is a transition-tree shape, and not once one of
+                    // them is a dictionary — which is what a delete and a prototype
+                    // swap both leave behind, and neither of which the receiver's
+                    // shape, all this entry checks, notices. `describes` above has
+                    // already ruled out the third change, an add to an
+                    // intermediate.
+                    bool crossedDictionary = false;
+                    if (ObjectHeader* holder =
+                            fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
+                        return holder->getSlot(ic->cached_slot).rawBits();
+                    }
                 }
-                // An ancestor's slot numbering is stable while every link on
-                // the way to it is a transition-tree shape, and not once one of
-                // them is a dictionary — which is what a delete and a prototype
-                // swap both leave behind, and neither of which the receiver's
-                // shape, all this entry checks, notices. `describes` above has
-                // already ruled out the third change, an add to an
-                // intermediate.
-                bool crossedDictionary = false;
-                if (ObjectHeader* holder =
-                        fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
-                    return holder->getSlot(ic->cached_slot).rawBits();
+            }
+        } else if (fastHdr->flags == HeapKind::Array) {
+            StringHeader* keyHeader = rtKeyHeader(keyIndex);
+            if (keyHeader && keyHeader->isLatin1() && keyHeader->getLength() == 6 &&
+                std::memcmp(keyHeader->latin1Data(), "length", 6) == 0) {
+                return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
+            }
+        } else if (fastHdr->flags == TypedArrayHeader::kFlags) {
+            StringHeader* keyHeader = rtKeyHeader(keyIndex);
+            if (keyHeader && keyHeader->isLatin1()) {
+                const size_t kLen = keyHeader->getLength();
+                const char* kData = keyHeader->latin1Data();
+                const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
+                if (kLen == 6 && std::memcmp(kData, "length", 6) == 0) {
+                    return Value::fromDouble(view->length).rawBits();
+                }
+                if (kLen == 10 && std::memcmp(kData, "byteLength", 10) == 0) {
+                    return Value::fromDouble(view->byteLength()).rawBits();
+                }
+                if (kLen == 10 && std::memcmp(kData, "byteOffset", 10) == 0) {
+                    return Value::fromDouble(view->byteOffset).rawBits();
+                }
+                if (kLen == 6 && std::memcmp(kData, "buffer", 6) == 0) {
+                    return view->buffer.rawBits();
                 }
             }
         }
@@ -712,6 +739,51 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     recordElemCall("bronze_elem_get");
     Value objVal(objBits);
+
+    // Fast path: numeric index access on an Array or TypedArray (the common case
+    // in compute and math kernels). Checked before symbol or string conversion.
+    if (objVal.isObject() && idxBits <= kNumberMaxBits) {
+        const double d = std::bit_cast<double>(idxBits);
+        const uint32_t idx = static_cast<uint32_t>(d);
+        if (d >= 0.0 && static_cast<double>(idx) == d && d <= 4294967294.0) {
+            HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+            if (hdr->flags == HeapKind::Array) {
+                const auto* arr = reinterpret_cast<const ArrayHeader*>(hdr);
+                if (idx < arr->length) {
+                    const Value v = arr->elementsData()[idx];
+                    return v.isHole() ? BRONZE_ABI_UNDEFINED_BITS : v.rawBits();
+                }
+                return BRONZE_ABI_UNDEFINED_BITS;
+            }
+            if (hdr->flags == TypedArrayHeader::kFlags) {
+                const auto* view = reinterpret_cast<const TypedArrayHeader*>(hdr);
+                if (idx >= view->length) return BRONZE_ABI_UNDEFINED_BITS;
+                const uint8_t* p = view->bytes() + static_cast<size_t>(idx) * view->bytesPerElement();
+                switch (view->elementKind()) {
+                    case ElementKind::Float64:
+                        return Value::fromDouble(*reinterpret_cast<const double*>(p)).rawBits();
+                    case ElementKind::Float32:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const float*>(p))).rawBits();
+                    case ElementKind::Int32:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const int32_t*>(p))).rawBits();
+                    case ElementKind::Uint32:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const uint32_t*>(p))).rawBits();
+                    case ElementKind::Int16:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const int16_t*>(p))).rawBits();
+                    case ElementKind::Uint16:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const uint16_t*>(p))).rawBits();
+                    case ElementKind::Uint8:
+                    case ElementKind::Uint8Clamped:
+                        return Value::fromDouble(static_cast<double>(*p)).rawBits();
+                    case ElementKind::Int8:
+                        return Value::fromDouble(static_cast<double>(*reinterpret_cast<const int8_t*>(p))).rawBits();
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+
     if (Value(idxBits).isSymbol()) {
         // Reading a property of null or undefined is the TypeError of 7.3.2
         // whatever the key is; the `fatal` below would kill the process where

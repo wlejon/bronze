@@ -471,7 +471,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* val = operand(inst, 1, "Undefined operand in PropSet instruction");
             if (!obj || !val) return false;
             emitPropSet(builder_, abi, shared_.icTable, obj, inst.keyIndex, val, inst.icIndex,
-                        inst.immI32 != 0);
+                        inst.immI32 != 0, inst.icMonomorphic);
             return true;
         }
         case il::Op::ElemGet: {

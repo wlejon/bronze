@@ -143,7 +143,11 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
-            fastObj->setSlot(ic->cached_slot, valVal);
+            if (ic->cached_slot < ObjectHeader::kInlineSlots) {
+                fastObj->slotsData()[ic->cached_slot] = valVal;
+            } else {
+                fastObj->setSlot(ic->cached_slot, valVal);
+            }
             return;
         }
     }
@@ -437,6 +441,30 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
     recordElemCall("bronze_elem_set");
     Value objVal(objBits);
+
+    // Fast path: numeric index write on an Array or TypedArray without side-effects.
+    if (objVal.isObject() && idxBits <= kNumberMaxBits) {
+        const double d = std::bit_cast<double>(idxBits);
+        const uint32_t idx = static_cast<uint32_t>(d);
+        if (d >= 0.0 && static_cast<double>(idx) == d && d <= 4294967294.0) {
+            HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+            if (hdr->flags == HeapKind::Array) {
+                auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
+                if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject()) {
+                    arr->elementsData()[idx] = Value(valBits);
+                    return;
+                }
+            } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {
+                auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+                const double num = std::bit_cast<double>(valBits);
+                if (idx < view->length) {
+                    view->set(idx, num);
+                }
+                return;  // out-of-bounds typed-array writes are discarded, per spec
+            }
+        }
+    }
+
     if (Value(idxBits).isSymbol()) {
         if (objVal.isNull() || objVal.isUndefined()) {
             rtThrowTypeError("Cannot set properties of " +

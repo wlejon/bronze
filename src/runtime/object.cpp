@@ -74,29 +74,6 @@ void ObjectHeader::setInternalSlot(uint32_t index, Value val) {
     slotsData()[kInlineSlots + index] = val;
 }
 
-Value ObjectHeader::getSlot(uint32_t index) const {
-    if (index < kInlineSlots) {
-        return slotsData()[index];
-    }
-    uint32_t oi = index - kInlineSlots;
-    if (oi >= overflowCapacity()) {
-        fatal("object slot index beyond overflow capacity (corrupt shape?)");
-    }
-    return overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi];
-}
-
-void ObjectHeader::setSlot(uint32_t index, Value val) {
-    if (index < kInlineSlots) {
-        slotsData()[index] = val;
-        return;
-    }
-    uint32_t oi = index - kInlineSlots;
-    if (oi >= overflowCapacity()) {
-        fatal("object slot index beyond overflow capacity (corrupt shape?)");
-    }
-    overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi] = val;
-}
-
 // Grow self's overflow block to hold at least `needed` out-of-line slots.
 // Allocation may collect and move both the object and its old block, so
 // everything is re-derived through the root after allocating.

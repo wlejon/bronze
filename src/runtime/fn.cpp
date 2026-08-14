@@ -36,13 +36,24 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
     // Arity adaptation: extend args with undefined up to arity. Unrooted, and
     // safe only because the callee's prologue stores its parameters into its
     // own root frame before it can allocate.
-    std::vector<Value> args(arity, Value::fromUndefined());
+    constexpr uint32_t kStackArgsCap = 32;
+    Value stack_args[kStackArgsCap];
+    Value* args_data = stack_args;
+    std::vector<Value> heap_args;
+    if (arity > kStackArgsCap) {
+        heap_args.resize(arity, Value::fromUndefined());
+        args_data = heap_args.data();
+    } else {
+        for (uint32_t i = argc; i < arity; ++i) {
+            stack_args[i] = Value::fromUndefined();
+        }
+    }
     for (uint32_t i = 0; i < argc; ++i) {
-        args[i] = argv[i];
+        args_data[i] = argv[i];
     }
 
     return Value(code(env_record.rawBits(), thisArg.rawBits(), arity,
-                      reinterpret_cast<const uint64_t*>(args.data())));
+                      reinterpret_cast<const uint64_t*>(args_data)));
 }
 
 }  // namespace bronze

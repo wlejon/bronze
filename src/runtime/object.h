@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "abi/bronze_abi.h"
+#include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/shape.h"
@@ -246,8 +247,28 @@ struct ObjectHeader {
     static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t needed);
     static ObjectHeader* ensureSlots(Heap& heap, Rooted<Value>& self, uint32_t count);
 
-    Value getSlot(uint32_t index) const;
-    void setSlot(uint32_t index, Value val);
+    inline Value getSlot(uint32_t index) const {
+        if (index < kInlineSlots) {
+            return slotsData()[index];
+        }
+        uint32_t oi = index - kInlineSlots;
+        if (oi >= overflowCapacity()) {
+            fatal("object slot index beyond overflow capacity (corrupt shape?)");
+        }
+        return overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi];
+    }
+
+    inline void setSlot(uint32_t index, Value val) {
+        if (index < kInlineSlots) {
+            slotsData()[index] = val;
+            return;
+        }
+        uint32_t oi = index - kInlineSlots;
+        if (oi >= overflowCapacity()) {
+            fatal("object slot index beyond overflow capacity (corrupt shape?)");
+        }
+        overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi] = val;
+    }
 
     uint32_t overflowCapacity() const noexcept {
         if (!overflow.isPointer()) return 0;

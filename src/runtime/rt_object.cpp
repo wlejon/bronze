@@ -606,12 +606,19 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
                              const uint64_t* argvBits) {
     recordCallSite("bronze_dynamic_call", calleeBits);
     Value calleeVal(calleeBits);
-    if (!calleeVal.isObject() ||
-        calleeVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+    if (!calleeVal.isObject()) {
         return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
             .rawBits();
     }
-    auto* fn = calleeVal.asObject<FunctionHeader>();
+    auto* hdr = calleeVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Function) {
+        return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
+            .rawBits();
+    }
+    auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+    if (fn->arity == 0 || argc >= fn->arity) {
+        return fn->code(fn->env_record.rawBits(), thisBits, argc, argvBits);
+    }
     // argvBits already points into the caller's GC root frame, so it is rooted
     // exactly as long as the call needs it — copying it into a vector would
     // build an *unrooted* duplicate and cost a malloc per call.

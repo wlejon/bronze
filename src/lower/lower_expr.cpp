@@ -502,6 +502,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         inst.icIndex = icSiteCounter_++;
         const bool monoSet = monomorphicPropSite(*mem->object);
         recordPropertyAccess(mem->span.file, monoSet, monoSet ? "" : propBailReason(*mem->object));
+        inst.icMonomorphic = monoSet;
         // The reference this write goes through is strict exactly when the
         // code that wrote it is (13.15.2 PutValue step 6.d), and that is the
         // only thing that decides whether a refused Set throws.
@@ -563,6 +564,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
+            setInst.icMonomorphic = mono;
         } else {
             recordElementOp(idxAccess->span.file, false, "computed dynamic index");
             setInst.op = il::Op::ElemSet;

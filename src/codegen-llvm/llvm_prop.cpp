@@ -10,11 +10,78 @@ namespace bronze::codegen_llvm {
 
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::GlobalVariable* icTable,
                  llvm::Value* objBits, uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex,
-                 bool strict) {
+                 bool strict, bool monomorphic) {
     llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
+    if (!monomorphic) {
+        builder.CreateCall(abi.bronze_prop_set,
+                           {objBits, builder.getInt32(keyIndex), valBits, entry,
+                            builder.getInt1(strict)});
+        return;
+    }
+
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.set.check", fn);
+    llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "ic.set.hit", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.done", fn);
+
+    // 1. Is the receiver an object at all?
+    llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isObject =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.set.isobj");
+    builder.CreateCondBr(isObject, checkBb, slowBb);
+
+    // 2. The guard: plain object, matching shape, and depth 0 inline slot.
+    builder.SetInsertPoint(checkBb);
+    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.set.hdr");
+
+    llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                              BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.set.flags");
+    llvm::Value* isPlain =
+        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
+
+    llvm::Value* shapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                              BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    llvm::Value* shape = builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), "ic.set.shape");
+    llvm::Value* cachedShape =
+        builder.CreateAlignedLoad(ptrTy, entry, llvm::Align(8), "ic.set.cached");
+    llvm::Value* shapeOk = builder.CreateICmpEQ(shape, cachedShape);
+
+    // (depth << 32) | slot < kInlineSlots tests BOTH depth == 0 (own property) and inline slot.
+    llvm::Value* slotWordPtr = builder.CreateConstInBoundsGEP1_32(
+        i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_SLOTWORD_OFFSET / sizeof(uint64_t)));
+    llvm::Value* slotWord =
+        builder.CreateAlignedLoad(i64Ty, slotWordPtr, llvm::Align(8), "ic.set.slotword");
+    llvm::Value* slotOk =
+        builder.CreateICmpULT(slotWord, builder.getInt64(BRONZE_ABI_OBJ_INLINE_SLOTS));
+
+    llvm::Value* hit = builder.CreateAnd(builder.CreateAnd(isPlain, shapeOk), slotOk, "ic.set.hit.cond");
+    builder.CreateCondBr(hit, hitBb, slowBb);
+
+    // 3. The hit: store directly into the inline slot without helper call.
+    builder.SetInsertPoint(hitBb);
+    llvm::Value* slotsBase =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, {slotWord});
+    builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    builder.CreateBr(doneBb);
+
+    // 4. The slow fallback call.
+    builder.SetInsertPoint(slowBb);
     builder.CreateCall(abi.bronze_prop_set,
                        {objBits, builder.getInt32(keyIndex), valBits, entry,
                         builder.getInt1(strict)});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
 }
 
 // The slow arm, which is also the whole of an unproven site.
