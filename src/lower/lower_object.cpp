@@ -461,20 +461,31 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     }
 
     if (consoleStream != ast::ConsoleStream::None) {
+        bool hasSpread = false;
+        for (const auto& argPtr : call->args) {
+            if (dynamic_cast<const ast::SpreadElement*>(argPtr.get())) {
+                hasSpread = true;
+                break;
+            }
+        }
+        if (hasSpread) {
+            auto argsArr = lowerListToArray(call->args, ilFn);
+            if (!argsArr) return std::nullopt;
+            il::Instruction inst;
+            inst.op = consoleStream == ast::ConsoleStream::Err ? il::Op::PrintSpreadErr
+                                                               : il::Op::PrintSpread;
+            inst.type = il::Type::Void;
+            inst.result = il::kNoValue;
+            inst.operands = {argsArr->id};
+            emitInst(ilFn, inst);
+            return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+        }
         // Any number of arguments, including none: node formats each one as it
         // would a lone argument and joins them with a single space. The joining
         // is the runtime's, so there is one inspect formatter and not two.
         std::vector<il::ValueId> args;
         args.reserve(call->args.size());
         for (const auto& argPtr : call->args) {
-            // `print` takes its arguments as operands, one per value, and a
-            // spread's length is not known until it runs. Naming it beats
-            // silently printing the array.
-            if (dynamic_cast<const ast::SpreadElement*>(argPtr.get())) {
-                diags_.error(argPtr->span,
-                             "unsupported construct: a spread argument to " + consoleName);
-                return std::nullopt;
-            }
             auto argVal = lowerExpr(*argPtr, ilFn);
             if (!argVal) return std::nullopt;
             args.push_back(boxValueIfNeeded(*argVal, ilFn).id);

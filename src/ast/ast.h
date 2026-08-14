@@ -622,6 +622,13 @@ struct ClassDecl final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+struct ClassExpr final : Expr {
+    std::string name;       // empty when anonymous
+    std::string superName;  // empty when no extends
+    std::vector<ClassMethod> methods;
+    void accept(Visitor& v) const override;
+};
+
 struct FunctionDecl final : Stmt {
     bool isExported = false;
     std::string name;
@@ -733,6 +740,7 @@ public:
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;
     virtual void visit(const FunctionExpr&) = 0;
+    virtual void visit(const ClassExpr&) = 0;
     virtual void visit(const BlockStmt&) = 0;
     virtual void visit(const VarDecl&) = 0;
     virtual void visit(const ReturnStmt&) = 0;

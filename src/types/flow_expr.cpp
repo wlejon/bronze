@@ -117,6 +117,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return Type::dynamic();
     }
     if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
+    if (const auto* ce = dynamic_cast<const ast::ClassExpr*>(&e)) {
+        for (const auto& m : ce->methods) {
+            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                          m.fn->isGenerator || m.fn->isAsync);
+        }
+        return Type::function();
+    }
     // The value of a `yield` is the argument of the `next(v)` that resumed the
     // generator, which comes from outside this compilation entirely. Its
     // operand is still analysed: it is ordinary code that runs here.

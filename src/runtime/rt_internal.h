@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -169,6 +170,19 @@ void rtCheckTypedArrayMember(const char* kindName, const std::string& key);
 // through a root and the caller must re-derive any raw pointer afterwards.
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal);
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal);
+Value rtGlobalThisObject();
+Value rtReflectNamespace();
+Value rtDateConstructor();
+// The builtin half of global resolution, shared by `bronze_global_get` and
+// the global object's population (rt_object.cpp) so the two cannot drift.
+bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out);
+// The host-global registry's entries, for the same population. host_globals.h
+// is the EXTERNAL surface (registration and lookup); enumeration is internal.
+const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries();
+// Own-property lookup on the global object, for `bronze_global_get`'s
+// user-defined-global fallback. Distinguishes an absent name from one
+// assigned `undefined`, which the fallback needs and a plain read cannot give.
+bool rtGlobalThisOwnLookup(const std::string& name, Value& out);
 
 // 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength, filled in from the key
 // index the creator was given. `BRONZE_ABI_FN_NAME_NONE` leaves both absent.

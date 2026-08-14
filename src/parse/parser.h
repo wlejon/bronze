@@ -168,11 +168,14 @@ private:
         std::string name;
         ast::PatternPtr pattern;
     };
-    bool parseForBindingHead(ForBindingHead& head);
+    bool parseForBindingHead(ForBindingHead& head, bool hasDecl = true);
     ast::StmtPtr parseTry();
     ast::StmtPtr parseThrow();
     // `defaultName`, as for parseFunctionDecl: `export default class {}`.
     ast::StmtPtr parseClass(const std::string& defaultName = "");
+    ast::ExprPtr parseClassExpr();
+    bool parseClassBodyCommon(const std::string& name, const std::string& superName,
+                              std::vector<ast::ClassMethod>& methods, Span span);
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
     // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed. One

@@ -29,6 +29,14 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
             if (!existing.inEnv) existing.valueId = valId;
             return true;
         }
+        if (isVar && existing.isVar) {
+            if (valId != il::kNoValue && !existing.inEnv) {
+                existing.valueId = valId;
+                existing.type = type;
+            }
+            existing.isInitialized = existing.isInitialized || isInitialized;
+            return true;
+        }
         if (existing.scopeDepth == currentScopeDepth_ && !isVar) {
             diags_.error(span, "redeclaration of variable '" + name + "' in same scope");
             return false;
@@ -43,7 +51,7 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
     b.isVar = isVar;
     b.isInitialized = isInitialized;
     b.declOrder = varDeclCounter_++;
-    b.scopeDepth = currentScopeDepth_;
+    b.scopeDepth = isVar ? 0 : currentScopeDepth_;
     b.valueId = valId;
 
     // A captured declaration lives in its scope's environment. `var` is

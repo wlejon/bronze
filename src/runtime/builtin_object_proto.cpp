@@ -33,10 +33,12 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/proxy.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/shape.h"
@@ -80,7 +82,7 @@ bool requireNonNullish(Value self, const char* method) {
 // name rather than reported absent. There is exactly one: a String exotic
 // OBJECT, whose 10.4.3.4 index properties are synthesised on the property path
 // and live in no shape (rt_object.cpp carries the reasoning).
-static_assert(HeapKind::Count == 14,
+static_assert(HeapKind::Count == 15,
               "a HeapKind was added or removed: give the own-property switch below an arm for "
               "it. `hasOwnProperty` and `propertyIsEnumerable` are reachable from EVERY "
               "receiver now that the chain runs past the member tables, so a kind with no arm "
@@ -206,6 +208,15 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             if (!rtModuleNamespaceHasExport(self.get(), name.string())) return false;
             enumerable = true;
             return true;
+        }
+        case HeapKind::Proxy: {
+            // 10.5.11 [[OwnPropertyKeys]] would be the `ownKeys` trap, and
+            // 10.5.5 the `getOwnPropertyDescriptor` trap — both of which the
+            // construction gate refused (runtime/proxy.h), so the target's
+            // answer IS the proxy's answer. Recursion, because the target can
+            // be any kind this switch already has an arm for.
+            Rooted<Value> targetRoot{self.get().asObject<ProxyHeader>()->target};
+            return ownProperty(targetRoot, keyVal, enumerable);
         }
         case HeapKind::Iterator:
         case HeapKind::Env:
@@ -435,6 +446,43 @@ uint64_t objectProtoToLocaleString(uint64_t, uint64_t thisBits, uint32_t, const 
     return bronze_dynamic_call(method.get().rawBits(), self.get().rawBits(), 0, nullptr);
 }
 
+// Annex B.2.2.1.1 get Object.prototype.__proto__
+uint64_t objectProtoGetProto(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (self.get().isNull() || self.get().isUndefined()) {
+        return rtThrowTypeError("Object.prototype.__proto__ called on null or undefined").rawBits();
+    }
+    const uint64_t argv[1] = {self.get().rawBits()};
+    return objectGetPrototypeOf(0, 0, 1, argv);
+}
+
+// Annex B.2.2.1.2 set Object.prototype.__proto__
+uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> self{Value(thisBits)};
+    if (self.get().isNull() || self.get().isUndefined()) {
+        return rtThrowTypeError("Object.prototype.__proto__ called on null or undefined").rawBits();
+    }
+    if (argc == 0) return BRONZE_ABI_UNDEFINED_BITS;
+    Value protoVal(argv[0]);
+    // B.2.2.1.2 steps 2 and 4: a non-object non-null VALUE and a primitive
+    // RECEIVER are both quiet returns — the spec's own answer, not a skip.
+    if (!protoVal.isObject() && !protoVal.isNull()) return BRONZE_ABI_UNDEFINED_BITS;
+    if (!self.get().isObject()) return BRONZE_ABI_UNDEFINED_BITS;
+    // An OBJECT receiver reaches step 5, [[SetPrototypeOf]], and for an array
+    // or a function that is a real operation bronze has not built — the
+    // prototype those kinds answer with is not a shape word a write here
+    // could change. Refused by name rather than quietly returned, which
+    // would leave the program believing the chain moved.
+    if (self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal((std::string("unsupported: __proto__ write on ") +
+               rtObjectKindName(self.get()) +
+               " (only a plain object's prototype can be replaced)")
+                  .c_str());
+    }
+    const uint64_t args[2] = {self.get().rawBits(), protoVal.rawBits()};
+    return objectSetPrototypeOf(0, 0, 2, args);
+}
+
 const NativeMethod kObjectProtoMethods[] = {
     {"hasOwnProperty", objectProtoHasOwnProperty, 1},
     {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
@@ -442,14 +490,6 @@ const NativeMethod kObjectProtoMethods[] = {
     {"toLocaleString", objectProtoToLocaleString, 0},
     {"toString", rtObjectProtoToString, 0},
     {"valueOf", objectProtoValueOf, 0},
-};
-
-// 20.1.3 members bronze has not built, diagnosed by name on a plain object's
-// full-chain miss. `__defineGetter__` and its three siblings are Annex B
-// (B.2.2) and are deliberately absent from this list as well as from bronze:
-// nothing in it is a name a program should be reaching for.
-const char* const kObjectProtoUnimplemented[] = {
-    "__proto__",
 };
 
 }  // namespace
@@ -466,12 +506,23 @@ void rtInstallObjectProtoMethods(Rooted<Value>& proto) {
     // is what 20.1.3 says every one of these is — and not an assignment, so a
     // member here cannot be swallowed by a setter anything installed first.
     rtDefineMethods(proto, kObjectProtoMethods, std::size(kObjectProtoMethods));
+    {
+        Rooted<Value> key{rtMakeString("__proto__")};
+        Rooted<Value> getter{rtNativeFunction(objectProtoGetProto, 0)};
+        Rooted<Value> setter{rtNativeFunction(objectProtoSetProto, 1)};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                     /*enumerable=*/false);
+    }
 }
 
-void rtObjectProtoCheckMissingMember(const std::string& key) {
-    rtCheckUnimplementedMember("Object.prototype", kObjectProtoUnimplemented,
-                               std::size(kObjectProtoUnimplemented), key);
-}
+// Every 20.1.3 member bronze knows about is now built (`__proto__` was the
+// list's last entry), so a full-chain miss really is an absent property. The
+// function stays because the miss path calls it for every receiver kind, and
+// the next unbuilt member belongs here rather than in a new mechanism —
+// `__defineGetter__` and its three Annex B siblings stay deliberately
+// unlisted as well as unbuilt: nothing in them is a name a program should be
+// reaching for.
+void rtObjectProtoCheckMissingMember(const std::string&) {}
 
 // The rest of the chain, for a receiver whose members bronze answers from a C
 // table beside it rather than from a prototype object.

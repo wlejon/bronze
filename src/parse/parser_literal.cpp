@@ -504,27 +504,25 @@ ExprPtr Parser::parseObjectLit() {
             if (!spread->argument) return nullptr;
             spread->span = {dots.span.begin, spread->argument->span.end};
             prop.value = std::move(spread);
-        } else {
-            // A numeric key (`{ 1: 'a' }`) lands here deliberately: its name
-            // is ToString(Number), which is the runtime's formatter and not
-            // something the parser may reimplement. `{ [1]: 'a' }` is the
-            // spelling that works, and it is the same property.
-            //
-            // It gets its own message, because 13.2.5 says a NumericLiteral IS
-            // a PropertyName — telling the reader one was expected names the
-            // wrong thing and sends them looking for a typo they did not make.
-            if (check(TokenKind::NumberLiteral)) {
-                // Quote the key the reader actually wrote: a fixed example
-                // sends someone who typed `{ 5: x }` looking for a `1`.
-                error((std::string("unsupported construct: a numeric property key "
-                                   "(its name is ToString(Number), which the parser "
-                                   "may not compute; write `[") +
-                       std::string(peek().text) + "]:` or its string name)")
-                          .c_str());
-                return nullptr;
+        } else if (check(TokenKind::NumberLiteral)) {
+            const Token& numTok = advance();
+            auto lit = std::make_unique<NumberLit>();
+            lit->span = numTok.span;
+            if (!decodeNumericLiteral(numTok.text, numTok.span, lit->value)) return nullptr;
+            prop.keyExpr = std::move(lit);
+            if (check(TokenKind::LParen)) {
+                auto method = parseMethodTail(methodName("computed"), numTok.span);
+                if (!method) return nullptr;
+                prop.isMethod = true;
+                prop.value = std::move(method);
+            } else {
+                if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
+                prop.value = parseAssign();
+                if (!prop.value) return nullptr;
             }
+        } else {
             error("expected a property key: an identifier, a string literal, "
-                  "or a computed '[expr]'");
+                  "a number literal, or a computed '[expr]'");
             return nullptr;
         }
 

@@ -31,6 +31,7 @@
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/proxy.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -343,6 +344,19 @@ struct CtorEntry {
     void (*decorate)(Rooted<Value>&);
 };
 
+// 28.2.1.2 Proxy.revocable. Revocation flips every internal method to a
+// TypeError, which is a per-operation check the proxy kind does not carry —
+// so the whole member is refused here, by name, rather than handed out as a
+// pair whose `revoke` would quietly do nothing.
+uint64_t proxyRevocable(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    fatal("unsupported: Proxy.revocable (a revoked proxy must refuse every operation, and "
+          "bronze's proxies have no revoked state to check)");
+}
+
+const StaticFn kProxyStatics[] = {
+    {"revocable", proxyRevocable, 2},
+};
+
 const CtorEntry kCtors[] = {
     {"Array", arrayConstructor, kArrayStatics, std::size(kArrayStatics),
      kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), nullptr, nullptr},
@@ -353,6 +367,8 @@ const CtorEntry kCtors[] = {
     // answers all fifteen (builtin_number.cpp says so at the table).
     {"Number", rtNumberConstructorBody, nullptr, 0, nullptr, 0, rtNumberPrototype,
      rtInstallNumberStatics},
+    {"Proxy", rtProxyConstructor, kProxyStatics, std::size(kProxyStatics), nullptr, 0, nullptr,
+     nullptr},
 };
 
 // Arity 0 for the constructors too, and here it decides an answer rather than

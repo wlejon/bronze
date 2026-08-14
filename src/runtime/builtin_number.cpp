@@ -207,6 +207,107 @@ const NamespaceConst kNumberConstants[] = {
     {"NaN", std::numeric_limits<double>::quiet_NaN()},
 };
 
+static bool isUriUnescaped(unsigned char c, bool component) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
+    switch (c) {
+        case '-': case '_': case '.': case '!': case '~': case '*': case '\'': case '(': case ')':
+            return true;
+        case ';': case ',': case '/': case '?': case ':': case '@': case '&': case '=': case '+': case '$': case '#':
+            return !component;
+        default:
+            return false;
+    }
+}
+
+static std::string encodeUriImpl(const std::string& input, bool component) {
+    static const char hexChars[] = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(input.size() * 3);
+    for (unsigned char c : input) {
+        if (isUriUnescaped(c, component)) {
+            result.push_back(c);
+        } else {
+            result.push_back('%');
+            result.push_back(hexChars[(c >> 4) & 0xF]);
+            result.push_back(hexChars[c & 0xF]);
+        }
+    }
+    return result;
+}
+
+uint64_t globalEncodeURI(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
+    return rtMakeString(encodeUriImpl(s, /*component=*/false)).rawBits();
+}
+
+uint64_t globalEncodeURIComponent(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
+    return rtMakeString(encodeUriImpl(s, /*component=*/true)).rawBits();
+}
+
+static int hexVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// 19.2.6.2 Decode. The two entry points differ in ONE set: `decodeURI` keeps
+// a reserved character's escape spelled as it was written — decoding `%2F`
+// would change where a path splits — while `decodeURIComponent` decodes
+// everything. A truncated or non-hex escape is the spec's URIError in both
+// (19.2.6.1.1), not a byte passed through: passing it through was a silent
+// wrong answer with the same shape as the reserved set being decoded.
+static bool decodeUriImpl(const std::string& input, bool preserveReserved,
+                          std::string& result) {
+    result.reserve(input.size());
+    const size_t len = input.size();
+    for (size_t i = 0; i < len; ++i) {
+        if (input[i] != '%') {
+            result.push_back(input[i]);
+            continue;
+        }
+        if (i + 2 >= len) return false;
+        const int h1 = hexVal(input[i + 1]);
+        const int h2 = hexVal(input[i + 2]);
+        if (h1 < 0 || h2 < 0) return false;
+        const char decoded = static_cast<char>((h1 << 4) | h2);
+        if (preserveReserved && !isUriUnescaped(static_cast<unsigned char>(decoded),
+                                                /*component=*/true) &&
+            isUriUnescaped(static_cast<unsigned char>(decoded), /*component=*/false)) {
+            // In the reserved set (uriReserved + '#'): the difference between
+            // the two isUriUnescaped answers IS that set.
+            result.append(input, i, 3);
+        } else {
+            result.push_back(decoded);
+        }
+        i += 2;
+    }
+    return true;
+}
+
+uint64_t globalDecodeURI(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
+    std::string decoded;
+    if (!decodeUriImpl(s, /*preserveReserved=*/true, decoded)) {
+        return rtThrowError(ErrorKind::URIError, "URI malformed").rawBits();
+    }
+    return rtMakeString(decoded).rawBits();
+}
+
+uint64_t globalDecodeURIComponent(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
+    std::string decoded;
+    if (!decodeUriImpl(s, /*preserveReserved=*/false, decoded)) {
+        return rtThrowError(ErrorKind::URIError, "URI malformed").rawBits();
+    }
+    return rtMakeString(decoded).rawBits();
+}
+
 // 19.2's function properties of the global object, by the name a free
 // identifier spells. `parseInt` and `parseFloat` share their code pointers with
 // the `Number` statics, and `bronze_function_singleton` interns by code
@@ -217,6 +318,10 @@ const NamespaceFn kGlobalFunctions[] = {
     {"isFinite", globalIsFinite, 1},
     {"parseInt", numberParseInt, 2},
     {"parseFloat", numberParseFloat, 1},
+    {"encodeURI", globalEncodeURI, 1},
+    {"encodeURIComponent", globalEncodeURIComponent, 1},
+    {"decodeURI", globalDecodeURI, 1},
+    {"decodeURIComponent", globalDecodeURIComponent, 1},
 };
 
 // Whether this function's statics have been installed. A plain bool and not a

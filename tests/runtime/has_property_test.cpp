@@ -29,6 +29,7 @@
 #include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -45,7 +46,7 @@ using namespace bronze::runtime;
 // about the kind you happened to run. Pinning the registry's SIZE in both
 // places is what makes adding a kind a build failure at the dispatch AND at the
 // test that covers it, rather than a segfault a year later.
-static_assert(HeapKind::Count == 14,
+static_assert(HeapKind::Count == 15,
               "a HeapKind was added or removed: give `in` an arm for it in rt_operator.cpp, "
               "and give it a receiver in `everyKind` below — a kind with no arm is exactly "
               "what used to read its payload's first word as a Shape*");
@@ -198,6 +199,33 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
         // found on.
         CHECK_FALSE(hasName("missing", ns));
         CHECK_FALSE(hasName("toString", ns));
+    }
+
+    SUBCASE("a proxy") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        Rooted<Value> key{rtMakeString("k")};
+        Rooted<Value> val{Value::fromDouble(1.0)};
+        target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        Rooted<Value> handler{Value(bronze_create_object())};
+        const uint64_t ctorArgs[2] = {target.get().rawBits(), handler.get().rawBits()};
+        Rooted<Value> proxy{Value(rtProxyConstructor(0, 0, 2, ctorArgs))};
+        // No `has` trap (10.5.7 step 7): the target's whole answer — its own
+        // key, its chain past the member tables, and its absences.
+        CHECK(hasName("k", proxy));
+        CHECK(hasName("hasOwnProperty", proxy));
+        CHECK_FALSE(hasName("missing", proxy));
+
+        // With a `has` trap, the handler's answer replaces the target's.
+        Rooted<Value> trapKey{rtMakeString("has")};
+        Rooted<Value> trap{rtNativeFunction(
+            [](uint64_t, uint64_t, uint32_t, const uint64_t*) -> uint64_t {
+                return Value::fromBool(true).rawBits();
+            },
+            2)};
+        handler.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), trapKey, trap);
+        const uint64_t trapArgs[2] = {target.get().rawBits(), handler.get().rawBits()};
+        Rooted<Value> trapped{Value(rtProxyConstructor(0, 0, 2, trapArgs))};
+        CHECK(hasName("missing", trapped));
     }
 }
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -25,6 +26,7 @@
 #include "runtime/profile.h"
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
+#include "runtime/builtin_object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -627,5 +629,219 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
 }
 
 }  // extern "C"
+
+static Value g_globalThisObject = Value::fromUndefined();
+
+// The names 19.1–19.4 put on the global object that bronze provides. The
+// SAME set lowering admits as provided globals (lower_util.cpp), minus
+// `globalThis` itself — which is written as a self-reference below — because
+// `Math` and `globalThis.Math` are one binding and must not drift.
+static const char* const kGlobalObjectNames[] = {
+    "Math", "Object", "Number", "JSON", "Array", "String", "Boolean", "Symbol", "RegExp",
+    "Promise", "Map", "Set", "WeakMap", "WeakSet", "Error", "TypeError", "AggregateError",
+    "RangeError", "SyntaxError", "ReferenceError", "URIError", "isNaN", "isFinite", "parseInt",
+    "parseFloat", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+    "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "DataView",
+    "Function", "Proxy", "Reflect", "Date", "encodeURI", "encodeURIComponent", "decodeURI",
+    "decodeURIComponent",
+};
+
+Value rtGlobalThisObject() {
+    if (g_globalThisObject.isUndefined()) {
+        Rooted<Value> glob{Value::fromObject(
+            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+        glob.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+        // 9.3.4: builtins on the global object are writable and configurable
+        // but NOT enumerable, which is what keeps a `for-in` over globalThis
+        // from visiting Math.
+        for (const char* name : kGlobalObjectNames) {
+            Value resolved = Value::fromUndefined();
+            if (!rtResolveBuiltinGlobal(name, resolved)) {
+                fatal((std::string("internal: global object population lists '") + name +
+                       "', a name the builtin ladder cannot resolve")
+                          .c_str());
+            }
+            Rooted<Value> key{rtMakeString(name)};
+            Rooted<Value> val{resolved};
+            glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                         /*enumerable=*/false,
+                                                         /*defineOwn=*/true);
+        }
+        // Host globals, as they stand when the object is FIRST read. A host
+        // registers before `bronze_main` runs and this object cannot exist
+        // before that, so the snapshot is the registry — a host that
+        // re-registers a name afterwards updates free-name reads (which scan
+        // the registry live) but not this object, an edge no current host
+        // exercises.
+        for (const auto& entry : rtHostGlobalEntries()) {
+            Rooted<Value> key{rtMakeString(entry.first)};
+            Rooted<Value> val{entry.second};
+            glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                         /*enumerable=*/false,
+                                                         /*defineOwn=*/true);
+        }
+        Rooted<Value> key{rtMakeString("globalThis")};
+        glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, glob, nullptr,
+                                                     /*enumerable=*/false, /*defineOwn=*/true);
+        g_globalThisObject = glob.get();
+        rtHeap().add_permanent_root(&g_globalThisObject);
+    }
+    return g_globalThisObject;
+}
+
+// The read half of "a property of the global object is a global binding":
+// `bronze_global_get` asks this after the builtin ladder and the host
+// registry both miss, so `globalThis.navigator = {...}` really does create
+// the global that a later free `navigator` reads. Presence is the SHAPE's
+// answer and not "the value is not undefined", because a global assigned
+// `undefined` is a defined global and not a ReferenceError.
+bool rtGlobalThisOwnLookup(const std::string& name, Value& out) {
+    if (!g_globalThisObject.isObject()) return false;
+    Rooted<Value> key{rtMakeString(name)};
+    PropertyKey pkey = rtInternPropertyKey(key.get());
+    auto* obj = g_globalThisObject.asObject<ObjectHeader>();
+    uint32_t slot = 0;
+    if (!obj->shape || !obj->shape->lookupProperty(pkey, slot)) return false;
+    out = g_globalThisObject.asObject<ObjectHeader>()->getProp(rtHeap(), key);
+    return true;
+}
+
+static uint64_t reflectApply(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 3) {
+        return rtThrowTypeError("Reflect.apply requires at least 3 arguments").rawBits();
+    }
+    Value target(argv[0]);
+    Value thisArg(argv[1]);
+    Value argsList(argv[2]);
+    if (!target.isObject() || target.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return rtThrowTypeError("Reflect.apply: target must be a function").rawBits();
+    }
+    if (!argsList.isObject()) {
+        return rtThrowTypeError("Reflect.apply: arguments must be an object").rawBits();
+    }
+    if (argsList.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
+        // 28.1.1 step 2 is CreateListFromArrayLike, which walks `length` and
+        // indices off ANY object. bronze reads a real array's elements only,
+        // and an array-like silently called with zero arguments would be the
+        // silent wrong answer this refusal exists to prevent.
+        fatal("unsupported: Reflect.apply with an argument list that is not an Array "
+              "(CreateListFromArrayLike over an array-like is not built)");
+    }
+    uint32_t count = argsList.asObject<ArrayHeader>()->length;
+    std::vector<Value> argVec(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        argVec[i] = argsList.asObject<ArrayHeader>()->getElem(i);
+    }
+    return target.asObject<FunctionHeader>()->call(thisArg, count, argVec.data()).rawBits();
+}
+
+static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 2) return BRONZE_ABI_UNDEFINED_BITS;
+    // 28.1.6 step 4: with a receiver, a GETTER found on the target runs
+    // against the receiver instead. bronze's read path would run it against
+    // the target, so a distinct receiver is refused rather than misanswered.
+    if (argc > 2 && argv[2] != argv[0]) {
+        fatal("unsupported: Reflect.get with a receiver distinct from the target");
+    }
+    return bronze_elem_get(argv[0], argv[1]);
+}
+
+static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 3) return Value::fromBool(false).rawBits();
+    if (argc > 3 && argv[3] != argv[0]) {
+        fatal("unsupported: Reflect.set with a receiver distinct from the target");
+    }
+    bronze_elem_set(argv[0], argv[1], argv[2], /*strict=*/false);
+    return Value::fromBool(true).rawBits();
+}
+
+static uint64_t reflectHas(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 2) return Value::fromBool(false).rawBits();
+    return Value::fromBool(bronze_has_property(argv[1], argv[0])).rawBits();
+}
+
+static uint64_t reflectOwnKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return rtThrowTypeError("Reflect.ownKeys called on non-object").rawBits();
+    const uint64_t call[1] = {argv[0]};
+    return rtObjectGetOwnPropertyNames(0, 0, 1, call);
+}
+
+static uint64_t reflectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return objectGetPrototypeOf(0, 0, argc, argv);
+}
+
+static uint64_t reflectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return objectSetPrototypeOf(0, 0, argc, argv);
+}
+
+static uint64_t reflectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return rtObjectGetOwnPropertyDescriptor(0, 0, argc, argv);
+}
+
+static uint64_t reflectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return rtObjectDefineProperty(0, 0, argc, argv);
+}
+
+static Value g_reflectNamespace = Value::fromUndefined();
+
+Value rtReflectNamespace() {
+    if (g_reflectNamespace.isUndefined()) {
+        Rooted<Value> ns{Value::fromObject(
+            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+        ns.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+        g_reflectNamespace = ns.get();
+        rtHeap().add_permanent_root(&g_reflectNamespace);
+
+        const NativeMethod methods[] = {
+            {"apply", reflectApply, 3},
+            {"get", reflectGet, 2},
+            {"set", reflectSet, 3},
+            {"has", reflectHas, 2},
+            {"ownKeys", reflectOwnKeys, 1},
+            {"getPrototypeOf", reflectGetPrototypeOf, 1},
+            {"setPrototypeOf", reflectSetPrototypeOf, 2},
+            {"getOwnPropertyDescriptor", reflectGetOwnPropertyDescriptor, 2},
+            {"defineProperty", reflectDefineProperty, 3},
+        };
+        rtDefineMethods(ns, methods, std::size(methods));
+    }
+    return g_reflectNamespace;
+}
+
+// 21.4.4.2.1: milliseconds since the epoch, from the real clock. The
+// determinism rule is about the COMPILER's output, not a compiled program's:
+// a program that reads the clock reads the clock, exactly as it would under
+// node, and an oracle case that printed this value would be wrong for a
+// reason no fixed constant could fix.
+static uint64_t dateNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    return Value::fromDouble(static_cast<double>(ms)).rawBits();
+}
+
+// A Date OBJECT carries [[DateValue]] and some forty prototype methods, none
+// of which bronze has built — so constructing one is refused by name rather
+// than handed back as something that would misanswer every method call.
+static uint64_t dateConstructor(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    fatal("unsupported: the Date constructor (Date.now() is built; a Date object and its "
+          "prototype methods are not)");
+}
+
+static Value g_dateConstructor = Value::fromUndefined();
+
+Value rtDateConstructor() {
+    if (g_dateConstructor.isUndefined()) {
+        Rooted<Value> ctor{rtNativeFunction(dateConstructor, 7)};
+        rtEnsureFunctionProperties(ctor);
+        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+        Rooted<Value> key{rtMakeString("now")};
+        Rooted<Value> nowFn{rtNativeFunction(dateNow, 0)};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, nowFn, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+        g_dateConstructor = ctor.get();
+        rtHeap().add_permanent_root(&g_dateConstructor);
+    }
+    return g_dateConstructor;
+}
 
 }  // namespace bronze::runtime

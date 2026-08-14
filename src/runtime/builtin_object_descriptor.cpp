@@ -27,6 +27,7 @@
 #include "runtime/array.h"
 #include "runtime/dictionary.h"
 #include "runtime/exception.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -90,6 +91,12 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
     Rooted<Value> self{args[0]};
     Rooted<Value> desc{args[2]};
 
+    Rooted<Value> target{self.get()};
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        target.set(self.get().asObject<FunctionHeader>()->properties);
+    }
+
     bool hasValue = false, hasGet = false, hasSet = false;
     bool hasWritable = false, hasEnumerable = false, hasConfigurable = false;
     Rooted<Value> value{readField(desc, "value", hasValue)};
@@ -114,9 +121,9 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
     // entry can hold it forever.
     PropertyKey name = rtInternPropertyKey(args[1]);
 
-    ObjectHeader::toDictionary(rtArena(), self);
-    DictEntry* existing = entryOf(self.get(), name);
-    if (!existing && !self.get().asObject<ObjectHeader>()->shape->dict->extensible) {
+    ObjectHeader::toDictionary(rtArena(), target);
+    DictEntry* existing = entryOf(target.get(), name);
+    if (!existing && !target.get().asObject<ObjectHeader>()->shape->dict->extensible) {
         return rtThrowTypeError("Cannot define property, object is not extensible").rawBits();
     }
     if (existing && !existing->configurable) {
@@ -125,14 +132,14 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
 
     uint32_t slot = 0;
     ObjectHeader* live =
-        ObjectHeader::dictDefine(rtHeap(), rtArena(), self, name, enumerable, accessor, slot);
+        ObjectHeader::dictDefine(rtHeap(), rtArena(), target, name, enumerable, accessor, slot);
     if (accessor) {
         live->setSlot(slot, hasGet ? getter.get() : Value::fromUndefined());
         live->setSlot(slot + 1, hasSet ? setter.get() : Value::fromUndefined());
     } else {
         live->setSlot(slot, value.get());
     }
-    DictEntry* entry = entryOf(self.get(), name);
+    DictEntry* entry = entryOf(target.get(), name);
     entry->writable = writable;
     entry->configurable = configurable;
     return self.get().rawBits();
@@ -216,6 +223,14 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             Rooted<Value> c{Value::fromBool(false)};
             putField(out, "configurable", c);
             return out.get().rawBits();
+        }
+        case ObjectOwnKeys::Function: {
+            Value props = args[0].asObject<FunctionHeader>()->properties;
+            if (props.isUndefined() || !props.isObject()) {
+                return Value::fromUndefined().rawBits();
+            }
+            const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
+            return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
         }
         case ObjectOwnKeys::Shape:
             break;

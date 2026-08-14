@@ -21,6 +21,7 @@
 #include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -189,6 +190,12 @@ void spreadStringSource(Rooted<Value>& target, Rooted<Value>& stringData,
 void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name) {
     Rooted<Value> key{name.isSymbol() ? name.toValue() : rtCopyKeyToHeap(name.string())};
     Rooted<Value> val{source.get().asObject<ObjectHeader>()->getProp(rtHeap(), key)};
+    // A proxy target's [[Set]] is its `set` trap; a direct shape write here
+    // would be exactly the bypass the proxy exists to prevent.
+    if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        rtProxySet(target.get(), key.get(), val.get(), /*strict=*/false);
+        return;
+    }
     target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
 }
 
@@ -393,6 +400,34 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             // The read runs the export's getter, so it can throw; carrying on
             // to the next name would be the runtime continuing past an
             // exception.
+            Rooted<Value> val{
+                Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+            if (rtExceptionPending()) return;
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            /*strict=*/false);
+            if (rtExceptionPending()) return;
+        }
+        return;
+    }
+    // A proxy SOURCE: CopyDataProperties takes the proxy's OwnPropertyKeys —
+    // which is the target's own list, because a vetted handler carries no
+    // ownKeys trap (proxy.cpp's construction gate) — and reads each one with
+    // [[Get]] THROUGH the proxy, so a `get` trap observes every read.
+    if (srcVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        Rooted<Value> inner{srcVal.asObject<ProxyHeader>()->target};
+        if (!isPlainObject(inner.get())) {
+            fatal((std::string("unsupported: object spread of a Proxy over ") +
+                   rtObjectKindName(inner.get()) +
+                   " (only a proxy over a plain object answers own keys here)")
+                      .c_str());
+        }
+        for (PropertyKey name : rtOwnKeysOrdered(inner.get().asObject<ObjectHeader>())) {
+            if (stringTarget.get().isString() && !name.isSymbol() &&
+                stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
+                return;
+            }
+            Rooted<Value> key{name.isSymbol() ? name.toValue()
+                                              : rtCopyKeyToHeap(name.string())};
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;

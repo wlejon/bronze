@@ -246,6 +246,57 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 // host registry is therefore still a drift between lowering's list and this
 // one — an internal tripwire, not a program error — and a manifest name the
 // host never registered is the same drift with the host on one side of it.
+}  // extern "C"
+
+// The builtin half of global resolution, name in and value out, with no
+// cache: `bronze_global_get` caches by key index, and `rtGlobalThisObject`
+// walks this same ladder to give the global object real properties — two
+// callers, one list, so `Math` and `globalThis.Math` cannot drift.
+bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
+    if (keyStr == "Math") {
+        out = rtMathObject();
+    } else if (keyStr == "Object") {
+        out = rtObjectNamespace();
+    } else if (keyStr == "Function") {
+        out = rtFunctionConstructorObject();
+    } else if (keyStr == "JSON") {
+        out = rtJsonNamespace();
+    } else if (keyStr == "globalThis") {
+        out = rtGlobalThisObject();
+    } else if (keyStr == "Reflect") {
+        out = rtReflectNamespace();
+    } else if (keyStr == "Date") {
+        out = rtDateConstructor();
+    } else if (keyStr == "Symbol") {
+        out = rtSymbolFunction();
+    } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
+        out = regexp;
+    } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
+        out = collection;
+    } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {
+        out = weak;
+    } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
+        out = typed;
+    } else if (Value dataView = rtDataViewConstructor(keyStr); dataView.isObject()) {
+        out = dataView;
+    } else if (Value global = rtGlobalConstructor(keyStr); global.isObject()) {
+        out = global;
+    } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
+        out = ctor;
+    } else if (Value promise = rtPromiseConstructor(keyStr); promise.isObject()) {
+        out = promise;
+    } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
+        out = numeric;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries() { return g_hostGlobals; }
+
+extern "C" {
+
 uint64_t bronze_global_get(uint32_t keyIndex) {
     recordPropCall("bronze_global_get", keyIndex, nullptr);
     if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
@@ -253,35 +304,7 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
     }
     const std::string& keyStr = rtKeyString(keyIndex);
     Value resolved = Value::fromUndefined();
-    if (keyStr == "Math") {
-        resolved = rtMathObject();
-    } else if (keyStr == "Object") {
-        resolved = rtObjectNamespace();
-    } else if (keyStr == "Function") {
-        resolved = rtFunctionConstructorObject();
-    } else if (keyStr == "JSON") {
-        resolved = rtJsonNamespace();
-    } else if (keyStr == "Symbol") {
-        resolved = rtSymbolFunction();
-    } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
-        resolved = regexp;
-    } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
-        resolved = collection;
-    } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {
-        resolved = weak;
-    } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
-        resolved = typed;
-    } else if (Value dataView = rtDataViewConstructor(keyStr); dataView.isObject()) {
-        resolved = dataView;
-    } else if (Value global = rtGlobalConstructor(keyStr); global.isObject()) {
-        resolved = global;
-    } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
-        resolved = ctor;
-    } else if (Value promise = rtPromiseConstructor(keyStr); promise.isObject()) {
-        resolved = promise;
-    } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
-        resolved = numeric;
-    } else if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
+    if (!rtResolveBuiltinGlobal(keyStr, resolved)) {
         // AFTER every builtin, so a host cannot swap out `Math` under code
         // that was compiled against it — and BEFORE the fatal, because a
         // host-registered name is a legitimate answer. Returned directly
@@ -289,8 +312,19 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         // rtRegisterHostGlobal replaces on re-registration, and a cached
         // first answer would keep serving the old value. The registry scan
         // per read is the price, paid only by host-global reads.
-        return host.rawBits();
-    } else {
+        if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
+            return host.rawBits();
+        }
+        // A property of the global object IS a global binding (9.1.1.4.1
+        // resolves an unqualified name against the global environment, whose
+        // object record is `globalThis`). A program that assigned
+        // `globalThis.navigator = {...}` created the global the next free
+        // `navigator` reads — so the object is consulted before the fatal,
+        // and never cached, because the program can assign again.
+        if (Value fromGlobalObject = Value::fromUndefined();
+            rtGlobalThisOwnLookup(keyStr, fromGlobalObject)) {
+            return fromGlobalObject.rawBits();
+        }
         fatal(("internal: no global named " + keyStr).c_str());
     }
     if (keyIndex >= g_globalCache.size()) {

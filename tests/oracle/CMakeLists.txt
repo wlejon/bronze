@@ -2,7 +2,8 @@ add_executable(bronze_oracle_tests oracle_test.cpp)
 target_include_directories(bronze_oracle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases"
-    TEST_THREEJS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/threejs")
+    TEST_THREEJS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/threejs"
+    TEST_PIXI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pixi")
 
 target_link_libraries(bronze_oracle_tests PRIVATE bronze::cli doctest::doctest)
 
@@ -13,7 +14,7 @@ endif()
 # The three suites share one binary and are split into three ctest tests by
 # doctest's own name filter, so that the ~70 s three.js compile can be selected
 # or skipped on its own without the case list forking into a second harness.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -28,3 +29,10 @@ set_tests_properties(oracle PROPERTIES LABELS oracle)
 # run reuses the executable the first one built.
 add_test(NAME oracle-threejs COMMAND bronze_oracle_tests --test-case=threejs*)
 set_tests_properties(oracle-threejs PROPERTIES LABELS threejs)
+
+# Unmodified pixi.js v8.19.0 (tests/oracle/pixi/README.md), under its own
+# label for the same reason as three.js: the bundle costs a whole-library
+# compile per inference mode, so `-L pixi` selects it and `-LE "threejs|pixi"`
+# is the fast loop when both milestones should stay out of the way.
+add_test(NAME oracle-pixi COMMAND bronze_oracle_tests --test-case=pixi*)
+set_tests_properties(oracle-pixi PROPERTIES LABELS pixi)

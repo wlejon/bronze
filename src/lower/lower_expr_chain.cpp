@@ -110,6 +110,7 @@ std::optional<Lowerer::Value> Lowerer::lowerChainJoin(
     // order is not deterministic output.
     std::vector<std::string> joinVars;
     for (const auto& name : getActiveVarsInDeclOrder()) {
+        if (varBindings_[activeVarMap_[name]].inEnv) continue;
         const il::ValueId here = success.state.at(name).valueId;
         for (const auto& exit : exits) {
             if (exit.state.at(name).valueId != here) {

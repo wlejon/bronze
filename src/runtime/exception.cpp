@@ -64,6 +64,7 @@ uint64_t errorCtorTypeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorRangeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorSyntaxError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorReferenceError(uint64_t, uint64_t, uint32_t, const uint64_t*);
+uint64_t errorCtorURIError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorAggregateError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 
 // Order matters only in that `Error` is first: the other two chain their
@@ -74,6 +75,7 @@ ErrorClass g_errorClasses[] = {
     {"RangeError", ErrorKind::RangeError, errorCtorRangeError},
     {"SyntaxError", ErrorKind::SyntaxError, errorCtorSyntaxError},
     {"ReferenceError", ErrorKind::ReferenceError, errorCtorReferenceError},
+    {"URIError", ErrorKind::URIError, errorCtorURIError},
     {"AggregateError", ErrorKind::AggregateError, errorCtorAggregateError},
 };
 
@@ -163,6 +165,9 @@ uint64_t errorCtorSyntaxError(uint64_t, uint64_t thisBits, uint32_t argc, const 
 uint64_t errorCtorReferenceError(uint64_t, uint64_t thisBits, uint32_t argc,
                                  const uint64_t* argv) {
     return errorCtorImpl(ErrorKind::ReferenceError, thisBits, argc, argv);
+}
+uint64_t errorCtorURIError(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return errorCtorImpl(ErrorKind::URIError, thisBits, argc, argv);
 }
 
 // 20.5.7.1.1 AggregateError(errors, message): the family constructor with one

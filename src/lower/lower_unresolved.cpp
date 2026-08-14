@@ -49,6 +49,15 @@ bool Lowerer::resolvesName(const std::string& name) const {
 // warning stream is too.
 void Lowerer::warnUnresolved(const std::string& name, Span span) {
     if (!warnedUnresolved_.insert(name).second) return;
+    // A folded console member is not a missing global: the parser folded it
+    // knowing what it is, and the warning has to say so or the reader goes
+    // looking for a binding that was never the problem.
+    if (name.rfind("console.", 0) == 0) {
+        diags_.warning(span, "unsupported: " + name +
+                                 " is not implemented (console provides log, info, debug, warn "
+                                 "and error); a ReferenceError if it is evaluated");
+        return;
+    }
     diags_.warning(span, "unresolved name '" + name +
                              "': a ReferenceError if it is evaluated (bare `typeof " + name +
                              "` is safe)");

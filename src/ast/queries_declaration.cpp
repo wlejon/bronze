@@ -145,4 +145,26 @@ std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*
     }
     return names;
 }
+
+std::vector<std::string> getTopLevelVarDeclarations(const std::vector<StmtPtr>& stmts) {
+    std::vector<std::string> names;
+    for (const auto& s : stmts) {
+        if (!s) continue;
+        if (const auto* v = dynamic_cast<const VarDecl*>(s.get())) {
+            if (v->isVar) appendDeclaredNames(*v, names);
+        }
+    }
+    return names;
+}
+
+std::vector<std::string> getTopLevelVarDeclarations(const std::vector<const Stmt*>& stmts) {
+    std::vector<std::string> names;
+    for (const auto* s : stmts) {
+        if (!s) continue;
+        if (const auto* v = dynamic_cast<const VarDecl*>(s)) {
+            if (v->isVar) appendDeclaredNames(*v, names);
+        }
+    }
+    return names;
+}
 }  // namespace bronze::ast

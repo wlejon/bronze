@@ -112,6 +112,8 @@ public:
         // binding the class introduces is handled where declarations are.
     }
 
+    void visit(const ClassExpr&) override {}
+
     void visit(const BlockStmt& b) override {
         for (const auto& s : b.stmts) s->accept(*this);
     }
@@ -175,11 +177,23 @@ public:
         if (l.body) l.body->accept(*this);
     }
     void visit(const ForInStmt& f) override {
+        if (!f.isConst && !f.isLet && !f.isVar) {
+            if (!f.name.empty()) record(f.name);
+            if (f.pattern) {
+                for (const auto& name : patternBoundNames(*f.pattern)) record(name);
+            }
+        }
         if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.object) f.object->accept(*this);
         for (const auto& s : f.body) s->accept(*this);
     }
     void visit(const ForOfStmt& f) override {
+        if (!f.isConst && !f.isLet && !f.isVar) {
+            if (!f.name.empty()) record(f.name);
+            if (f.pattern) {
+                for (const auto& name : patternBoundNames(*f.pattern)) record(name);
+            }
+        }
         if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.iterable) f.iterable->accept(*this);
         for (const auto& s : f.body) s->accept(*this);

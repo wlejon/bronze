@@ -26,6 +26,7 @@
 #include "runtime/namespace.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/proxy.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -127,7 +128,7 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
 // fails the BUILD when a kind is added, at the one place that has to have an
 // opinion about it, which is the property a runtime `default:` alone cannot
 // give.
-static_assert(HeapKind::Count == 14,
+static_assert(HeapKind::Count == 15,
               "a HeapKind was added or removed: give `in` an arm for it in the two switches "
               "below, or refuse it there by name. A kind with no arm used to fall through to "
               "a cast that read its payload's first word as a Shape*.");
@@ -225,6 +226,11 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
             return shapelessHasSymbol(kind, key);
+        case HeapKind::Proxy:
+            // 10.5.7: the handler's question, or the target's — either way the
+            // whole question moves, so this arm returns rather than falling
+            // out to a walk of the proxy's own (nonexistent) shape.
+            return rtProxyHas(objRoot.get(), key);
         case HeapKind::Iterator:
         case HeapKind::Env:
             refuseInternalKind(kind);
@@ -332,6 +338,13 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             Rooted<Value> keyStr{rtMakeString(key)};
             return rtModuleNamespaceHasExport(objRoot.get(),
                                               keyStr.get().asString<StringHeader>());
+        }
+        case HeapKind::Proxy: {
+            // 10.5.7: the handler's question, or the target's. Returns rather
+            // than falling out, because forwarding re-asks the WHOLE question
+            // of the target — Object.prototype tail included.
+            Rooted<Value> keyStr{rtMakeString(key)};
+            return rtProxyHas(objRoot.get(), keyStr.get());
         }
         case HeapKind::Function: {
             // `prototype` lives in its own slot and is materialised lazily, so

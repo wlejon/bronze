@@ -359,6 +359,14 @@ private:
             // and object methods land here too and are harmless: they contain
             // a `.` or a space, so no reference can ever spell one.
             functionBody(fe->params, fe->body, fe->isArrow ? std::string() : fe->name);
+        } else if (auto* ce = dynamic_cast<ast::ClassExpr*>(&e)) {
+            rewrite(ce->superName);
+            for (auto& m : ce->methods) {
+                if (m.keyExpr) expr(*m.keyExpr);
+                if (!m.fn) continue;
+                m.fn->span.file = fileId_;
+                functionBody(m.fn->params, m.fn->body, std::string());
+            }
         } else {
             fail(typeid(e));
         }

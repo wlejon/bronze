@@ -344,14 +344,20 @@ StmtPtr Parser::parseDoWhile() {
     return stmt;
 }
 
-// The binding target shared by `for-in` and `for-of`: one declaration
-// keyword, then a name or a pattern, then the type annotation bronze reads
-// and discards (a hint types nothing).
-bool Parser::parseForBindingHead(ForBindingHead& head) {
-    head.isConst = check(TokenKind::KwConst);
-    head.isLet = check(TokenKind::KwLet);
-    head.isVar = check(TokenKind::KwVar);
-    advance();  // const / let / var
+// The binding target shared by `for-in` and `for-of`: optionally one declaration
+// keyword (or none if assigning existing bindings), then a name or a pattern,
+// then the type annotation bronze reads and discards (a hint types nothing).
+bool Parser::parseForBindingHead(ForBindingHead& head, bool hasDecl) {
+    if (hasDecl) {
+        head.isConst = check(TokenKind::KwConst);
+        head.isLet = check(TokenKind::KwLet);
+        head.isVar = check(TokenKind::KwVar);
+        advance();  // const / let / var
+    } else {
+        head.isConst = false;
+        head.isLet = false;
+        head.isVar = false;
+    }
     if (check(TokenKind::LBracket) || check(TokenKind::LBrace)) {
         head.pattern = parsePattern();
         if (!head.pattern) return false;
@@ -381,15 +387,19 @@ StmtPtr Parser::parseFor() {
     }
     if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
 
-    if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
+    const bool hasDecl =
+        check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar);
+    const bool hasTarget =
+        hasDecl || check(TokenKind::Identifier) || check(TokenKind::LBracket) || check(TokenKind::LBrace);
+    if (hasTarget) {
         // What comes after the binding TARGET decides which of the three
         // `for` statements this is, and a target can be a pattern of
         // unbounded length — `for (const [k, v] of pairs)` — so the lookahead
         // has to skip a whole group rather than a fixed token count.
-        const size_t lookahead = skipBindingTarget(1);
+        const size_t lookahead = skipBindingTarget(hasDecl ? 1 : 0);
         if (peek(lookahead).kind == TokenKind::KwIn) {
             ForBindingHead head;
-            if (!parseForBindingHead(head)) return nullptr;
+            if (!parseForBindingHead(head, hasDecl)) return nullptr;
             auto stmt = std::make_unique<ForInStmt>();
             stmt->span = kw.span;
             stmt->isConst = head.isConst;
@@ -406,7 +416,7 @@ StmtPtr Parser::parseFor() {
         }
         if (peek(lookahead).kind == TokenKind::KwOf) {
             ForBindingHead head;
-            if (!parseForBindingHead(head)) return nullptr;
+            if (!parseForBindingHead(head, hasDecl)) return nullptr;
             auto stmt = std::make_unique<ForOfStmt>();
             stmt->span = kw.span;
             stmt->isConst = head.isConst;
@@ -421,15 +431,6 @@ StmtPtr Parser::parseFor() {
             stmt->body = parseBlockOrSingleStmt();
             return stmt;
         }
-    } else if (check(TokenKind::Identifier) &&
-               (peek(1).kind == TokenKind::KwIn || peek(1).kind == TokenKind::KwOf)) {
-        // `for (k in o)` writes a binding that already exists. Legal
-        // JavaScript, and deliberately not built — without this it read as a
-        // three-part header whose init expression was `k in o`, and the
-        // diagnostic named the missing semicolon rather than the construct.
-        error("unsupported construct: a for-in / for-of head that assigns an existing "
-              "binding (write `for (const x in o)`)");
-        return nullptr;
     }
 
     auto stmt = std::make_unique<ForStmt>();

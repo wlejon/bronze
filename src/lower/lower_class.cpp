@@ -27,9 +27,12 @@ Lowerer::Value Lowerer::emitPrototypeOf(Value ctorVal, il::Function& ilFn) {
     return Value{res, il::Type::Dynamic};
 }
 
-bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
+std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
+                                                  const std::string& superName,
+                                                  const std::vector<ast::ClassMethod>& methods,
+                                                  Span span, il::Function& ilFn) {
     const ast::ClassMethod* ctor = nullptr;
-    for (const auto& m : cls->methods) {
+    for (const auto& m : methods) {
         if (m.isConstructor) {
             ctor = &m;
             break;
@@ -38,8 +41,8 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     if (!ctor) {
         // The parser synthesizes one for a class that does not write it, so
         // reaching here is a drift between the two, not a program error.
-        diags_.error(cls->span, "internal: class with no constructor method");
-        return false;
+        diags_.error(span, "internal: class with no constructor method");
+        return std::nullopt;
     }
 
     // The heritage is READ before the class binding is initialized. 15.7.14
@@ -48,12 +51,12 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     // rather than a class extending itself: inside its own definition the name
     // is still in its dead zone.
     std::optional<Value> baseBoxed;
-    if (!cls->superName.empty()) {
+    if (!superName.empty()) {
         ast::Ident baseIdent;
-        baseIdent.name = cls->superName;
-        baseIdent.span = cls->span;
+        baseIdent.name = superName;
+        baseIdent.span = span;
         auto baseVal = lowerExpr(baseIdent, ilFn);
-        if (!baseVal) return false;
+        if (!baseVal) return std::nullopt;
         baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
     }
 
@@ -62,17 +65,9 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     // 15.7.14 step 15: the constructor's `name` is the CLASS's name, not the
     // parser's synthesized `constructor`, and its `length` is the constructor's
     // own parameter list.
-    auto ctorVal = lowerClosure(*ctor->fn, cls->name, cls->name, ctor->fn->params,
-                                ctor->fn->returnType, ctor->fn->body, cls->span, ilFn);
-    if (!ctorVal) return false;
-    if (!declareVariable(cls->name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
-                         /*isVar=*/false, /*isInitialized=*/true, ctorVal->id, cls->span)) {
-        return false;
-    }
-    VarBinding& bound = varBindings_[activeVarMap_[cls->name]];
-    if (bound.inEnv) {
-        emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot, *ctorVal, ilFn);
-    }
+    auto ctorVal = lowerClosure(*ctor->fn, name, name, ctor->fn->params,
+                                ctor->fn->returnType, ctor->fn->body, span, ilFn);
+    if (!ctorVal) return std::nullopt;
 
     // `extends` REPLACES the prototype object (the prototype lives on the
     // shape), so it has to be linked before a single method is stored.
@@ -86,13 +81,13 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     }
 
     bool needsPrototype = false;
-    for (const auto& m : cls->methods) {
+    for (const auto& m : methods) {
         if (!m.isConstructor && !m.isStatic) needsPrototype = true;
     }
     Value protoVal{il::kNoValue, il::Type::Dynamic};
     if (needsPrototype) protoVal = emitPrototypeOf(*ctorVal, ilFn);
 
-    for (const auto& m : cls->methods) {
+    for (const auto& m : methods) {
         if (m.isConstructor) continue;
         const il::ValueId homeObject = m.isStatic ? ctorVal->id : protoVal.id;
 
@@ -102,7 +97,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         if (m.accessor != ast::AccessorKind::None) {
             if (!emitAccessorDef(Value{homeObject, il::Type::Dynamic}, m.name, m.accessor, *m.fn,
                                  /*enumerable=*/false, ilFn)) {
-                return false;
+                return std::nullopt;
             }
             continue;
         }
@@ -115,7 +110,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         std::optional<Value> keyBoxed;
         if (m.keyExpr) {
             auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
-            if (!keyOpt) return false;
+            if (!keyOpt) return std::nullopt;
             keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
         }
 
@@ -128,7 +123,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
             *m.fn, m.fn->name,
             m.keyExpr ? std::optional<std::string>{} : std::optional<std::string>{m.name},
             m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
-        if (!fnVal) return false;
+        if (!fnVal) return std::nullopt;
 
         if (keyBoxed) {
             // `method.def.computed` and not `elem.set`: 15.7.14 defines a
@@ -160,7 +155,25 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
         setInst.keyIndex = getKeyConstantIndex(m.name);
         emitInst(ilFn, setInst);
     }
+    return ctorVal;
+}
+
+bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
+    auto ctorVal = lowerClass(cls->name, cls->superName, cls->methods, cls->span, ilFn);
+    if (!ctorVal) return false;
+    if (!declareVariable(cls->name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
+                         /*isVar=*/false, /*isInitialized=*/true, ctorVal->id, cls->span)) {
+        return false;
+    }
+    VarBinding& bound = varBindings_[activeVarMap_[cls->name]];
+    if (bound.inEnv) {
+        emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot, *ctorVal, ilFn);
+    }
     return true;
+}
+
+std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn) {
+    return lowerClass(cls->name, cls->superName, cls->methods, cls->span, ilFn);
 }
 
 // `super.m` — the lookup starts at the PARENT prototype, which is why it cannot

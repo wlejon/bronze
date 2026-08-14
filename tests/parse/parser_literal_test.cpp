@@ -161,15 +161,10 @@ TEST_CASE("a digit the radix does not have is a named error") {
     CHECK(bare.find("has no digits after its prefix") != std::string::npos);
 }
 
-// 13.2.5 lists NumericLiteral among the PropertyName productions, so telling
-// the reader a property key was expected names the wrong thing — `0` IS one.
-// The message has to say what bronze does not do with it (compute
-// ToString(Number) at parse time) and what to write instead.
-TEST_CASE("a numeric property key is refused by name, not as a missing key") {
+TEST_CASE("a numeric property key parses as a computed property") {
     const auto out = parseAndDump("const o = { 0: 1 };");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("unsupported construct: a numeric property key") != std::string::npos);
-    CHECK(out.find("expected a property key") == std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(prop-computed") != std::string::npos);
 }
 
 TEST_CASE("the computed and string spellings of a numeric key still parse") {

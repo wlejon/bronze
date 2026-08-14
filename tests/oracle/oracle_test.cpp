@@ -46,6 +46,10 @@
 #define TEST_THREEJS_DIR "tests/oracle/threejs"
 #endif
 
+#ifndef TEST_PIXI_DIR
+#define TEST_PIXI_DIR "tests/oracle/pixi"
+#endif
+
 namespace {
 
 constexpr uint32_t kRunTimeoutMs = 15000;
@@ -57,7 +61,8 @@ struct RunResult {
 };
 
 #ifdef _WIN32
-RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
+RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
+                         uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
 
     SECURITY_ATTRIBUTES sa{};
@@ -107,7 +112,7 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
         }
     });
 
-    DWORD wait = WaitForSingleObject(pi.hProcess, kRunTimeoutMs);
+    DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
     if (wait == WAIT_TIMEOUT) {
         result.timedOut = true;
         TerminateProcess(pi.hProcess, 1);
@@ -122,7 +127,9 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
     return result;
 }
 #else
-RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
+RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
+                         uint32_t timeoutMs = kRunTimeoutMs) {
+    (void)timeoutMs;
     RunResult result;
     std::string cmd = (gcStress ? "BRONZE_GC_STRESS=1 " : "") + ("\"" + exePath + "\"");
     FILE* pipe = popen(cmd.c_str(), "r");
@@ -468,6 +475,65 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         if (stressed.ran) {
             CHECK_MESSAGE(expected == stressed.output,
                           ("three.js output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
+        }
+        std::filesystem::remove(exePath, ec);
+    }
+}
+
+// The pixi milestone: the published pixi.js v8 ESM bundle, vendored
+// byte-for-byte (tests/oracle/pixi/README.md), compiles and a scene graph
+// built from its public API matches an expectation derived by reading pixi's
+// source — never by running bronze or node. Same shape as the three.js
+// milestone above, plus one seam that milestone does not need: pixi's
+// import-time code reads two browser globals (`navigator`, `Intl`), which
+// setup.mjs defines on `globalThis` and host.globals admits at compile time.
+TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds") {
+    std::filesystem::path dir = findTestDirectory(TEST_PIXI_DIR, "tests/oracle/pixi");
+    REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/pixi not found");
+
+    std::filesystem::path casePath = dir / "main.js";
+    REQUIRE(std::filesystem::exists(casePath));
+
+    std::string expected;
+    std::filesystem::path expectedPath = dir / "main.expected";
+    REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
+                    ("Missing pinned expectation " + expectedPath.string()).c_str());
+
+    const std::string hostGlobals = (dir / "host.globals").string();
+    REQUIRE(std::filesystem::exists(hostGlobals));
+
+    for (const bool infer : {true, false}) {
+        const std::string mode = infer ? " (inference on)" : " (--no-infer)";
+        std::filesystem::path exePath = std::filesystem::temp_directory_path() /
+                                        (infer ? "pixi_oracle.exe" : "pixi_oracle_ni.exe");
+        std::error_code ec;
+        std::filesystem::remove(exePath, ec);
+
+        std::string errOut;
+        int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer,
+                                           /*timings=*/false, /*emitObj=*/false, hostGlobals);
+        REQUIRE_MESSAGE(status == 0,
+                        ("Bronze failed to build pixi" + mode + ": " + errOut).c_str());
+        REQUIRE(std::filesystem::exists(exePath));
+
+        RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
+        CHECK_MESSAGE(!run.timedOut, ("pixi case did not finish within the timeout" + mode).c_str());
+        if (run.ran) {
+            CHECK_MESSAGE(expected == run.output,
+                          ("pixi output differs from the pinned expectation" + mode).c_str());
+        }
+
+        // Same executable, every allocation now moving the whole live set. A
+        // whole-library import under that regime measures in minutes, not the
+        // 15 s a case gets — the budget is sized to the run, not the run
+        // trimmed to the budget (the byte-compare is unchanged either way).
+        RunResult stressed =
+            runWithTimeout(exePath.string(), /*gcStress=*/true, /*timeoutMs=*/300000);
+        CHECK_MESSAGE(!stressed.timedOut,
+                      ("pixi case did not finish within the timeout (gc-stress" + mode + ")").c_str());
+        if (stressed.ran) {
+            CHECK_MESSAGE(expected == stressed.output,
+                          ("pixi output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }
         std::filesystem::remove(exePath, ec);
     }

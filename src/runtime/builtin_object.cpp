@@ -137,6 +137,7 @@ const char* propertyStoreReason(Value v) {
 
 bool rtObjectRequirePropertyTable(Value v, const char* member) {
     if (isPlainObject(v)) return true;
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) return true;
     if (!v.isObject()) {
         rtThrowTypeError(std::string("Object.") + member +
                          " called on a value that is not an object");
@@ -157,6 +158,9 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
     if (v.isString()) return ObjectOwnKeys::StringChars;
     if (!v.isObject()) return ObjectOwnKeys::None;
     if (isPlainObject(v)) return ObjectOwnKeys::Shape;
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        return ObjectOwnKeys::Function;
+    }
     if (rtIsModuleNamespace(v)) return ObjectOwnKeys::Namespace;
     refuseObjectKind(v, member);
 }
@@ -166,8 +170,6 @@ std::string rtObjectKeyTextOf(Value keyVal) {
     if (rtExceptionPending()) return std::string();
     return rtUtf8Chars(str.get().asString<StringHeader>());
 }
-
-namespace {
 
 // The six integrity-level members — `freeze`, `seal`, `preventExtensions` and
 // their predicates — are in integrity.cpp. They left this file when they
@@ -403,8 +405,6 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return out.get().rawBits();
 }
 
-}  // namespace
-
 // 20.1.2.10 Object.getOwnPropertyNames: own string keys in the same order
 // `keys` reports, MINUS the enumerable filter — which is the only difference,
 // and is one argument to one walk rather than a second walk.
@@ -432,6 +432,14 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             // changes nothing and this is the same list `Object.keys` gives —
             // answered by the same function, so the two cannot drift.
             return bronze_object_keys(args[0].rawBits());
+        case ObjectOwnKeys::Function: {
+            Value props = args[0].asObject<FunctionHeader>()->properties;
+            if (props.isUndefined() || !props.isObject()) {
+                return bronze_create_array(0);
+            }
+            const uint64_t call[1] = {props.rawBits()};
+            return rtObjectGetOwnPropertyNames(0, 0, 1, call);
+        }
         case ObjectOwnKeys::Shape:
             break;
     }
@@ -597,6 +605,11 @@ Value toObjectForAssign(Value v) {
               "to be)");
     }
     if (isPlainObject(v)) return v;
+    // A Proxy target passes through as itself: 20.1.2.1 writes with the
+    // target's [[Set]], which for a proxy IS the `set` trap — the thing a
+    // program handing `assign` a proxy is asking to fire. The write path
+    // (copyProperty, bronze_elem_set) speaks proxy, so nothing here needs to.
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return v;
     refuseObjectKind(v, "assign");
 }
 

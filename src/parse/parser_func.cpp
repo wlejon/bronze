@@ -308,38 +308,15 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
 // Everything ES2015+ puts in a class body that bronze has not built -
 // fields, getters and setters, computed keys, generators - is diagnosed by
 // name here rather than mis-parsed as a method.
-ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
-    const Token& kw = advance();  // 'class'
-    // ECMA-262 10.2.11 / 15.7: ALL parts of a class definition are strict mode
-    // code, whether or not anything said so — the name it binds, the `extends`
-    // clause, and every method body. Raised once here rather than per member,
-    // so that "a class body is strict" is one statement in the code and not
-    // one for each of the six ways a member can be written.
-    StrictScopeGuard strictGuard(*this);
-    strict_ = true;
-    auto cls = std::make_unique<ClassDecl>();
-    cls->span.begin = kw.span.begin;
-    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
-        cls->name = defaultName;  // `export default class {}`, as above
-    } else {
-        const Token* nameTok = expect(TokenKind::Identifier, "class name");
-        if (!nameTok) return nullptr;
-        if (!checkStrictBindingName(nameTok->text, nameTok->span, "class name")) return nullptr;
-        cls->name = std::string(nameTok->text);
-    }
-
-    if (match(TokenKind::KwExtends)) {
-        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
-        if (!base) return nullptr;
-        cls->superName = std::string(base->text);
-    }
-    if (!expect(TokenKind::LBrace, "'{' to open a class body")) return nullptr;
+bool Parser::parseClassBodyCommon(const std::string& name, const std::string& superName,
+                                  std::vector<ast::ClassMethod>& methods, Span span) {
+    if (!expect(TokenKind::LBrace, "'{' to open a class body")) return false;
 
     // Every `super` inside a method belongs to THIS class, and the parser is
     // the only place that knows which class that is.
     const std::string savedSuper = currentClassSuper_;
     const bool savedInMethod = inClassMethod_;
-    currentClassSuper_ = cls->superName;
+    currentClassSuper_ = superName;
     inClassMethod_ = true;
 
     bool ok = true;
@@ -389,14 +366,16 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             }
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = star.span.begin;
-            fn->name = cls->name + "." +
-                       (member.keyExpr ? std::string(kIteratorMethodSymbol) : member.name);
+            fn->name = name.empty()
+                           ? (member.keyExpr ? std::string(kIteratorMethodSymbol) : member.name)
+                           : (name + "." + (member.keyExpr ? std::string(kIteratorMethodSymbol)
+                                                           : member.name));
             if (!parseGeneratorTail(*fn)) {
                 ok = false;
                 break;
             }
             member.fn = std::move(fn);
-            cls->methods.push_back(std::move(member));
+            methods.push_back(std::move(member));
             continue;
         }
         if (check(TokenKind::LBracket)) {
@@ -419,20 +398,21 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
                 // class method and its `super` is the class's.
                 auto fn = std::make_unique<FunctionExpr>();
                 fn->span.begin = keySpan.begin;
-                fn->name = cls->name + "." + kIteratorMethodSymbol;
+                fn->name = name.empty() ? std::string(kIteratorMethodSymbol)
+                                        : (name + "." + kIteratorMethodSymbol);
                 advance();  // '('
-                if (!parseParams(fn->params)) return nullptr;
-                if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
+                if (!parseParams(fn->params)) return false;
+                if (!expect(TokenKind::RParen, "')' after parameters")) return false;
                 if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
                 {
                     GeneratorScopeGuard guard(*this);
                     fn->body = parseFunctionBody(fn->strict);
                 }
-                if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
-                if (diags_.hasErrors()) return nullptr;
+                if (!checkStrictParams(fn->params, fn->strict)) return false;
+                if (diags_.hasErrors()) return false;
                 fn->span.end = peek().span.begin;
                 member.fn = std::move(fn);
-                cls->methods.push_back(std::move(member));
+                methods.push_back(std::move(member));
                 continue;
             }
             error("unsupported construct: computed method name in a class body");
@@ -468,17 +448,18 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
                 break;
             }
             member.name = std::string(asyncName->text);
+            const std::string fnName = name.empty() ? member.name : (name + "." + member.name);
             // A class's own method keeps the enclosing `super` binding, which
             // is why the tail is told not to clear it — the same split
             // parseMethodTail and the inline `[Symbol.iterator]` above make.
-            auto fn = parseAsyncMethodTail(cls->name + "." + member.name, asyncName->span,
+            auto fn = parseAsyncMethodTail(fnName, asyncName->span,
                                            /*clearSuper=*/false);
             if (!fn) {
                 ok = false;
                 break;
             }
             member.fn = std::move(fn);
-            cls->methods.push_back(std::move(member));
+            methods.push_back(std::move(member));
             continue;
         }
         // `get`/`set` are contextual here too: `get() {}` is a method named
@@ -494,10 +475,10 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
                 ok = false;
                 break;
             }
-            accessorFn->name = cls->name + "." + accessorFn->name;
+            accessorFn->name = name.empty() ? accessorFn->name : (name + "." + accessorFn->name);
             member.accessor = kind;
             member.fn = std::move(accessorFn);
-            cls->methods.push_back(std::move(member));
+            methods.push_back(std::move(member));
             continue;
         }
         // A ClassElementName is a PropertyName is an IdentifierName (15.7), so
@@ -519,26 +500,26 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
 
         auto fn = std::make_unique<FunctionExpr>();
         fn->span.begin = memberName->span.begin;
-        fn->name = cls->name + "." + member.name;
+        fn->name = name.empty() ? member.name : (name + "." + member.name);
         advance();  // '('
-        if (!parseParams(fn->params)) return nullptr;
-        if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
+        if (!parseParams(fn->params)) return false;
+        if (!expect(TokenKind::RParen, "')' after parameters")) return false;
         if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
         {
             GeneratorScopeGuard guard(*this);
             fn->body = parseFunctionBody(fn->strict);
         }
-        if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
-        if (diags_.hasErrors()) return nullptr;
+        if (!checkStrictParams(fn->params, fn->strict)) return false;
+        if (diags_.hasErrors()) return false;
         fn->span.end = peek().span.begin;
         member.fn = std::move(fn);
-        cls->methods.push_back(std::move(member));
+        methods.push_back(std::move(member));
     }
 
     currentClassSuper_ = savedSuper;
     inClassMethod_ = savedInMethod;
-    if (!ok) return nullptr;
-    if (!expect(TokenKind::RBrace, "'}' to close a class body")) return nullptr;
+    if (!ok) return false;
+    if (!expect(TokenKind::RBrace, "'}' to close a class body")) return false;
 
     // Lowering wants exactly one constructor, always, so a class that writes
     // none gets the one ECMA-262 15.7.14 says it has — synthesized here, in
@@ -550,41 +531,94 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     // arity-preserving, and before those existed it was a named error rather
     // than a quietly truncated argument list.
     bool hasCtor = false;
-    for (const auto& m : cls->methods) hasCtor = hasCtor || m.isConstructor;
+    for (const auto& m : methods) hasCtor = hasCtor || m.isConstructor;
     if (!hasCtor) {
         ClassMethod ctor;
         ctor.name = "constructor";
         ctor.isConstructor = true;
         ctor.fn = std::make_unique<FunctionExpr>();
-        ctor.fn->name = cls->name + ".constructor";
-        ctor.fn->span = cls->span;
+        ctor.fn->name = name.empty() ? "constructor" : (name + ".constructor");
+        ctor.fn->span = span;
         ctor.fn->strict = true;  // synthesized class code, which 15.7 makes strict
-        if (!cls->superName.empty()) {
+        if (!superName.empty()) {
             Param rest;
             rest.name = "args";
             rest.isRest = true;
-            rest.span = cls->span;
+            rest.span = span;
             ctor.fn->params.push_back(std::move(rest));
 
             auto argsRef = std::make_unique<Ident>();
-            argsRef->span = cls->span;
+            argsRef->span = span;
             argsRef->name = "args";
             auto spread = std::make_unique<SpreadElement>();
-            spread->span = cls->span;
+            spread->span = span;
             spread->argument = std::move(argsRef);
 
             auto call = std::make_unique<SuperCall>();
-            call->span = cls->span;
-            call->baseName = cls->superName;
+            call->span = span;
+            call->baseName = superName;
             call->args.push_back(std::move(spread));
 
             auto stmt = std::make_unique<ExprStmt>();
-            stmt->span = cls->span;
+            stmt->span = span;
             stmt->expr = std::move(call);
             ctor.fn->body.push_back(std::move(stmt));
         }
-        cls->methods.insert(cls->methods.begin(), std::move(ctor));
+        methods.insert(methods.begin(), std::move(ctor));
     }
+    return true;
+}
+
+ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
+    const Token& kw = advance();  // 'class'
+    // ECMA-262 10.2.11 / 15.7: ALL parts of a class definition are strict mode
+    // code, whether or not anything said so — the name it binds, the `extends`
+    // clause, and every method body. Raised once here rather than per member,
+    // so that "a class body is strict" is one statement in the code and not
+    // one for each of the six ways a member can be written.
+    StrictScopeGuard strictGuard(*this);
+    strict_ = true;
+    auto cls = std::make_unique<ClassDecl>();
+    cls->span.begin = kw.span.begin;
+    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+        cls->name = defaultName;  // `export default class {}`, as above
+    } else {
+        const Token* nameTok = expect(TokenKind::Identifier, "class name");
+        if (!nameTok) return nullptr;
+        if (!checkStrictBindingName(nameTok->text, nameTok->span, "class name")) return nullptr;
+        cls->name = std::string(nameTok->text);
+    }
+
+    if (match(TokenKind::KwExtends)) {
+        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
+        if (!base) return nullptr;
+        cls->superName = std::string(base->text);
+    }
+
+    if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
+    cls->span.end = peek().span.begin;
+    return cls;
+}
+
+ast::ExprPtr Parser::parseClassExpr() {
+    const Token& kw = advance();  // 'class'
+    StrictScopeGuard strictGuard(*this);
+    strict_ = true;
+    auto cls = std::make_unique<ClassExpr>();
+    cls->span.begin = kw.span.begin;
+    if (check(TokenKind::Identifier)) {
+        const Token& nameTok = advance();
+        if (!checkStrictBindingName(nameTok.text, nameTok.span, "class name")) return nullptr;
+        cls->name = std::string(nameTok.text);
+    }
+
+    if (match(TokenKind::KwExtends)) {
+        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
+        if (!base) return nullptr;
+        cls->superName = std::string(base->text);
+    }
+
+    if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
     cls->span.end = peek().span.begin;
     return cls;
 }

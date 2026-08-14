@@ -170,9 +170,12 @@ TEST_CASE("console members are folded by name, and an unbuilt one is loud") {
     CHECK(warn.find("(ident console.warn)") != std::string::npos);
     CHECK(warn.find("(ident console.error)") != std::string::npos);
 
-    const auto trace = parseAndDump("console.trace();");
-    CHECK(trace.find("console.trace needs a stack trace") != std::string::npos);
-
-    const auto table = parseAndDump("console.table([1]);");
-    CHECK(table.find("unsupported: console.table is not implemented") != std::string::npos);
+    // An unbuilt member FOLDS like a built one. The refusal moved to where
+    // the unresolved-name judgment lives (lower_unresolved.cpp): lowering
+    // warns by name and compiles a deferred ReferenceError, so a program
+    // that carries `console.table` in a branch it never takes still runs —
+    // which real bundles do (pixi's deprecation path).
+    const auto count = parseAndDump("console.count();");
+    CHECK(count.substr(0, 7) != "ERRORS:");
+    CHECK(count.find("(ident console.count)") != std::string::npos);
 }

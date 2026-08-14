@@ -637,6 +637,10 @@ private:
 
     // --- lower_class.cpp: classes, desugared -------
     bool lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn);
+    std::optional<Value> lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn);
+    std::optional<Value> lowerClass(const std::string& name, const std::string& superName,
+                                    const std::vector<ast::ClassMethod>& methods, Span span,
+                                    il::Function& ilFn);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
     std::optional<Value> lowerSuperMember(const ast::SuperMember* sm, il::Function& ilFn);
     std::optional<Value> lowerSuperCall(const ast::SuperCall* sc, il::Function& ilFn);

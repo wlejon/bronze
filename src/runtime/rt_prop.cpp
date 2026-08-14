@@ -30,6 +30,7 @@
 #include "runtime/array.h"
 #include "runtime/profile.h"
 #include "runtime/exception.h"
+#include "runtime/proxy.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -546,6 +547,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         rtModuleNamespaceGet(objVal, keyHeader, found);
         return found.rawBits();
     }
+    if (hdr->flags == HeapKind::Proxy) {
+        // 10.5.8: the `get` trap, or the target's read through this same
+        // funnel. The proxy has no shape of its own, so nothing below this
+        // dispatch could answer for it anyway.
+        return rtProxyGet(objVal, Value::fromString(keyHeader)).rawBits();
+    }
     if (hdr->flags == HeapKind::Function) {
         // Rooted for the same reason the array branch is: the tail below walks
         // `Object.prototype`, and everything between here and there allocates.
@@ -736,6 +743,27 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
         .rawBits();
 }
 
+void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
+                      uint64_t valBits) {
+    recordPropCall("bronze_super_set", keyIndex, nullptr);
+    Value protoVal(protoBits);
+    if (!protoVal.isObject() ||
+        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: super property write on a base whose prototype is not an object");
+    }
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("super property write with an unregistered key index");
+
+    Rooted<Value> receiver{Value(thisBits)};
+    Rooted<Value> protoRoot{protoVal};
+    Rooted<Value> key{Value::fromString(keyHeader)};
+    Rooted<Value> val{Value(valBits)};
+    protoRoot.get()
+        .asObject<ObjectHeader>()
+        ->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
+                  /*defineOwn=*/false, receiver.slot_ptr());
+}
+
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     recordElemCall("bronze_elem_get");
     Value objVal(objBits);
@@ -793,6 +821,14 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                                     std::string(objVal.isNull() ? "null" : "undefined") +
                                     " (reading a symbol-keyed property)")
                 .rawBits();
+        }
+        // A proxy first: its symbol-keyed answer is the trap's or the
+        // target's (10.5.8 makes no distinction by key kind), and neither the
+        // well-known-symbol dispatch nor the shape walk below knows how to ask
+        // either of them.
+        if (objVal.isObject() &&
+            objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            return rtProxyGet(objVal, Value(idxBits)).rawBits();
         }
         // A well-known symbol first, and only for the receivers with no shape:
         // a plain object's own `[Symbol.iterator]` must win over the built-in

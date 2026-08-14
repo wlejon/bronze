@@ -81,6 +81,13 @@ enum : uint16_t {
     // none of the three is expressible as an attribute on a plain object's
     // property. See runtime/namespace.h.
     ModuleNamespace,
+    // A Proxy exotic object (10.5), carrying its target and handler. Its own
+    // kind for the same reason a namespace is: [[Get]], [[Set]] and
+    // [[HasProperty]] are not the ordinary internal methods, and no attribute
+    // on a plain object's property can express "ask the handler first".
+    // runtime/proxy.h owns the layout and the construction gate that keeps
+    // every OTHER internal method forwardable.
+    Proxy,
 
     // Not a kind: how many there are. It exists so that a dispatch which must
     // be TOTAL over the registry can pin the registry's size and break the

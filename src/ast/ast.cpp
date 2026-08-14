@@ -57,6 +57,7 @@ void LabeledStmt::accept(Visitor& v) const { v.visit(*this); }
 void TryStmt::accept(Visitor& v) const { v.visit(*this); }
 void ThrowStmt::accept(Visitor& v) const { v.visit(*this); }
 void ClassDecl::accept(Visitor& v) const { v.visit(*this); }
+void ClassExpr::accept(Visitor& v) const { v.visit(*this); }
 void FunctionDecl::accept(Visitor& v) const { v.visit(*this); }
 void ImportDecl::accept(Visitor& v) const { v.visit(*this); }
 void ExportNamesDecl::accept(Visitor& v) const { v.visit(*this); }

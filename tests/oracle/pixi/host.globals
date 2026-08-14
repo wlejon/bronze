@@ -1,0 +1,5 @@
+# Names setup.mjs defines on globalThis before pixi.mjs evaluates; this
+# manifest is what lets pixi's free references to them compile (they resolve
+# through the global object at run time — rt_state.cpp).
+navigator
+Intl

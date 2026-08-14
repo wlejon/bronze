@@ -333,8 +333,11 @@ ExprPtr Parser::parseUnaryPrefix() {
         return del;
     }
     if (check(TokenKind::KwClass)) {
-        error("unsupported construct: class expression");
-        return nullptr;
+        auto expr = parseClassExpr();
+        if (!expr) return nullptr;
+        auto suffixed = parsePostfixOps(std::move(expr));
+        lastOperandIsUnary_ = false;
+        return suffixed;
     }
     if (check(TokenKind::Ellipsis)) {
         // The three list positions that admit a spread parse it themselves,
@@ -425,22 +428,14 @@ bool Parser::parseMemberLink(ExprPtr& expr) {
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
         // `console` is not a binding and has no object: the whole member
         // expression folds to one name here, and `ast::consoleStreamOf` is the
-        // only place that says which names those are. A member it does not know
-        // is a hard error naming itself rather than the `undefined variable:
-        // console` a reader would have to decode.
+        // only place that says which names those are. A member it does not
+        // know still FOLDS — lowering warns about it by name and compiles a
+        // deferred ReferenceError, exactly as it does for a free name it
+        // cannot resolve — because a program that carries `console.table` in
+        // a branch it never takes is a program that runs (the same judgment
+        // the unresolved-name path makes; lower_unresolved.cpp).
         if (baseIdent && baseIdent->name == "console") {
             const std::string folded = "console." + std::string(member->text);
-            if (ast::consoleStreamOf(folded) == ast::ConsoleStream::None) {
-                const std::string why =
-                    member->text == "trace"
-                        ? "unsupported: console.trace needs a stack trace, and bronze does not "
-                          "build one; console provides log, info, debug, warn and error"
-                        : "unsupported: console." + std::string(member->text) +
-                              " is not implemented (console provides log, info, debug, warn and "
-                              "error)";
-                diags_.error({expr->span.begin, member->span.end}, why);
-                return false;
-            }
             auto ident = std::make_unique<ast::Ident>();
             ident->span = {expr->span.begin, member->span.end};
             ident->name = folded;

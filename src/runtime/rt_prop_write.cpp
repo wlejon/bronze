@@ -41,6 +41,7 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/namespace.h"
+#include "runtime/proxy.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -182,6 +183,11 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             return;
         }
         Rooted<Value> val(valVal);
+        if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
+            Rooted<Value> arrRoot(objVal);
+            reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
+            hdr = arrRoot.get().asObject<HeapObjectHeader>();
+        }
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
         return;
     }
@@ -238,6 +244,15 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // properties, and it has no shape for a named one either.
         fatal("named property writes on a WeakMap or a WeakSet are unsupported "
               "(use .set(key, value) / .add(value); its entries are not properties)");
+    }
+    if (hdr->flags == HeapKind::Proxy) {
+        // 10.5.9: the `set` trap, or the target's write through this same
+        // funnel — the strict flag rides along so a trap's `false` and a
+        // forwarded refusal both surface exactly where a plain write's would.
+        StringHeader* named = rtKeyHeader(keyIndex);
+        if (!named) fatal("property write with an unregistered key index");
+        rtProxySet(objVal, Value::fromString(named), valVal, strict);
+        return;
     }
     if (hdr->flags == IterRecordHeader::kFlags) {
         fatal("internal: a property write on an iteration record");
@@ -539,6 +554,12 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     uint32_t idx = 0;
+    if (hdr->flags == HeapKind::Proxy) {
+        // One operation, two spellings, like every arm below: `p[k] = v` is
+        // `p.k = v` and takes the same trap-or-forward path.
+        rtProxySet(objVal, Value(idxBits), Value(valBits), strict);
+        return;
+    }
     if (hdr->flags == HeapKind::Array) {
         if (!rtValueToElementIndex(Value(idxBits), idx)) {
             // A key that is not a canonical array index NAMES a property, and
@@ -562,6 +583,11 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             return;
         }
         Rooted<Value> val{Value(valBits)};
+        if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
+            Rooted<Value> arrRoot(objVal);
+            reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
+            hdr = arrRoot.get().asObject<HeapObjectHeader>();
+        }
         reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
         return;
     }

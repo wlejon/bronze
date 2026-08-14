@@ -32,6 +32,7 @@
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
@@ -101,7 +102,7 @@ Value aRegExp() {
 // compiler checks can prove that switch total — and `hasOwnProperty` is now
 // reachable from EVERY receiver, so a kind with no arm there is a receiver
 // those clauses cannot answer about.
-static_assert(HeapKind::Count == 14,
+static_assert(HeapKind::Count == 15,
               "a HeapKind was added or removed: give it an arm in the own-property switch in "
               "builtin_object_proto.cpp, and a receiver in the subcases below");
 
@@ -173,6 +174,15 @@ TEST_CASE("a receiver with no shape still reaches Object.prototype") {
         reachesValueOf(re);
     }
 
+    SUBCASE("a proxy with no get trap forwards, chain and all") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        Rooted<Value> handler{Value(bronze_create_object())};
+        const uint64_t ctorArgs[2] = {target.get().rawBits(), handler.get().rawBits()};
+        Rooted<Value> p{Value(rtProxyConstructor(0, 0, 2, ctorArgs))};
+        reaches(p);
+        reachesValueOf(p);
+    }
+
     // A primitive whose members are handed out beside the value rather than
     // found on a prototype object — the same arrangement, one level down. Both
     // of these DO carry a `valueOf` of their own (21.1.3.7, 20.4.3.4), so what
@@ -218,6 +228,19 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
         CHECK_FALSE(hasOwn(f, "missing"));
         CHECK_FALSE(enumerableOwn(f, "length"));
         CHECK_FALSE(enumerableOwn(f, "name"));
+    }
+
+    SUBCASE("a proxy: the target's own keys, because no vetted trap can differ") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        Rooted<Value> key{rtMakeString("k")};
+        Rooted<Value> val{Value::fromDouble(1.0)};
+        target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        Rooted<Value> handler{Value(bronze_create_object())};
+        const uint64_t ctorArgs[2] = {target.get().rawBits(), handler.get().rawBits()};
+        Rooted<Value> p{Value(rtProxyConstructor(0, 0, 2, ctorArgs))};
+        CHECK(hasOwn(p, "k"));
+        CHECK(enumerableOwn(p, "k"));
+        CHECK_FALSE(hasOwn(p, "missing"));
     }
 
     SUBCASE("an array: its indices and its length, and a hole is neither") {

@@ -204,6 +204,17 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                      {proto, builder_.getInt32(inst.keyIndex), thisArg});
             return true;
         }
+        case il::Op::SuperSet: {
+            if (!needs(3, false, "Invalid operands for SuperSet")) return false;
+            const char* what = "Undefined operand in SuperSet instruction";
+            llvm::Value* proto = operand(inst, 0, what);
+            llvm::Value* thisArg = operand(inst, 1, what);
+            llvm::Value* val = operand(inst, 2, what);
+            if (!proto || !thisArg || !val) return false;
+            builder_.CreateCall(abi.bronze_super_set,
+                                {proto, builder_.getInt32(inst.keyIndex), thisArg, val});
+            return true;
+        }
         case il::Op::PropDelete: {
             if (!needs(1, false, "Invalid operands for PropDelete")) return false;
             llvm::Value* target = operand(inst, 0, "Undefined operand in PropDelete instruction");
@@ -450,6 +461,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!ok) return false;
             builder_.CreateCall(toStderr ? abi.bronze_print_values_err : abi.bronze_print_values,
                                 {builder_.getInt32(argc), argv});
+            return true;
+        }
+
+        case il::Op::PrintSpread:
+        case il::Op::PrintSpreadErr: {
+            const bool toStderr = inst.op == il::Op::PrintSpreadErr;
+            if (!inst.operands.empty() && values_[inst.operands[0]]) {
+                builder_.CreateCall(toStderr ? abi.bronze_print_spread_err : abi.bronze_print_spread,
+                                    {values_[inst.operands[0]]});
+            }
             return true;
         }
 

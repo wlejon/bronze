@@ -36,17 +36,20 @@ const char* const kArrayMembers[] = {
 // miss is checked against, so it is consulted after the object and after
 // `Object.prototype` above it have both failed to answer.
 //
-// The five locale members are here as unimplemented rather than aliased to
-// their non-locale twins: the deterministic-output rule forbids a locale
-// function, and answering with `toLowerCase` would be right for most inputs
-// and silently wrong for the ones the member exists to get right.
-// `toLocaleString` (22.1.3.27) is one of them, and it is on this list rather
-// than left to `Object.prototype`'s: it is a NEARER member of a different
-// prototype, and a diagnostic that named the wrong holder would send a reader
-// to the wrong file.
+// `localeCompare` and `toLocaleString` stay unimplemented rather than
+// aliased to a non-locale answer: a collation or a formatted number is wrong
+// quietly for exactly the inputs the member exists to get right. The
+// toLocaleLower/UpperCase pair has LEFT this list: case mapping is the one
+// locale member whose tailorings touch only non-ASCII input, and
+// builtin_string.cpp's ASCII guard makes the root-locale alias honest —
+// every input the twins could disagree on dies loudly there instead.
+// `toLocaleString` (22.1.3.27) is on this list rather than left to
+// `Object.prototype`'s: it is a NEARER member of a different prototype, and
+// a diagnostic that named the wrong holder would send a reader to the wrong
+// file.
 const char* const kStringMembers[] = {
-    "isWellFormed", "localeCompare", "normalize", "substr",
-    "toLocaleLowerCase", "toLocaleString", "toLocaleUpperCase", "toWellFormed",
+    "isWellFormed", "localeCompare", "normalize",
+    "toLocaleString", "toWellFormed",
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in

@@ -67,6 +67,7 @@ bronze_add_module(runtime
         rt_spread.cpp
         rt_print.cpp
         namespace.cpp
+        proxy.cpp
     DEPS
         abi
         json

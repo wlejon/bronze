@@ -224,6 +224,10 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                             fnExpr->isArrow);
     }
 
+    if (const auto* clsExpr = dynamic_cast<const ast::ClassExpr*>(&expr)) {
+        return lowerClassExpr(clsExpr, ilFn);
+    }
+
     if (const auto* yield = dynamic_cast<const ast::YieldExpr*>(&expr)) {
         if (yield->isAwait) return lowerAwait(*yield, ilFn);
         return yield->delegate ? lowerYieldStar(*yield, ilFn) : lowerYield(*yield, ilFn);
@@ -573,6 +577,46 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         setInst.type = il::Type::Void;
         setInst.result = il::kNoValue;
         setInst.immI32 = strictFlag();
+        emitInst(ilFn, setInst);
+        return storedBoxed;
+    }
+    if (const auto* sm = dynamic_cast<const ast::SuperMember*>(bin->lhs.get())) {
+        ast::Ident baseIdent;
+        baseIdent.name = sm->baseName;
+        baseIdent.span = sm->span;
+        auto baseVal = lowerExpr(baseIdent, ilFn);
+        if (!baseVal) return std::nullopt;
+        auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
+        auto thisVal = lowerThisValue(sm->span, ilFn);
+        if (!thisVal) return std::nullopt;
+
+        const bool compound = bin->op != ast::BinaryOp::Assign;
+        std::optional<Value> curVal;
+        if (compound) {
+            il::ValueId readId = ilFn.valueCount++;
+            il::Instruction readInst;
+            readInst.op = il::Op::SuperGet;
+            readInst.type = il::Type::Dynamic;
+            readInst.result = readId;
+            readInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id};
+            readInst.keyIndex = getKeyConstantIndex(sm->property);
+            emitInst(ilFn, readInst);
+            curVal = Value{readId, il::Type::Dynamic};
+        }
+
+        auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+        if (!rhsVal) return std::nullopt;
+        auto stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
+                                                     provenNumber(*bin), ilFn)
+                               : *rhsVal;
+        auto storedBoxed = boxValueIfNeeded(stored, ilFn);
+
+        il::Instruction setInst;
+        setInst.op = il::Op::SuperSet;
+        setInst.type = il::Type::Void;
+        setInst.result = il::kNoValue;
+        setInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id, storedBoxed.id};
+        setInst.keyIndex = getKeyConstantIndex(sm->property);
         emitInst(ilFn, setInst);
         return storedBoxed;
     }

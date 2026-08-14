@@ -11,10 +11,11 @@ out of scope.
 ```
 .\dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON   # configure
 .\dev.cmd cmake --build --preset dev      # build (incremental ~2s)
-.\dev.cmd ctest --preset dev              # all tests (~1 min)
+.\dev.cmd ctest --preset dev              # all tests (~5 min)
 .\dev.cmd ctest --preset dev -L lex       # one module's tests
-.\dev.cmd ctest --preset dev -LE threejs  # everything but the milestone (~45 s)
-.\dev.cmd ctest --preset dev -L threejs   # the milestone alone (~10 s)
+.\dev.cmd ctest --preset dev -LE "threejs|pixi"  # everything but the milestones (~45 s)
+.\dev.cmd ctest --preset dev -L threejs   # the three.js milestone alone (~10 s)
+.\dev.cmd ctest --preset dev -L pixi      # the pixi milestone alone (~4 min)
 ```
 
 Iterate with scoped module tests; run the full `ctest` before any commit.
@@ -27,15 +28,18 @@ Wall time is the loop; don't switch the working build to Debug.
 `-DBRONZE_WITH_LLVM=ON` is on the configure line and not in the preset,
 because the hard rule below keeps the default build free of LLVM. It is not
 optional for the pre-commit run: `tests/oracle` is only defined when the
-backend is built, so without it `ctest` silently runs 14 tests instead of 18
+backend is built, so without it `ctest` silently runs 15 tests instead of 19
 and the entire oracle ratchet — the thing that decides whether bronze is
 correct — is absent rather than failing.
 
 `oracle-threejs` compiles unmodified three.js r160 from vendored source and
 checks the scene graph it builds (`tests/oracle/threejs/README.md`).
-The 28-file graph is compiled once per inference mode. **It stays in the
-pre-commit run** — it is the only test that proves the project's stated bar —
-but `-LE threejs` is the loop to iterate against.
+The 28-file graph is compiled once per inference mode. `oracle-pixi` does the
+same for the unmodified pixi.js v8.19.0 bundle (`tests/oracle/pixi/README.md`);
+its GC-stress re-runs are the bulk of the full suite's wall time (~87 s each,
+a whole-library import under every-allocation collection). **Both stay in the
+pre-commit run** — they are the tests that prove the project's stated bar —
+but `-LE "threejs|pixi"` is the loop to iterate against.
 
 ## Hard rules
 

@@ -65,6 +65,7 @@ const char* opName(Op op) {
         case Op::Unbox: return "unbox";
         case Op::PropGet: return "prop.get";
         case Op::SuperGet: return "super.get";
+        case Op::SuperSet: return "super.set";
         case Op::PropSet: return "prop.set";
         case Op::ElemGet: return "elem.get";
         case Op::ElemSet: return "elem.set";
@@ -111,6 +112,8 @@ const char* opName(Op op) {
         case Op::ModuleEnvGet: return "module.env.get";
         case Op::Print: return "print";
         case Op::PrintErr: return "print.err";
+        case Op::PrintSpread: return "print.spread";
+        case Op::PrintSpreadErr: return "print.spread.err";
     }
     return "?";
 }
@@ -188,6 +191,8 @@ bool canThrow(const Instruction& inst) {
         // console.log never runs user code: inspect does not call a getter.
         case Op::Print:
         case Op::PrintErr:
+        case Op::PrintSpread:
+        case Op::PrintSpreadErr:
         case Op::ExcTake:
             return false;
         case Op::Add:
@@ -332,6 +337,14 @@ std::string print(const Module& module) {
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                        break;
+                    case Op::SuperSet:
+                        out += "super.set %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
                         break;
                     case Op::PropDelete:
                         out += "prop.delete %" +

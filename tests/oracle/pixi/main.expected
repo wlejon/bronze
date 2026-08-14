@@ -1,0 +1,16 @@
+PIXI stage.label=stage
+PIXI stage.children.length=0
+PIXI addChild-returns-child=true
+PIXI group.parent-is-stage=true
+PIXI stage.children.length=1
+PIXI texture.white.width=1
+PIXI texture.white.height=1
+PIXI sprite.x=5
+PIXI group.children.length=1
+PIXI sprite.global=15,26
+PIXI rect.contains(8,8)=true
+PIXI rect.contains(20,8)=false
+PIXI matrix=2,0,0,2,6,8
+PIXI after-remove.children.length=0
+PIXI group.parent-null=true
+PIXI done=1

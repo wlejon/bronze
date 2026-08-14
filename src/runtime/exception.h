@@ -43,7 +43,17 @@ void rtClearException() noexcept;
 // and name. Its constructor takes (errors, message) — one more leading
 // argument than the others — which its own ctor body handles; everything
 // else about it is the family pattern.
-enum class ErrorKind { Error, TypeError, RangeError, SyntaxError, ReferenceError, AggregateError };
+enum class ErrorKind {
+    Error,
+    TypeError,
+    RangeError,
+    SyntaxError,
+    ReferenceError,
+    // 19.2.6.1.1: what `decodeURI` and its three siblings throw for a
+    // malformed escape sequence, and nothing else in the language throws.
+    URIError,
+    AggregateError,
+};
 
 Value rtThrow(Value thrown) noexcept;
 Value rtThrowError(ErrorKind kind, const std::string& message);

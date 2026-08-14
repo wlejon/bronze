@@ -56,6 +56,7 @@ public:
     void visit(const FunctionExpr&) override {}
     void visit(const FunctionDecl&) override {}
     void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
 
     void visit(const SpreadElement& n) override { walk(n.argument); }
     void visit(const Unary& n) override { walk(n.operand); }

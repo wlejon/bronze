@@ -52,8 +52,11 @@ PatternPtr Parser::parseArrayPattern() {
             return nullptr;
         }
         if (check(TokenKind::Comma)) {
-            error("unsupported construct: an elision (a hole) in an array pattern");
-            return nullptr;
+            PatternElement hole;
+            hole.span = peek().span;
+            pat->elements.push_back(std::move(hole));
+            advance();  // ','
+            continue;
         }
         PatternElement elem;
         elem.span.begin = peek().span.begin;

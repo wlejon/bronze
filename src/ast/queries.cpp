@@ -48,6 +48,7 @@ public:
     }
     void visit(const FunctionDecl&) override {}
     void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
 };
 
 // Finds `arguments` in a function body, descending into ARROWS and stopping at
@@ -73,6 +74,7 @@ public:
     }
     void visit(const FunctionDecl&) override {}
     void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
 };
 
 // Does a function body bind `name` itself, so that every reference to it
@@ -151,6 +153,13 @@ public:
             if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
         }
     }
+    void visit(const ClassExpr& c) override {
+        if (c.superName == name_) found = true;
+        for (const auto& m : c.methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            if (functionFreelyReferences(m.fn->params, m.fn->body, name_)) found = true;
+        }
+    }
 
 protected:
     std::string name_;
@@ -205,6 +214,7 @@ public:
     void visit(const FunctionExpr&) override {}
     void visit(const FunctionDecl&) override {}
     void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
 };
 
 }  // namespace

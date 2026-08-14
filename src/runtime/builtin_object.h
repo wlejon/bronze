@@ -43,6 +43,7 @@ enum class ObjectOwnKeys {
     Shape,        // a plain object: its own keys are in its shape
     StringChars,  // a primitive string: 10.4.3 synthesises them from the characters
     Namespace,    // a module namespace: 10.4.6.2's sorted export names
+    Function,     // a function: its statics are in FunctionHeader::properties
     None,         // a number, a boolean, a symbol: the box has no own property
     Threw,        // null or undefined: ToObject has no answer, and this raised it
 };
@@ -79,5 +80,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                                           const uint64_t* argv);
 uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                            const uint64_t* argv);
+uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 
 }  // namespace bronze::runtime

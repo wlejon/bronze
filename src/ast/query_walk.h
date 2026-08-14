@@ -111,6 +111,13 @@ public:
             m.fn->accept(*this);
         }
     }
+    void visit(const ClassExpr& c) override {
+        if (!c.superName.empty()) names.insert(c.superName);
+        for (const auto& m : c.methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            m.fn->accept(*this);
+        }
+    }
     void visit(const ObjectLit& o) override {
         for (const auto& prop : o.props) {
             if (prop.keyExpr) prop.keyExpr->accept(*this);
@@ -285,6 +292,12 @@ public:
     // mentions is a candidate capture - including the parent class name that a
     // `super` inside it resolves against.
     void visit(const ClassDecl& c) override {
+        for (const auto& m : c.methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            addFunctionBody(m.fn->body, &m.fn->params);
+        }
+    }
+    void visit(const ClassExpr& c) override {
         for (const auto& m : c.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
             addFunctionBody(m.fn->body, &m.fn->params);

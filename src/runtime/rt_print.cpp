@@ -13,6 +13,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/fatal.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
@@ -165,6 +166,34 @@ void bronze_print_string(const char* s) {
     if (s) std::fputs(s, stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
+}
+
+void bronze_print_spread(uint64_t arrBits) {
+    Value v(arrBits);
+    if (!v.isObject()) return;
+    auto* arr = v.asObject<ArrayHeader>();
+    if (!arr) return;
+    const uint32_t len = arr->length;
+    for (uint32_t i = 0; i < len; ++i) {
+        if (i > 0) std::fputc(' ', stdout);
+        writeValue(arr->getElem(i).rawBits(), stdout);
+    }
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+}
+
+void bronze_print_spread_err(uint64_t arrBits) {
+    Value v(arrBits);
+    if (!v.isObject()) return;
+    auto* arr = v.asObject<ArrayHeader>();
+    if (!arr) return;
+    const uint32_t len = arr->length;
+    for (uint32_t i = 0; i < len; ++i) {
+        if (i > 0) std::fputc(' ', stderr);
+        writeValue(arr->getElem(i).rawBits(), stderr);
+    }
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
 }
 
 }  // extern "C"

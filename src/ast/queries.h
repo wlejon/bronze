@@ -64,6 +64,10 @@ std::vector<std::string> getScopeDeclarations(const std::vector<const Stmt*>& st
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<StmtPtr>& stmts);
 std::vector<std::string> getHoistedVarDeclarations(const std::vector<const Stmt*>& stmts);
 
+// `var` declarations written directly at the top level of `stmts` (not inside blocks).
+std::vector<std::string> getTopLevelVarDeclarations(const std::vector<StmtPtr>& stmts);
+std::vector<std::string> getTopLevelVarDeclarations(const std::vector<const Stmt*>& stmts);
+
 // The LEXICAL half of `getScopeDeclarations`: the `let`, `const` and `class`
 // names this statement list declares directly, in source order. A hoisted
 // `function` declaration is deliberately absent — 14.3.1 leaves a lexical

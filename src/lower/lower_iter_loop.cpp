@@ -158,26 +158,24 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                          jumpStack_.size(), outerHandler});
     jumpStack_.back().cleanupDepthInBody = cleanupStack_.size();
 
-    // The head binding belongs to the body's scope, so it gets an environment
-    // slot there when a closure captures it — one per iteration, which is the
-    // whole of the language's rule for it. A destructuring head binds every
-    // name its pattern spells, and all of them belong to this scope for the
-    // same per-iteration reason.
+    // The head binding belongs to the body's scope when declared, so it gets an
+    // environment slot there when a closure captures it — one per iteration, which
+    // is the whole of the language's rule for it. When assigning to existing
+    // bindings, no new binding is introduced in this scope.
+    const bool isDecl = isConst || isLet || isVar;
     const std::vector<std::string> headNames =
-        headPattern ? ast::patternBoundNames(*headPattern) : std::vector<std::string>{headName};
+        isDecl ? (headPattern ? ast::patternBoundNames(*headPattern)
+                              : std::vector<std::string>{headName})
+               : std::vector<std::string>{};
     enterScope(body, ilFn, headNames);
     bool bodyOk = true;
+    const PatternTarget target{
+        .declare = isDecl, .isConst = isConst, .isLet = isLet, .isVar = isVar};
     if (headPattern) {
-        PatternTarget target{
-            .declare = true, .isConst = isConst, .isLet = isLet, .isVar = isVar};
         bodyOk = lowerPattern(*headPattern, Value{elemVal, il::Type::Dynamic}, target, ilFn);
     } else {
-        bodyOk = declareVariable(headName, il::Type::Dynamic, isConst, isLet, isVar,
-                                 /*isInitialized=*/true, elemVal, loopStmt.span);
-        if (bodyOk) {
-            writeBinding(varBindings_[activeVarMap_[headName]],
-                         Value{elemVal, il::Type::Dynamic}, ilFn);
-        }
+        bodyOk = bindPatternName(headName, Value{elemVal, il::Type::Dynamic}, target,
+                                 loopStmt.span, ilFn);
     }
 
     std::vector<const ast::Stmt*> bodyStmts;

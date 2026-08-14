@@ -280,6 +280,28 @@ uint64_t stringSubstring(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     return stringFromUnits(Units(self.begin() + a, self.begin() + b)).rawBits();
 }
 
+// Annex B.2.3.1 String.prototype.substr(start, length)
+uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Units self = thisUnits(Value(thisBits), "substr");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const size_t size = self.size();
+    double start = args.count() > 0 ? toInteger(rtToNumber(args[0])) : 0.0;
+    if (std::isinf(start) && start < 0.0) {
+        start = 0.0;
+    } else if (start < 0.0) {
+        start = std::max(static_cast<double>(size) + start, 0.0);
+    } else {
+        start = std::min(start, static_cast<double>(size));
+    }
+    double len = args.count() > 1 && !args[1].isUndefined() ? toInteger(rtToNumber(args[1]))
+                                                           : static_cast<double>(size);
+    if (len <= 0.0 || std::isnan(len)) return rtMakeString("").rawBits();
+    uint32_t intStart = static_cast<uint32_t>(start);
+    uint32_t intLength = static_cast<uint32_t>(std::min(len, static_cast<double>(size - intStart)));
+    return stringFromUnits(Units(self.begin() + intStart, self.begin() + intStart + intLength)).rawBits();
+}
+
 uint64_t stringConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units out = thisUnits(Value(thisBits), "concat");
@@ -353,16 +375,27 @@ uint64_t stringPadImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 // bronze does not carry, and "é".toUpperCase() answering "é" would be a
 // wrong answer given quietly — the one thing the house rules forbid above
 // all. When the tables land, this check is what gets deleted.
-template <bool Upper>
+//
+// The toLocale* twins share this body, and the ASCII fatal is what makes
+// that honest: locale tailorings (22.1.3.26's whole reason to exist) only
+// touch non-ASCII characters, so every input where the twins could answer
+// differently dies loudly here instead of answering wrong quietly.
+template <bool Upper, bool Locale = false>
 uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), Upper ? "toUpperCase" : "toLowerCase");
+    Units self = thisUnits(Value(thisBits),
+                           Locale ? (Upper ? "toLocaleUpperCase" : "toLocaleLowerCase")
+                                  : (Upper ? "toUpperCase" : "toLowerCase"));
     for (uint16_t u : self) {
         if (u >= 0x80) {
-            fatal(Upper ? "unsupported: String.prototype.toUpperCase on a non-ASCII string "
-                          "(no Unicode case tables)"
-                        : "unsupported: String.prototype.toLowerCase on a non-ASCII string "
-                          "(no Unicode case tables)");
+            fatal(Locale ? (Upper ? "unsupported: String.prototype.toLocaleUpperCase on a "
+                                    "non-ASCII string (no Unicode case tables)"
+                                  : "unsupported: String.prototype.toLocaleLowerCase on a "
+                                    "non-ASCII string (no Unicode case tables)")
+                         : (Upper ? "unsupported: String.prototype.toUpperCase on a non-ASCII "
+                                    "string (no Unicode case tables)"
+                                  : "unsupported: String.prototype.toLowerCase on a non-ASCII "
+                                    "string (no Unicode case tables)"));
         }
     }
     Units out;
@@ -453,7 +486,13 @@ const NativeMethod kStringMethods[] = {
     {"slice", stringSlice, 0},
     {"split", stringSplit, 0},
     {"startsWith", stringStartsWith, 1},
+    {"substr", stringSubstr, 2},
     {"substring", stringSubstring, 0},
+    // The toLocale* pair answers with the root-locale (untailored) mapping,
+    // which under the ASCII guard in stringCaseImpl is the only mapping any
+    // surviving input has — see the comment there.
+    {"toLocaleLowerCase", stringCaseImpl<false, true>, 0},
+    {"toLocaleUpperCase", stringCaseImpl<true, true>, 0},
     {"toLowerCase", stringCaseImpl<false>, 0},
     {"toString", stringItself, 0},
     {"toUpperCase", stringCaseImpl<true>, 0},

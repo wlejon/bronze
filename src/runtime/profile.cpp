@@ -1,6 +1,6 @@
-#ifdef _MSC_VER
-#pragma warning(disable: 4996)
-#endif
+// getenv, as heap.cpp: the CRT-deprecation opt-out, not a blanket C4996
+// disable that would also swallow real deprecated-API uses.
+#define _CRT_SECURE_NO_WARNINGS
 
 #include "runtime/profile.h"
 

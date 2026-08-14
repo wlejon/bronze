@@ -199,6 +199,29 @@ public:
         });
         emit(")");
     }
+    void visit(const ClassExpr& n) override {
+        emit("(class-expr " + (n.name.empty() ? "<anon>" : n.name) +
+             (n.superName.empty() ? "" : " extends " + n.superName));
+        indented([&] {
+            for (const auto& m : n.methods) {
+                const char* head = m.computed()
+                                       ? (m.isStatic ? "(static-method-computed"
+                                                     : "(method-computed")
+                                   : m.accessor == AccessorKind::Getter
+                                       ? (m.isStatic ? "(static-get " : "(get ")
+                                   : m.accessor == AccessorKind::Setter
+                                       ? (m.isStatic ? "(static-set " : "(set ")
+                                       : (m.isStatic ? "(static-method " : "(method ");
+                emit(std::string(head) + m.name);
+                indented([&] {
+                    if (m.keyExpr) m.keyExpr->accept(*this);
+                    m.fn->accept(*this);
+                });
+                emit(")");
+            }
+        });
+        emit(")");
+    }
     void visit(const BoolLit& n) override { emit(std::string("(bool ") + (n.value ? "true" : "false") + ")"); }
     void visit(const NullLit&) override { emit("(null)"); }
     void visit(const UndefinedLit&) override { emit("(undefined)"); }
@@ -466,6 +489,11 @@ private:
         emit(pattern->isObject ? "(pattern-object" : "(pattern-array");
         indented([&] {
             for (const auto& elem : pattern->elements) {
+                if (elem.name.empty() && !elem.pattern && !elem.target && !elem.defaultValue &&
+                    !elem.isRest && elem.key.empty() && !elem.keyExpr) {
+                    emit("(hole)");
+                    continue;
+                }
                 std::string head = elem.isRest ? "(elem ..." : "(elem ";
                 if (!elem.key.empty()) head += elem.key + ": ";
                 if (elem.keyExpr) head += "[computed]: ";

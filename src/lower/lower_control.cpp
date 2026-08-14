@@ -42,12 +42,13 @@ std::vector<Lowerer::LoopParam> Lowerer::collectLoopParams(
     std::vector<LoopParam> params;
     for (const auto& name : getActiveVarsInDeclOrder()) {
         if (!assigned.contains(name)) continue;
+        const VarBinding& b = varBindings_[activeVarMap_[name]];
+        if (b.inEnv) continue;
         // Becoming a loop parameter means being read on the entry edge, and an
         // annotated `let x: number;` has no value to read there — undefined has
         // no typed form (see lowerVarDecl). Diagnosed here by name, like every
         // other read before initialization, rather than left to emit an edge
         // argument that does not exist.
-        const VarBinding& b = varBindings_[activeVarMap_[name]];
         if (!b.isInitialized) {
             diags_.error(loopStmt.span, std::string("use of '") + (b.isConst ? "const" : "let") +
                                             "' binding '" + name +
@@ -260,6 +261,7 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
     std::vector<std::string> activeNames = getActiveVarsInDeclOrder();
     std::vector<std::string> joinVars;
     for (const auto& name : activeNames) {
+        if (varBindings_[activeVarMap_[name]].inEnv) continue;
         if (stateThenEnd.at(name).valueId != stateElseEnd.at(name).valueId) {
             joinVars.push_back(name);
         }
