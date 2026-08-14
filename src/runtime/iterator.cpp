@@ -13,6 +13,7 @@
 // record — so the loop's step is a switch on an integer rather than a
 // re-derivation per element.
 
+#include "runtime/async_generator.h"
 #include "runtime/generator.h"
 #include "runtime/iterator.h"
 
@@ -181,6 +182,7 @@ bool stepFast(IterRecordHeader* rec) {
 }  // namespace
 
 Value rtIteratorKey() { return Value::fromSymbol(rtSymbolIterator()); }
+Value rtAsyncIteratorKey() { return Value::fromSymbol(rtSymbolAsyncIterator()); }
 
 namespace {
 
@@ -192,17 +194,15 @@ uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t
     return thisBits;
 }
 
-// The five per-kind prototypes plus the %IteratorPrototype% they share, in one
-// table indexed by `IteratorProto`. Permanent roots: the collector moves plain
-// objects, and a `static Value` it has not been told about would be an address
-// recorded before a collection and read after one.
+// The per-kind prototypes plus %IteratorPrototype% / %AsyncIteratorPrototype%,
+// in one table indexed by `IteratorProto`.
 struct ProtoEntry {
     Value proto = Value::fromUndefined();
     Shape* shape = nullptr;
 };
 
 ProtoEntry& protoEntry(IteratorProto kind) {
-    static ProtoEntry table[6];
+    static ProtoEntry table[7];
     return table[static_cast<uint32_t>(kind)];
 }
 
@@ -222,6 +222,21 @@ Value iteratorPrototypeRoot() {
     return root;
 }
 
+// %AsyncIteratorPrototype% (27.1.3). Inherits Object.prototype.
+// Has [Symbol.asyncIterator]() { return this; }.
+Value asyncIteratorPrototypeRoot() {
+    static Value root = Value::fromUndefined();
+    if (root.isObject()) return root;
+    Rooted<Value> obj{
+        Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
+    Rooted<Value> key{rtAsyncIteratorKey()};
+    Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0)};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
+    root = obj.get();
+    rtHeap().add_permanent_root(&root);
+    return root;
+}
+
 // How many internal slots each kind's objects are allocated with, in the order
 // `IteratorProto` declares. Half the brand, so it is written once and read by
 // both the creator and the check.
@@ -232,6 +247,7 @@ constexpr uint32_t kInternalSlots[] = {
     RegExpStringIteratorSlot::kCount,
     GeneratorSlot::kCount,
     StringIteratorSlot::kCount,
+    AsyncGeneratorSlot::kCount,
 };
 
 Shape* iteratorObjectShape(IteratorProto kind) {
@@ -240,24 +256,22 @@ Shape* iteratorObjectShape(IteratorProto kind) {
     // The kind's own prototype. For all but the generator's it has NO members
     // of its own: bronze puts their `next` on the iterator itself, which is a
     // divergence recorded in cases/collection_internal_slots.js and not one
-    // this seam decides. %GeneratorPrototype% is the exception, and not by
-    // choice — 27.5.1 defines `next`, `return` and `throw` there, and a
-    // generator object with an own `next` would report one where a spec engine
-    // reports none.
-    Rooted<Value> parent{iteratorPrototypeRoot()};
+    // this seam decides. %GeneratorPrototype% and %AsyncGeneratorPrototype%
+    // are the exceptions.
+    Rooted<Value> parent{kind == IteratorProto::AsyncGenerator ? asyncIteratorPrototypeRoot()
+                                                              : iteratorPrototypeRoot()};
     Rooted<Value> proto{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(parent.get())))};
     entry.proto = proto.get();
     rtHeap().add_permanent_root(&entry.proto);
     if (kind == IteratorProto::Generator) {
         rtInstallGeneratorPrototype(proto);
-        // Re-read through the permanent root: installing the methods allocates,
-        // so the address `proto` was built at may already be stale.
+        entry.proto = proto.get();
+    } else if (kind == IteratorProto::AsyncGenerator) {
+        rtInstallAsyncGeneratorPrototype(proto);
         entry.proto = proto.get();
     }
-    // `@@toStringTag`, which is what `Object.prototype.toString` reads (20.1.3.6
-    // step 15) and the only reason these objects have any own property beyond
-    // the generator's three methods.
+    // `@@toStringTag`
     switch (kind) {
         case IteratorProto::Map:
             rtDefineToStringTag(proto, "Map Iterator");  // 24.1.5.2.2
@@ -279,13 +293,11 @@ Shape* iteratorObjectShape(IteratorProto kind) {
         case IteratorProto::String:
             rtDefineToStringTag(proto, "String Iterator");  // 22.1.5.1.2
             break;
+        case IteratorProto::AsyncGenerator:
+            rtDefineToStringTag(proto, "AsyncGenerator");  // 27.6.1.5
+            break;
     }
-    // Defining the tag allocates, for the same reason installing the generator
-    // methods above does.
     entry.proto = proto.get();
-    // The root shape holds the prototype, and `rtNewRootShape` hands it to the
-    // collector — so the object above is reachable twice over, once for the
-    // shape and once for the static this function reads it back from.
     entry.shape = rtNewRootShape(entry.proto);
     return entry.shape;
 }
@@ -527,6 +539,75 @@ uint64_t bronze_iter_rest(uint64_t recBits) {
     return out.get().rawBits();
 }
 
+uint64_t bronze_async_iter_open(uint64_t srcBits) {
+    recordHelperCall("bronze_async_iter_open");
+    return rtOpenAsyncIterator(Value(srcBits)).rawBits();
+}
+
+uint64_t bronze_async_iter_next(uint64_t recBits) {
+    recordHelperCall("bronze_async_iter_next");
+    Value recVal(recBits);
+    if (!recVal.isObject() ||
+        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
+        fatal("internal: async_iter.next on a value that is not an iteration record");
+    }
+    Rooted<Value> recRoot{recVal};
+    auto* rec = recRoot.get().asObject<IterRecordHeader>();
+    if (rec->kindOf() == IterRecordHeader::Protocol) {
+        Rooted<Value> nextFn{rec->nextFn};
+        Rooted<Value> target{rec->target};
+        return nextFn.get().asObject<FunctionHeader>()->call(target.get(), 0, nullptr).rawBits();
+    }
+    bool hasVal = bronze_iter_step(recRoot.get().rawBits());
+    Rooted<Value> valVal{hasVal ? Value(bronze_iter_value(recRoot.get().rawBits())) : Value::fromUndefined()};
+    Rooted<Value> resObj{Value(bronze_create_object())};
+    Rooted<Value> keyDone{rtMakeString("done")};
+    Rooted<Value> valDone{Value::fromBool(!hasVal)};
+    Rooted<Value> keyVal{rtMakeString("value")};
+    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyDone, valDone);
+    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyVal, valVal);
+    return resObj.get().rawBits();
+}
+
+void bronze_async_iter_close(uint64_t recBits, bool suppress) {
+    bronze_iter_close(recBits, suppress);
+}
+
 }  // extern "C"
+
+Value asyncIteratorMethodOf(Value v) {
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        return Value::fromUndefined();
+    }
+    Rooted<Value> objRoot{v};
+    Rooted<Value> keyRoot{rtAsyncIteratorKey()};
+    return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
+}
+
+Value rtOpenAsyncIterator(Value source) {
+    Rooted<Value> srcRoot{source};
+    Rooted<Value> asyncMethod{asyncIteratorMethodOf(srcRoot.get())};
+    if (isCallable(asyncMethod.get())) {
+        Rooted<Value> iter{
+            asyncMethod.get().asObject<FunctionHeader>()->call(srcRoot.get(), 0, nullptr)};
+        if (rtExceptionPending()) return Value::fromUndefined();
+        if (!iter.get().isObject()) {
+            rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
+            return Value::fromUndefined();
+        }
+        Rooted<Value> next{namedProp(iter.get(), keyNext())};
+        if (!isCallable(next.get())) {
+            rtThrowTypeError("the async iterator has no `next` method");
+            return Value::fromUndefined();
+        }
+        Rooted<Value> recRoot{
+            Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
+        auto* rec = recRoot.get().asObject<IterRecordHeader>();
+        rec->target = iter.get();
+        rec->nextFn = next.get();
+        return recRoot.get();
+    }
+    return rtOpenIterator(srcRoot.get());
+}
 
 }  // namespace bronze::runtime

@@ -55,12 +55,20 @@ bool Parser::parseFromClause(std::string& outSpecifier, Span& outSpan) {
 bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
     const Token& kw = advance();  // 'import'
 
-    // Two things that begin with `import` and are not declarations. Both are
-    // real JavaScript bronze has not built, so both are named: falling
-    // through to the clause grammar below would report a missing '{'.
     if (check(TokenKind::LParen)) {
-        error("unsupported construct: dynamic import() (bronze has no promises)");
-        return false;
+        advance();  // '('
+        auto spec = parseAssign();
+        if (!spec) return false;
+        if (!expect(TokenKind::RParen, "')' after dynamic import specifier")) return false;
+        consumeSemicolon("a dynamic import expression");
+        auto node = std::make_unique<DynamicImportExpr>();
+        node->span = kw.span;
+        node->specifier = std::move(spec);
+        auto stmt = std::make_unique<ExprStmt>();
+        stmt->span = node->span;
+        stmt->expr = std::move(node);
+        out.push_back(std::move(stmt));
+        return true;
     }
     if (check(TokenKind::Dot)) {
         error("unsupported construct: import.meta");

@@ -41,15 +41,21 @@ const char* Lowerer::asyncMachineSlotName() { return kMachineSlot; }
 std::optional<Lowerer::Value> Lowerer::lowerAwait(const ast::YieldExpr& await,
                                                   il::Function& ilFn) {
     if (!generator_ || !generator_->isAsync) {
-        // Unreachable through the parser, which only builds an await-flagged
-        // YieldExpr inside an async body. Named rather than assumed, for the
-        // reason lowerYield names its twin.
         diags_.error(await.span, "internal: an `await` outside an async function body");
         return std::nullopt;
     }
     auto operand = lowerExpr(*await.argument, ilFn);
     if (!operand) return std::nullopt;
     Value awaited = boxValueIfNeeded(*operand, ilFn);
+    return lowerAwaitValue(awaited, await.span, ilFn);
+}
+
+std::optional<Lowerer::Value> Lowerer::lowerAwaitValue(Value awaited, Span span,
+                                                       il::Function& ilFn) {
+    if (!generator_ || !generator_->isAsync) {
+        diags_.error(span, "internal: an `await` outside an async function body");
+        return std::nullopt;
+    }
 
     GeneratorContext& gen = *generator_;
     const uint32_t depth = envDepthOf(gen.frameScope);
@@ -71,8 +77,12 @@ std::optional<Lowerer::Value> Lowerer::lowerAwait(const ast::YieldExpr& await,
     subscribe.operands = {machine.id, awaited.id};
     emitInst(ilFn, subscribe);
 
-    emitGeneratorResult(Value{emitConstUndefined(ilFn), il::Type::Dynamic},
-                        /*done=*/false, ilFn);
+    if (gen.isAsyncGenerator) {
+        emitAsyncAwaitResult(ilFn);
+    } else {
+        emitGeneratorResult(Value{emitConstUndefined(ilFn), il::Type::Dynamic},
+                            /*done=*/false, ilFn);
+    }
 
     const il::BlockId bResume = createBlock(ilFn);
     gen.resumeBlocks.push_back(bResume);
@@ -122,6 +132,36 @@ std::optional<Lowerer::Value> Lowerer::lowerAwait(const ast::YieldExpr& await,
     setCurrentBlock(bNormal);
     // The value of the `await` is what the awaited promise fulfilled with.
     return Value{gen.sentParam, il::Type::Dynamic};
+}
+
+Lowerer::Value Lowerer::emitAsyncAwaitResult(il::Function& ilFn) {
+    Value res = emitIterResult(Value{emitConstUndefined(ilFn), il::Type::Dynamic}, false, ilFn);
+
+    il::ValueId awaitVal = ilFn.valueCount++;
+    il::Instruction awaitConst;
+    awaitConst.op = il::Op::ConstBool;
+    awaitConst.type = il::Type::Bool;
+    awaitConst.result = awaitVal;
+    awaitConst.immI32 = 1;
+    emitInst(ilFn, awaitConst);
+    Value awaitBoxed = boxValueIfNeeded(Value{awaitVal, il::Type::Bool}, ilFn);
+
+    il::Instruction setAwait;
+    setAwait.op = il::Op::PropSet;
+    setAwait.type = il::Type::Void;
+    setAwait.result = il::kNoValue;
+    setAwait.operands = {res.id, awaitBoxed.id};
+    setAwait.keyIndex = getKeyConstantIndex("isAwait");
+    setAwait.icIndex = icSiteCounter_++;
+    emitInst(ilFn, setAwait);
+
+    il::Instruction ret;
+    ret.op = il::Op::Ret;
+    ret.type = il::Type::Dynamic;
+    ret.result = il::kNoValue;
+    ret.operands = {res.id};
+    emitInst(ilFn, ret);
+    return res;
 }
 
 // The async function's own body: park the state, close the resume function
@@ -198,6 +238,63 @@ bool Lowerer::lowerAsyncTail(const std::vector<const ast::Stmt*>& stmts, il::Fun
     ret.type = il::Type::Dynamic;
     ret.result = il::kNoValue;
     ret.operands = {promise};
+    emitInst(ilFn, ret);
+    return true;
+}
+
+bool Lowerer::lowerAsyncGeneratorTail(const std::vector<const ast::Stmt*>& stmts,
+                                      il::Function& ilFn) {
+    if (functionEnvScope_ == SIZE_MAX) {
+        diags_.error(Span{}, "internal: an async generator function with no frame record");
+        return false;
+    }
+    const size_t frameScope = functionEnvScope_;
+    const uint32_t depth = envDepthOf(frameScope);
+    emitEnvSet(depth, envScopes_[frameScope].slotOf.at(generatorStateSlotName()),
+               emitConstF64(0, ilFn), ilFn);
+    const il::ValueId frameRecord = currentEnvValue_;
+
+    il::Function resumeFn;
+    resumeFn.name = ilFn.name + ".resume";
+    resumeFn.returnType = il::Type::Dynamic;
+    resumeFn.needsEnv = true;
+    resumeFn.params.push_back({"__env", il::Type::Dynamic});
+    resumeFn.params.push_back({"__mode", il::Type::Dynamic});
+    resumeFn.params.push_back({"__sent", il::Type::Dynamic});
+    resumeFn.requiredArgs = 2;
+    resumeFn.valueCount = static_cast<uint32_t>(resumeFn.params.size());
+
+    if (!lowerResumeBody(stmts, resumeFn, /*isAsync=*/true, /*isAsyncGenerator=*/true)) return false;
+
+    const auto resumeIndex = static_cast<uint32_t>(ilModule_.functions.size());
+    ilModule_.functions.push_back(std::move(resumeFn));
+
+    il::ValueId closure = ilFn.valueCount++;
+    il::Instruction create;
+    create.op = il::Op::CreateFunction;
+    create.type = il::Type::Dynamic;
+    create.result = closure;
+    create.calleeIndex = resumeIndex;
+    create.immI32 = 2;
+    create.operands = {frameRecord};
+    emitInst(ilFn, create);
+
+    il::ValueId genObj = ilFn.valueCount++;
+    il::Instruction makeGen;
+    makeGen.op = il::Op::CreateAsyncGeneratorObject;
+    makeGen.type = il::Type::Dynamic;
+    makeGen.result = genObj;
+    makeGen.operands = {closure};
+    emitInst(ilFn, makeGen);
+
+    emitEnvSet(depth, envScopes_[frameScope].slotOf.at(kMachineSlot),
+               Value{genObj, il::Type::Dynamic}, ilFn);
+
+    il::Instruction ret;
+    ret.op = il::Op::Ret;
+    ret.type = il::Type::Dynamic;
+    ret.result = il::kNoValue;
+    ret.operands = {genObj};
     emitInst(ilFn, ret);
     return true;
 }

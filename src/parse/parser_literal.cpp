@@ -392,7 +392,7 @@ ExprPtr Parser::parseObjectLit() {
                 }
                 auto method = parseAsyncMethodTail(
                     methodName(prop.key.empty() ? "computed" : prop.key), star.span,
-                    /*clearSuper=*/true);
+                    /*clearSuper=*/true, /*isGenerator=*/true);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);

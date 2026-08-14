@@ -152,6 +152,7 @@ enum class Op : uint8_t {
     // things that make it one is a property: the prototype lives on the shape,
     // and the resume closure is an internal slot.
     CreateGeneratorObject, // a = create.generator_object b
+    CreateAsyncGeneratorObject, // a = create.async_generator_object b
     // The three edges of an ASYNC function (ECMA-262 27.7): make the machine
     // the runtime driver holds (operand = the resume closure), start it (run
     // the body synchronously to the first await, 27.7.5.1, and answer the
@@ -162,6 +163,7 @@ enum class Op : uint8_t {
     CreateAsyncMachine, // a = create.async_machine b     (b = resume closure)
     AsyncStart,         // a = async.start b              (b = machine; a = promise)
     AsyncAwait,         // async.await machine, value     (no result; subscribes)
+    DynamicImport,      // a = dynamic_import specifier
     // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
     // of getters the operand holds. Its own op for the reason
     // `create.generator_object` is one: what it produces is not an object
@@ -216,6 +218,9 @@ enum class Op : uint8_t {
     // walk survives as a kind INSIDE the record, so the common case still costs
     // no allocation and no call into user code.
     IterOpen,    // a: dynamic = iter.open b        (GetIterator, 7.4.2)
+    AsyncIterOpen, // a: dynamic = async_iter.open b
+    AsyncIterNext, // a: dynamic = async_iter.next %record
+    AsyncIterClose, // async_iter.close %record, <suppress>
     // Advances the cursor, stashes what it produced in the record, and
     // answers whether there was anything. Two ops rather than one because
     // an SSA instruction has one result and a step has two answers.

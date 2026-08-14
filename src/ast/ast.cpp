@@ -39,6 +39,7 @@ void NewTargetExpr::accept(Visitor& v) const { v.visit(*this); }
 void SuperCall::accept(Visitor& v) const { v.visit(*this); }
 void SuperMember::accept(Visitor& v) const { v.visit(*this); }
 void DestructuringAssign::accept(Visitor& v) const { v.visit(*this); }
+void DynamicImportExpr::accept(Visitor& v) const { v.visit(*this); }
 void ObjectLit::accept(Visitor& v) const { v.visit(*this); }
 void ArrayLit::accept(Visitor& v) const { v.visit(*this); }
 void FunctionExpr::accept(Visitor& v) const { v.visit(*this); }

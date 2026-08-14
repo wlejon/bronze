@@ -47,11 +47,13 @@
 // an allocation, and every slot read below is re-derived through a root.
 
 #include "abi/bronze_abi.h"
+#include "runtime/async_generator.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/generator.h"
 #include "runtime/heap.h"
+#include "runtime/iterator.h"
 #include "runtime/microtask.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
@@ -156,6 +158,10 @@ void settleFromCompletion(Rooted<Value>& machine, Rooted<Value>& value, bool rej
 //                                  subscription before the result), so there is
 //                                  nothing to do but record where we are
 void resumeMachine(Rooted<Value>& machine, uint32_t mode, Rooted<Value>& sent) {
+    if (rtIsIteratorObject(machine.get(), IteratorProto::AsyncGenerator)) {
+        rtAsyncGeneratorResumeFromAwait(machine, mode, sent);
+        return;
+    }
     const uint32_t state = stateOf(machine);
     if (state == MachineState::Completed) {
         // Unreachable: an await subscribes ONE fulfill/reject pair, a promise

@@ -77,9 +77,9 @@ size_t Lowerer::cleanupDepthForJump(size_t targetIndex) const {
     return depth;
 }
 
-void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn) {
+void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync) {
     il::Instruction inst;
-    inst.op = il::Op::IterClose;
+    inst.op = isAsync ? il::Op::AsyncIterClose : il::Op::IterClose;
     inst.type = il::Type::Void;
     inst.result = il::kNoValue;
     inst.operands = {record};
@@ -111,7 +111,7 @@ bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
         // or return into.
         if (currentBlockIsTerminated(ilFn)) break;
         const CleanupFrame frame = cleanupStack_[i];
-        if (frame.kind == CleanupKind::IteratorClose) {
+        if (frame.kind == CleanupKind::IteratorClose || frame.kind == CleanupKind::AsyncIteratorClose) {
             // No block of its own and no handler dance: closing an iterator
             // is one call, and an error its `return` method raises on THIS
             // path (a `break` or a `return`, not a throw) propagates like any
@@ -123,7 +123,7 @@ bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
             const il::ValueId record = frame.iterFrameSlot == UINT32_MAX
                                            ? frame.iterRecord
                                            : emitFrameSlotGet(frame.iterFrameSlot, ilFn).id;
-            emitIterClose(record, /*suppress=*/false, ilFn);
+            emitIterClose(record, /*suppress=*/false, ilFn, frame.kind == CleanupKind::AsyncIteratorClose);
             continue;
         }
         // Truncated below this entry while its body runs, so a `break` inside

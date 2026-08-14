@@ -110,7 +110,7 @@ bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     const bool savedAsync = inAsyncBody_;
     const bool savedGen = inGeneratorBody_;
     inAsyncBody_ = true;
-    inGeneratorBody_ = false;
+    inGeneratorBody_ = fn.isGenerator;
     fn.body = parseFunctionBody(fn.strict);
     inGeneratorBody_ = savedGen;
     inAsyncBody_ = savedAsync;
@@ -127,14 +127,12 @@ bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
 StmtPtr Parser::parseAsyncFunctionDecl(bool isExported, const std::string& defaultName) {
     const Token& asyncKw = advance();  // `async`
     advance();                         // `function` (the caller checked both)
-    if (check(TokenKind::Star)) {
-        error("unsupported construct: an async generator function (`async function*`)");
-        return nullptr;
-    }
+    const bool isGenerator = match(TokenKind::Star);
     auto fn = std::make_unique<FunctionDecl>();
     fn->span.begin = asyncKw.span.begin;
     fn->isExported = isExported;
     fn->isAsync = true;
+    fn->isGenerator = isGenerator;
 
     if (!defaultName.empty() && !check(TokenKind::Identifier)) {
         // `export default async function () {}` — the anonymous hoisted
@@ -155,6 +153,7 @@ StmtPtr Parser::parseAsyncFunctionDecl(bool isExported, const std::string& defau
     ast::FunctionExpr shell;
     shell.span = fn->span;
     shell.name = fn->name;
+    shell.isGenerator = isGenerator;
     if (!parseAsyncFnTail(shell)) return nullptr;
     fn->params = std::move(shell.params);
     fn->returnType = std::move(shell.returnType);
@@ -167,12 +166,10 @@ StmtPtr Parser::parseAsyncFunctionDecl(bool isExported, const std::string& defau
 ExprPtr Parser::parseAsyncFunctionExpr() {
     const Token& asyncKw = advance();  // `async`
     advance();                         // `function`
-    if (check(TokenKind::Star)) {
-        error("unsupported construct: an async generator function (`async function*`)");
-        return nullptr;
-    }
+    const bool isGenerator = match(TokenKind::Star);
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = asyncKw.span.begin;
+    fn->isGenerator = isGenerator;
     if (check(TokenKind::Identifier)) {
         const Token& nameTok = advance();
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
@@ -241,10 +238,12 @@ ExprPtr Parser::parseAsyncArrow() {
 // class's `super`, a class's own method must keep it.
 std::unique_ptr<ast::FunctionExpr> Parser::parseAsyncMethodTail(const std::string& name,
                                                                 Span nameSpan,
-                                                                bool clearSuper) {
+                                                                bool clearSuper,
+                                                                bool isGenerator) {
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = nameSpan.begin;
     fn->name = name;
+    fn->isGenerator = isGenerator;
 
     const bool savedInClassMethod = inClassMethod_;
     const std::string savedClassSuper = currentClassSuper_;

@@ -144,6 +144,10 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         expr(*y->argument);
         return Type::dynamic();
     }
+    if (const auto* di = dynamic_cast<const ast::DynamicImportExpr*>(&e)) {
+        if (di->specifier) expr(*di->specifier);
+        return Type::dynamic();
+    }
     // A spread contributes its argument's effects and nothing about the
     // container's element types — there is no element type here to prove.
     if (const auto* sp = dynamic_cast<const ast::SpreadElement*>(&e)) {

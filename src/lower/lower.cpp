@@ -611,8 +611,9 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // fact — 27.7.5.1 runs the body synchronously to the first await — and
     // that fact lives in the runtime driver its tail calls, not here.
     if (isGenerator || isAsync) {
-        const bool ok = isGenerator ? lowerGeneratorTail(stmts, ilFn)
-                                    : lowerAsyncTail(stmts, ilFn);
+        const bool ok = (isGenerator && isAsync) ? lowerAsyncGeneratorTail(stmts, ilFn)
+                        : isGenerator             ? lowerGeneratorTail(stmts, ilFn)
+                                                  : lowerAsyncTail(stmts, ilFn);
         if (functionEnvScope_ != SIZE_MAX) {
             envScopes_.pop_back();
             currentEnvValue_ = savedEnvValues_.back();

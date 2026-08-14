@@ -335,6 +335,13 @@ struct DestructuringAssign final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `import(specifier)` — dynamic import expression (ECMA-262 13.3.10).
+// Evaluates to a Promise resolving to the module's namespace object.
+struct DynamicImportExpr final : Expr {
+    ExprPtr specifier;
+    void accept(Visitor& v) const override;
+};
+
 // ---- Statements / declarations ---------------------------------------------
 
 struct Stmt : Node {};
@@ -566,6 +573,7 @@ struct ForOfStmt final : Stmt {
     bool isConst = false;
     bool isLet = false;
     bool isVar = false;
+    bool isAwait = false;
     ExprPtr iterable;
     std::vector<StmtPtr> body;
     void accept(Visitor& v) const override;
@@ -751,6 +759,7 @@ public:
     virtual void visit(const SuperCall&) = 0;
     virtual void visit(const SuperMember&) = 0;
     virtual void visit(const YieldExpr&) = 0;
+    virtual void visit(const DynamicImportExpr&) = 0;
     virtual void visit(const DestructuringAssign&) = 0;
     virtual void visit(const ObjectLit&) = 0;
     virtual void visit(const ArrayLit&) = 0;

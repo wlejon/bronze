@@ -126,7 +126,7 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     // is a syntax error rather than something the linker later has to decide
     // the meaning of, because there is no meaning to decide — a binding
     // introduced into a block would be visible to nothing outside it.
-    if (check(TokenKind::KwExport) || check(TokenKind::KwImport)) {
+    if (check(TokenKind::KwExport) || (check(TokenKind::KwImport) && peek(1).kind != TokenKind::LParen)) {
         if (!atModuleTop) {
             error("an import or export declaration may only appear at the top level of a module");
             return false;
@@ -377,13 +377,10 @@ bool Parser::parseForBindingHead(ForBindingHead& head, bool hasDecl) {
 StmtPtr Parser::parseFor() {
     const Token& kw = advance();
     // `for await (const x of y)` — async iteration (ECMA-262 14.7.5), which
-    // is a second protocol (27.6, @@asyncIterator) over the machine and not a
-    // spelling of the sync one. Refused by name in EVERY position, async body
-    // or not: outside one it is a syntax error anyway, and inside one a
-    // silent sync reading would await nothing.
+    bool isAwait = false;
     if (check(TokenKind::Identifier) && peek().text == "await") {
-        error("unsupported construct: for-await-of (async iteration is not built)");
-        return nullptr;
+        advance();
+        isAwait = true;
     }
     if (!expect(TokenKind::LParen, "'(' after 'for'")) return nullptr;
 
@@ -398,6 +395,10 @@ StmtPtr Parser::parseFor() {
         // has to skip a whole group rather than a fixed token count.
         const size_t lookahead = skipBindingTarget(hasDecl ? 1 : 0);
         if (peek(lookahead).kind == TokenKind::KwIn) {
+            if (isAwait) {
+                error("'for await' can only be used with 'of' loops");
+                return nullptr;
+            }
             ForBindingHead head;
             if (!parseForBindingHead(head, hasDecl)) return nullptr;
             auto stmt = std::make_unique<ForInStmt>();
@@ -422,6 +423,7 @@ StmtPtr Parser::parseFor() {
             stmt->isConst = head.isConst;
             stmt->isLet = head.isLet;
             stmt->isVar = head.isVar;
+            stmt->isAwait = isAwait;
             stmt->name = std::move(head.name);
             stmt->pattern = std::move(head.pattern);
             if (!expect(TokenKind::KwOf, "'of' in a for-of header")) return nullptr;
@@ -431,6 +433,11 @@ StmtPtr Parser::parseFor() {
             stmt->body = parseBlockOrSingleStmt();
             return stmt;
         }
+    }
+
+    if (isAwait) {
+        error("'for await' can only be used with 'of' loops");
+        return nullptr;
     }
 
     auto stmt = std::make_unique<ForStmt>();

@@ -142,6 +142,11 @@ public:
         indented([&] { n.argument->accept(*this); });
         emit(")");
     }
+    void visit(const DynamicImportExpr& n) override {
+        emit("(dynamic-import");
+        indented([&] { if (n.specifier) n.specifier->accept(*this); });
+        emit(")");
+    }
     void visit(const DestructuringAssign& n) override {
         emit("(destructuring-assign");
         indented([&] {
@@ -403,7 +408,7 @@ public:
         emit(")");
     }
     void visit(const ForOfStmt& n) override {
-        emit("(for-of " + (n.pattern ? std::string("<pattern>") : n.name));
+        emit((n.isAwait ? "(for-await-of " : "(for-of ") + (n.pattern ? std::string("<pattern>") : n.name));
         indented([&] {
             if (n.pattern) dumpPattern(n.pattern.get());
             if (n.iterable) n.iterable->accept(*this);

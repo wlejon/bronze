@@ -74,9 +74,11 @@ const char* opName(Op op) {
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
         case Op::CreateGeneratorObject: return "create.generator_object";
+        case Op::CreateAsyncGeneratorObject: return "create.async_generator_object";
         case Op::CreateAsyncMachine: return "create.async_machine";
         case Op::AsyncStart: return "async.start";
         case Op::AsyncAwait: return "async.await";
+        case Op::DynamicImport: return "dynamic_import";
         case Op::ModuleNamespace: return "module.namespace";
         case Op::ObjectKeys: return "object.keys";
         case Op::ForInKeys: return "forin.keys";
@@ -95,6 +97,9 @@ const char* opName(Op op) {
         case Op::RefError: return "ref.error";
         case Op::ClassExtend: return "class.extend";
         case Op::IterOpen: return "iter.open";
+        case Op::AsyncIterOpen: return "async_iter.open";
+        case Op::AsyncIterNext: return "async_iter.next";
+        case Op::AsyncIterClose: return "async_iter.close";
         case Op::IterStep: return "iter.step";
         case Op::IterValue: return "iter.value";
         case Op::IterClose: return "iter.close";
@@ -457,10 +462,14 @@ std::string print(const Module& module) {
                         break;
                     case Op::ModuleNamespace:
                     case Op::CreateGeneratorObject:
+                    case Op::CreateAsyncGeneratorObject:
                     case Op::CreateAsyncMachine:
                     case Op::AsyncStart:
+                    case Op::DynamicImport:
                     case Op::ForInKeys:
                     case Op::IterOpen:
+                    case Op::AsyncIterOpen:
+                    case Op::AsyncIterNext:
                     case Op::IterStep:
                     case Op::IterValue:
                     case Op::IterRest:
@@ -480,7 +489,8 @@ std::string print(const Module& module) {
                     // error `return` raises and one on a `break` path does
                     // not (ECMA-262 7.4.9 step 6).
                     case Op::IterClose:
-                        out += "iter.close %" +
+                    case Op::AsyncIterClose:
+                        out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
                                (inst.immI32 == 0 ? "abrupt" : "suppress");
                         break;

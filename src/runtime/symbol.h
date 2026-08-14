@@ -76,6 +76,7 @@ Value rtSymbolKeyFor(Value symbol);
 // `undefined`. These two exist because the hooks they name are built — the
 // iterator protocol, and 20.1.3.6's tag lookup.
 SymbolHeader* rtSymbolIterator();
+SymbolHeader* rtSymbolAsyncIterator();
 SymbolHeader* rtSymbolToStringTag();
 SymbolHeader* rtSymbolToPrimitive();
 

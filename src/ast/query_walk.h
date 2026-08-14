@@ -100,6 +100,7 @@ public:
     void visit(const SuperMember& m) override { names.insert(m.baseName); }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
+    void visit(const DynamicImportExpr& d) override { if (d.specifier) d.specifier->accept(*this); }
     void visit(const DestructuringAssign& d) override {
         for (const auto& n : patternBoundNames(*d.pattern)) names.insert(n);
         visitPatternExprs(d.pattern.get(), *this);
@@ -262,6 +263,7 @@ public:
     void visit(const Ident&) override {}
 
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
+    void visit(const DynamicImportExpr& d) override { if (d.specifier) d.specifier->accept(*this); }
     void visit(const Unary& u) override { u.operand->accept(*this); }
     void visit(const Binary& b) override {
         b.lhs->accept(*this);

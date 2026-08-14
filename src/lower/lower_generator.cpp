@@ -349,7 +349,7 @@ void Lowerer::emitGeneratorDispatch(il::Function& ilFn) {
 // that made the record — so its `envValue` is repointed at this function's
 // `__env` parameter for the duration and put back afterwards.
 bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
-                              il::Function& resumeFn, bool isAsync) {
+                              il::Function& resumeFn, bool isAsync, bool isAsyncGenerator) {
     resumeFn.blocks.push_back(il::Block{.id = 0});
 
     const size_t outerBlockIdx = currentBlockIdx_;
@@ -404,6 +404,7 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     // the machine to subscribe resumption through, and it reaches them the way
     // everything else does — through a frame slot (see asyncMachineSlotName).
     context.isAsync = isAsync;
+    context.isAsyncGenerator = isAsyncGenerator;
     if (isAsync) {
         context.machineSlot = envScopes_[frameScope].slotOf.at(asyncMachineSlotName());
     }

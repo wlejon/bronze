@@ -157,6 +157,21 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_create_generator_object, {body});
             return true;
         }
+        case il::Op::CreateAsyncGeneratorObject: {
+            if (!needs(1, false, "Invalid operands for CreateAsyncGeneratorObject")) return false;
+            llvm::Value* body =
+                operand(inst, 0, "Undefined operand in CreateAsyncGeneratorObject instruction");
+            if (!body) return false;
+            callWith(abi.bronze_create_async_generator_object, {body});
+            return true;
+        }
+        case il::Op::DynamicImport: {
+            if (!needs(1, false, "Invalid operands for DynamicImport")) return false;
+            llvm::Value* spec = operand(inst, 0, "Undefined operand in DynamicImport instruction");
+            if (!spec) return false;
+            callWith(abi.bronze_dynamic_import, {spec});
+            return true;
+        }
         case il::Op::CreateAsyncMachine: {
             // The operand is the resume closure, exactly as it is for the
             // generator object above — one machine body, two drivers.
@@ -321,6 +336,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         }
 
         case il::Op::IterOpen:
+        case il::Op::AsyncIterOpen:
+        case il::Op::AsyncIterNext:
         case il::Op::IterStep:
         case il::Op::IterValue:
         case il::Op::IterRest: {
@@ -329,6 +346,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!rec) return false;
             switch (inst.op) {
                 case il::Op::IterOpen: callWith(abi.bronze_iter_open, {rec}); break;
+                case il::Op::AsyncIterOpen: callWith(abi.bronze_async_iter_open, {rec}); break;
+                case il::Op::AsyncIterNext: callWith(abi.bronze_async_iter_next, {rec}); break;
                 case il::Op::IterStep: callWith(abi.bronze_iter_step, {rec}); break;
                 case il::Op::IterValue: callWith(abi.bronze_iter_value, {rec}); break;
                 default: callWith(abi.bronze_iter_rest, {rec}); break;
@@ -347,12 +366,15 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
-        case il::Op::IterClose: {
+        case il::Op::IterClose:
+        case il::Op::AsyncIterClose: {
             if (!needs(1, false, "Invalid operands for IterClose")) return false;
             llvm::Value* rec = operand(inst, 0, "Undefined record in IterClose instruction");
             if (!rec) return false;
-            builder_.CreateCall(abi.bronze_iter_close,
-                                {rec, builder_.getInt1(inst.immI32 != 0)});
+            llvm::Function* closeFn = inst.op == il::Op::AsyncIterClose
+                                          ? abi.bronze_async_iter_close
+                                          : abi.bronze_iter_close;
+            builder_.CreateCall(closeFn, {rec, builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::PatternCheck: {

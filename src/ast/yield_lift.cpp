@@ -249,6 +249,10 @@ private:
             da->value = lift(std::move(da->value), pre);
             return e;
         }
+        if (auto* di = dynamic_cast<DynamicImportExpr*>(e.get())) {
+            di->specifier = lift(std::move(di->specifier), pre);
+            return e;
+        }
         refuse(e->span, yieldFormsIn(*e), "in a position bronze cannot lift it out of");
         return e;
     }

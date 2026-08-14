@@ -39,12 +39,12 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 const std::string& headName,
                                 const ast::BindingPattern* headPattern, bool isConst, bool isLet,
                                 bool isVar, const std::vector<ast::StmtPtr>& body,
-                                il::Function& ilFn) {
+                                il::Function& ilFn, bool isAwait) {
     const std::string label = takePendingLabel();
 
     il::ValueId recVal = ilFn.valueCount++;
     il::Instruction openInst;
-    openInst.op = il::Op::IterOpen;
+    openInst.op = isAwait ? il::Op::AsyncIterOpen : il::Op::IterOpen;
     openInst.type = il::Type::Dynamic;
     openInst.result = recVal;
     openInst.operands = {iterVal.id};
@@ -56,7 +56,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     // SSA value. `recVal` above is still the record for the whole of the entry
     // path; every read from the header onward goes through `readRecord`, which
     // re-derives it from the frame when there is one to re-derive it from.
-    const bool suspends = generator_ && ast::containsYield(body);
+    const bool suspends = isAwait || (generator_ && ast::containsYield(body));
     uint32_t frameSlot = UINT32_MAX;
     if (suspends) {
         if (generator_->activeIterLoops >= generator_->loopIterSlots.size()) {
@@ -112,13 +112,45 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     setCurrentBlock(bHeader);
     bindLoopBlockParams(loopParams, headerParamMap);
 
-    il::ValueId moreVal = ilFn.valueCount++;
-    il::Instruction stepInst;
-    stepInst.op = il::Op::IterStep;
-    stepInst.type = il::Type::Bool;
-    stepInst.result = moreVal;
-    stepInst.operands = {readRecord(ilFn)};
-    emitInst(ilFn, stepInst);
+    il::ValueId moreVal = il::kNoValue;
+    Value asyncIterResult{il::kNoValue, il::Type::Dynamic};
+    if (isAwait) {
+        il::ValueId nextPromiseVal = ilFn.valueCount++;
+        il::Instruction nextInst;
+        nextInst.op = il::Op::AsyncIterNext;
+        nextInst.type = il::Type::Dynamic;
+        nextInst.result = nextPromiseVal;
+        nextInst.operands = {readRecord(ilFn)};
+        emitInst(ilFn, nextInst);
+
+        auto awaitResult = lowerAwaitValue(Value{nextPromiseVal, il::Type::Dynamic},
+                                           loopStmt.span, ilFn);
+        if (!awaitResult) return false;
+        asyncIterResult = *awaitResult;
+
+        const uint32_t doneIdx = getKeyConstantIndex("done");
+        il::ValueId doneVal = ilFn.valueCount++;
+        il::Instruction getDone;
+        getDone.op = il::Op::PropGet;
+        getDone.type = il::Type::Dynamic;
+        getDone.result = doneVal;
+        getDone.keyIndex = doneIdx;
+        getDone.icIndex = icSiteCounter_++;
+        getDone.operands = {asyncIterResult.id};
+        emitInst(ilFn, getDone);
+
+        Value doneBool = lowerConditionFromVal(Value{doneVal, il::Type::Dynamic}, ilFn);
+        Value notDone = emitLogicalNot(doneBool, ilFn);
+        moreVal = notDone.id;
+    } else {
+        moreVal = ilFn.valueCount++;
+        il::Instruction stepInst;
+        stepInst.op = il::Op::IterStep;
+        stepInst.type = il::Type::Bool;
+        stepInst.result = moreVal;
+        stepInst.operands = {readRecord(ilFn)};
+        emitInst(ilFn, stepInst);
+    }
 
     // The exit block carries the loop variables only: `break` reaches it from
     // the body and has nothing else to hand over.
@@ -137,13 +169,27 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     auto updateParamMap = addLoopBlockParams(loopParams, bUpdate, ilFn);
 
     setCurrentBlock(bBody);
-    il::ValueId elemVal = ilFn.valueCount++;
-    il::Instruction valueInst;
-    valueInst.op = il::Op::IterValue;
-    valueInst.type = il::Type::Dynamic;
-    valueInst.result = elemVal;
-    valueInst.operands = {readRecord(ilFn)};
-    emitInst(ilFn, valueInst);
+    il::ValueId elemVal;
+    if (isAwait) {
+        const uint32_t valIdx = getKeyConstantIndex("value");
+        elemVal = ilFn.valueCount++;
+        il::Instruction getVal;
+        getVal.op = il::Op::PropGet;
+        getVal.type = il::Type::Dynamic;
+        getVal.result = elemVal;
+        getVal.keyIndex = valIdx;
+        getVal.icIndex = icSiteCounter_++;
+        getVal.operands = {asyncIterResult.id};
+        emitInst(ilFn, getVal);
+    } else {
+        elemVal = ilFn.valueCount++;
+        il::Instruction valueInst;
+        valueInst.op = il::Op::IterValue;
+        valueInst.type = il::Type::Dynamic;
+        valueInst.result = elemVal;
+        valueInst.operands = {readRecord(ilFn)};
+        emitInst(ilFn, valueInst);
+    }
 
     // The jump target goes on FIRST and the cleanup second, so the cleanup's
     // recorded depth is inside this loop: a `break` here crosses it (and
@@ -154,8 +200,9 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                    bExit,           loopVars,
                    cleanupStack_.size(), cleanupStack_.size()};
     jumpStack_.push_back(ctx);
-    cleanupStack_.push_back(CleanupFrame{CleanupKind::IteratorClose, nullptr, recVal, frameSlot,
-                                         jumpStack_.size(), outerHandler});
+    cleanupStack_.push_back(CleanupFrame{
+        isAwait ? CleanupKind::AsyncIteratorClose : CleanupKind::IteratorClose, nullptr, recVal,
+        frameSlot, jumpStack_.size(), outerHandler});
     jumpStack_.back().cleanupDepthInBody = cleanupStack_.size();
 
     // The head binding belongs to the body's scope when declared, so it gets an
@@ -221,7 +268,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     take.type = il::Type::Dynamic;
     take.result = pending;
     emitInst(ilFn, take);
-    emitIterClose(readRecord(ilFn), /*suppress=*/true, ilFn);
+    emitIterClose(readRecord(ilFn), /*suppress=*/true, ilFn, isAwait);
     il::Instruction rethrow;
     rethrow.op = il::Op::Throw;
     rethrow.type = il::Type::Void;
@@ -242,7 +289,7 @@ bool Lowerer::lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn) {
     const Value iterVal = boxValueIfNeeded(*iterOpt, ilFn);
     pendingLabel_ = label;
     if (!lowerIteratorLoop(*forOf, iterVal, forOf->name, forOf->pattern.get(), forOf->isConst,
-                           forOf->isLet, forOf->isVar, forOf->body, ilFn)) {
+                           forOf->isLet, forOf->isVar, forOf->body, ilFn, forOf->isAwait)) {
         return false;
     }
     exitScope();

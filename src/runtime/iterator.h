@@ -66,6 +66,7 @@ namespace bronze::runtime {
 // 4 defines for a value with no @@iterator method, so the caller must test
 // the pending cell.
 Value rtOpenIterator(Value source);
+Value rtOpenAsyncIterator(Value source);
 
 // The kind of a value, for that TypeError. `rt_object.cpp` answers the same
 // question for "is not a function"; the two spellings are deliberately not
@@ -79,6 +80,7 @@ std::string rtIterableKindName(Value v);
 // the string `"@@iterator"` this used to be, and the reason
 // `{ "@@iterator": f }` is no longer an iterable.
 Value rtIteratorKey();
+Value rtAsyncIteratorKey();
 
 // The prototype chain an ITERATOR OBJECT hangs from, and the reason none of
 // them carries an own `[Symbol.iterator]`.
@@ -96,7 +98,7 @@ Value rtIteratorKey();
 // The kinds are kept apart even though bronze puts no member on most of them,
 // because the prototype is what an iterator's `next` recognises its own
 // receiver by. A brand check needs the five to be five objects.
-enum class IteratorProto : uint32_t { Map, Set, Array, RegExpString, Generator, String };
+enum class IteratorProto : uint32_t { Map, Set, Array, RegExpString, Generator, String, AsyncGenerator };
 
 // The INTERNAL SLOTS each kind carries, named after ECMA-262's. They are real
 // fields on the object (`ObjectHeader::internalSlot`) and not properties under

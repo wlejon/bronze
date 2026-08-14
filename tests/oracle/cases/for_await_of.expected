@@ -1,0 +1,11 @@
+=== async gen loop ===
+item: 1
+item: 2
+item: 3
+=== custom async iterable ===
+custom item: 10
+custom item: 20
+custom item: 30
+=== break in for-await ===
+break item: 1
+break item: 2

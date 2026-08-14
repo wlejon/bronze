@@ -1,0 +1,11 @@
+true
+[object AsyncGenerator]
+start
+r1: 10 false
+after 10
+obj method: obj-yield false
+cls method: cls-yield false
+r2: 20 false
+after 20
+r3: 30 true
+r4: undefined true

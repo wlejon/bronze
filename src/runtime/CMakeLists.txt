@@ -24,6 +24,7 @@ bronze_add_module(runtime
         fn.cpp
         builtin_math.cpp
         builtin_generator.cpp
+        builtin_async_generator.cpp
         microtask.cpp
         promise.cpp
         builtin_promise.cpp

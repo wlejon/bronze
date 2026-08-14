@@ -63,10 +63,13 @@ TEST_CASE("every export form records the names it publishes") {
     CHECK(out.find("(name default as default)") != std::string::npos);
 }
 
-TEST_CASE("the import forms bronze does not have are named, not mis-parsed") {
+TEST_CASE("dynamic import parses into ast::DynamicImportExpr") {
     const auto dynamicImport = parseAndDump("const m = import(\"./x.js\");");
-    CHECK(dynamicImport.find("unsupported construct: dynamic import()") != std::string::npos);
+    CHECK(dynamicImport.find("(dynamic-import") != std::string::npos);
+    CHECK(dynamicImport.find("\"./x.js\"") != std::string::npos);
+}
 
+TEST_CASE("the import forms bronze does not have are named, not mis-parsed") {
     const auto meta = parseAndDump("console.log(import.meta.url);");
     CHECK(meta.find("unsupported construct: import.meta") != std::string::npos);
 

@@ -105,6 +105,7 @@ public:
     // The operand is code that runs in this scope; the value the node produces
     // comes from outside it and writes nothing.
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
+    void visit(const DynamicImportExpr& d) override { if (d.specifier) d.specifier->accept(*this); }
     // Every name a destructuring assignment's pattern binds is written by it,
     // which is exactly what sizes the SSA joins around it. A pattern that
     // contributed nothing here would leave those variables out of a loop's

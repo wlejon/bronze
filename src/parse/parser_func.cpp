@@ -459,7 +459,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                                             ? (member.isStatic ? "static.computed" : "computed")
                                             : member.name;
                 const std::string fnName = name.empty() ? sym : (name + "." + sym);
-                auto fn = parseAsyncMethodTail(fnName, star.span, /*clearSuper=*/false);
+                auto fn = parseAsyncMethodTail(fnName, star.span, /*clearSuper=*/false, /*isGenerator=*/true);
                 if (!fn) {
                     ok = false;
                     break;

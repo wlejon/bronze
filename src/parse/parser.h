@@ -266,7 +266,8 @@ private:
     // object-literal half of that seam: a literal's method must not inherit
     // the enclosing class's `super`, a class's must keep it.
     std::unique_ptr<ast::FunctionExpr> parseAsyncMethodTail(const std::string& name,
-                                                            Span nameSpan, bool clearSuper);
+                                                            Span nameSpan, bool clearSuper,
+                                                            bool isGenerator = false);
 
     // --- parser_strict.cpp: the Directive Prologue and the early errors -----
     // Restores `strict_` on the way out of a body that may have raised it.

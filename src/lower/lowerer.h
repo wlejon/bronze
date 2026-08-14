@@ -168,6 +168,7 @@ private:
         Finally,
         // IteratorClose on a for-of left early.
         IteratorClose,
+        AsyncIteratorClose,
     };
 
     struct CleanupFrame {
@@ -355,6 +356,7 @@ private:
         // DOES (subscribe vs yield), and two context types would duplicate
         // every shared field to say so.
         bool isAsync = false;
+        bool isAsyncGenerator = false;
         // Where the machine value (runtime/builtin_async.cpp's object) lives
         // in the frame, or UINT32_MAX in a generator. In the FRAME for the
         // reason every binding is: an `await` site needs it to subscribe the
@@ -399,6 +401,7 @@ private:
     static std::string loopIterSlotName(uint32_t depth);
     Value emitConstF64(double value, il::Function& ilFn);
     Value emitIterResult(Value value, bool done, il::Function& ilFn);
+    Value emitAsyncAwaitResult(il::Function& ilFn);
     Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
     void emitFrameSlotSet(uint32_t slot, Value val, il::Function& ilFn);
     void emitGeneratorResult(Value value, bool done, il::Function& ilFn);
@@ -412,13 +415,15 @@ private:
     // body itself needs — dispatch, resume blocks, cleanup routing — is one
     // code path either way.
     bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn,
-                         bool isAsync = false);
+                         bool isAsync = false, bool isAsyncGenerator = false);
     bool lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
+    bool lowerAsyncGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
 
     // --- lower_async.cpp: the async driver over the same machine ----------
     // `await <v>`: subscribe the machine's resumption to v's settlement, then
     // suspend exactly as a yield does.
     std::optional<Value> lowerAwait(const ast::YieldExpr& await, il::Function& ilFn);
+    std::optional<Value> lowerAwaitValue(Value awaited, Span span, il::Function& ilFn);
     // The async function's own body: park the state, build the resume
     // closure, hand it to the runtime driver, and return the promise the
     // driver made.
@@ -719,7 +724,7 @@ private:
     bool lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
                            const ast::BindingPattern* headPattern, bool isConst, bool isLet,
                            bool isVar, const std::vector<ast::StmtPtr>& body,
-                           il::Function& ilFn);
+                           il::Function& ilFn, bool isAwait = false);
 
     // --- lower_switch.cpp: selection and fallthrough -----------
     bool lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn);
@@ -747,7 +752,7 @@ private:
     size_t cleanupDepthForJump(size_t targetIndex) const;
     // `iter.close %record, <suppress>`, the one instruction an
     // IteratorClose cleanup emits.
-    void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn);
+    void emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync = false);
     // One copy of a finally body, in its own scope. Lowered from the AST rather
     // than cloned: a re-lowering is fresh blocks and fresh SSA values, and
     // nothing in lowering is stateful across it.

@@ -233,6 +233,13 @@ ExprPtr cloneExpr(const Expr& expr) {
         if (d->value) res->value = cloneExpr(*d->value);
         return res;
     }
+    if (const auto* di = dynamic_cast<const DynamicImportExpr*>(&expr)) {
+        auto res = std::make_unique<DynamicImportExpr>();
+        res->span = di->span;
+        res->parenthesized = di->parenthesized;
+        if (di->specifier) res->specifier = cloneExpr(*di->specifier);
+        return res;
+    }
     if (const auto* obj = dynamic_cast<const ObjectLit*>(&expr)) {
         auto res = std::make_unique<ObjectLit>();
         res->span = obj->span;
@@ -391,6 +398,7 @@ StmtPtr cloneStmt(const Stmt& stmt) {
         res->isConst = fo->isConst;
         res->isLet = fo->isLet;
         res->isVar = fo->isVar;
+        res->isAwait = fo->isAwait;
         if (fo->iterable) res->iterable = cloneExpr(*fo->iterable);
         for (const auto& s : fo->body) res->body.push_back(cloneStmt(*s));
         return res;

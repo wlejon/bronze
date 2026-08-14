@@ -760,15 +760,24 @@ ExprPtr Parser::parsePrimary() {
         // (ECMA-262 13.3.10 and 13.3.12). Neither reaches the statement
         // production, so naming them there is not enough — an `import(...)` in
         // an initializer landed on "expected expression", which names nothing.
-        case TokenKind::KwImport:
-            if (peek(1).kind == TokenKind::LParen) {
-                error("unsupported construct: dynamic import() (bronze has no promises)");
-            } else if (peek(1).kind == TokenKind::Dot) {
+        case TokenKind::KwImport: {
+            const Token& kw = advance();
+            if (check(TokenKind::LParen)) {
+                advance();  // '('
+                auto spec = parseAssign();
+                if (!spec) return nullptr;
+                if (!expect(TokenKind::RParen, "')' after dynamic import specifier")) return nullptr;
+                auto node = std::make_unique<DynamicImportExpr>();
+                node->span = kw.span;
+                node->specifier = std::move(spec);
+                return node;
+            } else if (check(TokenKind::Dot)) {
                 error("unsupported construct: import.meta");
             } else {
                 error("an import declaration may only appear at the top level of a module");
             }
             return nullptr;
+        }
         // `super` is a keyword, so reaching the default arm means it was
         // written somewhere the call/member production does not look — inside a
         // `new` callee (`new super.x()`), which is now a full expression.

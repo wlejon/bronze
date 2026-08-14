@@ -335,6 +335,19 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         if (yield->isAwait) return lowerAwait(*yield, ilFn);
         return yield->delegate ? lowerYieldStar(*yield, ilFn) : lowerYield(*yield, ilFn);
     }
+    if (const auto* di = dynamic_cast<const ast::DynamicImportExpr*>(&expr)) {
+        auto specOpt = lowerExpr(*di->specifier, ilFn);
+        if (!specOpt) return std::nullopt;
+        Value specVal = boxValueIfNeeded(*specOpt, ilFn);
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::DynamicImport;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {specVal.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
         auto it = activeVarMap_.find(ident->name);
         if (it == activeVarMap_.end()) {

@@ -96,6 +96,11 @@ SymbolHeader* rtSymbolIterator() {
     return sym;
 }
 
+SymbolHeader* rtSymbolAsyncIterator() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.asyncIterator");
+    return sym;
+}
+
 SymbolHeader* rtSymbolToStringTag() {
     static SymbolHeader* sym = wellKnownSymbol("Symbol.toStringTag");
     return sym;

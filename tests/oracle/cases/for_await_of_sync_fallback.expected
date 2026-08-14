@@ -1,0 +1,14 @@
+=== sync array ===
+arr item: 100
+arr item: 200
+arr item: 300
+=== sync set ===
+set item: alpha
+set item: beta
+=== sync gen ===
+gen item: a
+gen item: b
+gen item: c
+=== custom sync iterable ===
+custom: custom-1
+custom: custom-2

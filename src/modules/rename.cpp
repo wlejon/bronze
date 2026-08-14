@@ -338,6 +338,8 @@ private:
             // The operand is ordinary code of this module; the value the node
             // produces comes from a caller and names nothing.
             expr(*y->argument);
+        } else if (auto* di = dynamic_cast<ast::DynamicImportExpr*>(&e)) {
+            if (di->specifier) expr(*di->specifier);
         } else if (auto* da = dynamic_cast<ast::DestructuringAssign*>(&e)) {
             // Every element of this pattern is an assignment TARGET — it
             // declares nothing — so each name it writes is refused like the

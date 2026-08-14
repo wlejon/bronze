@@ -97,6 +97,9 @@ public:
         walkPattern(n.pattern.get());
         walk(n.value);
     }
+    void visit(const DynamicImportExpr& n) override {
+        walk(n.specifier);
+    }
     void visit(const ObjectLit& n) override {
         for (const auto& p : n.props) {
             walk(p.keyExpr);
@@ -145,6 +148,10 @@ public:
         walkList(n.body);
     }
     void visit(const ForOfStmt& n) override {
+        if (n.isAwait) {
+            found = true;
+            forms = forms | YieldForms::Await;
+        }
         walkPattern(n.pattern.get());
         walk(n.iterable);
         walkList(n.body);
@@ -224,11 +231,10 @@ YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts) {
 }
 
 const char* yieldFormName(YieldForms forms) {
-    // Await first: the parser refuses async generators by name, so a body
-    // holds await bits or yield bits and never both — a mixed answer here
-    // would mean the parser's fence broke, and "an `await`" is still the
-    // honest half of what it would be naming.
-    if (hasAwait(forms)) return "an `await`";
+    const bool hasAw = hasAwait(forms);
+    const bool hasY = (static_cast<uint8_t>(forms) & (static_cast<uint8_t>(YieldForms::Plain) | static_cast<uint8_t>(YieldForms::Delegating))) != 0;
+    if (hasAw && hasY) return "a `yield` or an `await`";
+    if (hasAw) return "an `await`";
     switch (forms) {
         case YieldForms::Delegating: return "a `yield*`";
         case YieldForms::Both: return "a `yield` or a `yield*`";
@@ -375,7 +381,9 @@ uint32_t iterationDepth(const Stmt& s) {
     if (const auto* w = dynamic_cast<const WhileStmt*>(&s)) return iterationDepth(w->body);
     if (const auto* d = dynamic_cast<const DoWhileStmt*>(&s)) return iterationDepth(d->body);
     if (const auto* f = dynamic_cast<const ForStmt*>(&s)) return iterationDepth(f->body);
-    if (const auto* fo = dynamic_cast<const ForOfStmt*>(&s)) return iterationLoopDepth(fo->body);
+    if (const auto* fo = dynamic_cast<const ForOfStmt*>(&s)) {
+        return fo->isAwait ? iterationDepth(fo->body) + 1 : iterationLoopDepth(fo->body);
+    }
     if (const auto* fi = dynamic_cast<const ForInStmt*>(&s)) return iterationLoopDepth(fi->body);
     if (const auto* sw = dynamic_cast<const SwitchStmt*>(&s)) {
         uint32_t deepest = 0;
