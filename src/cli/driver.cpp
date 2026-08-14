@@ -21,9 +21,6 @@
 #include <unistd.h>
 #endif
 
-#ifdef _MSC_VER
-#pragma warning(disable: 4996)
-#endif
 
 #include "ast/dump.h"
 #include "codegen/backend.h"
@@ -212,6 +209,19 @@ std::optional<std::filesystem::path> findRuntimeLib() {
     static std::optional<std::filesystem::path> s_cached;
     static std::once_flag s_once;
     std::call_once(s_once, [] {
+#ifdef _WIN32
+        char* envBuffer = nullptr;
+        size_t envLen = 0;
+        if (_dupenv_s(&envBuffer, &envLen, "BRONZE_RT_LIB") == 0 && envBuffer != nullptr) {
+            std::filesystem::path p(envBuffer);
+            std::free(envBuffer);
+            std::error_code ec;
+            if (std::filesystem::exists(p, ec)) {
+                s_cached = p;
+                return;
+            }
+        }
+#else
         if (const char* envPath = std::getenv("BRONZE_RT_LIB")) {
             std::filesystem::path p(envPath);
             std::error_code ec;
@@ -220,6 +230,7 @@ std::optional<std::filesystem::path> findRuntimeLib() {
                 return;
             }
         }
+#endif
 
         std::vector<std::filesystem::path> candidates;
         std::filesystem::path exeDir = getExecutableDir();
@@ -619,7 +630,11 @@ int runDriver(int argc, char** argv) {
     const std::string command = argv[1];
 
     if (command == "version") {
-        std::puts("bronze 0.1.0");
+#if defined(NDEBUG)
+        std::puts("bronze 0.1.0 (Release)");
+#else
+        std::puts("bronze 0.1.0 (Debug)");
+#endif
         return 0;
     }
 

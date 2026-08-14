@@ -86,3 +86,20 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   - `render_scenegraph_host`: **446.66ms** (compiled bro-bronze-host, 30 frames)
   - `render_wild_orbit_host`: **535.25ms** (compiled bro-bronze-host-wild, 30 frames)
   - `render_interpreted_bro`: **449.83ms** (interpreted QuickJS, 30 frames)
+
+- **Chunk C: Build-Type Truth & Release Baseline**:
+  > [!NOTE]
+  > Compile-time and execution figures in entries above were measured with a Debug compiler build and are superseded by these verified Release figures (`build_type: "Release"`).
+  - `three_math.js`: **148.08ms** (infer) vs 162.11ms (no-infer) — **1.09x inference speedup**
+  - `object_graph.js`: **297.78ms** (infer) vs 303.28ms (no-infer) — **1.02x inference speedup**
+  - `typed_array_crunch.js`: **643.02ms** (infer) vs 857.41ms (no-infer) — **1.33x inference speedup**
+  - `mesh_churn_2k.js`: **355.82ms** (infer) vs 379.55ms (no-infer) — **1.07x inference speedup**
+  - `fib.js`: **23.34ms** (infer) vs 79.05ms (no-infer) — **3.39x inference speedup**
+  - `numeric_loop.js`: **48.73ms** (infer) vs 155.80ms (no-infer) — **3.20x inference speedup**
+  - `property_access.js`: **71.39ms** (infer) vs 88.03ms (no-infer) — **1.23x inference speedup**
+  - `proto_dispatch.js`: **87.10ms** (infer) vs 166.44ms (no-infer) — **1.91x inference speedup**
+  - `proto_dispatch_churn.js`: **393.17ms** (infer) vs 506.19ms (no-infer) — **1.29x inference speedup**
+  - `typed_array_loop.js`: **230.65ms** (infer) vs 253.91ms (no-infer) — **1.10x inference speedup**
+  - `render_scenegraph_host`: **460.05ms** (compiled bro-bronze-host, 30 frames)
+  - `render_wild_orbit_host`: **497.92ms** (compiled bro-bronze-host-wild, 30 frames)
+  - `render_interpreted_bro`: **450.93ms** (interpreted QuickJS, 30 frames)

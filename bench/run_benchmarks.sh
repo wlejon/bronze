@@ -23,6 +23,7 @@ RUNS=5
 FILTER=""
 PURE_ONLY=0
 RENDER_ONLY=0
+ALLOW_DEBUG=0
 JSON_ONLY=0
 JSONL_OUT="$SCRIPT_DIR/results.jsonl"
 
@@ -35,6 +36,7 @@ Options:
   --filter PATTERN   Run only benchmarks matching PATTERN (case-insensitive)
   --pure-only        Run only pure-compute benchmarks (no GL/DOM)
   --render-only      Run only render scene benchmarks (requires Bro host)
+  --allow-debug      Allow running benchmarks with a Debug (non-Release) bronze binary
   --json             Print only machine-readable JSON lines to stdout
   --jsonl-out FILE   Output file for JSON lines (default: bench/results.jsonl)
   -h, --help         Show this help message
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --render-only)
             RENDER_ONLY=1
+            shift
+            ;;
+        --allow-debug)
+            ALLOW_DEBUG=1
             shift
             ;;
         --json)
@@ -118,6 +124,35 @@ find_bronze_cli() {
 BRONZE_BIN="$(find_bronze_cli)"
 if [[ -z "$BRONZE_BIN" ]]; then
     echo "Error: bronze CLI not found. Build it first via ./dev.cmd cmake --build --preset dev" >&2
+    exit 1
+fi
+
+# --- Detect Build Type of Bronze CLI ---
+detect_build_type() {
+    local bin="$1"
+    local ver_out
+    ver_out="$("$bin" version 2>/dev/null || echo "")"
+    if [[ "$ver_out" =~ Release ]]; then
+        echo "Release"
+        return 0
+    elif [[ "$ver_out" =~ Debug ]]; then
+        echo "Debug"
+        return 0
+    fi
+    # Fallback inspection on binary path
+    if [[ "$bin" =~ [Rr]elease || "$bin" =~ /dev/ ]]; then
+        echo "Release"
+        return 0
+    fi
+    echo "Debug"
+}
+
+BUILD_TYPE="$(detect_build_type "$BRONZE_BIN")"
+
+if [[ "$BUILD_TYPE" != "Release" && $ALLOW_DEBUG -eq 0 ]]; then
+    echo "Error: $BRONZE_BIN is a $BUILD_TYPE binary. Benchmarks require a Release build for build-type truth." >&2
+    echo "       Rebuild with: ./dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON && ./dev.cmd cmake --build --preset dev" >&2
+    echo "       Or pass --allow-debug to benchmark this build anyway." >&2
     exit 1
 fi
 
@@ -248,6 +283,7 @@ if [[ $JSON_ONLY -eq 0 ]]; then
     echo "                      Bronze Compiler Benchmark Suite                           "
     echo "================================================================================"
     echo "Bronze CLI : $BRONZE_BIN"
+    echo "Build Type : $BUILD_TYPE"
     echo "Runs / case: $RUNS (+ 1 warmup discarded)"
     if [[ -n "$BRO_PATH" ]]; then
         echo "Bro Tree   : $BRO_PATH"
@@ -319,10 +355,11 @@ name = sys.argv[1]
 desc = sys.argv[2]
 st_inf = json.loads(sys.argv[3])
 st_noinf = json.loads(sys.argv[4])
+btype = sys.argv[5]
 
 if "error" in st_inf or "error" in st_noinf:
     err = st_inf.get("error", "") + " " + st_noinf.get("error", "")
-    print(json.dumps({"name": name, "category": "pure-compute", "error": err.strip()}))
+    print(json.dumps({"name": name, "category": "pure-compute", "build_type": btype, "error": err.strip()}))
     sys.exit(0)
 
 inf_med = st_inf["median_ms"]
@@ -333,13 +370,14 @@ record = {
     "name": name,
     "description": desc,
     "category": "pure-compute",
+    "build_type": btype,
     "infer": st_inf,
     "noinfer": st_noinf,
     "infer_speedup": speedup,
     "output_match": (st_inf["output"] == st_noinf["output"])
 }
 print(json.dumps(record))
-' "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer")"
+' "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE")"
 
         echo "$record_json" >> "$JSONL_OUT"
 
@@ -361,17 +399,19 @@ if [[ $PURE_ONLY -eq 0 && -n "$BRO_PATH" ]]; then
         record_json="$(python3 -c '
 import sys, json
 st = json.loads(sys.argv[1])
+btype = sys.argv[2]
 record = {
     "name": "render_scenegraph_host",
     "description": "bro-bronze-host Three.js scenegraph (30 frames)",
     "category": "render-compiled",
+    "build_type": btype,
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
     "output_match": True
 }
 print(json.dumps(record))
-' "$stats_render")"
+' "$stats_render" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -388,17 +428,19 @@ print(json.dumps(record))
         record_json="$(python3 -c '
 import sys, json
 st = json.loads(sys.argv[1])
+btype = sys.argv[2]
 record = {
     "name": "render_wild_orbit_host",
     "description": "bro-bronze-host-wild full Three.js scene + textures + OrbitControls (30 frames)",
     "category": "render-compiled",
+    "build_type": btype,
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
     "output_match": True
 }
 print(json.dumps(record))
-' "$stats_wild")"
+' "$stats_wild" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"
@@ -417,17 +459,19 @@ print(json.dumps(record))
         record_json="$(python3 -c '
 import sys, json
 st = json.loads(sys.argv[1])
+btype = sys.argv[2]
 record = {
     "name": "render_interpreted_bro",
     "description": "bro-headless interpreted QuickJS 3D scene (30 frames)",
     "category": "render-interpreted",
+    "build_type": btype,
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
     "output_match": True
 }
 print(json.dumps(record))
-' "$stats_interp")"
+' "$stats_interp" "$BUILD_TYPE")"
         echo "$record_json" >> "$JSONL_OUT"
         if [[ $JSON_ONLY -eq 1 ]]; then
             echo "$record_json"

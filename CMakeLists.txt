@@ -84,6 +84,11 @@ add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
 add_subdirectory(src/cli)
 
+if(BRONZE_IS_TOP_LEVEL)
+    add_subdirectory(tools)
+endif()
+
 if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     add_subdirectory(tests/oracle)
 endif()
+

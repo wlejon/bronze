@@ -1,10 +1,10 @@
 // GENERATED FILE -- DO NOT EDIT BY HAND.
 //
-// Written by tools/gen_unicode_tables.py from the Unicode Character Database
-// version 16.0.0, as carried by Python's `unicodedata`. To change anything
-// here, change the generator and rerun it:
+// Written by tools/gen_unicode_tables from the Unicode Character Database
+// version 16.0.0 vendored under tools/ucd/. To change anything here, change the
+// generator and rerun it:
 //
-//     python3 tools/gen_unicode_tables.py
+//     tools/gen_unicode_tables
 //
 // The generator asserts the UCD version it reads, so a rerun either reproduces
 // these bytes or stops.
@@ -45,6 +45,6 @@ struct FoldEntry {
 };
 
 extern const FoldEntry kSimpleCaseFolds[];
-constexpr uint32_t kSimpleCaseFoldCount = 1481;
+constexpr uint32_t kSimpleCaseFoldCount = 1484;
 
 }  // namespace bronze::regex::data

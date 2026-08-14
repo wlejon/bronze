@@ -12,3 +12,9 @@ tests/oracle/threejs/three.module.js -text
 # Vendored as published from the r160 examples tree; byte-for-byte identity
 # with upstream is the provenance check, so a checkout must not rewrite it.
 tests/oracle/threejs/OrbitControls.js -text
+
+# Vendored Unicode Character Database (UCD) 16.0.0 files; byte-for-byte identity
+# with published upstream is required, so a checkout must not rewrite line endings.
+tools/ucd/UnicodeData.txt -text
+tools/ucd/CaseFolding.txt -text
+

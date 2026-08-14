@@ -37,9 +37,6 @@
 #include <windows.h>
 #endif
 
-#ifdef _MSC_VER
-#pragma warning(disable: 4996)
-#endif
 
 #ifndef TEST_CASES_DIR
 #define TEST_CASES_DIR "tests/oracle/cases"
@@ -200,10 +197,20 @@ std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
 }
 
 unsigned int getWorkerJobCount() {
+#ifdef _WIN32
+    char* env = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&env, &len, "BRONZE_TEST_JOBS") == 0 && env != nullptr) {
+        int n = std::atoi(env);
+        std::free(env);
+        if (n > 0) return static_cast<unsigned int>(n);
+    }
+#else
     if (const char* env = std::getenv("BRONZE_TEST_JOBS")) {
         int n = std::atoi(env);
         if (n > 0) return static_cast<unsigned int>(n);
     }
+#endif
     unsigned int hw = std::thread::hardware_concurrency();
     if (hw == 0) return 2;
     // Bounded concurrency: at most 4 threads by default (or hw / 2) to prevent machine saturation
@@ -230,6 +237,7 @@ struct CaseExecutionResult {
     std::string buildNoInferErr;
     bool noInferExeExists = false;
     RunResult runNoInfer;
+    RunResult runNoInferGc;
 };
 
 }  // namespace
@@ -300,6 +308,8 @@ TEST_CASE("Oracle differential test suite") {
 
                 if (res.buildNoInferStatus == 0 && res.noInferExeExists) {
                     res.runNoInfer = runWithTimeout(exeNoInfer.string(), /*gcStress=*/false);
+                    // Same compiled binary re-run under GC stress to verify rooting without duplicate builds
+                    res.runNoInferGc = runWithTimeout(exeNoInfer.string(), /*gcStress=*/true);
                 }
                 std::filesystem::remove(exeNoInfer, ec);
             }
@@ -359,6 +369,16 @@ TEST_CASE("Oracle differential test suite") {
                 CHECK_MESSAGE(res.expected == res.runNoInfer.output,
                               ("Output differs from the pinned expectation for " +
                                res.oracleCase.id + " (--no-infer)").c_str());
+            }
+
+            // GC stress (--no-infer)
+            CHECK_MESSAGE(!res.runNoInferGc.timedOut,
+                          ("Compiled case did not finish within the timeout (gc-stress, --no-infer): " +
+                           res.oracleCase.entry.string()).c_str());
+            if (res.runNoInferGc.ran) {
+                CHECK_MESSAGE(res.expected == res.runNoInferGc.output,
+                              ("Output differs from the pinned expectation for " +
+                               res.oracleCase.id + " (gc-stress, --no-infer)").c_str());
             }
         }
     }
@@ -442,14 +462,12 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         }
 
         // Same executable, every allocation now moving the whole live set.
-        if (infer) {
-            RunResult stressed = runWithTimeout(exePath.string(), /*gcStress=*/true);
-            CHECK_MESSAGE(!stressed.timedOut,
-                          "three.js case did not finish within the timeout (gc-stress)");
-            if (stressed.ran) {
-                CHECK_MESSAGE(expected == stressed.output,
-                              "three.js output differs from the pinned expectation (gc-stress)");
-            }
+        RunResult stressed = runWithTimeout(exePath.string(), /*gcStress=*/true);
+        CHECK_MESSAGE(!stressed.timedOut,
+                      ("three.js case did not finish within the timeout (gc-stress" + mode + ")").c_str());
+        if (stressed.ran) {
+            CHECK_MESSAGE(expected == stressed.output,
+                          ("three.js output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }
         std::filesystem::remove(exePath, ec);
     }
