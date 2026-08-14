@@ -380,20 +380,28 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 }
             }
         } else if (fastHdr->flags == HeapKind::Array) {
-            StringHeader* keyHeader = rtKeyHeader(keyIndex);
-            if (keyHeader && keyHeader->isLatin1() && keyHeader->getLength() == 6 &&
-                std::memcmp(keyHeader->latin1Data(), "length", 6) == 0) {
+            const KeyInfo& ki = rtKeyInfo(keyIndex);
+            if (ki.isElemIndex) {
+                return reinterpret_cast<const ArrayHeader*>(fastHdr)->getElem(ki.elemIndex).rawBits();
+            }
+            if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
             }
         } else if (fastHdr->flags == TypedArrayHeader::kFlags) {
+            const KeyInfo& ki = rtKeyInfo(keyIndex);
+            if (ki.isElemIndex) {
+                const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
+                if (ki.elemIndex >= view->length) return Value::fromUndefined().rawBits();
+                return Value::fromDouble(view->get(ki.elemIndex)).rawBits();
+            }
+            if (ki.isLength) {
+                return Value::fromDouble(reinterpret_cast<const TypedArrayHeader*>(fastHdr)->length).rawBits();
+            }
             StringHeader* keyHeader = rtKeyHeader(keyIndex);
             if (keyHeader && keyHeader->isLatin1()) {
                 const size_t kLen = keyHeader->getLength();
                 const char* kData = keyHeader->latin1Data();
                 const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
-                if (kLen == 6 && std::memcmp(kData, "length", 6) == 0) {
-                    return Value::fromDouble(view->length).rawBits();
-                }
                 if (kLen == 10 && std::memcmp(kData, "byteLength", 10) == 0) {
                     return Value::fromDouble(view->byteLength()).rawBits();
                 }
@@ -859,6 +867,23 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     uint32_t idx = 0;
     if (objVal.isObject()) {
         HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+        Value idxVal(idxBits);
+        if (idxVal.isNumber()) {
+            double d = idxVal.asNumber();
+            if (d >= 0.0 && d <= 4294967294.0) {
+                uint32_t u = static_cast<uint32_t>(d);
+                if (static_cast<double>(u) == d) {
+                    if (hdr->flags == HeapKind::Array) {
+                        return reinterpret_cast<ArrayHeader*>(hdr)->getElem(u).rawBits();
+                    }
+                    if (hdr->flags == TypedArrayHeader::kFlags) {
+                        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+                        if (u >= view->length) return Value::fromUndefined().rawBits();
+                        return Value::fromDouble(view->get(u)).rawBits();
+                    }
+                }
+            }
+        }
         if (hdr->flags == HeapKind::Array && rtValueToElementIndex(Value(idxBits), idx)) {
             return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
         }

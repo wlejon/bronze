@@ -140,8 +140,17 @@ double TypedArrayHeader::get(uint32_t index) const noexcept {
 
 void TypedArrayHeader::set(uint32_t index, double value) noexcept {
     const ElementKind k = elementKind();
-    const double c = convertForStore(k, value);
     uint8_t* p = bytes() + static_cast<size_t>(index) * bytesPerElement();
+    if (k == ElementKind::Float32) {
+        auto v = static_cast<float>(value);
+        std::memcpy(p, &v, sizeof v);
+        return;
+    }
+    if (k == ElementKind::Float64) {
+        std::memcpy(p, &value, sizeof value);
+        return;
+    }
+    const double c = convertForStore(k, value);
     switch (k) {
         case ElementKind::Int8: {
             auto v = static_cast<int8_t>(c);
@@ -174,15 +183,8 @@ void TypedArrayHeader::set(uint32_t index, double value) noexcept {
             std::memcpy(p, &v, sizeof v);
             return;
         }
-        case ElementKind::Float32: {
-            auto v = static_cast<float>(c);
-            std::memcpy(p, &v, sizeof v);
-            return;
-        }
-        case ElementKind::Float64: {
-            std::memcpy(p, &c, sizeof c);
-            return;
-        }
+        case ElementKind::Float32:
+        case ElementKind::Float64:
         case ElementKind::Count: break;
     }
     fatal("internal: a store to a typed array with an element kind outside the table");

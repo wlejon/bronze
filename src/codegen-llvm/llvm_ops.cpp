@@ -78,20 +78,69 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, true, "Invalid operands for Box")) return false;
             llvm::Value* src = operand(inst, 0, "Undefined value in Box instruction");
             if (!src) return false;
-            llvm::Function* boxFn = abi.bronze_box_f64;
-            if (inst.boxType == il::Type::I32) boxFn = abi.bronze_box_i32;
-            else if (inst.boxType == il::Type::Bool) boxFn = abi.bronze_box_bool;
-            values_[inst.result] = builder_.CreateCall(boxFn, {src});
+            if (inst.boxType == il::Type::F64 || src->getType()->isDoubleTy()) {
+                llvm::Value* isNan = builder_.CreateFCmpUNO(src, src);
+                llvm::Value* bitcast = builder_.CreateBitCast(src, builder_.getInt64Ty());
+                values_[inst.result] = builder_.CreateSelect(
+                    isNan, builder_.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), bitcast);
+                return true;
+            }
+            if (inst.boxType == il::Type::Bool || src->getType()->isIntegerTy(1)) {
+                llvm::Value* isTrue = builder_.CreateIsNotNull(src);
+                llvm::Value* tagShifted =
+                    builder_.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL) << BRONZE_ABI_VALUE_TAG_SHIFT);
+                llvm::Value* zext = builder_.CreateZExt(isTrue, builder_.getInt64Ty());
+                values_[inst.result] = builder_.CreateOr(tagShifted, zext);
+                return true;
+            }
+            if (inst.boxType == il::Type::I32 || src->getType()->isIntegerTy(32)) {
+                llvm::Value* tagShifted =
+                    builder_.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_INT32) << BRONZE_ABI_VALUE_TAG_SHIFT);
+                llvm::Value* zext = builder_.CreateZExt(src, builder_.getInt64Ty());
+                values_[inst.result] = builder_.CreateOr(tagShifted, zext);
+                return true;
+            }
+            values_[inst.result] = builder_.CreateCall(abi.bronze_box_f64, {src});
             return true;
         }
         case il::Op::Unbox: {
             if (!needs(1, true, "Invalid operands for Unbox")) return false;
             llvm::Value* src = operand(inst, 0, "Undefined value in Unbox instruction");
             if (!src) return false;
-            llvm::Function* unboxFn = abi.bronze_unbox_f64;
-            if (inst.type == il::Type::I32) unboxFn = abi.bronze_unbox_i32;
-            else if (inst.type == il::Type::Bool) unboxFn = abi.bronze_unbox_bool;
-            values_[inst.result] = builder_.CreateCall(unboxFn, {src});
+            if (inst.type == il::Type::I32) {
+                values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_i32, {src});
+                return true;
+            }
+            if (inst.type == il::Type::Bool) {
+                values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_bool, {src});
+                return true;
+            }
+            if (inst.type == il::Type::F64) {
+                llvm::Value* isNum = builder_.CreateICmpULE(
+                    src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.isnum");
+                llvm::Value* fastDouble = builder_.CreateBitCast(src, builder_.getDoubleTy());
+
+                llvm::LLVMContext& ctx = builder_.getContext();
+                llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+                llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "unbox.slow", fn);
+                llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "unbox.done", fn);
+                llvm::BasicBlock* curBb = builder_.GetInsertBlock();
+
+                builder_.CreateCondBr(isNum, doneBb, slowBb);
+
+                builder_.SetInsertPoint(slowBb);
+                llvm::Value* slowVal = builder_.CreateCall(abi.bronze_unbox_f64, {src});
+                llvm::BasicBlock* slowEndBb = builder_.GetInsertBlock();
+                builder_.CreateBr(doneBb);
+
+                builder_.SetInsertPoint(doneBb);
+                llvm::PHINode* phi = builder_.CreatePHI(builder_.getDoubleTy(), 2, "unbox.val");
+                phi->addIncoming(fastDouble, curBb);
+                phi->addIncoming(slowVal, slowEndBb);
+                values_[inst.result] = phi;
+                return true;
+            }
+            values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_f64, {src});
             return true;
         }
 

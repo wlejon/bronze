@@ -430,6 +430,12 @@ enum class LessThan { False, True, Undefined };
 // or have an effect, so the order is unobservable here and is not threaded
 // through.
 LessThan isLessThan(Value x, Value y) {
+    if (x.isNumber() && y.isNumber()) {
+        const double nx = x.asNumber();
+        const double ny = y.asNumber();
+        if (std::isnan(nx) || std::isnan(ny)) return LessThan::Undefined;
+        return nx < ny ? LessThan::True : LessThan::False;
+    }
     const Value px = relationalToPrimitive(x);
     const Value py = relationalToPrimitive(y);
     // Step 3: both Strings, compared by code unit with NOTHING converted. It

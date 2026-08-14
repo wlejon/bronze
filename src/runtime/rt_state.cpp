@@ -114,6 +114,10 @@ static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
 static_assert(kTagShift == BRONZE_ABI_VALUE_TAG_SHIFT);
 static_assert(kPayloadMask == BRONZE_ABI_VALUE_PAYLOAD_MASK);
 static_assert(static_cast<uint16_t>(Tag::Object) == BRONZE_ABI_TAG_OBJECT);
+static_assert(static_cast<uint16_t>(Tag::Bool) == BRONZE_ABI_TAG_BOOL);
+static_assert(static_cast<uint16_t>(Tag::Int32) == BRONZE_ABI_TAG_INT32);
+static_assert(kCanonicalNaNBits == BRONZE_ABI_CANONICAL_NAN_BITS);
+static_assert(kNumberMaxBits == BRONZE_ABI_NUMBER_MAX_BITS);
 
 // The inline fast path loads HeapObjectHeader::flags (offset 2) and
 // ObjectHeader::shape (offsets 8..15) from any Object-tagged pointer BEFORE
@@ -131,7 +135,9 @@ static std::vector<std::string> g_keyStrings;
 // The same keys as immortal arena strings, so a property access allocates
 // nothing on the path that reaches one.
 static std::vector<StringHeader*> g_keyHeaders;
+static std::vector<KeyInfo> g_keyInfos;
 static const std::string g_emptyKey;
+static const KeyInfo g_emptyKeyInfo{};
 
 const std::string& rtKeyString(uint32_t index) {
     return index < g_keyStrings.size() ? g_keyStrings[index] : g_emptyKey;
@@ -139,6 +145,10 @@ const std::string& rtKeyString(uint32_t index) {
 
 StringHeader* rtKeyHeader(uint32_t index) {
     return index < g_keyHeaders.size() ? g_keyHeaders[index] : nullptr;
+}
+
+const KeyInfo& rtKeyInfo(uint32_t index) {
+    return index < g_keyInfos.size() ? g_keyInfos[index] : g_emptyKeyInfo;
 }
 
 // ---- Caches with heap Values ------------------------------------------------
@@ -338,10 +348,23 @@ void bronze_register_key_string(uint32_t index, const char* str) {
     if (index >= g_keyStrings.size()) {
         g_keyStrings.resize(index + 1);
         g_keyHeaders.resize(index + 1, nullptr);
+        g_keyInfos.resize(index + 1);
     }
     g_keyStrings[index] = str ? str : "";
     StringHeader* tmp = StringHeader::createFromUTF8(g_heap, std::string_view(g_keyStrings[index]));
     g_keyHeaders[index] = StringHeader::internToArena(g_arena, tmp);
+
+    KeyInfo info;
+    uint32_t elemIdx = 0;
+    if (rtIsIntegerLikeKey(g_keyStrings[index], elemIdx)) {
+        info.isElemIndex = true;
+        info.elemIndex = elemIdx;
+    } else {
+        info.isElemIndex = false;
+        info.elemIndex = UINT32_MAX;
+    }
+    info.isLength = (g_keyStrings[index] == "length");
+    g_keyInfos[index] = info;
 }
 
 }  // extern "C"

@@ -50,8 +50,15 @@ Shape* rtPlainObjectShape();
 // comparisons; the header form is the arena-interned key the property path
 // uses, so a property access allocates nothing. `rtKeyHeader` is null for an
 // index no `bronze_register_key_string` call ever covered.
+struct KeyInfo {
+    uint32_t elemIndex = UINT32_MAX;
+    bool isElemIndex = false;
+    bool isLength = false;
+};
+
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
+const KeyInfo& rtKeyInfo(uint32_t index);
 
 // A plain object's own keys in ECMA-262 6.1.7.1 OwnPropertyKeys order:
 // integer-like keys ascending, then the remaining STRING keys in insertion

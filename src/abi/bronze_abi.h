@@ -214,6 +214,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_VALUE_TAG_SHIFT      48
 #define BRONZE_ABI_VALUE_PAYLOAD_MASK   0x0000FFFFFFFFFFFFull
 #define BRONZE_ABI_TAG_OBJECT           0xFFF1
+#define BRONZE_ABI_TAG_STRING           0xFFF2
+#define BRONZE_ABI_TAG_INT32            0xFFF3
+#define BRONZE_ABI_TAG_BOOL             0xFFF4
+#define BRONZE_ABI_TAG_NULL             0xFFF5
+#define BRONZE_ABI_TAG_UNDEFINED        0xFFF6
+#define BRONZE_ABI_CANONICAL_NAN_BITS   0x7FF8000000000000ull
+#define BRONZE_ABI_NUMBER_MAX_BITS      0xFFF0000000000000ull
 
 /* HeapObjectHeader::flags, and the value that means "a plain object" as
  * opposed to an array (1), a function (2), a typed-array view (3) or an

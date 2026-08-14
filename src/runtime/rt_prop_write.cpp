@@ -153,60 +153,49 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         }
     }
 
+    const KeyInfo& ki = rtKeyInfo(keyIndex);
     const std::string& keyStr = rtKeyString(keyIndex);
-    uint32_t idx = 0;
 
     if (hdr->flags == HeapKind::Array) {
-        // Numeric keys store an element; everything else is one of the two
-        // properties an array has beside them, and rt_prop_array.cpp owns both.
-        // The index test is FIRST because `a[i] = v` is the hot write and must
-        // not walk two string compares to reach the block.
-        if (!rtKeyAsIndex(keyStr, idx)) {
-            Rooted<Value> arrRoot{objVal};
-            if (keyStr == "length") {
-                rtReportSetRefusal(rtArraySetLength(arrRoot, valVal), strict, keyStr);
+        if (ki.isElemIndex) {
+            const uint32_t idx = ki.elemIndex;
+            const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
+            if (refusal != SetRefusal::None) {
+                rtReportSetRefusal(refusal, strict, rtKeyString(keyIndex));
                 return;
             }
-            StringHeader* named = rtKeyHeader(keyIndex);
-            if (!named) fatal("property write with an unregistered key index");
-            Rooted<Value> val{valVal};
-            Rooted<Value> key(Value::fromString(named));
-            rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, keyStr);
+            Rooted<Value> val(valVal);
+            if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
+                Rooted<Value> arrRoot(objVal);
+                reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
+                hdr = arrRoot.get().asObject<HeapObjectHeader>();
+            }
+            reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
             return;
         }
-        // A frozen or non-extensible array refuses the write on exactly the
-        // terms a plain object's property does, so it reports through the same
-        // enum and the same strict-mode translation (integrity.h).
-        const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
-        if (refusal != SetRefusal::None) {
-            rtReportSetRefusal(refusal, strict, keyStr);
+        if (ki.isLength) {
+            Rooted<Value> arrRoot{objVal};
+            rtReportSetRefusal(rtArraySetLength(arrRoot, valVal), strict, "length");
             return;
         }
-        Rooted<Value> val(valVal);
-        if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
-            Rooted<Value> arrRoot(objVal);
-            reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
-            hdr = arrRoot.get().asObject<HeapObjectHeader>();
-        }
-        reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
+        StringHeader* named = rtKeyHeader(keyIndex);
+        if (!named) fatal("property write with an unregistered key index");
+        Rooted<Value> arrRoot{objVal};
+        Rooted<Value> val{valVal};
+        Rooted<Value> key(Value::fromString(named));
+        rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, rtKeyString(keyIndex));
         return;
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
-        if (!rtKeyAsIndex(keyStr, idx)) {
-            fatal(("named property writes on a typed array (" +
-                   std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
-                   ") are unsupported").c_str());
+        if (ki.isElemIndex) {
+            const double num = rtToNumber(Value(valBits));
+            auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+            if (ki.elemIndex < view->length) view->set(ki.elemIndex, num);
+            return;
         }
-        // ToNumber BEFORE the bounds test, because 10.4.5.5
-        // IntegerIndexedElementSet performs it whether or not the index is in
-        // range. `hdr` survives the call only because rtToNumber cannot
-        // allocate: an object is either a named error or a primitive wrapper,
-        // and unwrapping one reads an internal slot rather than running
-        // ToPrimitive. So nothing here can move the view.
-        const double num = rtToNumber(Value(valBits));
-        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-        if (idx < view->length) view->set(idx, num);
-        return;  // out-of-bounds typed-array writes are discarded, per spec
+        fatal(("named property writes on a typed array (" +
+               std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
+               ") are unsupported").c_str());
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) {
         fatal("property writes on an ArrayBuffer are unsupported");
@@ -559,6 +548,36 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // `p.k = v` and takes the same trap-or-forward path.
         rtProxySet(objVal, Value(idxBits), Value(valBits), strict);
         return;
+    }
+    Value idxVal(idxBits);
+    if (idxVal.isNumber()) {
+        double d = idxVal.asNumber();
+        if (d >= 0.0 && d <= 4294967294.0) {
+            uint32_t u = static_cast<uint32_t>(d);
+            if (static_cast<double>(u) == d) {
+                if (hdr->flags == HeapKind::Array) {
+                    const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, u);
+                    if (refusal != SetRefusal::None) {
+                        rtReportSetRefusal(refusal, strict, std::to_string(u));
+                        return;
+                    }
+                    Rooted<Value> val{Value(valBits)};
+                    if (u > reinterpret_cast<ArrayHeader*>(hdr)->length) {
+                        Rooted<Value> arrRoot(objVal);
+                        reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, u + 1);
+                        hdr = arrRoot.get().asObject<HeapObjectHeader>();
+                    }
+                    reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), u, val);
+                    return;
+                }
+                if (hdr->flags == TypedArrayHeader::kFlags) {
+                    const double num = rtToNumber(Value(valBits));
+                    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+                    if (u < view->length) view->set(u, num);
+                    return;
+                }
+            }
+        }
     }
     if (hdr->flags == HeapKind::Array) {
         if (!rtValueToElementIndex(Value(idxBits), idx)) {

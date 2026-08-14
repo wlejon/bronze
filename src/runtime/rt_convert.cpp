@@ -469,8 +469,13 @@ uint64_t bronze_string_concat(uint64_t aBits, uint64_t bBits) {
 // are meant to.
 uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_dynamic_add");
-    Rooted<Value> aRoot{Value(aBits)};
-    Rooted<Value> bRoot{Value(bBits)};
+    Value aVal(aBits);
+    Value bVal(bBits);
+    if (aVal.isNumber() && bVal.isNumber()) {
+        return Value::fromDouble(aVal.asNumber() + bVal.asNumber()).rawBits();
+    }
+    Rooted<Value> aRoot{aVal};
+    Rooted<Value> bRoot{bVal};
     // Both are rooted before either conversion runs: ToPrimitive can call user
     // code, and a collection there moves the other operand out from under any
     // raw bits still being held.
