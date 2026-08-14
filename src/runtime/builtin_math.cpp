@@ -9,6 +9,7 @@
 // the arithmetic inline — so the two paths have to agree on every edge case,
 // and the oracle case runs both.
 
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +17,7 @@
 #include <random>
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
@@ -117,7 +119,9 @@ double unaryTrunc(double x) { return std::trunc(x); }
 double unarySqrt(double x) { return std::sqrt(x); }
 double unaryCbrt(double x) { return std::cbrt(x); }
 double unaryExp(double x) { return std::exp(x); }
+double unaryExpm1(double x) { return std::expm1(x); }
 double unaryLog(double x) { return std::log(x); }
+double unaryLog1p(double x) { return std::log1p(x); }
 double unaryLog2(double x) { return std::log2(x); }
 double unaryLog10(double x) { return std::log10(x); }
 double unarySin(double x) { return std::sin(x); }
@@ -126,6 +130,26 @@ double unaryTan(double x) { return std::tan(x); }
 double unaryAsin(double x) { return std::asin(x); }
 double unaryAcos(double x) { return std::acos(x); }
 double unaryAtan(double x) { return std::atan(x); }
+double unarySinh(double x) { return std::sinh(x); }
+double unaryCosh(double x) { return std::cosh(x); }
+double unaryTanh(double x) { return std::tanh(x); }
+double unaryAsinh(double x) { return std::asinh(x); }
+double unaryAcosh(double x) { return std::acosh(x); }
+double unaryAtanh(double x) { return std::atanh(x); }
+double unaryFround(double x) { return static_cast<double>(static_cast<float>(x)); }
+
+uint64_t mathClz32(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return Value::fromDouble(32.0).rawBits();
+    uint32_t n = static_cast<uint32_t>(bronze_to_int32(argv[0]));
+    if (n == 0) return Value::fromDouble(32.0).rawBits();
+    return Value::fromDouble(static_cast<double>(std::countl_zero(n))).rawBits();
+}
+
+uint64_t mathImul(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    uint32_t a = argc > 0 ? static_cast<uint32_t>(bronze_to_int32(argv[0])) : 0;
+    uint32_t b = argc > 1 ? static_cast<uint32_t>(bronze_to_int32(argv[1])) : 0;
+    return Value::fromDouble(static_cast<int32_t>(a * b)).rawBits();
+}
 
 uint64_t mathPow(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // `Math.pow(a, b)` and `a ** b` are the SAME operation in ECMA-262
@@ -236,11 +260,17 @@ const MathFn kMathFunctions[] = {
     {"ceil", mathUnary<unaryCeil>, 1},   {"trunc", mathUnary<unaryTrunc>, 1},
     {"round", mathUnary<jsRound>, 1},    {"sign", mathUnary<jsSign>, 1},
     {"sqrt", mathUnary<unarySqrt>, 1},   {"cbrt", mathUnary<unaryCbrt>, 1},
-    {"exp", mathUnary<unaryExp>, 1},     {"log", mathUnary<unaryLog>, 1},
+    {"exp", mathUnary<unaryExp>, 1},     {"expm1", mathUnary<unaryExpm1>, 1},
+    {"log", mathUnary<unaryLog>, 1},     {"log1p", mathUnary<unaryLog1p>, 1},
     {"log2", mathUnary<unaryLog2>, 1},   {"log10", mathUnary<unaryLog10>, 1},
     {"sin", mathUnary<unarySin>, 1},     {"cos", mathUnary<unaryCos>, 1},
     {"tan", mathUnary<unaryTan>, 1},     {"asin", mathUnary<unaryAsin>, 1},
     {"acos", mathUnary<unaryAcos>, 1},   {"atan", mathUnary<unaryAtan>, 1},
+    {"sinh", mathUnary<unarySinh>, 1},   {"cosh", mathUnary<unaryCosh>, 1},
+    {"tanh", mathUnary<unaryTanh>, 1},   {"asinh", mathUnary<unaryAsinh>, 1},
+    {"acosh", mathUnary<unaryAcosh>, 1}, {"atanh", mathUnary<unaryAtanh>, 1},
+    {"fround", mathUnary<unaryFround>, 1},
+    {"clz32", mathClz32, 1},             {"imul", mathImul, 2},
     {"atan2", mathAtan2, 2},             {"pow", mathPow, 2},
     // Arity 0 is not "takes nothing": FunctionHeader::arity is the count a
     // short call is PADDED with undefined up to, and a variadic builtin
@@ -265,8 +295,7 @@ const MathConst kMathConstants[] = {
 // tables in rt_helpers.cpp — membership here is ECMA-262's "does this exist?",
 // never "have we got round to it?".
 const char* const kMathUnimplemented[] = {
-    "acosh", "asinh", "atanh", "clz32", "cosh", "expm1", "f16round", "fround",
-    "imul",  "log1p", "sinh",  "sumPrecise", "tanh",
+    "f16round", "sumPrecise",
 };
 
 Value g_mathObject = Value::fromUndefined();

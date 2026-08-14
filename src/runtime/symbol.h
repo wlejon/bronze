@@ -79,6 +79,9 @@ SymbolHeader* rtSymbolIterator();
 SymbolHeader* rtSymbolAsyncIterator();
 SymbolHeader* rtSymbolToStringTag();
 SymbolHeader* rtSymbolToPrimitive();
+SymbolHeader* rtSymbolHasInstance();
+SymbolHeader* rtSymbolSpecies();
+SymbolHeader* rtSymbolIsConcatSpreadable();
 
 // SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
 // description spelled `Symbol()` — the description of a `Symbol()` and of a

@@ -1,0 +1,16 @@
+console.log(Math.sinh(0));
+console.log(Math.cosh(0));
+console.log(Math.tanh(0));
+console.log(Math.asinh(0));
+console.log(Math.acosh(1));
+console.log(Math.atanh(0));
+console.log(Math.expm1(0));
+console.log(Math.log1p(0));
+console.log(Math.fround(1.5));
+console.log(Math.fround(1.337));
+console.log(Math.clz32(1));
+console.log(Math.clz32(1000));
+console.log(Math.clz32(0));
+console.log(Math.imul(2, 4));
+console.log(Math.imul(-1, 8));
+console.log(Math.imul(0xffffffff, 5));

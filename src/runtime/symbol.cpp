@@ -111,6 +111,21 @@ SymbolHeader* rtSymbolToPrimitive() {
     return sym;
 }
 
+SymbolHeader* rtSymbolHasInstance() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.hasInstance");
+    return sym;
+}
+
+SymbolHeader* rtSymbolSpecies() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.species");
+    return sym;
+}
+
+SymbolHeader* rtSymbolIsConcatSpreadable() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.isConcatSpreadable");
+    return sym;
+}
+
 Value rtSymbolFor(Rooted<Value>& keyString) {
     if (!keyString.get().isString()) {
         fatal("internal: Symbol.for with a key that is not a string");

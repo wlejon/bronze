@@ -25,8 +25,7 @@ namespace {
 // builtin_array.cpp answers first — or `length` and `constructor`, which are
 // real. `sort`, `splice` and the three iterator methods left when they landed.
 const char* const kArrayMembers[] = {
-    "copyWithin", "flat", "flatMap",
-    "toLocaleString", "toReversed", "toSorted", "toSpliced", "with",
+    "toLocaleString",
 };
 
 // String.prototype, on the same rule — and the answering side is the
@@ -48,8 +47,7 @@ const char* const kArrayMembers[] = {
 // a diagnostic that named the wrong holder would send a reader to the wrong
 // file.
 const char* const kStringMembers[] = {
-    "isWellFormed", "localeCompare", "normalize",
-    "toLocaleString", "toWellFormed",
+    "localeCompare", "toLocaleString",
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in

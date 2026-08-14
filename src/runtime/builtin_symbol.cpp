@@ -88,8 +88,7 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // so `Symbol.toPrimitive` is a diagnosed missing member rather than
 // `undefined`.
 const char* const kSymbolUnimplemented[] = {
-    "hasInstance", "isConcatSpreadable", "match",       "matchAll",
-    "replace",     "search",             "species",     "split",       "unscopables",
+    "match", "matchAll", "replace", "search", "split", "unscopables",
 };
 
 Value g_symbolFunction = Value::fromUndefined();
@@ -239,11 +238,7 @@ Value rtSymbolFunction() {
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
-    // 20.4.2.5 `Symbol.iterator` and 20.4.2.14 `Symbol.toStringTag`: the
-    // well-known symbols themselves, as ordinary properties of this object.
-    // Properties and not compile-time constants, because that is what ECMA-262
-    // makes them — `[Symbol.iterator]` is a member expression, and evaluating
-    // it is what makes a program that rebinds `Symbol` get its own answer.
+    // Well-known symbols:
     {
         Rooted<Value> key{rtMakeString("iterator")};
         Rooted<Value> val{rtIteratorKey()};
@@ -265,6 +260,24 @@ Value rtSymbolFunction() {
     {
         Rooted<Value> key{rtMakeString("toPrimitive")};
         Rooted<Value> val{Value::fromSymbol(rtSymbolToPrimitive())};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("hasInstance")};
+        Rooted<Value> val{Value::fromSymbol(rtSymbolHasInstance())};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("species")};
+        Rooted<Value> val{Value::fromSymbol(rtSymbolSpecies())};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("isConcatSpreadable")};
+        Rooted<Value> val{Value::fromSymbol(rtSymbolIsConcatSpreadable())};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

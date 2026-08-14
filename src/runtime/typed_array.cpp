@@ -196,8 +196,25 @@ ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, uint32_t byte_length) {
     auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
     buf->header.flags = kFlags;
     buf->byteLength = byte_length;
+    buf->maxByteLength = byte_length;
+    buf->bufferFlags = 0;
     buf->reserved = 0;
     std::memset(buf->data(), 0, byte_length);
+    return buf;
+}
+
+ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, uint32_t byte_length,
+                                                      uint32_t max_byte_length) {
+    size_t payload_bytes =
+        (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + max_byte_length;
+    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
+    auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
+    buf->header.flags = kFlags;
+    buf->byteLength = byte_length;
+    buf->maxByteLength = max_byte_length;
+    buf->bufferFlags = kFlagResizable;
+    buf->reserved = 0;
+    std::memset(buf->data(), 0, max_byte_length);
     return buf;
 }
 

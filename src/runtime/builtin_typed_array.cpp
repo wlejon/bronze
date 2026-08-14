@@ -2,15 +2,6 @@
 // the four construction paths of 23.2.5.1, and the members an instance answers.
 // The METHODS live next door in builtin_typed_array_methods.cpp; the
 // representation lives in typed_array.{h,cpp}.
-//
-// The seam that shapes this file: a typed array constructor is an ordinary
-// bronze function object, interned by code pointer, so `Float32Array` read as a
-// bare name and `v.constructor` read off an instance are the SAME object and
-// `===` between them holds. That is what three.js's `switch
-// (array.constructor)` needs, and it is why the nine constructors are nine
-// instantiations of one template rather than one function taking a kind — nine
-// distinct code pointers is exactly what `bronze_function_singleton` interns
-// on.
 
 #include <cmath>
 #include <cstring>
@@ -19,10 +10,12 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_typed_array_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
+#include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -35,29 +28,15 @@ namespace {
 bool isBuffer(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == ArrayBufferHeader::kFlags;
 }
-bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
-}
 
-// 7.1.22 ToIndex, and it is deliberately NOT "reject anything that is not an
-// integer": ToIndex truncates, so `new Float32Array(1.5)` has one element and
-// `new Float32Array(NaN)` has none. Only a negative value, an infinity, or
-// something past 2^53-1 is the RangeError of step 2.c — which is a different
-// error from "bronze cannot allocate that", and the two are kept apart so a
-// program can tell a bad argument from a heap it has outgrown.
-//
-// Answering `false` leaves the error pending, which is what every caller here
-// checks for.
 bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_t& out) {
     if (v.isUndefined()) {
         out = 0;
         return true;
     }
     const double n = rtToNumber(v);
-    // ToIntegerOrInfinity: NaN and both zeroes become +0, everything finite
-    // truncates towards zero, and the infinities pass through to be rejected.
     double integer = std::isnan(n) ? 0.0 : std::trunc(n);
-    if (integer == 0.0) integer = 0.0;  // normalise -0
+    if (integer == 0.0) integer = 0.0;
     if (integer < 0.0 || integer > 9007199254740991.0) {
         rtThrowRangeError(std::string("Invalid ") + what + " length");
         return false;
@@ -70,10 +49,6 @@ bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_t& out)
     return true;
 }
 
-// A buffer that a collection would have to COPY has to fit in a semispace,
-// which is the concrete form "the buffer moves" takes. Diagnosed here, by name,
-// rather than left to `std::bad_alloc` unwinding out of a helper that generated
-// code called.
 bool checkAllocatable(uint32_t byteLength) {
     const size_t semispace = rtHeap().reserved_size() / 2;
     if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
@@ -84,19 +59,12 @@ bool checkAllocatable(uint32_t byteLength) {
     return true;
 }
 
-// ---- construction (23.2.5.1) ------------------------------------------------
-
-// `new T(length)` and `new T()`.
 Value fromLength(ElementKind kind, uint32_t length) {
     const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
     if (!checkAllocatable(length * bpe)) return Value::fromUndefined();
     return Value::fromObject(TypedArrayHeader::create(rtHeap(), kind, length));
 }
 
-// `new T(buffer, byteOffset, length)` — 23.2.5.1 step 6, InitializeTypedArray-
-// FromArrayBuffer. The view SHARES the buffer's bytes: two views over one
-// buffer see each other's writes, which is the whole point of the form and
-// what `extras/DataUtils.js` uses to reinterpret a float's bits.
 Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value lengthVal) {
     const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
     uint32_t offset = 0;
@@ -106,7 +74,12 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
                           " should be a multiple of " + std::to_string(bpe));
         return Value::fromUndefined();
     }
-    const uint32_t bufferLength = buffer.get().asObject<ArrayBufferHeader>()->byteLength;
+    auto* buf = buffer.get().asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        rtThrowTypeError("ArrayBuffer is detached");
+        return Value::fromUndefined();
+    }
+    const uint32_t bufferLength = buf->byteLength;
     if (offset > bufferLength) {
         rtThrowRangeError("Start offset " + std::to_string(offset) +
                           " is outside the bounds of the buffer");
@@ -115,9 +88,6 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
 
     uint32_t length = 0;
     if (lengthVal.isUndefined()) {
-        // 23.2.5.1 step 6.d: an auto-length view spans the rest of the buffer,
-        // and the remainder must divide evenly — a Float32Array over 6 bytes
-        // is a RangeError, not a truncation.
         if ((bufferLength - offset) % bpe != 0) {
             rtThrowRangeError("byte length of " + std::string(elementKindInfo(kind).name) +
                               " should be a multiple of " + std::to_string(bpe));
@@ -135,28 +105,17 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
         TypedArrayHeader::createOverBuffer(rtHeap(), kind, buffer, offset, length));
 }
 
-// `new T(otherTypedArray)` — 23.2.5.1 step 5.b.i, InitializeTypedArrayFrom-
-// TypedArray. A COPY with the destination's conversion applied per element,
-// never a shared buffer: `new Uint8Array(f32)` is nine bytes of narrowing, not
-// a reinterpretation of the float's bits (which is what `new Uint8Array(
-// f32.buffer)` would be).
 Value fromTypedArray(ElementKind kind, Rooted<Value>& source) {
     const uint32_t length = source.get().asObject<TypedArrayHeader>()->length;
     Rooted<Value> out{fromLength(kind, length)};
     if (rtExceptionPending()) return Value::fromUndefined();
     for (uint32_t i = 0; i < length; ++i) {
-        // Both pointers are re-derived every step. Nothing in the loop
-        // allocates today, but the rule that keeps this correct is that a raw
-        // view pointer never outlives a statement.
         const double v = source.get().asObject<TypedArrayHeader>()->get(i);
         out.get().asObject<TypedArrayHeader>()->set(i, v);
     }
     return out.get();
 }
 
-// `new T(arrayLike)` and `new T(iterable)` — 23.2.5.1 step 5.b.ii. An array
-// is walked directly rather than through its iterator: the answer is the same
-// and the iterator form allocates a record and a cursor per element.
 Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
     if (isArray(source.get())) {
         const uint32_t length = source.get().asObject<ArrayHeader>()->length;
@@ -170,8 +129,6 @@ Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
         return out.get();
     }
 
-    // Anything else iterable: collect first, because the element count is not
-    // known until the walk ends and a typed array cannot grow.
     Rooted<Value> collected{Value(bronze_create_array(0))};
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
     if (rtExceptionPending()) return Value::fromUndefined();
@@ -213,9 +170,6 @@ Value constructTypedArray(ElementKind kind, uint32_t argc, const uint64_t* argv)
                             " constructor requires a length, a buffer, an array or an iterable");
 }
 
-// Nine instantiations, so nine distinct code pointers, so nine distinct
-// interned function objects — which is what makes `Int8Array !== Uint8Array`
-// and `x.constructor === Float32Array` both true.
 template <ElementKind K>
 uint64_t typedArrayCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return constructTypedArray(K, argc, argv).rawBits();
@@ -226,10 +180,26 @@ uint64_t arrayBufferCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv
     uint32_t byteLength = 0;
     if (!toIndex(args[0], "array buffer", 1, byteLength)) return Value::fromUndefined().rawBits();
     if (!checkAllocatable(byteLength)) return Value::fromUndefined().rawBits();
-    // A byteLength of 0 is legal and produces a real buffer: `byteLength` is
-    // 0, every view over it has length 0, and it is still an eight-byte heap
-    // object, which is what keeps the inline property fast path's
-    // unconditional header load safe (BRONZE_ABI_OBJ_MIN_PAYLOAD).
+
+    if (args.count() > 1 && args[1].isObject()) {
+        Rooted<Value> opts{args[1]};
+        Rooted<Value> mblKey{rtMakeString("maxByteLength")};
+        Value mblVal =
+            opts.get().asObject<ObjectHeader>()->getProp(rtHeap(), mblKey, nullptr, opts.slot_ptr());
+        if (!mblVal.isUndefined()) {
+            uint32_t maxByteLength = 0;
+            if (!toIndex(mblVal, "maxByteLength", 1, maxByteLength)) {
+                return Value::fromUndefined().rawBits();
+            }
+            if (maxByteLength < byteLength) {
+                return rtThrowRangeError("maxByteLength must be >= byteLength").rawBits();
+            }
+            if (!checkAllocatable(maxByteLength)) return Value::fromUndefined().rawBits();
+            return Value::fromObject(
+                       ArrayBufferHeader::createResizable(rtHeap(), byteLength, maxByteLength))
+                .rawBits();
+        }
+    }
     return Value::fromObject(ArrayBufferHeader::create(rtHeap(), byteLength)).rawBits();
 }
 
@@ -253,30 +223,244 @@ const CtorEntry kCtors[] = {
 static_assert(std::size(kCtors) == static_cast<size_t>(ElementKind::Count),
               "the constructor table has drifted from the ElementKind enum");
 
-// Real members of `%TypedArray%.prototype` that bronze has not built. A name
-// leaves this list when it lands (rt_members.cpp's rule); what is here is the
-// ECMA-262 question "does this exist?", so reading one is a named error and
-// never `undefined`.
 const char* const kTypedArrayUnimplemented[] = {
-    "at",         "entries",     "every",    "filter",  "find",        "findIndex",
-    "findLast",   "findLastIndex", "keys",   "lastIndexOf", "reduce",  "reduceRight",
-    "reverse",    "some",        "sort",     "toLocaleString", "toReversed", "toSorted",
-    "values",     "with",
+    "toLocaleString",
 };
 
-// Real members of `ArrayBuffer.prototype`, minus `byteLength`, which is real.
 const char* const kArrayBufferUnimplemented[] = {
-    "detached", "maxByteLength", "resizable", "resize", "slice", "transfer",
-    "transferToFixedLength",
+    "slice",
 };
 
-// The five slot accessors and the 10.2.5 back-pointer, by name. They are a
-// ladder in `rtTypedArrayMember`, which needs each one's field, and a list here
-// for `rtTypedArrayHasMember`, which needs only the name — one list, so the two
-// readers cannot come to disagree about what a typed array HAS.
 const char* const kTypedArraySlotMembers[] = {
     "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT", "constructor",
 };
+
+// 25.1.5.5 ArrayBuffer.prototype.resize
+uint64_t arrayBufferResize(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value self(thisBits);
+    if (!isBuffer(self)) {
+        return rtThrowTypeError("ArrayBuffer.prototype.resize called on non-ArrayBuffer").rawBits();
+    }
+    auto* buf = self.asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        return rtThrowTypeError("Cannot resize a detached ArrayBuffer").rawBits();
+    }
+    if (!buf->isResizable()) {
+        return rtThrowTypeError("Cannot resize a non-resizable ArrayBuffer").rawBits();
+    }
+    uint32_t newLen = 0;
+    if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
+    if (newLen > buf->maxByteLength) {
+        return rtThrowRangeError("Invalid byte length: exceeds maxByteLength").rawBits();
+    }
+    if (newLen > buf->byteLength) {
+        std::memset(buf->data() + buf->byteLength, 0, newLen - buf->byteLength);
+    }
+    buf->byteLength = newLen;
+    return Value::fromUndefined().rawBits();
+}
+
+// 25.1.5.7 ArrayBuffer.prototype.transfer
+uint64_t arrayBufferTransfer(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!isBuffer(self.get())) {
+        return rtThrowTypeError("ArrayBuffer.prototype.transfer called on non-ArrayBuffer").rawBits();
+    }
+    auto* buf = self.get().asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        return rtThrowTypeError("Cannot transfer a detached ArrayBuffer").rawBits();
+    }
+    uint32_t newLen = buf->byteLength;
+    if (args.count() > 0 && !args[0].isUndefined()) {
+        if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
+    }
+    if (!checkAllocatable(newLen)) return Value::fromUndefined().rawBits();
+
+    const bool resizable = buf->isResizable();
+    const uint32_t maxByteLen = buf->maxByteLength;
+    const uint32_t oldLen = buf->byteLength;
+    if (resizable && newLen > maxByteLen) {
+        return rtThrowRangeError("newByteLength exceeds maxByteLength").rawBits();
+    }
+
+    Rooted<Value> newBufVal{Value::fromUndefined()};
+    if (resizable) {
+        newBufVal.set(Value::fromObject(
+            ArrayBufferHeader::createResizable(rtHeap(), newLen, maxByteLen)));
+    } else {
+        newBufVal.set(Value::fromObject(
+            ArrayBufferHeader::create(rtHeap(), newLen)));
+    }
+    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
+    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
+    const uint32_t copyLen = std::min(oldLen, newLen);
+    std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
+    oldBuf->setDetached();
+    return newBufVal.get().rawBits();
+}
+
+// 25.1.5.8 ArrayBuffer.prototype.transferToFixedLength
+uint64_t arrayBufferTransferToFixedLength(uint64_t, uint64_t thisBits, uint32_t argc,
+                                         const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!isBuffer(self.get())) {
+        return rtThrowTypeError("ArrayBuffer.prototype.transferToFixedLength called on non-ArrayBuffer").rawBits();
+    }
+    auto* buf = self.get().asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        return rtThrowTypeError("Cannot transfer a detached ArrayBuffer").rawBits();
+    }
+    uint32_t newLen = buf->byteLength;
+    if (args.count() > 0 && !args[0].isUndefined()) {
+        if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
+    }
+    if (!checkAllocatable(newLen)) return Value::fromUndefined().rawBits();
+
+    const uint32_t oldLen = buf->byteLength;
+    Rooted<Value> newBufVal{Value::fromObject(ArrayBufferHeader::create(rtHeap(), newLen))};
+    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
+    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
+    const uint32_t copyLen = std::min(oldLen, newLen);
+    std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
+    oldBuf->setDetached();
+    return newBufVal.get().rawBits();
+}
+
+// 25.1.5.6 ArrayBuffer.prototype.slice
+uint64_t arrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!isBuffer(self.get())) {
+        return rtThrowTypeError("ArrayBuffer.prototype.slice called on non-ArrayBuffer").rawBits();
+    }
+    auto* buf = self.get().asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        return rtThrowTypeError("Cannot slice a detached ArrayBuffer").rawBits();
+    }
+    const uint32_t len = buf->byteLength;
+    uint32_t first = 0;
+    if (args.count() > 0 && !args[0].isUndefined()) {
+        first = relativeIndex(toInteger(rtToNumber(args[0])), len);
+    }
+    uint32_t final = len;
+    if (args.count() > 1 && !args[1].isUndefined()) {
+        final = relativeIndex(toInteger(rtToNumber(args[1])), len);
+    }
+    const uint32_t newLen = final > first ? final - first : 0;
+    Rooted<Value> newBufVal{Value::fromObject(ArrayBufferHeader::create(rtHeap(), newLen))};
+    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
+    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
+    if (newLen > 0) {
+        std::memcpy(newBuf->data(), oldBuf->data() + first, newLen);
+    }
+    return newBufVal.get().rawBits();
+}
+
+// %TypedArray%.from
+uint64_t typedArrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value ctorVal(thisBits);
+    ElementKind kind = ElementKind::Float64;
+    bool found = false;
+    for (const CtorEntry& entry : kCtors) {
+        if (ctorVal.isObject() && ctorVal.asObject<FunctionHeader>()->code == entry.code) {
+            kind = entry.kind;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return rtThrowTypeError("%TypedArray%.from called on non-TypedArray constructor").rawBits();
+    }
+    Rooted<Value> source{args[0]};
+    Rooted<Value> mapFn{args[1]};
+    Rooted<Value> thisArg{args[2]};
+    const bool hasMap = !mapFn.get().isUndefined();
+    if (hasMap && !isCallable(mapFn.get())) {
+        return rtThrowTypeError("mapFn is not callable").rawBits();
+    }
+
+    if (isTypedArray(source.get())) {
+        const uint32_t len = lengthOf(source.get());
+        Rooted<Value> out{fromLength(kind, len)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        for (uint32_t i = 0; i < len; ++i) {
+            double v = elemOf(source.get(), i);
+            if (hasMap) {
+                Rooted<Value> val{Value::fromDouble(v)};
+                Rooted<Value> mapped{callBack(mapFn, thisArg, val, i, source)};
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                v = rtToNumber(mapped.get());
+            }
+            out.get().asObject<TypedArrayHeader>()->set(i, v);
+        }
+        return out.get().rawBits();
+    }
+
+    if (isArray(source.get())) {
+        const uint32_t len = source.get().asObject<ArrayHeader>()->length;
+        Rooted<Value> out{fromLength(kind, len)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        for (uint32_t i = 0; i < len; ++i) {
+            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
+            double v = 0.0;
+            if (hasMap) {
+                Rooted<Value> mapped{callBack(mapFn, thisArg, elem, i, source)};
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                v = rtToNumber(mapped.get());
+            } else {
+                v = rtToNumber(elem.get());
+            }
+            out.get().asObject<TypedArrayHeader>()->set(i, v);
+        }
+        return out.get().rawBits();
+    }
+
+    Rooted<Value> collected{Value(bronze_create_array(0))};
+    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        bronze_array_append(collected.get().rawBits(), item.get().rawBits());
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), true);
+        return Value::fromUndefined().rawBits();
+    }
+    const uint64_t block[3] = {collected.get().rawBits(), mapFn.get().rawBits(),
+                               thisArg.get().rawBits()};
+    return typedArrayFrom(0, thisBits, 3, block);
+}
+
+// %TypedArray%.of
+uint64_t typedArrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value ctorVal(thisBits);
+    ElementKind kind = ElementKind::Float64;
+    bool found = false;
+    for (const CtorEntry& entry : kCtors) {
+        if (ctorVal.isObject() && ctorVal.asObject<FunctionHeader>()->code == entry.code) {
+            kind = entry.kind;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return rtThrowTypeError("%TypedArray%.of called on non-TypedArray constructor").rawBits();
+    }
+    Rooted<Value> out{fromLength(kind, args.count())};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    for (uint32_t i = 0; i < args.count(); ++i) {
+        double v = rtToNumber(args[i]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        out.get().asObject<TypedArrayHeader>()->set(i, v);
+    }
+    return out.get().rawBits();
+}
 
 }  // namespace
 
@@ -284,9 +468,6 @@ Value rtTypedArrayConstructor(const std::string& name) {
     if (name == "ArrayBuffer") return rtNativeFunction(arrayBufferCtor, 0);
     for (const CtorEntry& entry : kCtors) {
         if (name == elementKindInfo(entry.kind).name) {
-            // Arity 0: a variadic native must not be padded, or
-            // `new Float32Array(buf)` would arrive with two extra undefined
- // arguments and take the three-argument branch.
             return rtNativeFunction(entry.code, 0);
         }
     }
@@ -319,13 +500,16 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
-        // 23.2.6.2: the only own data property a %TypedArray% constructor
-        // carries. Answering `undefined` for it would be a silent lie about a
-        // property ECMA-262 defines, which is exactly what rt_members.cpp
-        // exists to prevent — and it is two lines, so it is built rather than
-        // diagnosed.
         if (key == "BYTES_PER_ELEMENT") {
             out = Value::fromDouble(elementKindInfo(entry.kind).bytesPerElement);
+            return true;
+        }
+        if (key == "from") {
+            out = rtNativeFunction(typedArrayFrom, 1);
+            return true;
+        }
+        if (key == "of") {
+            out = rtNativeFunction(typedArrayOf, 0);
             return true;
         }
         return false;
@@ -340,16 +524,8 @@ Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     if (key == "byteOffset") return Value::fromDouble(view->byteOffset);
     if (key == "buffer") return view->buffer;
     if (key == "BYTES_PER_ELEMENT") return Value::fromDouble(view->bytesPerElement());
-    // The 10.2.5 back-pointer, as a real one: the same object the bare name
-    // resolves to, so `x.constructor === Float32Array` and the `switch` over
-    // constructors in three.js's MathUtils both work.
     if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());
 
-    // Everything below can allocate a function object, so `view` — and
-    // `viewVal`, which is a by-value copy of bits the collector will not
-    // update — must not be read again. The kind's name is an immortal string
-    // literal in the element table, so reading it HERE and holding it across
-    // the allocation is the one thing that is safe to carry.
     const char* kindName = view->kindName();
     Value method = rtTypedArrayMethod(key);
     if (!method.isUndefined()) return method;
@@ -364,24 +540,30 @@ void rtCheckTypedArrayMember(const char* kindName, const std::string& key) {
 }
 
 Value rtArrayBufferMember(Value bufferVal, const std::string& key) {
+    auto* buf = bufferVal.asObject<ArrayBufferHeader>();
     if (key == "byteLength") {
-        return Value::fromDouble(bufferVal.asObject<ArrayBufferHeader>()->byteLength);
+        return Value::fromDouble(buf->isDetached() ? 0.0 : static_cast<double>(buf->byteLength));
     }
+    if (key == "maxByteLength") {
+        return Value::fromDouble(buf->isDetached() ? 0.0
+                                                   : static_cast<double>(buf->maxByteLength));
+    }
+    if (key == "resizable") {
+        return Value::fromBool(buf->isDetached() ? false : buf->isResizable());
+    }
+    if (key == "detached") {
+        return Value::fromBool(buf->isDetached());
+    }
+    if (key == "resize") return rtNativeFunction(arrayBufferResize, 1);
+    if (key == "transfer") return rtNativeFunction(arrayBufferTransfer, 0);
+    if (key == "transferToFixedLength") {
+        return rtNativeFunction(arrayBufferTransferToFixedLength, 0);
+    }
+    if (key == "slice") return rtNativeFunction(arrayBufferSlice, 0);
     if (key == "constructor") return rtTypedArrayConstructor("ArrayBuffer");
-    rtCheckUnimplementedMember("ArrayBuffer.prototype", kArrayBufferUnimplemented,
-                               std::size(kArrayBufferUnimplemented), key);
     return Value::fromUndefined();
 }
 
-// The two receivers above asked whether a member EXISTS, which is `in`'s
-// question and not a read's. Both walk the same lists their readers walk and
-// end at the same named refusal, so `'sort' in v` is the diagnostic `v.sort`
-// is, rather than a `false` that contradicts it. Nothing here allocates: the
-// caller holds a header across the call.
-//
-// The INDEX half of a typed array is not here — 10.4.5 makes an integer index a
-// different question from a member name, and the caller answers it against the
-// view's length before it ever gets this far.
 bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
     for (const char* name : kTypedArraySlotMembers) {
         if (key == name) return true;
@@ -392,9 +574,11 @@ bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
 }
 
 bool rtArrayBufferHasMember(const std::string& key) {
-    if (key == "byteLength" || key == "constructor") return true;
-    rtCheckUnimplementedMember("ArrayBuffer.prototype", kArrayBufferUnimplemented,
-                               std::size(kArrayBufferUnimplemented), key);
+    if (key == "byteLength" || key == "maxByteLength" || key == "resizable" ||
+        key == "detached" || key == "resize" || key == "transfer" ||
+        key == "transferToFixedLength" || key == "slice" || key == "constructor") {
+        return true;
+    }
     return false;
 }
 

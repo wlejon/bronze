@@ -531,6 +531,10 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
             rtEnsureFunctionProperties(recv);
         }
+        if (recv.get().isObject() &&
+            recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+            ArrayHeader::ensureProperties(rtHeap(), rtArena(), recv);
+        }
         if (ObjectHeader* holder = rtSymbolKeyHolder(recv.get())) {
             Rooted<Value> holderRoot{Value::fromObject(holder)};
             Rooted<Value> key{Value(idxBits)};
@@ -547,17 +551,8 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // A namespace refuses a SYMBOL key on the same terms as a string one:
         // 10.4.6.9 returns false without ever looking at the key.
         if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
-        // A receiver with no shape has nowhere to put one, and discarding the
-        // write would leave the program believing it stored something. An ARRAY
-        // is refused for a different reason from the rest: it HAS storage for
-        // an own property now, but only for a string-named one — the two
-        // well-known symbols an array answers are answered beside the value
-        // (rt_prop.cpp's `wellKnownSymbolMember`), so an own symbol-keyed
-        // property would be written where no read could ever shadow them with
-        // it.
-        fatal("a symbol-keyed property write is only supported on a plain object or a "
-              "function (an array holds string-named own properties only; a Map, a Set "
-              "and a typed array carry no shape at all)");
+        fatal("a symbol-keyed property write is only supported on a plain object, a "
+              "function or an array (a Map, a Set and a typed array carry no shape at all)");
     }
     // A write through `o[i]` to something that is not an object, answered
     // exactly as `bronze_prop_set` answers `o.k` — the same two TypeErrors, in

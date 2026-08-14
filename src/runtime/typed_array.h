@@ -60,13 +60,27 @@ inline constexpr uint32_t kMaxByteLength = 1u << 28;  // 256 MiB
 struct ArrayBufferHeader {
     HeapObjectHeader header;
     uint32_t byteLength;
+    uint32_t maxByteLength;
+    uint32_t bufferFlags;
     uint32_t reserved;
 
     static constexpr uint16_t kFlags = HeapKind::ArrayBuffer;
 
+    static constexpr uint32_t kFlagResizable = 1U << 0;
+    static constexpr uint32_t kFlagDetached = 1U << 1;
+
     // Zero-filled, as 25.1.3.1 AllocateArrayBuffer requires. `byte_length` is
     // the caller's business to validate; this allocates what it is asked for.
     static ArrayBufferHeader* create(Heap& heap, uint32_t byte_length);
+    static ArrayBufferHeader* createResizable(Heap& heap, uint32_t byte_length,
+                                              uint32_t max_byte_length);
+
+    bool isResizable() const noexcept { return (bufferFlags & kFlagResizable) != 0; }
+    bool isDetached() const noexcept { return (bufferFlags & kFlagDetached) != 0; }
+    void setDetached() noexcept {
+        bufferFlags |= kFlagDetached;
+        byteLength = 0;
+    }
 
     uint8_t* data() noexcept { return reinterpret_cast<uint8_t*>(this + 1); }
     const uint8_t* data() const noexcept { return reinterpret_cast<const uint8_t*>(this + 1); }

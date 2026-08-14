@@ -239,7 +239,7 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
 // differ over the PROTOTYPE chain, and an array's own keys are not where they
 // are allowed to differ. `getOwnPropertyNames` of an array stays refused,
 // because listing the keys is the part that needs somewhere to put them.
-bool arrayHasOwnKey(Value arrVal, const std::string& key) {
+static bool arrayHasOwnKey(Value arrVal, const std::string& key) {
     if (key == "length") return true;
     uint32_t index = 0;
     if (!rtIsIntegerLikeKey(key, index)) return false;
@@ -249,11 +249,11 @@ bool arrayHasOwnKey(Value arrVal, const std::string& key) {
     return arr->hasElem(index);
 }
 
-bool isArray(Value v) {
+static bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
-bool isFunction(Value v) {
+static bool isFunction(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 

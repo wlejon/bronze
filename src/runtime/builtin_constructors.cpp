@@ -441,6 +441,25 @@ bool rtIsArrayConstructor(Value fn) {
            fn.asObject<FunctionHeader>()->code == kCtors[0].code;
 }
 
+bool rtIsArrayBufferConstructor(Value fn) {
+    if (const char* name = rtTypedArrayConstructorName(fn)) {
+        return std::strcmp(name, "ArrayBuffer") == 0;
+    }
+    return false;
+}
+
+bool rtIsTypedArrayConstructor(Value fn) {
+    if (const char* name = rtTypedArrayConstructorName(fn)) {
+        return std::strcmp(name, "ArrayBuffer") != 0;
+    }
+    return false;
+}
+
+bool rtIsRegExpConstructor(Value fn) {
+    Value regCtor = rtRegExpConstructor("RegExp");
+    return regCtor.isObject() && fn.isObject() && regCtor.rawBits() == fn.rawBits();
+}
+
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;

@@ -912,6 +912,12 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
 // refuse a base whose instances it cannot actually produce.
 const char* rtIntrinsicConstructorName(Value fn);
 bool rtIsArrayConstructor(Value fn);
+bool rtIsArrayBufferConstructor(Value fn);
+bool rtIsTypedArrayConstructor(Value fn);
+bool rtIsRegExpConstructor(Value fn);
+bool rtOrdinaryHasInstance(Value ctor, Value obj);
+uint64_t rtFunctionHasInstanceBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
+                                      const uint64_t* argv);
 
 // The name of the intrinsic whose `new` form builds a primitive WRAPPER
 // object, or null. `bronze_construct` dispatches on it rather than running the

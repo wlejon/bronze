@@ -20,6 +20,7 @@ bronze_add_module(runtime
         typed_array.cpp
         builtin_typed_array.cpp
         builtin_typed_array_methods.cpp
+        builtin_typed_array_iteration.cpp
         builtin_data_view.cpp
         fn.cpp
         builtin_math.cpp
@@ -30,6 +31,10 @@ bronze_add_module(runtime
         builtin_promise.cpp
         builtin_async.cpp
         builtin_array.cpp
+        builtin_array_mutators.cpp
+        builtin_array_search.cpp
+        builtin_array_transform.cpp
+        builtin_array_iteration.cpp
         builtin_array_sort.cpp
         builtin_array_iterator.cpp
         builtin_string.cpp

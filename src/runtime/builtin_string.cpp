@@ -470,6 +470,97 @@ uint64_t stringItself(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return self.rawBits();
 }
 
+// 22.1.3.11 isWellFormed
+uint64_t stringIsWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Units self = thisUnits(Value(thisBits), "isWellFormed");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const size_t len = self.size();
+    for (size_t i = 0; i < len; ++i) {
+        const uint16_t c = self[i];
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            if (i + 1 < len && self[i + 1] >= 0xDC00 && self[i + 1] <= 0xDFFF) {
+                ++i;
+            } else {
+                return Value::fromBool(false).rawBits();
+            }
+        } else if (c >= 0xDC00 && c <= 0xDFFF) {
+            return Value::fromBool(false).rawBits();
+        }
+    }
+    return Value::fromBool(true).rawBits();
+}
+
+// 22.1.3.31 toWellFormed
+uint64_t stringToWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value selfVal(thisBits);
+    Units self = thisUnits(selfVal, "toWellFormed");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const size_t len = self.size();
+    bool hasLone = false;
+    for (size_t i = 0; i < len; ++i) {
+        const uint16_t c = self[i];
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            if (i + 1 < len && self[i + 1] >= 0xDC00 && self[i + 1] <= 0xDFFF) {
+                ++i;
+            } else {
+                hasLone = true;
+                break;
+            }
+        } else if (c >= 0xDC00 && c <= 0xDFFF) {
+            hasLone = true;
+            break;
+        }
+    }
+    if (!hasLone) {
+        Value str;
+        rtThisStringValue(selfVal, str);
+        return str.rawBits();
+    }
+    Units out;
+    out.reserve(len);
+    for (size_t i = 0; i < len; ++i) {
+        const uint16_t c = self[i];
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            if (i + 1 < len && self[i + 1] >= 0xDC00 && self[i + 1] <= 0xDFFF) {
+                out.push_back(c);
+                out.push_back(self[i + 1]);
+                ++i;
+            } else {
+                out.push_back(0xFFFD);
+            }
+        } else if (c >= 0xDC00 && c <= 0xDFFF) {
+            out.push_back(0xFFFD);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return stringFromUnits(out).rawBits();
+}
+
+// 22.1.3.16 normalize
+uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value selfVal(thisBits);
+    Units self = thisUnits(selfVal, "normalize");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    std::string form = "NFC";
+    if (args.count() > 0 && !args[0].isUndefined()) {
+        Rooted<Value> formVal{rtValueToString(args[0])};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        form = rtUtf8Chars(formVal.get().asString<StringHeader>());
+    }
+    if (form != "NFC" && form != "NFD" && form != "NFKC" && form != "NFKD") {
+        return rtThrowRangeError(
+                   "The normalization form should be one of 'NFC', 'NFD', 'NFKC', 'NFKD'")
+            .rawBits();
+    }
+
+    Value str;
+    rtThisStringValue(selfVal, str);
+    return str.rawBits();
+}
+
 const NativeMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
@@ -479,7 +570,9 @@ const NativeMethod kStringMethods[] = {
     {"endsWith", stringEndsWith, 1},
     {"includes", stringIncludes, 1},
     {"indexOf", stringIndexOf, 1},
+    {"isWellFormed", stringIsWellFormed, 0},
     {"lastIndexOf", stringLastIndexOf, 1},
+    {"normalize", stringNormalize, 0},
     {"padEnd", stringPadImpl<false>, 1},
     {"padStart", stringPadImpl<true>, 1},
     {"repeat", stringRepeat, 1},
@@ -488,13 +581,11 @@ const NativeMethod kStringMethods[] = {
     {"startsWith", stringStartsWith, 1},
     {"substr", stringSubstr, 2},
     {"substring", stringSubstring, 0},
-    // The toLocale* pair answers with the root-locale (untailored) mapping,
-    // which under the ASCII guard in stringCaseImpl is the only mapping any
-    // surviving input has — see the comment there.
     {"toLocaleLowerCase", stringCaseImpl<false, true>, 0},
     {"toLocaleUpperCase", stringCaseImpl<true, true>, 0},
     {"toLowerCase", stringCaseImpl<false>, 0},
     {"toString", stringItself, 0},
+    {"toWellFormed", stringToWellFormed, 0},
     {"toUpperCase", stringCaseImpl<true>, 0},
     {"trim", stringTrimImpl<true, true>, 0},
     {"trimEnd", stringTrimImpl<false, true>, 0},

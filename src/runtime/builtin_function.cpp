@@ -73,6 +73,12 @@ void ensureFunctionIntrinsics() {
     g_functionConstructor = ctor.get();
     rtHeap().add_permanent_root(&g_functionPrototype);
     rtHeap().add_permanent_root(&g_functionConstructor);
+
+    rtEnsureFunctionProperties(proto);
+    Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
+    Rooted<Value> hasInstFn{rtNativeFunction(rtFunctionHasInstanceBuiltin, 1)};
+    proto.get().asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->setProp(
+        rtHeap(), rtArena(), hasInstKey, hasInstFn, nullptr, /*enumerable=*/false, /*defineOwn=*/true);
 }
 
 bool requireFunctionReceiver(Value self, const char* method) {
@@ -194,6 +200,14 @@ Value rtFunctionMethod(const std::string& key) {
         if (key == m.name) return rtNativeFunction(m.code, m.arity);
     }
     return Value::fromUndefined();
+}
+
+uint64_t rtFunctionHasInstanceBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
+                                      const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value self(thisBits);
+    Value v = args[0];
+    return Value::fromBool(rtOrdinaryHasInstance(self, v)).rawBits();
 }
 
 }  // namespace bronze::runtime

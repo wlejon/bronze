@@ -264,6 +264,23 @@ Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
     if (keyVal.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
         return toStringTagOf(objVal, handled);
     }
+    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolSpecies()) {
+        if (rtIsArrayConstructor(objVal) ||
+            rtIsArrayBufferConstructor(objVal) ||
+            rtIsTypedArrayConstructor(objVal) ||
+            rtIsRegExpConstructor(objVal)) {
+            handled = true;
+            return objVal;
+        }
+        return Value::fromUndefined();
+    }
+    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
+        if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+            handled = true;
+            return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1);
+        }
+        return Value::fromUndefined();
+    }
     if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
     // A STRING is not this function's business: 22.1.3.36 puts its
     // `[Symbol.iterator]` on the real `String.prototype` object
@@ -272,7 +289,7 @@ Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
     // for every other member a string reaches through its intrinsic.
     if (!objVal.isObject()) return Value::fromUndefined();
     switch (objVal.asObject<HeapObjectHeader>()->flags) {
-        case 1:
+        case HeapKind::Array:
             // 23.1.3.41 makes it the same function object as
             // `Array.prototype.values` — an IDENTITY, not a twin, and it holds
             // because both routes intern on the one code pointer.
@@ -293,23 +310,17 @@ Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
 }
 
 // The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
-// for a function — the side object its statics live in. Null for every receiver
-// with no shape, which is not an error: an array or a Map simply has no own
-// symbol-keyed property, so a read of one is `undefined` and a write is
-// diagnosed by the caller.
-//
-// Its own function because a symbol key can never mean anything else. Every
-// receiver-kind branch on the string path exists to decide between an element,
-// a member table and a shape slot, and a symbol key is only ever the third — so
-// a symbol never enters that dispatch at all. The internal slots a Map's
-// iterators keep are untouched by every line of it for a stronger reason: they
-// are not properties, and no key of any kind names one.
+// for a function / array — the side object its properties live in.
 ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     if (!objVal.isObject()) return nullptr;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
     if (hdr->flags == HeapKind::Function) {
         Value props = objVal.asObject<FunctionHeader>()->properties;
+        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    }
+    if (hdr->flags == HeapKind::Array) {
+        Value props = objVal.asObject<ArrayHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
@@ -619,10 +630,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // object its statics are kept in — which is the whole reason
             // getProp takes a receiver at all.
             Rooted<Value> propsRoot{props};
-            Rooted<Value> key(Value::fromString(keyHeader));
-            Value found = propsRoot.get().asObject<ObjectHeader>()->getProp(
-                rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr());
-            if (!found.isUndefined()) return found.rawBits();
+            ObjectHeader* propsObj = propsRoot.get().asObject<ObjectHeader>();
+            PropertyInfo own;
+            if (propsObj->shape &&
+                propsObj->shape->lookupProperty(
+                    PropertyKey::forString(keyHeader), own)) {
+                Rooted<Value> key(Value::fromString(keyHeader));
+                return propsObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
+            }
         }
         // `length` and `name`, the two own data properties 10.2.10 and 10.2.9
         // give every function object. Both are non-writable and non-enumerable,
@@ -671,6 +686,21 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // is not read first even though it is the cheaper lookup.
         if (Value method = rtFunctionMethod(keyStr); !method.isUndefined()) {
             return method.rawBits();
+        }
+        if (props.isObject()) {
+            Rooted<Value> propsRoot{props};
+            ObjectHeader* propsObj = propsRoot.get().asObject<ObjectHeader>();
+            const uint64_t objProtoBits = rtObjectPrototype().rawBits();
+            for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+                ObjectHeader* ancestor = propsObj->protoAncestor(depth);
+                if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
+                PropertyInfo inherited;
+                if (ancestor->shape &&
+                    ancestor->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
+                    Rooted<Value> key(Value::fromString(keyHeader));
+                    return propsObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
+                }
+            }
         }
         rtCheckFunctionMember(keyStr);
         // `Function.prototype` has had its say — `call`, `apply` and `bind`
@@ -844,10 +874,20 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
             objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
             return rtProxyGet(objVal, Value(idxBits)).rawBits();
         }
-        // A well-known symbol first, and only for the receivers with no shape:
-        // a plain object's own `[Symbol.iterator]` must win over the built-in
-        // meaning, and it does because none of the kinds below is a plain
-        // object.
+        if (ObjectHeader* holder = rtSymbolKeyHolder(objVal)) {
+            PropertyInfo info;
+            if (holder->shape &&
+                holder->shape->lookupProperty(
+                    PropertyKey::forSymbol(Value(idxBits).asSymbol<SymbolHeader>()), info)) {
+                Rooted<Value> recv{objVal};
+                Rooted<Value> key{Value(idxBits)};
+                Rooted<Value> holderRoot{Value::fromObject(holder)};
+                return holderRoot.get()
+                    .asObject<ObjectHeader>()
+                    ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
+                    .rawBits();
+            }
+        }
         bool handled = false;
         const Value wellKnown = wellKnownSymbolMember(objVal, Value(idxBits), handled);
         if (handled) return wellKnown.rawBits();

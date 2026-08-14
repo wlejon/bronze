@@ -464,66 +464,17 @@ double rtExponentiate(double base, double exponent) {
     return std::pow(base, exponent);
 }
 
-extern "C" {
+bool rtOrdinaryHasInstance(Value ctor, Value obj) {
+    if (!obj.isObject()) return false;
 
-int32_t bronze_to_int32_f64(double d) { return toInt32(d); }
-
-int32_t bronze_to_int32(uint64_t bits) {
-    // ToNumber first, which is where a string operand is parsed: `"12" & 10`
-    // is 8, not NaN-and-therefore-0. rtToNumber names the object case as a
-    // hard error rather than guessing at ToPrimitive.
-    return toInt32(rtToNumber(Value(bits)));
-}
-
-double bronze_pow(double base, double exponent) {
-    recordHelperCall("bronze_pow");
-    return rtExponentiate(base, exponent);
-}
-
-uint64_t bronze_typeof(uint64_t bits) {
-    recordHelperCall("bronze_typeof");
-    Value v(bits);
-    // `null` first, and reported as "object": ECMA-262's oldest wart, kept
-    // because every engine keeps it and programs test for it.
-    if (v.isNull()) return typeofString(kObject).rawBits();
-    if (v.isUndefined() || v.isHole()) return typeofString(kUndefined).rawBits();
-    if (v.isBool()) return typeofString(kBoolean).rawBits();
-    if (v.isNumber() || v.isInt32()) return typeofString(kNumber).rawBits();
-    if (v.isString()) return typeofString(kString).rawBits();
-    if (v.isSymbol()) return typeofString(kSymbol).rawBits();
-    if (isCallable(v)) return typeofString(kFunction).rawBits();
-    return typeofString(kObject).rawBits();
-}
-
-bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
-    recordHelperCall("bronze_instanceof");
-    // Both operands are rooted before anything below allocates, and every
-    // header is derived from a root AFTER the last allocation: the collector
-    // moves objects, so a raw HeapObjectHeader* held across a call that can
-    // allocate points into dead from-space.
-    Rooted<Value> objRoot{Value(objBits)};
-    Rooted<Value> ctorRoot{Value(ctorBits)};
-
-    // A primitive left operand has no prototype chain, so the answer is
-    // false — not an error, which is what makes `x instanceof C` a safe
-    // guard on an unknown value (ECMA-262 7.3.22 step 3).
-    if (!objRoot.get().isObject()) return false;
-
+    Rooted<Value> objRoot{obj};
+    Rooted<Value> ctorRoot{ctor};
     Rooted<Value> protoRoot{Value::fromUndefined()};
+
     if (ctorRoot.get().rawBits() == rtObjectNamespace().rawBits()) {
         protoRoot.set(rtObjectPrototype());
     } else {
-        if (!isCallable(ctorRoot.get())) {
-            rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
-            return false;
-        }
-        // `x instanceof Array` is IsArray(x), answered here rather than by the walk
-        // below. The walk cannot answer it at all: an array carries no shape and
-        // therefore no prototype chain, so it would report false for every array,
-        // on one of the most common guards written in JS. The shortcut is EXACT and
-        // not an approximation, because bronze refuses `class X extends Array`
-        // (bronze_class_extends) — so there is no array in a bronze program whose
-        // chain would have made the two differ.
+        if (!isCallable(ctorRoot.get())) return false;
         if (rtIsArrayConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         }
@@ -574,6 +525,73 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         cur = next;
     }
     fatal("prototype chain too deep (a cycle?)");
+}
+
+extern "C" {
+
+int32_t bronze_to_int32_f64(double d) { return toInt32(d); }
+
+int32_t bronze_to_int32(uint64_t bits) {
+    // ToNumber first, which is where a string operand is parsed: `"12" & 10`
+    // is 8, not NaN-and-therefore-0. rtToNumber names the object case as a
+    // hard error rather than guessing at ToPrimitive.
+    return toInt32(rtToNumber(Value(bits)));
+}
+
+double bronze_pow(double base, double exponent) {
+    recordHelperCall("bronze_pow");
+    return rtExponentiate(base, exponent);
+}
+
+uint64_t bronze_typeof(uint64_t bits) {
+    recordHelperCall("bronze_typeof");
+    Value v(bits);
+    // `null` first, and reported as "object": ECMA-262's oldest wart, kept
+    // because every engine keeps it and programs test for it.
+    if (v.isNull()) return typeofString(kObject).rawBits();
+    if (v.isUndefined() || v.isHole()) return typeofString(kUndefined).rawBits();
+    if (v.isBool()) return typeofString(kBoolean).rawBits();
+    if (v.isNumber() || v.isInt32()) return typeofString(kNumber).rawBits();
+    if (v.isString()) return typeofString(kString).rawBits();
+    if (v.isSymbol()) return typeofString(kSymbol).rawBits();
+    if (isCallable(v)) return typeofString(kFunction).rawBits();
+    return typeofString(kObject).rawBits();
+}
+
+bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
+    recordHelperCall("bronze_instanceof");
+    Rooted<Value> objRoot{Value(objBits)};
+    Rooted<Value> ctorRoot{Value(ctorBits)};
+
+    if (!ctorRoot.get().isObject()) {
+        rtThrowTypeError("Right-hand side of 'instanceof' is not an object");
+        return false;
+    }
+
+    Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
+    Value handler(bronze_elem_get(ctorRoot.get().rawBits(), hasInstKey.get().rawBits()));
+    if (rtExceptionPending()) return false;
+
+    if (!handler.isNull() && !handler.isUndefined()) {
+        if (!isCallable(handler)) {
+            rtThrowTypeError("Symbol.hasInstance is not a function");
+            return false;
+        }
+        uint64_t arg = objRoot.get().rawBits();
+        uint64_t res = bronze_dynamic_call(handler.rawBits(), ctorRoot.get().rawBits(), 1, &arg);
+        if (rtExceptionPending()) return false;
+        return bronze_truthy(res);
+    }
+
+    if (ctorRoot.get().rawBits() == rtObjectNamespace().rawBits()) {
+        return rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
+    }
+
+    if (!isCallable(ctorRoot.get())) {
+        rtThrowTypeError("Right-hand side of 'instanceof' is not callable");
+        return false;
+    }
+    return rtOrdinaryHasInstance(ctorRoot.get(), objRoot.get());
 }
 
 bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
