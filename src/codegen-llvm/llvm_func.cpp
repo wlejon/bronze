@@ -110,6 +110,7 @@ void FunctionEmitter::planRootFrame() {
     }
 
     uint32_t maxArgc = 0;
+    bool hasConstruct = false;
     for (uint32_t b = 0; b < func_.blocks.size(); ++b) {
         const auto& block = func_.blocks[b];
         for (const auto& param : block.params) {
@@ -150,6 +151,7 @@ void FunctionEmitter::planRootFrame() {
             }
             if (inst.op == il::Op::Construct && !inst.operands.empty()) {
                 maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 1));
+                hasConstruct = true;
             }
             // console.log with more than one argument builds an argv too,
             // and console.warn/error take the same path to the other stream.
@@ -216,6 +218,14 @@ void FunctionEmitter::planRootFrame() {
     // immediately after, never nested.
     argvBase_ = pinnedCount + poolHighWater;
     frameSlots_ = argvBase_ + maxArgc;
+
+    // One slot above the argv region for the inline `new` fast path's fresh
+    // instance. Shared by every construct site — a site's use of it ends at
+    // its own merge, and IL construct sites never nest mid-flight for the
+    // same reason argument lists never do.
+    if (hasConstruct && !shared_.moduleHasNewTarget) {
+        constructSelfSlot_ = frameSlots_++;
+    }
 }
 
 void FunctionEmitter::emitPrologue() {

@@ -62,6 +62,25 @@ struct FunctionHeader {
     // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
     uint32_t length{0};
     bool is_generator{false};
+    // Set by bronze_construct's ordinary path and nothing else: this function
+    // object has been constructed once as a PLAIN constructor — not bound, not
+    // a primitive-wrapper intrinsic — and its prototype/instance_shape pair
+    // exists. The inline `new` fast path in generated code trusts the byte to
+    // skip the helper's probes; it is sound because those probes answer by the
+    // CODE pointer, which is fixed at creation, so no vetted function can
+    // later start needing a slow path. bronze_abi.h pins the offset.
+    bool construct_vetted{false};
+    // The rest of this word, spelled out because the GC payload scan reads
+    // the whole payload as Values and this word — two bools plus padding —
+    // is one of them. A heap block is recycled semispace memory, so padding
+    // left unwritten holds OLD VALUE RESIDUE, and residue whose top two
+    // bytes spell a heap tag sends the scan chasing a garbage payload —
+    // whether it corrupts then depends on which bytes an unrelated change
+    // shifted under it (this chunk's one-byte vet write was enough to turn
+    // a green pixi GC-stress run into an environment-chain corruption).
+    // create() zeroes these, so the word is a small integer, never a
+    // plausible pointer.
+    uint8_t padding_to_value_scan[6]{};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0);
@@ -74,5 +93,13 @@ struct FunctionHeader {
 // position — and the Function kind's number — are ABI facts.
 static_assert(offsetof(FunctionHeader, code) == BRONZE_ABI_FN_CODE_OFFSET);
 static_assert(HeapKind::Function == BRONZE_ABI_OBJ_FLAGS_FUNCTION);
+
+// The fields the inline `new` fast path reads (llvm_construct.cpp): the
+// closure environment and arity for the direct code call, the instance shape
+// for the allocation, and the vet byte that gates the whole path.
+static_assert(offsetof(FunctionHeader, env_record) == BRONZE_ABI_FN_ENV_OFFSET);
+static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
+static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
+static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);
 
 }  // namespace bronze

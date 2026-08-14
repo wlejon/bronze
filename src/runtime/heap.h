@@ -163,6 +163,19 @@ public:
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
+    // Re-arm the inline-allocation window (the bronze_alloc_cursor/limit ABI
+    // globals): carve a fresh run of from-space for generated code's `new`
+    // fast path to bump-allocate plain instances from. Called by
+    // bronze_construct's ordinary path when the window has less than one
+    // object of headroom; every collection zeroes the window, because it
+    // points into the semispace being abandoned. Under GC stress the carve is
+    // exactly ONE plain object, so the fast path still runs — and its rooting
+    // across the constructor call is still shaken — while every second
+    // construction goes through the helper and collects. The carve itself
+    // goes through allocate_raw, so commit growth and the stress collection
+    // happen before the window is published, never after.
+    void refill_inline_lab();
+
     // How many objects this collector has RELOCATED. A hash table keyed on
     // VALUES rather than on property names (a Map)
     // hashes an object key by its address, so every such table records this
@@ -209,6 +222,10 @@ private:
     std::vector<Value*> permanent_roots_;
     std::vector<RootSource> root_sources_;
     bool gc_stress_mode_{false};
+    // BRONZE_NO_INLINE_ALLOC=1: refill_inline_lab becomes a no-op, the window
+    // stays 0/0, and every construction takes the helper — the A/B seam for
+    // measuring the inline path in one binary.
+    bool inline_lab_enabled_{true};
     bool in_gc_{false};
     uint64_t collections_{0};
     uint64_t relocations_{0};

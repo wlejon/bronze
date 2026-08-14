@@ -9,6 +9,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_cache.h"
+#include "codegen-llvm/llvm_construct.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
@@ -707,6 +708,19 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             bool ok = false;
             llvm::Value* argv = emitArgv(inst, 1, argc, ok);
             if (!ok) return false;
+            // The vetted-constructor fast path: bump-allocate the instance
+            // and call the constructor's code directly, with every miss one
+            // branch into the helper. Off for the whole module when anything
+            // in it reads `new.target` (the slot is then never planned) —
+            // the inline path does not push the helper's NewTargetScope.
+            // This may SPLIT the current block.
+            if (constructSelfSlot_ != kNoSlot) {
+                llvm::Value* res =
+                    emitConstructInline(builder_, abi, shared_.globals, ctor, argc, argv,
+                                        slotAddr(constructSelfSlot_));
+                if (inst.result != il::kNoValue) values_[inst.result] = res;
+                return true;
+            }
             callWith(abi.bronze_construct, {ctor, builder_.getInt32(argc), argv});
             return true;
         }

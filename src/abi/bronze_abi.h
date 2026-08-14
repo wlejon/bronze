@@ -228,7 +228,19 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * collide on a slot and cost a refill, never an identity break — the
      * by-code-pointer map in rt_state.cpp stays the authority. */ \
     X(bronze_fn_singleton_tbl, BRONZE_ABI_MU64) \
-    X(bronze_fn_singleton_len, BRONZE_ABI_U64)
+    X(bronze_fn_singleton_len, BRONZE_ABI_U64) \
+    /* The inline-allocation window: [cursor, limit) is heap memory the
+     * runtime has carved out of from-space for generated code to bump-
+     * allocate plain `new` instances from (heap.cpp owns both). The inline
+     * path only ever ADVANCES cursor when the object fits — it can never
+     * collect — and every miss (window empty, invalidated, or disabled)
+     * falls back to bronze_construct, which refills it. Both words are
+     * zeroed by every collection, because the window points into the
+     * semispace the collector is abandoning. Zero/zero is also the initial
+     * and the BRONZE_NO_INLINE_ALLOC=1 state: the subtraction limit-cursor
+     * is then 0, no size fits, and the fast path is dormant. */ \
+    X(bronze_alloc_cursor, BRONZE_ABI_U64) \
+    X(bronze_alloc_limit,  BRONZE_ABI_U64)
 
 /*
  * ---- the inline property cache contract ---------------------------------
@@ -366,6 +378,27 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */
 #define BRONZE_ABI_OBJ_FLAGS_FUNCTION    2
 #define BRONZE_ABI_FN_CODE_OFFSET        8
+
+/* The FunctionHeader fields the inline `new` fast path reads, and the vet
+ * byte that gates it. `construct_vetted` is set by exactly one line in the
+ * runtime — bronze_construct's ordinary path, after the bound-function and
+ * primitive-wrapper probes have both missed and the prototype/instance_shape
+ * pair exists — so a set byte means "the helper has already taken the plain
+ * path for this function object", which is monotone: a function's code
+ * pointer never changes, so it can never later become bound or a wrapper
+ * constructor. Reassigning `.prototype` swaps `instance_shape` in the same
+ * write (rt_prop_write.cpp) and never nulls it, so the vetted fast path
+ * reads whatever is current. Pinned in runtime/fn.h. */
+#define BRONZE_ABI_FN_ENV_OFFSET            16
+#define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 40
+#define BRONZE_ABI_FN_ARITY_OFFSET          56
+#define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    65
+
+/* Total bytes of a plain object with no internal slots — header, shape word,
+ * overflow word, and the kInlineSlots inline Values — which is the one size
+ * the inline `new` fast path allocates. Already 8-aligned, so it is also the
+ * exact amount the bump cursor advances. Pinned in runtime/object.cpp. */
+#define BRONZE_ABI_PLAIN_OBJECT_BYTES    56
 
 /* One bronze_fn_singleton_tbl entry: the code pointer, then the Value. */
 #define BRONZE_ABI_FNSLOT_SIZE          16

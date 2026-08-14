@@ -38,6 +38,11 @@ public:
         const std::vector<llvm::Function*>& entries;
         const std::vector<llvm::Function*>& wrappers;
         DiagnosticSink& diags;
+        // Whether ANY function in the module reads `new.target`. The inline
+        // `new` fast path skips the helper's NewTargetScope push, which is
+        // observable through bronze_get_new_target and nothing else — so one
+        // mention anywhere keeps every construct site on the helper.
+        bool moduleHasNewTarget;
     };
 
     FunctionEmitter(const Context& shared, const il::Function& func, llvm::Function* llvmFunc);
@@ -109,6 +114,11 @@ private:
     std::vector<uint32_t> slotOf_;
     uint32_t argvBase_ = 0;
     uint32_t frameSlots_ = 0;
+    // A dedicated root slot for the inline `new` fast path's fresh instance,
+    // live only across each site's constructor call — every site shares it,
+    // exactly as the argv region is shared. kNoSlot when the function has no
+    // Construct or the module's `new.target` use keeps the path off.
+    uint32_t constructSelfSlot_ = kNoSlot;
     llvm::StructType* frameTy_ = nullptr;
     llvm::Value* framePtr_ = nullptr;
     llvm::Value* slotsBase_ = nullptr;

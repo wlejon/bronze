@@ -29,6 +29,14 @@ namespace {
 constexpr size_t kObjectBasePayload =
     (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) + ObjectHeader::kInlineSlots * sizeof(Value);
 
+// The inline `new` fast path allocates this exact object — header word,
+// shape, overflow, four undefined inline slots — as raw stores against the
+// bump cursor, so the total is an ABI fact. It must also be what
+// Heap::allocate would have written into header.size (the collector parses
+// to-space by that field), which the 8-alignment half of the assert pins.
+static_assert(sizeof(HeapObjectHeader) + kObjectBasePayload == BRONZE_ABI_PLAIN_OBJECT_BYTES);
+static_assert(BRONZE_ABI_PLAIN_OBJECT_BYTES % 8 == 0);
+
 }  // namespace
 
 ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape) {

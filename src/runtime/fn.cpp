@@ -19,6 +19,13 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->arity = arity;
     fn->length = 0;
     fn->is_generator = false;
+    // Explicit, like every field here: the memory is a raw heap block, so a
+    // field the constructor-syntax initializers name is still garbage until
+    // this function writes it.
+    fn->construct_vetted = false;
+    // The word these bools share is scanned as a Value; unwritten padding in
+    // it is recycled-memory residue that can parse as a heap pointer (fn.h).
+    for (uint8_t& b : fn->padding_to_value_scan) b = 0;
     return fn;
 }
 

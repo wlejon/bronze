@@ -28,6 +28,16 @@
 
 namespace bronze {
 
+// The inline-allocation window (see the registry comment in bronze_abi.h):
+// generated code's `new` fast path bump-allocates plain instances from
+// [cursor, limit) and never collects — refill_inline_lab below is the only
+// producer, and Heap::collect zeroes both words because the window points
+// into the semispace a collection abandons. 0/0 is the dormant state: the
+// unsigned headroom subtraction is then 0 and every construct site falls
+// back to bronze_construct.
+extern "C" uint64_t bronze_alloc_cursor = 0;
+extern "C" uint64_t bronze_alloc_limit = 0;
+
 // Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
 // the collector actually was — collections, bytes copied vs bytes allocated,
 // and wall time inside collect(). It exists because "allocation-heavy loop"
@@ -148,6 +158,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         gc_stress_mode_ = true;
     }
 
+    const char* env_no_inline = std::getenv("BRONZE_NO_INLINE_ALLOC");
+    if (env_no_inline && std::strcmp(env_no_inline, "1") == 0) {
+        inline_lab_enabled_ = false;
+    }
+
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
         g_gcLog.enabled = true;
@@ -157,6 +172,14 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
 }
 
 Heap::~Heap() {
+    // Retract the inline-allocation window if this heap published it: the
+    // memory under it is released on the next line, and the globals are
+    // process-wide while a Heap (in tests) need not be.
+    if (bronze_alloc_cursor >= reinterpret_cast<uint64_t>(reserved_base_) &&
+        bronze_alloc_cursor < reinterpret_cast<uint64_t>(reserved_base_) + reserved_bytes_) {
+        bronze_alloc_cursor = 0;
+        bronze_alloc_limit = 0;
+    }
     if (reserved_base_) {
         VirtualMemory::release(reserved_base_, reserved_bytes_);
         reserved_base_ = nullptr;
@@ -256,6 +279,23 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
     return header;
 }
 
+void Heap::refill_inline_lab() {
+    if (!inline_lab_enabled_) return;
+    // Under stress: exactly one plain object, so the inline path runs on the
+    // very next `new` — its rooting across the constructor call is what the
+    // stress mode exists to shake — and the `new` after that misses back into
+    // the helper, whose allocations collect. Without stress: a run long
+    // enough that the helper is a rounding error, small enough that a
+    // collection abandons nothing worth naming.
+    constexpr size_t kLabBytes = 8 * 1024;
+    const size_t bytes = gc_stress_mode_ ? BRONZE_ABI_PLAIN_OBJECT_BYTES : kLabBytes;
+    // allocate_raw may collect (stress does so every time), which zeroes the
+    // window — publishing AFTER it returns is what keeps the two ordered.
+    void* run = allocate_raw(bytes);
+    bronze_alloc_cursor = reinterpret_cast<uint64_t>(run);
+    bronze_alloc_limit = bronze_alloc_cursor + bytes;
+}
+
 static bool is_valid_object_tag(uint16_t tag) noexcept {
     return (tag >= 0xFFF1 && tag <= 0xFFF9) || tag == static_cast<uint16_t>(Tag::Forwarded);
 }
@@ -316,6 +356,13 @@ void Heap::collect() {
     }
 
     in_gc_ = true;
+
+    // The inline-allocation window points into from-space, which this
+    // collection is about to abandon — invalidate it FIRST, so nothing
+    // (hooks included) can see a window over memory whose objects are being
+    // forwarded out from under it. bronze_construct refills it later.
+    bronze_alloc_cursor = 0;
+    bronze_alloc_limit = 0;
 
     std::chrono::steady_clock::time_point gc_t0;
     if (g_gcLog.enabled) gc_t0 = std::chrono::steady_clock::now();

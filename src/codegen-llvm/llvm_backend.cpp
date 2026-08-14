@@ -385,8 +385,23 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     std::vector<llvm::Function*> wrappers;
     emitCallWrappers(module, *llvmModule, ctx, abi, abiGlobals, entries, wrappers);
 
+    // One `new.target` anywhere disables the inline `new` fast path for the
+    // whole module: the fast path skips the NewTargetScope push, and
+    // bronze_get_new_target — this instruction's helper — is that scope's
+    // only observer, so absence of the instruction is what makes the skip
+    // unobservable.
+    bool moduleHasNewTarget = false;
+    for (const auto& ilFunc : module.functions) {
+        for (const auto& block : ilFunc.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == il::Op::GetNewTarget) moduleHasNewTarget = true;
+            }
+        }
+    }
+
     const FunctionEmitter::Context shared{ctx,      module,   abi,      abiGlobals,
-                                          icTable,  entries,  wrappers, diags};
+                                          icTable,  entries,  wrappers, diags,
+                                          moduleHasNewTarget};
     for (size_t i = 0; i < module.functions.size(); ++i) {
         FunctionEmitter emitter(shared, module.functions[i], entries[i]);
         if (!emitter.emit()) return false;

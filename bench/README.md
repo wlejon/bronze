@@ -91,6 +91,67 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 9: Inline allocation for `new` — the constructor fast path in generated code**:
+  > [!NOTE]
+  > `BRONZE_PROFILE=1` re-verified chunk 8's remaining churn bill at HEAD before
+  > building: 3,000,001 `bronze_construct` calls were the ENTIRE
+  > `proto_dispatch_churn` residual. One mechanism, the house pattern: guard,
+  > inline the helper's committed ordinary path exactly, fall back to the
+  > helper on every miss (`llvm_construct.cpp`, new).
+  > The guard admits a constructor carrying `FunctionHeader::construct_vetted`
+  > — a byte only `bronze_construct`'s ordinary path sets, i.e. after the
+  > bound-function and primitive-wrapper probes (both answer by the
+  > creation-fixed code pointer, so the byte is monotone-sound) — with
+  > `arity <= argc` (the exact condition `FunctionHeader::call` passes argv
+  > through unpadded), a non-null `instance_shape`, and headroom in the
+  > inline-allocation window. The window (`bronze_alloc_cursor`/`_limit`, ABI
+  > data symbols) is from-space the helper carves 8 KB at a time; generated
+  > code bump-allocates the 56-byte plain instance from it and NEVER collects
+  > — no fit means the helper, which can. Every collection zeroes the window.
+  > The fresh instance is rooted in a dedicated frame slot across the
+  > constructor call and re-read after, since the constructor's own
+  > allocations may move it. Under BRONZE_GC_STRESS the refill is exactly ONE
+  > object, so stress alternates inline/helper and shakes the inline rooting;
+  > `BRONZE_NO_INLINE_ALLOC=1` keeps the window empty (one-binary A/B: 96 ms
+  > vs 172 ms wall-clock medians on churn). The inline path skips the
+  > helper's NewTargetScope push, which is sound only because
+  > `bronze_get_new_target` is that scope's sole observer — so one
+  > `new.target` anywhere in a module keeps every construct site of that
+  > module on the helper (neither three.js r160 nor pixi v8.19.0 contains
+  > one). Helper invocations on churn: 3.0M → 20.4k (one refill per 146
+  > inline allocations). New oracle case `construct_inline_alloc` pins the
+  > replace-on-object-return rule, primitive-return rule, the under-arity
+  > fallback, and — shaped for the suite's GC-stress re-run — construction
+  > whose ctor allocates mid-flight with live references held across every
+  > allocation; byte-equal in both modes, stressed and not.
+  >
+  > Landing this chunk surfaced a LATENT collector bug, older than the
+  > chunk: the GC payload scan reads the word of `FunctionHeader` holding
+  > `is_generator` — two bools and six bytes of never-written padding — as a
+  > Value, and recycled-semispace residue in that padding can parse as a
+  > heap pointer. The chunk's one-byte vet write shifted the residue and
+  > turned pixi's GC-stress milestone from green into an environment-chain
+  > corruption; bisected by disabling the feature piecewise until the only
+  > live delta was that byte, then fixed by zeroing the padding explicitly
+  > at create() (the `reserved` convention namespace.h and typed_array.h
+  > already follow). Details in the fix commit.
+  > Node-baseline standing: `proto_dispatch_churn` 3.3x → **1.55x** behind
+  > (59.16 vs 38.14). No-regression check across all benches vs chunk 8: all
+  > within noise (instanced_mesh_churn 288.74 vs 277.86 is the documented
+  > bimodal machine noise — its no-infer twin measured 279.12 vs chunk 8's
+  > 298.07 in the same sweep, and a re-run gave 290.90/287.42).
+  - `three_math.js`: **38.67ms** (infer) vs 38.33ms (no-infer) — (checksum=405000)
+  - `object_graph.js`: **169.23ms** (infer) vs 170.04ms (no-infer) — (checksum=-32601148, down from 175.67ms)
+  - `typed_array_crunch.js`: **115.52ms** (infer) vs 127.38ms (no-infer) — (checksum=78849652)
+  - `mesh_churn_2k.js`: **215.83ms** (infer) vs 225.08ms (no-infer) — (checksum=-2112298, down from 253.13ms)
+  - `instanced_mesh_churn.js`: **288.74ms** (infer) vs 279.12ms (no-infer) — (checksum=1260786; noise band, see note)
+  - `fib.js`: **7.95ms** (infer) vs 15.06ms (no-infer)
+  - `numeric_loop.js`: **35.82ms** (infer) vs 52.29ms (no-infer)
+  - `property_access.js`: **10.97ms** (infer) vs 10.62ms (no-infer)
+  - `proto_dispatch.js`: **22.18ms** (infer) vs 24.99ms (no-infer)
+  - `proto_dispatch_churn.js`: **59.16ms** (infer) vs 62.25ms (no-infer) — **down from 124.98ms / 129.64ms**
+  - `typed_array_loop.js`: **37.13ms** (infer) vs 36.20ms (no-infer)
+
 - **Chunk 8: The dispatch-churn loop's caches, inlined — and Math dispatched direct**:
   > [!NOTE]
   > `BRONZE_PROFILE=1` re-verified Chunk 7's named bill at HEAD before building
