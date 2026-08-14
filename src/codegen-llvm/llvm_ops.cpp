@@ -9,6 +9,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_cache.h"
+#include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_construct.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_env.h"
@@ -696,8 +697,22 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                     return true;
                 }
             }
-            callWith(abi.bronze_dynamic_call,
-                     {callee, thisVal, builder_.getInt32(argc), argv});
+            // The inline path skips the helper's NewTargetScope(undefined)
+            // push — the mask that makes new.target read undefined inside a
+            // plain call made during construction. Same rule as the inline
+            // `new` path: bronze_get_new_target is the scope stack's only
+            // observer, so one new.target anywhere keeps the whole module on
+            // the helper, and its absence makes the skip unobservable.
+            if (shared_.moduleHasNewTarget) {
+                callWith(abi.bronze_dynamic_call,
+                         {callee, thisVal, builder_.getInt32(argc), argv});
+                return true;
+            }
+            llvm::Value* res = emitDynamicCallInline(
+                builder_, abi, shared_.globals, callee, thisVal, argc, argv);
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = res;
+            }
             return true;
         }
         case il::Op::Construct: {

@@ -37,6 +37,7 @@ namespace bronze {
 // back to bronze_construct.
 extern "C" uint64_t bronze_alloc_cursor = 0;
 extern "C" uint64_t bronze_alloc_limit = 0;
+extern "C" uint64_t bronze_inline_call_enabled = 1;
 
 // Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
 // the collector actually was — collections, bytes copied vs bytes allocated,
@@ -161,6 +162,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     const char* env_no_inline = std::getenv("BRONZE_NO_INLINE_ALLOC");
     if (env_no_inline && std::strcmp(env_no_inline, "1") == 0) {
         inline_lab_enabled_ = false;
+    }
+
+    const char* env_no_call = std::getenv("BRONZE_NO_INLINE_CALL");
+    if (env_no_call && std::strcmp(env_no_call, "1") == 0) {
+        bronze_inline_call_enabled = 0;
     }
 
     const char* env_log = std::getenv("BRONZE_GC_LOG");

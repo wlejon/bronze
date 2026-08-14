@@ -91,6 +91,72 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 10: Profile-driven bill knockdown — inlined dynamic calls and prototype-overflow IC**:
+  > [!NOTE]
+  > Profiled the three unprofiled benchmarks (`object_graph.js`, `mesh_churn_2k.js`, `instanced_mesh_churn.js`)
+  > at HEAD before implementing. Profiling evidence:
+  > - `BRONZE_GC_LOG=1` confirmed GC collections are 0 on all three target benchmarks (0 collections, 0.000 ms in `collect()`).
+  > - `BRONZE_PROFILE=1` identified two massive bills across all three workloads:
+  >   1. `bronze_dynamic_call`: **3,571,537 calls** across the three targets (2,151,629 on `instanced_mesh_churn`, 706,597 on `mesh_churn_2k`, 713,311 on `object_graph`).
+  >   2. `bronze_prop_get`: **5,783,016 calls** across the three targets (3,275,715 on `instanced_mesh_churn`, 1,854,556 on `mesh_churn_2k`, 652,745 on `object_graph`).
+  >
+  > Two fast-path mechanisms implemented following the house pattern:
+  > 1. **Inlined Dynamic Call (`llvm_call.cpp`, new)**:
+  >    In generated code, `Op::DynamicCall` guards on:
+  >    - Callee is Object-tagged (`(callee >> 48) == TAG_OBJECT`)
+  >    - Callee flags == `HeapKind::Function` (`BRONZE_ABI_OBJ_FLAGS_FUNCTION`)
+  >    - `fn->arity <= argc` (FunctionHeader arity check)
+  >    - Feature enabled (`bronze_inline_call_enabled != 0`, toggled via `BRONZE_NO_INLINE_CALL=1`)
+  >    When all guards pass, generated LLVM IR loads `fn->env_record` and `fn->code` and invokes
+  >    `code(env, thisVal, argc, argv)` directly via indirect function call.
+  >    On any miss (non-callable, under-arity requiring undefined padding, or seam disabled),
+  >    branches to `bronze_dynamic_call`.
+  > 2. **Prototype IC Overflow Slot Support (`llvm_prop.cpp`)**:
+  >    Extended the depth > 0 prototype walk in `emitPropGet` to support slots >= 4 (overflow slots).
+  >    When the target slot index on the prototype holder is >= 4, generated code loads the holder's
+  >    `overflow` block (guarding on Object tag) and loads `payload[slot - 4]` directly, mirroring depth-0
+  >    overflow reads.
+  >
+  > Helper invocation reductions:
+  > - `object_graph`: `bronze_dynamic_call` 713,311 → **0** (total helper invocations: 2.73M → 2.01M).
+  > - `mesh_churn_2k`: `bronze_dynamic_call` 706,597 → **2,002**; `bronze_prop_get` 1.85M → **1.55M** (total helper invocations: 3.42M → 2.41M, over 1.01M calls eliminated).
+  > - `instanced_mesh_churn`: `bronze_dynamic_call` 2.15M → **300,138**; `bronze_prop_get` 3.28M → **2.37M** (total helper invocations: 5.66M → 2.90M, **2.76M calls eliminated**).
+  >
+  > New oracle test `dynamic_call_inline_stress` verifies exact arity, over-arity, under-arity padding fallback,
+  > prototype overflow methods, this-binding, TypeError exceptions on non-callables, and heavy allocations
+  > during calls under `BRONZE_GC_STRESS=1`. Full test suite 19/19 passing.
+  > A/B seam numbers (`BRONZE_NO_INLINE_CALL=1`):
+  > - `object_graph`: 167.31 ms vs 172.12 ms (no-inline-call)
+  > - `mesh_churn_2k`: 226.28 ms vs 232.64 ms (no-inline-call)
+  > - `instanced_mesh_churn`: 272.16 ms vs 285.82 ms (no-inline-call)
+  >
+  > Post-chunk audit: the inline call path as first landed skipped the
+  > helper's `NewTargetScope(undefined)` push with no gate, so `new.target`
+  > read inside a plain callee DURING a construction leaked the enclosing
+  > constructor instead of undefined — a real miscompile, reproduced in both
+  > modes and absent under `BRONZE_NO_INLINE_CALL=1`. Fixed the way the
+  > inline `new` path already handles the identical skip: one `new.target`
+  > anywhere keeps the whole module's dynamic calls on the helper
+  > (`moduleHasNewTarget` in llvm_ops.cpp); neither three.js r160 nor pixi
+  > v8.19.0 mentions it, so the fast path is unaffected where it matters.
+  > New oracle case `new_target_plain_call_mask` pins the mask. The audit
+  > also re-measured two outliers in the sweep below on the fixed build:
+  > `property_access` no-infer measured 10.79 ms (the 19.77 was machine
+  > noise) and `typed_array_crunch` no-infer 124.57 ms (the 164.63
+  > likewise) — both consistent with chunk 9; the lines below carry the
+  > re-measured numbers.
+  - `three_math.js`: **35.26ms** (infer) vs 34.06ms (no-infer) — (checksum=405000, down from 38.67ms)
+  - `object_graph.js`: **176.05ms** (infer) vs 178.88ms (no-infer) — (checksum=-32601148)
+  - `typed_array_crunch.js`: **111.23ms** (infer) vs 124.57ms (no-infer, audit re-measure) — (checksum=78849652, down from 115.52ms)
+  - `mesh_churn_2k.js`: **222.75ms** (infer) vs 206.54ms (no-infer) — (checksum=-2112298)
+  - `instanced_mesh_churn.js`: **278.22ms** (infer) vs 272.22ms (no-infer) — (checksum=1260786, down from 288.74ms / 279.12ms)
+  - `fib.js`: **8.04ms** (infer) vs 13.91ms (no-infer)
+  - `numeric_loop.js`: **35.30ms** (infer) vs 52.17ms (no-infer)
+  - `property_access.js`: **10.36ms** (infer) vs 10.79ms (no-infer, audit re-measure)
+  - `proto_dispatch.js`: **21.80ms** (infer) vs 25.15ms (no-infer)
+  - `proto_dispatch_churn.js`: **64.36ms** (infer) vs 59.67ms (no-infer)
+  - `typed_array_loop.js`: **34.63ms** (infer) vs 34.95ms (no-infer)
+
 - **Chunk 9: Inline allocation for `new` — the constructor fast path in generated code**:
   > [!NOTE]
   > `BRONZE_PROFILE=1` re-verified chunk 8's remaining churn bill at HEAD before

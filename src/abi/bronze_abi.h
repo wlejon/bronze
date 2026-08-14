@@ -240,7 +240,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * and the BRONZE_NO_INLINE_ALLOC=1 state: the subtraction limit-cursor
      * is then 0, no size fits, and the fast path is dormant. */ \
     X(bronze_alloc_cursor, BRONZE_ABI_U64) \
-    X(bronze_alloc_limit,  BRONZE_ABI_U64)
+    X(bronze_alloc_limit,  BRONZE_ABI_U64) \
+    /* The inline dynamic call enable flag: 1 by default, set to 0 under
+     * BRONZE_NO_INLINE_CALL=1 so one binary can A/B test dynamic-call
+     * inlining against the helper trampoline. */ \
+    X(bronze_inline_call_enabled, BRONZE_ABI_U64)
 
 /*
  * ---- the inline property cache contract ---------------------------------

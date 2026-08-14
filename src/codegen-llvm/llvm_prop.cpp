@@ -410,8 +410,6 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     builder.SetInsertPoint(protoCheckBb);
     llvm::Value* protoSlot32 = builder.CreateTrunc(slotWord, i32Ty, "proto.slot32");
-    llvm::Value* protoSlotInline = builder.CreateICmpULT(
-        protoSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
     llvm::Value* epochPtr = builder.CreateConstInBoundsGEP1_32(
         i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
     llvm::Value* fillEpoch =
@@ -419,7 +417,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* curEpoch = builder.CreateAlignedLoad(
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "proto.epoch");
     llvm::Value* epochOk = builder.CreateICmpEQ(fillEpoch, curEpoch);
-    builder.CreateCondBr(builder.CreateAnd(protoSlotInline, epochOk), protoLoopBb, slowBb);
+    builder.CreateCondBr(epochOk, protoLoopBb, slowBb);
 
     // The walk: `depth` steps of shape -> root -> prototype, each link
     // object-tagged, Plain, and not a dictionary.
@@ -485,11 +483,42 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.CreateCondBr(walked, protoResBb, protoLoopBb);
 
     builder.SetInsertPoint(protoResBb);
+    llvm::BasicBlock* protoInlineBb = llvm::BasicBlock::Create(ctx, "ic.proto.inline", fn);
+    llvm::BasicBlock* protoOverflowBb = llvm::BasicBlock::Create(ctx, "ic.proto.overflow", fn);
+    llvm::BasicBlock* protoOverflowAccessBb =
+        llvm::BasicBlock::Create(ctx, "ic.proto.overflow.access", fn);
+
+    llvm::Value* protoIsInline =
+        builder.CreateICmpULT(protoSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
+    builder.CreateCondBr(protoIsInline, protoInlineBb, protoOverflowBb);
+
+    builder.SetInsertPoint(protoInlineBb);
     llvm::Value* holderSlots =
         builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
     llvm::Value* holderSlotPtr = builder.CreateInBoundsGEP(i64Ty, holderSlots, {protoSlot32});
-    llvm::Value* protoHitVal =
-        builder.CreateAlignedLoad(i64Ty, holderSlotPtr, llvm::Align(8), "proto.hit.val");
+    llvm::Value* protoHitInlineVal =
+        builder.CreateAlignedLoad(i64Ty, holderSlotPtr, llvm::Align(8), "proto.hit.inline.val");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(protoOverflowBb);
+    llvm::Value* protoOverflowPtr = builder.CreateConstInBoundsGEP1_32(
+        i8Ty, protoHdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+    llvm::Value* protoOverflowVal =
+        builder.CreateAlignedLoad(i64Ty, protoOverflowPtr, llvm::Align(8), "proto.overflow");
+    llvm::Value* protoOverflowTag = builder.CreateLShr(protoOverflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* protoOverflowIsObj =
+        builder.CreateICmpEQ(protoOverflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    builder.CreateCondBr(protoOverflowIsObj, protoOverflowAccessBb, slowBb);
+
+    builder.SetInsertPoint(protoOverflowAccessBb);
+    llvm::Value* protoOverflowAddr =
+        builder.CreateAnd(protoOverflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* protoOverflowObj = builder.CreateIntToPtr(protoOverflowAddr, ptrTy);
+    llvm::Value* protoSlotIdx = builder.CreateSub(protoSlot32, builder.getInt32(3));
+    llvm::Value* protoOverflowSlotPtr =
+        builder.CreateInBoundsGEP(i64Ty, protoOverflowObj, {protoSlotIdx});
+    llvm::Value* protoHitOverflowVal =
+        builder.CreateAlignedLoad(i64Ty, protoOverflowSlotPtr, llvm::Align(8), "proto.hit.overflow.val");
     builder.CreateBr(doneBb);
 
     // 4. Hit: inline slot or overflow slot
@@ -532,7 +561,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    unsigned phiCount = 4;  // inlineHitBb, overflowAccessBb, slowBb, protoResBb
+    unsigned phiCount = 5;  // inlineHitBb, overflowAccessBb, slowBb, protoInlineBb, protoOverflowAccessBb
     if (arrLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
     if (arrPayloadBb) phiCount++;
@@ -541,7 +570,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     result->addIncoming(inlineVal, inlineHitBb);
     result->addIncoming(overflowValLoaded, overflowAccessBb);
     result->addIncoming(slowVal, slowBb);
-    result->addIncoming(protoHitVal, protoResBb);
+    result->addIncoming(protoHitInlineVal, protoInlineBb);
+    result->addIncoming(protoHitOverflowVal, protoOverflowAccessBb);
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);
