@@ -136,6 +136,34 @@ Value rtValueToString(Value v) { return valueToString(v); }
 Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
     if (!input.get().isObject()) return input.get();
 
+    // 7.1.1 step 2: check for @@toPrimitive method
+    {
+        Rooted<Value> toPrimKey{Value::fromSymbol(rtSymbolToPrimitive())};
+        Rooted<Value> exoticToPrim{
+            Value(bronze_elem_get(input.get().rawBits(), toPrimKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value::fromUndefined();
+        if (!exoticToPrim.get().isUndefined() && !exoticToPrim.get().isNull()) {
+            if (!exoticToPrim.get().isObject() ||
+                exoticToPrim.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+                rtThrowTypeError("Symbol.toPrimitive is not a function");
+                return Value::fromUndefined();
+            }
+            const char* hintStr = (hint == ToPrimitiveHint::String) ? "string"
+                                : (hint == ToPrimitiveHint::Number) ? "number"
+                                : "default";
+            Rooted<Value> hintVal{rtMakeString(hintStr)};
+            const uint64_t args[1] = {hintVal.get().rawBits()};
+            Rooted<Value> result{Value(bronze_dynamic_call(
+                exoticToPrim.get().rawBits(), input.get().rawBits(), 1, args))};
+            if (rtExceptionPending()) return Value::fromUndefined();
+            if (result.get().isObject()) {
+                rtThrowTypeError("Cannot convert object to primitive value");
+                return Value::fromUndefined();
+            }
+            return result.get();
+        }
+    }
+
     // 7.1.1.1 step 1/2: "string" tries toString then valueOf, and both other
     // hints try valueOf then toString.
     const char* order[2] = {"valueOf", "toString"};

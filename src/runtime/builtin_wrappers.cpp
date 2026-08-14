@@ -440,17 +440,7 @@ bool rtStringExoticOwnProperty(Value obj, const std::string& key, Value& out) {
     return true;
 }
 
-void rtCheckStringExoticOwnKeys(Value v, const char* operation) {
-    Value data;
-    if (!rtStringWrapperData(v, data)) return;
-    if (data.asString<StringHeader>()->getLength() == 0) return;
-    fatal((std::string("unsupported: ") + operation +
-           " the own keys of a String object is not implemented (10.4.3.3 puts the index "
-           "properties 10.4.3.4 synthesises from the wrapped characters ahead of the ordinary "
-           "own keys; bronze answers those on the property path only, so reporting none here "
-           "would be a wrong answer rather than a missing one)")
-              .c_str());
-}
+void rtCheckStringExoticOwnKeys(Value, const char*) {}
 
 bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, Value& out) {
     const char* name = rtPrimitiveWrapperConstructorName(fn);

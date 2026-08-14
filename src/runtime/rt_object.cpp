@@ -191,7 +191,9 @@ static Value indexName(uint32_t index) {
 
 Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
     Rooted<Value> self{strVal};
-    const uint32_t length = self.get().asString<StringHeader>()->getLength();
+    Value data = self.get();
+    if (!data.isString()) rtStringWrapperData(self.get(), data);
+    const uint32_t length = data.asString<StringHeader>()->getLength();
     const uint32_t total = enumerableOnly ? length : length + 1;
     Rooted<Value> out{Value(bronze_create_array(total))};
     for (uint32_t i = 0; i < length; ++i) {
@@ -239,13 +241,21 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t le
     // Read the environment through the root only AFTER allocating: the
     // allocation above can collect, and a by-value copy taken before it would
     // point into dead from-space.
-    fn->env_record = env.get();
+    fn->env_record = env.get().isUndefined() ? Value::fromObject(fn) : env.get();
     fn->header.flags = HeapKind::Function;
     // The key headers are arena-interned and immortal (rt_state.cpp), so this
     // is a pointer copy and not an allocation — which is what keeps a closure
     // created in a loop as cheap as it was before it carried a name.
     rtSetFunctionNameAndLength(fn, nameKey, length);
     return Value::fromObject(fn).rawBits();
+}
+
+void bronze_set_function_generator(uint64_t fnBits) {
+    recordHelperCall("bronze_set_function_generator");
+    Value fnVal(fnBits);
+    if (fnVal.isObject() && fnVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        fnVal.asObject<FunctionHeader>()->is_generator = true;
+    }
 }
 
 // `class D extends B` — the two prototype links a class sets up, and the only
@@ -409,6 +419,9 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // to be read once and thrown away, which is the arrangement
     // `Object.getPrototypeOf` of a primitive already uses.
     if (objVal.isString()) return rtStringOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
+    if (Value data; rtStringWrapperData(objVal, data)) {
+        return rtStringOwnKeyNames(data, /*enumerableOnly=*/true).rawBits();
+    }
     // A number, a boolean and a symbol box to an object with no own property of
     // any kind, so the empty answer needs no box either — which is what lets
     // `Object.keys(5)` answer at all, since bronze has no Number.prototype for

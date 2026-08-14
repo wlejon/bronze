@@ -269,7 +269,7 @@ TEST_CASE("the arguments object carries `callee`; an ordinary array does not") {
     ShadowStackFrame frame;
 
     const uint64_t argv[1] = {Value::fromDouble(1.0).rawBits()};
-    Rooted<Value> args{Value(bronze_arguments_object(1, argv))};
+    Rooted<Value> args{Value(bronze_arguments_object(1, argv, BRONZE_ABI_UNDEFINED_BITS, /*strict=*/true))};
 
     // The property is what tells an arguments object apart from every other
     // array, which is the whole reason the answer is a property: `[].callee`
@@ -293,22 +293,17 @@ TEST_CASE("the arguments object carries `callee`; an ordinary array does not") {
     CHECK(plain.get().asObject<ArrayHeader>()->properties.isUndefined());
 }
 
-TEST_CASE("reading arguments.callee is a hard error naming both modes") {
+TEST_CASE("reading arguments.callee in strict mode throws TypeError") {
     ShadowStackFrame frame;
 
     const uint64_t argv[1] = {Value::fromDouble(1.0).rawBits()};
-    Rooted<Value> args{Value(bronze_arguments_object(1, argv))};
+    Rooted<Value> args{Value(bronze_arguments_object(1, argv, BRONZE_ABI_UNDEFINED_BITS, /*strict=*/true))};
     Rooted<Value> key{rtMakeString("callee")};
     ObjectHeader* props = args.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
 
-    std::string caught;
-    {
-        FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
-        try {
-            (void)props->getProp(rtHeap(), key, nullptr, args.slot_ptr());
-        } catch (const std::runtime_error& e) {
-            caught = e.what();
-        }
-    }
-    CHECK(caught.find("`arguments.callee`") != std::string::npos);
+    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    Value res = props->getProp(rtHeap(), key, nullptr, args.slot_ptr());
+    (void)res;
+    CHECK(rtExceptionPending());
+    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

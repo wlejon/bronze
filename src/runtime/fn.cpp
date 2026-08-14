@@ -18,6 +18,7 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->name = nullptr;
     fn->arity = arity;
     fn->length = 0;
+    fn->is_generator = false;
     return fn;
 }
 

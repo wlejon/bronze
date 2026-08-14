@@ -30,7 +30,8 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
 }
 
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
-                          uint32_t& out_slot, bool is_enumerable, bool is_accessor) {
+                          uint32_t& out_slot, bool is_enumerable, bool is_accessor,
+                          bool is_writable, bool is_configurable) {
     (void)heap;
     PropertyKey incoming = PropertyKey::fromValue(name.get());
     if (!incoming.valid()) {
@@ -43,6 +44,7 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     Shape* next_shape = nullptr;
     for (const auto& trans : transitions) {
         if (trans.enumerable == is_enumerable && trans.accessor == is_accessor &&
+            trans.writable == is_writable && trans.configurable == is_configurable &&
             trans.key.matches(incoming)) {
             out_slot = trans.next_shape->slot_index;
             next_shape = trans.next_shape;
@@ -70,8 +72,10 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
                 ? incoming
                 : PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
         next_shape =
-            arena.create<Shape>(this, stored, next_slot, root, is_enumerable, is_accessor);
-        transitions.push_back(ShapeTransition{stored, next_shape, is_enumerable, is_accessor});
+            arena.create<Shape>(this, stored, next_slot, root, is_enumerable, is_accessor,
+                                is_writable, is_configurable);
+        transitions.push_back(ShapeTransition{stored, next_shape, is_enumerable, is_accessor,
+                                             is_writable, is_configurable});
     }
 
     // An object that was a prototype before this add is still one after it, so
@@ -123,6 +127,8 @@ bool Shape::lookupProperty(PropertyKey name, PropertyInfo& out) const noexcept {
             out.slot = curr->slot_index;
             out.enumerable = curr->enumerable;
             out.accessor = curr->accessor;
+            out.writable = curr->writable;
+            out.configurable = curr->configurable;
             return true;
         }
         curr = curr->parent;

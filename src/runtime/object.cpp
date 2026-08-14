@@ -232,7 +232,8 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                                     Rooted<Value>& val, InlineCache* ic, bool enumerable,
-                                    bool defineOwn, const Value* receiver, SetRefusal* refused) {
+                                    bool defineOwn, const Value* receiver, SetRefusal* refused,
+                                    bool writable, bool configurable) {
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
         fatal("property key must be a string or a symbol");
@@ -328,6 +329,11 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     ObjectHeader* live = nullptr;
     if (shape->isDictionary()) {
         live = dictDefine(heap, arena, self, prop_name, enumerable, /*accessor=*/false, new_slot);
+        DictEntry* entry = self.get().asObject<ObjectHeader>()->shape->dict->find(prop_name);
+        if (entry) {
+            entry->writable = writable;
+            entry->configurable = configurable;
+        }
     } else {
         // If this object is somebody's prototype, the property just created
         // shadows whatever the depth > 0 entries below it point at, and their
@@ -336,7 +342,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // `new Point(x, y)` in a loop from invalidating the whole program's
         // proto caches.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
-        Shape* next_shape = shape->addProperty(arena, heap, key, new_slot, enumerable);
+        Shape* next_shape =
+            shape->addProperty(arena, heap, key, new_slot, enumerable, /*is_accessor=*/false,
+                               writable, configurable);
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
         if (ic) ic->fill(next_shape, new_slot, /*depth=*/0);

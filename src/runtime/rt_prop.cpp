@@ -245,6 +245,12 @@ Value toStringTagOf(Value objVal, bool& handled) {
         case ModuleNamespaceHeader::kFlags:
             handled = true;
             return rtMakeString("Module");
+        case HeapKind::Function:
+            if (objVal.asObject<FunctionHeader>()->is_generator) {
+                handled = true;
+                return rtMakeString("GeneratorFunction");
+            }
+            return Value::fromUndefined();
         default:
             // An array, a function, a RegExp and a plain object: 23.1.3, 20.2.3,
             // 22.2.6 and 20.1.3 define no `@@toStringTag` at all, which is

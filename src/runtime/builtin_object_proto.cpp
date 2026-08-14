@@ -114,7 +114,19 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
 
     switch (self.get().asObject<HeapObjectHeader>()->flags) {
         case HeapKind::Plain: {
-            rtCheckStringExoticOwnKeys(self.get(), "testing");
+            if (Value data; rtStringWrapperData(self.get(), data)) {
+                if (name.isString()) {
+                    if (key == "length") {
+                        enumerable = false;
+                        return true;
+                    }
+                    if (rtIsIntegerLikeKey(key, index) &&
+                        index < data.asString<StringHeader>()->getLength()) {
+                        enumerable = true;
+                        return true;
+                    }
+                }
+            }
             auto* obj = self.get().asObject<ObjectHeader>();
             PropertyInfo info;
             if (!obj->shape || !obj->shape->lookupProperty(name, info)) return false;

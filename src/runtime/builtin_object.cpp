@@ -72,11 +72,12 @@ PropertyKey rtInternPropertyKey(Value keyVal) {
 // The key is interned BEFORE the object is read: `rtInternPropertyKey` runs
 // ToString, which allocates, so an ObjectHeader* taken across it would be stale.
 bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
-    // A String exotic object's own keys are not all in its shape: 10.4.3.4
-    // synthesises index properties from the wrapped characters, and bronze
-    // answers those on the property path only. Refused by name rather than
-    // reported absent (rt_object.cpp says why they are not materialised).
-    rtCheckStringExoticOwnKeys(self.get(), "testing");
+    if (Value data; rtStringWrapperData(self.get(), data)) {
+        if (key.isSymbol()) return false;
+        const std::string keyStr = rtObjectKeyTextOf(key);
+        if (rtExceptionPending()) return false;
+        return rtStringDataHasOwnKey(data, keyStr);
+    }
     PropertyKey name = rtInternPropertyKey(key);
     auto* obj = self.get().asObject<ObjectHeader>();
     uint32_t slot = 0;
@@ -156,6 +157,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
         return ObjectOwnKeys::Threw;
     }
     if (v.isString()) return ObjectOwnKeys::StringChars;
+    if (Value data; rtStringWrapperData(v, data)) return ObjectOwnKeys::StringChars;
     if (!v.isObject()) return ObjectOwnKeys::None;
     if (isPlainObject(v)) return ObjectOwnKeys::Shape;
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
@@ -316,7 +318,9 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             const std::string key = rtObjectKeyTextOf(args[1]);
             if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
-            return Value::fromBool(rtStringDataHasOwnKey(args[0], key)).rawBits();
+            Value data = args[0];
+            if (!data.isString()) rtStringWrapperData(args[0], data);
+            return Value::fromBool(rtStringDataHasOwnKey(data, key)).rawBits();
         }
         case ObjectOwnKeys::Namespace: {
             // The exports are the complete list of own keys (10.4.6.2), and
@@ -738,7 +742,9 @@ void ensureObjectIntrinsics() {
     {
         Rooted<Value> key{rtMakeString("prototype")};
         ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, proto, nullptr,
-                                                  /*enumerable=*/false, /*defineOwn=*/true);
+                                                  /*enumerable=*/false, /*defineOwn=*/true,
+                                                  /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                  /*writable=*/false, /*configurable=*/false);
     }
     {
         Rooted<Value> key{rtMakeString("constructor")};

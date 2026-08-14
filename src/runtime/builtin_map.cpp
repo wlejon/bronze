@@ -89,7 +89,8 @@ uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // it have an [[IteratedMap]]" — the kind's prototype and the kind's slots —
     // and it is a memory-safety check as much as a semantic one, since the
     // reads below address fields only an object created here has.
-    if (!rtIsIteratorObject(self.get(), IteratorProto::Map)) {
+    if (!rtIsIteratorObject(self.get(), IteratorProto::Map) &&
+        !rtIsIteratorObject(self.get(), IteratorProto::Set)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
     Rooted<Value> target{readSlot(self, MapIteratorSlot::IteratedMap)};
@@ -127,13 +128,12 @@ uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 }
 
 Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
-    // %MapIteratorPrototype% (24.1.5.2), which is where `[Symbol.iterator]`
-    // lives — 27.1.2.1 puts the self-hook on the shared %IteratorPrototype%,
-    // and an INHERITED property is not an own one, so
-    // `Object.getOwnPropertySymbols(m.keys())` is empty. The shape is shared by
-    // every map iterator, so the `next` read inside a loop is a monomorphic
-    // cache hit.
-    Rooted<Value> it{rtNewIteratorObject(IteratorProto::Map)};
+    // %MapIteratorPrototype% (24.1.5.2) / %SetIteratorPrototype% (24.2.5.2),
+    // which is where `[Symbol.iterator]` lives — 27.1.2.1 puts the self-hook
+    // on the shared %IteratorPrototype%, and an INHERITED property is not an own
+    // one, so `Object.getOwnPropertySymbols(m.keys())` is empty.
+    const bool set = isSet(map.get());
+    Rooted<Value> it{rtNewIteratorObject(set ? IteratorProto::Set : IteratorProto::Map)};
     Rooted<Value> nextFn{rtNativeFunction(mapIterNext, 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);

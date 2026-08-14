@@ -369,13 +369,9 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             break;
         }
         case HeapKind::Plain: {
-            // A String exotic object's index properties are own properties that
-            // live nowhere the walk below can see them — 10.4.3.4 synthesises
-            // them from the wrapped characters and bronze answers them on the
-            // property path alone — so `"0" in new String("ab")` would read
-            // false. Refused by name instead (rt_object.cpp carries the
-            // reasoning).
-            rtCheckStringExoticOwnKeys(objRoot.get(), "testing");
+            if (Value data; rtStringWrapperData(objRoot.get(), data)) {
+                if (rtStringDataHasOwnKey(data, key)) return true;
+            }
             Rooted<Value> keyStr{rtMakeString(key)};
             auto* holder =
                 reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());

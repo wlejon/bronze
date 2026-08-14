@@ -208,7 +208,8 @@ struct ObjectHeader {
     ObjectHeader* setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
                           Rooted<Value>& val, InlineCache* ic = nullptr,
                           bool enumerable = true, bool defineOwn = false,
-                          const Value* receiver = nullptr, SetRefusal* refused = nullptr);
+                          const Value* receiver = nullptr, SetRefusal* refused = nullptr,
+                          bool writable = true, bool configurable = true);
 
     // `delete o.k`, which removes an OWN property and answers true — also when
     // the property was never there, and when only a prototype has it (ECMA-262

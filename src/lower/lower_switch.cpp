@@ -28,22 +28,7 @@
 
 namespace bronze::lower {
 
-namespace {
 
-// A `function` declaration written directly in a case clause. Every other
-// declaration form is now lowered — the CaseBlock's one scope holds them and
-// the dead zone makes a jump past one well defined — but a function
-// declaration is not lexical: 8.6.2 instantiates it for the whole scope before
-// any clause runs, so it would have to be hoisted out of the clause it is
-// written in and bronze's hoisting pass works one statement list at a time.
-const ast::Stmt* functionDeclarationIn(const ast::SwitchCase& clause) {
-    for (const auto& s : clause.body) {
-        if (dynamic_cast<const ast::FunctionDecl*>(s.get())) return s.get();
-    }
-    return nullptr;
-}
-
-}  // namespace
 
 bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
     const std::string label = takePendingLabel();
@@ -53,13 +38,6 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
     // these belong to the switch and not to the clause that spells them.
     std::vector<std::string> caseLexicals;
     for (const auto& clause : sw->cases) {
-        if (const ast::Stmt* decl = functionDeclarationIn(clause)) {
-            diags_.error(decl->span,
-                         "unsupported construct: a 'function' declaration directly in a switch "
-                         "case (the switch body is one scope, so the declaration belongs to it "
-                         "rather than to the clause); wrap the case body in a block");
-            return false;
-        }
         for (auto& name : ast::getLexicalDeclarations(clause.body)) {
             caseLexicals.push_back(std::move(name));
         }
@@ -97,6 +75,28 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
     // — and the uninitialized marker in every lexical slot of it — exists
     // however the chain of tests ends up entering it.
     enterScope(std::vector<ast::StmtPtr>{}, ilFn, {}, caseLexicals);
+
+    // Function declarations in any case clause hoist to the CaseBlock scope
+    // (ECMA-262 14.12.4 / Annex B.3.2 BlockDeclarationInstantiation).
+    for (const auto& clause : sw->cases) {
+        for (const auto& s : clause.body) {
+            const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(s.get());
+            if (!fnDecl) continue;
+            auto closure = lowerClosure(*fnDecl, fnDecl->name, fnDecl->name, fnDecl->params,
+                                        fnDecl->returnType, fnDecl->body, fnDecl->span, ilFn);
+            if (!closure) return false;
+            if (!declareVariable(fnDecl->name, il::Type::Dynamic, /*isConst=*/false,
+                                 /*isLet=*/true, /*isVar=*/false, /*isInitialized=*/true,
+                                 closure->id, fnDecl->span)) {
+                return false;
+            }
+            VarBinding& b = varBindings_[activeVarMap_[fnDecl->name]];
+            if (b.inEnv) {
+                emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, *closure, ilFn);
+            }
+        }
+    }
+
     auto snapshotState = [&]() { return snapshotVarStates(); };
     const VarStateMap stateBeforeTests = snapshotState();
 
@@ -161,7 +161,11 @@ bool Lowerer::lowerSwitchStmt(const ast::SwitchStmt* sw, il::Function& ilFn) {
         bindLoopBlockParams(params, bodyParamMaps[i]);
 
         std::vector<const ast::Stmt*> stmts;
-        for (const auto& s : sw->cases[i].body) stmts.push_back(s.get());
+        for (const auto& s : sw->cases[i].body) {
+            if (!dynamic_cast<const ast::FunctionDecl*>(s.get())) {
+                stmts.push_back(s.get());
+            }
+        }
         if (!lowerStmtList(stmts, ilFn)) {
             jumpStack_.pop_back();
             return false;

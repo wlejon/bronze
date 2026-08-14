@@ -96,7 +96,7 @@ Value rtIteratorKey();
 // The kinds are kept apart even though bronze puts no member on most of them,
 // because the prototype is what an iterator's `next` recognises its own
 // receiver by. A brand check needs the five to be five objects.
-enum class IteratorProto : uint32_t { Map, Array, RegExpString, Generator, String };
+enum class IteratorProto : uint32_t { Map, Set, Array, RegExpString, Generator, String };
 
 // The INTERNAL SLOTS each kind carries, named after ECMA-262's. They are real
 // fields on the object (`ObjectHeader::internalSlot`) and not properties under

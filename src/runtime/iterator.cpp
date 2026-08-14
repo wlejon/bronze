@@ -202,7 +202,7 @@ struct ProtoEntry {
 };
 
 ProtoEntry& protoEntry(IteratorProto kind) {
-    static ProtoEntry table[5];
+    static ProtoEntry table[6];
     return table[static_cast<uint32_t>(kind)];
 }
 
@@ -226,6 +226,7 @@ Value iteratorPrototypeRoot() {
 // `IteratorProto` declares. Half the brand, so it is written once and read by
 // both the creator and the check.
 constexpr uint32_t kInternalSlots[] = {
+    MapIteratorSlot::kCount,
     MapIteratorSlot::kCount,
     ArrayIteratorSlot::kCount,
     RegExpStringIteratorSlot::kCount,
@@ -257,17 +258,13 @@ Shape* iteratorObjectShape(IteratorProto kind) {
     // `@@toStringTag`, which is what `Object.prototype.toString` reads (20.1.3.6
     // step 15) and the only reason these objects have any own property beyond
     // the generator's three methods.
-    //
-    // Every kind but one gets a tag. The MAP kind does not, and the reason is
-    // that bronze uses one prototype object where ECMA-262 has two:
-    // %MapIteratorPrototype%'s tag is "Map Iterator" (24.1.5.2.2) and
-    // %SetIteratorPrototype%'s is "Set Iterator" (24.2.5.2.2), and this single
-    // object stands in for both — so no value here is right for both receivers.
-    // Left absent rather than guessed: an object with no tag reads
-    // "[object Object]", which is a MISSING answer, where "Map Iterator" on a
-    // Set's iterator would be a wrong one.
-    // (cases/blocked/set_iterator_tostringtag.js pins the day that is fixed.)
     switch (kind) {
+        case IteratorProto::Map:
+            rtDefineToStringTag(proto, "Map Iterator");  // 24.1.5.2.2
+            break;
+        case IteratorProto::Set:
+            rtDefineToStringTag(proto, "Set Iterator");  // 24.2.5.2.2
+            break;
         case IteratorProto::Array:
             // 23.1.5.2.2 — and a typed array's iterator shares this prototype
             // by 23.2.5.2, so the one object really is the one ECMA-262 has.
@@ -281,8 +278,6 @@ Shape* iteratorObjectShape(IteratorProto kind) {
             break;
         case IteratorProto::String:
             rtDefineToStringTag(proto, "String Iterator");  // 22.1.5.1.2
-            break;
-        case IteratorProto::Map:
             break;
     }
     // Defining the tag allocates, for the same reason installing the generator

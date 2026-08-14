@@ -60,6 +60,7 @@ struct FunctionHeader {
     // count from `arity` above and is why it is a second field rather than a
     // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
     uint32_t length{0};
+    bool is_generator{false};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0);

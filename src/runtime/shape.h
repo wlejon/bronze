@@ -42,6 +42,8 @@ struct ShapeTransition {
     // function.
     bool enumerable{true};
     bool accessor{false};
+    bool writable{true};
+    bool configurable{true};
 };
 
 // A hidden class: one node of a transition tree, immortal and non-moving, so
@@ -70,6 +72,8 @@ public:
     // `slot_index + 1`, so the node is two slots wide and the next property
     // starts past both.
     bool accessor{false};
+    bool writable{true};
+    bool configurable{true};
     Shape* root{nullptr};  // self, for a root shape
     Value prototype;       // meaningful on a root shape only
     std::vector<ShapeTransition> transitions;
@@ -93,12 +97,14 @@ public:
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
     Shape(Shape* parent_shape, PropertyKey prop_key, uint32_t slot, Shape* root_shape,
-          bool is_enumerable, bool is_accessor)
+          bool is_enumerable, bool is_accessor, bool is_writable = true, bool is_configurable = true)
         : parent(parent_shape),
           key(prop_key),
           slot_index(slot),
           enumerable(is_enumerable),
           accessor(is_accessor),
+          writable(is_writable),
+          configurable(is_configurable),
           root(root_shape),
           prototype(Value::fromUndefined()) {}
 
@@ -120,7 +126,8 @@ public:
     }
 
     Shape* addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot,
-                       bool is_enumerable = true, bool is_accessor = false);
+                       bool is_enumerable = true, bool is_accessor = false,
+                       bool is_writable = true, bool is_configurable = true);
 
     // Existence and location of an own property. The `out_slot` overload is
     // for callers that only ask "is it there, and where" — `in`, and the

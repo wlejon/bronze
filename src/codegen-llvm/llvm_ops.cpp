@@ -411,6 +411,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32),
                       builder_.getInt32(created.requiredArgs),
                       builder_.getInt32(created.nameKeyIndex), env});
+            if (created.isGenerator && inst.result != il::kNoValue) {
+                builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
+            }
             return true;
         }
         case il::Op::FunctionRef: {
@@ -428,6 +431,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(arity),
                       builder_.getInt32(target.requiredArgs),
                       builder_.getInt32(target.nameKeyIndex)});
+            if (target.isGenerator && inst.result != il::kNoValue) {
+                builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
+            }
             return true;
         }
 

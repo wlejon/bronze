@@ -401,6 +401,8 @@ struct Function {
     // never a direct-call target, the same restriction `needsEnv` carries and
     // for a related reason.
     bool needsArguments = false;
+    bool isStrict = false;
+    bool isGenerator = false;
     // `...rest`: the LAST source parameter, and the one no caller supplies a
     // value for. It arrives as an array built from whatever arguments were left
     // over — by the call wrapper on the uniform path, by the call site on a

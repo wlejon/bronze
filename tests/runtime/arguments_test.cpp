@@ -25,11 +25,11 @@ TEST_CASE("the arguments object holds every argument passed, in order") {
                               Value::fromDouble(20.0).rawBits(),
                               Value::fromDouble(30.0).rawBits()};
 
-    Rooted<Value> none{Value(bronze_arguments_object(0, argv))};
+    Rooted<Value> none{Value(bronze_arguments_object(0, argv, BRONZE_ABI_UNDEFINED_BITS, false))};
     REQUIRE(none.get().isObject());
     CHECK(none.get().asObject<ArrayHeader>()->length == 0);
 
-    Rooted<Value> all{Value(bronze_arguments_object(3, argv))};
+    Rooted<Value> all{Value(bronze_arguments_object(3, argv, BRONZE_ABI_UNDEFINED_BITS, false))};
     REQUIRE(all.get().isObject());
     ArrayHeader* arr = all.get().asObject<ArrayHeader>();
     REQUIRE(arr->length == 3);
@@ -45,7 +45,7 @@ TEST_CASE("the arguments object IS an array — the recorded divergence") {
     ShadowStackFrame frame;
 
     const uint64_t argv[1] = {Value::fromDouble(1.0).rawBits()};
-    Rooted<Value> args{Value(bronze_arguments_object(1, argv))};
+    Rooted<Value> args{Value(bronze_arguments_object(1, argv, BRONZE_ABI_UNDEFINED_BITS, false))};
     REQUIRE(args.get().isObject());
 
     // `flags == 1` is what `Array.isArray`, `JSON.stringify` and the spread

@@ -89,8 +89,7 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // `undefined`.
 const char* const kSymbolUnimplemented[] = {
     "asyncIterator", "hasInstance", "isConcatSpreadable", "match",       "matchAll",
-    "replace",       "search",      "species",            "split",       "toPrimitive",
-    "unscopables",
+    "replace",       "search",      "species",            "split",       "unscopables",
 };
 
 Value g_symbolFunction = Value::fromUndefined();
@@ -254,6 +253,12 @@ Value rtSymbolFunction() {
     {
         Rooted<Value> key{rtMakeString("toStringTag")};
         Rooted<Value> val{Value::fromSymbol(rtSymbolToStringTag())};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        Rooted<Value> key{rtMakeString("toPrimitive")};
+        Rooted<Value> val{Value::fromSymbol(rtSymbolToPrimitive())};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

@@ -55,6 +55,10 @@ bool indexedLength(Value v, uint32_t& outLength) {
         return true;
     }
     if (!v.isObject()) return false;
+    if (Value data; rtStringWrapperData(v, data)) {
+        outLength = data.asString<StringHeader>()->getLength();
+        return true;
+    }
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Array) {
         outLength = reinterpret_cast<ArrayHeader*>(hdr)->length;

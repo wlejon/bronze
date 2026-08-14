@@ -162,8 +162,10 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             if (args[1].isSymbol()) return Value::fromUndefined().rawBits();
             const std::string key = rtObjectKeyTextOf(args[1]);
             if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            Value data = args[0];
+            if (!data.isString()) rtStringWrapperData(args[0], data);
             StringOwnProperty own;
-            if (!rtStringDataOwnProperty(args[0], key, own)) {
+            if (!rtStringDataOwnProperty(data, key, own)) {
                 return Value::fromUndefined().rawBits();
             }
             // 6.2.6.4 FromPropertyDescriptor in the same field order as below,

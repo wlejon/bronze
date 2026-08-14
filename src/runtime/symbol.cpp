@@ -101,6 +101,11 @@ SymbolHeader* rtSymbolToStringTag() {
     return sym;
 }
 
+SymbolHeader* rtSymbolToPrimitive() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.toPrimitive");
+    return sym;
+}
+
 Value rtSymbolFor(Rooted<Value>& keyString) {
     if (!keyString.get().isString()) {
         fatal("internal: Symbol.for with a key that is not a string");

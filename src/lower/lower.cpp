@@ -507,6 +507,8 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator, bool isAsync) {
     ilFn.blocks.push_back(il::Block{.id = 0});
+    ilFn.isStrict = strictCode_;
+    ilFn.isGenerator = isGenerator;
     currentBlockIdx_ = 0;
     varBindings_.clear();
     activeVarMap_.clear();

@@ -95,15 +95,10 @@ TEST_CASE("a lexical declaration directly in a switch case belongs to the whole 
     CHECK(printed.find("\"x\"") != std::string::npos);
 }
 
-TEST_CASE("a function declaration directly in a switch case is still named") {
-    // The one form the CaseBlock's scope does not carry: 8.6.2 instantiates a
-    // function declaration for the whole scope before any clause runs, which
-    // would mean hoisting it out of the clause it is written in.
-    const std::string rendered =
-        errorFor("switch (1) {\n  case 1:\n    function f() {}\n}\n");
-    CHECK(rendered.find("unsupported construct: a 'function' declaration directly in a switch "
-                        "case") != std::string::npos);
-    CHECK(rendered.find("wrap the case body in a block") != std::string::npos);
+TEST_CASE("a function declaration directly in a switch case is hoisted") {
+    const std::string printed =
+        printOf("switch (1) {\n  case 1:\n    function f() {}\n}\n");
+    CHECK(printed.find("strict.eq") != std::string::npos);
 }
 
 TEST_CASE("a block wrapping the case body accepts the same declaration") {

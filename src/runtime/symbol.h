@@ -77,6 +77,7 @@ Value rtSymbolKeyFor(Value symbol);
 // iterator protocol, and 20.1.3.6's tag lookup.
 SymbolHeader* rtSymbolIterator();
 SymbolHeader* rtSymbolToStringTag();
+SymbolHeader* rtSymbolToPrimitive();
 
 // SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
 // description spelled `Symbol()` — the description of a `Symbol()` and of a

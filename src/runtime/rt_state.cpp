@@ -243,6 +243,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         if (entry.first == code) return entry.second.rawBits();
     }
     FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
+    fn->env_record = Value::fromObject(fn);
     fn->header.flags = HeapKind::Function;
     rtSetFunctionNameAndLength(fn, nameKey, length);
     g_functionSingletons.emplace_back(code, Value::fromObject(fn));

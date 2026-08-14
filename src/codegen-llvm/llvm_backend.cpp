@@ -229,7 +229,15 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         llvm::Value* argumentsArg = nullptr;
         if (func.needsArguments) {
             argumentsArg = emitWrapperArrayCall(builder, ctx, globals, live, [&] {
-                return builder.CreateCall(abi.bronze_arguments_object, {argc, argv});
+                llvm::Value* calleeVal = nullptr;
+                llvm::Value* isStrictVal = builder.getInt1(func.isStrict);
+                if (func.isStrict) {
+                    calleeVal = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+                } else {
+                    calleeVal = env;
+                }
+                return builder.CreateCall(abi.bronze_arguments_object,
+                                          {argc, argv, calleeVal, isStrictVal});
             });
         }
         llvm::Value* restArg = nullptr;

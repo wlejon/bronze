@@ -519,7 +519,7 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         // null and undefined join as the empty string, not as their
         // ToString — the one place join is not ToString(element).
         if (elem.get().isNull() || elem.get().isUndefined()) continue;
-        Rooted<Value> piece{rtValueToString(elem.get())};
+        Rooted<Value> piece{rtToStringValue(elem)};
         acc.set(StringHeader::concat(rtHeap(), acc, piece));
     }
     return acc.get().rawBits();

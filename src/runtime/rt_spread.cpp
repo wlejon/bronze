@@ -67,10 +67,8 @@ bool isPlainObject(Value v) {
 // one loud answer covers both modes and names the gap, which is the house rule
 // applied to the alternative: a silent `undefined`, which is what a program
 // feature-detecting `callee` used to read.
-[[noreturn]] uint64_t argumentsCalleePill(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: `arguments.callee` — the running function object is not passed to a "
-          "compiled body, so sloppy code cannot be handed the function (10.4.4) and strict "
-          "code cannot be told apart to be handed the TypeError (10.2.4)");
+uint64_t argumentsCalleePill(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtThrowTypeError("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them").rawBits();
 }
 
 // The arena-interned `callee` key. Interned once because every call that owns
@@ -86,18 +84,26 @@ StringHeader* calleeKey() {
 }
 
 // 10.2.11 step 6, on the array that stands in for the arguments object. The
-// pair is non-enumerable, which is both what the specification says and what
+// property is non-enumerable, which is both what the specification says and what
 // keeps every existing walk over an arguments object unchanged: `for-in`,
 // `Object.keys`, spread and `JSON.stringify` all ask for own enumerable keys,
 // and console.log's array format skips accessors outright.
-void installArgumentsCallee(Rooted<Value>& args) {
+void installArgumentsCallee(Rooted<Value>& args, Value calleeVal, bool strict) {
     ArrayHeader::ensureProperties(rtHeap(), rtArena(), args);
     Rooted<Value> props{args.get().asObject<ArrayHeader>()->properties};
     Rooted<Value> key{Value::fromString(calleeKey())};
-    Rooted<Value> pill{rtNativeFunction(
-        reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0)};
-    ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
-                                 /*enumerable=*/false);
+    if (strict) {
+        Rooted<Value> pill{rtNativeFunction(
+            reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0)};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
+                                     /*enumerable=*/false);
+    } else {
+        Rooted<Value> val{calleeVal};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true,
+                                                      /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                      /*writable=*/true, /*configurable=*/true);
+    }
 }
 
 bool isArray(Value v) {
@@ -109,10 +115,10 @@ bool isArray(Value v) {
 // The brand, asked from outside: is this array the one an `arguments` binding
 // holds? `callee` is the discriminator, and what makes it one is not the NAME —
 // a program can write `a.callee = 1` on any array — but the SHAPE of the
-// property: `installArgumentsCallee` defines a non-enumerable ACCESSOR, and an
-// assignment can only ever create an enumerable data property. So the two
-// attributes are checked rather than mere presence, and nothing a program can
-// write forges the answer.
+// property: `installArgumentsCallee` defines a non-enumerable property (an accessor
+// in strict mode or a data property in sloppy mode), and an assignment can only
+// ever create an enumerable data property. So `!info.enumerable` is checked rather
+// than mere presence, and nothing a program can write forges the answer.
 //
 // It is what `Object.prototype.toString` needs for step 5's "[[ParameterMap]]",
 // and it costs a shape lookup on the side object rather than a walk.
@@ -120,7 +126,7 @@ bool rtIsArgumentsObject(Value v) {
     if (!isArray(v)) return false;
     PropertyInfo info;
     if (!rtArrayOwnNamed(v, calleeKey(), info)) return false;
-    return info.accessor && !info.enumerable;
+    return !info.enumerable;
 }
 
 namespace {
@@ -274,10 +280,12 @@ uint64_t bronze_rest_args(uint32_t argc, const uint64_t* argv, uint32_t first) {
 // the two receivers. 10.2.11 step 6 defines it on the unmapped object as an
 // accessor pair whose halves are %ThrowTypeError%, so the shape of what is
 // installed is the specification's; only the pill's contents differ.
-uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv) {
+uint64_t bronze_arguments_object(uint32_t argc, const uint64_t* argv, uint64_t calleeBits,
+                                bool strict) {
     recordHelperCall("bronze_arguments_object");
+    Rooted<Value> calleeRoot{Value(calleeBits)};
     Rooted<Value> args{Value(bronze_rest_args(argc, argv, 0))};
-    installArgumentsCallee(args);
+    installArgumentsCallee(args, calleeRoot.get(), strict);
     return args.get().rawBits();
 }
 
