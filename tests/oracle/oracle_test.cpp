@@ -17,9 +17,12 @@
 // both of which must produce the pinned bytes.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +35,10 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(disable: 4996)
 #endif
 
 #ifndef TEST_CASES_DIR
@@ -53,7 +60,7 @@ struct RunResult {
 };
 
 #ifdef _WIN32
-RunResult runWithTimeout(const std::string& exePath) {
+RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
     RunResult result;
 
     SECURITY_ATTRIBUTES sa{};
@@ -73,11 +80,23 @@ RunResult runWithTimeout(const std::string& exePath) {
     PROCESS_INFORMATION pi{};
 
     std::string cmdLine = "\"" + exePath + "\"";
-    if (!CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
-                        &si, &pi)) {
-        CloseHandle(readPipe);
-        CloseHandle(writePipe);
-        return result;
+
+    static std::mutex s_spawnMutex;
+    {
+        std::lock_guard<std::mutex> lock(s_spawnMutex);
+        if (gcStress) {
+            _putenv_s("BRONZE_GC_STRESS", "1");
+        } else {
+            _putenv_s("BRONZE_GC_STRESS", "");
+        }
+        BOOL ok = CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, TRUE, 0, nullptr,
+                                 nullptr, &si, &pi);
+        _putenv_s("BRONZE_GC_STRESS", "");
+        if (!ok) {
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            return result;
+        }
     }
     CloseHandle(writePipe);  // ours would keep the pipe open past child exit
 
@@ -106,9 +125,10 @@ RunResult runWithTimeout(const std::string& exePath) {
     return result;
 }
 #else
-RunResult runWithTimeout(const std::string& exePath) {
+RunResult runWithTimeout(const std::string& exePath, bool gcStress = false) {
     RunResult result;
-    FILE* pipe = popen(("\"" + exePath + "\"").c_str(), "r");
+    std::string cmd = (gcStress ? "BRONZE_GC_STRESS=1 " : "") + ("\"" + exePath + "\"");
+    FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) return result;
     char buf[4096];
     while (std::size_t n = std::fread(buf, 1, sizeof(buf), pipe)) {
@@ -120,22 +140,6 @@ RunResult runWithTimeout(const std::string& exePath) {
 }
 #endif
 
-// Compiled cases inherit this process's environment, which is how ctest's
-// `ENVIRONMENT BRONZE_GC_STRESS=1` reaches them. A case too expensive to build
-// twice sets it for itself around a second run of the executable it already
-// has.
-void setGcStress(bool on) {
-#ifdef _WIN32
-    _putenv_s("BRONZE_GC_STRESS", on ? "1" : "");
-#else
-    if (on) {
-        setenv("BRONZE_GC_STRESS", "1", 1);
-    } else {
-        unsetenv("BRONZE_GC_STRESS");
-    }
-#endif
-}
-
 bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
@@ -143,10 +147,6 @@ bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     return true;
 }
 
-// The configure-time absolute path first, then the same directory reached by
-// walking up from wherever ctest happened to start the binary. Taking the
-// suffix as a parameter is what lets `threejs/` be found by exactly the rule
-// that already finds `cases/`, rather than by a second one.
 std::filesystem::path findTestDirectory(const std::filesystem::path& baked,
                                         const std::string& suffix) {
     std::vector<std::filesystem::path> candidates = {
@@ -175,20 +175,11 @@ std::filesystem::path findCasesDirectory() {
     return findTestDirectory(TEST_CASES_DIR, "tests/oracle/cases");
 }
 
-// One case: the entry file bronze is pointed at, and the name it is reported
-// and named its temporary executable by. For a single-file case the two are
-// the same thing they always were.
 struct OracleCase {
     std::filesystem::path entry;
     std::string id;
 };
 
-// A case is EITHER `cases/<name>.js`, as every case was before modules, OR a
-// directory `cases/<name>/` whose entry is `main.js` and whose other files are
-// what it imports. Nothing about the first kind changes: it is found the same
-// way, paired with `<name>.expected` by the same rule, and compared the same
-// way. The second kind reuses that rule one level deeper —
-// `cases/<name>/main.expected` — so there is one pairing rule and not two.
 std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
     std::vector<OracleCase> cases;
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
@@ -197,21 +188,49 @@ std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
             continue;
         }
         if (!entry.is_directory()) continue;
-        // `blocked/` is the other suite's, and it is enumerated by its own
-        // TEST_CASE with the same two rules.
         if (entry.path().filename() == "blocked") continue;
         std::filesystem::path main = entry.path() / "main.js";
         std::error_code ec;
         if (!std::filesystem::exists(main, ec)) continue;
-        // Named for the DIRECTORY: every multi-file case's entry is
-        // `main.js`, so naming them for the entry would report them all
-        // identically and would collide on `main_oracle.exe`.
         cases.push_back({main, entry.path().filename().string()});
     }
     std::sort(cases.begin(), cases.end(),
               [](const OracleCase& a, const OracleCase& b) { return a.entry < b.entry; });
     return cases;
 }
+
+unsigned int getWorkerJobCount() {
+    if (const char* env = std::getenv("BRONZE_TEST_JOBS")) {
+        int n = std::atoi(env);
+        if (n > 0) return static_cast<unsigned int>(n);
+    }
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) return 2;
+    // Bounded concurrency: at most 4 threads by default (or hw / 2) to prevent machine saturation
+    return std::max(1u, std::min(4u, hw / 2));
+}
+
+struct CaseExecutionResult {
+    OracleCase oracleCase;
+    bool codeReadOk = false;
+    bool hasNonDeterminism = false;
+    bool expectedReadOk = false;
+    std::string expectedPathStr;
+    std::string expected;
+
+    // Inference mode (normal + gc stress on the same built binary)
+    int buildInferStatus = -1;
+    std::string buildInferErr;
+    bool inferExeExists = false;
+    RunResult runInfer;
+    RunResult runInferGc;
+
+    // No-inference mode
+    int buildNoInferStatus = -1;
+    std::string buildNoInferErr;
+    bool noInferExeExists = false;
+    RunResult runNoInfer;
+};
 
 }  // namespace
 
@@ -222,51 +241,124 @@ TEST_CASE("Oracle differential test suite") {
     auto caseFiles = casesIn(casesDir);
     REQUIRE_MESSAGE(!caseFiles.empty(), "No .js test cases found in cases directory");
 
-    for (const auto& oracleCase : caseFiles) {
-        const std::filesystem::path& casePath = oracleCase.entry;
-        SUBCASE(oracleCase.id.c_str()) {
-            std::string code;
-            REQUIRE(readFileBytes(casePath, code));
+    static std::vector<CaseExecutionResult> results;
+    static std::once_flag resultsOnce;
 
-            // Ratchet rule: non-determinism sources are banned in cases
-            CHECK(code.find("Date") == std::string::npos);
-            CHECK(code.find("Math.random") == std::string::npos);
+    std::call_once(resultsOnce, [&] {
+        results.resize(caseFiles.size());
+        const unsigned int numJobs = getWorkerJobCount();
+        std::atomic<size_t> nextCaseIdx{0};
 
-            std::filesystem::path expectedPath = casePath;
-            expectedPath.replace_extension(".expected");
-            std::string expected;
-            REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
-                            ("Missing pinned expectation " + expectedPath.string()).c_str());
+        auto worker = [&] {
+            while (true) {
+                size_t idx = nextCaseIdx.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= caseFiles.size()) break;
 
-            // Every case runs twice: with inference and with it switched off.
-            // Both must produce the same pinned bytes, which is what makes
-            // `--no-infer` a ratchet rather than a comfort blanket — a case
-            // only inference gets right means the no-inference path is unsound,
-            // and a case only `--no-infer` gets right means inference is.
-            for (const bool infer : {true, false}) {
-                const std::string mode = infer ? " (inference on)" : " (--no-infer)";
-                std::filesystem::path exePath =
-                    std::filesystem::temp_directory_path() /
-                    (oracleCase.id + (infer ? "_oracle.exe" : "_oracle_noinfer.exe"));
-                std::error_code ec;
-                std::filesystem::remove(exePath, ec);
+                const auto& oracleCase = caseFiles[idx];
+                CaseExecutionResult& res = results[idx];
+                res.oracleCase = oracleCase;
 
-                std::string errOut;
-                int status =
-                    bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
-                REQUIRE_MESSAGE(status == 0, ("Bronze build failed for " + casePath.string() +
-                                              mode + ": " + errOut).c_str());
-                REQUIRE(std::filesystem::exists(exePath));
-
-                RunResult run = runWithTimeout(exePath.string());
-                CHECK_MESSAGE(!run.timedOut, ("Compiled case did not finish within the timeout: " +
-                                              casePath.string() + mode).c_str());
-                if (run.ran) {
-                    CHECK_MESSAGE(expected == run.output,
-                                  ("Output differs from the pinned expectation for " +
-                                   oracleCase.id + mode).c_str());
+                std::string code;
+                res.codeReadOk = readFileBytes(oracleCase.entry, code);
+                if (res.codeReadOk) {
+                    res.hasNonDeterminism = (code.find("Date") != std::string::npos ||
+                                             code.find("Math.random") != std::string::npos);
                 }
-                std::filesystem::remove(exePath, ec);
+
+                std::filesystem::path expectedPath = oracleCase.entry;
+                expectedPath.replace_extension(".expected");
+                res.expectedPathStr = expectedPath.string();
+                res.expectedReadOk = readFileBytes(expectedPath, res.expected);
+
+                if (!res.codeReadOk || !res.expectedReadOk) continue;
+
+                // 1. Compile with inference on
+                std::filesystem::path exeInfer =
+                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle.exe");
+                std::error_code ec;
+                std::filesystem::remove(exeInfer, ec);
+
+                res.buildInferStatus = bronze::cli::runBuild(oracleCase.entry.string(),
+                                                             exeInfer.string(), &res.buildInferErr, true);
+                res.inferExeExists = std::filesystem::exists(exeInfer);
+
+                if (res.buildInferStatus == 0 && res.inferExeExists) {
+                    res.runInfer = runWithTimeout(exeInfer.string(), /*gcStress=*/false);
+                    // Same compiled binary re-run under GC stress to verify rooting without duplicate builds
+                    res.runInferGc = runWithTimeout(exeInfer.string(), /*gcStress=*/true);
+                }
+                std::filesystem::remove(exeInfer, ec);
+
+                // 2. Compile with --no-infer
+                std::filesystem::path exeNoInfer =
+                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle_noinfer.exe");
+                std::filesystem::remove(exeNoInfer, ec);
+
+                res.buildNoInferStatus = bronze::cli::runBuild(
+                    oracleCase.entry.string(), exeNoInfer.string(), &res.buildNoInferErr, false);
+                res.noInferExeExists = std::filesystem::exists(exeNoInfer);
+
+                if (res.buildNoInferStatus == 0 && res.noInferExeExists) {
+                    res.runNoInfer = runWithTimeout(exeNoInfer.string(), /*gcStress=*/false);
+                }
+                std::filesystem::remove(exeNoInfer, ec);
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(numJobs);
+        for (unsigned int i = 0; i < numJobs; ++i) {
+            threads.emplace_back(worker);
+        }
+        for (auto& t : threads) {
+            t.join();
+        }
+    });
+
+    // Report results sequentially to doctest
+    for (const auto& res : results) {
+        SUBCASE(res.oracleCase.id.c_str()) {
+            REQUIRE(res.codeReadOk);
+            CHECK_MESSAGE(!res.hasNonDeterminism, "Banned non-determinism (Date/Math.random) found in test case");
+            REQUIRE_MESSAGE(res.expectedReadOk,
+                            ("Missing pinned expectation " + res.expectedPathStr).c_str());
+
+            // Inference on
+            REQUIRE_MESSAGE(res.buildInferStatus == 0,
+                            ("Bronze build failed for " + res.oracleCase.entry.string() +
+                             " (inference on): " + res.buildInferErr).c_str());
+            REQUIRE(res.inferExeExists);
+            CHECK_MESSAGE(!res.runInfer.timedOut,
+                          ("Compiled case did not finish within the timeout: " +
+                           res.oracleCase.entry.string() + " (inference on)").c_str());
+            if (res.runInfer.ran) {
+                CHECK_MESSAGE(res.expected == res.runInfer.output,
+                              ("Output differs from the pinned expectation for " +
+                               res.oracleCase.id + " (inference on)").c_str());
+            }
+
+            // GC stress (inference on)
+            CHECK_MESSAGE(!res.runInferGc.timedOut,
+                          ("Compiled case did not finish within the timeout (gc-stress): " +
+                           res.oracleCase.entry.string()).c_str());
+            if (res.runInferGc.ran) {
+                CHECK_MESSAGE(res.expected == res.runInferGc.output,
+                              ("Output differs from the pinned expectation for " +
+                               res.oracleCase.id + " (gc-stress)").c_str());
+            }
+
+            // --no-infer
+            REQUIRE_MESSAGE(res.buildNoInferStatus == 0,
+                            ("Bronze build failed for " + res.oracleCase.entry.string() +
+                             " (--no-infer): " + res.buildNoInferErr).c_str());
+            REQUIRE(res.noInferExeExists);
+            CHECK_MESSAGE(!res.runNoInfer.timedOut,
+                          ("Compiled case did not finish within the timeout: " +
+                           res.oracleCase.entry.string() + " (--no-infer)").c_str());
+            if (res.runNoInfer.ran) {
+                CHECK_MESSAGE(res.expected == res.runNoInfer.output,
+                              ("Output differs from the pinned expectation for " +
+                               res.oracleCase.id + " (--no-infer)").c_str());
             }
         }
     }
@@ -317,18 +409,6 @@ TEST_CASE("Oracle blocked test suite") {
     }
 }
 
-// The milestone: unmodified three.js r160, compiled from its own source
-// (tests/oracle/threejs/README.md). It is a separate TEST_CASE and a separate
-// ctest test — `oracle-threejs`, label `threejs` — because compiling the
-// 28-file graph costs ~70 s, and a case sitting in `cases/` would be compiled
-// FOUR times per suite run (twice per mode, once per each of the two ctest
-// tests that share this binary). Here it is compiled once per mode.
-//
-// The gc-stress dimension is kept, because it is the one that has caught a
-// shipped rooting bug three times, but it is bought by re-RUNNING the
-// executable rather than by rebuilding it: the collector reads
-// BRONZE_GC_STRESS in the compiled program, not in the compiler, so a second
-// run of the same binary under that variable costs half a second.
 TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds") {
     std::filesystem::path dir = findTestDirectory(TEST_THREEJS_DIR, "tests/oracle/threejs");
     REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/threejs not found");
@@ -336,12 +416,6 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
     std::filesystem::path casePath = dir / "main.js";
     REQUIRE(std::filesystem::exists(casePath));
 
-    // The library reaches Math.random through MathUtils.generateUUID, so the
-    // determinism grep the other two suites apply to a case's source cannot
-    // apply here. What replaces it is stricter and is enforced by the
-    // expectation itself: every line main.js prints is a boolean, an integer
-    // or an exactly representable decimal, and the uuid it draws is never
-    // printed. See main.js's header.
     std::string expected;
     std::filesystem::path expectedPath = dir / "main.expected";
     REQUIRE_MESSAGE(readFileBytes(expectedPath, expected),
@@ -360,7 +434,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
                         ("Bronze failed to build three.js" + mode + ": " + errOut).c_str());
         REQUIRE(std::filesystem::exists(exePath));
 
-        RunResult run = runWithTimeout(exePath.string());
+        RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
         CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode).c_str());
         if (run.ran) {
             CHECK_MESSAGE(expected == run.output,
@@ -369,9 +443,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
 
         // Same executable, every allocation now moving the whole live set.
         if (infer) {
-            setGcStress(true);
-            RunResult stressed = runWithTimeout(exePath.string());
-            setGcStress(false);
+            RunResult stressed = runWithTimeout(exePath.string(), /*gcStress=*/true);
             CHECK_MESSAGE(!stressed.timedOut,
                           "three.js case did not finish within the timeout (gc-stress)");
             if (stressed.ran) {

@@ -14,7 +14,7 @@ static void writeTestFile(const std::filesystem::path& path, const std::string& 
     out << content;
 }
 
-static std::string runAndCaptureOutput(const std::filesystem::path& exePath) {
+[[maybe_unused]] static std::string runAndCaptureOutput(const std::filesystem::path& exePath) {
     std::string result;
 #ifdef _WIN32
     FILE* pipe = _popen(exePath.string().c_str(), "r");

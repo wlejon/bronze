@@ -73,13 +73,19 @@ Value makeArray(uint32_t count) {
 }
 
 // A function object with nothing special about it: the singleton table interns
-// on the code pointer, so one per test body is one object.
+// on the code pointer, so one per test body is one object. Distinct return values
+// prevent MSVC identical code folding (/O2) from merging their addresses.
 uint64_t dummyCode(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return BRONZE_ABI_UNDEFINED_BITS;
 }
 uint64_t otherCode(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    return BRONZE_ABI_UNDEFINED_BITS;
+    return BRONZE_ABI_NULL_BITS;
 }
+
+struct FatalGuard {
+    FatalGuard(FatalHandler handler) { setFatalHandler(handler); }
+    ~FatalGuard() { setFatalHandler(nullptr); }
+};
 
 struct ClearCell {
     ~ClearCell() { bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
@@ -227,15 +233,16 @@ TEST_CASE("a receiver bronze cannot record a level for is refused by name") {
     CHECK_FALSE(isFrozen(map.get()));
     CHECK_FALSE(isSealed(map.get()));
 
-    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
-    CHECK_THROWS_WITH_AS(freeze(map.get()),
-                         doctest::Contains("Object.freeze on a Map"), std::runtime_error);
-    CHECK_THROWS_WITH_AS(seal(map.get()), doctest::Contains("Object.seal on a Map"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(preventExtensions(map.get()),
-                         doctest::Contains("Object.preventExtensions on a Map"),
-                         std::runtime_error);
-    setFatalHandler(nullptr);
+    {
+        FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
+        CHECK_THROWS_WITH_AS(freeze(map.get()),
+                             doctest::Contains("Object.freeze on a Map"), std::runtime_error);
+        CHECK_THROWS_WITH_AS(seal(map.get()), doctest::Contains("Object.seal on a Map"),
+                             std::runtime_error);
+        CHECK_THROWS_WITH_AS(preventExtensions(map.get()),
+                             doctest::Contains("Object.preventExtensions on a Map"),
+                             std::runtime_error);
+    }
 }
 
 TEST_CASE("freezing a typed array with elements is the TypeError 10.4.5.3 gives") {
@@ -292,10 +299,16 @@ TEST_CASE("reading arguments.callee is a hard error naming both modes") {
     const uint64_t argv[1] = {Value::fromDouble(1.0).rawBits()};
     Rooted<Value> args{Value(bronze_arguments_object(1, argv))};
     Rooted<Value> key{rtMakeString("callee")};
+    ObjectHeader* props = args.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
 
-    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
-    CHECK_THROWS_WITH_AS(
-        Value(bronze_elem_get(args.get().rawBits(), key.get().rawBits())),
-        doctest::Contains("`arguments.callee`"), std::runtime_error);
-    setFatalHandler(nullptr);
+    std::string caught;
+    {
+        FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
+        try {
+            (void)props->getProp(rtHeap(), key, nullptr, args.slot_ptr());
+        } catch (const std::runtime_error& e) {
+            caught = e.what();
+        }
+    }
+    CHECK(caught.find("`arguments.callee`") != std::string::npos);
 }

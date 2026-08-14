@@ -8,15 +8,21 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #include <unistd.h>
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(disable: 4996)
 #endif
 
 #include "ast/dump.h"
@@ -198,53 +204,75 @@ std::filesystem::path getExecutableDir() {
 }
 
 std::optional<std::filesystem::path> findRuntimeLib() {
-    if (const char* envPath = std::getenv("BRONZE_RT_LIB")) {
-        std::filesystem::path p(envPath);
-        std::error_code ec;
-        if (std::filesystem::exists(p, ec)) return p;
-    }
-
-    std::vector<std::filesystem::path> candidates;
-    std::filesystem::path exeDir = getExecutableDir();
-
-    candidates.push_back(exeDir / "bronze_rt.lib");
-    candidates.push_back(exeDir / "../rt/bronze_rt.lib");
-    candidates.push_back(exeDir / "src/rt/bronze_rt.lib");
-    candidates.push_back(exeDir / "../../src/rt/bronze_rt.lib");
-
-    std::filesystem::path cwd = std::filesystem::current_path();
-    candidates.push_back(cwd / "bronze_rt.lib");
-    candidates.push_back(cwd / "src/rt/bronze_rt.lib");
-    candidates.push_back(cwd / "build/dev/src/rt/bronze_rt.lib");
-
-    for (const auto& cand : candidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(cand, ec)) {
-            return std::filesystem::canonical(cand, ec);
+    static std::optional<std::filesystem::path> s_cached;
+    static std::once_flag s_once;
+    std::call_once(s_once, [] {
+        if (const char* envPath = std::getenv("BRONZE_RT_LIB")) {
+            std::filesystem::path p(envPath);
+            std::error_code ec;
+            if (std::filesystem::exists(p, ec)) {
+                s_cached = p;
+                return;
+            }
         }
-    }
-    return std::nullopt;
+
+        std::vector<std::filesystem::path> candidates;
+        std::filesystem::path exeDir = getExecutableDir();
+
+        candidates.push_back(exeDir / "bronze_rt.lib");
+        candidates.push_back(exeDir / "../rt/bronze_rt.lib");
+        candidates.push_back(exeDir / "src/rt/bronze_rt.lib");
+        candidates.push_back(exeDir / "../../src/rt/bronze_rt.lib");
+
+        std::filesystem::path cwd = std::filesystem::current_path();
+        candidates.push_back(cwd / "bronze_rt.lib");
+        candidates.push_back(cwd / "src/rt/bronze_rt.lib");
+        candidates.push_back(cwd / "build/dev/src/rt/bronze_rt.lib");
+
+        for (const auto& cand : candidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(cand, ec)) {
+                s_cached = std::filesystem::canonical(cand, ec);
+                return;
+            }
+        }
+    });
+    return s_cached;
 }
 
 std::optional<std::filesystem::path> findRuntimeCpp() {
-    std::vector<std::filesystem::path> candidates;
-    std::filesystem::path exeDir = getExecutableDir();
+    static std::optional<std::filesystem::path> s_cached;
+    static std::once_flag s_once;
+    std::call_once(s_once, [] {
+        std::vector<std::filesystem::path> candidates;
+        std::filesystem::path exeDir = getExecutableDir();
 
-    candidates.push_back(exeDir / "../../src/rt/rt.cpp");
-    candidates.push_back(exeDir / "../src/rt/rt.cpp");
-    candidates.push_back(exeDir / "src/rt/rt.cpp");
+        candidates.push_back(exeDir / "../../src/rt/rt.cpp");
+        candidates.push_back(exeDir / "../src/rt/rt.cpp");
+        candidates.push_back(exeDir / "src/rt/rt.cpp");
 
-    std::filesystem::path cwd = std::filesystem::current_path();
-    candidates.push_back(cwd / "src/rt/rt.cpp");
+        std::filesystem::path cwd = std::filesystem::current_path();
+        candidates.push_back(cwd / "src/rt/rt.cpp");
 
-    for (const auto& cand : candidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(cand, ec)) {
-            return std::filesystem::canonical(cand, ec);
+        for (const auto& cand : candidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(cand, ec)) {
+                s_cached = std::filesystem::canonical(cand, ec);
+                return;
+            }
         }
-    }
-    return std::nullopt;
+    });
+    return s_cached;
 }
+
+struct LinkerState {
+    int workingIndex = -1;
+    std::string libStr;
+    std::string runtimeLibStr;
+    std::string runtimeWholeStr;
+    std::string cppStr;
+    std::mutex mutex;
+};
 
 bool linkExecutable(const std::string& objPath, const std::string& outputPath, DiagnosticSink& diags) {
     auto rtLib = findRuntimeLib();
@@ -255,51 +283,80 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
         return false;
     }
 
-    std::vector<std::string> commands;
-
-    if (rtLib) {
-        std::string libStr = rtLib->string();
-        // Compiled output links `bronze_rt`, everything `bronze_runtime`
-        // holds, and everything the RUNTIME links in turn — CMake does not
-        // merge static archives, so a module the runtime depends on has to be
-        // named here too. The list grows with `src/runtime/CMakeLists.txt`'s
-        // DEPS and is the one place that coupling lives.
-        static const char* const kRuntimeLibs[][2] = {
-            {"runtime", "bronze_runtime.lib"},
-            {"json", "bronze_json.lib"},
-            {"regex", "bronze_regex.lib"},
-        };
-        std::string runtimeLibStr;
-        std::string runtimeWholeStr;
-        for (const auto& lib : kRuntimeLibs) {
-            std::filesystem::path path = rtLib->parent_path() / lib[1];
-            if (!std::filesystem::exists(path)) {
-                path = rtLib->parent_path() / ".." / lib[0] / lib[1];
+    static LinkerState s_state;
+    static std::once_flag s_stringsOnce;
+    std::call_once(s_stringsOnce, [&] {
+        if (rtLib) {
+            s_state.libStr = rtLib->string();
+            static const char* const kRuntimeLibs[][2] = {
+                {"runtime", "bronze_runtime.lib"},
+                {"json", "bronze_json.lib"},
+                {"regex", "bronze_regex.lib"},
+            };
+            for (const auto& lib : kRuntimeLibs) {
+                std::filesystem::path path = rtLib->parent_path() / lib[1];
+                if (!std::filesystem::exists(path)) {
+                    path = rtLib->parent_path() / ".." / lib[0] / lib[1];
+                }
+                if (!std::filesystem::exists(path)) continue;
+                const std::string quoted = "\"" + path.string() + "\"";
+                s_state.runtimeLibStr += (s_state.runtimeLibStr.empty() ? "" : " ") + quoted;
+                s_state.runtimeWholeStr += (s_state.runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
             }
-            if (!std::filesystem::exists(path)) continue;
-            const std::string quoted = "\"" + path.string() + "\"";
-            runtimeLibStr += (runtimeLibStr.empty() ? "" : " ") + quoted;
-            runtimeWholeStr += (runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
         }
+        if (rtCpp) {
+            s_state.cppStr = rtCpp->string();
+        }
+    });
 
-        commands.push_back("lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
-        commands.push_back("lld-link /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
-        commands.push_back("link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr);
-        commands.push_back("link.exe /nologo /subsystem:console /wholearchive:\"" + libStr + "\" " + runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"");
-        commands.push_back("clang-cl /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
-        commands.push_back("cl.exe /nologo \"" + objPath + "\" \"" + libStr + "\" " + runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"");
+    auto makeCommand = [&](int index) -> std::string {
+        switch (index) {
+            case 0:
+                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+            case 1:
+                return "lld-link /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+            case 2:
+                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+            case 3:
+                return "link.exe /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+            case 4:
+                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
+            case 5:
+                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
+            case 6:
+                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+            case 7:
+                return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+            default:
+                return "";
+        }
+    };
+
+    int cachedIndex = -1;
+    {
+        std::lock_guard<std::mutex> lock(s_state.mutex);
+        cachedIndex = s_state.workingIndex;
     }
 
-    if (rtCpp) {
-        std::string cppStr = rtCpp->string();
-        commands.push_back("clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + cppStr + "\" /Fe:\"" + outputPath + "\"");
-        commands.push_back("cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + cppStr + "\" /Fe:\"" + outputPath + "\"");
-    }
-
-    for (const auto& cmd : commands) {
+    if (cachedIndex >= 0) {
+        std::string cmd = makeCommand(cachedIndex);
         int res = std::system(cmd.c_str());
         std::error_code ec;
         if (res == 0 && std::filesystem::exists(outputPath, ec)) {
+            return true;
+        }
+    }
+
+    const int totalCommands = (rtLib ? 6 : 0) + (rtCpp ? 2 : 0);
+    for (int i = 0; i < totalCommands; ++i) {
+        if (i == cachedIndex) continue;
+        std::string cmd = makeCommand(i);
+        if (cmd.empty()) continue;
+        int res = std::system(cmd.c_str());
+        std::error_code ec;
+        if (res == 0 && std::filesystem::exists(outputPath, ec)) {
+            std::lock_guard<std::mutex> lock(s_state.mutex);
+            s_state.workingIndex = i;
             return true;
         }
     }
@@ -420,6 +477,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath) {
 #if !BRONZE_WITH_LLVM
+    (void)sourcePath;
+    (void)outputPath;
     (void)infer;
     (void)timings;
     (void)emitObj;
