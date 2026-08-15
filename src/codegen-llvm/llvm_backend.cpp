@@ -31,7 +31,11 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
+#if __has_include(<llvm/TargetParser/Host.h>)
 #include <llvm/TargetParser/Host.h>
+#else
+#include <llvm/Support/Host.h>
+#endif
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_abi.h"
@@ -320,8 +324,8 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
     }
 
     llvm::TargetOptions opt;
-    auto targetMachine = target->createTargetMachine(targetTriple, "generic", "", opt,
-                                                     std::optional<llvm::Reloc::Model>());
+    auto targetMachine =
+        target->createTargetMachine(targetTriple, "generic", "", opt, {});
     if (!targetMachine) {
         diags.error(Span{}, "Failed to create LLVM target machine");
         return false;
@@ -335,9 +339,14 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
         return false;
     }
 
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 18
+    constexpr auto kObjFileType = llvm::CodeGenFileType::ObjectFile;
+#else
+    constexpr auto kObjFileType = llvm::CGFT_ObjectFile;
+#endif
+
     llvm::legacy::PassManager pass;
-    if (targetMachine->addPassesToEmitFile(pass, dest, nullptr,
-                                           llvm::CodeGenFileType::ObjectFile)) {
+    if (targetMachine->addPassesToEmitFile(pass, dest, nullptr, kObjFileType)) {
         diags.error(Span{}, "Target machine cannot emit object file for this target");
         return false;
     }
@@ -365,6 +374,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     lap("il-verify");
 
     llvm::LLVMContext ctx;
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR <= 14
+    ctx.enableOpaquePointers();
+#endif
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
     AbiFns abi;
@@ -414,6 +426,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         // The IL dump is the bisection seam: a module LLVM rejects almost
         // always names an IL construct that was lowered wrong.
         std::cerr << "IL Module Verification Failed:\n" << il::print(module) << "\n";
+        std::cerr << "LLVM Module Verification Error:\n" << errStr << "\n";
         diags.error(Span{}, "LLVM module verification failed: " + errStr);
         return false;
     }

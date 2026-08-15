@@ -224,13 +224,13 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
         }
         if (info->op == BinaryOp::NullishCoalescing &&
             mixesWith(lhs.get(), BinaryOp::LogicalAnd, BinaryOp::LogicalOr)) {
-            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            error("'?" "?' cannot be mixed with '&&' or '||' without parentheses");
             return nullptr;
         }
         if ((info->op == BinaryOp::LogicalAnd || info->op == BinaryOp::LogicalOr) &&
             mixesWith(lhs.get(), BinaryOp::NullishCoalescing,
                       BinaryOp::NullishCoalescing)) {
-            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            error("'?" "?' cannot be mixed with '&&' or '||' without parentheses");
             return nullptr;
         }
         advance();
@@ -243,7 +243,7 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
         if (!rhs) return nullptr;
         if (info->op == BinaryOp::NullishCoalescing &&
             mixesWith(rhs.get(), BinaryOp::LogicalAnd, BinaryOp::LogicalOr)) {
-            error("'??' cannot be mixed with '&&' or '||' without parentheses");
+            error("'?" "?' cannot be mixed with '&&' or '||' without parentheses");
             return nullptr;
         }
         auto bin = std::make_unique<Binary>();

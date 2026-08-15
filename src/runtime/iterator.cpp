@@ -83,8 +83,7 @@ Value namedProp(Value obj, StringHeader* key) {
 }
 
 StringHeader* internKey(const char* text) {
-    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(text));
-    return StringHeader::internToArena(rtArena(), tmp);
+    return StringHeader::createLatin1InArena(rtArena(), text, static_cast<uint32_t>(std::strlen(text)));
 }
 
 StringHeader* keyNext() {

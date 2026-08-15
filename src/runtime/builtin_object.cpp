@@ -253,10 +253,6 @@ static bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
 }
 
-static bool isFunction(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
-
 // A function's own keys, for the same one question `arrayHasOwnKey` above
 // answers and for the same reason: LISTING them is what needs somewhere to put
 // them, and testing for one does not.
@@ -299,18 +295,15 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
         return Value::fromBool(arrayHasOwnKey(args[0], key)).rawBits();
     }
-    if (isFunction(args[0])) {
-        // A function used to be refused here outright, on the grounds that
-        // bronze did not store `length` and `name` at all. It does now, so the
-        // answer is complete and the refusal was the thing that had gone stale.
-        Rooted<Value> fn{args[0]};
-        return Value::fromBool(functionHasOwnKey(fn, args[1])).rawBits();
-    }
     switch (rtObjectOwnKeysOf(args[0], "hasOwn")) {
         case ObjectOwnKeys::Threw:
             return Value::fromUndefined().rawBits();
         case ObjectOwnKeys::None:
             return Value::fromBool(false).rawBits();
+        case ObjectOwnKeys::Function: {
+            Rooted<Value> fn{args[0]};
+            return Value::fromBool(functionHasOwnKey(fn, args[1])).rawBits();
+        }
         case ObjectOwnKeys::StringChars: {
             // A symbol is never an own key of a String exotic object: 10.4.3.3
             // reports the indices and `length`, all of them strings.

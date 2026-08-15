@@ -227,10 +227,6 @@ const char* const kTypedArrayUnimplemented[] = {
     "toLocaleString",
 };
 
-const char* const kArrayBufferUnimplemented[] = {
-    "slice",
-};
-
 const char* const kTypedArraySlotMembers[] = {
     "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT", "constructor",
 };

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -201,6 +202,13 @@ std::filesystem::path getExecutableDir() {
     if (len > 0) {
         return std::filesystem::path(buffer).parent_path();
     }
+#elif defined(__linux__)
+    char buffer[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len > 0) {
+        buffer[len] = '\0';
+        return std::filesystem::path(buffer).parent_path();
+    }
 #endif
     return std::filesystem::current_path();
 }
@@ -235,15 +243,27 @@ std::optional<std::filesystem::path> findRuntimeLib() {
         std::vector<std::filesystem::path> candidates;
         std::filesystem::path exeDir = getExecutableDir();
 
-        candidates.push_back(exeDir / "bronze_rt.lib");
-        candidates.push_back(exeDir / "../rt/bronze_rt.lib");
-        candidates.push_back(exeDir / "src/rt/bronze_rt.lib");
-        candidates.push_back(exeDir / "../../src/rt/bronze_rt.lib");
+        const std::vector<const char*> libNames = {
+#ifdef _WIN32
+            "bronze_rt.lib", "libbronze_rt.a"
+#else
+            "libbronze_rt.a", "bronze_rt.lib"
+#endif
+        };
 
-        std::filesystem::path cwd = std::filesystem::current_path();
-        candidates.push_back(cwd / "bronze_rt.lib");
-        candidates.push_back(cwd / "src/rt/bronze_rt.lib");
-        candidates.push_back(cwd / "build/dev/src/rt/bronze_rt.lib");
+        for (const char* name : libNames) {
+            candidates.push_back(exeDir / name);
+            candidates.push_back(exeDir / "../rt" / name);
+            candidates.push_back(exeDir / "src/rt" / name);
+            candidates.push_back(exeDir / "../../src/rt" / name);
+
+            std::filesystem::path cwd = std::filesystem::current_path();
+            candidates.push_back(cwd / name);
+            candidates.push_back(cwd / "src/rt" / name);
+            candidates.push_back(cwd / "build/dev/src/rt" / name);
+            candidates.push_back(cwd / "build/src/rt" / name);
+            candidates.push_back(cwd / "build/Release/src/rt" / name);
+        }
 
         for (const auto& cand : candidates) {
             std::error_code ec;
@@ -286,6 +306,7 @@ struct LinkerState {
     std::string libStr;
     std::string runtimeLibStr;
     std::string runtimeWholeStr;
+    std::string unixRuntimeLibs;
     std::string cppStr;
     std::mutex mutex;
 };
@@ -295,7 +316,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
     auto rtCpp = findRuntimeCpp();
 
     if (!rtLib && !rtCpp) {
-        diags.error(Span{}, "Runtime library (bronze_rt.lib) or runtime source (rt.cpp) not found");
+        diags.error(Span{}, "Runtime library (libbronze_rt.a/bronze_rt.lib) or runtime source (rt.cpp) not found");
         return false;
     }
 
@@ -304,20 +325,30 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
     std::call_once(s_stringsOnce, [&] {
         if (rtLib) {
             s_state.libStr = rtLib->string();
-            static const char* const kRuntimeLibs[][2] = {
-                {"runtime", "bronze_runtime.lib"},
-                {"json", "bronze_json.lib"},
-                {"regex", "bronze_regex.lib"},
+            static const char* const kRuntimeLibs[][3] = {
+                {"runtime", "libbronze_runtime.a", "bronze_runtime.lib"},
+                {"json", "libbronze_json.a", "bronze_json.lib"},
+                {"regex", "libbronze_regex.a", "bronze_regex.lib"},
             };
             for (const auto& lib : kRuntimeLibs) {
-                std::filesystem::path path = rtLib->parent_path() / lib[1];
-                if (!std::filesystem::exists(path)) {
-                    path = rtLib->parent_path() / ".." / lib[0] / lib[1];
+                std::filesystem::path path;
+                for (int nameIdx = 1; nameIdx <= 2; ++nameIdx) {
+                    std::filesystem::path p1 = rtLib->parent_path() / lib[nameIdx];
+                    if (std::filesystem::exists(p1)) {
+                        path = p1;
+                        break;
+                    }
+                    std::filesystem::path p2 = rtLib->parent_path() / ".." / lib[0] / lib[nameIdx];
+                    if (std::filesystem::exists(p2)) {
+                        path = p2;
+                        break;
+                    }
                 }
-                if (!std::filesystem::exists(path)) continue;
+                if (path.empty()) continue;
                 const std::string quoted = "\"" + path.string() + "\"";
                 s_state.runtimeLibStr += (s_state.runtimeLibStr.empty() ? "" : " ") + quoted;
                 s_state.runtimeWholeStr += (s_state.runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
+                s_state.unixRuntimeLibs += (s_state.unixRuntimeLibs.empty() ? "" : " ") + quoted;
             }
         }
         if (rtCpp) {
@@ -326,6 +357,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
     });
 
     auto makeCommand = [&](int index) -> std::string {
+#ifdef _WIN32
         switch (index) {
             case 0:
                 return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
@@ -340,12 +372,42 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
             case 5:
                 return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
             case 6:
-                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+                return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 7:
+                return "g++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 8:
+                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+            case 9:
                 return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+            case 10:
+                return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 11:
+                return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
             default:
                 return "";
         }
+#else
+        switch (index) {
+            case 0:
+                return "clang++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 1:
+                return "g++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 2:
+                return "clang++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 3:
+                return "g++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 4:
+                return "clang++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 5:
+                return "g++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+            case 6:
+                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+            case 7:
+                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+            default:
+                return "";
+        }
+#endif
     };
 
     int cachedIndex = -1;
@@ -363,7 +425,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
         }
     }
 
-    const int totalCommands = (rtLib ? 6 : 0) + (rtCpp ? 2 : 0);
+    const int totalCommands = 12;
     for (int i = 0; i < totalCommands; ++i) {
         if (i == cachedIndex) continue;
         std::string cmd = makeCommand(i);
@@ -377,7 +439,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
         }
     }
 
-    diags.error(Span{}, "Failed to link executable with available toolchain (lld-link, link, clang-cl, cl)");
+    diags.error(Span{}, "Failed to link executable with available toolchain (clang++, g++, lld-link, link, clang-cl, cl)");
     return false;
 }
 
@@ -392,8 +454,13 @@ std::filesystem::path uniqueTempObjPath(const std::string& sourcePath) {
 #endif
     uint64_t count = g_tempObjCounter.fetch_add(1, std::memory_order_relaxed);
     std::string stem = std::filesystem::path(sourcePath).stem().string();
+#ifdef _WIN32
     std::string filename =
         stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + "_temp.obj";
+#else
+    std::string filename =
+        stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + "_temp.o";
+#endif
     return std::filesystem::temp_directory_path() / filename;
 }
 

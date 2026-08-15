@@ -215,7 +215,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* transSlotsBase =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
         llvm::Value* transSlotPtr =
-            builder.CreateInBoundsGEP(i64Ty, transSlotsBase, {transSlot32});
+            builder.CreateInBoundsGEP(i64Ty, transSlotsBase, transSlot32);
         builder.CreateAlignedStore(valBits, transSlotPtr, llvm::Align(8));
         builder.CreateBr(doneBb);
     } else {
@@ -232,7 +232,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.SetInsertPoint(inlineHitBb);
     llvm::Value* slotsBase =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
-    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, {slot32});
+    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
     builder.CreateAlignedStore(valBits, inlineSlotPtr, llvm::Align(8));
     builder.CreateBr(doneBb);
 
@@ -251,7 +251,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
-    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, {slotIdx});
+    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
     builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
     builder.CreateBr(doneBb);
 
@@ -495,7 +495,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.SetInsertPoint(protoInlineBb);
     llvm::Value* holderSlots =
         builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
-    llvm::Value* holderSlotPtr = builder.CreateInBoundsGEP(i64Ty, holderSlots, {protoSlot32});
+    llvm::Value* holderSlotPtr = builder.CreateInBoundsGEP(i64Ty, holderSlots, protoSlot32);
     llvm::Value* protoHitInlineVal =
         builder.CreateAlignedLoad(i64Ty, holderSlotPtr, llvm::Align(8), "proto.hit.inline.val");
     builder.CreateBr(doneBb);
@@ -516,7 +516,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* protoOverflowObj = builder.CreateIntToPtr(protoOverflowAddr, ptrTy);
     llvm::Value* protoSlotIdx = builder.CreateSub(protoSlot32, builder.getInt32(3));
     llvm::Value* protoOverflowSlotPtr =
-        builder.CreateInBoundsGEP(i64Ty, protoOverflowObj, {protoSlotIdx});
+        builder.CreateInBoundsGEP(i64Ty, protoOverflowObj, protoSlotIdx);
     llvm::Value* protoHitOverflowVal =
         builder.CreateAlignedLoad(i64Ty, protoOverflowSlotPtr, llvm::Align(8), "proto.hit.overflow.val");
     builder.CreateBr(doneBb);
@@ -531,7 +531,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.SetInsertPoint(inlineHitBb);
     llvm::Value* slotsBase =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
-    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, {slot32});
+    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
     llvm::Value* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), "ic.inline.val");
     builder.CreateBr(doneBb);
 
@@ -550,7 +550,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
-    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, {slotIdx});
+    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
     llvm::Value* overflowValLoaded =
         builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), "ic.overflow.val");
     builder.CreateBr(doneBb);

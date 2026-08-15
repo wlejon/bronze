@@ -8,16 +8,6 @@ namespace bronze {
 
 using namespace ast;
 
-namespace {
-
-// The IL symbol a class's `[Symbol.iterator]` method compiles to. A computed
-// key has no NAME — the two fields of a class member are never both meaningful
-// — but a function still needs a symbol, and this one cannot collide with a
-// method a program wrote: a source identifier cannot contain a dot.
-constexpr const char* kIteratorMethodSymbol = "Symbol.iterator";
-
-}  // namespace
-
 StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultName) {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionDecl>();

@@ -301,6 +301,7 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
         // Values of these kinds are boxed in the IL, so `Dynamic` is what
         // the return-statement rule would have produced anyway; saying it
         // up front is what makes the signature authoritative.
+        case types::TypeKind::Null:
         case types::TypeKind::String:
         case types::TypeKind::Object:
         case types::TypeKind::Function:

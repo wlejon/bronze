@@ -131,6 +131,7 @@ bool functionFreelyReferences(const std::vector<Param>& params, const std::vecto
 // whenever the closure binds the name itself.
 class NestedFunctionRefVisitor : public CaptureVisitor {
 public:
+    using CaptureVisitor::visit;
     explicit NestedFunctionRefVisitor(std::string name) : name_(std::move(name)) {}
     bool found = false;
 
@@ -177,6 +178,7 @@ protected:
 // reverse is a silently wrong capture.
 class FreeMentionVisitor final : public NestedFunctionRefVisitor {
 public:
+    using NestedFunctionRefVisitor::visit;
     using NestedFunctionRefVisitor::NestedFunctionRefVisitor;
 
     void visit(const Ident& i) override {

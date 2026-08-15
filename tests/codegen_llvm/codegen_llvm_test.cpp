@@ -338,10 +338,11 @@ TEST_CASE("LLVM backend exports only bronze_main") {
 
     auto binOrErr = llvm::object::ObjectFile::createObjectFile(outPath.string());
     REQUIRE(static_cast<bool>(binOrErr));
-    auto* coff = llvm::dyn_cast<llvm::object::COFFObjectFile>(binOrErr->getBinary());
-    REQUIRE(coff != nullptr);
+    auto* obj = llvm::dyn_cast<llvm::object::ObjectFile>(binOrErr->getBinary());
+    REQUIRE(obj != nullptr);
+    auto* coff = llvm::dyn_cast<llvm::object::COFFObjectFile>(obj);
     bool sawMain = false;
-    for (const llvm::object::SymbolRef& sym : coff->symbols()) {
+    for (const llvm::object::SymbolRef& sym : obj->symbols()) {
         auto flagsOrErr = sym.getFlags();
         REQUIRE(static_cast<bool>(flagsOrErr));
         if (!(*flagsOrErr & llvm::object::SymbolRef::SF_Global)) continue;
@@ -355,11 +356,13 @@ TEST_CASE("LLVM backend exports only bronze_main") {
         // COMDAT globals (constant pools like __real@…) deduplicate by
         // design; they are not in the linker's flat namespace the way a
         // plain global definition is.
-        auto secOrErr = sym.getSection();
-        REQUIRE(static_cast<bool>(secOrErr));
-        if (*secOrErr != coff->section_end()) {
-            const llvm::object::coff_section* cs = coff->getCOFFSection(**secOrErr);
-            if (cs->Characteristics & kCoffComdatFlag) continue;
+        if (coff != nullptr) {
+            auto secOrErr = sym.getSection();
+            REQUIRE(static_cast<bool>(secOrErr));
+            if (*secOrErr != coff->section_end()) {
+                const llvm::object::coff_section* cs = coff->getCOFFSection(**secOrErr);
+                if (cs->Characteristics & kCoffComdatFlag) continue;
+            }
         }
         const std::string symName(nameOrErr->str());
         CAPTURE(symName);

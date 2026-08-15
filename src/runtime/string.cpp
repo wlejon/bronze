@@ -284,4 +284,18 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     return static_cast<StringHeader*>(mem);
 }
 
+StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len) {
+    size_t total = sizeof(StringHeader) + len + 1;
+    void* mem = arena.allocate(total, alignof(StringHeader));
+    auto* hdr = static_cast<StringHeader*>(mem);
+    hdr->header.tag = static_cast<uint16_t>(Tag::String);
+    hdr->header.flags = 0;
+    hdr->header.size = static_cast<uint32_t>(total);
+    hdr->length = len;
+    hdr->flags = 0;
+    std::memcpy(hdr + 1, str, len);
+    hdr->latin1Data()[len] = '\0';
+    return hdr;
+}
+
 }  // namespace bronze
