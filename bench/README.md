@@ -9,19 +9,28 @@ Measures execution performance across compilation modes (inferred native layouts
 
 ## Running Benchmarks
 
-Run via the bash runner:
+Run via PowerShell (Windows native) or Bash:
 
-```bash
-bench/run_benchmarks.sh          # Full suite (5 runs per case, warmup discarded)
-bench/run_benchmarks.sh --pure-only   # Pure-compute scenes only (no GL/DOM)
-bench/run_benchmarks.sh --render-only # Bro WebGL/scenegraph render scenes only
-bench/run_benchmarks.sh --filter math # Filter benchmarks by name/description
-bench/run_benchmarks.sh --json        # Machine-readable JSON-lines only
+```powershell
+# PowerShell (Windows native):
+.\bench\bench.ps1                      # Full suite (5 runs per case, warmup discarded)
+.\bench\bench.ps1 -Quick               # Fast iteration (3 runs, infer-only, ~30-45s)
+.\bench\bench.ps1 -Filter math         # Filter benchmarks by name/description
+.\bench\bench.ps1 -Profile             # Capture top ABI helper calls and IC misses
+.\bench\bench.ps1 -Cached              # Reuse compiled binaries if sources unchanged
+.\bench\bench.ps1 -PureOnly            # Pure-compute scenes only (no GL/DOM)
 ```
 
-Or via the alias:
 ```bash
-./bench/bench.sh
+# Bash:
+bench/run_benchmarks.sh                # Full suite (5 runs per case, warmup discarded)
+bench/run_benchmarks.sh --quick        # Fast iteration (3 runs, infer-only, ~30-45s)
+bench/run_benchmarks.sh --filter math  # Filter benchmarks by name/description
+bench/run_benchmarks.sh --profile      # Capture top ABI helper calls and IC misses
+bench/run_benchmarks.sh --cached       # Reuse compiled binaries if sources unchanged
+bench/run_benchmarks.sh --pure-only    # Pure-compute scenes only (no GL/DOM)
+bench/run_benchmarks.sh --render-only  # Bro WebGL/scenegraph render scenes only
+bench/run_benchmarks.sh --json         # Machine-readable JSON-lines only
 ```
 
 ## Benchmark Suite Catalog

@@ -6,11 +6,12 @@
 #   1. Compiled with Inference (default AOT with native layout proofs)
 #   2. Compiled without Inference (--no-infer uniform dynamic convention)
 #   3. Host Compiled vs Interpreted (for Bro WebGL/Scene render benchmarks)
+#   4. Pinned Node.js Baseline Comparison (Node v24.2.0 out-of-band reference)
 #
 # HARD RULES (CLAUDE.md):
 #   - Automated runner MUST NEVER invoke node.
 #   - No sleep/poll loops.
-#   - Median of >= 5 timed runs, warmup run discarded.
+#   - Median of >= 5 timed runs (or >= 3 under --quick), warmup run discarded.
 #   - Produces machine-readable JSON lines and a clean human Markdown table.
 # ==============================================================================
 
@@ -25,13 +26,23 @@ PURE_ONLY=0
 RENDER_ONLY=0
 ALLOW_DEBUG=0
 JSON_ONLY=0
+INFER_ONLY=0
+NOINFER_ONLY=0
+DO_PROFILE=0
+USE_CACHED=0
 JSONL_OUT="$SCRIPT_DIR/results.jsonl"
+BASELINES_FILE="$SCRIPT_DIR/node_baselines.json"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
 Options:
+  --quick            Fast iteration mode (3 runs, infer-only, runs in ~30s)
+  --infer-only       Run only default inference mode (skip --no-infer builds/runs)
+  --no-infer-only    Run only --no-infer mode
+  --profile          Capture top ABI helper calls and IC misses per benchmark
+  --cached           Reuse existing compiled binaries if newer than source
   --runs N           Number of timed runs per benchmark (default: 5, warmup discarded)
   --filter PATTERN   Run only benchmarks matching PATTERN (case-insensitive)
   --pure-only        Run only pure-compute benchmarks (no GL/DOM)
@@ -50,6 +61,28 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --quick)
+            RUNS=3
+            INFER_ONLY=1
+            PURE_ONLY=1
+            shift
+            ;;
+        --infer-only)
+            INFER_ONLY=1
+            shift
+            ;;
+        --no-infer-only)
+            NOINFER_ONLY=1
+            shift
+            ;;
+        --profile)
+            DO_PROFILE=1
+            shift
+            ;;
+        --cached|--no-rebuild)
+            USE_CACHED=1
+            shift
+            ;;
         --runs)
             RUNS="$2"
             shift 2
@@ -139,7 +172,6 @@ detect_build_type() {
         echo "Debug"
         return 0
     fi
-    # Fallback inspection on binary path
     if [[ "$bin" =~ [Rr]elease || "$bin" =~ /dev/ ]]; then
         echo "Release"
         return 0
@@ -198,8 +230,6 @@ if [[ -n "$BRO_PATH" ]]; then
 fi
 
 # --- Python timing and statistics helper ---
-# Executes a command N+1 times (1 warmup + N measured runs), computes stats,
-# returns JSON with timings and last stdout.
 time_command_json() {
     local cmd_json="$1"
     local runs="$2"
@@ -240,7 +270,6 @@ mx = max(timings)
 mean_val = statistics.mean(timings)
 stdev_val = statistics.stdev(timings) if len(timings) > 1 else 0.0
 
-# Extract clean checksum line from combined stdout & stderr
 combined_lines = [line.strip() for line in (last_out + "\n" + last_err).splitlines() if line.strip()]
 checksum_line = ""
 for line in reversed(combined_lines):
@@ -264,6 +293,80 @@ print(json.dumps({
 ' "$cmd_json" "$runs"
 }
 
+# --- Profile run helper ---
+profile_command_json() {
+    local cmd_json="$1"
+    python3 -c '
+import sys, subprocess, json, os
+
+cmd = json.loads(sys.argv[1])
+env = os.environ.copy()
+env["BRONZE_PROFILE"] = "1"
+env["BRONZE_IC_LOG"] = "1"
+env["BRONZE_GC_LOG"] = "1"
+env["WSLENV"] = "BRONZE_PROFILE:BRONZE_IC_LOG:BRONZE_GC_LOG"
+
+try:
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    output = (p.stdout or "") + "\n" + (p.stderr or "")
+    
+    # Parse total helpers and top 3 helpers
+    top_helpers = []
+    total_helpers = 0
+    in_profile = False
+    for line in output.splitlines():
+        line_s = line.strip()
+        if "Total Dynamic ABI Helper Invocations:" in line_s:
+            parts = line_s.split(":")
+            if len(parts) > 1:
+                try:
+                    total_helpers = int(parts[1].strip())
+                except:
+                    pass
+        elif "=== Bronze Runtime Profile" in line_s:
+            in_profile = True
+        elif in_profile and line_s.startswith("---"):
+            continue
+        elif in_profile and ("=== Bronze GC Log" in line_s or line_s.startswith("===")):
+            in_profile = False
+        elif in_profile and line_s:
+            parts = line_s.split()
+            if len(parts) >= 2 and parts[0].startswith("bronze_"):
+                hname = parts[0]
+                try:
+                    hcount = int(parts[1])
+                    top_helpers.append({"name": hname, "count": hcount})
+                except:
+                    pass
+
+    # Parse top IC miss reason
+    top_miss = ""
+    in_miss = False
+    for line in output.splitlines():
+        line_s = line.strip()
+        if "--- bronze_prop_get Misses by Reason" in line_s or "--- bronze_prop_set Misses by Reason" in line_s:
+            in_miss = True
+        elif in_miss and line_s.startswith("---"):
+            continue
+        elif in_miss and line_s.startswith("==="):
+            in_miss = False
+        elif in_miss and line_s and not top_miss:
+            parts = line_s.split()
+            if len(parts) >= 2:
+                top_miss = f"{parts[0]} ({parts[1]})"
+                in_miss = False
+
+    res = {
+        "total_helpers": total_helpers,
+        "top_helpers": top_helpers[:3],
+        "top_miss": top_miss
+    }
+    print(json.dumps(res))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+' "$cmd_json"
+}
+
 # --- Benchmark Registry ---
 PURE_BENCHMARKS=(
     "three_math.js:Three.js Vector3/Matrix4 math loop against vendored three.js"
@@ -279,7 +382,6 @@ PURE_BENCHMARKS=(
     "typed_array_loop.js:TypedArray element access vs plain array view"
 )
 
-# Initialize output JSONL file
 mkdir -p "$(dirname "$JSONL_OUT")"
 rm -f "$JSONL_OUT"
 
@@ -290,13 +392,15 @@ if [[ $JSON_ONLY -eq 0 ]]; then
     echo "Bronze CLI : $BRONZE_BIN"
     echo "Build Type : $BUILD_TYPE"
     echo "Runs / case: $RUNS (+ 1 warmup discarded)"
+    echo "Mode       : $([ $INFER_ONLY -eq 1 ] && echo 'Inference only' || ([ $NOINFER_ONLY -eq 1 ] && echo 'No-Infer only' || echo 'Both (Infer & No-Infer)'))"
+    if [[ $DO_PROFILE -eq 1 ]]; then
+        echo "Profiling  : Enabled (capturing ABI helpers & IC misses)"
+    fi
     if [[ -n "$BRO_PATH" ]]; then
         echo "Bro Tree   : $BRO_PATH"
     fi
     echo ""
 fi
-
-RESULTS_JSON="[]"
 
 # --- Execute Pure Compute Benchmarks ---
 if [[ $RENDER_ONLY -eq 0 ]]; then
@@ -316,73 +420,118 @@ if [[ $RENDER_ONLY -eq 0 ]]; then
 
         exe_infer="$SCRIPT_DIR/${bench_file%.js}_infer.exe"
         exe_noinfer="$SCRIPT_DIR/${bench_file%.js}_noinfer.exe"
-
-        # 1. Compile with default inference
         win_js="$(to_win_path "$js_path")"
         win_exe_infer="$(to_win_path "$exe_infer")"
         win_exe_noinfer="$(to_win_path "$exe_noinfer")"
 
-        "$BRONZE_BIN" build "$win_js" -o "$win_exe_infer" >/dev/null 2>&1
-        BUILD_STATUS_INFER=$?
-
-        # 2. Compile without inference (--no-infer)
-        "$BRONZE_BIN" build "$win_js" -o "$win_exe_noinfer" --no-infer >/dev/null 2>&1
-        BUILD_STATUS_NOINFER=$?
-
-        if [[ $BUILD_STATUS_INFER -ne 0 || ! -f "$exe_infer" ]]; then
-            echo "Error: Failed to build $bench_file (infer mode)" >&2
-            rm -f "$exe_infer" "$exe_noinfer"
-            continue
+        # 1. Compile with default inference
+        if [[ $NOINFER_ONLY -eq 0 ]]; then
+            if [[ $USE_CACHED -eq 0 || ! -f "$exe_infer" || "$js_path" -nt "$exe_infer" || "$BRONZE_BIN" -nt "$exe_infer" ]]; then
+                "$BRONZE_BIN" build "$win_js" -o "$win_exe_infer" >/dev/null 2>&1
+                BUILD_STATUS_INFER=$?
+                if [[ $BUILD_STATUS_INFER -ne 0 || ! -f "$exe_infer" ]]; then
+                    echo "Error: Failed to build $bench_file (infer mode)" >&2
+                    continue
+                fi
+            fi
         fi
 
-        if [[ $BUILD_STATUS_NOINFER -ne 0 || ! -f "$exe_noinfer" ]]; then
-            echo "Error: Failed to build $bench_file (--no-infer mode)" >&2
-            rm -f "$exe_infer" "$exe_noinfer"
-            continue
+        # 2. Compile without inference (--no-infer)
+        if [[ $INFER_ONLY -eq 0 ]]; then
+            if [[ $USE_CACHED -eq 0 || ! -f "$exe_noinfer" || "$js_path" -nt "$exe_noinfer" || "$BRONZE_BIN" -nt "$exe_noinfer" ]]; then
+                "$BRONZE_BIN" build "$win_js" -o "$win_exe_noinfer" --no-infer >/dev/null 2>&1
+                BUILD_STATUS_NOINFER=$?
+                if [[ $BUILD_STATUS_NOINFER -ne 0 || ! -f "$exe_noinfer" ]]; then
+                    echo "Error: Failed to build $bench_file (--no-infer mode)" >&2
+                    continue
+                fi
+            fi
         fi
 
         # Time infer executable
-        cmd_infer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_infer")"
-        stats_infer="$(time_command_json "$cmd_infer_json" "$RUNS")"
+        stats_infer="{}"
+        profile_infer="{}"
+        if [[ $NOINFER_ONLY -eq 0 && -f "$exe_infer" ]]; then
+            cmd_infer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_infer")"
+            stats_infer="$(time_command_json "$cmd_infer_json" "$RUNS")"
+            if [[ $DO_PROFILE -eq 1 ]]; then
+                profile_infer="$(profile_command_json "$cmd_infer_json")"
+            fi
+        fi
 
         # Time no-infer executable
-        cmd_noinfer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_noinfer")"
-        stats_noinfer="$(time_command_json "$cmd_noinfer_json" "$RUNS")"
+        stats_noinfer="{}"
+        if [[ $INFER_ONLY -eq 0 && -f "$exe_noinfer" ]]; then
+            cmd_noinfer_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1]]))" "$exe_noinfer")"
+            stats_noinfer="$(time_command_json "$cmd_noinfer_json" "$RUNS")"
+        fi
 
-        # Clean up executables
-        rm -f "$exe_infer" "$exe_noinfer"
+        # Clean up if caching not requested
+        if [[ $USE_CACHED -eq 0 ]]; then
+            rm -f "$exe_infer" "$exe_noinfer"
+        fi
 
-        # Parse stats
+        # Parse stats and combine with Node baseline
         record_json="$(python3 -c '
-import sys, json
+import sys, json, os
 
 name = sys.argv[1]
 desc = sys.argv[2]
-st_inf = json.loads(sys.argv[3])
-st_noinf = json.loads(sys.argv[4])
+st_inf = json.loads(sys.argv[3]) if sys.argv[3] else {}
+st_noinf = json.loads(sys.argv[4]) if sys.argv[4] else {}
 btype = sys.argv[5]
+baselines_file = sys.argv[6]
+prof_inf = json.loads(sys.argv[7]) if sys.argv[7] else {}
+
+node_med = None
+node_out = ""
+if os.path.exists(baselines_file):
+    try:
+        with open(baselines_file, "r") as f:
+            bdata = json.load(f)
+            benches = bdata.get("benchmarks", {})
+            if name in benches:
+                node_med = benches[name].get("median_ms")
+                node_out = benches[name].get("checksum", "")
+    except:
+        pass
 
 if "error" in st_inf or "error" in st_noinf:
     err = st_inf.get("error", "") + " " + st_noinf.get("error", "")
     print(json.dumps({"name": name, "category": "pure-compute", "build_type": btype, "error": err.strip()}))
     sys.exit(0)
 
-inf_med = st_inf["median_ms"]
-noinf_med = st_noinf["median_ms"]
-speedup = round(noinf_med / inf_med, 2) if inf_med > 0 else 1.0
+inf_med = st_inf.get("median_ms")
+noinf_med = st_noinf.get("median_ms")
+speedup = round(noinf_med / inf_med, 2) if (inf_med and noinf_med and inf_med > 0) else 1.0
+
+vs_node = round(node_med / inf_med, 2) if (node_med and inf_med and inf_med > 0) else None
+
+status = "N/A"
+if vs_node is not None:
+    if vs_node >= 1.05:
+        status = "WIN"
+    elif vs_node >= 0.95:
+        status = "PARITY"
+    else:
+        status = "BEHIND"
 
 record = {
     "name": name,
     "description": desc,
     "category": "pure-compute",
     "build_type": btype,
-    "infer": st_inf,
-    "noinfer": st_noinf,
+    "infer": st_inf if st_inf else None,
+    "noinfer": st_noinf if st_noinf else None,
     "infer_speedup": speedup,
-    "output_match": (st_inf["output"] == st_noinf["output"])
+    "node_median_ms": node_med,
+    "vs_node": vs_node,
+    "status": status,
+    "profile": prof_inf if prof_inf else None,
+    "output_match": (st_inf.get("output") == st_noinf.get("output")) if (st_inf and st_noinf) else True
 }
 print(json.dumps(record))
-' "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE")"
+' "$bench_file" "$bench_desc" "$stats_infer" "$stats_noinfer" "$BUILD_TYPE" "$BASELINES_FILE" "$profile_infer")"
 
         echo "$record_json" >> "$JSONL_OUT"
 
@@ -395,7 +544,7 @@ fi
 # --- Execute Render Benchmarks (Bro Host) ---
 if [[ $PURE_ONLY -eq 0 && -n "$BRO_PATH" ]]; then
     # 1. Bro Bronze Host SceneGraph (compiled)
-    if [[ -f "$BRO_HOST_SCENEGRAPH" ]]; then
+    if [[ -f "$BRO_HOST_SCENEGRAPH" && ( -z "$FILTER" || "render_scenegraph_host" =~ $FILTER || "scenegraph" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/src/bronze_host/app/appdir"
         win_appdir="$(to_win_path "$appdir")"
         cmd_host_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_SCENEGRAPH" "$win_appdir")"
@@ -413,6 +562,9 @@ record = {
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
+    "node_median_ms": None,
+    "vs_node": None,
+    "status": "HOST",
     "output_match": True
 }
 print(json.dumps(record))
@@ -424,7 +576,7 @@ print(json.dumps(record))
     fi
 
     # 2. Bro Bronze Host Wild Orbit (compiled)
-    if [[ -f "$BRO_HOST_WILD" ]]; then
+    if [[ -f "$BRO_HOST_WILD" && ( -z "$FILTER" || "render_wild_orbit_host" =~ $FILTER || "wild" =~ $FILTER || "orbit" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/tests/bronze_host/appdir_wild"
         win_appdir="$(to_win_path "$appdir")"
         cmd_wild_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_WILD" "$win_appdir")"
@@ -442,6 +594,9 @@ record = {
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
+    "node_median_ms": None,
+    "vs_node": None,
+    "status": "HOST",
     "output_match": True
 }
 print(json.dumps(record))
@@ -453,7 +608,7 @@ print(json.dumps(record))
     fi
 
     # 3. Bro Bronze Host Instanced Mesh (compiled)
-    if [[ -f "$BRO_HOST_INSTANCED" ]]; then
+    if [[ -f "$BRO_HOST_INSTANCED" && ( -z "$FILTER" || "render_instanced_host" =~ $FILTER || "instanced" =~ $FILTER ) ]]; then
         appdir="$BRO_PATH/tests/bronze_host/appdir_instanced"
         win_appdir="$(to_win_path "$appdir")"
         cmd_inst_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_INSTANCED" "$win_appdir")"
@@ -471,6 +626,9 @@ record = {
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
+    "node_median_ms": None,
+    "vs_node": None,
+    "status": "HOST",
     "output_match": True
 }
 print(json.dumps(record))
@@ -482,7 +640,7 @@ print(json.dumps(record))
     fi
 
     # 4. Bro Headless Interpreted (QuickJS)
-    if [[ -f "$BRO_HEADLESS" && -f "$SCRIPT_DIR/render_bench_interpreted.js" ]]; then
+    if [[ -f "$BRO_HEADLESS" && -f "$SCRIPT_DIR/render_bench_interpreted.js" && ( -z "$FILTER" || "render_interpreted_bro" =~ $FILTER || "interpreted" =~ $FILTER ) ]]; then
         smoke_dir="$BRO_PATH/tests/_smoke_app"
         script_file="$SCRIPT_DIR/render_bench_interpreted.js"
         win_smoke="$(to_win_path "$smoke_dir")"
@@ -502,6 +660,9 @@ record = {
     "infer": st,
     "noinfer": None,
     "infer_speedup": 1.0,
+    "node_median_ms": None,
+    "vs_node": None,
+    "status": "INTERP",
     "output_match": True
 }
 print(json.dumps(record))
@@ -519,6 +680,7 @@ if [[ $JSON_ONLY -eq 0 ]]; then
 import sys, json
 
 jsonl_file = sys.argv[1]
+do_prof = int(sys.argv[2])
 records = []
 try:
     with open(jsonl_file, "r") as f:
@@ -534,9 +696,9 @@ if not records:
     print("No benchmark results generated.")
     sys.exit(0)
 
-print("\n### Pure-Compute Benchmarks (Compiled Native)")
-print("| Benchmark | Inferred (ms) | No-Infer (ms) | Speedup (Infer) | Checksum / Output |")
-print("|---|---|---|---|---|")
+print("\n### Pure-Compute Benchmarks (Compiled Native vs Node.js Baseline)")
+print("| Benchmark | Inferred (ms) | Node.js (ms) | vs Node | Status | No-Infer (ms) | Speedup (Infer) | Checksum / Output |")
+print("|---|---|---|---|---|---|---|---|")
 
 for r in records:
     if r.get("category") != "pure-compute":
@@ -544,15 +706,44 @@ for r in records:
     name = r.get("name", "")
     if "error" in r:
         err = r.get("error", "")
-        print("| `" + name + "` | ERROR | ERROR | - | " + err + " |")
+        print(f"| `{name}` | ERROR | - | - | ERROR | - | - | {err} |")
         continue
     inf_st = r.get("infer") or {}
     noinf_st = r.get("noinfer") or {}
-    inf_med = "{:.2f}".format(inf_st.get("median_ms", 0.0))
-    noinf_med = "{:.2f}".format(noinf_st.get("median_ms", 0.0))
-    speedup = "{:.2f}x".format(r.get("infer_speedup", 1.0))
-    out = inf_st.get("output", "")
-    print("| `" + name + "` | **" + inf_med + "** | " + noinf_med + " | **" + speedup + "** | `" + out + "` |")
+    inf_med = "{:.2f}".format(inf_st.get("median_ms", 0.0)) if inf_st else "-"
+    noinf_med = "{:.2f}".format(noinf_st.get("median_ms", 0.0)) if noinf_st else "-"
+    speedup = "{:.2f}x".format(r.get("infer_speedup", 1.0)) if (inf_st and noinf_st) else "-"
+    
+    node_med = "{:.2f}".format(r["node_median_ms"]) if r.get("node_median_ms") is not None else "-"
+    vs_node = "{:.2f}x".format(r["vs_node"]) if r.get("vs_node") is not None else "-"
+    status = r.get("status", "-")
+    if status == "WIN":
+        status_badge = "**WIN**"
+    elif status == "PARITY":
+        status_badge = "PARITY"
+    elif status == "BEHIND":
+        status_badge = "BEHIND"
+    else:
+        status_badge = "-"
+
+    out = inf_st.get("output", "") if inf_st else noinf_st.get("output", "")
+    print(f"| `{name}` | **{inf_med}** | {node_med} | **{vs_node}** | {status_badge} | {noinf_med} | {speedup} | `{out}` |")
+
+if do_prof:
+    print("\n#### Profile Miss Breakdown (--profile)")
+    print("| Benchmark | Total Helpers | Top ABI Helpers | Top IC Miss Reason |")
+    print("|---|---|---|---|")
+    for r in records:
+        if r.get("category") != "pure-compute":
+            continue
+        name = r.get("name", "")
+        prof = r.get("profile") or {}
+        if not prof:
+            continue
+        tot = prof.get("total_helpers", 0)
+        helpers = ", ".join([f"{h['name']}: {h['count']}" for h in prof.get("top_helpers", [])]) or "None"
+        top_miss = prof.get("top_miss") or "None"
+        print(f"| `{name}` | {tot:,} | {helpers} | {top_miss} |")
 
 render_records = [r for r in records if r.get("category") != "pure-compute"]
 if render_records:
@@ -564,7 +755,7 @@ if render_records:
         if "error" in r:
             cat = r.get("category", "")
             err = r.get("error", "")
-            print("| `" + name + "` | " + cat + " | ERROR | - | - | " + err + " |")
+            print(f"| `{name}` | {cat} | ERROR | - | - | {err} |")
             continue
         st = r.get("infer") or {}
         cat = "Compiled Host" if "compiled" in r.get("category", "") else "Interpreted QuickJS"
@@ -572,8 +763,8 @@ if render_records:
         mn = "{:.2f}".format(st.get("min_ms", 0.0))
         mx = "{:.2f}".format(st.get("max_ms", 0.0))
         out = st.get("output", "")
-        print("| `" + name + "` | " + cat + " | **" + med + "** | " + mn + " | " + mx + " | `" + out + "` |")
+        print(f"| `{name}` | {cat} | **{med}** | {mn} | {mx} | `{out}` |")
 
 print("\nMachine-readable results saved to `" + jsonl_file + "`.")
-' "$JSONL_OUT"
+' "$JSONL_OUT" "$DO_PROFILE"
 fi

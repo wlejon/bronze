@@ -1,0 +1,61 @@
+{
+  "version": "Node v24.2.0",
+  "description": "Pinned reference baseline measurements on Node.js v24.2.0 (median ms, out-of-band manual reference)",
+  "benchmarks": {
+    "fib.js": {
+      "median_ms": 41.06,
+      "checksum": "832040",
+      "description": "Recursive fib(30) call overhead on dynamic function"
+    },
+    "numeric_loop.js": {
+      "median_ms": 65.62,
+      "checksum": "60644102826883.61",
+      "description": "10M-iteration float loop (proven-f64 arithmetic)"
+    },
+    "property_access.js": {
+      "median_ms": 37.09,
+      "checksum": "3000000",
+      "description": "1M iterations shape lookup & own-property IC dispatch"
+    },
+    "proto_dispatch.js": {
+      "median_ms": 36.13,
+      "checksum": "3000000",
+      "description": "3M iterations depth-3 inherited property read"
+    },
+    "proto_dispatch_churn.js": {
+      "median_ms": 38.14,
+      "checksum": "3000000",
+      "description": "3M iterations depth-3 read with object creation churn"
+    },
+    "typed_array_loop.js": {
+      "median_ms": 40.75,
+      "checksum": "523828354.8980187",
+      "description": "TypedArray element access vs plain array view"
+    },
+    "typed_array_crunch.js": {
+      "median_ms": 56.27,
+      "checksum": "typed_array_crunch checksum=78849652",
+      "description": "Float64Array/Float32Array N-body physics & FFT crunch"
+    },
+    "object_graph.js": {
+      "median_ms": 69.38,
+      "checksum": "object_graph checksum=-32601148",
+      "description": "Object-graph traversal, search, mutation, and cloning"
+    },
+    "three_math.js": {
+      "median_ms": 48.40,
+      "checksum": "three_math checksum=405000",
+      "description": "Three.js Vector3/Matrix4 math loop against vendored three.js"
+    },
+    "mesh_churn_2k.js": {
+      "median_ms": 92.70,
+      "checksum": "mesh_churn_2k checksum=-2112298",
+      "description": "2k animated meshes scene graph updates & geometry churn"
+    },
+    "instanced_mesh_churn.js": {
+      "median_ms": 95.28,
+      "checksum": "instanced_mesh_churn checksum=1260786",
+      "description": "Three.js InstancedMesh 5,000 instances churn and color updates"
+    }
+  }
+}
