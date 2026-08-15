@@ -27,6 +27,7 @@
 #include <string_view>
 
 #include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
 #include "runtime/array.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
@@ -377,24 +378,32 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
             if (ic && ic->cached_shape) {
                 auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
                 if (ic->describes(fastObj->shape)) {
-                    // Depth 0 is an own property — the common case, straight to the
-                    // slot. Anything else was found up the prototype chain, so the
-                    // cached slot belongs to an ancestor and reading it off the
-                    // receiver would return an unrelated property.
-                    if (ic->cached_depth == 0) {
-                        return fastObj->getSlot(ic->cached_slot).rawBits();
-                    }
-                    // An ancestor's slot numbering is stable while every link on
-                    // the way to it is a transition-tree shape, and not once one of
-                    // them is a dictionary — which is what a delete and a prototype
-                    // swap both leave behind, and neither of which the receiver's
-                    // shape, all this entry checks, notices. `describes` above has
-                    // already ruled out the third change, an add to an
-                    // intermediate.
-                    bool crossedDictionary = false;
-                    if (ObjectHeader* holder =
-                            fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
-                        return holder->getSlot(ic->cached_slot).rawBits();
+                    if (ic->isAccessor()) {
+                        uint32_t depth = ic->realDepth();
+                        ObjectHeader* holder = fastObj;
+                        if (depth > 0) {
+                            bool crossedDictionary = false;
+                            holder = fastObj->cachedProtoHolder(depth, crossedDictionary);
+                        }
+                        if (holder) {
+                            Value getter = holder->getSlot(ic->cached_slot);
+                            if (getter.isObject() &&
+                                getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                                FunctionHeader* fn = getter.asObject<FunctionHeader>();
+                                if (fn->code && fn->arity == 0) {
+                                    return fn->code(fn->env_record.rawBits(), objBits, 0, nullptr);
+                                }
+                            }
+                            Rooted<Value> self{objVal};
+                            return callGetter(getter, self).rawBits();
+                        }
+                    } else {
+                        if (ic->cached_depth == 0) return fastObj->getSlot(ic->cached_slot).rawBits();
+                        bool crossedDictionary = false;
+                        if (ObjectHeader* holder =
+                                fastObj->cachedProtoHolder(ic->cached_depth, crossedDictionary)) {
+                            return holder->getSlot(ic->cached_slot).rawBits();
+                        }
                     }
                 }
             }

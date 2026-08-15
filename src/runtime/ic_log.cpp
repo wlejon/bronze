@@ -94,10 +94,10 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     if (!ic->cached_shape) return "ic_uninitialized";
     if (ic->cached_shape != obj->shape) return "shape_mismatch_polymorphic";
 
-    if (ic->cached_depth > 0) {
+    if (ic->realDepth() > 0) {
         if (ic->cached_epoch != protoMutationEpoch()) return "proto_epoch_stale";
         bool crossedDict = false;
-        ObjectHeader* holder = obj->cachedProtoHolder(ic->cached_depth, crossedDict);
+        ObjectHeader* holder = obj->cachedProtoHolder(ic->realDepth(), crossedDict);
         if (crossedDict) return "proto_dict_mode";
         if (!holder) return "proto_non_plain_or_null";
         if (keyHdr) {

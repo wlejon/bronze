@@ -195,15 +195,36 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
     // in codegen-llvm — it compares a shape pointer and nothing else, and a
     // shape that gained a symbol-keyed transition is a different pointer.
     if (ic && ic->describes(shape)) {
-        if (ic->cached_depth == 0) return getSlot(ic->cached_slot);
-        bool crossedDictionary = false;
-        ObjectHeader* holder = cachedProtoHolder(ic->cached_depth, crossedDictionary);
-        if (holder) return holder->getSlot(ic->cached_slot);
-        if (!crossedDictionary) {
-            // The chain got shorter than the cache says, which the shape check
-            // should have caught: the prototype lives on the shape, so it
-            // cannot change without the shape changing.
-            fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
+        if (ic->isAccessor()) {
+            uint32_t depth = ic->realDepth();
+            ObjectHeader* holder = this;
+            if (depth > 0) {
+                bool crossedDictionary = false;
+                holder = cachedProtoHolder(depth, crossedDictionary);
+            }
+            if (holder) {
+                Value getter = holder->getSlot(ic->cached_slot);
+                Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
+                if (getter.isObject() &&
+                    getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                    FunctionHeader* fn = getter.asObject<FunctionHeader>();
+                    if (fn->code && fn->arity == 0) {
+                        return Value(fn->code(fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
+                    }
+                }
+                return callGetter(getter, self);
+            }
+        } else {
+            if (ic->cached_depth == 0) return getSlot(ic->cached_slot);
+            bool crossedDictionary = false;
+            ObjectHeader* holder = cachedProtoHolder(ic->cached_depth, crossedDictionary);
+            if (holder) return holder->getSlot(ic->cached_slot);
+            if (!crossedDictionary) {
+                // The chain got shorter than the cache says, which the shape check
+                // should have caught: the prototype lives on the shape, so it
+                // cannot change without the shape changing.
+                fatal("inline cache depth outruns the prototype chain (corrupt shape?)");
+            }
         }
         // Fall through and look it up properly; the entry is refilled below,
         // or left alone if the answer is no longer cacheable.
@@ -217,9 +238,11 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
         PropertyInfo info;
         if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
             if (info.accessor) {
-                // Deliberately NOT cached: every consumer of an entry reads it
-                // as a slot index, including the load generated code inlines,
-                // and a getter is a call.
+                bool crossedDictionary = false;
+                if (ic && shape && !shape->isDictionary() &&
+                    (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
+                    ic->fillAccessor(shape, info.slot, depth);
+                }
                 Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
                 Value getter = holder->getSlot(info.slot);
                 if (getter.isObject() &&
@@ -268,6 +291,24 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (ic && ic->describesOwn(shape)) {
         setSlot(ic->cached_slot, val.get());
         return this;
+    }
+
+    if (ic && ic->isRealShape() && ic->describes(shape) && ic->isAccessor()) {
+        uint32_t depth = ic->realDepth();
+        ObjectHeader* holder = this;
+        if (depth > 0) {
+            bool crossedDictionary = false;
+            holder = cachedProtoHolder(depth, crossedDictionary);
+        }
+        if (holder) {
+            Value setter = holder->getSlot(ic->cached_slot + 1);
+            Rooted<Value> live{Value::fromObject(this)};
+            Rooted<Value> recv{receiver ? *receiver : live.get()};
+            bool noSetter = false;
+            callSetter(setter, recv, val, &noSetter);
+            if (noSetter && refused) *refused = SetRefusal::NoSetter;
+            return live.get().asObject<ObjectHeader>();
+        }
     }
 
     // The shape-transition hit: the receiver is one property short of the
@@ -326,6 +367,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 // so it is named rather than half-built.
                 fatal("redefining an accessor property as a data property is unsupported");
             }
+            if (ic && !shape->isDictionary()) {
+                ic->fillAccessor(shape, own.slot, /*depth=*/0);
+            }
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
             bool noSetter = false;
@@ -363,6 +407,11 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             PropertyInfo info;
             if (!holder->shape || !holder->shape->lookupProperty(prop_name, info)) continue;
             if (!info.accessor) break;  // shadowed by the own property created below
+            bool crossedDictionary = false;
+            if (ic && shape && !shape->isDictionary() &&
+                cachedProtoHolder(depth, crossedDictionary) == holder) {
+                ic->fillAccessor(shape, info.slot, depth);
+            }
             Rooted<Value> live{Value::fromObject(this)};
             Rooted<Value> recv{receiver ? *receiver : live.get()};
             bool noSetter = false;

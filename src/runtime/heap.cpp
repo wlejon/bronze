@@ -41,6 +41,7 @@ uint64_t bronze_alloc_limit = 0;
 uint64_t bronze_inline_call_enabled = 1;
 uint64_t bronze_array_method_ic_enabled = 1;
 uint64_t bronze_inline_overflow_set_enabled = 1;
+uint64_t bronze_inline_accessor_enabled = 1;
 }
 
 // Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
@@ -181,6 +182,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     const char* env_no_overflow_set = std::getenv("BRONZE_NO_INLINE_OVERFLOW_SET");
     if (env_no_overflow_set && std::strcmp(env_no_overflow_set, "1") == 0) {
         bronze_inline_overflow_set_enabled = 0;
+    }
+
+    const char* env_no_accessor = std::getenv("BRONZE_NO_INLINE_ACCESSOR");
+    if (env_no_accessor && std::strcmp(env_no_accessor, "1") == 0) {
+        bronze_inline_accessor_enabled = 0;
     }
 
     const char* env_log = std::getenv("BRONZE_GC_LOG");

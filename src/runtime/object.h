@@ -71,6 +71,14 @@ struct InlineCache {
         return cached_shape != nullptr && !isArrayMethod();
     }
 
+    bool isAccessor() const noexcept {
+        return (cached_depth & BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG) != 0;
+    }
+
+    uint32_t realDepth() const noexcept {
+        return cached_depth & ~BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
+    }
+
     // Is this entry still about the chain it was filled against? Both runtime
     // hit paths — `bronze_prop_get`'s and `ObjectHeader::getProp`'s — ask here
     // rather than restating the condition, because the last time this question
@@ -79,7 +87,7 @@ struct InlineCache {
     // that, and a caller needs both.
     bool describes(const Shape* receiverShape) const noexcept {
         return isRealShape() && cached_shape == receiverShape &&
-               (cached_depth == 0 || cached_epoch == protoMutationEpoch());
+               (realDepth() == 0 || cached_epoch == protoMutationEpoch());
     }
 
     // The same question for a WRITE, which additionally requires depth 0: the
@@ -89,13 +97,20 @@ struct InlineCache {
     // been filled at depth > 0 — this asks anyway, because that is a fact
     // about the compiler's site numbering and this is the runtime.
     bool describesOwn(const Shape* receiverShape) const noexcept {
-        return isRealShape() && cached_depth == 0 && cached_shape == receiverShape;
+        return isRealShape() && !isAccessor() && cached_depth == 0 && cached_shape == receiverShape;
     }
 
     void fill(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
         cached_shape = receiverShape;
         cached_slot = slot;
         cached_depth = depth;
+        cached_epoch = protoMutationEpoch();
+    }
+
+    void fillAccessor(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = depth | BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
         cached_epoch = protoMutationEpoch();
     }
 

@@ -253,6 +253,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * BRONZE_NO_INLINE_OVERFLOW_SET=1 so one binary can A/B test inline
      * overflow property stores against the helper. */ \
     X(bronze_inline_overflow_set_enabled, BRONZE_ABI_U64) \
+    /* The inline accessor enable flag: 1 by default, set to 0 under
+     * BRONZE_NO_INLINE_ACCESSOR=1 so one binary can A/B test inline
+     * accessor getter/setter calls against the helper. */ \
+    X(bronze_inline_accessor_enabled, BRONZE_ABI_U64) \
     /* The array method singleton table: published by the runtime and rooted
      * across GC collections. Indexed by array method ID (0 for constructor,
      * 1..N for Array.prototype methods). */ \
@@ -302,6 +306,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_IC_DEPTH_OFFSET   12 /* InlineCache::cached_depth (uint32) */
 #define BRONZE_ABI_IC_EPOCH_OFFSET   16 /* InlineCache::cached_epoch (uint64) */
 #define BRONZE_ABI_IC_SHAPE_ARRAY_METHOD 1ull
+#define BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG 0x80000000u
 /* slot and depth are adjacent and little-endian, so the single u64 at
  * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
  * therefore ONE compare meaning "own property, in an inline slot" — the

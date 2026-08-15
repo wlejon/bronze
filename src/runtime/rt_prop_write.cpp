@@ -30,6 +30,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/accessor.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -152,6 +153,33 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                 fastObj->setSlot(ic->cached_slot, valVal);
             }
             return;
+        }
+        if (ic->isRealShape() && ic->describes(fastObj->shape) && ic->isAccessor()) {
+            uint32_t depth = ic->realDepth();
+            ObjectHeader* holder = fastObj;
+            if (depth > 0) {
+                bool crossedDictionary = false;
+                holder = fastObj->cachedProtoHolder(depth, crossedDictionary);
+            }
+            if (holder) {
+                Value setter = holder->getSlot(ic->cached_slot + 1);
+                if (setter.isObject() &&
+                    setter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                    FunctionHeader* fn = setter.asObject<FunctionHeader>();
+                    if (fn->code && fn->arity == 1) {
+                        uint64_t argBits = valVal.rawBits();
+                        fn->code(fn->env_record.rawBits(), objBits, 1, &argBits);
+                        return;
+                    }
+                }
+                Rooted<Value> live{objVal};
+                Rooted<Value> recv{objVal};
+                Rooted<Value> v{valVal};
+                bool noSetter = false;
+                callSetter(setter, recv, v, &noSetter);
+                if (noSetter) rtReportSetRefusal(SetRefusal::NoSetter, strict, rtKeyString(keyIndex));
+                return;
+            }
         }
     }
 
