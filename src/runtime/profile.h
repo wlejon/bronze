@@ -5,8 +5,10 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define BRONZE_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define BRONZE_LIKELY(x) __builtin_expect(!!(x), 1)
 #else
 #define BRONZE_UNLIKELY(x) (x)
+#define BRONZE_LIKELY(x) (x)
 #endif
 
 namespace bronze::runtime {

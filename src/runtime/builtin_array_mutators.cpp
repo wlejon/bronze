@@ -2,6 +2,18 @@
 
 namespace bronze::runtime {
 
+extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Value self(thisBits);
+    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        ArrayHeader* arr = self.asObject<ArrayHeader>();
+        if (argc == 1 && (arr->head_offset + arr->length < arr->capacity) && arr->properties.isUndefined()) {
+            arr->elementsData()[arr->length++] = Value(argv[0]);
+            return Value::fromDouble(arr->length).rawBits();
+        }
+    }
+    return arrayPush(0, thisBits, argc, argv);
+}
+
 uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};

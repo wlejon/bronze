@@ -168,4 +168,66 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     return result;
 }
 
+llvm::Value* emitCreateObjectInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                    const AbiGlobals& globals) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* buildBb = llvm::BasicBlock::Create(ctx, "obj.build", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "obj.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "obj.done", fn);
+
+    llvm::Value* cursor = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_cursor,
+                                                    llvm::Align(8), "obj.cursor");
+    llvm::Value* limit = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_limit,
+                                                   llvm::Align(8), "obj.limit");
+    llvm::Value* shape = builder.CreateAlignedLoad(i64Ty, globals.bronze_plain_shape,
+                                                   llvm::Align(8), "obj.shape");
+    llvm::Value* headroom = builder.CreateSub(limit, cursor, "obj.headroom");
+    llvm::Value* fits = builder.CreateICmpUGE(
+        headroom, builder.getInt64(BRONZE_ABI_PLAIN_OBJECT_BYTES), "obj.fits");
+    llvm::Value* shapeOk = builder.CreateICmpNE(shape, builder.getInt64(0), "obj.shapeok");
+    llvm::Value* ok = builder.CreateAnd(fits, shapeOk, "obj.ok");
+    builder.CreateCondBr(ok, buildBb, slowBb);
+
+    builder.SetInsertPoint(buildBb);
+    builder.CreateAlignedStore(
+        builder.CreateAdd(cursor, builder.getInt64(BRONZE_ABI_PLAIN_OBJECT_BYTES)),
+        globals.bronze_alloc_cursor, llvm::Align(8));
+    llvm::Value* objPtr = builder.CreateIntToPtr(cursor, ptrTy, "obj.ptr");
+    constexpr uint64_t kHeaderWord =
+        static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) |
+        (static_cast<uint64_t>(BRONZE_ABI_PLAIN_OBJECT_BYTES) << 32);
+    builder.CreateAlignedStore(builder.getInt64(kHeaderWord), objPtr, llvm::Align(8));
+    auto storeWord = [&](unsigned byteOffset, llvm::Value* word) {
+        builder.CreateAlignedStore(
+            word, builder.CreateConstInBoundsGEP1_32(i8Ty, objPtr, byteOffset), llvm::Align(8));
+    };
+    storeWord(BRONZE_ABI_OBJ_SHAPE_OFFSET, shape);
+    llvm::Value* undef = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+    storeWord(BRONZE_ABI_OBJ_OVERFLOW_OFFSET, undef);
+    for (unsigned s = 0; s < BRONZE_ABI_OBJ_INLINE_SLOTS; ++s) {
+        storeWord(BRONZE_ABI_OBJ_SLOTS_OFFSET + s * 8, undef);
+    }
+    llvm::Value* fastVal = builder.CreateOr(
+        cursor,
+        builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT)
+                         << BRONZE_ABI_VALUE_TAG_SHIFT),
+        "obj.fastval");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(abi.bronze_create_object, {}, "obj.slowval");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "obj.result");
+    result->addIncoming(fastVal, buildBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
 }  // namespace bronze::codegen_llvm

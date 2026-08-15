@@ -30,6 +30,7 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
                     dedicated->prototype = protoShape->prototype;
                     dedicated->used_as_prototype = true;
                     obj->shape = dedicated;
+                    runtime::rtRegisterRootShape(dedicated);
                 } else {
                     protoShape->used_as_prototype = true;
                 }

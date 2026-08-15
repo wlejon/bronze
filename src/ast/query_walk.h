@@ -233,6 +233,17 @@ public:
     }
 };
 
+// A declarator contributes its name, or — when it is a pattern — every name
+// the pattern binds. One helper, because a scope that saw only the outermost
+// level of a pattern would leave the inner names with no slot to live in.
+inline void appendDeclaredNames(const VarDecl& decl, std::vector<std::string>& out) {
+    if (decl.pattern) {
+        for (auto& name : patternBoundNames(*decl.pattern)) out.push_back(std::move(name));
+    } else {
+        out.push_back(decl.name);
+    }
+}
+
 // Walks a scope looking for nested functions; everything mentioned inside
 // one is a candidate capture. Does not descend into a nested function
 // itself — IdentVisitor already covers it to every depth.
@@ -244,14 +255,7 @@ public:
     // parameter defaults, which are code that runs on every call that omits the
     // argument and can name anything in scope where the function was written.
     void addFunctionBody(const std::vector<StmtPtr>& body,
-                         const std::vector<Param>* params = nullptr) {
-        IdentVisitor idents;
-        if (params) visitParamExprs(*params, idents);
-        for (const auto& s : body) {
-            if (s) s->accept(idents);
-        }
-        captured.insert(idents.names.begin(), idents.names.end());
-    }
+                         const std::vector<Param>* params = nullptr);
 
     void visit(const NumberLit&) override {}
     void visit(const StringLit&) override {}
@@ -435,15 +439,57 @@ public:
     }
 };
 
-// A declarator contributes its name, or — when it is a pattern — every name
-// the pattern binds. One helper, because a scope that saw only the outermost
-// level of a pattern would leave the inner names with no slot to live in.
-inline void appendDeclaredNames(const VarDecl& decl, std::vector<std::string>& out) {
-    if (decl.pattern) {
-        for (auto& name : patternBoundNames(*decl.pattern)) out.push_back(std::move(name));
-    } else {
-        out.push_back(decl.name);
+// Collects all identifier names declared anywhere within a scope (stopping at nested functions).
+class DeclaredNamesVisitor final : public CaptureVisitor {
+public:
+    std::unordered_set<std::string> names;
+
+    void visit(const VarDecl& v) override {
+        std::vector<std::string> declared;
+        appendDeclaredNames(v, declared);
+        names.insert(declared.begin(), declared.end());
     }
+    void visit(const FunctionDecl& f) override { names.insert(f.name); }
+    void visit(const ClassDecl& c) override { names.insert(c.name); }
+
+    void visit(const FunctionExpr&) override {}
+    void visit(const ClassExpr&) override {}
+
+    void visit(const TryStmt& t) override {
+        for (const auto& s : t.body) if (s) s->accept(*this);
+        if (t.catchPattern) {
+            for (const auto& b : patternBoundNames(*t.catchPattern)) names.insert(b);
+        }
+        for (const auto& s : t.catchBody) if (s) s->accept(*this);
+        for (const auto& s : t.finallyBody) if (s) s->accept(*this);
+    }
+};
+
+inline void CaptureVisitor::addFunctionBody(const std::vector<StmtPtr>& body,
+                                           const std::vector<Param>* params) {
+    IdentVisitor idents;
+    if (params) visitParamExprs(*params, idents);
+    for (const auto& s : body) {
+        if (s) s->accept(idents);
+    }
+    if (params) {
+        for (const auto& p : *params) {
+            if (!p.name.empty()) idents.names.erase(p.name);
+            if (p.pattern) {
+                for (const auto& bound : patternBoundNames(*p.pattern)) {
+                    idents.names.erase(bound);
+                }
+            }
+        }
+    }
+    DeclaredNamesVisitor decls;
+    for (const auto& s : body) {
+        if (s) s->accept(decls);
+    }
+    for (const auto& d : decls.names) {
+        idents.names.erase(d);
+    }
+    captured.insert(idents.names.begin(), idents.names.end());
 }
 
 // What one statement contributes to its scope's LEXICAL declarations. A

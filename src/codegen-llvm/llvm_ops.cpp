@@ -152,7 +152,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         }
 
         case il::Op::CreateObject:
-            if (inst.result != il::kNoValue) callWith(abi.bronze_create_object, {});
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = emitCreateObjectInline(builder_, abi, shared_.globals);
+            }
             return true;
         case il::Op::CreateGeneratorObject: {
             // The operand is the RESUME FUNCTION: a generator object is the
@@ -683,16 +685,26 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const uint32_t calleeKey = inst.operands[0] < propGetKey_.size()
                                            ? propGetKey_[inst.operands[0]]
                                            : UINT32_MAX;
-            if (inst.result != il::kNoValue &&
-                calleeKey < shared_.module.keyConstants.size()) {
-                if (auto kind =
-                        mathIntrinsicFor(shared_.module.keyConstants[calleeKey], argc)) {
-                    llvm::SmallVector<llvm::Value*, 2> args;
-                    for (uint32_t a = 0; a < argc; ++a) {
-                        args.push_back(values_[inst.operands[2 + a]]);
+            if (calleeKey < shared_.module.keyConstants.size()) {
+                if (inst.result != il::kNoValue) {
+                    if (auto kind =
+                            mathIntrinsicFor(shared_.module.keyConstants[calleeKey], argc)) {
+                        llvm::SmallVector<llvm::Value*, 2> args;
+                        for (uint32_t a = 0; a < argc; ++a) {
+                            args.push_back(values_[inst.operands[2 + a]]);
+                        }
+                        values_[inst.result] = emitMathDirectCall(builder_, abi, *kind, callee,
+                                                                  thisVal, argc, argv, args);
+                        return true;
                     }
-                    values_[inst.result] = emitMathDirectCall(builder_, abi, *kind, callee,
-                                                              thisVal, argc, argv, args);
+                }
+                if (shared_.module.keyConstants[calleeKey] == "push" && argc == 1) {
+                    llvm::Value* argVal = values_[inst.operands[2]];
+                    llvm::Value* res = emitArrayPushDirectCall(
+                        builder_, abi, callee, thisVal, argc, argv, argVal);
+                    if (inst.result != il::kNoValue) {
+                        values_[inst.result] = res;
+                    }
                     return true;
                 }
             }

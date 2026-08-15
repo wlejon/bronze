@@ -121,6 +121,7 @@ bool rtIsConcatSpreadable(Rooted<Value>& item);
 
 // Declarations of method entry points:
 // Mutators
+extern "C" uint64_t bronze_array_push(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayPush(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayPop(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t arrayShift(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);

@@ -313,7 +313,7 @@ void Heap::refill_inline_lab() {
     // the helper, whose allocations collect. Without stress: a run long
     // enough that the helper is a rounding error, small enough that a
     // collection abandons nothing worth naming.
-    constexpr size_t kLabBytes = 8 * 1024;
+    constexpr size_t kLabBytes = 64 * 1024;
     const size_t bytes = gc_stress_mode_ ? BRONZE_ABI_PLAIN_OBJECT_BYTES : kLabBytes;
     // allocate_raw may collect (stress does so every time), which zeroes the
     // window — publishing AFTER it returns is what keeps the two ordered.

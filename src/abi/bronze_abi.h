@@ -156,6 +156,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_pattern_check,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_rest_args,           BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_array_append,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_array_push,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_array_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_spread,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_object_rest,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -245,6 +246,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * BRONZE_NO_INLINE_CALL=1 so one binary can A/B test dynamic-call
      * inlining against the helper trampoline. */ \
     X(bronze_inline_call_enabled, BRONZE_ABI_U64) \
+    /* The plain object root shape pointer for inline object creation. */ \
+    X(bronze_plain_shape, BRONZE_ABI_U64) \
     /* The inline array method IC enable flag: 1 by default, set to 0 under
      * BRONZE_NO_ARRAY_METHOD_IC=1 so one binary can A/B test array method
      * IC inlining against the helper. */ \

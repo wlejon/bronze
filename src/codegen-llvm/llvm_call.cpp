@@ -136,4 +136,133 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     return result;
 }
 
+llvm::Value* emitArrayPushDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                     llvm::Value* calleeBits, llvm::Value* thisBits,
+                                     uint32_t argc, llvm::Value* argvPtr,
+                                     llvm::Value* argVal) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* thisBb = llvm::BasicBlock::Create(ctx, "push.this", fn);
+    llvm::BasicBlock* calleeBb = llvm::BasicBlock::Create(ctx, "push.callee", fn);
+    llvm::BasicBlock* capBb = llvm::BasicBlock::Create(ctx, "push.cap", fn);
+    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "push.fast", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "push.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "push.done", fn);
+
+    // 1. Guard `this` is an Object
+    llvm::Value* thisTag = builder.CreateLShr(thisBits, BRONZE_ABI_VALUE_TAG_SHIFT, "push.thistag");
+    llvm::Value* thisIsObj =
+        builder.CreateICmpEQ(thisTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "push.thisisobj");
+    builder.CreateCondBr(thisIsObj, thisBb, slowBb);
+
+    // 2. Guard `this` is Array with no side properties object
+    builder.SetInsertPoint(thisBb);
+    llvm::Value* thisAddr =
+        builder.CreateAnd(thisBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* thisHdr = builder.CreateIntToPtr(thisAddr, ptrTy, "push.arrhdr");
+    llvm::Value* thisFlags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), "push.arrflags");
+    llvm::Value* isArr =
+        builder.CreateICmpEQ(thisFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), "push.isarr");
+
+    llvm::Value* propsVal = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_PROPS_OFFSET),
+        llvm::Align(8), "push.props");
+    llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* hasNoProps =
+        builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "push.noprops");
+    builder.CreateCondBr(builder.CreateAnd(isArr, hasNoProps), calleeBb, slowBb);
+
+    // 3. Guard callee is a function with expected bronze_array_push code pointer
+    builder.SetInsertPoint(calleeBb);
+    llvm::Value* calleeTag = builder.CreateLShr(calleeBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* calleeIsObj =
+        builder.CreateICmpEQ(calleeTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::Value* calleeAddr =
+        builder.CreateAnd(calleeBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* calleeHdr = builder.CreateIntToPtr(calleeAddr, ptrTy);
+    llvm::Value* calleeFlags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, calleeHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2));
+    llvm::Value* calleeIsFn =
+        builder.CreateICmpEQ(calleeFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
+    llvm::Value* codePtr = builder.CreateAlignedLoad(
+        ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, calleeHdr, BRONZE_ABI_FN_CODE_OFFSET),
+        llvm::Align(8));
+    llvm::Value* codeOk = builder.CreateICmpEQ(codePtr, abi.bronze_array_push);
+    llvm::Value* calleeOk = builder.CreateAnd(calleeIsObj, builder.CreateAnd(calleeIsFn, codeOk));
+    builder.CreateCondBr(calleeOk, capBb, slowBb);
+
+    // 4. Capacity check
+    builder.SetInsertPoint(capBb);
+    llvm::Value* head = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_HEAD_OFFSET),
+        llvm::Align(4), "push.head");
+    llvm::Value* len = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET),
+        llvm::Align(4), "push.len");
+    llvm::Value* cap = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET),
+        llvm::Align(4), "push.cap");
+
+    llvm::Value* actualSlot = builder.CreateAdd(head, len, "push.actslot");
+    llvm::Value* capOk = builder.CreateICmpULT(actualSlot, cap, "push.capok");
+    llvm::Value* lenSafe = builder.CreateICmpULT(len, builder.getInt32(0xFFFFFFFEu), "push.lensafe");
+    builder.CreateCondBr(builder.CreateAnd(capOk, lenSafe), fastBb, slowBb);
+
+    // 5. Fast path: store element, increment length, return new length
+    builder.SetInsertPoint(fastBb);
+    llvm::Value* elemsVal = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET),
+        llvm::Align(8), "push.elems");
+    llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "push.store", fn);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), storeBb, slowBb);
+
+    builder.SetInsertPoint(storeBb);
+    llvm::Value* elemsAddr =
+        builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
+    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualSlot, i64Ty),
+                                             builder.getInt64(1));
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
+    builder.CreateAlignedStore(argVal, slotPtr, llvm::Align(8));
+
+    llvm::Value* newLen = builder.CreateAdd(len, builder.getInt32(1), "push.newlen");
+    builder.CreateAlignedStore(
+        newLen, builder.CreateConstInBoundsGEP1_32(i8Ty, thisHdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET),
+        llvm::Align(4));
+
+    llvm::Value* newLenDbl = builder.CreateUIToFP(newLen, dblTy, "push.newlendbl");
+    llvm::Value* isNan = builder.CreateFCmpUNO(newLenDbl, newLenDbl);
+    llvm::Value* rBits = builder.CreateBitCast(newLenDbl, i64Ty);
+    llvm::Value* fastRes = builder.CreateSelect(
+        isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), rBits, "push.fastval");
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    // 6. Slow path: helper trampoline
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowRes = builder.CreateCall(
+        abi.bronze_dynamic_call, {calleeBits, thisBits, builder.getInt32(argc), argvPtr}, "push.slowres");
+    llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    // 7. Merge result
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "push.result");
+    result->addIncoming(fastRes, fastEndBb);
+    result->addIncoming(slowRes, slowEndBb);
+    return result;
+}
+
 }  // namespace bronze::codegen_llvm

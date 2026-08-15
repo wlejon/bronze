@@ -23,4 +23,18 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
                                    const AbiGlobals& globals, llvm::Value* callee,
                                    llvm::Value* thisVal, uint32_t argc, llvm::Value* argv);
 
+// Emits an inlined direct dispatch for Array.prototype.push:
+// Guard:
+//   - `this` is an Array object with no side properties
+//   - `callee` is a function with code pointer == `bronze_array_push`
+//   - Array has headroom in its element backing block (`head_offset + length < capacity`)
+// Fast path:
+//   Stores `argVal` into `elements[head_offset + length]`, increments `length`, and returns new length as boxed double.
+// Fallback:
+//   Calls `bronze_dynamic_call(callee, thisVal, argc, argv)` on any miss.
+llvm::Value* emitArrayPushDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                     llvm::Value* calleeBits, llvm::Value* thisBits,
+                                     uint32_t argc, llvm::Value* argvPtr,
+                                     llvm::Value* argVal);
+
 }  // namespace bronze::codegen_llvm

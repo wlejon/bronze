@@ -241,6 +241,11 @@ uint64_t bronze_create_object() {
     recordHelperCall("bronze_create_object");
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
     obj->header.flags = HeapKind::Plain;
+    if (bronze_alloc_limit - bronze_alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
+        Rooted<Value> objRoot{Value::fromObject(obj)};
+        rtHeap().refill_inline_lab();
+        return objRoot.get().rawBits();
+    }
     return Value::fromObject(obj).rawBits();
 }
 

@@ -52,7 +52,8 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 
 #define BRONZE_ABI_LLVM_DECLARE(name, RET, PARAMS) \
     fns.name = getOrDeclareFunc(#name, \
-        llvm::FunctionType::get(RET, {BRONZE_ABI_UNPAREN PARAMS}, false));
+        llvm::FunctionType::get(RET, {BRONZE_ABI_UNPAREN PARAMS}, false)); \
+    fns.name->addFnAttr(llvm::Attribute::NoUnwind);
     BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
 #undef BRONZE_ABI_LLVM_DECLARE
 

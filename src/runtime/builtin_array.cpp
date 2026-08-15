@@ -88,7 +88,7 @@ const ArrayMethod kArrayMethods[] = {
     {"lastIndexOf", arrayLastIndexOf, 1},
     {"map", arrayMap, 1},
     {"pop", arrayPop, 0},
-    {"push", arrayPush, 0},
+    {"push", bronze_array_push, 0},
     {"reduce", arrayReduce, 0},
     {"reduceRight", arrayReduceRight, 0},
     {"reverse", arrayReverse, 0},

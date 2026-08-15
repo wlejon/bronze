@@ -33,7 +33,10 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/SubtargetFeature.h>
 #include <llvm/TargetParser/Triple.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassBuilder.h>
 
 static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
 
@@ -305,8 +308,8 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
     }
 }
 
-// Host target machine → object file. Nothing bronze-specific happens here;
-// LLVM's default pipeline is the optimizer.
+// Host target machine → object file. Runs LLVM's PassBuilder O3 optimization pipeline
+// and targets the host CPU and instruction set extensions.
 bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
                      DiagnosticSink& diags) {
     llvm::InitializeNativeTarget();
@@ -323,14 +326,38 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
         return false;
     }
 
+    std::string cpu = std::string(llvm::sys::getHostCPUName());
+    llvm::SubtargetFeatures features;
+    for (const auto& [feature, enabled] : llvm::sys::getHostCPUFeatures()) {
+        features.AddFeature(feature, enabled);
+    }
+
     llvm::TargetOptions opt;
-    auto targetMachine =
-        target->createTargetMachine(targetTriple, "generic", "", opt, {});
+    std::unique_ptr<llvm::TargetMachine> targetMachine(target->createTargetMachine(
+        targetTriple, cpu, features.getString(), opt,
+        std::nullopt, std::nullopt, llvm::CodeGenOptLevel::Aggressive));
     if (!targetMachine) {
         diags.error(Span{}, "Failed to create LLVM target machine");
         return false;
     }
     llvmModule.setDataLayout(targetMachine->createDataLayout());
+
+    // Run LLVM middle-end optimization pipeline (PassBuilder O3)
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+
+    llvm::PassBuilder pb(targetMachine.get());
+
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+    mpm.run(llvmModule, mam);
 
     std::error_code ec;
     llvm::raw_fd_ostream dest(outputPath, ec, llvm::sys::fs::OF_None);

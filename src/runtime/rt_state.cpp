@@ -84,18 +84,26 @@ Shape* rtRootShapeForPrototype(Value proto) {
 }
 
 static Shape* g_plainObjectShape = nullptr;
+extern "C" uint64_t bronze_plain_shape = 0;
 
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
         Shape* shape = Shape::createRoot(g_arena, rtObjectPrototype());
         g_rootShapes.push_back(shape);
         g_plainObjectShape = shape;
+        bronze_plain_shape = reinterpret_cast<uint64_t>(shape);
     }
     return g_plainObjectShape;
 }
 
 Shape* rtCurrentPlainObjectShape() {
     return g_plainObjectShape;
+}
+
+void rtRegisterRootShape(Shape* shape) {
+    if (shape) {
+        g_rootShapes.push_back(shape);
+    }
 }
 
 // ---- ABI pins ---------------------------------------------------------------
