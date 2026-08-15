@@ -319,10 +319,11 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
     llvm::InitializeNativeTargetAsmParser();
 
     llvm::Triple targetTriple(llvm::sys::getDefaultTargetTriple());
-    llvmModule.setTargetTriple(targetTriple);
+    std::string targetTripleStr = targetTriple.str();
+    llvmModule.setTargetTriple(targetTripleStr);
 
     std::string lookupError;
-    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTriple, lookupError);
+    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTripleStr, lookupError);
     if (!target) {
         diags.error(Span{}, "Failed to lookup host target: " + lookupError);
         return false;
@@ -330,7 +331,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
 
     llvm::TargetOptions opt;
     auto targetMachine =
-        target->createTargetMachine(targetTriple, "generic", "", opt, {});
+        target->createTargetMachine(targetTripleStr, "generic", "", opt, {});
     if (!targetMachine) {
         diags.error(Span{}, "Failed to create LLVM target machine");
         return false;
