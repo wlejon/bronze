@@ -23,7 +23,11 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (arr->length == 0) return Value::fromUndefined().rawBits();
     if (!requireConfigurableElements(self, "pop")) return Value::fromUndefined().rawBits();
     Value last = arr->getElem(arr->length - 1);
+    arr->elementsData()[arr->length - 1] = Value::fromHole();
     arr->length -= 1;
+    if (arr->length == 0) {
+        arr->head_offset = 0;
+    }
     return last.rawBits();
 }
 
@@ -34,9 +38,12 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (arr->length == 0) return Value::fromUndefined().rawBits();
     if (!requireConfigurableElements(self, "shift")) return Value::fromUndefined().rawBits();
     Value first = arr->getElem(0);
-    Value* data = arr->elementsData();
-    for (uint32_t i = 1; i < arr->length; ++i) data[i - 1] = data[i];
+    arr->elementsData()[0] = Value::fromHole();
+    arr->head_offset += 1;
     arr->length -= 1;
+    if (arr->length == 0) {
+        arr->head_offset = 0;
+    }
     return first.rawBits();
 }
 
@@ -48,12 +55,21 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (n == 0) return Value::fromDouble(lengthOf(self.get())).rawBits();
     if (!requireExtensible(self.get(), "unshift")) return Value::fromUndefined().rawBits();
 
+    ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+    if (arr->head_offset >= n) {
+        arr->head_offset -= n;
+        arr->length += n;
+        Value* data = arr->elementsData();
+        for (uint32_t i = 0; i < n; ++i) data[i] = args[i];
+        return Value::fromDouble(arr->length).rawBits();
+    }
+
     const uint32_t oldLen = lengthOf(self.get());
     for (uint32_t i = 0; i < n; ++i) {
         Rooted<Value> filler{Value::fromUndefined()};
         appendTo(self, filler);
     }
-    ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+    arr = self.get().asObject<ArrayHeader>();
     Value* data = arr->elementsData();
     for (uint32_t i = oldLen; i > 0; --i) data[i - 1 + n] = data[i - 1];
     for (uint32_t i = 0; i < n; ++i) data[i] = args[i];

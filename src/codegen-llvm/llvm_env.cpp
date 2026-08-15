@@ -27,6 +27,33 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
+    if (depth == 0) {
+        llvm::Value* tag = builder.CreateLShr(envBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isObj = builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+        llvm::Value* addr =
+            builder.CreateAnd(envBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "env.hdr");
+        llvm::Value* flagsPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        llvm::Value* flags =
+            builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "env.flags");
+        llvm::Value* isEnv = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ENV));
+
+        llvm::Value* sizePtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_HDR_SIZE_OFFSET);
+        llvm::Value* size = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "env.size");
+        const uint32_t needed = BRONZE_ABI_ENV_SLOTS_OFFSET + (index + 1) * 8;
+        llvm::Value* inRange = builder.CreateICmpUGE(size, builder.getInt32(needed));
+
+        llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(isObj, isEnv), inRange);
+        llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, "env.ok", fn);
+        builder.CreateCondBr(ok, cont, slowBb);
+        builder.SetInsertPoint(cont);
+
+        return builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                  BRONZE_ABI_ENV_SLOTS_OFFSET + index * 8);
+    }
+
     auto guard = [&](llvm::Value* cond, const char* name) {
         llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, name, fn);
         builder.CreateCondBr(cond, cont, slowBb);

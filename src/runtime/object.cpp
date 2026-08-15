@@ -2,6 +2,7 @@
 
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
+#include "runtime/fn.h"
 
 namespace bronze {
 
@@ -220,7 +221,15 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
                 // as a slot index, including the load generated code inlines,
                 // and a getter is a call.
                 Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
-                return callGetter(holder->getSlot(info.slot), self);
+                Value getter = holder->getSlot(info.slot);
+                if (getter.isObject() &&
+                    getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                    FunctionHeader* fn = getter.asObject<FunctionHeader>();
+                    if (fn->code && fn->arity == 0) {
+                        return Value(fn->code(fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
+                    }
+                }
+                return callGetter(getter, self);
             }
             // A dictionary receiver's shape is private to one object and its
             // slots are not shape-indexed, so an entry naming it could only

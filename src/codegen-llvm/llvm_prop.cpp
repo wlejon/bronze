@@ -84,6 +84,10 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* capPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                 BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
         llvm::Value* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "arr.cap");
+        llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                 BRONZE_ABI_ARRAY_HEAD_OFFSET);
+        llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
         llvm::Value* propsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                   BRONZE_ABI_ARRAY_PROPS_OFFSET);
         llvm::Value* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "arr.props");
@@ -91,7 +95,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* hasNoProps =
             builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_UNDEFINED));
         llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
-        llvm::Value* inCap = builder.CreateICmpULT(builder.getInt32(idx), cap);
+        llvm::Value* inCap = builder.CreateICmpULT(actualIdx, cap);
         llvm::Value* arrOk = builder.CreateAnd(builder.CreateAnd(inBounds, inCap), hasNoProps);
         builder.CreateCondBr(arrOk, arrWriteBb, slowBb);
 
@@ -108,7 +112,8 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* elemsAddr =
             builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
         llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-        llvm::Value* slotPtr = builder.CreateConstInBoundsGEP1_32(i64Ty, elemsObj, idx + 1);
+        llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+        llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
         builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
         builder.CreateBr(doneBb);
     } else {
@@ -359,6 +364,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     llvm::BasicBlock* arrLenBb = nullptr;
     llvm::Value* arrLenVal = nullptr;
+    llvm::BasicBlock* taLenBb = nullptr;
+    llvm::Value* taLenVal = nullptr;
 
     llvm::BasicBlock* arrUndefBb = nullptr;
     llvm::BasicBlock* arrPayloadBb = nullptr;
@@ -370,15 +377,29 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     auto optIdx = parseIndexKey(keyStr);
     if (keyStr == "length") {
         arrLenBb = llvm::BasicBlock::Create(ctx, "ic.arr.len", fn);
+        taLenBb = llvm::BasicBlock::Create(ctx, "ic.ta.len", fn);
+        llvm::BasicBlock* taCheckBb = llvm::BasicBlock::Create(ctx, "ic.ta.check", fn);
         llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-        builder.CreateCondBr(isArr, arrLenBb, plainCheckBb);
+        builder.CreateCondBr(isArr, arrLenBb, taCheckBb);
+
+        builder.SetInsertPoint(taCheckBb);
+        llvm::Value* isTa = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
+        builder.CreateCondBr(isTa, taLenBb, plainCheckBb);
 
         builder.SetInsertPoint(arrLenBb);
-        llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-        llvm::Value* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
-        llvm::Value* lenDbl = builder.CreateUIToFP(len, llvm::Type::getDoubleTy(ctx), "arr.len.dbl");
-        arrLenVal = builder.CreateBitCast(lenDbl, i64Ty, "arr.len.bits");
+        llvm::Value* arrLenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                   BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+        llvm::Value* arrLen = builder.CreateAlignedLoad(i32Ty, arrLenPtr, llvm::Align(4), "arr.len");
+        llvm::Value* arrLenDbl = builder.CreateUIToFP(arrLen, llvm::Type::getDoubleTy(ctx), "arr.len.dbl");
+        arrLenVal = builder.CreateBitCast(arrLenDbl, i64Ty, "arr.len.bits");
+        builder.CreateBr(doneBb);
+
+        builder.SetInsertPoint(taLenBb);
+        llvm::Value* taLenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                  BRONZE_ABI_TA_LENGTH_OFFSET);
+        llvm::Value* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ta.len");
+        llvm::Value* taLenDbl = builder.CreateUIToFP(taLen, llvm::Type::getDoubleTy(ctx), "ta.len.dbl");
+        taLenVal = builder.CreateBitCast(taLenDbl, i64Ty, "ta.len.bits");
         builder.CreateBr(doneBb);
     } else if (optIdx.has_value()) {
         uint32_t idx = *optIdx;
@@ -413,7 +434,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
         llvm::Value* elemsAddr =
             builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
         llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-        llvm::Value* slotPtr = builder.CreateConstInBoundsGEP1_32(i64Ty, elemsObj, idx + 1);
+        llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                 BRONZE_ABI_ARRAY_HEAD_OFFSET);
+        llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
+        llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+        llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
         llvm::Value* elemVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "arr.elem.raw");
         llvm::Value* elemTag = builder.CreateLShr(elemVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* isHole = builder.CreateICmpEQ(elemTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
@@ -651,6 +677,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.SetInsertPoint(doneBb);
     unsigned phiCount = 5;  // inlineHitBb, overflowAccessBb, slowBb, protoInlineBb, protoOverflowAccessBb
     if (arrLenBb) phiCount++;
+    if (taLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
     if (arrPayloadBb) phiCount++;
     if (arrMethodHitBb) phiCount++;
@@ -662,6 +689,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     result->addIncoming(protoHitInlineVal, protoInlineBb);
     result->addIncoming(protoHitOverflowVal, protoOverflowAccessBb);
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
+    if (taLenBb) result->addIncoming(taLenVal, taLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);
     if (arrMethodHitBb) result->addIncoming(arrMethodVal, arrMethodHitBb);

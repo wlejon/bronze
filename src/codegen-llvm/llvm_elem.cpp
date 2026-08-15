@@ -36,27 +36,26 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    auto guard = [&](llvm::Value* cond, const char* name) {
-        llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, std::string(prefix) + name, fn);
-        builder.CreateCondBr(cond, cont, slowBb);
-        builder.SetInsertPoint(cont);
-    };
-
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject = builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::Value* idxIsNum =
         builder.CreateICmpULE(idxBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
-    guard(builder.CreateAnd(isObject, idxIsNum), "objnum");
+    llvm::Value* objAndNum = builder.CreateAnd(isObject, idxIsNum);
 
     llvm::Value* d = builder.CreateBitCast(idxBits, dblTy);
     llvm::Value* geZero = builder.CreateFCmpOGE(d, llvm::ConstantFP::get(dblTy, 0.0));
     llvm::Value* leMax =
         builder.CreateFCmpOLE(d, llvm::ConstantFP::get(dblTy, 4294967294.0));
-    guard(builder.CreateAnd(geZero, leMax), "range");
+    llvm::Value* inRange = builder.CreateAnd(geZero, leMax);
 
     llvm::Value* idx32 = builder.CreateFPToUI(d, builder.getInt32Ty(), "elem.idx");
     llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
-    guard(builder.CreateFCmpOEQ(roundTrip, d), "integral");
+    llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, d);
+
+    llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(objAndNum, inRange), isIntegral);
+    llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, std::string(prefix) + "ok", fn);
+    builder.CreateCondBr(ok, cont, slowBb);
+    builder.SetInsertPoint(cont);
 
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "elem.hdr");
@@ -160,8 +159,12 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::Value* elemsAddr =
         builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
+    llvm::Value* headPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+    llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "eg.head");
+    llvm::Value* actualIdx = builder.CreateAdd(g.idx32, head, "eg.actidx");
     // +1: the elements block's payload begins one i64 past its header.
-    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(g.idx32, i64Ty),
+    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty),
                                              builder.getInt64(1));
     llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
     llvm::Value* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "eg.raw");
@@ -258,6 +261,10 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* capPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
     llvm::Value* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "es.cap");
+    llvm::Value* headPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+    llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "es.head");
+    llvm::Value* actualIdx = builder.CreateAdd(g.idx32, head, "es.actidx");
     llvm::Value* propsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     llvm::Value* propsVal =
@@ -266,7 +273,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* noProps =
         builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::Value* inBounds = builder.CreateAnd(builder.CreateICmpULT(g.idx32, len),
-                                              builder.CreateICmpULT(g.idx32, cap));
+                                              builder.CreateICmpULT(actualIdx, cap));
     llvm::BasicBlock* arrElemsBb = llvm::BasicBlock::Create(ctx, "es.arr.elems", fn);
     builder.CreateCondBr(builder.CreateAnd(inBounds, noProps), arrElemsBb, slowBb);
 
@@ -284,7 +291,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* elemsAddr =
         builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(g.idx32, i64Ty),
+    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty),
                                              builder.getInt64(1));
     llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
     builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));

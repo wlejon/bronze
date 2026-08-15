@@ -336,8 +336,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 /* ArrayHeader field offsets */
 #define BRONZE_ABI_ARRAY_LENGTH_OFFSET   8
 #define BRONZE_ABI_ARRAY_CAPACITY_OFFSET 12
-#define BRONZE_ABI_ARRAY_ELEMS_OFFSET    16
-#define BRONZE_ABI_ARRAY_PROPS_OFFSET    24
+#define BRONZE_ABI_ARRAY_HEAD_OFFSET     16
+#define BRONZE_ABI_ARRAY_ELEMS_OFFSET    24
+#define BRONZE_ABI_ARRAY_PROPS_OFFSET    32
 
 /* Environment records (runtime/env.h EnvHeader): the parent link, then the
  * slot array. Generated code inlines captured-variable reads and writes —

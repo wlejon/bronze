@@ -17,6 +17,8 @@ struct ArrayHeader {
     HeapObjectHeader header;
     uint32_t length{0};
     uint32_t capacity{0};
+    uint32_t head_offset{0};
+    uint32_t reserved{0};
     // Undefined, or an Object-tagged pointer to the header of a heap block
     // of `capacity` Values. Out of line so that growing an array keeps its
     // identity: only the block is reallocated, and every Value already
@@ -84,9 +86,17 @@ struct ArrayHeader {
 
     Value* elementsData() noexcept {
         if (!elements.isPointer()) return nullptr;
-        return elements.asObject<HeapObjectHeader>()->payload<Value>();
+        return rawElementsData() + head_offset;
     }
     const Value* elementsData() const noexcept {
+        if (!elements.isPointer()) return nullptr;
+        return rawElementsData() + head_offset;
+    }
+    Value* rawElementsData() noexcept {
+        if (!elements.isPointer()) return nullptr;
+        return elements.asObject<HeapObjectHeader>()->payload<Value>();
+    }
+    const Value* rawElementsData() const noexcept {
         if (!elements.isPointer()) return nullptr;
         return elements.asObject<HeapObjectHeader>()->payload<Value>();
     }
@@ -94,6 +104,7 @@ struct ArrayHeader {
 
 static_assert(offsetof(ArrayHeader, length) == BRONZE_ABI_ARRAY_LENGTH_OFFSET);
 static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+static_assert(offsetof(ArrayHeader, head_offset) == BRONZE_ABI_ARRAY_HEAD_OFFSET);
 static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
 static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
 

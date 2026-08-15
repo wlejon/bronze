@@ -30,6 +30,7 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
 
     arr->elements = Value::fromObject(block);
     arr->capacity = new_capacity;
+    arr->head_offset = 0;
 }
 
 }  // namespace
@@ -41,6 +42,8 @@ ArrayHeader* ArrayHeader::create(Heap& heap, uint32_t initial_capacity) {
     auto* arr = reinterpret_cast<ArrayHeader*>(raw_hdr);
     arr->length = 0;
     arr->capacity = 0;
+    arr->head_offset = 0;
+    arr->reserved = 0;
     arr->elements = Value::fromUndefined();
     arr->properties = Value::fromUndefined();
 
@@ -101,9 +104,14 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
             Value* slots = arr->elementsData();
             for (uint32_t i = newLength; i < arr->length; ++i) slots[i] = Value::fromHole();
             arr->length = newLength;
+            if (newLength == 0) {
+                arr->head_offset = 0;
+            }
             return;
         }
-        if (newLength > arr->capacity) setCapacity(heap, self, newLength);
+        if (arr->head_offset + newLength > arr->capacity) {
+            setCapacity(heap, self, newLength);
+        }
     }
     // `setCapacity` allocates, so the header is re-derived through the root.
     ArrayHeader* arr = self.get().asObject<ArrayHeader>();
@@ -119,12 +127,23 @@ void ArrayHeader::setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
     }
 
     Rooted<Value> self(Value::fromObject(this));
-    if (index >= capacity) {
-        uint32_t new_capacity = capacity ? capacity * 2 : 4;
-        while (new_capacity <= index) {
-            new_capacity *= 2;
+    if (head_offset + index >= capacity) {
+        // If there is head headroom and in-place compaction fits the write, compact to index 0
+        if (head_offset > 0 && index + 1 <= capacity) {
+            Value* raw = rawElementsData();
+            const Value* cur = elementsData();
+            std::memmove(raw, cur, length * sizeof(Value));
+            for (uint32_t i = length; i < capacity; ++i) {
+                raw[i] = Value::fromHole();
+            }
+            head_offset = 0;
+        } else {
+            uint32_t new_capacity = capacity ? capacity * 2 : 4;
+            while (new_capacity <= index) {
+                new_capacity *= 2;
+            }
+            setCapacity(heap, self, new_capacity);
         }
-        setCapacity(heap, self, new_capacity);
     }
 
     // `this` may be stale: setCapacity allocates.
