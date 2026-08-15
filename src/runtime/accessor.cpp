@@ -71,7 +71,7 @@ void callSetter(Value setter, Rooted<Value>& receiver, Rooted<Value>& value,
 // exists for.
 void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                   Rooted<Value>& key, Rooted<Value>& getter,
-                                  Rooted<Value>& setter, bool enumerable) {
+                                  Rooted<Value>& setter, bool enumerable, bool configurable) {
     const PropertyKey name = PropertyKey::fromValue(key.get());
     if (!name.valid()) {
         fatal("property name must be a string or a symbol");
@@ -97,7 +97,8 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         // every depth > 0 entry below it points at.
         if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
         Shape* next = obj->shape->addProperty(arena, heap, key, slot, enumerable,
-                                              /*is_accessor=*/true);
+                                              /*is_accessor=*/true, /*is_writable=*/true,
+                                              configurable);
         obj = ensureSlots(heap, self, slot + 2);
         obj->shape = next;
         // A pair starts empty, so the half this call does not write reads as

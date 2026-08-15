@@ -1,6 +1,7 @@
 bronze_add_module(runtime
     SOURCES
         profile.cpp
+        ic_log.cpp
         fatal.cpp
         number_format.cpp
         value.cpp

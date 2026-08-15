@@ -1,3 +1,6 @@
+// getenv, as heap.cpp: the CRT-deprecation opt-out, not a blanket C4996
+#define _CRT_SECURE_NO_WARNINGS
+
 // The property descriptor as a reified object: the four `Object` members that
 // convert between it and bronze's internal form.
 //
@@ -12,15 +15,17 @@
 // The FIELD ORDER of the object built here is the specification's and not a
 // convenience: `Object.keys(descriptor)` prints it, so it is pinned bytes.
 //
-// Everything here goes through DICTIONARY mode on the write side, including a
-// descriptor that asks for nothing unusual — `writable` and `configurable` live
-// in the dictionary entry and nowhere else. That is what keeps the inline
-// caches out of this file entirely, and it is the reason the split is drawn
-// here: builtin_object.cpp's members all read an object through its shape, and
-// none of them moves it out of one.
-
+// The write side keeps an object in SHAPE-land whenever the descriptor can be
+// represented there — a shape carries all four attributes, and transitions
+// match on the full tuple, so `Object.defineProperty` in a hot constructor
+// (three.js Object3D does exactly this) no longer costs every later property
+// access its inline cache. Dictionary mode remains the escape for what a
+// shared shape cannot express: redescribing attributes on one object of many,
+// and the delete-shaped history it has always owned.
 #include "runtime/builtin_object.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "abi/bronze_abi.h"
@@ -39,6 +44,14 @@
 namespace bronze::runtime {
 
 namespace {
+
+static bool shapeDefineEnabled() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("BRONZE_NO_SHAPE_DEFINE");
+        return !(env && std::strcmp(env, "1") == 0);
+    }();
+    return enabled;
+}
 
 // A key as text, for a diagnostic. `Symbol(desc)` for a symbol, which is the
 // only spelling one has (20.4.3.3.1) and is not a conversion a program could
@@ -76,10 +89,9 @@ DictEntry* entryOf(Value objVal, PropertyKey name) {
 }  // namespace
 
 // ECMA-262 10.1.6.3 DefineOwnProperty, for the one caller that can express a
-// full descriptor. Every path goes through dictionary mode, including a
-// descriptor that asks for nothing unusual: `{ value: 5 }` DEFAULTS its three
-// missing attributes to false (6.2.6.5), so the plain-looking case is exactly
-// the one a shape transition cannot represent.
+// full descriptor. Plain data and accessor properties on shape-chain objects
+// extend their shape transition tree rather than unconditionally degrading
+// to dictionary mode.
 uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
@@ -120,6 +132,74 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
     // The key is built before the object is disturbed, and interned so the
     // entry can hold it forever.
     PropertyKey name = rtInternPropertyKey(args[1]);
+
+    auto* obj = target.get().asObject<ObjectHeader>();
+    if (shapeDefineEnabled() && obj->shape && !obj->shape->isDictionary()) {
+        PropertyInfo existing;
+        bool hasExisting = obj->shape->lookupProperty(name, existing);
+        if (!hasExisting) {
+            Rooted<Value> keyRoot{name.toValue()};
+            if (accessor) {
+                ObjectHeader::defineAccessor(rtHeap(), rtArena(), target, keyRoot, getter, setter,
+                                             enumerable, configurable);
+                return self.get().rawBits();
+            } else {
+                SetRefusal refusal = SetRefusal::None;
+                target.get().asObject<ObjectHeader>()->setProp(
+                    rtHeap(), rtArena(), keyRoot, value, /*ic=*/nullptr, enumerable,
+                    /*defineOwn=*/true, /*receiver=*/nullptr, &refusal, writable, configurable);
+                if (refusal == SetRefusal::NotExtensible) {
+                    return rtThrowTypeError("Cannot define property, object is not extensible").rawBits();
+                }
+                return self.get().rawBits();
+            }
+        } else {
+            if (!existing.configurable) {
+                if (existing.accessor != accessor) {
+                    return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                }
+                if (!existing.accessor) {
+                    if (!existing.writable && (hasWritable && writable)) {
+                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    }
+                    if (!existing.writable && hasValue &&
+                        obj->getSlot(existing.slot).rawBits() != value.get().rawBits()) {
+                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    }
+                    if (hasEnumerable && existing.enumerable != enumerable) {
+                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    }
+                    if (hasConfigurable && existing.configurable != configurable) {
+                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    }
+                    if (existing.writable && hasValue) {
+                        obj->setSlot(existing.slot, value.get());
+                    }
+                    if (existing.writable && hasWritable && !writable) {
+                        // The one attribute change 10.1.6.3 still permits when
+                        // configurable is false: writable true -> false. A
+                        // Shape is shared by every object that reached it, so
+                        // the demotion cannot be written into the shape — this
+                        // object diverges into dictionary mode instead, the
+                        // same escape `delete` takes.
+                        ObjectHeader::toDictionary(rtArena(), target);
+                        entryOf(target.get(), name)->writable = false;
+                    }
+                    return self.get().rawBits();
+                }
+            } else if (existing.accessor == accessor && existing.enumerable == enumerable &&
+                       existing.writable == writable && existing.configurable == configurable) {
+                Rooted<Value> keyRoot{name.toValue()};
+                if (accessor) {
+                    ObjectHeader::defineAccessor(rtHeap(), rtArena(), target, keyRoot, getter, setter,
+                                                 enumerable, configurable);
+                } else if (hasValue) {
+                    obj->setSlot(existing.slot, value.get());
+                }
+                return self.get().rawBits();
+            }
+        }
+    }
 
     ObjectHeader::toDictionary(rtArena(), target);
     DictEntry* existing = entryOf(target.get(), name);

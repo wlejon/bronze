@@ -40,6 +40,7 @@
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/ic_log.h"
 #include "runtime/namespace.h"
 #include "runtime/proxy.h"
 #include "runtime/regexp.h"
@@ -108,6 +109,7 @@ extern "C" {
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry,
                      bool strict) {
     recordPropCall("bronze_prop_set", keyIndex, icEntry);
+    recordPropSetMiss(objBits, keyIndex, valBits, icEntry, strict);
     Value objVal(objBits);
     Value valVal(valBits);
     InlineCache* ic = rtAsCache(icEntry);

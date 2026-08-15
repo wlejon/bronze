@@ -224,9 +224,13 @@ struct ObjectHeader {
     // rather than creating a second property. Allocates (a shape transition
     // may grow the overflow block), so it takes the object through a root
     // and the caller must re-derive any raw pointer afterwards.
+    // `configurable` defaults true because the language forms that reach here
+    // — literal accessors, class accessors, __defineGetter__ — all produce
+    // configurable properties; Object.defineProperty passes what its
+    // descriptor says (absent means FALSE there, 6.2.6.5).
     static void defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,
                                Rooted<Value>& key, Rooted<Value>& getter, Rooted<Value>& setter,
-                               bool enumerable);
+                               bool enumerable, bool configurable = true);
 
     // The object's own properties as a table that can be removed from the
     // middle of, and a private shape naming it. Idempotent.

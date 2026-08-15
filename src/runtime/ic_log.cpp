@@ -1,0 +1,366 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include "runtime/ic_log.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "abi/bronze_abi.h"
+#include "runtime/array.h"
+#include "runtime/fn.h"
+#include "runtime/map.h"
+#include "runtime/namespace.h"
+#include "runtime/object.h"
+#include "runtime/regexp.h"
+#include "runtime/rt_internal.h"
+#include "runtime/shape.h"
+#include "runtime/string.h"
+#include "runtime/typed_array.h"
+#include "runtime/value.h"
+
+namespace bronze::runtime {
+
+bool g_icLogEnabled = false;
+
+namespace {
+
+struct KeyStats {
+    uint64_t totalCount{0};
+    std::unordered_map<std::string, uint64_t> reasonCounts;
+};
+
+struct SectionStats {
+    uint64_t totalCount{0};
+    std::unordered_map<std::string, uint64_t> reasonCounts;
+    std::unordered_map<std::string, KeyStats> keyStats;
+};
+
+static SectionStats g_propGetStats;
+static SectionStats g_propSetStats;
+static SectionStats g_dynamicCallStats;
+static bool s_initialized = false;
+
+const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
+    if (!ic) return "no_ic_slot";
+    if (!objVal.isObject()) {
+        if (objVal.isNull() || objVal.isUndefined()) return "primitive_null_or_undefined";
+        return "primitive_other";
+    }
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == HeapKind::Array) return "kind_array";
+    if (hdr->flags == TypedArrayHeader::kFlags) return "kind_typed_array";
+    if (hdr->flags == HeapKind::Function) return "kind_function";
+    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) return "kind_map_or_set";
+    if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) return "kind_weak_collection";
+    if (hdr->flags == ArrayBufferHeader::kFlags) return "kind_array_buffer";
+    if (hdr->flags == DataViewHeader::kFlags) return "kind_data_view";
+    if (hdr->flags == RegExpHeader::kFlags) return "kind_regexp";
+    if (hdr->flags == ModuleNamespaceHeader::kFlags) return "kind_module_namespace";
+    if (hdr->flags == HeapKind::Proxy) return "kind_proxy";
+    if (hdr->flags != HeapKind::Plain) return "kind_other";
+
+    auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+    if (obj->shape && obj->shape->dict) return "receiver_in_dict_mode";
+
+    StringHeader* keyHdr = rtKeyHeader(keyIndex);
+    if (keyHdr) {
+        PropertyKey pk = PropertyKey::forString(keyHdr);
+        ObjectHeader* holder = obj;
+        for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+            PropertyInfo info;
+            if (holder->shape && holder->shape->lookupProperty(pk, info)) {
+                if (info.accessor) return "accessor_getter";
+                break;
+            }
+            ObjectHeader* next = holder->protoAncestor(1);
+            if (!next) break;
+            holder = next;
+        }
+    }
+
+    if (!ic->cached_shape) return "ic_uninitialized";
+    if (ic->cached_shape != obj->shape) return "shape_mismatch_polymorphic";
+
+    if (ic->cached_depth > 0) {
+        if (ic->cached_epoch != protoMutationEpoch()) return "proto_epoch_stale";
+        bool crossedDict = false;
+        ObjectHeader* holder = obj->cachedProtoHolder(ic->cached_depth, crossedDict);
+        if (crossedDict) return "proto_dict_mode";
+        if (!holder) return "proto_non_plain_or_null";
+        if (keyHdr) {
+            PropertyKey pk = PropertyKey::forString(keyHdr);
+            PropertyInfo info;
+            if (holder->shape && holder->shape->lookupProperty(pk, info)) {
+                if (info.accessor) return "accessor_getter";
+                return "proto_overflow_or_other";
+            }
+        }
+        return "missing_property";
+    }
+
+    if (keyHdr) {
+        PropertyKey pk = PropertyKey::forString(keyHdr);
+        PropertyInfo info;
+        if (obj->shape && obj->shape->lookupProperty(pk, info)) {
+            if (info.accessor) return "accessor_getter";
+            return "depth0_overflow_or_other";
+        }
+    }
+    return "missing_property";
+}
+
+const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, InlineCache* ic, bool strict) {
+    (void)valVal;
+    (void)strict;
+    if (!ic) return "no_ic_slot";
+    if (!objVal.isObject()) return "primitive_receiver";
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags == HeapKind::Array) return "kind_array";
+    if (hdr->flags == TypedArrayHeader::kFlags) return "kind_typed_array";
+    if (hdr->flags == HeapKind::Function) return "kind_function";
+    if (hdr->flags != HeapKind::Plain) return "kind_other";
+
+    auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+    if (obj->shape && obj->shape->dict) return "receiver_in_dict_mode";
+
+    StringHeader* keyHdr = rtKeyHeader(keyIndex);
+    if (keyHdr) {
+        PropertyKey pk = PropertyKey::forString(keyHdr);
+        ObjectHeader* holder = obj;
+        for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+            PropertyInfo info;
+            if (holder->shape && holder->shape->lookupProperty(pk, info)) {
+                if (info.accessor) return "accessor_setter";
+                break;
+            }
+            ObjectHeader* next = holder->protoAncestor(1);
+            if (!next) break;
+            holder = next;
+        }
+    }
+
+    if (!ic->cached_shape) return "ic_uninitialized";
+    if (ic->cached_shape == obj->shape) {
+        if (ic->cached_depth > 0) return "inherited_prop_set";
+        if (obj->shape && obj->shape->dict) return "receiver_dict_mode";
+        if (keyHdr) {
+            PropertyKey pk = PropertyKey::forString(keyHdr);
+            PropertyInfo info;
+            if (obj->shape && obj->shape->lookupProperty(pk, info) && info.accessor) {
+                return "accessor_setter";
+            }
+        }
+        return "depth0_overflow_or_other";
+    }
+
+    if (ic->cached_shape->parent == obj->shape) {
+        uint64_t slotWord = *reinterpret_cast<const uint64_t*>(
+            reinterpret_cast<const char*>(ic) + BRONZE_ABI_IC_SLOT_OFFSET);
+        if ((slotWord >> 32) != 0 || (slotWord & 0xFFFFFFFF) >= BRONZE_ABI_OBJ_INLINE_SLOTS) {
+            return "transition_overflow_slot";
+        }
+        if (ic->cached_shape->slot_index != static_cast<uint32_t>(slotWord)) {
+            return "transition_key_mismatch";
+        }
+        if (!(ic->cached_shape->enumerable && !ic->cached_shape->accessor &&
+              ic->cached_shape->writable && ic->cached_shape->configurable)) {
+            return "transition_attrs_not_plain";
+        }
+        if (obj->shape && obj->shape->used_as_prototype) {
+            return "transition_receiver_used_as_proto";
+        }
+        if (ic->cached_epoch != protoMutationEpoch()) {
+            return "transition_epoch_stale";
+        }
+        const std::string& keyStr = rtKeyString(keyIndex);
+        if (keyStr == "length" || rtKeyInfo(keyIndex).isElemIndex) {
+            return "transition_special_key";
+        }
+        return "transition_arm_miss_other";
+    }
+
+    return "shape_mismatch_polymorphic";
+}
+
+const char* classifyDynamicCall(uint64_t calleeBits, uint32_t argc, std::string& calleeDesc) {
+    Value calleeVal(calleeBits);
+    if (!calleeVal.isObject()) {
+        calleeDesc = "(non-object)";
+        return "tag_not_object";
+    }
+    auto* hdr = calleeVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Function) {
+        calleeDesc = "(non-function object)";
+        return "not_function_kind";
+    }
+    auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+    std::string nameStr;
+    if (fn->name) {
+        if (fn->name->getLength() == 0) {
+            nameStr = "anonymous";
+        } else {
+            nameStr = rtUtf8Chars(fn->name);
+        }
+    } else {
+        nameStr = "native/unnamed";
+    }
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "fn \"%s\" (arity %u, argc %u)", nameStr.c_str(), fn->arity, argc);
+    calleeDesc = buf;
+
+    if (fn->arity > argc) {
+        return "under_arity_padding";
+    }
+    if (bronze_inline_call_enabled == 0) {
+        return "seam_disabled";
+    }
+    return "module_has_new_target_or_direct";
+}
+
+struct AutoIcLogInit {
+    AutoIcLogInit() {
+        initIcLog();
+    }
+} s_autoIcLogInit;
+
+}  // namespace
+
+void initIcLog() {
+    if (s_initialized) return;
+    s_initialized = true;
+    const char* env = std::getenv("BRONZE_IC_LOG");
+    if (env && std::strcmp(env, "1") == 0) {
+        g_icLogEnabled = true;
+        std::atexit(dumpIcLogReport);
+    }
+}
+
+void icLogRecordPropGet(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    Value objVal(objBits);
+    InlineCache* ic = rtAsCache(icEntry);
+    const char* reason = classifyPropGet(objVal, keyIndex, ic);
+    std::string key = "." + rtKeyString(keyIndex);
+
+    g_propGetStats.totalCount++;
+    g_propGetStats.reasonCounts[reason]++;
+    auto& ks = g_propGetStats.keyStats[key];
+    ks.totalCount++;
+    ks.reasonCounts[reason]++;
+}
+
+void icLogRecordPropSet(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry, bool strict) {
+    Value objVal(objBits);
+    Value valVal(valBits);
+    InlineCache* ic = rtAsCache(icEntry);
+    const char* reason = classifyPropSet(objVal, keyIndex, valVal, ic, strict);
+    std::string key = "." + rtKeyString(keyIndex);
+
+    g_propSetStats.totalCount++;
+    g_propSetStats.reasonCounts[reason]++;
+    auto& ks = g_propSetStats.keyStats[key];
+    ks.totalCount++;
+    ks.reasonCounts[reason]++;
+}
+
+void icLogRecordDynamicCall(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
+    (void)thisBits;
+    (void)argvBits;
+    std::string calleeDesc;
+    const char* reason = classifyDynamicCall(calleeBits, argc, calleeDesc);
+
+    g_dynamicCallStats.totalCount++;
+    g_dynamicCallStats.reasonCounts[reason]++;
+    auto& ks = g_dynamicCallStats.keyStats[calleeDesc];
+    ks.totalCount++;
+    ks.reasonCounts[reason]++;
+}
+
+static void printSectionReport(const char* sectionTitle, const char* keyColumnTitle, const SectionStats& stats) {
+    if (stats.totalCount == 0) return;
+
+    std::fprintf(stderr, "\n--- %s by Reason (Total: %llu) ---\n",
+                 sectionTitle, static_cast<unsigned long long>(stats.totalCount));
+    std::fprintf(stderr, "%-48s %12s %8s\n", "Miss Reason", "Count", "% Total");
+    std::fprintf(stderr, "-----------------------------------------------------------------------\n");
+
+    std::vector<std::pair<std::string, uint64_t>> sortedReasons(
+        stats.reasonCounts.begin(), stats.reasonCounts.end());
+    std::sort(sortedReasons.begin(), sortedReasons.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+
+    for (const auto& r : sortedReasons) {
+        double pct = 100.0 * r.second / stats.totalCount;
+        std::fprintf(stderr, "%-48s %12llu %7.1f%%\n",
+                     r.first.c_str(),
+                     static_cast<unsigned long long>(r.second),
+                     pct);
+    }
+    std::fprintf(stderr, "-----------------------------------------------------------------------\n");
+
+    std::fprintf(stderr, "\n--- %s by %s (Top 20) ---\n", sectionTitle, keyColumnTitle);
+    std::fprintf(stderr, "%-38s %10s %7s  %-20s\n", keyColumnTitle, "Count", "% Tot", "Top Miss Reason");
+    std::fprintf(stderr, "-----------------------------------------------------------------------\n");
+
+    std::vector<std::pair<std::string, KeyStats>> sortedKeys(
+        stats.keyStats.begin(), stats.keyStats.end());
+    std::sort(sortedKeys.begin(), sortedKeys.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second.totalCount != b.second.totalCount) {
+                      return a.second.totalCount > b.second.totalCount;
+                  }
+                  return a.first < b.first;
+              });
+
+    size_t count = 0;
+    for (const auto& [k, ks] : sortedKeys) {
+        if (++count > 20) {
+            size_t remaining = sortedKeys.size() - 20;
+            std::fprintf(stderr, "  ... and %zu more entry(s)\n", remaining);
+            break;
+        }
+        std::string topReason = "(none)";
+        uint64_t topReasonCount = 0;
+        for (const auto& [r, rc] : ks.reasonCounts) {
+            if (rc > topReasonCount || (rc == topReasonCount && r < topReason)) {
+                topReasonCount = rc;
+                topReason = r;
+            }
+        }
+
+        double pct = 100.0 * ks.totalCount / stats.totalCount;
+        std::string label = k;
+        if (label.size() > 38) label = label.substr(0, 35) + "...";
+        std::fprintf(stderr, "%-38s %10llu %6.1f%%  %-20s\n",
+                     label.c_str(),
+                     static_cast<unsigned long long>(ks.totalCount),
+                     pct,
+                     topReason.c_str());
+    }
+    std::fprintf(stderr, "-----------------------------------------------------------------------\n");
+}
+
+void dumpIcLogReport() {
+    if (!g_icLogEnabled) return;
+
+    std::fprintf(stderr, "\n=======================================================================\n");
+    std::fprintf(stderr, "=== Bronze Property & Dynamic Call Miss Attribution (BRONZE_IC_LOG=1) ===\n");
+    std::fprintf(stderr, "=======================================================================\n");
+
+    printSectionReport("bronze_prop_get Misses", "Key", g_propGetStats);
+    printSectionReport("bronze_prop_set Misses", "Key", g_propSetStats);
+    printSectionReport("bronze_dynamic_call Misses", "Callee", g_dynamicCallStats);
+
+    std::fprintf(stderr, "\n");
+    std::fflush(stderr);
+}
+
+}  // namespace bronze::runtime

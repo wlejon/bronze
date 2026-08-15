@@ -29,14 +29,13 @@ struct DictEntry {
     // The slot holds the getter and `slot + 1` the setter, either of which may
     // be `undefined`.
     bool accessor{false};
-    // The other two attributes of 6.2.6.1, which live HERE and nowhere else: a
-    // shape transition is matched on (name, enumerable, accessor), and adding
-    // two more bits to that key would fork the transition tree for every object
-    // that had reached the node a late `writable: false` was defined on. An
-    // object that wants a non-default attribute becomes a dictionary instead,
-    // which is the same escape `delete` already takes and is the reason the
-    // inline caches need no change: a dictionary's private shape is one no
-    // entry has ever seen.
+    // The other two attributes of 6.2.6.1. A Shape carries them too, and a
+    // transition matches on the full attribute tuple — but REDESCRIBING one
+    // on a live property is a change a shared shape cannot express for one
+    // object of many, so that object diverges into dictionary mode, where the
+    // entry is private and can simply be edited. The same escape `delete`
+    // takes, and the reason the inline caches need no change: a dictionary's
+    // private shape is one no IC entry has ever seen.
     bool writable{true};
     bool configurable{true};
 };

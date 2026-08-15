@@ -26,6 +26,7 @@
 #include "runtime/namespace.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/ic_log.h"
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/builtin_object.h"
@@ -653,6 +654,7 @@ void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t v
 uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,
                              const uint64_t* argvBits) {
     recordCallSite("bronze_dynamic_call", calleeBits);
+    recordDynamicCallMiss(calleeBits, thisBits, argc, argvBits);
     NewTargetScope targetScope(Value::fromUndefined());
     Value calleeVal(calleeBits);
     if (!calleeVal.isObject()) {

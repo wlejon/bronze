@@ -29,6 +29,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/profile.h"
+#include "runtime/ic_log.h"
 #include "runtime/exception.h"
 #include "runtime/proxy.h"
 #include "runtime/fatal.h"
@@ -362,6 +363,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
+    recordPropGetMiss(objBits, keyIndex, icEntry);
     Value objVal(objBits);
     InlineCache* ic = rtAsCache(icEntry);
 

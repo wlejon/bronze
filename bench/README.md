@@ -91,6 +91,64 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 11: IC Miss Attribution and Shape-Preserving Property Definition**:
+  > [!NOTE]
+  > **Phase 1 Attribution Diagnosis (`BRONZE_IC_LOG=1`)**:
+  > Built an env-gated IC miss attribution subsystem (`src/runtime/ic_log.h`, `src/runtime/ic_log.cpp`)
+  > classifying every `bronze_prop_get`, `bronze_prop_set`, and `bronze_dynamic_call` entry by reason,
+  > key/callee, and site. Attribution ran across `object_graph.js`, `mesh_churn_2k.js`, and `instanced_mesh_churn.js`
+  > in both `infer` and `--no-infer` modes (producing 100% identical byte-for-byte miss classifications):
+  > 1. **Three.js Object3D Dictionary Degradation (The Top Cause)**:
+  >    On `instanced_mesh_churn.js`, `bronze_prop_get` recorded **2,370,609 misses** (89.0% `receiver_in_dict_mode`: 2,110,973 misses on `.matrix`, `.instanceColor`, `.position`, `.scale`, `.instanceMatrix`, `.setMatrixAt`, `.quaternion`, `.updateMatrix`, `.rotation`, `.setColorAt`) and `bronze_prop_set` recorded **183,035 misses** (82.4% `receiver_in_dict_mode`: 150,817 on `.matrixWorldNeedsUpdate`).
+  >    On `mesh_churn_2k.js`, `bronze_prop_get` recorded **1,548,058 misses** (78.6% `receiver_in_dict_mode`: 1,216,846 misses on `.rotation`, `.parent`, `.matrixWorld`, etc.) and `bronze_prop_set` recorded **480,153 misses** (36.8% `receiver_in_dict_mode`: 176,864 misses).
+  >    *Root Cause*: Three.js `Object3D`'s constructor invokes `Object.defineProperty(this, 'id', ...)` and `Object.defineProperties(this, { position, rotation, quaternion, scale, ... })`. `rtObjectDefineProperty` previously converted the object unconditionally to dictionary mode (`ObjectHeader::toDictionary()`), preventing all inline caches from caching or hitting on any `Object3D` property.
+  > 2. **Dynamic Call Under-Arity Padding**:
+  >    On `instanced_mesh_churn.js`, all **300,138** residual `bronze_dynamic_call` misses were attributed 100.0% to `under_arity_padding` (`setRGB` arity 4, argc 3: 150,038 misses; `set` arity 4, argc 3: 150,000 misses), where calls pass 3 arguments to 4-parameter functions expecting `undefined` padding.
+  > 3. **Array Prototype Method Gets**:
+  >    On `object_graph.js`, `bronze_prop_get` recorded **652,622 misses** (100.0% `kind_array` on `.push` [352,204] and `.shift` [300,418]), while `bronze_prop_set` recorded **254,390 misses** (99.8% `transition_overflow_slot` on slots >= 4).
+  >
+  > **Phase 2 Fix — Shape-Preserving Property Definition (`builtin_object_descriptor.cpp`)**:
+  > Updated `rtObjectDefineProperty` to extend the receiver's Shape transition tree (`shape->addProperty` / `setProp` with `defineOwn=true` or `defineAccessor`) for new properties and compatible attribute updates rather than degrading plain objects to dictionary mode.
+  > All `Object3D` instances now traverse a shared, monomorphic Shape transition tree, enabling LLVM-generated monomorphic ICs to hit directly in generated code.
+  > Provided an env seam `BRONZE_NO_SHAPE_DEFINE=1` to A/B test.
+  >
+  > **Impact** (miss counts; runtimes below are the audit's re-measured sweep):
+  > - `instanced_mesh_churn`: `bronze_prop_get` misses **2.37M → 260k** (89% drop); `bronze_prop_set` misses **183k → 33k** (82% drop). Total property misses cut by **2.26 Million**.
+  > - `mesh_churn_2k`: `bronze_prop_get` misses **1.55M → 360k** (77% drop).
+  >
+  > Post-chunk audit: the shape-preserving path as first landed broke two
+  > 10.1.6.3 rules the dictionary path used to honor. (1) An accessor
+  > defined via `defineProperty` was recorded configurable:true — the
+  > literal-accessor default — so `delete` removed what the spec says must
+  > survive; fixed by threading the descriptor's `configurable` through
+  > `ObjectHeader::defineAccessor` (literals keep their true default).
+  > (2) `{writable:false}` on a non-configurable writable property — one of
+  > the two changes the spec still permits — returned without applying;
+  > fixed by demoting that one object to dictionary mode (a shared Shape
+  > cannot express the change) and clearing the entry's writable bit.
+  > Oracle case `define_property_shape_semantics` pins both rules, the
+  > descriptor attribute defaults, and the hot Object3D-style constructor
+  > pattern under the GC-stress re-run. The chunk's own sweep (and its
+  > "baseline before") ran on a loaded machine — every non-target bench
+  > read ~2x high — so the table below is the audit's clean re-run; the
+  > mechanism's win is real and LARGER against true baselines. Two
+  > pre-existing dictionary-path gaps are now named for future work, not
+  > introduced here: redefinition with a partial descriptor clobbers
+  > absent fields to their defaults instead of keeping existing values,
+  > and any redefinition on a non-configurable dictionary entry throws
+  > blanket TypeErrors including for spec-legal no-ops.
+  - `three_math.js`: **36.54ms** (infer) vs 36.99ms (no-infer) — (checksum=405000)
+  - `object_graph.js`: **171.62ms** (infer) vs 166.46ms (no-infer) — (checksum=-32601148; its bill is kind_array push/shift + transition_overflow_slot, untouched by this chunk)
+  - `typed_array_crunch.js`: **117.30ms** (infer) vs 125.40ms (no-infer) — (checksum=78849652)
+  - `mesh_churn_2k.js`: **129.01ms** (infer) vs 141.68ms (no-infer) — (checksum=-2112298, **down from 215.83ms; now 1.39x behind node's 92.70**)
+  - `instanced_mesh_churn.js`: **130.29ms** (infer) vs 128.86ms (no-infer) — (checksum=1260786, **down from ~278-289ms; now 1.37x behind node's 95.28**)
+  - `fib.js`: **8.91ms** (infer) vs 14.84ms (no-infer)
+  - `numeric_loop.js`: **36.17ms** (infer) vs 54.03ms (no-infer)
+  - `property_access.js`: **12.87ms** (infer) vs 11.48ms (no-infer)
+  - `proto_dispatch.js`: **22.21ms** (infer) vs 25.73ms (no-infer)
+  - `proto_dispatch_churn.js`: **60.22ms** (infer) vs 62.21ms (no-infer)
+  - `typed_array_loop.js`: **34.71ms** (infer) vs 36.07ms (no-infer)
+
 - **Chunk 10: Profile-driven bill knockdown — inlined dynamic calls and prototype-overflow IC**:
   > [!NOTE]
   > Profiled the three unprofiled benchmarks (`object_graph.js`, `mesh_churn_2k.js`, `instanced_mesh_churn.js`)
