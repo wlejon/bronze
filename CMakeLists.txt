@@ -40,6 +40,10 @@ option(BRONZE_WITH_LLVM "Build the LLVM codegen backend" OFF)
 if(BRONZE_WITH_LLVM)
     if(NOT DEFINED LLVM_DIR AND NOT DEFINED ENV{LLVM_DIR})
         foreach(_llvm_candidate
+                "D:/llvm-22/lib/cmake/llvm"
+                "D:/llvm-21/lib/cmake/llvm"
+                "D:/llvm-20/lib/cmake/llvm"
+                "C:/Program Files/LLVM/lib/cmake/llvm"
                 "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm"
                 "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/arm64-osx/share/llvm"
                 "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-osx/share/llvm"
@@ -53,7 +57,8 @@ if(BRONZE_WITH_LLVM)
                 "/usr/lib/llvm-20/lib/cmake/llvm"
                 "/usr/lib/llvm-20/cmake")
             if(EXISTS "${_llvm_candidate}")
-                set(LLVM_DIR "${_llvm_candidate}" CACHE PATH "")
+                set(LLVM_DIR "${_llvm_candidate}" CACHE PATH "" FORCE)
+                set(LLVM_DIR "${_llvm_candidate}")
                 list(APPEND CMAKE_PREFIX_PATH "${_llvm_candidate}/../..")
                 break()
             endif()

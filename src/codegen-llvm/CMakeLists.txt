@@ -32,11 +32,12 @@ target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS
 target_compile_definitions(bronze_codegen_llvm PUBLIC ${LLVM_DEFINITIONS})
 target_link_libraries(bronze_codegen_llvm PUBLIC ${llvm_libs})
 
-# The test TU parses the emitted COFF back with llvm::object to pin symbol
-# linkage. Instantiating those templates under /W4 /WX trips C4702
-# (unreachable code) inside LLVM's own Endian.h — a code-generation warning
-# that neither /external:W0 nor an in-file pragma reaches on MSVC.
+# Instantiating templates inside LLVM headers (e.g. Endian.h, bit.h) under
+# /W4 /WX trips C4702 (unreachable code) — a code-generation warning that
+# neither /external:W0 nor an in-file pragma reaches on MSVC.
 if(MSVC)
-    set_source_files_properties(../../tests/codegen_llvm/codegen_llvm_test.cpp
-                                PROPERTIES COMPILE_OPTIONS /wd4702)
+    target_compile_options(bronze_codegen_llvm PRIVATE /wd4702)
+    if(TARGET bronze_codegen_llvm_tests)
+        target_compile_options(bronze_codegen_llvm_tests PRIVATE /wd4702)
+    endif()
 endif()
