@@ -84,7 +84,9 @@ Shape* rtRootShapeForPrototype(Value proto) {
 }
 
 static Shape* g_plainObjectShape = nullptr;
-extern "C" uint64_t bronze_plain_shape = 0;
+extern "C" {
+uint64_t bronze_plain_shape = 0;
+}
 
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
