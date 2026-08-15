@@ -98,6 +98,8 @@ static_assert(HeapKind::Function == BRONZE_ABI_OBJ_FLAGS_FUNCTION);
 // closure environment and arity for the direct code call, the instance shape
 // for the allocation, and the vet byte that gates the whole path.
 static_assert(offsetof(FunctionHeader, env_record) == BRONZE_ABI_FN_ENV_OFFSET);
+static_assert(offsetof(FunctionHeader, prototype) == BRONZE_ABI_FN_PROTOTYPE_OFFSET);
+static_assert(offsetof(FunctionHeader, properties) == BRONZE_ABI_FN_PROPERTIES_OFFSET);
 static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
 static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
 static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);

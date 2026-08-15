@@ -592,6 +592,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* arrPayloadVal = nullptr;
     llvm::BasicBlock* arrMethodHitBb = nullptr;
     llvm::Value* arrMethodVal = nullptr;
+    llvm::BasicBlock* fnProtoHitBb = nullptr;
+    llvm::Value* fnProtoVal = nullptr;
 
     auto optIdx = parseIndexKey(keyStr);
     if (keyStr == "length") {
@@ -619,6 +621,22 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         llvm::Value* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ta.len");
         llvm::Value* taLenDbl = builder.CreateUIToFP(taLen, llvm::Type::getDoubleTy(ctx), "ta.len.dbl");
         taLenVal = builder.CreateBitCast(taLenDbl, i64Ty, "ta.len.bits");
+        builder.CreateBr(doneBb);
+    } else if (keyStr == "prototype") {
+        llvm::BasicBlock* fnProtoBb = llvm::BasicBlock::Create(ctx, "ic.fn.proto", fn);
+        fnProtoHitBb = llvm::BasicBlock::Create(ctx, "ic.fn.proto.hit", fn);
+        llvm::Value* isFn = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
+        builder.CreateCondBr(isFn, fnProtoBb, plainCheckBb);
+
+        builder.SetInsertPoint(fnProtoBb);
+        llvm::Value* protoPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, hdr, BRONZE_ABI_FN_PROTOTYPE_OFFSET);
+        fnProtoVal = builder.CreateAlignedLoad(i64Ty, protoPtr, llvm::Align(8), "fn.proto");
+        llvm::Value* protoTag = builder.CreateLShr(fnProtoVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* protoIsObj = builder.CreateICmpEQ(protoTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+        builder.CreateCondBr(protoIsObj, fnProtoHitBb, slowBb);
+
+        builder.SetInsertPoint(fnProtoHitBb);
         builder.CreateBr(doneBb);
     } else if (optIdx.has_value()) {
         uint32_t idx = *optIdx;
@@ -909,6 +927,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (arrUndefBb) phiCount++;
     if (arrPayloadBb) phiCount++;
     if (arrMethodHitBb) phiCount++;
+    if (fnProtoHitBb) phiCount++;
 
     llvm::PHINode* result = builder.CreatePHI(i64Ty, phiCount, "prop");
     result->addIncoming(inlineVal, inlineHitBb);
@@ -922,6 +941,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);
     if (arrMethodHitBb) result->addIncoming(arrMethodVal, arrMethodHitBb);
+    if (fnProtoHitBb) result->addIncoming(fnProtoVal, fnProtoHitBb);
     return result;
 }
 

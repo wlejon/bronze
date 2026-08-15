@@ -45,6 +45,7 @@ Shape* rtRootShapeForPrototype(Value proto);
 // shapes would give two identical literals unrelated hidden classes, so a site
 // seeing both would miss its inline cache every time.
 Shape* rtPlainObjectShape();
+Shape* rtCurrentPlainObjectShape();
 
 // A property key by the index lowering assigned it. The string form is for
 // comparisons; the header form is the arena-interned key the property path

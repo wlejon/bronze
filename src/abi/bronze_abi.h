@@ -423,6 +423,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * write (rt_prop_write.cpp) and never nulls it, so the vetted fast path
  * reads whatever is current. Pinned in runtime/fn.h. */
 #define BRONZE_ABI_FN_ENV_OFFSET            16
+#define BRONZE_ABI_FN_PROTOTYPE_OFFSET      24
+#define BRONZE_ABI_FN_PROPERTIES_OFFSET     32
 #define BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET 40
 #define BRONZE_ABI_FN_ARITY_OFFSET          56
 #define BRONZE_ABI_FN_CTOR_VETTED_OFFSET    65

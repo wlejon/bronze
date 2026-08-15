@@ -530,7 +530,6 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             }
             return true;
         }
-
         case il::Op::EnvCreate: {
             if (inst.result == il::kNoValue) return true;
             llvm::Value* parent = inst.operands.empty()

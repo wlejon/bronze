@@ -110,7 +110,9 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
     if (fn->prototype.isObject() && fn->instance_shape) return;
 
-    ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
+    Shape* protoShape = rtNewRootShape(rtObjectPrototype());
+    protoShape->used_as_prototype = true;
+    ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
     proto->header.flags = HeapKind::Plain;
 
     fn = fnVal.get().asObject<FunctionHeader>();  // create() may have moved it

@@ -4,6 +4,7 @@
 
 #include "runtime/fatal.h"
 #include "runtime/object.h"
+#include "runtime/rt_internal.h"
 
 namespace bronze {
 
@@ -21,8 +22,17 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     if (proto.isObject()) {
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-            if (Shape* protoShape = reinterpret_cast<ObjectHeader*>(hdr)->shape) {
-                protoShape->used_as_prototype = true;
+            auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+            if (Shape* protoShape = obj->shape) {
+                Shape* plainShape = runtime::rtCurrentPlainObjectShape();
+                if (plainShape && protoShape == plainShape) {
+                    Shape* dedicated = arena.create<Shape>();
+                    dedicated->prototype = protoShape->prototype;
+                    dedicated->used_as_prototype = true;
+                    obj->shape = dedicated;
+                } else {
+                    protoShape->used_as_prototype = true;
+                }
             }
         }
     }

@@ -83,9 +83,19 @@ Shape* rtRootShapeForPrototype(Value proto) {
     return root;
 }
 
+static Shape* g_plainObjectShape = nullptr;
+
 Shape* rtPlainObjectShape() {
-    static Shape* shape = rtNewRootShape(rtObjectPrototype());
-    return shape;
+    if (!g_plainObjectShape) {
+        Shape* shape = Shape::createRoot(g_arena, rtObjectPrototype());
+        g_rootShapes.push_back(shape);
+        g_plainObjectShape = shape;
+    }
+    return g_plainObjectShape;
+}
+
+Shape* rtCurrentPlainObjectShape() {
+    return g_plainObjectShape;
 }
 
 // ---- ABI pins ---------------------------------------------------------------
