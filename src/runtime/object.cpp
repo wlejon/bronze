@@ -14,7 +14,9 @@ namespace bronze {
 // An ABI data symbol rather than a static, because generated code now reads
 // it: the inline proto-hit and shape-transition fast paths compare an entry's
 // fill epoch against it, which is the same question `describes` asks here.
-extern "C" uint64_t bronze_proto_epoch = 1;
+extern "C" {
+uint64_t bronze_proto_epoch = 1;
+}
 
 uint64_t protoMutationEpoch() noexcept { return bronze_proto_epoch; }
 void bumpProtoMutationEpoch() noexcept { ++bronze_proto_epoch; }

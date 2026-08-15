@@ -123,15 +123,18 @@ TEST_CASE("a receiver with no shape still reaches Object.prototype") {
     // lookups in one expression are two allocations, and the first result would
     // be a raw pointer across the second's collection.
     auto reaches = [&](Rooted<Value>& receiver) {
-        CHECK(member(receiver, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
-        CHECK(member(receiver, "isPrototypeOf").rawBits() == isPrototypeOf.get().rawBits());
-        CHECK(member(receiver, "propertyIsEnumerable").rawBits() ==
-              propertyIsEnumerable.get().rawBits());
+        const auto hasOwn = member(receiver, "hasOwnProperty");
+        CHECK(hasOwn.rawBits() == hasOwnProperty.get().rawBits());
+        const auto isProto = member(receiver, "isPrototypeOf");
+        CHECK(isProto.rawBits() == isPrototypeOf.get().rawBits());
+        const auto propIsEnum = member(receiver, "propertyIsEnumerable");
+        CHECK(propIsEnum.rawBits() == propertyIsEnumerable.get().rawBits());
     };
     // `valueOf` is one 21.1.3.7 and 20.4.3.4 DO redefine, so it is asked only of
     // the kinds whose intermediate prototype leaves it alone.
     auto reachesValueOf = [&](Rooted<Value>& receiver) {
-        CHECK(member(receiver, "valueOf").rawBits() == valueOf.get().rawBits());
+        const auto valOf = member(receiver, "valueOf");
+        CHECK(valOf.rawBits() == valueOf.get().rawBits());
     };
 
     SUBCASE("a function") {

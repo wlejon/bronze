@@ -35,9 +35,11 @@ namespace bronze {
 // into the semispace a collection abandons. 0/0 is the dormant state: the
 // unsigned headroom subtraction is then 0 and every construct site falls
 // back to bronze_construct.
-extern "C" uint64_t bronze_alloc_cursor = 0;
-extern "C" uint64_t bronze_alloc_limit = 0;
-extern "C" uint64_t bronze_inline_call_enabled = 1;
+extern "C" {
+uint64_t bronze_alloc_cursor = 0;
+uint64_t bronze_alloc_limit = 0;
+uint64_t bronze_inline_call_enabled = 1;
+}
 
 // Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
 // the collector actually was — collections, bytes copied vs bytes allocated,

@@ -77,7 +77,8 @@ TEST_CASE("WeakMap set/get/has/delete over object keys") {
     Rooted<Value> val{Value::fromDouble(7.0)};
 
     // 24.3.3.5 answers the map itself, so `.set` chains.
-    CHECK(invoke2(wm, "set", key, val).rawBits() == wm.get().rawBits());
+    const auto setResult = invoke2(wm, "set", key, val);
+    CHECK(setResult.rawBits() == wm.get().rawBits());
     CHECK(invoke1(wm, "has", key).asBool());
     CHECK(invoke1(wm, "get", key).asNumber() == 7.0);
 

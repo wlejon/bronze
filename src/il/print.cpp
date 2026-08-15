@@ -267,7 +267,11 @@ std::string print(const Module& module) {
             for (const auto& inst : block.instructions) {
                 out += "    ";
                 if (inst.result != kNoValue) {
-                    out += "%" + std::to_string(inst.result) + ": " + typeName(inst.type) + " = ";
+                    out += "%";
+                    out += std::to_string(inst.result);
+                    out += ": ";
+                    out += typeName(inst.type);
+                    out += " = ";
                 }
                 switch (inst.op) {
                     case Op::Jump:

@@ -84,11 +84,11 @@ TEST_CASE("`**` is right-associative and refuses an unparenthesized unary left o
 
 TEST_CASE("`??` cannot be mixed with `&&` or `||` without parentheses") {
     CHECK(parseAndDump("const a = b ?? c || d;").find(
-              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+              "'?" "?' cannot be mixed with '&&' or '||'") != std::string::npos);
     CHECK(parseAndDump("const a = b || c ?? d;").find(
-              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+              "'?" "?' cannot be mixed with '&&' or '||'") != std::string::npos);
     CHECK(parseAndDump("const a = b && c ?? d;").find(
-              "'??' cannot be mixed with '&&' or '||'") != std::string::npos);
+              "'?" "?' cannot be mixed with '&&' or '||'") != std::string::npos);
     CHECK(parseAndDump("const a = (b ?? c) || d;").substr(0, 7) != "ERRORS:");
 }
 

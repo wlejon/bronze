@@ -2,9 +2,9 @@
 
 #include "abi/bronze_abi.h"
 
-// The head of generated code's root-frame list. Compiled code stores to it
-// directly on function entry and exit; the collector reads it.
-extern "C" bronze_gc_frame* bronze_gc_frame_top = nullptr;
+extern "C" {
+bronze_gc_frame* bronze_gc_frame_top = nullptr;
+}
 
 namespace bronze {
 
