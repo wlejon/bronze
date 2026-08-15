@@ -174,9 +174,9 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* parent =
             builder.CreateAlignedLoad(ptrTy, parentPtr, llvm::Align(8), "trans.parent");
         llvm::Value* parentOk = builder.CreateICmpEQ(parent, shape);
-        llvm::Value* slotSmall = builder.CreateICmpULT(
-            slotWord, builder.getInt64(BRONZE_ABI_OBJ_INLINE_SLOTS), "trans.slotsmall");
-        builder.CreateCondBr(builder.CreateAnd(parentOk, slotSmall), transNodeBb, slowBb);
+        llvm::Value* transDepth = builder.CreateLShr(slotWord, 32);
+        llvm::Value* transDepthOk = builder.CreateICmpEQ(transDepth, builder.getInt64(0), "trans.depthok");
+        builder.CreateCondBr(builder.CreateAnd(parentOk, transDepthOk), transNodeBb, slowBb);
 
         builder.SetInsertPoint(transNodeBb);
         llvm::Value* transSlot32 = builder.CreateTrunc(slotWord, i32Ty, "trans.slot32");
@@ -209,6 +209,13 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateCondBr(nodeOk, transHitBb, slowBb);
 
         builder.SetInsertPoint(transHitBb);
+        llvm::BasicBlock* transInlineBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.inline", fn);
+        llvm::BasicBlock* transOverflowBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow", fn);
+        llvm::Value* isInline = builder.CreateICmpULT(
+            transSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS), "trans.isinline");
+        builder.CreateCondBr(isInline, transInlineBb, transOverflowBb);
+
+        builder.SetInsertPoint(transInlineBb);
         llvm::Value* shapeSlotPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
         builder.CreateAlignedStore(cachedShape, shapeSlotPtr, llvm::Align(8));
@@ -217,6 +224,47 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* transSlotPtr =
             builder.CreateInBoundsGEP(i64Ty, transSlotsBase, transSlot32);
         builder.CreateAlignedStore(valBits, transSlotPtr, llvm::Align(8));
+        builder.CreateBr(doneBb);
+
+        builder.SetInsertPoint(transOverflowBb);
+        llvm::BasicBlock* transOverflowCheckCapBb =
+            llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.checkcap", fn);
+        llvm::BasicBlock* transOverflowAccessBb =
+            llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.access", fn);
+
+        llvm::Value* enabledVal = builder.CreateAlignedLoad(
+            i64Ty, globals.bronze_inline_overflow_set_enabled, llvm::Align(8), "trans.overflow.enabled");
+        llvm::Value* isEnabled = builder.CreateICmpNE(enabledVal, builder.getInt64(0));
+
+        llvm::Value* overflowPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+        llvm::Value* overflowVal =
+            builder.CreateAlignedLoad(i64Ty, overflowPtr, llvm::Align(8), "trans.overflow");
+        llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* overflowIsObj =
+            builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+        builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), transOverflowCheckCapBb, slowBb);
+
+        builder.SetInsertPoint(transOverflowCheckCapBb);
+        llvm::Value* overflowAddr =
+            builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
+        llvm::Value* sizePtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, overflowObj, BRONZE_ABI_HDR_SIZE_OFFSET);
+        llvm::Value* sizeVal = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "overflow.size");
+
+        llvm::Value* neededBytes = builder.CreateMul(
+            builder.CreateSub(transSlot32, builder.getInt32(2)), builder.getInt32(8), "needed.bytes");
+        llvm::Value* hasCapacity = builder.CreateICmpUGE(sizeVal, neededBytes, "has.cap");
+        builder.CreateCondBr(hasCapacity, transOverflowAccessBb, slowBb);
+
+        builder.SetInsertPoint(transOverflowAccessBb);
+        llvm::Value* transShapeSlotPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        builder.CreateAlignedStore(cachedShape, transShapeSlotPtr, llvm::Align(8));
+        llvm::Value* slotIdx = builder.CreateSub(transSlot32, builder.getInt32(3));
+        llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
+        builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
         builder.CreateBr(doneBb);
     } else {
         builder.CreateCondBr(hit, hitBb, slowBb);
@@ -316,6 +364,9 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* arrPayloadBb = nullptr;
     llvm::Value* arrPayloadVal = nullptr;
 
+    llvm::BasicBlock* arrMethodHitBb = nullptr;
+    llvm::Value* arrMethodVal = nullptr;
+
     auto optIdx = parseIndexKey(keyStr);
     if (keyStr == "length") {
         arrLenBb = llvm::BasicBlock::Create(ctx, "ic.arr.len", fn);
@@ -369,7 +420,44 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
         arrPayloadVal = builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), elemVal, "arr.elem");
         builder.CreateBr(doneBb);
     } else {
-        builder.CreateBr(plainCheckBb);
+        llvm::BasicBlock* arrMethodBb = llvm::BasicBlock::Create(ctx, "ic.arr.method", fn);
+        arrMethodHitBb = llvm::BasicBlock::Create(ctx, "ic.arr.method.hit", fn);
+        llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+        builder.CreateCondBr(isArr, arrMethodBb, plainCheckBb);
+
+        builder.SetInsertPoint(arrMethodBb);
+        llvm::Value* enabledVal = builder.CreateAlignedLoad(
+            i64Ty, globals.bronze_array_method_ic_enabled, llvm::Align(8), "arr.ic.enabled");
+        llvm::Value* isEnabled = builder.CreateICmpNE(enabledVal, builder.getInt64(0));
+
+        llvm::Value* propsPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+        llvm::Value* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "arr.props");
+        llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* hasNoProps =
+            builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+
+        llvm::Value* cachedShapeVal = builder.CreateAlignedLoad(ptrTy, entry, llvm::Align(8), "arr.cached");
+        llvm::Value* cachedShapeInt = builder.CreatePtrToInt(cachedShapeVal, i64Ty);
+        llvm::Value* isSentinel =
+            builder.CreateICmpEQ(cachedShapeInt, builder.getInt64(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD));
+
+        llvm::Value* methodOk = builder.CreateAnd(
+            isEnabled, builder.CreateAnd(hasNoProps, isSentinel), "arr.method.ok");
+        builder.CreateCondBr(methodOk, arrMethodHitBb, slowBb);
+
+        builder.SetInsertPoint(arrMethodHitBb);
+        llvm::Value* slot32Ptr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, entry, BRONZE_ABI_IC_SLOT_OFFSET);
+        llvm::Value* methodId = builder.CreateAlignedLoad(
+            i32Ty, slot32Ptr, llvm::Align(4), "arr.method.id");
+        llvm::Value* methodTbl = builder.CreateAlignedLoad(
+            ptrTy, globals.bronze_array_method_tbl, llvm::Align(8), "arr.method.tbl");
+        llvm::Value* methodSlotPtr = builder.CreateInBoundsGEP(
+            i64Ty, methodTbl, methodId);
+        arrMethodVal = builder.CreateAlignedLoad(
+            i64Ty, methodSlotPtr, llvm::Align(8), "arr.method.val");
+        builder.CreateBr(doneBb);
     }
 
     // 3. Plain object guard: matching shape and depth 0
@@ -565,6 +653,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     if (arrLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
     if (arrPayloadBb) phiCount++;
+    if (arrMethodHitBb) phiCount++;
 
     llvm::PHINode* result = builder.CreatePHI(i64Ty, phiCount, "prop");
     result->addIncoming(inlineVal, inlineHitBb);
@@ -575,6 +664,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);
+    if (arrMethodHitBb) result->addIncoming(arrMethodVal, arrMethodHitBb);
     return result;
 }
 

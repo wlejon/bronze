@@ -221,6 +221,7 @@ static const bool g_valueCachesRegistered = [] {
         for (FnSingletonSlot& slot : g_fnSingletonSlots) visit(slot.value);
         for (Value& v : g_globalCache) visit(v);
         for (auto& entry : g_hostGlobals) visit(entry.second);
+        rtVisitArrayMethodRoots(visit);
         visit(g_moduleEnv);
     });
     return true;

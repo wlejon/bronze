@@ -108,7 +108,41 @@ const ArrayMethod kArrayMethods[] = {
 
 Value g_arrayPrototype = Value::fromUndefined();
 
+// Sized once and never resized, so the backing store never moves and
+// `bronze_array_method_tbl` below stays valid for the process lifetime —
+// generated code reads it through the global on every sentinel IC hit.
+static std::vector<Value> g_arrayMethodValues(1 + std::size(kArrayMethods), Value::fromUndefined());
+
 }  // namespace
+
+extern "C" {
+uint64_t* bronze_array_method_tbl = reinterpret_cast<uint64_t*>(g_arrayMethodValues.data());
+}
+
+void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit) {
+    for (Value& v : g_arrayMethodValues) visit(v);
+}
+
+uint32_t rtArrayMethodId(const std::string& key) {
+    if (key == "constructor") return 0;
+    for (size_t i = 0; i < std::size(kArrayMethods); ++i) {
+        if (key == kArrayMethods[i].name) return static_cast<uint32_t>(1 + i);
+    }
+    return UINT32_MAX;
+}
+
+Value rtArrayMethodById(uint32_t id) {
+    if (id >= g_arrayMethodValues.size()) return Value::fromUndefined();
+    if (g_arrayMethodValues[id].isUndefined()) {
+        if (id == 0) {
+            g_arrayMethodValues[0] = rtArrayConstructorObject();
+        } else {
+            const size_t idx = id - 1;
+            g_arrayMethodValues[id] = rtNativeFunction(kArrayMethods[idx].code, kArrayMethods[idx].arity);
+        }
+    }
+    return g_arrayMethodValues[id];
+}
 
 Value rtArrayPrototypeObject() {
     if (g_arrayPrototype.isObject()) return g_arrayPrototype;
@@ -150,9 +184,8 @@ void rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key) {
 }
 
 Value rtArrayMethod(const std::string& key) {
-    for (const ArrayMethod& m : kArrayMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
-    }
+    uint32_t id = rtArrayMethodId(key);
+    if (id != UINT32_MAX && id != 0) return rtArrayMethodById(id);
     return Value::fromUndefined();
 }
 

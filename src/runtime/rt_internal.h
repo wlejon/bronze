@@ -60,6 +60,10 @@ const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 const KeyInfo& rtKeyInfo(uint32_t index);
 
+uint32_t rtArrayMethodId(const std::string& key);
+Value rtArrayMethodById(uint32_t id);
+void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
+
 // A plain object's own keys in ECMA-262 6.1.7.1 OwnPropertyKeys order:
 // integer-like keys ascending, then the remaining STRING keys in insertion
 // order, then the SYMBOL keys in insertion order. The keys are arena-interned

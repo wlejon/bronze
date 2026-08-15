@@ -53,7 +53,14 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
         return "primitive_other";
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags == HeapKind::Array) return "kind_array";
+    if (hdr->flags == HeapKind::Array) {
+        auto* arr = reinterpret_cast<const ArrayHeader*>(hdr);
+        if (arr->properties.isObject()) return "array_shadowed_by_side_object";
+        if (bronze_array_method_ic_enabled == 0) return "seam_disabled";
+        if (!ic->cached_shape) return "ic_uninitialized";
+        if (ic->isArrayMethod()) return "array_method_ic_hit_or_other";
+        return "shape_mismatch_polymorphic";
+    }
     if (hdr->flags == TypedArrayHeader::kFlags) return "kind_typed_array";
     if (hdr->flags == HeapKind::Function) return "kind_function";
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) return "kind_map_or_set";
@@ -146,6 +153,7 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
     }
 
     if (!ic->cached_shape) return "ic_uninitialized";
+    if (ic->isArrayMethod()) return "array_method_sentinel_at_set_site";
     if (ic->cached_shape == obj->shape) {
         if (ic->cached_depth > 0) return "inherited_prop_set";
         if (obj->shape && obj->shape->dict) return "receiver_dict_mode";
@@ -159,13 +167,19 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
         return "depth0_overflow_or_other";
     }
 
-    if (ic->cached_shape->parent == obj->shape) {
+    if (ic->isRealShape() && ic->cached_shape->parent == obj->shape) {
         uint64_t slotWord = *reinterpret_cast<const uint64_t*>(
             reinterpret_cast<const char*>(ic) + BRONZE_ABI_IC_SLOT_OFFSET);
-        if ((slotWord >> 32) != 0 || (slotWord & 0xFFFFFFFF) >= BRONZE_ABI_OBJ_INLINE_SLOTS) {
-            return "transition_overflow_slot";
+        uint32_t slot = static_cast<uint32_t>(slotWord);
+        uint32_t depth = static_cast<uint32_t>(slotWord >> 32);
+        if (depth != 0) return "transition_inherited_slot";
+        if (slot >= BRONZE_ABI_OBJ_INLINE_SLOTS) {
+            if (bronze_inline_overflow_set_enabled == 0) return "seam_disabled";
+            if (!obj->overflow.isObject()) return "transition_overflow_alloc_needed";
+            uint32_t cap = obj->overflowCapacity();
+            if (slot - BRONZE_ABI_OBJ_INLINE_SLOTS >= cap) return "transition_overflow_growth_needed";
         }
-        if (ic->cached_shape->slot_index != static_cast<uint32_t>(slotWord)) {
+        if (ic->cached_shape->slot_index != slot) {
             return "transition_key_mismatch";
         }
         if (!(ic->cached_shape->enumerable && !ic->cached_shape->accessor &&

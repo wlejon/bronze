@@ -7,10 +7,10 @@
 #include <charconv>
 #include <cstdlib>
 #include <string>
+#include <clocale>
+#include <locale.h>
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <xlocale.h>
-#elif !defined(_WIN32)
-#include <locale.h>
 #endif
 
 #include "parse/parser.h"

@@ -91,6 +91,72 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 12: object_graph's bill — Array-Method Loads and Overflow-Slot Transitions**:
+  > [!NOTE]
+  > **Phase 1 — Sizing the Three Buckets Before Implementation**:
+  > 1. **Array-Method Loads (652,622 misses)**:
+  >    - Isolated microbenchmark probe: 10M `obj.push` (IC hit) = 1.0 ns/op vs 10M `arr.push` (helper lookup) = 68.5 ns/op (delta: 67.5 ns/call).
+  >    - Total helper cost for 652,622 misses (352,204 `.push` + 300,418 `.shift`): **44.05 ms**.
+  > 2. **Overflow-Slot Transitions (254,390 misses)**:
+  >    - Isolated microbenchmark probe: 1M 4-property objects = 31 ns/obj vs 1M 14-property objects = 360 ns/obj (delta: 32.9 ns per overflow property add).
+  >    - Total helper cost for 254,390 overflow transition misses: **8.37 ms**.
+  > 3. **Array Shift Element Copying (300,418 calls)**:
+  >    - Instrumenting `arrayShift` accumulated **162,102,770 elements moved** (1.24 GB memory copied, max queue length 1,082, avg 539.6 elements/call).
+  >    - Measured time spent inside shift copy loops: **~49.0 ms**.
+  >    - Total `object_graph` runtime decomposed (~171.6 ms): ~44.1 ms method loads + ~8.4 ms overflow transitions + ~49.0 ms shift copies + ~70.1 ms BFS/DFS/Math/allocations.
+  >
+  > **Phase 2 Implementation**:
+  > - **Phase 2a (Array Method IC Arm)**: Inlined array method resolution in `llvm_prop.cpp` (`emitPropGet`) for array receivers when `ArrayHeader::properties` is not an object. Uses sentinel `cached_shape == 1` (`BRONZE_ABI_IC_SHAPE_ARRAY_METHOD`) and indexes into the GC-rooted `bronze_array_method_tbl` by method ID. Preserves all language semantics (method identity `a.push === a.push`, own-property shadowing `a.push = 5`, deletion restoring builtin `delete a.push`, `a.push = undefined` shadowing, match arrays, arguments). Gated by `BRONZE_NO_ARRAY_METHOD_IC=1`.
+  > - **Phase 2b (Inline Overflow Transition Arm)**: Extended `emitPropSet` transition block to support `slot >= 4` when `overflow` is allocated and has sufficient capacity (`overflowCapacity() > slot - 4`). Directly swings receiver shape pointer and stores value into overflow block payload, avoiding helper calls for 7 out of 10 overflow properties (slots 5, 6, 7, 9, 10, 11, 13). Gated by `BRONZE_NO_INLINE_OVERFLOW_SET=1`.
+  > - **Attribution & GC Robustness**: Updated `ic_log.cpp` classifiers to attribute honestly (`seam_disabled`, `transition_overflow_alloc_needed`, `transition_overflow_growth_needed`, `array_shadowed_by_side_object`). All singleton method values are registered as permanent root sources in `rt_state.cpp` surviving moving Cheney collections under `BRONZE_GC_STRESS=1`.
+  >
+  > **Trade Analysis on `kInlineSlots = 4`**:
+  > Each `ObjectHeader` with 4 inline slots is 56 bytes. Increasing `kInlineSlots` to 8 (88 bytes) or 16 (152 bytes) would waste 32 to 96 bytes on millions of small 2–4 property objects (`Vector2`, `Vector3`, `Point`, internal scopes, options bags). With 70% of overflow transitions now inlined in generated code with zero helper overhead, `kInlineSlots = 4` remains the optimal trade between footprint and dispatch speed.
+  >
+  > **Seam A/B on `object_graph.js`** (audit re-measurement on an idle
+  > machine; the implementing agent's sweep ran loaded and read high across
+  > the board, so its absolute medians were discarded — its deltas held):
+  > - Baseline (both arms enabled): **107.08 ms** (infer)
+  > - `BRONZE_NO_ARRAY_METHOD_IC=1`: **157.40 ms** (+50.3 ms, vs the ~44 ms
+  >   Phase-1 estimate)
+  > - `BRONZE_NO_INLINE_OVERFLOW_SET=1`: **112.26 ms** (+5.2 ms, vs ~8.4 ms
+  >   estimated)
+  > - Both seams disabled: **161.99 ms** (+54.9 ms). Identical checksum in
+  >   every variant.
+  >
+  > **Miss Count Impact (`BRONZE_IC_LOG=1`)**:
+  > - `bronze_prop_get` on `object_graph`: **652,745 → 132 misses** (warmup
+  >   `ic_uninitialized` plus a few `proto_epoch_stale`; the `kind_array`
+  >   reason is gone).
+  > - `bronze_prop_set` on `object_graph`: **254,390 → 77,052 misses**, now
+  >   attributed 33% `transition_overflow_alloc_needed` + 66%
+  >   `transition_overflow_growth_needed` — the allocation points the inline
+  >   arm deliberately leaves to the helper (growth can move the receiver).
+  >
+  > **Audit notes (2026-08-15)**: probes confirmed the sentinel never
+  > reaches a set site (lowering allocates separate IC indices for the get
+  > and set halves of compound assignment — verified end-to-end with
+  > `a.push += ""` over mixed array/plain receivers), shadow flips at IC
+  > heat resolve correctly in both directions, and `ensureOverflow` zeroes
+  > every fresh word it exposes to the GC payload scan (the chunk-9 residue
+  > bug class does not apply). The remaining `object_graph` gap is now
+  > dominated by `arrayShift`'s O(n) element copying — measured this chunk
+  > at ~162 M elements / ~1.24 GB moved (~49 ms). A head-offset array
+  > representation is the named candidate fix, deliberately left to its own
+  > chunk because it touches the `ARRAY_*` ABI offsets and every inline
+  > element path.
+  - `object_graph.js`: **107.08ms** (infer) vs 114.98ms (no-infer) — (checksum=-32601148, **down from 171.62ms: 38% faster, 1.54x behind node's 69.38ms**)
+  - `three_math.js`: **37.53ms** (infer) vs 35.82ms (no-infer) — (checksum=405000)
+  - `typed_array_crunch.js`: **114.66ms** (infer) vs 123.10ms (no-infer) — (checksum=78849652)
+  - `mesh_churn_2k.js`: **131.68ms** (infer) vs 161.41ms (no-infer) — (checksum=-2112298)
+  - `instanced_mesh_churn.js`: **132.08ms** (infer) vs 129.58ms (no-infer) — (checksum=1260786)
+  - `fib.js`: **7.30ms** (infer) vs 13.94ms (no-infer)
+  - `numeric_loop.js`: **34.13ms** (infer) vs 51.50ms (no-infer)
+  - `property_access.js`: **9.52ms** (infer) vs 9.91ms (no-infer)
+  - `proto_dispatch.js`: **20.55ms** (infer) vs 24.70ms (no-infer)
+  - `proto_dispatch_churn.js`: **55.28ms** (infer) vs 58.87ms (no-infer)
+  - `typed_array_loop.js`: **33.05ms** (infer) vs 35.02ms (no-infer)
+
 - **Chunk 11: IC Miss Attribution and Shape-Preserving Property Definition**:
   > [!NOTE]
   > **Phase 1 Attribution Diagnosis (`BRONZE_IC_LOG=1`)**:

@@ -57,8 +57,19 @@ struct InlineCache {
     uint32_t cached_depth{0};
     // The epoch this entry was filled at. Consulted only when
     // `cached_depth > 0`; at depth 0 the receiver's own shape already
-    // changes whenever an own property is added to it.
+    // changes whenever an own property is added to it, and an
+    // array-method sentinel entry leaves it 0 and never reads it (the
+    // method table is immutable by construction — decorating
+    // `Array.prototype` is a hard error, rt_prop_write.cpp).
     uint64_t cached_epoch{0};
+
+    bool isArrayMethod() const noexcept {
+        return reinterpret_cast<uintptr_t>(cached_shape) == BRONZE_ABI_IC_SHAPE_ARRAY_METHOD;
+    }
+
+    bool isRealShape() const noexcept {
+        return cached_shape != nullptr && !isArrayMethod();
+    }
 
     // Is this entry still about the chain it was filled against? Both runtime
     // hit paths — `bronze_prop_get`'s and `ObjectHeader::getProp`'s — ask here
@@ -67,7 +78,7 @@ struct InlineCache {
     // whether the walk to the holder is safe to take; `cachedProtoHolder` owns
     // that, and a caller needs both.
     bool describes(const Shape* receiverShape) const noexcept {
-        return cached_shape == receiverShape &&
+        return isRealShape() && cached_shape == receiverShape &&
                (cached_depth == 0 || cached_epoch == protoMutationEpoch());
     }
 
@@ -78,7 +89,7 @@ struct InlineCache {
     // been filled at depth > 0 — this asks anyway, because that is a fact
     // about the compiler's site numbering and this is the runtime.
     bool describesOwn(const Shape* receiverShape) const noexcept {
-        return cached_depth == 0 && cached_shape == receiverShape;
+        return isRealShape() && cached_depth == 0 && cached_shape == receiverShape;
     }
 
     void fill(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
@@ -86,6 +97,13 @@ struct InlineCache {
         cached_slot = slot;
         cached_depth = depth;
         cached_epoch = protoMutationEpoch();
+    }
+
+    void fillArrayMethod(uint32_t methodId) noexcept {
+        cached_shape = reinterpret_cast<Shape*>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD);
+        cached_slot = methodId;
+        cached_depth = 0;
+        cached_epoch = 0;
     }
 };
 

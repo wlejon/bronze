@@ -399,6 +399,12 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 }
             }
         } else if (fastHdr->flags == HeapKind::Array) {
+            if (ic && ic->isArrayMethod() && bronze_array_method_ic_enabled != 0) {
+                const auto* arr = reinterpret_cast<const ArrayHeader*>(fastHdr);
+                if (!arr->properties.isObject()) {
+                    return bronze_array_method_tbl[ic->cached_slot];
+                }
+            }
             const KeyInfo& ki = rtKeyInfo(keyIndex);
             if (ki.isElemIndex) {
                 return reinterpret_cast<const ArrayHeader*>(fastHdr)->getElem(ki.elemIndex).rawBits();
@@ -497,9 +503,16 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
                 ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
                 .rawBits();
         }
-        if (keyStr == "constructor") return rtArrayConstructorObject().rawBits();
-        Value method = rtArrayMethod(keyStr);
-        if (!method.isUndefined()) return method.rawBits();
+        if (uint32_t methodId = rtArrayMethodId(keyStr); methodId != UINT32_MAX) {
+            Value method = rtArrayMethodById(methodId);
+            if (!method.isUndefined()) {
+                if (ic && bronze_array_method_ic_enabled != 0 &&
+                    !recv.get().asObject<ArrayHeader>()->properties.isObject()) {
+                    ic->fillArrayMethod(methodId);
+                }
+                return method.rawBits();
+            }
+        }
         rtCheckArrayMember(keyStr);
         // `Array.prototype`'s own members have all had their say — including
         // the two that SHADOW this next step, `toString` and `toLocaleString`,

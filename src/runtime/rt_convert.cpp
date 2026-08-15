@@ -30,10 +30,10 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <clocale>
+#include <locale.h>
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <xlocale.h>
-#elif !defined(_WIN32)
-#include <locale.h>
 #endif
 
 #include "abi/bronze_abi.h"

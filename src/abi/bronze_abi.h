@@ -244,7 +244,19 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     /* The inline dynamic call enable flag: 1 by default, set to 0 under
      * BRONZE_NO_INLINE_CALL=1 so one binary can A/B test dynamic-call
      * inlining against the helper trampoline. */ \
-    X(bronze_inline_call_enabled, BRONZE_ABI_U64)
+    X(bronze_inline_call_enabled, BRONZE_ABI_U64) \
+    /* The inline array method IC enable flag: 1 by default, set to 0 under
+     * BRONZE_NO_ARRAY_METHOD_IC=1 so one binary can A/B test array method
+     * IC inlining against the helper. */ \
+    X(bronze_array_method_ic_enabled, BRONZE_ABI_U64) \
+    /* The inline overflow slot set enable flag: 1 by default, set to 0 under
+     * BRONZE_NO_INLINE_OVERFLOW_SET=1 so one binary can A/B test inline
+     * overflow property stores against the helper. */ \
+    X(bronze_inline_overflow_set_enabled, BRONZE_ABI_U64) \
+    /* The array method singleton table: published by the runtime and rooted
+     * across GC collections. Indexed by array method ID (0 for constructor,
+     * 1..N for Array.prototype methods). */ \
+    X(bronze_array_method_tbl, BRONZE_ABI_MU64)
 
 /*
  * ---- the inline property cache contract ---------------------------------
@@ -269,16 +281,27 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * The fourth word is the prototype-mutation epoch the entry was filled at,
  * and it is what makes a depth > 0 entry sound: the receiver's shape cannot
  * notice a property added to an object BETWEEN the receiver and the holder,
- * because that add changes only the intermediate's shape. The inline fast
- * path never reads it — that path is depth 0 only, where the receiver's own
- * shape is the whole answer — so this word costs generated code the table
- * stride and nothing else.
+ * because that add changes only the intermediate's shape.
+ *
+ * Non-shape sentinel discipline:
+ * When an entry caches an Array built-in method (or the Array constructor),
+ * `cached_shape` holds BRONZE_ABI_IC_SHAPE_ARRAY_METHOD ((uintptr_t)1).
+ * Real Shape pointers are 8-byte aligned arena allocations and can never be 1.
+ * The slot word then holds the method ID — an index into
+ * `bronze_array_method_tbl`, NOT a Value: the collector moves function
+ * objects, so the Value lives in that rooted table and the entry stores
+ * only the immortal index. The epoch word is 0 and unread for these
+ * entries. Only GET sites ever hold the sentinel (lowering never shares
+ * an IC index between a read and a write, `lower_update.cpp`), which is
+ * why the set-side transition arm may still dereference `cached_shape`
+ * after its null check.
  */
 #define BRONZE_ABI_IC_ENTRY_SIZE     24 /* sizeof(InlineCache) */
 #define BRONZE_ABI_IC_SHAPE_OFFSET    0 /* InlineCache::cached_shape (pointer) */
 #define BRONZE_ABI_IC_SLOT_OFFSET     8 /* InlineCache::cached_slot  (uint32) */
 #define BRONZE_ABI_IC_DEPTH_OFFSET   12 /* InlineCache::cached_depth (uint32) */
 #define BRONZE_ABI_IC_EPOCH_OFFSET   16 /* InlineCache::cached_epoch (uint64) */
+#define BRONZE_ABI_IC_SHAPE_ARRAY_METHOD 1ull
 /* slot and depth are adjacent and little-endian, so the single u64 at
  * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
  * therefore ONE compare meaning "own property, in an inline slot" — the

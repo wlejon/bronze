@@ -283,7 +283,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     //    marked-prototype shape, a dictionary define, a prototype swap —
     //    bumps the epoch, exactly the discipline the depth > 0 read entries
     //    already lean on.
-    if (ic && ic->cached_shape && ic->cached_depth == 0 && shape && !shape->isDictionary() &&
+    if (ic && ic->isRealShape() && ic->cached_depth == 0 && shape && !shape->isDictionary() &&
         ic->cached_shape->parent == shape &&
         ic->cached_shape->slot_index == ic->cached_slot &&
         ic->cached_shape->enumerable && !ic->cached_shape->accessor &&
