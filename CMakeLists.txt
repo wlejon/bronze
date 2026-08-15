@@ -46,11 +46,12 @@ if(BRONZE_WITH_LLVM)
                 "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-linux/share/llvm"
                 "/opt/homebrew/opt/llvm/lib/cmake/llvm"
                 "/usr/local/opt/llvm/lib/cmake/llvm"
-                "/usr/lib/llvm-18/lib/cmake/llvm"
-                "/usr/lib/llvm-17/lib/cmake/llvm"
-                "/usr/lib/llvm-16/lib/cmake/llvm"
-                "/usr/lib/llvm-15/lib/cmake/llvm"
-                "/usr/lib/llvm-14/lib/cmake/llvm")
+                "/usr/lib/llvm-22/lib/cmake/llvm"
+                "/usr/lib/llvm-22/cmake"
+                "/usr/lib/llvm-21/lib/cmake/llvm"
+                "/usr/lib/llvm-21/cmake"
+                "/usr/lib/llvm-20/lib/cmake/llvm"
+                "/usr/lib/llvm-20/cmake")
             if(EXISTS "${_llvm_candidate}")
                 set(LLVM_DIR "${_llvm_candidate}" CACHE PATH "")
                 list(APPEND CMAKE_PREFIX_PATH "${_llvm_candidate}/../..")

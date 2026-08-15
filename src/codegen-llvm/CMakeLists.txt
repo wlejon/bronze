@@ -1,4 +1,7 @@
 find_package(LLVM CONFIG REQUIRED)
+if(LLVM_VERSION_MAJOR LESS 20)
+    message(FATAL_ERROR "Bronze requires LLVM 20 or higher, found LLVM ${LLVM_PACKAGE_VERSION}")
+endif()
 
 llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target native nativecodegen asmparser passes object)
 

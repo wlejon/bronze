@@ -31,16 +31,11 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
-#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/Config/llvm-config.h>
 #include <llvm/TargetParser/Host.h>
-#else
-#include <llvm/Support/Host.h>
-#endif
-#if __has_include(<llvm/TargetParser/Triple.h>)
 #include <llvm/TargetParser/Triple.h>
-#else
-#include <llvm/ADT/Triple.h>
-#endif
+
+static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_abi.h"
@@ -319,11 +314,10 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
     llvm::InitializeNativeTargetAsmParser();
 
     llvm::Triple targetTriple(llvm::sys::getDefaultTargetTriple());
-    std::string targetTripleStr = targetTriple.str();
-    llvmModule.setTargetTriple(targetTripleStr);
+    llvmModule.setTargetTriple(targetTriple);
 
     std::string lookupError;
-    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTripleStr, lookupError);
+    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTriple, lookupError);
     if (!target) {
         diags.error(Span{}, "Failed to lookup host target: " + lookupError);
         return false;
@@ -331,7 +325,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
 
     llvm::TargetOptions opt;
     auto targetMachine =
-        target->createTargetMachine(targetTripleStr, "generic", "", opt, {});
+        target->createTargetMachine(targetTriple, "generic", "", opt, {});
     if (!targetMachine) {
         diags.error(Span{}, "Failed to create LLVM target machine");
         return false;
@@ -345,11 +339,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
         return false;
     }
 
-#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 18
     constexpr auto kObjFileType = llvm::CodeGenFileType::ObjectFile;
-#else
-    constexpr auto kObjFileType = llvm::CGFT_ObjectFile;
-#endif
 
     llvm::legacy::PassManager pass;
     if (targetMachine->addPassesToEmitFile(pass, dest, nullptr, kObjFileType)) {
@@ -380,9 +370,6 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     lap("il-verify");
 
     llvm::LLVMContext ctx;
-#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR <= 14
-    ctx.enableOpaquePointers();
-#endif
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
     AbiFns abi;
