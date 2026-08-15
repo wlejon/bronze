@@ -364,10 +364,13 @@ TEST_CASE("LLVM backend exports only bronze_main") {
                 if (cs->Characteristics & kCoffComdatFlag) continue;
             }
         }
-        const std::string symName(nameOrErr->str());
+        std::string symName(nameOrErr->str());
+        if (symName.starts_with('_')) {
+            symName = symName.substr(1);
+        }
         CAPTURE(symName);
         CHECK(symName == "bronze_main");
-        if (*nameOrErr == "bronze_main") sawMain = true;
+        if (symName == "bronze_main") sawMain = true;
     }
     CHECK(sawMain);
 

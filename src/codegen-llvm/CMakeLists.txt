@@ -1,6 +1,6 @@
 find_package(LLVM CONFIG REQUIRED)
 
-llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target x86codegen x86asmparser passes object)
+llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target native nativecodegen asmparser passes object)
 
 bronze_add_module(codegen_llvm
     SOURCES

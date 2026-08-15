@@ -38,8 +38,26 @@ endif()
 
 option(BRONZE_WITH_LLVM "Build the LLVM codegen backend" OFF)
 if(BRONZE_WITH_LLVM)
-    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows")
-    set(LLVM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm" CACHE PATH "")
+    if(NOT DEFINED LLVM_DIR AND NOT DEFINED ENV{LLVM_DIR})
+        foreach(_llvm_candidate
+                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm"
+                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/arm64-osx/share/llvm"
+                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-osx/share/llvm"
+                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-linux/share/llvm"
+                "/opt/homebrew/opt/llvm/lib/cmake/llvm"
+                "/usr/local/opt/llvm/lib/cmake/llvm"
+                "/usr/lib/llvm-18/lib/cmake/llvm"
+                "/usr/lib/llvm-17/lib/cmake/llvm"
+                "/usr/lib/llvm-16/lib/cmake/llvm"
+                "/usr/lib/llvm-15/lib/cmake/llvm"
+                "/usr/lib/llvm-14/lib/cmake/llvm")
+            if(EXISTS "${_llvm_candidate}")
+                set(LLVM_DIR "${_llvm_candidate}" CACHE PATH "")
+                list(APPEND CMAKE_PREFIX_PATH "${_llvm_candidate}/../..")
+                break()
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # C is enabled solely for src/abi/abi_check.c, which compiles the

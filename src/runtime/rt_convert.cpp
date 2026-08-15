@@ -22,12 +22,19 @@
 // cannot yet run user code: `rel.lt` and friends, `==` against a primitive, a
 // computed property key, and ToNumber. Each names itself.
 
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h>
+#elif !defined(_WIN32)
+#include <locale.h>
+#endif
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
@@ -315,11 +322,35 @@ static double stringToNumber(const StringHeader* s) {
         digits.remove_prefix(1);
     }
     if (digits == "Infinity") return sign * std::numeric_limits<double>::infinity();
+    if (digits.empty()) return std::numeric_limits<double>::quiet_NaN();
 
-    double magnitude = 0.0;
-    auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), magnitude,
-                                     std::chars_format::general);
-    if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
+    char first = digits[0];
+    if (first == '.') {
+        if (digits.size() < 2 || digits[1] < '0' || digits[1] > '9') {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+    } else if (first < '0' || first > '9') {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    for (char c : digits) {
+        if (c == 'p' || c == 'P' || c == 'x' || c == 'X') {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+    }
+
+    std::string str(digits);
+    char* endptr = nullptr;
+    errno = 0;
+#if defined(_WIN32)
+    static _locale_t c_loc = _create_locale(LC_ALL, "C");
+    double magnitude = _strtod_l(str.c_str(), &endptr, c_loc);
+#elif defined(__APPLE__)
+    double magnitude = strtod_l(str.c_str(), &endptr, NULL);
+#else
+    static locale_t c_loc = newlocale(LC_ALL_MASK, "C", nullptr);
+    double magnitude = strtod_l(str.c_str(), &endptr, c_loc);
+#endif
+    if (endptr != str.c_str() + str.size()) {
         return std::numeric_limits<double>::quiet_NaN();
     }
     return sign * magnitude;

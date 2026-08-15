@@ -3,8 +3,15 @@
 // TEXT into a value, which is why the escape decoder and the numeric decoder
 // live here with them.
 
+#include <cerrno>
 #include <charconv>
+#include <cstdlib>
 #include <string>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h>
+#elif !defined(_WIN32)
+#include <locale.h>
+#endif
 
 #include "parse/parser.h"
 #include "regex/regex.h"
@@ -258,17 +265,18 @@ bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) 
     }
 
     double value = 0;
-    const char* begin = text.data();
-    const char* end = begin + text.size();
-    const auto result = std::from_chars(begin, end, value);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        // Out of range is the one `errc` that is not a malformed literal:
-        // ECMA-262 rounds an over-large MV to +Infinity and an under-small
-        // one to zero, which is what `from_chars` already put in `value`.
-        if (result.ec == std::errc::result_out_of_range && result.ptr == end) {
-            out = value;
-            return true;
-        }
+    char* endptr = nullptr;
+    errno = 0;
+#if defined(_WIN32)
+    static _locale_t c_loc = _create_locale(LC_ALL, "C");
+    value = _strtod_l(text.c_str(), &endptr, c_loc);
+#elif defined(__APPLE__)
+    value = strtod_l(text.c_str(), &endptr, NULL);
+#else
+    static locale_t c_loc = newlocale(LC_ALL_MASK, "C", nullptr);
+    value = strtod_l(text.c_str(), &endptr, c_loc);
+#endif
+    if (endptr != text.c_str() + text.size()) {
         diags_.error(span, "malformed numeric literal '" + std::string(raw) + "'");
         return false;
     }

@@ -277,7 +277,7 @@ void FunctionEmitter::emitKeyRegistration() {
     if (func_.name != "main" || blocks_.empty()) return;
     builder_.SetInsertPoint(blocks_[0]);
     for (size_t k = 0; k < shared_.module.keyConstants.size(); ++k) {
-        llvm::Value* text = builder_.CreateGlobalStringPtr(shared_.module.keyConstants[k]);
+        llvm::Value* text = builder_.CreateGlobalString(shared_.module.keyConstants[k]);
         builder_.CreateCall(shared_.abi.bronze_register_key_string,
                             {builder_.getInt32(static_cast<uint32_t>(k)), text});
     }

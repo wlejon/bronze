@@ -36,6 +36,11 @@
 #else
 #include <llvm/Support/Host.h>
 #endif
+#if __has_include(<llvm/TargetParser/Triple.h>)
+#include <llvm/TargetParser/Triple.h>
+#else
+#include <llvm/ADT/Triple.h>
+#endif
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_abi.h"
@@ -313,7 +318,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
 
-    std::string targetTriple = llvm::sys::getDefaultTargetTriple();
+    llvm::Triple targetTriple(llvm::sys::getDefaultTargetTriple());
     llvmModule.setTargetTriple(targetTriple);
 
     std::string lookupError;

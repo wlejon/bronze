@@ -19,6 +19,7 @@
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+namespace array_internal {
 
 inline bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
@@ -109,6 +110,10 @@ inline bool requireWritableElements(Value self, const char* method) {
                      method + ")");
     return false;
 }
+
+}  // namespace array_internal
+
+using namespace array_internal;
 
 // Species & Spreadable helpers
 Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length);

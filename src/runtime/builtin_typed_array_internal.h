@@ -21,6 +21,7 @@
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+namespace typed_array_internal {
 
 inline bool isTypedArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags;
@@ -98,6 +99,10 @@ inline bool sameValueZero(Value a, Value b) {
     }
     return bronze_strict_eq(a.rawBits(), b.rawBits());
 }
+
+}  // namespace typed_array_internal
+
+using namespace typed_array_internal;
 
 // Transform & Mutator declarations:
 uint64_t taSet(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);

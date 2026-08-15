@@ -18,6 +18,9 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <unistd.h>
 #else
 #include <unistd.h>
 #endif
@@ -209,6 +212,16 @@ std::filesystem::path getExecutableDir() {
         buffer[len] = '\0';
         return std::filesystem::path(buffer).parent_path();
     }
+#elif defined(__APPLE__)
+    char buffer[PATH_MAX];
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) == 0) {
+        char realBuffer[PATH_MAX];
+        if (realpath(buffer, realBuffer) != nullptr) {
+            return std::filesystem::path(realBuffer).parent_path();
+        }
+        return std::filesystem::path(buffer).parent_path();
+    }
 #endif
     return std::filesystem::current_path();
 }
@@ -383,6 +396,23 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath, D
                 return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 11:
                 return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+            default:
+                return "";
+        }
+#elif defined(__APPLE__)
+        switch (index) {
+            case 0:
+                return "clang++ -w \"" + objPath + "\" -Wl,-force_load,\"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+            case 1:
+                return "clang++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+            case 2:
+                return "clang++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
+            case 3:
+                return "g++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+            case 4:
+                return "g++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
+            case 5:
+                return "clang++ -w -Wl,-all_load \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
             default:
                 return "";
         }
