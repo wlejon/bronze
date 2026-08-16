@@ -1,0 +1,9 @@
+function 3 7
+apply:2:5
+null-this true
+receiver
+5 true
+10 trap
+true
+object
+true

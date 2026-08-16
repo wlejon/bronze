@@ -1,0 +1,18 @@
+9
+NaN
+[2]a|b
+[2]a|b
+[2]a|b
+[0]
+[0]
+[3]1|undefined|3
+[0]
+[0] [0]
+apply primitive: true
+5
+[2]x|y
+[2]7|8
+Reflect.apply null: true
+Reflect.apply primitive: true
+[1][object Object]
+here/2

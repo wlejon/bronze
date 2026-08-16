@@ -213,6 +213,12 @@ enum class Op : uint8_t {
     AccessorDef,  // accessor.def obj, <key_const_index>, getter, setter, <enumerable>
     AccessorDefComputed, // accessor.def.computed obj, key, getter, setter, <enumerable>
     GetNewTarget, // a = get.new_target
+    // `import.meta` (13.3.12). `keyIndex` names the module's URL, which
+    // lowering resolved from the file id the linker stamped on the expression
+    // — so the URL is a compile-time constant and the op carries no operand.
+    // The runtime answers the SAME object every time for one index, which is
+    // what makes `import.meta === import.meta` hold within a module.
+    ImportMeta,  // a = import.meta <url_const_index>
     // `delete o.k` and `delete o[i]`. A reference operation, not a read:
     // the operand's property is never loaded, and the result is the boolean
     // ECMA-262 13.5.1 defines rather than the property's value.

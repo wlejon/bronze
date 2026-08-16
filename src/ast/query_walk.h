@@ -90,6 +90,7 @@ public:
         for (const auto& arg : n.args) arg->accept(*this);
     }
     void visit(const NewTargetExpr&) override {}
+    void visit(const ImportMetaExpr&) override {}
     void visit(const TaggedTemplate& t) override {
         t.tag->accept(*this);
         for (const auto& e : t.templateLit->exprs) e->accept(*this);
@@ -297,6 +298,7 @@ public:
         for (const auto& arg : n.args) arg->accept(*this);
     }
     void visit(const NewTargetExpr&) override {}
+    void visit(const ImportMetaExpr&) override {}
     void visit(const TaggedTemplate& t) override {
         t.tag->accept(*this);
         for (const auto& e : t.templateLit->exprs) e->accept(*this);

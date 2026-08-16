@@ -889,6 +889,36 @@ uint64_t rtArrayEntriesBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
 uint64_t rtObjectProtoToString(uint64_t env, uint64_t thisBits, uint32_t argc,
                                const uint64_t* argv);
 
+// ECMA-262 7.3.35 GroupBy's two members, both in builtin_group_by.cpp because
+// they are one operation with keyCoercion flipped. Declared here so the tables
+// that publish them — `Object`'s static list in builtin_object.cpp and the
+// `Map` constructor's own-member answer in builtin_map.cpp — each stay the one
+// list of what their intrinsic implements.
+uint64_t rtObjectGroupBy(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtMapGroupBy(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+
+// The array-like protocol (builtin_constructors.cpp): does this value have an
+// @@iterator (23.1.2.1 step 3's GetMethod), how long is it (7.3.18
+// LengthOfArrayLike) and what is at index i. `Array.from` is where the two
+// protocols first had to be told apart; `Function.prototype.apply`,
+// `Reflect.apply` and the typed-array constructors ask the same question, and
+// ask it here so four callers cannot disagree about `{length: 2}`.
+bool rtHasIteratorMethod(Rooted<Value>& src);
+uint32_t rtArrayLikeLength(Rooted<Value>& src);
+Value rtArrayLikeElement(Rooted<Value>& src, uint32_t index);
+
+// The bound on an argument list built from an array-like. Answers false having
+// thrown a RangeError that names the count and the limit.
+constexpr uint32_t kMaxAppliedArguments = 65535;
+bool rtCheckAppliedArgumentCount(uint32_t count, const char* member);
+
+// The own members of the `Map` / `Set` constructor FUNCTION objects — today
+// just `Map.groupBy`. Answered from a table here for the reason
+// `rtTypedArrayStatic` is: a constructor is an interned function singleton
+// with no property object to install statics into, so the property path asks
+// this instead.
+bool rtMapStatic(Value fn, const std::string& key, Value& out);
+
 // The `Array.prototype` OBJECT — the value the expression denotes, built from
 // the same method table an array answers beside itself, never a link on any
 // array's chain (builtin_array.cpp's comment above it says why both halves

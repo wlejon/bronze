@@ -135,6 +135,32 @@ Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
         return out.get();
     }
 
+    // 23.2.5.1 step 5: usingIterator is GetMethod(object, @@iterator), and when
+    // it is undefined the constructor falls to step 5.c —
+    // InitializeTypedArrayFromArrayLike, which reads `length` and the indices
+    // and never asks for an iterator at all. Without this arm every object
+    // without @@iterator was "not iterable", which is a TypeError the language
+    // does not raise: `new Float64Array({length: 2, 0: 1.5, 1: 2.5})` is a
+    // two-element view, and an object with no `length` at all is a length-0
+    // one rather than an error.
+    if (!rtHasIteratorMethod(source)) {
+        const uint32_t length = rtArrayLikeLength(source);
+        if (rtExceptionPending()) return Value::fromUndefined();
+        Rooted<Value> out{fromLength(kind, length)};
+        if (rtExceptionPending()) return Value::fromUndefined();
+        for (uint32_t i = 0; i < length; ++i) {
+            // Both the element read and the ToNumber under it can run user
+            // code, so the view is reached through its root each time rather
+            // than through a pointer taken before the loop.
+            Rooted<Value> elem{rtArrayLikeElement(source, i)};
+            if (rtExceptionPending()) return Value::fromUndefined();
+            const double v = rtToNumber(elem.get());
+            if (rtExceptionPending()) return Value::fromUndefined();
+            out.get().asObject<TypedArrayHeader>()->set(i, v);
+        }
+        return out.get();
+    }
+
     Rooted<Value> collected{Value(bronze_create_array(0))};
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
     if (rtExceptionPending()) return Value::fromUndefined();

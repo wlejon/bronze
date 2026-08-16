@@ -69,10 +69,28 @@ TEST_CASE("dynamic import parses into ast::DynamicImportExpr") {
     CHECK(dynamicImport.find("\"./x.js\"") != std::string::npos);
 }
 
-TEST_CASE("the import forms bronze does not have are named, not mis-parsed") {
+TEST_CASE("import.meta parses into ast::ImportMetaExpr, wherever it is written") {
+    // A meta-property, not a member access on a binding named `import`: the
+    // grammar spells `import . meta` out (13.3.12), and nothing else may follow
+    // the dot.
     const auto meta = parseAndDump("console.log(import.meta.url);");
-    CHECK(meta.find("unsupported construct: import.meta") != std::string::npos);
+    CHECK(meta.find("(import.meta)") != std::string::npos);
+    CHECK(meta.find("unsupported construct") == std::string::npos);
 
+    // An EXPRESSION, so it is legal wherever one is — including at the top of a
+    // module, where a leading `import` token otherwise routes to the ModuleItem
+    // parser, and inside a function body, where a ModuleItem is refused.
+    const auto bare = parseAndDump("import.meta;");
+    CHECK(bare.find("(import.meta)") != std::string::npos);
+    const auto nestedMeta = parseAndDump("function f() { return import.meta.url; }");
+    CHECK(nestedMeta.find("(import.meta)") != std::string::npos);
+    CHECK(nestedMeta.find("top level of a module") == std::string::npos);
+
+    const auto wrong = parseAndDump("import.metal;");
+    CHECK(wrong.find("expected 'meta' after 'import.'") != std::string::npos);
+}
+
+TEST_CASE("the import forms bronze does not have are named, not mis-parsed") {
     // A ModuleItem is not a Statement (ECMA-262 16.2): a nested one binds
     // nothing anything outside the block could see, so there is nothing for
     // it to mean.

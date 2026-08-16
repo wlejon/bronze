@@ -70,8 +70,13 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
         out.push_back(std::move(stmt));
         return true;
     }
+    // `import.meta` is an EXPRESSION (13.3.12), not a ModuleItem, so the
+    // statement router sends it to the expression production and never here.
+    // The check stays because "never" is a property of that router rather than
+    // of this function, and a router change that broke it would otherwise be
+    // read as a malformed import declaration.
     if (check(TokenKind::Dot)) {
-        error("unsupported construct: import.meta");
+        error("internal error: import.meta reached the import-declaration parser");
         return false;
     }
 

@@ -465,11 +465,13 @@ void ensurePromiseIntrinsics() {
     if (g_promiseProto.isObject()) return;
     ensurePromiseRoots();
 
-    // The prototype: a chain-end object like `Error.prototype` — the members
-    // 20.1.3 gives every object are answered by the chain-end fallback
-    // (rtObjectProtoMember), so no explicit link to `Object.prototype` is
-    // built here either.
-    Rooted<Value> parent{Value::fromUndefined()};
+    // The prototype, with its [[Prototype]] named: 27.2.3.1 says
+    // `Promise.prototype`'s is `Object.prototype`, and the chain-end fallback
+    // does not stand in for it here. That fallback is a step the property path
+    // takes for receivers whose members come from a TABLE beside the value; a
+    // promise is an ordinary object, so its walk ended at null and
+    // `Promise.resolve(1).hasOwnProperty` was `undefined`.
+    Rooted<Value> parent{rtObjectPrototype()};
     ObjectHeader* protoObj =
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(parent.get()));
     protoObj->header.flags = HeapKind::Plain;

@@ -75,6 +75,7 @@ public:
     }
 
     void visit(const NewTargetExpr&) override {}
+    void visit(const ImportMetaExpr&) override {}
 
     void visit(const TaggedTemplate& t) override {
         t.tag->accept(*this);

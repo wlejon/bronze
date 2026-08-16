@@ -208,6 +208,40 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
     return self.get().rawBits();
 }
 
+// 20.5.3.4 Error.prototype.toString. It exists here because linking
+// `Error.prototype` to `Object.prototype` above would otherwise hand every
+// error `Object.prototype.toString`, and `String(new TypeError("boom"))` would
+// quietly become "[object Object]" where the language says "TypeError: boom" —
+// a wrong answer arriving as a side effect of fixing the chain.
+//
+// `name` and `message` are read through the ordinary walk (steps 3 and 5 are
+// Get, not own-property reads), so a subclass that sets `this.name` in its
+// constructor is answered by its own value, and an error given neither is
+// answered from this prototype's pair.
+uint64_t errorProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> self{Value(thisBits)};
+    if (!self.get().isObject()) {
+        return rtThrowTypeError("Error.prototype.toString called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> nameKey{rtMakeString("name")};
+    Rooted<Value> name{self.get().asObject<ObjectHeader>()->getProp(rtHeap(), nameKey)};
+    // Each Get can run a getter, so each result is rooted before the next one
+    // allocates, and ToString of it is a second collection point again.
+    name.set(name.get().isUndefined() ? rtMakeString("Error") : rtValueToString(name.get()));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> msgKey{rtMakeString("message")};
+    Rooted<Value> msg{self.get().asObject<ObjectHeader>()->getProp(rtHeap(), msgKey)};
+    msg.set(msg.get().isUndefined() ? rtMakeString("") : rtValueToString(msg.get()));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    const std::string nameText = rtUtf8Chars(name.get().asString<StringHeader>());
+    const std::string msgText = rtUtf8Chars(msg.get().asString<StringHeader>());
+    if (nameText.empty()) return msg.get().rawBits();
+    if (msgText.empty()) return name.get().rawBits();
+    return rtMakeString(nameText + ": " + msgText).rawBits();
+}
+
 void ensureErrorClasses() {
     if (g_errorClasses[0].constructor.isObject()) return;
     ensureExceptionRoots();
@@ -218,8 +252,18 @@ void ensureErrorClasses() {
         // with the second's prototype pointing at the first, which is exactly
         // what `class TypeError extends Error` would build — so it is built the
         // same way, with a root shape naming the parent.
+        //
+        // `Error.prototype`'s own parent is `Object.prototype` (20.5.3), and it
+        // is named here rather than left to the chain-end fallback: that
+        // fallback is a step the property path takes for receivers with a
+        // members TABLE (an array, a Map), and an error instance is an ordinary
+        // object whose walk simply ends. Without the link, `e.hasOwnProperty`
+        // was `undefined` and `String(e)` was "Cannot convert object to
+        // primitive value" — an object that is on the chain in the language but
+        // was not on one here.
+        Rooted<Value> objectProto{rtObjectPrototype()};
         Value parentProto =
-            (&cls == &g_errorClasses[0]) ? Value::fromUndefined() : g_errorClasses[0].prototype;
+            (&cls == &g_errorClasses[0]) ? objectProto.get() : g_errorClasses[0].prototype;
         Rooted<Value> parent{parentProto};
         ObjectHeader* protoObj =
             ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(parent.get()));
@@ -252,6 +296,21 @@ void ensureErrorClasses() {
         fn->instance_shape = rtNewRootShape(proto.get());
         cls.constructor = ctor.get();
         cls.prototype = proto.get();
+    }
+
+    // 20.5.3.4, on `Error.prototype` ALONE: 20.5.6.3 gives a NativeError
+    // prototype `constructor`, `message` and `name` and nothing else, so
+    // `TypeError.prototype.toString` is this same function reached by the walk
+    // — which is what makes `String(new TypeError("boom"))` read "TypeError:
+    // boom" off the nearer `name`.
+    {
+        Rooted<Value> proto{g_errorClasses[0].prototype};
+        Rooted<Value> key{rtMakeString("toString")};
+        Rooted<Value> fn{rtNativeFunction(errorProtoToString, 0)};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
+                                                      /*ic=*/nullptr, /*enumerable=*/false,
+                                                      /*defineOwn=*/true);
+        g_errorClasses[0].prototype = proto.get();
     }
 
     // The two keys the error prototype was just given, recovered as the

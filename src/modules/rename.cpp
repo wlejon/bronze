@@ -377,6 +377,9 @@ private:
             for (auto& exp : tt->templateLit->exprs) expr(*exp);
         } else if (dynamic_cast<ast::NewTargetExpr*>(&e)) {
             // new.target carries no identifier bindings
+        } else if (dynamic_cast<ast::ImportMetaExpr*>(&e)) {
+            // import.meta carries no identifier bindings either; what it means
+            // is decided from the file id this pass is about to stamp on it.
         } else {
             fail(typeid(e));
         }

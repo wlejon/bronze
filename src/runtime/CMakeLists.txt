@@ -43,6 +43,9 @@ bronze_add_module(runtime
         builtin_array_sort.cpp
         builtin_array_iterator.cpp
         builtin_string.cpp
+        unicode_case.cpp
+        unicode_case_data_simple.cpp
+        unicode_case_data_full.cpp
         builtin_string_iterator.cpp
         builtin_function.cpp
         builtin_function_bind.cpp
@@ -65,6 +68,7 @@ bronze_add_module(runtime
         iterator_delegate.cpp
         map.cpp
         builtin_map.cpp
+        builtin_group_by.cpp
         builtin_date.cpp
         builtin_date_accessors.cpp
         date_math.cpp
@@ -95,6 +99,7 @@ bronze_add_module(runtime
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp
         ../../tests/runtime/string_test.cpp
+        ../../tests/runtime/unicode_case_test.cpp
         ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/shape_test.cpp
         ../../tests/runtime/object_test.cpp

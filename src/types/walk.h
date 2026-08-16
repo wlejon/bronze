@@ -86,6 +86,7 @@ public:
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::NewTargetExpr&) override {}
+    void visit(const ast::ImportMetaExpr&) override {}
     void visit(const ast::TaggedTemplate& n) override {
         n.tag->accept(*this);
         for (const auto& a : n.templateLit->exprs) a->accept(*this);

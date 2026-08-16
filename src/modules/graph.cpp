@@ -83,6 +83,7 @@ public:
         for (const auto& a : n.args) scan(a.get());
     }
     void visit(const ast::NewTargetExpr&) override {}
+    void visit(const ast::ImportMetaExpr&) override {}
     void visit(const ast::SuperCall& s) override {
         for (const auto& a : s.args) scan(a.get());
     }

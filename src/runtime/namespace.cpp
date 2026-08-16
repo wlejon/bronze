@@ -70,6 +70,34 @@ ModuleNamespaceHeader* asNamespace(Value v) {
     return reinterpret_cast<ModuleNamespaceHeader*>(hdr);
 }
 
+// One `import.meta` object per module, keyed by the URL constant lowering
+// assigned. 16.2.1.10 caches the object on the Module Record, so every mention
+// of `import.meta` inside one module is the SAME object and a property written
+// on it is visible to the next mention; the key-constant index is that record's
+// stand-in here, because lowering already made it one index per module.
+//
+// Rooted through a root SOURCE and not slot by slot: the table grows as the
+// program's modules reach their first `import.meta`, and a growing vector
+// reallocates, which is exactly the case `add_permanent_root` cannot describe
+// (it pins one address). The list is bounded by the module graph, not by how
+// many times the expression runs.
+//
+// A namespace-scope vector rather than a function-local static, and the same
+// reason `ensureExceptionRoots` uses one: the visitor the collector calls reads
+// this table, so a table whose first read is also its own initialization would
+// be re-entered by a collection that happened inside that initialization.
+std::vector<Value> g_importMetaObjects;
+
+void ensureImportMetaRoots() {
+    static const bool registered = [] {
+        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+            for (Value& v : g_importMetaObjects) visit(v);
+        });
+        return true;
+    }();
+    (void)registered;
+}
+
 }  // namespace
 
 bool rtIsModuleNamespace(Value v) { return asNamespace(v) != nullptr; }
@@ -204,6 +232,38 @@ uint64_t bronze_module_namespace(uint64_t sourceBits) {
         ns->entries()[2 * i + 1] = obj->getSlot(info.slot);
     }
     return nsRoot.get().rawBits();
+}
+
+// 16.2.1.10 `import.meta`. The object is OrdinaryObjectCreate(NULL) — no
+// prototype, so `import.meta.toString` is `undefined` rather than
+// `Object.prototype`'s, which is what makes "every property but `url` reads as
+// undefined" true rather than nearly true.
+//
+// It is ORDINARY and extensible, not frozen: 16.2.1.10 step 4 hands it to the
+// host to add properties to, and a program may add its own. What is fixed is
+// its IDENTITY within a module, which the cache above provides.
+uint64_t bronze_import_meta(uint32_t urlKeyIndex) {
+    ensureImportMetaRoots();
+    std::vector<Value>& cache = g_importMetaObjects;
+    if (urlKeyIndex < cache.size() && cache[urlKeyIndex].isObject()) {
+        return cache[urlKeyIndex].rawBits();
+    }
+    // Grown BEFORE the object is built, so the assignment at the end cannot be
+    // the thing that reallocates — the root source walks the vector, so a
+    // reallocation between building the object and storing it would be safe
+    // anyway, but growing first also means the slot exists when it is needed.
+    if (urlKeyIndex >= cache.size()) {
+        cache.resize(static_cast<size_t>(urlKeyIndex) + 1, Value::fromUndefined());
+    }
+
+    Rooted<Value> meta{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+    meta.get().asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    Rooted<Value> key{rtMakeString("url")};
+    Rooted<Value> url{rtMakeString(rtKeyString(urlKeyIndex))};
+    meta.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, url);
+    cache[urlKeyIndex] = meta.get();
+    return meta.get().rawBits();
 }
 
 uint64_t bronze_dynamic_import(uint64_t specifierBits) {

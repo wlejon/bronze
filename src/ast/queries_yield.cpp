@@ -91,6 +91,7 @@ public:
         for (const auto& a : n.args) walk(a);
     }
     void visit(const NewTargetExpr&) override {}
+    void visit(const ImportMetaExpr&) override {}
     void visit(const SuperCall& n) override {
         for (const auto& a : n.args) walk(a);
     }

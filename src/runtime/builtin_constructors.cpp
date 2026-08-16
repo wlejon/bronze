@@ -31,6 +31,7 @@
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/number_format.h"
 #include "runtime/proxy.h"
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
@@ -135,35 +136,6 @@ uint64_t arrayOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 // else is asked for the well-known key, because the answer decides between the
 // iterator path and the array-like one and getting it wrong turns
 // `Array.from(userIterable)` into an empty array.
-bool hasIterator(Rooted<Value>& src) {
-    if (src.get().isString()) return true;
-    if (!src.get().isObject()) return false;
-    const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
-    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags ||
-        flags == MapHeader::kMapFlags ||
-        flags == MapHeader::kSetFlags) {
-        return true;
-    }
-    if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
-    Rooted<Value> key{rtIteratorKey()};
-    const Value method = src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-    return isCallable(method);
-}
-
-// The `length` of an array-like, as 23.1.2.1 step 4.a's LengthOfArrayLike reads
-// it. A missing `length` is ToLength(undefined), which is 0 — an empty result
-// rather than an error, which is what the specification says and what a
-// feature-testing program expects.
-uint32_t arrayLikeLength(Rooted<Value>& src) {
-    if (!src.get().isObject() ||
-        src.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        return 0;
-    }
-    Rooted<Value> key{rtMakeString("length")};
-    const double len = rtToNumber(src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key));
-    if (!(len >= 1.0)) return 0;
-    return len > 4294967295.0 ? 4294967295u : static_cast<uint32_t>(len);
-}
 
 Value callMapper(Rooted<Value>& fn, Rooted<Value>& thisArg, Rooted<Value>& item, uint32_t index) {
     Value block[2] = {item.get(), Value::fromDouble(static_cast<double>(index))};
@@ -188,7 +160,7 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     }
     Rooted<Value> out{newEmptyArray()};
 
-    if (hasIterator(src)) {
+    if (rtHasIteratorMethod(src)) {
         Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
         if (rtExceptionPending()) return out.get().rawBits();
         uint32_t i = 0;
@@ -210,7 +182,7 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         return out.get().rawBits();
     }
 
-    const uint32_t len = arrayLikeLength(src);
+    const uint32_t len = rtArrayLikeLength(src);
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> item{
             Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(i).rawBits()))};
@@ -272,6 +244,42 @@ uint64_t stringFromCharCode(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
     return rtStringFromUnits(units).rawBits();
 }
 
+// 22.1.2.2. CodePointsToString (11.1.6) over the arguments: this is the member
+// that can spell an astral character, because 11.1.3 UTF16EncodeCodePoint emits
+// a surrogate PAIR at or above 0x10000 where `fromCharCode` above truncates to
+// one code unit and loses it.
+//
+// The three refusals are one step (2.b): a value that is not an integral
+// Number, a negative one, or one above 0x10FFFF is a RangeError naming the
+// value — catchable, unlike the wrapping `fromCharCode` performs, because a
+// code point out of range names a bug in the caller where a code UNIT out of
+// range is the defined truncation.
+uint64_t stringFromCodePoint(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    std::vector<uint16_t> units;
+    units.reserve(args.count());
+    for (uint32_t i = 0; i < args.count(); ++i) {
+        // ToNumber is user code (a `valueOf`), so nothing raw is held across
+        // it; `units` is a C++ vector of plain integers and holds no heap.
+        const double n = rtToNumber(args[i]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!std::isfinite(n) || std::trunc(n) != n || n < 0.0 || n > 0x10FFFF) {
+            char buf[32];
+            const size_t len = formatJsNumber(n, buf);
+            return rtThrowRangeError("Invalid code point " + std::string(buf, len)).rawBits();
+        }
+        const uint32_t cp = static_cast<uint32_t>(n);
+        if (cp <= 0xFFFF) {
+            units.push_back(static_cast<uint16_t>(cp));
+            continue;
+        }
+        const uint32_t rest = cp - 0x10000;
+        units.push_back(static_cast<uint16_t>(0xD800 + (rest >> 10)));
+        units.push_back(static_cast<uint16_t>(0xDC00 + (rest & 0x3FF)));
+    }
+    return rtStringFromUnits(units).rawBits();
+}
+
 // ---- Boolean (20.3) ---------------------------------------------------------
 
 // 20.3.1.1 as a conversion, for the same reason `String` is one: the `new` form
@@ -303,6 +311,7 @@ const StaticFn kArrayStatics[] = {
 
 const StaticFn kStringStatics[] = {
     {"fromCharCode", stringFromCharCode, 0},
+    {"fromCodePoint", stringFromCodePoint, 1},
 };
 
 // Real static members of each constructor that bronze has not built.
@@ -314,7 +323,7 @@ const StaticFn kStringStatics[] = {
 // `Boolean.prototype` and `Number.prototype` are answered from the
 // constructor's own prototype slot.
 const char* const kArrayCtorUnimplemented[] = {"fromAsync"};
-const char* const kStringCtorUnimplemented[] = {"fromCodePoint", "raw"};
+const char* const kStringCtorUnimplemented[] = {"raw"};
 
 struct CtorEntry {
     const char* name;
@@ -398,6 +407,77 @@ Value ctorObject(const CtorEntry& entry) {
 }
 
 }  // namespace
+
+// ---- the array-like protocol (7.3.18, 7.3.19, 23.1.2.1 step 3) --------------
+//
+// These three live here because `Array.from` is the member that has to tell the
+// two protocols apart, and they are exported because it is not the only one:
+// `Function.prototype.apply` and `Reflect.apply` build their argument list from
+// CreateListFromArrayLike (7.3.19), and the nine typed-array constructors fall
+// back to the array-like path when the source has no @@iterator (23.2.5.1 step
+// 5.c). One answer to "is this iterable, and how long is it?" rather than four,
+// because four is how they would come to disagree about `{length: 2}`.
+
+bool rtHasIteratorMethod(Rooted<Value>& src) {
+    if (src.get().isString()) return true;
+    if (!src.get().isObject()) return false;
+    const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
+    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags ||
+        flags == MapHeader::kMapFlags ||
+        flags == MapHeader::kSetFlags) {
+        return true;
+    }
+    if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+    Rooted<Value> key{rtIteratorKey()};
+    const Value method = src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+    return isCallable(method);
+}
+
+// 7.3.18 LengthOfArrayLike: ToLength of the `length` property. A missing
+// `length` is ToLength(undefined), which is 0 — an empty result rather than an
+// error, which is what the specification says and what
+// `new Float64Array({valueOf(){return 4}})` therefore produces: a length-0
+// view, because an object with a `valueOf` and no `length` is an array-like of
+// no elements and not a number in disguise.
+//
+// The read can run a getter, so the object arrives through a root.
+uint32_t rtArrayLikeLength(Rooted<Value>& src) {
+    if (!src.get().isObject()) return 0;
+    const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
+    if (flags == HeapKind::Array) return src.get().asObject<ArrayHeader>()->length;
+    if (flags == TypedArrayHeader::kFlags) return src.get().asObject<TypedArrayHeader>()->length;
+    if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return 0;
+    Rooted<Value> key{rtMakeString("length")};
+    const double len = rtToNumber(src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key));
+    if (!(len >= 1.0)) return 0;
+    return len > 4294967295.0 ? 4294967295u : static_cast<uint32_t>(len);
+}
+
+// 7.3.19 has no length cap and neither does the language; what has one is the
+// machine. An argument list is a contiguous block of ROOTED slots, so
+// `f.apply(null, {length: 4294967295})` would ask for 32 GB of them before a
+// single one could be filled -- and `std::bad_alloc` unwinding out of a helper
+// generated code called is the one failure mode this runtime must not have
+// (see `arrayOfLength` above, which refuses for the same reason).
+//
+// So the block is bounded, and the bound is named in the refusal rather than
+// left as a crash. It is far above any real call: an argument list is written
+// by a program, not generated, and 65535 is the count past which every engine
+// in use also refuses.
+bool rtCheckAppliedArgumentCount(uint32_t count, const char* member) {
+    if (count <= kMaxAppliedArguments) return true;
+    rtThrowRangeError(std::string(member) + ": an argument list of " + std::to_string(count) +
+                      " does not fit in a call frame (the limit is " +
+                      std::to_string(kMaxAppliedArguments) + ")");
+    return false;
+}
+
+// One element of an array-like, by index. This is Get(obj, ToString(index)),
+// which is what makes a HOLE and a missing index both read as `undefined` —
+// 7.3.19 has no notion of a hole and neither does the argument list it builds.
+Value rtArrayLikeElement(Rooted<Value>& src, uint32_t index) {
+    return Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(index).rawBits()));
+}
 
 Value rtGlobalConstructor(const std::string& name) {
     for (const CtorEntry& entry : kCtors) {

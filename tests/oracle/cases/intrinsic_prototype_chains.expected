@@ -1,0 +1,23 @@
+true
+true
+true
+true
+function function function
+false true
+true true
+0 {}
+[object Promise]
+function function function
+TypeError: boom
+Error
+RangeError: r
+true false
+false 0 {}
+[object Error]
+true true true
+true Error: m
+function,function,function,function,function,function,function,function,function,function,function,function,function
+function,function,function,function,function
+Map.get brand: true
+0 {}
+Promise.then brand: true

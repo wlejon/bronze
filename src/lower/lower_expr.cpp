@@ -311,6 +311,24 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
 
+    // 13.3.12 `import.meta`. What it MEANS is a fact about the module the
+    // expression sits in, and the linker recorded that on the span: every
+    // expression carries its owning file id, so the URL is resolved here at
+    // compile time and travels as a key constant like any other string. There
+    // is nothing left for the runtime to look up — only to hand back the same
+    // object for the same index every time, which is the identity 16.2.1.10
+    // requires within one module.
+    if (const auto* meta = dynamic_cast<const ast::ImportMetaExpr*>(&expr)) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::ImportMeta;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.keyIndex = getKeyConstantIndex(moduleUrl(meta->span.file));
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
+
     if (const auto* objLit = dynamic_cast<const ast::ObjectLit*>(&expr)) {
         return lowerObjectLit(objLit, ilFn);
     }

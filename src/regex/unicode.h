@@ -13,7 +13,7 @@
 // knowledge and are checked differently. `chars.cpp` writes the case mappings
 // bronze uses WITHOUT `u` as rules plus their exceptions, so a reader can
 // audit them without a data file; everything here comes out of the UCD by way
-// of `tools/gen_unicode_tables.py` and is audited by regenerating it. Mixing
+// of `tools/gen_unicode_tables` and is audited by regenerating it. Mixing
 // the two would leave a file where half the lines can be reasoned about and
 // half have to be trusted.
 

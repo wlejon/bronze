@@ -23,6 +23,8 @@ tests/oracle/threejs/OrbitControls.js -text
 # with published upstream is required, so a checkout must not rewrite line endings.
 tools/ucd/UnicodeData.txt -text
 tools/ucd/CaseFolding.txt -text
+tools/ucd/SpecialCasing.txt -text
+tools/ucd/DerivedCoreProperties.txt -text
 # Vendored pixi.js bundle; byte-for-byte identity with upstream is checked.
 tests/oracle/pixi/** -text
 

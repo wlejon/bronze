@@ -482,6 +482,8 @@ private:
     // --- lower_util.cpp: key constants, blocks, coercions, truthiness ----
     bool isProvidedGlobal(const std::string& name) const;
     uint32_t getKeyConstantIndex(const std::string& key);
+    // The `file:` URL of one module, for `import.meta.url`.
+    std::string moduleUrl(uint16_t fileId) const;
     // The key constant a bracket index folds to, when the index is a literal
     // that names a property at compile time. `nullopt` means the site needs a
     // real elem.get / elem.set on the evaluated index.

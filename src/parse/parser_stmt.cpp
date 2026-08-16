@@ -126,7 +126,14 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     // is a syntax error rather than something the linker later has to decide
     // the meaning of, because there is no meaning to decide — a binding
     // introduced into a block would be visible to nothing outside it.
-    if (check(TokenKind::KwExport) || (check(TokenKind::KwImport) && peek(1).kind != TokenKind::LParen)) {
+    // `import(` is a dynamic import and `import.` is the `import.meta`
+    // meta-property (13.3.12); both are EXPRESSIONS and legal anywhere an
+    // expression is, so neither may be routed to the ModuleItem parser — a
+    // nested `import.meta.url` was reported as a misplaced import declaration
+    // before this second exclusion.
+    if (check(TokenKind::KwExport) ||
+        (check(TokenKind::KwImport) && peek(1).kind != TokenKind::LParen &&
+         peek(1).kind != TokenKind::Dot)) {
         if (!atModuleTop) {
             error("an import or export declaration may only appear at the top level of a module");
             return false;

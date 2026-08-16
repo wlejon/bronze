@@ -363,6 +363,14 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 callWith(abi.bronze_get_new_target, {});
             }
             return true;
+        // `import.meta` carries its module's URL as a key-constant index, the
+        // same currency a Str box uses, so the call takes an index and no
+        // operand.
+        case il::Op::ImportMeta:
+            if (inst.result != il::kNoValue) {
+                callWith(abi.bronze_import_meta, {builder_.getInt32(inst.keyIndex)});
+            }
+            return true;
         case il::Op::SuperGet: {
             if (!needs(2, false, "Invalid operands for SuperGet")) return false;
             const char* what = "Undefined operand in SuperGet instruction";

@@ -200,6 +200,12 @@ ExprPtr cloneExpr(const Expr& expr) {
         res->parenthesized = nt->parenthesized;
         return res;
     }
+    if (const auto* im = dynamic_cast<const ImportMetaExpr*>(&expr)) {
+        auto res = std::make_unique<ImportMetaExpr>();
+        res->span = im->span;
+        res->parenthesized = im->parenthesized;
+        return res;
+    }
     if (const auto* sc = dynamic_cast<const SuperCall*>(&expr)) {
         auto res = std::make_unique<SuperCall>();
         res->span = sc->span;

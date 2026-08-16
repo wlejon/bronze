@@ -75,6 +75,24 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "encodeURIComponent" || name == "decodeURI" || name == "decodeURIComponent";
 }
 
+// The `file:` URL of one module of the graph, for `import.meta.url`
+// (16.2.1.10). The SourceSet holds each module's path as its generic (forward
+// slash) form, so the only work here is the scheme and the leading slash a
+// Windows drive letter needs: "file:///D:/x/main.js" against
+// "file:///home/x/main.js".
+//
+// A build with no SourceSet has no path to name — `bronze il` used to be such
+// a build and an embedder could be — so the fallback is the bare scheme rather
+// than a fabricated path: "file:///" is honestly empty where a made-up file
+// name would be a lie a program could read. The rule is spelled here so the
+// callers of `lowerModule` cannot answer differently.
+std::string Lowerer::moduleUrl(uint16_t fileId) const {
+    if (!sources_ || fileId >= sources_->size()) return "file:///";
+    std::string path(sources_->at(fileId).name());
+    if (path.empty()) return "file:///";
+    return path.front() == '/' ? "file://" + path : "file:///" + path;
+}
+
 uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
     auto it = keyConstants_.find(key);
     if (it != keyConstants_.end()) return it->second;

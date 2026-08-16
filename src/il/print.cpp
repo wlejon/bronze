@@ -91,6 +91,7 @@ const char* opName(Op op) {
         case Op::AccessorDef: return "accessor.def";
         case Op::AccessorDefComputed: return "accessor.def.computed";
         case Op::GetNewTarget: return "get.new_target";
+        case Op::ImportMeta: return "import.meta";
         case Op::SuperCall: return "call.super";
         case Op::SuperCallSpread: return "call.super.spread";
         case Op::TemplateObject: return "template.object";
@@ -411,6 +412,13 @@ std::string print(const Module& module) {
                         break;
                     case Op::GetNewTarget:
                         out += "get.new_target";
+                        break;
+                    case Op::ImportMeta:
+                        out += "import.meta \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
                         break;
                     case Op::ArrayAppendHole:
                         out += "array.append.hole %" +

@@ -688,12 +688,18 @@ const NamespaceFn kObjectFunctions[] = {
     {"hasOwn", objectHasOwn, 2},
     {"is", objectIs, 2},
     {"getOwnPropertySymbols", objectGetOwnPropertySymbols, 1},
+    // 20.1.2.13, whose body is 7.3.35 shared with `Map.groupBy`
+    // (builtin_group_by.cpp).
+    {"groupBy", rtObjectGroupBy, 2},
 };
 
-// Real members of `Object` that bronze has not built.
-const char* const kObjectUnimplemented[] = {
-    "groupBy",
-};
+// Real members of `Object` that bronze has not built. `groupBy` was the last
+// entry and left when 20.1.2.13 landed, so the list is empty — spelled as a
+// named empty rather than deleted, because the check it feeds is what turns
+// the next member of 20.1.2 bronze has not built from a silent `undefined`
+// into a refusal by name.
+const char* const* const kObjectUnimplemented = nullptr;
+constexpr size_t kObjectUnimplementedCount = 0;
 
 Value g_objectNamespace = Value::fromUndefined();
 Value g_objectPrototype = Value::fromUndefined();
@@ -775,8 +781,7 @@ Value rtObjectPrototype() {
 
 void rtObjectCheckMissingMember(Value obj, const std::string& key) {
     if (!g_objectNamespace.isObject() || obj.rawBits() != g_objectNamespace.rawBits()) return;
-    rtCheckUnimplementedMember("Object", kObjectUnimplemented, std::size(kObjectUnimplemented),
-                               key);
+    rtCheckUnimplementedMember("Object", kObjectUnimplemented, kObjectUnimplementedCount, key);
 }
 
 }  // namespace bronze::runtime

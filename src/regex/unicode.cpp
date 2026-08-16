@@ -249,9 +249,9 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
     if (name == "Script" || name == "sc" || name == "Script_Extensions" || name == "scx") {
         error = "unsupported: " + quoted(name, value) +
                 " — the Unicode Script and Script_Extensions properties are not implemented. "
-                "They are a separate UAX #24 data file, and the generator behind bronze's "
-                "tables reads Python's `unicodedata`, which carries no Script property at "
-                "all, so there is no honest source for one here. " +
+                "They are a separate UAX #24 data file (Scripts.txt), and nothing under "
+                "tools/ucd carries a Script property at all, so there is no honest source "
+                "for one here. " +
                 kSupported;
         return false;
     }

@@ -113,10 +113,17 @@ uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 //
 // `null` and `undefined` for the array mean "no arguments" (step 3), which is
 // what separates `f.apply(o)` from `f.apply(o, [])` in spelling only. Anything
-// else must be a real array: CreateListFromArrayLike accepts any array-like,
-// and bronze refuses the ones it cannot walk by name rather than treating a
-// non-array as empty — silently dropping every argument is the worst available
-// answer.
+// else goes through 7.3.19 CreateListFromArrayLike, which accepts ANY object
+// with a `length` — a real array, an `arguments` object, a NodeList, a
+// hand-written `{length: 2, 0: "a", 1: "b"}`. A PRIMITIVE is the one refusal
+// step 1 names, and it is a catchable TypeError rather than a fatal, because
+// the specification says exactly what that call means.
+//
+// `f.apply(null, arrayLike)` is how a program spells "call with these
+// arguments" when it does not have an array in hand, and it is common enough in
+// library code that refusing it stopped real programs. The refusal it replaces
+// said bronze had no array-like protocol; it has one now (rt_internal.h), and
+// `Array.from` and the typed-array constructors read the same one.
 uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> fn{Value(thisBits)};
@@ -128,17 +135,24 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
         RootedBlock empty(0);
         return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), 0, empty.data());
     }
-    if (!list.get().isObject() ||
-        list.get().asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
-        fatal("unsupported: Function.prototype.apply with an argument list that is not an array "
-              "(bronze has no array-like protocol; pass a real array)");
+    if (!list.get().isObject()) {
+        return rtThrowTypeError(
+                   "CreateListFromArrayLike called on a non-object: Function.prototype.apply "
+                   "needs an array-like argument list")
+            .rawBits();
     }
-    // The length is read before the block is built, and each element is read
-    // through the rooted array — the block's construction allocates.
-    const uint32_t count = list.get().asObject<ArrayHeader>()->length;
+    // The length is read before the block is built, and each element through
+    // the rooted source — both reads can run a getter, and the block's
+    // construction allocates.
+    const uint32_t count = rtArrayLikeLength(list);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!rtCheckAppliedArgumentCount(count, "Function.prototype.apply")) {
+        return Value::fromUndefined().rawBits();
+    }
     RootedBlock block(count);
     for (uint32_t i = 0; i < count; ++i) {
-        block.set(i, list.get().asObject<ArrayHeader>()->getElem(i));
+        block.set(i, rtArrayLikeElement(list, i));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), count, block.data());
 }

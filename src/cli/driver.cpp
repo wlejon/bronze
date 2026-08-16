@@ -569,9 +569,14 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
         }
     }
 
+    // `&sources` is not optional here even though this path only PRINTS the
+    // IL: `import.meta` resolves its module's URL out of the source set at
+    // lowering time, so a null one would make `bronze il` dump a different
+    // program from the one `bronze build` compiles.
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals);
+                                       hostGlobals.empty() ? nullptr : &hostGlobals,
+                                       &sources);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;

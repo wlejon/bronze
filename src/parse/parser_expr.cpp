@@ -784,7 +784,19 @@ ExprPtr Parser::parsePrimary() {
                 node->specifier = std::move(spec);
                 return node;
             } else if (check(TokenKind::Dot)) {
-                error("unsupported construct: import.meta");
+                // 13.3.12 ImportMeta, and it is spelled out by the grammar
+                // rather than parsed as a member access: `import` is a keyword,
+                // so there is no binding for `.meta` to read off. Nothing else
+                // may follow the dot.
+                advance();  // '.'
+                if (!check(TokenKind::Identifier) || peek().text != "meta") {
+                    error("expected 'meta' after 'import.'");
+                    return nullptr;
+                }
+                const Token& metaTok = advance();
+                auto meta = std::make_unique<ImportMetaExpr>();
+                meta->span = {kw.span.begin, metaTok.span.end, kw.span.file};
+                return meta;
             } else {
                 error("an import declaration may only appear at the top level of a module");
             }

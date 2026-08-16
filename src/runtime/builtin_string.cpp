@@ -14,9 +14,10 @@
 // representation-specialized fast path is worth writing when a benchmark asks
 // for one, not before.
 //
-// Where a correct answer needs Unicode tables bronze does not carry (case
-// mapping past ASCII) the call is a hard error naming itself, never a
-// quietly wrong answer.
+// Case mapping is the one member family whose answer is not computable from the
+// characters alone: it needs the Unicode case tables, which are generated into
+// unicode_case_data_*.cpp and applied by unicode_case.cpp. FULL mapping, so
+// `toUpperCase` can return a longer string than it was given.
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +35,7 @@
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/unicode_case.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -70,6 +72,17 @@ Units thisUnits(Value self, const char* method) {
 Units argUnits(Value v) {
     Value str = rtValueToString(v);
     return unitsOf(str.asString<StringHeader>());
+}
+
+// 7.1.6 ToUint32. `split`'s limit is the one member here that takes it: the
+// argument wraps modulo 2^32 rather than clamping, so a limit of -1 is
+// 4294967295 (no limit in practice) and 2^32 is 0 (an empty result).
+uint32_t toUint32(Value v) {
+    const double n = rtToNumber(v);
+    if (rtExceptionPending() || !std::isfinite(n) || n == 0.0) return 0;
+    const double truncated = std::trunc(n);
+    const double wrapped = std::fmod(truncated, 4294967296.0);
+    return static_cast<uint32_t>(static_cast<int64_t>(wrapped < 0 ? wrapped + 4294967296.0 : wrapped));
 }
 
 double toInteger(double d) {
@@ -380,42 +393,29 @@ uint64_t stringPadImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     return stringFromUnits(out).rawBits();
 }
 
-// ASCII-only, and loud about it. Full case mapping is a Unicode table
-// bronze does not carry, and "é".toUpperCase() answering "é" would be a
-// wrong answer given quietly — the one thing the house rules forbid above
-// all. When the tables land, this check is what gets deleted.
+// 22.1.3.28 toUpperCase / 22.1.3.30 toLowerCase, which are both 11.1.3 over the
+// Default Case Conversion tables (unicode_case.{h,cpp}). FULL, so the result
+// can be LONGER than the input: "\u00df".toUpperCase() is "SS" and
+// "\u0130".toLowerCase() is two code points. Nothing here is per-character, and
+// that is why the whole string goes to one function rather than a loop over
+// units living in this file.
 //
-// The toLocale* twins share this body, and the ASCII fatal is what makes
-// that honest: locale tailorings (22.1.3.26's whole reason to exist) only
-// touch non-ASCII characters, so every input where the twins could answer
-// differently dies loudly here instead of answering wrong quietly.
+// The toLocale* twins share this body, and now they share it as an ANSWER
+// rather than as a shared refusal. 22.1.3.26 and 22.1.3.27 say a locale
+// tailoring is applied "in an implementation-defined locale-sensitive way", and
+// with no locale to be sensitive to, what is left is the language-independent
+// mapping — which is what the tables hold, because the generator drops every
+// SpecialCasing line carrying a language ID. So `"i".toLocaleUpperCase()` is
+// "I" here and stays "I": the Turkish tailoring that would make it "\u0130" is
+// data bronze deliberately does not carry, not data it has and ignores.
 template <bool Upper, bool Locale = false>
 uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits),
                            Locale ? (Upper ? "toLocaleUpperCase" : "toLocaleLowerCase")
                                   : (Upper ? "toUpperCase" : "toLowerCase"));
-    for (uint16_t u : self) {
-        if (u >= 0x80) {
-            fatal(Locale ? (Upper ? "unsupported: String.prototype.toLocaleUpperCase on a "
-                                    "non-ASCII string (no Unicode case tables)"
-                                  : "unsupported: String.prototype.toLocaleLowerCase on a "
-                                    "non-ASCII string (no Unicode case tables)")
-                         : (Upper ? "unsupported: String.prototype.toUpperCase on a non-ASCII "
-                                    "string (no Unicode case tables)"
-                                  : "unsupported: String.prototype.toLowerCase on a non-ASCII "
-                                    "string (no Unicode case tables)"));
-        }
-    }
-    Units out;
-    out.reserve(self.size());
-    for (uint16_t u : self) {
-        if constexpr (Upper) {
-            out.push_back(u >= 'a' && u <= 'z' ? static_cast<uint16_t>(u - 32) : u);
-        } else {
-            out.push_back(u >= 'A' && u <= 'Z' ? static_cast<uint16_t>(u + 32) : u);
-        }
-    }
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Units out = Upper ? unicode::toUpperFull(self) : unicode::toLowerFull(self);
     return stringFromUnits(out).rawBits();
 }
 
@@ -431,15 +431,28 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
               "nor a RegExp is not implemented");
     }
 
+    // Step 4, and it runs BEFORE the separator is looked at — which is the
+    // whole reason `"abc".split(undefined, 0)` is `[]` and not `["abc"]`: the
+    // limit-zero exit (step 6) comes ahead of the undefined-separator exit
+    // (step 7). `undefined` is 2^32-1, everything else is ToUint32.
+    const uint32_t limit = args[1].isUndefined() ? 0xFFFFFFFFu : toUint32(args[1]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
     ArrayHeader* raw = ArrayHeader::create(rtHeap(), 4);
     raw->length = 0;
     Rooted<Value> out{Value::fromObject(raw)};
 
+    // Answers false once the array has reached the limit, so every caller stops
+    // at the same place rather than each remembering to check.
     auto pushPiece = [&](const Units& piece) {
+        if (out.get().asObject<ArrayHeader>()->length >= limit) return false;
         Rooted<Value> val{stringFromUnits(piece)};
         uint32_t at = out.get().asObject<ArrayHeader>()->length;
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, val);
+        return true;
     };
+
+    if (limit == 0) return out.get().rawBits();
 
     // No separator at all: the whole string, as one element. Distinct from
     // an empty separator, which splits into single code units.
@@ -448,8 +461,15 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         return out.get().rawBits();
     }
     Units sep = argUnits(args[0]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (sep.empty()) {
-        for (uint16_t u : self) pushPiece(Units{u});
+        // Step 9: the first `min(len, lim)` code units, each its own element.
+        // An empty subject yields nothing here, which is why `"".split("")` is
+        // `[]` where `"".split("x")` is `[""]` — the two exits are steps 9 and
+        // 10 and they disagree on purpose.
+        for (uint16_t u : self) {
+            if (!pushPiece(Units{u})) break;
+        }
         return out.get().rawBits();
     }
 
@@ -457,7 +477,9 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     for (;;) {
         int64_t found = indexOfUnits(self, sep, at);
         if (found < 0) break;
-        pushPiece(Units(self.begin() + at, self.begin() + found));
+        if (!pushPiece(Units(self.begin() + at, self.begin() + found))) {
+            return out.get().rawBits();
+        }
         at = static_cast<size_t>(found) + sep.size();
     }
     pushPiece(Units(self.begin() + at, self.end()));

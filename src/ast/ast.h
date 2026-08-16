@@ -288,6 +288,16 @@ struct NewTargetExpr final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// `import.meta` (ECMA-262 13.3.12). A meta-property like `new.target`, and
+// parsed the same way: two tokens the grammar spells out, not a member access
+// on a binding named `import`. It carries nothing, because what it MEANS is a
+// fact about the module it appears in, and the span already records which one
+// that is — the linker stamps every expression with its owning file id, so
+// lowering reads the module's path back out of the source set.
+struct ImportMetaExpr final : Expr {
+    void accept(Visitor& v) const override;
+};
+
 // `super(...)` — the parent constructor run on the current receiver, and
 // `super.m` — a lookup that starts at the parent prototype but is called with
 // the current receiver. Both carry the parent class's NAME, resolved by the
@@ -775,6 +785,7 @@ public:
     // Visitors that render or transform the node must override it.
     virtual void visit(const NewExpr&) = 0;
     virtual void visit(const NewTargetExpr&) = 0;
+    virtual void visit(const ImportMetaExpr&) = 0;
     virtual void visit(const SuperCall&) = 0;
     virtual void visit(const SuperMember&) = 0;
     virtual void visit(const YieldExpr&) = 0;

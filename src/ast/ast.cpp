@@ -37,6 +37,7 @@ void IndexAccess::accept(Visitor& v) const { v.visit(*this); }
 void Call::accept(Visitor& v) const { v.visit(*this); }
 void NewExpr::accept(Visitor& v) const { v.visit(*this); }
 void NewTargetExpr::accept(Visitor& v) const { v.visit(*this); }
+void ImportMetaExpr::accept(Visitor& v) const { v.visit(*this); }
 void SuperCall::accept(Visitor& v) const { v.visit(*this); }
 void SuperMember::accept(Visitor& v) const { v.visit(*this); }
 void DestructuringAssign::accept(Visitor& v) const { v.visit(*this); }

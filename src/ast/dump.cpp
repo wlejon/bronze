@@ -84,6 +84,9 @@ public:
     void visit(const NewTargetExpr&) override {
         emit("(new.target)");
     }
+    void visit(const ImportMetaExpr&) override {
+        emit("(import.meta)");
+    }
     void visit(const ObjectLit& n) override {
         // A module namespace dumps under its own head: the property list is the
         // same getters, and what the linker decided is that the object built

@@ -109,6 +109,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (const auto* c = dynamic_cast<const ast::Call*>(&e)) return call(*c);
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&e)) return newExpr(*n);
     if (dynamic_cast<const ast::NewTargetExpr*>(&e)) return Type::dynamic();
+    if (dynamic_cast<const ast::ImportMetaExpr*>(&e)) return Type::dynamic();
     if (const auto* tt = dynamic_cast<const ast::TaggedTemplate*>(&e)) {
         expr(*tt->tag);
         for (const auto& el : tt->templateLit->exprs) expr(*el);

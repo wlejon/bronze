@@ -841,22 +841,30 @@ static uint64_t reflectApply(uint64_t, uint64_t, uint32_t argc, const uint64_t* 
         return rtThrowTypeError("Reflect.apply: target must be a function").rawBits();
     }
     if (!argsList.isObject()) {
+        // 28.1.1 step 2's CreateListFromArrayLike (7.3.19) step 1: a primitive
+        // argument list is a TypeError, and `null` is not the "no arguments"
+        // spelling here that it is for `Function.prototype.apply` — 20.2.3.1
+        // has an extra step for it that 28.1.1 does not.
         return rtThrowTypeError("Reflect.apply: arguments must be an object").rawBits();
     }
-    if (argsList.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
-        // 28.1.1 step 2 is CreateListFromArrayLike, which walks `length` and
-        // indices off ANY object. bronze reads a real array's elements only,
-        // and an array-like silently called with zero arguments would be the
-        // silent wrong answer this refusal exists to prevent.
-        fatal("unsupported: Reflect.apply with an argument list that is not an Array "
-              "(CreateListFromArrayLike over an array-like is not built)");
+    // 7.3.19 over ANY object with a `length`, the same walk
+    // `Function.prototype.apply` takes. Both reads can run a getter, so the
+    // list is held through a root and the argument block is rooted with it.
+    Rooted<Value> targetRoot{target};
+    Rooted<Value> thisRoot{thisArg};
+    Rooted<Value> listRoot{argsList};
+    const uint32_t count = rtArrayLikeLength(listRoot);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!rtCheckAppliedArgumentCount(count, "Reflect.apply")) {
+        return Value::fromUndefined().rawBits();
     }
-    uint32_t count = argsList.asObject<ArrayHeader>()->length;
-    std::vector<Value> argVec(count);
+    RootedBlock block(count);
     for (uint32_t i = 0; i < count; ++i) {
-        argVec[i] = argsList.asObject<ArrayHeader>()->getElem(i);
+        block.set(i, rtArrayLikeElement(listRoot, i));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
-    return target.asObject<FunctionHeader>()->call(thisArg, count, argVec.data()).rawBits();
+    return bronze_dynamic_call(targetRoot.get().rawBits(), thisRoot.get().rawBits(), count,
+                               block.data());
 }
 
 static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

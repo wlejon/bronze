@@ -625,6 +625,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // it, so answering `undefined` would be a silent lie about a name
         // ECMA-262 defines.
         if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
+        // `Map.groupBy` (24.1.2.1), on the same terms and for the same reason:
+        // the `Map` constructor is an interned function singleton with no
+        // property object, so its one own member is answered from a table.
+        if (Value stat; rtMapStatic(recv.get(), keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(recv.get(), keyStr);
         // The same step for `Promise`, whose statics live in the properties
         // object read above — so a name 27.2.4 defines and bronze has not

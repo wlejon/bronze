@@ -314,7 +314,7 @@ const Method kSetMethods[] = {
 // header), and answering `undefined` for it would let a program install a
 // method that nothing would ever find.
 const char* const kMapUnimplemented[] = {
-    "constructor", "groupBy", "prototype",
+    "constructor", "prototype",
 };
 const char* const kSetUnimplemented[] = {
     "constructor",   "difference", "intersection", "isDisjointFrom", "isSubsetOf",
@@ -337,6 +337,19 @@ const char* rtMapConstructorName(Value fn) {
     if (code == mapConstructor) return "Map";
     if (code == setConstructor) return "Set";
     return nullptr;
+}
+
+// 24.1.2.1 `Map.groupBy`, the one own member of the `Map` constructor beyond
+// the two ECMA-262 gives every function. It is answered here rather than
+// installed on the function object because that object is an interned
+// singleton with no property object of its own — the same arrangement
+// `rtTypedArrayStatic` answers `Float64Array.from` from. The body is 7.3.35 in
+// builtin_group_by.cpp, shared with `Object.groupBy`.
+bool rtMapStatic(Value fn, const std::string& key, Value& out) {
+    const char* name = rtMapConstructorName(fn);
+    if (!name || std::string(name) != "Map" || key != "groupBy") return false;
+    out = rtNativeFunction(rtMapGroupBy, 2);
+    return true;
 }
 
 Value rtMapMethod(bool isSetReceiver, const std::string& key) {
