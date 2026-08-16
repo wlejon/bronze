@@ -149,19 +149,23 @@ TEST_CASE("the update block copies before it increments") {
     const il::Function* main = functionNamed(*optMod, "main");
     REQUIRE(main != nullptr);
 
-    // The update block is the one holding both a copy and the increment's add.
+    // The update block is the one holding both a copy and the increment. A
+    // captured `i` reads back dynamic, so `i++` is the ToNumeric step rather
+    // than a typed add — either opcode counts as the increment here; the
+    // ordering is what this case pins.
     bool sawUpdate = false;
     for (const auto& block : main->blocks) {
         size_t create = block.instructions.size();
-        size_t add = block.instructions.size();
+        size_t step = block.instructions.size();
         for (size_t i = 0; i < block.instructions.size(); ++i) {
-            if (block.instructions[i].op == il::Op::EnvCreate && create == block.instructions.size())
-                create = i;
-            if (block.instructions[i].op == il::Op::Add && add == block.instructions.size()) add = i;
+            const il::Op op = block.instructions[i].op;
+            if (op == il::Op::EnvCreate && create == block.instructions.size()) create = i;
+            if ((op == il::Op::Add || op == il::Op::NumericStep) && step == block.instructions.size())
+                step = i;
         }
-        if (create == block.instructions.size() || add == block.instructions.size()) continue;
+        if (create == block.instructions.size() || step == block.instructions.size()) continue;
         sawUpdate = true;
-        CHECK(create < add);
+        CHECK(create < step);
     }
     CHECK(sawUpdate);
 }

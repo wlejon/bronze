@@ -83,11 +83,15 @@ TEST_CASE("every write form carries it, and a read carries nothing") {
     // flagged: `prop.get` has no such field at all.
     CHECK(has(il, "%8: dynamic = prop.get %5, 2, 1\n"));
     CHECK(has(il, "prop.set %5, 2, %11, 2, 1\n"));
-    // An update operator writes too (13.4.2.1).
-    CHECK(has(il, "prop.set %5, 2, %16, 4, 1\n"));
+    // An update operator writes too (13.4.2.1) — and it steps through
+    // ToNumeric first, because `q.k` could hold a BigInt (13.4.4.1's delta
+    // has the operand's own numeric type).
+    CHECK(has(il, "to.numeric %12\n"));
+    CHECK(has(il, "numeric.step %13, +1\n"));
+    CHECK(has(il, "prop.set %5, 2, %14, 4, 1\n"));
     // And `delete` carries it, because 13.5.1.2 step 5.b turns a refusal into
     // a TypeError on the same rule.
-    CHECK(has(il, "%17: bool = prop.delete %5, 2, 1\n"));
+    CHECK(has(il, "%15: bool = prop.delete %5, 2, 1\n"));
 }
 
 TEST_CASE("a sloppy delete is flagged 0") {

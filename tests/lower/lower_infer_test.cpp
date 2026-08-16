@@ -20,7 +20,7 @@ static constexpr const char* kAnnotatedArithmetic =
     "  return a + b;\n"
     "}\n"
     "export function calculate(x: number): number {\n"
-    "  const doubled = x * 2;\n"
+    "  const doubled = 21 * 2;\n"
     "  const difference = doubled - 1;\n"
     "  const ratio = difference / 2;\n"
     "  return add(ratio, x);\n"
@@ -43,9 +43,8 @@ TEST_CASE("a proven signature types the IL; the annotation on it does not") {
     // the return joins to dynamic with it.
     //
     // `calculate` escapes through `export`, so it keeps the uniform dynamic
-    // convention whatever its annotations say. Its `x * 2` still unboxes,
-    // and that is not the old unsoundness: `*` is ToNumber on both operands
-    // in every case (ECMA-262 13.6), unlike `+`.
+    // convention whatever its annotations say. The literal chain `21 * 2`
+    // is proven f64 end to end, which is what lets `ratio` prove `a`.
     CHECK(printed ==
           "module test\n"
           "\n"
@@ -58,9 +57,9 @@ TEST_CASE("a proven signature types the IL; the annotation on it does not") {
           "\n"
           "func calculate(%0: dynamic) -> dynamic export {\n"
           "  b0:\n"
-          "    %1: f64 = const.f64 2\n"
-          "    %2: f64 = unbox.f64 %0\n"
-          "    %3: f64 = mul %2, %1\n"
+          "    %1: f64 = const.f64 21\n"
+          "    %2: f64 = const.f64 2\n"
+          "    %3: f64 = mul %1, %2\n"
           "    %4: f64 = const.f64 1\n"
           "    %5: f64 = sub %3, %4\n"
           "    %6: f64 = const.f64 2\n"
@@ -81,6 +80,28 @@ TEST_CASE("a proven signature types the IL; the annotation on it does not") {
                         "(inferred: dynamic)") != std::string::npos);
     CHECK(rendered.find("warning: annotation 'number' on 'calculate' is not provable; ignoring "
                         "(inferred: dynamic)") != std::string::npos);
+}
+
+TEST_CASE("arithmetic on an unproven operand stays dynamic — a BigInt may arrive") {
+    // 13.6 applies ToNumeric, not ToNumber: `x * 2` where nothing proves `x`
+    // numeric must reach the dynamic multiply, because a BigInt (or an object
+    // whose valueOf answers one) takes the other branch of 13.15.3. Forcing
+    // f64 here was the pre-BigInt unsoundness: `unbox.f64` would read a heap
+    // pointer as a double.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "export function scale(x: number): number {\n"
+        "  return x * 2;\n"
+        "}\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("func scale(%0: dynamic) -> dynamic export") != std::string::npos);
+    CHECK(printed.find("dynamic = mul") != std::string::npos);
+    CHECK(printed.find("unbox.f64") == std::string::npos);
 }
 
 TEST_CASE("with no inference, an annotation types nothing at all") {
