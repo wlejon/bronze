@@ -432,7 +432,16 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     // every question below is about what the value IS, and a wrapper's answer
     // to each is the wrapped primitive's — `builtinTag` names the two places
     // that would have differed, and neither does.
-    std::string tag = builtinTag(self);
+    //
+    // The receiver is rooted BEFORE the tag is computed, not after. Several of
+    // the questions `builtinTag` asks — is this an arguments object, a Date, a
+    // wrapper — go through property lookups that can allocate, and under a
+    // moving collector an allocation relocates the receiver. Reading the tag
+    // through an unrooted copy survived, because the tag is a static string;
+    // carrying that copy forward into the property GET below did not, and the
+    // read landed in a recycled block.
+    Rooted<Value> receiver{self};
+    std::string tag = builtinTag(receiver.get());
 
     // Steps 15-17. An ordinary property GET, so a user-installed
     // `[Symbol.toStringTag]` — own or inherited — is found by the ordinary
@@ -447,7 +456,6 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     // objects bronze does not have. The order is what makes that sound: this
     // read runs first and unconditionally, so anything a program installed is
     // consulted before any stand-in can be.
-    Rooted<Value> receiver{self};
     Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
     Rooted<Value> found{
         Value(bronze_elem_get(receiver.get().rawBits(), key.get().rawBits()))};

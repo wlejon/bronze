@@ -10,6 +10,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
+#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
 #include "runtime/microtask.h"
@@ -192,22 +193,39 @@ void appendReaction(Rooted<Value>& promise, uint32_t slot, Rooted<Value>& handle
 
 }  // namespace
 
-bool rtIsPromise(Value v) {
+bool rtIsPromiseObject(Value v) {
     if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) return false;
+    auto* obj = v.asObject<ObjectHeader>();
+    if (obj->internalSlotCount() != PromiseSlot::kCount) return false;
+    // The slot count alone would be the brand if nothing else ever allocated
+    // exactly six internal slots. Two things could: this file's own closure
+    // environments (two slots) and the combinators' (four and two), and a
+    // future third would be silent. So the STATE slot is read as well — a
+    // promise's is one of three small integers written at creation and never
+    // by anything else — which makes the brand a fact about the object rather
+    // than about today's slot-count arithmetic. Neither half is reachable by a
+    // program: `createWithInternalSlots` is the runtime's alone.
+    const Value state = obj->internalSlot(PromiseSlot::State);
+    if (!state.isNumber()) return false;
+    const double n = state.asNumber();
+    return n == static_cast<double>(PromiseState::Pending) ||
+           n == static_cast<double>(PromiseState::Fulfilled) ||
+           n == static_cast<double>(PromiseState::Rejected);
+}
+
+bool rtIsPromise(Value v) {
+    if (!rtIsPromiseObject(v)) return false;
     // The prototype accessor can BUILD the intrinsics (an allocation), so it
-    // is taken before any raw pointer into `v` — reached only for a plain
-    // object with exactly a promise's slot count, so the build triggers at
-    // most once, and for something that is almost certainly a promise.
-    if (v.asObject<ObjectHeader>()->internalSlotCount() != PromiseSlot::kCount) return false;
+    // is taken before any raw pointer into `v` — reached only for a branded
+    // promise, so the build triggers at most once.
     Rooted<Value> self{v};
     const uint64_t protoBits = rtPromisePrototype().rawBits();
     ObjectHeader* proto = self.get().asObject<ObjectHeader>()->protoAncestor(1);
     return proto != nullptr && Value::fromObject(proto).rawBits() == protoBits;
 }
 
-Value rtNewPromise() {
-    // The shape accessor first: it may build the intrinsics, which allocates.
-    Shape* shape = rtPromiseInstanceShape();
+Value rtNewPromiseWithShape(Shape* shape) {
+    if (!shape) fatal("internal: a promise allocated with no instance shape");
     ObjectHeader* p =
         ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(), shape, PromiseSlot::kCount);
     p->header.flags = HeapKind::Plain;
@@ -215,6 +233,11 @@ Value rtNewPromise() {
     p->setInternalSlot(PromiseSlot::IsHandled, Value::fromBool(false));
     p->setInternalSlot(PromiseSlot::AlreadyResolved, Value::fromBool(false));
     return Value::fromObject(p);
+}
+
+Value rtNewPromise() {
+    // The shape accessor first: it may build the intrinsics, which allocates.
+    return rtNewPromiseWithShape(rtPromiseInstanceShape());
 }
 
 void rtResolvePromise(Rooted<Value>& promise, Rooted<Value>& value) {
@@ -230,8 +253,12 @@ void rtRejectPromise(Rooted<Value>& promise, Rooted<Value>& reason) {
 Value rtPromiseResolveValue(Rooted<Value>& v) {
     // 27.2.4.7 step 2, and the whole of the ES2019 single-tick rule: an
     // intrinsic promise passes through UNTOUCHED, so an await of one costs
-    // exactly one reaction job. (With subclassing refused, "its constructor
-    // is %Promise%" is the brand check.)
+    // exactly one reaction job. Step 2's test is `x.constructor === C` with C
+    // fixed at %Promise% here, and `rtIsPromise` — is the receiver's prototype
+    // %Promise.prototype% — is that question asked of the object instead of
+    // through a property read. A SUBCLASS instance answers false and is
+    // wrapped, which is what the step says: `await new MyPromise(...)` costs
+    // the extra tick precisely because its constructor is not %Promise%.
     if (rtIsPromise(v.get())) return v.get();
     Rooted<Value> p{rtNewPromise()};
     rtResolvePromise(p, v);
@@ -315,10 +342,165 @@ void rtRunReactionJob(Rooted<Value>& handler, Rooted<Value>& capability,
         // here so a future caller trips it loudly.
         return;
     }
-    if (resultRejected) {
-        rtRejectPromise(capability, result);
+    rtSettleCapability(capability, result, resultRejected);
+}
+
+// ---- 27.2.1.5 NewPromiseCapability, and the record it produces --------------
+//
+// A capability is (promise, resolve, reject). For %Promise% the pair is left
+// EMPTY and the promise is settled through its own latch — which is precisely
+// what its resolving functions do, so materializing two closures per `then`
+// would buy nothing observable. For any OTHER constructor the pair is the one
+// the constructor handed the executor, and calling it rather than settling the
+// promise directly is the whole point of the abstract operation: a subclass
+// whose constructor WRAPS the executor's resolve is observable only through it.
+
+namespace {
+
+// The executor NewPromiseCapability passes to the constructor: it captures its
+// two arguments into the record. 27.2.1.5.1 makes a SECOND call a TypeError,
+// which is what the already-set test below is.
+uint64_t capabilityExecutor(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args{argc, argv};
+    Rooted<Value> record{Value(env)};
+    ObjectHeader* rec = record.get().asObject<ObjectHeader>();
+    if (!rec->internalSlot(CapabilitySlot::Resolve).isUndefined() ||
+        !rec->internalSlot(CapabilitySlot::Reject).isUndefined()) {
+        return rtThrowTypeError("Promise executor was called twice").rawBits();
+    }
+    rec->setInternalSlot(CapabilitySlot::Resolve, args[0]);
+    rec->setInternalSlot(CapabilitySlot::Reject, args[1]);
+    return Value::fromUndefined().rawBits();
+}
+
+}  // namespace
+
+Value rtNewPromiseCapabilityForIntrinsic() {
+    Rooted<Value> promise{rtNewPromise()};
+    ObjectHeader* rec = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(),
+                                                             rtPlainObjectShape(),
+                                                             CapabilitySlot::kCount);
+    rec->header.flags = HeapKind::Plain;
+    Rooted<Value> record{Value::fromObject(rec)};
+    record.get().asObject<ObjectHeader>()->setInternalSlot(CapabilitySlot::Promise, promise.get());
+    return record.get();
+}
+
+Value rtNewPromiseCapability(Rooted<Value>& ctor) {
+    if (!ctor.get().isObject() || rtIsPromiseConstructor(ctor.get())) {
+        return rtNewPromiseCapabilityForIntrinsic();
+    }
+    Rooted<Value> record{Value::fromUndefined()};
+    {
+        ObjectHeader* rec = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(),
+                                                                 rtPlainObjectShape(),
+                                                                 CapabilitySlot::kCount);
+        rec->header.flags = HeapKind::Plain;
+        record.set(Value::fromObject(rec));
+    }
+    Rooted<Value> executor{rtMakeNativeClosure(capabilityExecutor, record, /*arity=*/2)};
+    Rooted<Value> executorArg{executor.get()};
+    Rooted<Value> built{Value(bronze_construct(
+        ctor.get().rawBits(), 1, reinterpret_cast<const uint64_t*>(executorArg.slot_ptr())))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    // Steps 3-4: a constructor that did not hand the executor two callable
+    // functions has produced no capability, and the language names the
+    // TypeError. bronze adds one condition of its own: the object must be a
+    // BRANDED promise, because everything downstream — the state slot, the
+    // reaction lists, the rejection tracker — addresses those slots. A species
+    // that is a constructor of something else is refused here rather than read
+    // as a promise.
+    ObjectHeader* rec = record.get().asObject<ObjectHeader>();
+    if (!isCallable(rec->internalSlot(CapabilitySlot::Resolve)) ||
+        !isCallable(rec->internalSlot(CapabilitySlot::Reject))) {
+        rtThrowTypeError("Promise resolve or reject function is not callable");
+        return Value::fromUndefined();
+    }
+    if (!rtIsPromiseObject(built.get())) {
+        rtThrowTypeError(
+            "a Symbol.species constructor that does not produce a promise is unsupported "
+            "(bronze's promise state lives in internal slots only a promise carries)");
+        return Value::fromUndefined();
+    }
+    record.get().asObject<ObjectHeader>()->setInternalSlot(CapabilitySlot::Promise, built.get());
+    return record.get();
+}
+
+Value rtPromiseResolveWith(Rooted<Value>& ctor, Rooted<Value>& x) {
+    // 27.2.4.7.1 PromiseResolve(C, x). The intrinsic arm is `rtPromiseResolveValue`
+    // above, single-tick rule and all; this adds the other arm, which is what
+    // makes `MyPromise.resolve(1) instanceof MyPromise` true.
+    if (!ctor.get().isObject() || rtIsPromiseConstructor(ctor.get())) {
+        return rtPromiseResolveValue(x);
+    }
+    // Step 2: a promise whose OWN `constructor` is already C passes through,
+    // which is the same one-tick saving the intrinsic arm makes.
+    if (rtIsPromiseObject(x.get())) {
+        Rooted<Value> ctorKey{rtMakeString("constructor")};
+        Rooted<Value> xCtor{Value(bronze_elem_get(x.get().rawBits(), ctorKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value::fromUndefined();
+        if (xCtor.get().isObject() && xCtor.get().rawBits() == ctor.get().rawBits()) {
+            return x.get();
+        }
+    }
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    rtSettleCapability(cap, x, /*reject=*/false);
+    return rtCapabilityPromise(cap.get());
+}
+
+Value rtPromiseSpeciesConstructor(Rooted<Value>& promise) {
+    // THE FAST PATH: a promise whose [[Prototype]] is %Promise.prototype% was
+    // not subclassed, so 7.3.20 reads `constructor` off that intrinsic and
+    // @@species off %Promise%, and both answers are fixed. `rtIsPromise` is
+    // that compare — the identity check, as opposed to the brand — so every
+    // `then` in an ordinary program costs one pointer compare and enters no
+    // property path at all.
+    if (rtIsPromise(promise.get())) return Value::fromUndefined();
+    Rooted<Value> ctorKey{rtMakeString("constructor")};
+    Rooted<Value> ctor{
+        Value(bronze_elem_get(promise.get().rawBits(), ctorKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    // Step 3: an absent constructor is the intrinsic.
+    if (ctor.get().isUndefined() || ctor.get().isNull()) return Value::fromUndefined();
+    if (!ctor.get().isObject()) {
+        rtThrowTypeError("Promise constructor is not an object");
+        return Value::fromUndefined();
+    }
+    Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
+    Rooted<Value> species{
+        Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (species.get().isUndefined() || species.get().isNull()) return Value::fromUndefined();
+    if (rtIsPromiseConstructor(species.get())) return Value::fromUndefined();
+    if (!isCallable(species.get())) {
+        rtThrowTypeError("Symbol.species is not a constructor");
+        return Value::fromUndefined();
+    }
+    return species.get();
+}
+
+Value rtCapabilityPromise(Value capability) {
+    if (!capability.isObject()) return Value::fromUndefined();
+    return capability.asObject<ObjectHeader>()->internalSlot(CapabilitySlot::Promise);
+}
+
+void rtSettleCapability(Rooted<Value>& capability, Rooted<Value>& value, bool reject) {
+    if (!capability.get().isObject()) return;
+    Rooted<Value> fn{capability.get().asObject<ObjectHeader>()->internalSlot(
+        reject ? CapabilitySlot::Reject : CapabilitySlot::Resolve)};
+    if (isCallable(fn.get())) {
+        uint64_t argBits[1] = {value.get().rawBits()};
+        bronze_dynamic_call(fn.get().rawBits(), Value::fromUndefined().rawBits(), 1, argBits);
+        return;
+    }
+    Rooted<Value> promise{
+        capability.get().asObject<ObjectHeader>()->internalSlot(CapabilitySlot::Promise)};
+    if (!promise.get().isObject()) return;
+    if (reject) {
+        rtRejectPromise(promise, value);
     } else {
-        rtResolvePromise(capability, result);
+        rtResolvePromise(promise, value);
     }
 }
 

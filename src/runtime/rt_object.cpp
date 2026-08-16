@@ -26,6 +26,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/namespace.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/profile.h"
@@ -342,47 +343,44 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal("a class can only extend another class or a constructor function");
     }
-    // A native intrinsic cannot be a base, and saying so is the point. The
-    // derived constructor builds an ordinary plain object and forwards to the
-    // base, but `Array`'s body ignores the receiver and returns an array of its
-    // own — so `new Sub()` would be a plain object that `Array.isArray` and
-    // `instanceof Array` both call false while the program believes it made an
-    // array. Refusing is loud where subclassing it is a silent wrong answer.
-    if (const char* intrinsic = rtIntrinsicConstructorName(baseVal)) {
-        fatal((std::string("extending the native constructor `") + intrinsic +
-               "` is unsupported (its instances are built by the runtime, so a "
-               "subclass would not be one)")
-                  .c_str());
-    }
-    // `Promise` is refused for a reason of its own, and it is load-bearing
-    // rather than defensive: the whole capability story in promise.h — no
-    // @@species, no NewPromiseCapability over an arbitrary constructor, `then`
-    // minting a plain intrinsic promise — rests on every promise in the
-    // program BEING the intrinsic. A subclass's instances are exactly the
-    // receiver that story has no answer for, and silently handing them
-    // intrinsic capabilities would be a wrong answer rather than a missing one.
-    // `Date` is refused for the reason the intrinsics above are, and it is not
-    // covered by `rtIntrinsicConstructorName`: its constructor body builds a
-    // Date OBJECT of its own — internal slots and all — and returns it, so a
-    // subclass's instance would be the plain object the derived constructor
-    // made, with no [[DateValue]] and every one of 21.4.4's members raising a
-    // TypeError on it. Refusing is loud where subclassing is a wrong answer.
-    if (rtIsDateConstructor(baseVal)) {
-        fatal("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
-              "runtime's own constructor, so a subclass's instances would not carry one)");
-    }
-    if (rtIsPromiseConstructor(baseVal)) {
-        fatal("extending `Promise` is unsupported (bronze's promises are the intrinsic and "
-              "only the intrinsic: there is no @@species, so a subclass's `then` could not "
-              "produce a subclass)");
-    }
-
     Rooted<Value> derived{derivedVal};
     Rooted<Value> base{baseVal};
+    // A native base whose instances bronze cannot allocate from NewTarget is
+    // refused BY NAME here, before a single link is made — the alternative is a
+    // derived constructor that hands back an ordinary plain object answering
+    // `undefined` to every member of the thing it claims to be.
+    // runtime/native_base.h owns both halves of that decision: which natives
+    // ARE subclassable, and what each refusal says.
+    //
+    // AFTER the roots, not before: the refusal list probes an identity per
+    // native, and the first probe of one BUILDS it. Asking before rooting made
+    // the two `Rooted` constructors below capture pre-collection addresses,
+    // which showed up as a class whose methods were all `undefined`.
+    rtCheckNativeBaseExtends(base);
     rtEnsureFunctionPrototype(base);
     rtEnsureFunctionProperties(base);
+    // 15.7.14 step 6 makes the base constructor the derived one's
+    // [[Prototype]], and the box chain built below IS that link — so a base
+    // whose statics are answered beside the value has to write them into its
+    // box first, or `MyArr.of` is a silent `undefined`. Nothing to do for an
+    // ordinary class, and nothing to do twice (runtime/native_base.h).
+    rtRealizeNativeStatics(base);
+    // Which exotic object `new Derived()` must allocate, recorded on the
+    // derived constructor rather than rediscovered by walking the chain at
+    // every construction. Inherited THROUGH a user class, so `class C extends
+    // MyMap` allocates a Map exactly as `class MyMap extends Map` does.
+    rtInheritNativeBase(derived, base);
 
+    // `Map.prototype` and `Set.prototype` are intrinsics bronze builds no
+    // OBJECT for (rt_builtins.h says why the slot must stay empty), so a
+    // subclass of one has nothing above it to link to and its chain ends at
+    // NULL. That is not a shortened chain: the members those two prototypes
+    // carry are answered from the table beside the value, which the read path
+    // reaches after this chain misses (rt_prop.cpp). Spelling it `undefined`
+    // — which is what an empty base slot used to produce — made the chain
+    // unwalkable instead of finite.
     Rooted<Value> baseProto{base.get().asObject<FunctionHeader>()->prototype};
+    if (!baseProto.get().isObject()) baseProto.set(Value::fromNull());
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProto.get()));
     proto->header.flags = HeapKind::Plain;
     Rooted<Value> protoRoot{Value::fromObject(proto)};
@@ -461,6 +459,33 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     }
 
     Rooted<Value> fnRoot{fnVal};
+
+    // A constructor whose instances are a NATIVE EXOTIC OBJECT — `Map` itself,
+    // and every class that reaches it through `extends`. `fnRoot` IS NewTarget
+    // here, so this one site is 10.1.13 OrdinaryCreateFromConstructor: the
+    // exotic object is allocated with the prototype 10.1.14 takes from
+    // NewTarget, the derived constructor receives it as `this`, and `super()`
+    // — the base's body run on that receiver — initializes it in place.
+    //
+    // It returns BEFORE `construct_vetted` is set, and that is load-bearing
+    // rather than incidental: the inline `new` fast path in generated code
+    // bump-allocates a plain object and can express nothing else, so leaving
+    // the byte clear for these functions is what keeps the fast path from ever
+    // producing a slotless instance behind this helper's back.
+    if (const uint8_t nativeBase = rtNativeBaseOf(fnRoot.get());
+        nativeBase != NativeBase::None) {
+        Rooted<Value> self{rtAllocateNativeBaseInstance(nativeBase, fnRoot)};
+        // The scope is what lets the BASE body — reached through however many
+        // `super()` hops — tell the object it was handed to fill from a
+        // receiver a program passed to `Map.call(...)`. Pushed BEFORE the
+        // header is derived, so nothing it does can leave `live` stale.
+        NativeReceiverScope receiverScope(self.get());
+        FunctionHeader* live = fnRoot.get().asObject<FunctionHeader>();
+        Value result = live->call(self.get(), argc,
+                                  const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+        return result.isObject() ? result.rawBits() : self.get().rawBits();
+    }
+
     rtEnsureFunctionPrototype(fnRoot);
 
     FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();

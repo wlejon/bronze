@@ -1,0 +1,20 @@
+ctor true true
+then true
+catch true
+finally true
+resolve true
+reject true
+all true
+allSettled true
+race true
+any true
+opt true false true
+plain false true true
+a 2
+b e3
+c
+d 10
+all 1,2,3 true
+allSettled fulfilled,rejected
+any b
+race r

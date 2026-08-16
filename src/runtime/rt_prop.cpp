@@ -12,6 +12,12 @@
 // same sentence read backwards: it stores nothing, so its answer comes from an
 // intrinsic prototype rather than from the value. rt_prop_primitive.cpp owns it.
 //
+// A SYMBOL key is the other thing that is not here, and its seam is the key
+// rather than the receiver: every kind keeps symbol-keyed properties the same
+// way, so what stays interesting is the handful of well-known symbols whose
+// intrinsic prototype bronze does not build. rt_prop_symbol.cpp stands in for
+// those objects; this file calls it once, from the symbol arm below.
+//
 // The WRITE dispatch is rt_prop_write.cpp, split off along the same kind of
 // seam: a read asks every receiver the same question and takes each kind's
 // answer, while a write asks whether the receiver can hold the property at all
@@ -43,6 +49,7 @@
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/namespace.h"
+#include "runtime/native_base.h"
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
@@ -68,19 +75,18 @@ namespace bronze::runtime {
 // cache as "look it up and cache nothing", a difference in speed and not in
 // semantics.
 
-// An own named property of one of the four MapHeader kinds, read through the
-// receiver so that an accessor stored there sees the collection and not the box
-// its properties live in. False means the collection has no such own property
-// and the member tables below are the answer.
+// The ORDINARY half of one of the four MapHeader kinds: its own named
+// properties and the chain above them, read through the receiver so that an
+// accessor found there sees the collection and not the box its properties live
+// in. False means neither had the name and the member tables below are the
+// answer.
+//
+// The chain is `MyMap.prototype` and everything above it for a subclass
+// instance, since a collection carries no shape of its own and its
+// [[Prototype]] lives on that box (runtime/native_base.h). A collection that is
+// neither subclassed nor decorated has no box, and answers false after one load.
 static bool mapOwnNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out) {
-    if (!keyHeader) return false;
-    PropertyInfo info;
-    if (!rtMapOwnNamed(recv.get(), keyHeader, info)) return false;
-    Rooted<Value> propsRoot{recv.get().asObject<MapHeader>()->properties};
-    Rooted<Value> key{Value::fromString(keyHeader)};
-    out = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
-                                                           recv.slot_ptr());
-    return true;
+    return rtExoticNamedRead(recv, keyHeader, out);
 }
 
 // A member of a WeakMap or a WeakSet, by name. The Map arrangement below with
@@ -126,191 +132,6 @@ static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
     return rtObjectProtoMember(recv, keyStr);
 }
 
-// What a WELL-KNOWN symbol names on a receiver that carries no shape.
-//
-// `o[sym]` on a plain object or a function is a slot the shape decides, and
-// needs nothing from here. An array, a string, a typed array, a Map and a Set
-// have no own properties at all, so what `v[Symbol.iterator]` means for them is
-// ECMA-262's answer rather than the object's — and it used to arrive through
-// the string member tables purely because the key used to be the string
-// `"@@iterator"`. This is the one place that sees both the receiver kind and
-// the key, so it is where that answer moved to.
-//
-// `handled` separates "this receiver kind has no answer here" from "the answer
-// is undefined", which are the same bits and different facts: only the first
-// may fall through to the shape.
-// 20.4.2.14 `@@toStringTag` for a receiver that has NO PROTOTYPE OBJECT to
-// carry it.
-//
-// This is an approximation of the MECHANISM and not of the bytes. ECMA-262
-// puts the tag on a prototype — `Map.prototype[@@toStringTag]` is "Map"
-// (24.1.3.13), `Set.prototype`'s is "Set" (24.2.3.12),
-// `%TypedArray%.prototype`'s is an accessor over [[TypedArrayName]]
-// (23.2.3.35), `ArrayBuffer.prototype`'s is "ArrayBuffer" (25.1.6.6),
-// `DataView.prototype`'s is "DataView" (25.3.4.25) — and bronze has none of
-// those objects, so the property a walk would find is answered from the heap
-// kind at the one place that sees both the receiver and the key. The VALUE is
-// the one the specification's property holds, so
-// `Object.prototype.toString.call(new Map())` is the spec's bytes.
-//
-// Nothing a program installs is overridden by this, because it answers only for
-// receivers that have no shape to install anything on: a plain object's and a
-// function's own `[Symbol.toStringTag]` is a slot, found by the ordinary walk
-// that this function declines (`handled` stays false) to intercept.
-//
-// One of the answers is not an approximation at all: a module namespace's is an
-// OWN property that 10.4.6.1 defines on the object itself.
-//
-// A PRIMITIVE is not this function's business any more. All four kinds reach a
-// real intrinsic prototype now, and the walk below finds what that object
-// carries — "Symbol" from `Symbol.prototype[@@toStringTag]` (20.4.3.6), and
-// nothing from the other three, because 21.1.3, 22.1.3 and 20.3.3 define no tag
-// and the language's answer really is `undefined`.
-Value toStringTagOf(Value objVal, bool& handled) {
-    if (!objVal.isObject()) return Value::fromUndefined();
-    switch (objVal.asObject<HeapObjectHeader>()->flags) {
-        case MapHeader::kMapFlags:
-            handled = true;
-            return rtMakeString("Map");
-        case MapHeader::kSetFlags:
-            handled = true;
-            return rtMakeString("Set");
-        case MapHeader::kWeakMapFlags:
-            handled = true;
-            return rtMakeString("WeakMap");  // 24.3.3.6
-        case MapHeader::kWeakSetFlags:
-            handled = true;
-            return rtMakeString("WeakSet");  // 24.4.3.5
-        case TypedArrayHeader::kFlags: {
-            // 23.2.3.35 is an ACCESSOR whose answer is [[TypedArrayName]], so
-            // nine views give nine tags rather than one shared "TypedArray".
-            const char* kind =
-                reinterpret_cast<TypedArrayHeader*>(objVal.asObject<HeapObjectHeader>())
-                    ->kindName();
-            handled = true;
-            return rtMakeString(kind);
-        }
-        case ArrayBufferHeader::kFlags:
-            handled = true;
-            return rtMakeString("ArrayBuffer");
-        case DataViewHeader::kFlags:
-            handled = true;
-            return rtMakeString("DataView");
-        case ModuleNamespaceHeader::kFlags:
-            handled = true;
-            return rtMakeString("Module");
-        case HeapKind::Function:
-            if (objVal.asObject<FunctionHeader>()->is_generator) {
-                handled = true;
-                return rtMakeString("GeneratorFunction");
-            }
-            return Value::fromUndefined();
-        default:
-            // An array, a function, a RegExp and a plain object: 23.1.3, 20.2.3,
-            // 22.2.6 and 20.1.3 define no `@@toStringTag` at all, which is
-            // exactly why 20.1.3.6 keeps a builtin-tag list for them.
-            return Value::fromUndefined();
-    }
-}
-
-Value wellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
-    handled = false;
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
-        return toStringTagOf(objVal, handled);
-    }
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolSpecies()) {
-        if (rtIsArrayConstructor(objVal) ||
-            rtIsArrayBufferConstructor(objVal) ||
-            rtIsTypedArrayConstructor(objVal) ||
-            rtIsRegExpConstructor(objVal)) {
-            handled = true;
-            return objVal;
-        }
-        return Value::fromUndefined();
-    }
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
-        if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-            handled = true;
-            return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1);
-        }
-        return Value::fromUndefined();
-    }
-    if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
-    // A STRING is not this function's business: 22.1.3.36 puts its
-    // `[Symbol.iterator]` on the real `String.prototype` object
-    // (builtin_string_iterator.cpp), and the ordinary symbol-keyed walk below
-    // this dispatch finds it there — `handled` stays false, exactly as it does
-    // for every other member a string reaches through its intrinsic.
-    if (!objVal.isObject()) return Value::fromUndefined();
-    switch (objVal.asObject<HeapObjectHeader>()->flags) {
-        case HeapKind::Array:
-            // 23.1.3.41 makes it the same function object as
-            // `Array.prototype.values` — an IDENTITY, not a twin, and it holds
-            // because both routes intern on the one code pointer.
-            handled = true;
-            return rtNativeFunction(rtArrayValuesBuiltin, 0);
-        case TypedArrayHeader::kFlags:
-            handled = true;
-            return rtTypedArrayIteratorMethod();
-        case MapHeader::kMapFlags:
-            handled = true;
-            return rtMapDefaultIterator(/*isSetReceiver=*/false);
-        case MapHeader::kSetFlags:
-            handled = true;
-            return rtMapDefaultIterator(/*isSetReceiver=*/true);
-        default:
-            return Value::fromUndefined();
-    }
-}
-
-// The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
-// for a function / array — the side object its properties live in.
-ObjectHeader* rtSymbolKeyHolder(Value objVal) {
-    if (!objVal.isObject()) return nullptr;
-    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
-    if (hdr->flags == HeapKind::Function) {
-        Value props = objVal.asObject<FunctionHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    if (hdr->flags == HeapKind::Array) {
-        Value props = objVal.asObject<ArrayHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    if (rtIsMapLike(objVal)) {
-        Value props = objVal.asObject<MapHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    return nullptr;
-}
-
-namespace {
-
-// Where a symbol-keyed READ starts its prototype walk. It is deliberately NOT
-// the function above, and the difference is the point: a primitive has no
-// storage of its own to write a symbol-keyed property INTO, but it does have a
-// chain to read one OFF — which is how `sym[Symbol.toStringTag]` reaches
-// 20.4.3.6's "Symbol" on `Symbol.prototype`. One function serving both would
-// make `sym[k] = v` write onto the intrinsic every symbol in the program
-// shares.
-//
-// ALLOCATES, because the first read of any intrinsic builds it — so the caller
-// roots its receiver and its key before asking, and the raw header the tail
-// derives is read after everything that can move it.
-Value symbolReadStart(Value v) {
-    if (v.isString()) return rtStringPrototype();
-    if (v.isBool()) return rtBooleanPrototype();
-    if (v.isNumber()) return rtNumberPrototype();
-    if (v.isSymbol()) return rtSymbolPrototype();
-    // The same road as the four above it, and the reason a BigInt needs it:
-    // `Object.prototype.toString.call(1n)` reads @@toStringTag off the
-    // receiver, and 21.2.3.5 puts "BigInt" on `BigInt.prototype`.
-    if (v.isBigInt()) return rtBigIntPrototype();
-    ObjectHeader* holder = rtSymbolKeyHolder(v);
-    return holder ? Value::fromObject(holder) : Value::fromUndefined();
-}
-
-}  // namespace
 
 extern "C" {
 
@@ -462,16 +283,15 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // undefined": `a.map = undefined` is an own property whose value is
         // undefined, and reading the builtin for it would un-shadow a property
         // the program really created.
-        if (PropertyInfo info; rtArrayOwnNamed(recv.get(), keyHeader, info)) {
-            Rooted<Value> propsRoot{recv.get().asObject<ArrayHeader>()->properties};
-            Rooted<Value> key(Value::fromString(keyHeader));
-            // The array is the receiver, so a getter stored here runs against
-            // the object the program read from rather than against the box.
-            return propsRoot.get()
-                .asObject<ObjectHeader>()
-                ->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr())
-                .rawBits();
-        }
+        //
+        // The same read continues UP the box's chain, which for a subclass
+        // instance is `MySubArray.prototype` and everything above it — that is
+        // where an Array subclass's [[Prototype]] lives, since an array carries
+        // no shape of its own (runtime/native_base.h). An array with no box —
+        // every array a program has neither subclassed nor written a named
+        // property on — answers after one load, which is what keeps the method
+        // table below the only thing an ordinary `a.map` touches.
+        if (Value own; rtExoticNamedRead(recv, keyHeader, own)) return own.rawBits();
         if (uint32_t methodId = rtArrayMethodId(keyStr); methodId != UINT32_MAX) {
             Value method = rtArrayMethodById(methodId);
             if (!method.isUndefined()) {
@@ -893,7 +713,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         // which allocates. No inline cache: a computed site has no entry.
         //
         // The roots are taken BEFORE the well-known dispatch rather than after
-        // it, and that order is load-bearing: `wellKnownSymbolMember` allocates
+        // it, and that order is load-bearing: `rtWellKnownSymbolMember` allocates
         // on two routes — a well-known symbol is created on first use and its
         // description is a heap string, and `toStringTagOf` builds its answer
         // with `rtMakeString` — so a raw receiver held across the call is a
@@ -904,9 +724,9 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> recv{objVal};
         Rooted<Value> key{Value(idxBits)};
         bool handled = false;
-        const Value wellKnown = wellKnownSymbolMember(recv.get(), key.get(), handled);
+        const Value wellKnown = rtWellKnownSymbolMember(recv.get(), key.get(), handled);
         if (handled) return wellKnown.rawBits();
-        Rooted<Value> holderRoot{symbolReadStart(recv.get())};
+        Rooted<Value> holderRoot{rtSymbolReadStart(recv.get())};
         // A receiver with neither own symbol-keyed storage nor a chain: an
         // array, a Map, a RegExp. Those have no own symbol-keyed property and
         // no prototype object here to inherit one from.

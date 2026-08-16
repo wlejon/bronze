@@ -55,6 +55,7 @@ bronze_add_module(runtime
         rt_state.cpp
         rt_convert.cpp
         rt_members.cpp
+        native_base.cpp
         rt_object.cpp
         rt_reflect.cpp
         rt_operator.cpp
@@ -64,6 +65,7 @@ bronze_add_module(runtime
         rt_prop_primitive.cpp
         rt_prop_array.cpp
         rt_prop_map.cpp
+        rt_prop_symbol.cpp
         rt_prop_write.cpp
         rt_delete.cpp
         rt_private.cpp
@@ -133,6 +135,7 @@ bronze_add_module(runtime
         ../../tests/runtime/integrity_test.cpp
         ../../tests/runtime/math_random_test.cpp
         ../../tests/runtime/namespace_test.cpp
+        ../../tests/runtime/native_base_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

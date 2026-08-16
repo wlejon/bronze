@@ -7,10 +7,12 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -18,34 +20,63 @@
 
 namespace bronze::runtime {
 
+// 7.3.22 ArraySpeciesCreate. `map`, `filter`, `slice`, `splice`, `concat`,
+// `flat`, `flatMap` and `toSpliced` all build their result through it, so a
+// subclass's `map` answers a subclass instance and `static get
+// [Symbol.species]() { return Array; }` opts back out.
+//
+// THE FAST PATH IS THE FIRST TWO LINES, and it is not an optimization detail:
+// steps 3-6 are two property reads and a construct, and the overwhelming
+// majority of arrays in any program are plain ones whose `constructor` is
+// %Array% and whose @@species is %Array% — for which the whole algorithm is
+// `ArrayCreate(length)`. An array carries a property BOX only when a program
+// subclassed it or wrote a named property on it (runtime/native_base.h), so
+// "no box" IS "the constructor is exactly the Array intrinsic", answered by one
+// load with no property path entered at all.
 Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
     if (!isArray(originalArray.get())) {
         return Value(bronze_create_array(length));
     }
+    if (!rtExoticPropertyBox(originalArray.get()).isObject()) {
+        return Value(bronze_create_array(length));
+    }
+    // Step 5: Get(originalArray, "constructor"), which for a subclass instance
+    // is `A.prototype.constructor` up the chain the box carries — and for an
+    // array carrying only an expando is absent, leaving %Array%.
     Rooted<Value> ctorKey{rtMakeString("constructor")};
-    PropertyInfo info;
-    Value ctorVal = Value::fromUndefined();
-    if (ObjectHeader* holder = rtSymbolKeyHolder(originalArray.get())) {
-        if (holder->shape &&
-            holder->shape->lookupProperty(
-                PropertyKey::forString(ctorKey.get().asString<StringHeader>()), info)) {
-            ctorVal = holder->getProp(rtHeap(), ctorKey, nullptr, originalArray.slot_ptr());
-        }
+    // Both reads below are held in ROOTS from the moment they exist, because
+    // every predicate applied to them — `rtIsArrayConstructor` above all — can
+    // build the intrinsic it compares against, and an identity test run against
+    // a pre-collection address answers a confident no.
+    Rooted<Value> ctorRoot{Value::fromUndefined()};
+    if (Value found;
+        rtExoticNamedRead(originalArray, ctorKey.get().asString<StringHeader>(), found)) {
+        ctorRoot.set(found);
     }
-    if (ctorVal.isUndefined()) {
-        ctorVal = rtArrayConstructorObject();
+    // `Array` itself takes the same shortcut the missing-box case does: its
+    // @@species is itself (rt_prop.cpp), so constructing through it would run
+    // 23.1.1.1 to reach exactly ArrayCreate(length).
+    if (ctorRoot.get().isUndefined() || rtIsArrayConstructor(ctorRoot.get())) {
+        return Value(bronze_create_array(length));
     }
-    if (ctorVal.isObject()) {
-        Rooted<Value> ctorRoot{ctorVal};
+    if (ctorRoot.get().isObject()) {
         Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
-        Value speciesVal(bronze_elem_get(ctorRoot.get().rawBits(), speciesKey.get().rawBits()));
-        if (speciesVal.isNull()) return Value(bronze_create_array(length));
-        if (!speciesVal.isUndefined()) {
-            if (!isCallable(speciesVal)) {
+        Rooted<Value> speciesRoot{
+            Value(bronze_elem_get(ctorRoot.get().rawBits(), speciesKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value(bronze_create_array(0));
+        // Step 6: @@species NULL means "no subclass result", which is the
+        // documented opt-out and is NOT the same as absent.
+        if (speciesRoot.get().isNull()) return Value(bronze_create_array(length));
+        if (!speciesRoot.get().isUndefined()) {
+            if (rtIsArrayConstructor(speciesRoot.get())) {
+                return Value(bronze_create_array(length));
+            }
+            if (!isCallable(speciesRoot.get())) {
                 return rtThrowTypeError("Symbol.species is not a constructor");
             }
-            uint64_t lenArg = Value::fromDouble(length).rawBits();
-            return Value(bronze_construct(speciesVal.rawBits(), 1, &lenArg));
+            Rooted<Value> lenRoot{Value::fromDouble(length)};
+            return Value(bronze_construct(speciesRoot.get().rawBits(), 1,
+                                          reinterpret_cast<const uint64_t*>(lenRoot.slot_ptr())));
         }
     }
     return Value(bronze_create_array(length));
@@ -167,6 +198,31 @@ Value rtArrayPrototypeObject() {
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor,
                                                     /*ic=*/nullptr, /*enumerable=*/false,
                                                     /*defineOwn=*/true);
+    }
+    {
+        // 23.1.3's opening sentence: `Array.prototype` IS an Array exotic
+        // object, and the one thing about that a program can read off it is
+        // its own `length` — 0, writable, neither enumerable nor configurable
+        // (10.4.2.1). Without it `Object.create(Array.prototype).length` is
+        // `undefined` where the language says 0, which is the divergence a
+        // program inheriting from it actually trips over.
+        //
+        // The object's KIND is still Plain, and that is a deliberate stop
+        // rather than an oversight: bronze's prototype links live on shapes and
+        // every walk over one — `protoAncestor`, the inline caches, the
+        // subclass chain in runtime/native_base.h — dereferences an
+        // ObjectHeader. An ArrayHeader carries no shape, so making this object
+        // one would leave every `Object.create(Array.prototype)` and every
+        // `class extends Array` prototype pointing at something no walk can
+        // cross. `Array.isArray` answers for it by identity below instead, and
+        // what remains unavailable is element storage ON the prototype, which
+        // `Array.prototype[0] = 1` would need.
+        Rooted<Value> key{rtMakeString("length")};
+        Rooted<Value> zero{Value::fromDouble(0)};
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, zero, /*ic=*/nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true,
+                                                    /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                    /*writable=*/true, /*configurable=*/false);
     }
     {
         Rooted<Value> key{rtIteratorKey()};

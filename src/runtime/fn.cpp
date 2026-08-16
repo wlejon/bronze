@@ -23,6 +23,13 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // field the constructor-syntax initializers name is still garbage until
     // this function writes it.
     fn->construct_vetted = false;
+    // NOT ordinary padding, and the difference is why it is written here rather
+    // than left to the loop below: `bronze_construct` DISPATCHES on this byte,
+    // so residue in it makes an ordinary closure allocate a Map — a type
+    // confusion whose symptom is a segfault in whatever reads the object next,
+    // and which only appears once the heap has recycled a block with the right
+    // byte in the right place.
+    fn->native_base = 0;
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).
     for (uint8_t& b : fn->padding_to_value_scan) b = 0;

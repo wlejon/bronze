@@ -13,12 +13,12 @@
 // splits 27.2.1 (abstract operations) from 27.2.4/27.2.5 (the API): the async
 // driver (builtin_async.cpp) needs everything HERE and nothing THERE.
 //
-// There is no NewPromiseCapability over an arbitrary constructor and no
-// @@species anywhere in this file, deliberately: bronze's promises are the
-// intrinsic and only the intrinsic. Subclassing Promise is refused by name at
-// `extends` (rt_object.cpp), so a capability is always "a fresh intrinsic
-// promise plus its two resolving functions" — which is `rtNewPromise` and the
-// internal settle functions, with the function objects never materialized.
+// A CAPABILITY is the record 27.2.1.5 names, and it has two forms for one
+// reason: over %Promise% the resolving functions are never materialized (the
+// promise's own latch is exactly what they would consume), while over a
+// SPECIES they are the pair the constructor handed the executor and calling
+// them is the only way a subclass that wraps resolve can be observed. The slot
+// layout and both forms are `CapabilitySlot` below.
 
 namespace bronze::runtime {
 
@@ -76,6 +76,20 @@ bool rtIsPromise(Value v);
 // A fresh pending intrinsic promise. ALLOCATES.
 Value rtNewPromise();
 
+// The same, with the [[Prototype]] 10.1.13 takes from NewTarget rather than
+// %Promise.prototype% — the one thing `new (class extends Promise)()` needs
+// that `new Promise()` does not. `shape` is the constructor's memoized instance
+// shape, so a subclass costs no shape per promise. ALLOCATES.
+Value rtNewPromiseWithShape(class Shape* shape);
+
+// The BRAND, and not `rtIsPromise`: an object allocated as a promise, whatever
+// its prototype is. A subclass instance is one and its [[Prototype]] is the
+// subclass's, so the identity check `rtIsPromise` makes — "the prototype is
+// %Promise.prototype%" — answers false for it while every one of 27.2.5's
+// methods must still work on it. The two are separate because the ONE place
+// that wants identity rather than the brand is 27.2.4.7's single-tick rule.
+bool rtIsPromiseObject(Value v);
+
 // The resolve/reject half of a resolving-function PAIR whose latch is the
 // promise's own (27.2.1.3, for the pair whose env is the promise): checks and
 // sets [[AlreadyResolved]], then runs the resolution steps. Every settle that
@@ -90,6 +104,48 @@ void rtRejectPromise(Rooted<Value>& promise, Rooted<Value>& reason);
 // UNCHANGED (step 2), so awaiting one subscribes it directly — one reaction
 // job, no wrapper promise, no extra tick. ALLOCATES on the other arm.
 Value rtPromiseResolveValue(Rooted<Value>& v);
+
+// A PromiseCapability Record (27.2.1.1): the promise, and the two resolving
+// functions the constructor handed the executor. An object with internal slots
+// so that nothing a program can reach ever sees it.
+//
+// For %Promise% the two function slots stay EMPTY and `rtSettleCapability`
+// settles the promise through its own latch — which is exactly what those
+// functions would do, so building them per `then` would buy nothing observable.
+// They are filled only when the capability was constructed over a SPECIES, and
+// there the difference is real: a subclass whose constructor wraps the executor's
+// resolve is observable only if the wrapper is what gets called.
+namespace CapabilitySlot {
+enum : uint32_t { Promise, Resolve, Reject, kCount };
+}
+
+// 27.2.1.5 NewPromiseCapability(C). `ctor` undefined or %Promise% takes the
+// intrinsic path; anything else is constructed with a capturing executor and
+// checked. Returns `undefined` with an exception pending on every failure
+// path. ALLOCATES, and may run USER CODE (the constructor).
+Value rtNewPromiseCapability(Rooted<Value>& ctor);
+Value rtNewPromiseCapabilityForIntrinsic();
+
+// The promise half — what `then` returns.
+Value rtCapabilityPromise(Value capability);
+
+// Resolve or reject through the capability: the captured function when there is
+// one, the promise's own latch otherwise. A non-object capability is the
+// no-capability reaction (the async driver's) and settles nothing.
+void rtSettleCapability(Rooted<Value>& capability, Rooted<Value>& value, bool reject);
+
+// 27.2.4.7.1 PromiseResolve(C, x) — the general form of `rtPromiseResolveValue`
+// above, which is its C = %Promise% arm. `ctor` undefined or %Promise% takes
+// that arm unchanged; anything else builds a capability over the constructor,
+// so `MyPromise.resolve(1)` is a MyPromise. May run USER CODE.
+Value rtPromiseResolveWith(Rooted<Value>& ctor, Rooted<Value>& x);
+
+// 7.3.20 SpeciesConstructor(O, %Promise%): O's `constructor`, then its
+// @@species, defaulting to %Promise% at each step. `undefined` — meaning "the
+// intrinsic, take the fast path" — is the answer for every promise a program
+// did not subclass, decided by one prototype compare before any property is
+// read. May run USER CODE (a `constructor` getter).
+Value rtPromiseSpeciesConstructor(Rooted<Value>& promise);
 
 // 27.2.5.4.1 PerformPromiseThen. Handlers that are not callable are treated
 // as absent (the identity/thrower defaults). `capability` undefined means the

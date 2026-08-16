@@ -1,7 +1,3 @@
-// BLOCKED: `extending `Promise` is unsupported (bronze's promises are the
-// intrinsic and only the intrinsic: there is no @@species, so a subclass's
-// `then` could not produce a subclass)`.
-//
 // A Promise subclass, which the language supports through two hooks that have
 // to agree. `MyPromise.resolve` (27.2.4.7) constructs through `this` rather
 // than through %Promise%, so the result is a MyPromise; and `then`
@@ -15,9 +11,12 @@
 // reactions registered on `p` run in registration order, and the reaction on
 // `q` runs after the one that resolves it.
 //
-// Unblocking this means promise creation going through a constructor rather
-// than through the intrinsic, and `then` asking SpeciesConstructor for the
-// one it should use.
+// What this pins is the pair of hooks meeting: `new` on a constructor whose
+// `extends` chain reaches `Promise` allocates the slotted promise object and
+// binds it as the derived `this` (runtime/native_base.h), and `then` builds its
+// result through NewPromiseCapability(SpeciesConstructor(p, %Promise%)) rather
+// than through the intrinsic. Either one alone would answer `false` on the
+// second line.
 
 class MyPromise extends Promise {}
 

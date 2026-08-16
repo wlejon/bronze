@@ -250,7 +250,11 @@ TEST_CASE("a pending promise's reactions survive a collection") {
     Rooted<Value> promise{rtNewPromise()};
     Rooted<Value> onF{makeNoop()};
     Rooted<Value> onR{Value::fromUndefined()};
-    Rooted<Value> cap{rtNewPromise()};
+    // A capability RECORD, which is what a reaction settles through since
+    // `then` began building its result over @@species — the promise is one of
+    // its three slots rather than the thing itself.
+    Rooted<Value> cap{rtNewPromiseCapabilityForIntrinsic()};
+    Rooted<Value> capPromise{rtCapabilityPromise(cap.get())};
     rtPerformPromiseThen(promise, onF, onR, cap);
 
     for (int i = 0; i < 32; ++i) {
@@ -263,8 +267,8 @@ TEST_CASE("a pending promise's reactions survive a collection") {
     rtResolvePromise(promise, value);
     rtDrainMicrotasks();
     // The handler answered undefined, and that is what the capability took.
-    CHECK(rtPromiseStateOf(cap.get()) == PromiseState::Fulfilled);
-    CHECK(rtPromiseResultOf(cap.get()).isUndefined());
+    CHECK(rtPromiseStateOf(capPromise.get()) == PromiseState::Fulfilled);
+    CHECK(rtPromiseResultOf(capPromise.get()).isUndefined());
 }
 
 TEST_CASE("the first settle wins, whichever half asks") {

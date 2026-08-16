@@ -8,11 +8,14 @@
 // constructor carries `prototype` / `instance_shape` / a `constructor`
 // back-pointer, and one initializer builds both because each holds the other.
 //
-// One deliberate absence: no @@species, no NewPromiseCapability over an
-// arbitrary constructor. Every capability minted here is an intrinsic promise
-// (rtNewPromise), because subclassing Promise is refused by name at `extends`
-// — so the receiver a species-divergent program would need cannot exist, and
-// `then` refuses any receiver that is not a branded intrinsic promise.
+// SUBCLASSING runs through two hooks that have to agree, and both are here.
+// `Promise.resolve` and the six statics construct through `this` (27.2.4.7.1
+// PromiseResolve(C, x)), so `MyPromise.resolve(1)` is a MyPromise; `then`,
+// `catch` and `finally` build their result through SpeciesConstructor
+// (7.3.20) and NewPromiseCapability (27.2.1.5), so a chain started on a
+// subclass stays in it. Both funnel through promise.h's capability record, and
+// both take a one-compare fast path — "this promise's prototype is
+// %Promise.prototype%" — for every promise a program did not subclass.
 
 #include <string>
 
@@ -21,6 +24,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
@@ -70,9 +74,13 @@ Value makeEnvObject(uint32_t slotCount) {
 uint64_t promiseConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc,
                                 const uint64_t* argv) {
     // Step 1: NewTarget undefined is a TypeError. The uniform convention
-    // cannot see NewTarget, but it can see `this`: bronze_construct hands a
-    // native constructor a fresh instance, and a plain call hands undefined.
-    if (!Value(thisBits).isObject()) {
+    // cannot see NewTarget, but it can see the RECEIVER the running
+    // construction allocated — 27.2.3.1 step 3 is
+    // OrdinaryCreateFromConstructor over NewTarget, and bronze performs it at
+    // the one site every `new` goes through, so this body is handed the promise
+    // it has to fill. `Promise(f)` without `new` has no such receiver.
+    Rooted<Value> promise{Value(thisBits)};
+    if (!rtIsNativeConstructReceiver(promise.get()) || !rtIsPromiseObject(promise.get())) {
         return rtThrowTypeError("Constructor Promise requires 'new'").rawBits();
     }
     RootedArgs args{argc, argv};
@@ -80,10 +88,6 @@ uint64_t promiseConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc,
         return rtThrowTypeError("Promise resolver is not a function").rawBits();
     }
     Rooted<Value> executor{args[0]};
-    // The instance bronze_construct built is DISCARDED in favour of a branded
-    // promise — a constructor that returns an object replaces `this` (13.3.5),
-    // the same trick `new Map` uses to produce a header kind of its own.
-    Rooted<Value> promise{rtNewPromise()};
     Rooted<Value> resolveFn{rtMakeResolvingFunction(promise, /*isReject=*/false)};
     Rooted<Value> rejectFn{rtMakeResolvingFunction(promise, /*isReject=*/true)};
 
@@ -105,19 +109,25 @@ uint64_t promiseConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc,
 uint64_t promiseThen(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> self{Value(thisBits)};
     RootedArgs args{argc, argv};
-    if (!rtIsPromise(self.get())) {
-        // 27.2.5.4 step 2 — and also the fence the missing species machinery
-        // stands behind: a receiver that is not a branded intrinsic promise
-        // has no capability bronze could mint for it.
+    // 27.2.5.4 step 2 is the BRAND — an object allocated as a promise — and not
+    // the identity of its prototype: a subclass instance is a promise and every
+    // one of 27.2.5's methods works on it.
+    if (!rtIsPromiseObject(self.get())) {
         return rtThrowTypeError(
                    "Promise.prototype.then called on a value that is not a promise")
             .rawBits();
     }
+    // Step 3: SpeciesConstructor(promise, %Promise%), then NewPromiseCapability
+    // over it — so `sub.then(...)` answers a `sub` and
+    // `static get [Symbol.species]() { return Promise }` opts back out.
+    Rooted<Value> species{rtPromiseSpeciesConstructor(self)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> cap{rtNewPromiseCapability(species)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> onF{args[0]};
     Rooted<Value> onR{args[1]};
-    Rooted<Value> cap{rtNewPromise()};
     rtPerformPromiseThen(self, onF, onR, cap);
-    return cap.get().rawBits();
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
 // 27.2.5.1: `then(undefined, onRejected)`. The spec spells Invoke(this,
@@ -159,11 +169,11 @@ uint64_t finallyStep(uint64_t env, uint32_t argc, const uint64_t* argv, bool ret
     Rooted<Value> restore{
         rtMakeNativeClosure(rethrow ? reasonThrower : valueThunk, completion, 0)};
     Rooted<Value> noHandler{Value::fromUndefined()};
-    Rooted<Value> cap{rtNewPromise()};
+    Rooted<Value> cap{rtNewPromiseCapabilityForIntrinsic()};
     rtPerformPromiseThen(inner, restore, noHandler, cap);
     // Returning this promise makes the OUTER capability adopt it, which is
     // exactly the wait 27.2.5.3.1 step 6 spells as `then(thenFinally)`.
-    return cap.get().rawBits();
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
 uint64_t thenFinally(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
@@ -177,7 +187,11 @@ uint64_t catchFinally(uint64_t env, uint64_t, uint32_t argc, const uint64_t* arg
 uint64_t promiseFinally(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> self{Value(thisBits)};
     RootedArgs args{argc, argv};
-    if (!rtIsPromise(self.get())) {
+    // The BRAND, like `then` above it: 27.2.5.3 step 2 requires an Object and
+    // leaves the promise-ness to the `then` it forwards to, so a SUBCLASS
+    // instance must pass here — `rtIsPromise`, which asks whether the prototype
+    // is %Promise.prototype%, would refuse every one of them.
+    if (!rtIsPromiseObject(self.get())) {
         return rtThrowTypeError(
                    "Promise.prototype.finally called on a value that is not a promise")
             .rawBits();
@@ -196,9 +210,12 @@ uint64_t promiseFinally(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         onF.set(args[0]);
         onR.set(args[0]);
     }
-    Rooted<Value> cap{rtNewPromise()};
+    Rooted<Value> species{rtPromiseSpeciesConstructor(self)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> cap{rtNewPromiseCapability(species)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtPerformPromiseThen(self, onF, onR, cap);
-    return cap.get().rawBits();
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
 // ---- the combinators (27.2.4.1-27.2.4.6) ------------------------------------
@@ -238,10 +255,10 @@ void combinatorFinish(Rooted<Value>& shared) {
         Rooted<Value> errorsKey{rtMakeString("errors")};
         err.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), errorsKey, values,
                                                     /*ic=*/nullptr, /*enumerable=*/false);
-        rtRejectPromise(cap, err);
+        rtSettleCapability(cap, err, /*reject=*/true);
         return;
     }
-    rtResolvePromise(cap, values);
+    rtSettleCapability(cap, values, /*reject=*/false);
 }
 
 void combinatorDecrement(Rooted<Value>& shared) {
@@ -321,7 +338,7 @@ uint64_t capResolve(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv)
     RootedArgs args{argc, argv};
     Rooted<Value> cap{Value(env)};
     Rooted<Value> v{args[0]};
-    rtResolvePromise(cap, v);
+    rtSettleCapability(cap, v, /*reject=*/false);
     return Value::fromUndefined().rawBits();
 }
 
@@ -329,7 +346,7 @@ uint64_t capReject(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) 
     RootedArgs args{argc, argv};
     Rooted<Value> cap{Value(env)};
     Rooted<Value> reason{args[0]};
-    rtRejectPromise(cap, reason);
+    rtSettleCapability(cap, reason, /*reject=*/true);
     return Value::fromUndefined().rawBits();
 }
 
@@ -338,13 +355,18 @@ uint64_t capReject(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) 
 void rejectWithPending(Rooted<Value>& cap) {
     Rooted<Value> thrown{Value(bronze_exception_cell)};
     rtClearException();
-    rtRejectPromise(cap, thrown);
+    rtSettleCapability(cap, thrown, /*reject=*/true);
 }
 
-uint64_t runCombinator(uint32_t argc, const uint64_t* argv, uint32_t kind) {
+// `ctor` is the combinator's `this` (27.2.4.1 step 1: "Let C be the this
+// value"), so `MyPromise.all([...])` answers a MyPromise and every element is
+// adopted through `PromiseResolve(C, x)` rather than through the intrinsic.
+uint64_t runCombinator(Rooted<Value>& ctor, uint32_t argc, const uint64_t* argv,
+                       uint32_t kind) {
     RootedArgs args{argc, argv};
     Rooted<Value> source{args[0]};
-    Rooted<Value> cap{rtNewPromise()};
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> values{Value(bronze_create_array(0))};
     Rooted<Value> shared{makeEnvObject(SharedSlot::kCount)};
     {
@@ -361,14 +383,15 @@ uint64_t runCombinator(uint32_t argc, const uint64_t* argv, uint32_t kind) {
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
     if (rtExceptionPending()) {
         rejectWithPending(cap);
-        return cap.get().rawBits();
+        return rtCapabilityPromise(cap.get()).rawBits();
     }
     double index = 0;
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         Rooted<Value> undef{Value::fromUndefined()};
         bronze_array_append(values.get().rawBits(), undef.get().rawBits());
-        Rooted<Value> p{rtPromiseResolveValue(item)};
+        Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
+        if (rtExceptionPending()) break;
         Rooted<Value> element{makeEnvObject(ElementSlot::kCount)};
         element.get().asObject<ObjectHeader>()->setInternalSlot(ElementSlot::Shared,
                                                                 shared.get());
@@ -400,54 +423,65 @@ uint64_t runCombinator(uint32_t argc, const uint64_t* argv, uint32_t kind) {
     if (rtExceptionPending()) {
         bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
         rejectWithPending(cap);
-        return cap.get().rawBits();
+        return rtCapabilityPromise(cap.get()).rawBits();
     }
     combinatorDecrement(shared);
-    return cap.get().rawBits();
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
 // ---- the statics ------------------------------------------------------------
 
-uint64_t staticResolve(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+// 27.2.4.7: `this` is the constructor the result is built through, which is
+// the hook that makes `MyPromise.resolve(1)` a MyPromise.
+uint64_t staticResolve(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args{argc, argv};
+    Rooted<Value> ctor{Value(thisBits)};
     Rooted<Value> v{args[0]};
-    return rtPromiseResolveValue(v).rawBits();
+    return rtPromiseResolveWith(ctor, v).rawBits();
 }
 
-uint64_t staticReject(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t staticReject(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args{argc, argv};
+    Rooted<Value> ctor{Value(thisBits)};
     Rooted<Value> reason{args[0]};
-    Rooted<Value> p{rtNewPromise()};
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // No pass-through here, unlike `resolve`: 27.2.4.6 always mints a new
     // rejected promise, even for a promise argument.
-    rtRejectPromise(p, reason);
-    return p.get().rawBits();
+    rtSettleCapability(cap, reason, /*reject=*/true);
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
-uint64_t staticAll(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return runCombinator(argc, argv, kAll);
+uint64_t staticAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> ctor{Value(thisBits)};
+    return runCombinator(ctor, argc, argv, kAll);
 }
 
-uint64_t staticAllSettled(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return runCombinator(argc, argv, kAllSettled);
+uint64_t staticAllSettled(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> ctor{Value(thisBits)};
+    return runCombinator(ctor, argc, argv, kAllSettled);
 }
 
-uint64_t staticAny(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return runCombinator(argc, argv, kAny);
+uint64_t staticAny(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> ctor{Value(thisBits)};
+    return runCombinator(ctor, argc, argv, kAny);
 }
 
-uint64_t staticRace(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t staticRace(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args{argc, argv};
+    Rooted<Value> ctor{Value(thisBits)};
     Rooted<Value> source{args[0]};
-    Rooted<Value> cap{rtNewPromise()};
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
     if (rtExceptionPending()) {
         rejectWithPending(cap);
-        return cap.get().rawBits();
+        return rtCapabilityPromise(cap.get()).rawBits();
     }
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-        Rooted<Value> p{rtPromiseResolveValue(item)};
+        Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
+        if (rtExceptionPending()) break;
         // The pass-through form: absent handlers with the capability, so
         // every element's settle tries to settle the capability directly and
         // the latch keeps the first (27.2.4.5.1 hands each element the SAME
@@ -460,7 +494,7 @@ uint64_t staticRace(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
         rejectWithPending(cap);
     }
-    return cap.get().rawBits();
+    return rtCapabilityPromise(cap.get()).rawBits();
 }
 
 // ---- building the intrinsics ------------------------------------------------

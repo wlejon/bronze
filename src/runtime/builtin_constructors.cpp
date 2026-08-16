@@ -31,6 +31,7 @@
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/native_base.h"
 #include "runtime/number_format.h"
 #include "runtime/proxy.h"
 #include "runtime/object.h"
@@ -66,33 +67,82 @@ void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
     arrRoot.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, val);
 }
 
+// 23.1.2.1 step 4 and 23.1.2.2 step 4: `Array.of` and `Array.from` build their
+// result by CONSTRUCTING `this` when `this` is a constructor, which is the
+// whole reason `MyArr.of(1, 2, 3)` is a MyArr and not an Array.
+//
+// False takes the plain-array path, and covers the three cases where
+// constructing would be observably the same as ArrayCreate: `this` is absent
+// (a detached `const of = Array.of`), `this` is not a constructor at all, or
+// `this` IS %Array% — whose 23.1.1.1 over a single length argument is exactly
+// ArrayCreate(len). So the ordinary `Array.of(1, 2, 3)` never enters a
+// construction, and the guard is one call and one identity compare.
+bool buildsThroughThis(Value thisVal) {
+    return isCallable(thisVal) && !rtIsArrayConstructor(thisVal);
+}
+
+// Construct(C, « len ») or Construct(C), depending on whether the caller knows
+// the length yet — `Array.from` over an ITERATOR does not (step 5.b passes no
+// argument), and every other site does.
+Value constructThrough(Rooted<Value>& ctor, const uint32_t* len) {
+    if (!len) return Value(bronze_construct(ctor.get().rawBits(), 0, nullptr));
+    Rooted<Value> lenRoot{Value::fromDouble(*len)};
+    return Value(bronze_construct(ctor.get().rawBits(), 1,
+                                  reinterpret_cast<const uint64_t*>(lenRoot.slot_ptr())));
+}
+
+// CreateDataPropertyOrThrow(A, ToString(index), value), or the append that is
+// the same thing on an array being filled front to back. Kept as one call so
+// the two paths INTERLEAVE identically with the iteration around them: a
+// subclass with an index setter that throws must see the same prefix written
+// as a plain array would have had.
+void emitAt(Rooted<Value>& out, uint32_t index, Rooted<Value>& value, bool constructed) {
+    if (!constructed) {
+        appendTo(out, value);
+        return;
+    }
+    Rooted<Value> key{Value::fromDouble(index)};
+    bronze_elem_set(out.get().rawBits(), key.get().rawBits(), value.get().rawBits(),
+                    /*strict=*/true);
+}
+
+// The `Set(A, "length", n, true)` both members finish with. A no-op on the
+// fast path, where the array's length IS the count appended.
+void setResultLength(Rooted<Value>& out, uint32_t n, bool constructed) {
+    if (!constructed) return;
+    Rooted<Value> key{rtMakeString("length")};
+    Rooted<Value> value{Value::fromDouble(n)};
+    bronze_elem_set(out.get().rawBits(), key.get().rawBits(), value.get().rawBits(),
+                    /*strict=*/true);
+}
+
 // ---- Array (23.1) -----------------------------------------------------------
 
-// `new Array(n)` — n HOLES, not n undefineds. The difference is observable:
-// `new Array(3).forEach(f)` calls `f` zero times, and console.log prints `[ <3
-// empty items> ]`. Building it as a dense run of `undefined` would be the
-// plausible-but-wrong answer.
-Value arrayOfLength(uint32_t n) {
-    // A dense array costs eight bytes per element, so a length the spec allows
-    // is not thereby a length this heap can hold. Refused BEFORE the
-    // allocation, so `std::bad_alloc` never unwinds out of a helper generated
-    // code called — the same rule a byte store follows.
+// A dense array costs eight bytes per element, so a length the specification
+// allows is not thereby a length this heap can hold. Refused BEFORE the
+// allocation, so `std::bad_alloc` never unwinds out of a helper generated code
+// called — the same rule a byte store follows. False means it threw.
+bool arrayLengthFits(uint32_t n) {
     const size_t bytes = static_cast<size_t>(n) * sizeof(Value);
     if (bytes + 64 >= rtHeap().reserved_size() / 2) {
         rtThrowRangeError("Array allocation failed: " + std::to_string(n) +
                           " elements does not fit in the heap");
-        return Value::fromUndefined();
+        return false;
     }
-    ArrayHeader* arr = ArrayHeader::create(rtHeap(), n > 0 ? n : 4);
-    arr->length = n;
-    // Nothing between `create` and here allocates, so the raw pointer is live.
-    Value* slots = arr->elementsData();
-    for (uint32_t i = 0; i < n; ++i) slots[i] = Value::fromHole();
-    return Value::fromObject(arr);
+    return true;
 }
 
-uint64_t arrayConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+// 23.1.1.1. The array this fills is the RECEIVER when there is one:
+// ArrayCreate's proto argument comes from NewTarget, and bronze performs that
+// allocation at the one site every `new` goes through, so `new Array(3)` and
+// `new (class extends Array)(3)` both arrive here with the array already made
+// and only its contents left to write. `Array(3)` without `new` has no
+// receiver — the language allows the call form (step 1 defaults NewTarget to
+// the active function) — and builds one.
+uint64_t arrayConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> out{Value(thisBits)};
+    if (!rtIsNativeConstructReceiver(out.get())) out.set(newEmptyArray());
     // 23.1.1.1 step 3: ONE argument that is a number is a LENGTH, and every
     // other shape is an element list. So `new Array(3)` has length 3 and
     // `new Array("3")` has length 1, and `new Array(3, 4)` has length 2.
@@ -105,9 +155,17 @@ uint64_t arrayConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
         if (!(len >= 0.0) || len > 4294967295.0 || std::floor(len) != len) {
             return rtThrowRangeError("Invalid array length").rawBits();
         }
-        return arrayOfLength(static_cast<uint32_t>(len)).rawBits();
+        // n HOLES, not n undefineds. The difference is observable: `new
+        // Array(3).forEach(f)` calls `f` zero times, and console.log prints
+        // `[ <3 empty items> ]`. Growing an empty array leaves exactly that
+        // (array.h at setLength), which is why this is a length write and not
+        // a fill.
+        if (!arrayLengthFits(static_cast<uint32_t>(len))) {
+            return Value::fromUndefined().rawBits();
+        }
+        ArrayHeader::setLength(rtHeap(), out, static_cast<uint32_t>(len));
+        return out.get().rawBits();
     }
-    Rooted<Value> out{newEmptyArray()};
     for (uint32_t i = 0; i < args.count(); ++i) {
         Rooted<Value> elem{args[i]};
         appendTo(out, elem);
@@ -120,18 +178,31 @@ uint64_t arrayConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 uint64_t arrayIsArray(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const Value v = args[0];
+    // `Array.prototype` is an Array exotic object (23.1.3) that bronze keeps as
+    // a plain one, for the reason builtin_array.cpp gives where its `length` is
+    // installed. IsArray is the one question that difference is visible
+    // through, so it is answered by identity here rather than left to report
+    // the kind and be wrong.
+    if (rtIsArrayPrototypeObject(v)) return Value::fromBool(true).rawBits();
     return Value::fromBool(v.isObject() &&
                            v.asObject<HeapObjectHeader>()->flags == HeapKind::Array)
         .rawBits();
 }
 
-uint64_t arrayOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t arrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Rooted<Value> out{newEmptyArray()};
-    for (uint32_t i = 0; i < args.count(); ++i) {
+    Rooted<Value> ctor{Value(thisBits)};
+    const bool constructed = buildsThroughThis(ctor.get());
+    const uint32_t len = args.count();
+    Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{args[i]};
-        appendTo(out, elem);
+        emitAt(out, i, elem, constructed);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
+    setResultLength(out, len, constructed);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -148,7 +219,7 @@ Value callMapper(Rooted<Value>& fn, Rooted<Value>& thisArg, Rooted<Value>& item,
                                      reinterpret_cast<const uint64_t*>(block)));
 }
 
-uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> src{args[0]};
     Rooted<Value> mapFn{args[1]};
@@ -163,9 +234,15 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (!mapFn.get().isUndefined() && !isCallable(mapFn.get())) {
         return rtThrowTypeError("Array.from: the second argument is not a function").rawBits();
     }
-    Rooted<Value> out{newEmptyArray()};
+    Rooted<Value> ctor{Value(thisBits)};
+    const bool constructed = buildsThroughThis(ctor.get());
 
     if (rtHasIteratorMethod(src)) {
+        // Step 5.b constructs with NO argument on this path, because the count
+        // is not known until the iterator is exhausted — which is the one place
+        // the two halves of this member differ in what they hand the base.
+        Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
         if (rtExceptionPending()) return out.get().rawBits();
         uint32_t i = 0;
@@ -181,13 +258,20 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
                     return out.get().rawBits();
                 }
             }
-            appendTo(out, item);
+            emitAt(out, i, item, constructed);
+            if (rtExceptionPending()) {
+                bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+                return out.get().rawBits();
+            }
             ++i;
         }
+        setResultLength(out, i, constructed);
         return out.get().rawBits();
     }
 
     const uint32_t len = rtArrayLikeLength(src);
+    Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> item{
             Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(i).rawBits()))};
@@ -196,8 +280,10 @@ uint64_t arrayFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             item.set(callMapper(mapFn, thisArg, item, i));
             if (rtExceptionPending()) return out.get().rawBits();
         }
-        appendTo(out, item);
+        emitAt(out, i, item, constructed);
+        if (rtExceptionPending()) return out.get().rawBits();
     }
+    setResultLength(out, len, constructed);
     return out.get().rawBits();
 }
 
@@ -475,7 +561,7 @@ uint32_t rtArrayLikeLength(Rooted<Value>& src) {
 // `f.apply(null, {length: 4294967295})` would ask for 32 GB of them before a
 // single one could be filled -- and `std::bad_alloc` unwinding out of a helper
 // generated code called is the one failure mode this runtime must not have
-// (see `arrayOfLength` above, which refuses for the same reason).
+// (see `arrayLengthFits` above, which refuses for the same reason).
 //
 // So the block is bounded, and the bound is named in the refusal rather than
 // left as a crash. It is far above any real call: an argument list is written
@@ -610,6 +696,35 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
         rtCheckUnimplementedMember(entry.name, entry.unimplemented, entry.unimplementedCount,
                                    key);
         return false;
+    }
+    return false;
+}
+
+bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
+    if (!ctor.get().isObject() ||
+        ctor.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+        return false;
+    }
+    const bronze_fn_code code = ctor.get().asObject<FunctionHeader>()->code;
+    for (const CtorEntry& entry : kCtors) {
+        if (entry.code != code || entry.staticCount == 0) continue;
+        rtEnsureFunctionProperties(ctor);
+        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+        if (!props.get().isObject()) return false;
+        for (size_t i = 0; i < entry.staticCount; ++i) {
+            // The SAME interned function object the read path hands out, so
+            // `Array.of === MyArr.of` however either was reached.
+            Rooted<Value> key{rtMakeString(entry.statics[i].name)};
+            Rooted<Value> fn{rtNativeFunction(entry.statics[i].code, entry.statics[i].arity)};
+            props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
+                                                         /*ic=*/nullptr, /*enumerable=*/false,
+                                                         /*defineOwn=*/true);
+        }
+        // `prototype` is deliberately NOT among them: it is the base's own
+        // object and a subclass has one of its own, so copying it here would
+        // put %Array.prototype% on a chain `MyArr.prototype` already sits at
+        // the bottom of.
+        return true;
     }
     return false;
 }

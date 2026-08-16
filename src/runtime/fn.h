@@ -70,9 +70,26 @@ struct FunctionHeader {
     // CODE pointer, which is fixed at creation, so no vetted function can
     // later start needing a slow path. bronze_abi.h pins the offset.
     bool construct_vetted{false};
+    // Which NATIVE EXOTIC OBJECT a `new` of this function must allocate, or
+    // `NativeBase::None` for the overwhelming majority that allocate the
+    // ordinary plain instance (runtime/native_base.h names the codes).
+    //
+    // It is what makes `class MyMap extends Map {}` produce a Map: ECMA-262
+    // has the BASE constructor allocate, through OrdinaryCreateFromConstructor
+    // over NewTarget (10.1.13/10.1.14), and bronze allocates once up front in
+    // `bronze_construct` — where the function being constructed IS NewTarget.
+    // So the base's allocation decision has to be visible from the derived
+    // constructor, and `bronze_class_extends` copies it down the chain when the
+    // link is made rather than walking the chain on every construction.
+    //
+    // A non-None value also keeps `construct_vetted` false forever, which is
+    // what stops the inline `new` fast path in generated code — it bump
+    // allocates a PLAIN object and can express nothing else — from ever firing
+    // for one of these.
+    uint8_t native_base{0};
     // The rest of this word, spelled out because the GC payload scan reads
-    // the whole payload as Values and this word — two bools plus padding —
-    // is one of them. A heap block is recycled semispace memory, so padding
+    // the whole payload as Values and this word — two bools, one code byte
+    // and padding — is one of them. A heap block is recycled semispace memory, so padding
     // left unwritten holds OLD VALUE RESIDUE, and residue whose top two
     // bytes spell a heap tag sends the scan chasing a garbage payload —
     // whether it corrupts then depends on which bytes an unrelated change
@@ -80,7 +97,7 @@ struct FunctionHeader {
     // a green pixi GC-stress run into an environment-chain corruption).
     // create() zeroes these, so the word is a small integer, never a
     // plausible pointer.
-    uint8_t padding_to_value_scan[6]{};
+    uint8_t padding_to_value_scan[5]{};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0);

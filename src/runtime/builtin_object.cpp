@@ -38,6 +38,7 @@
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/namespace.h"
@@ -235,6 +236,16 @@ std::string rtObjectKeyTextOf(Value keyVal) {
 bool rtShapelessPrototypeOf(Value obj, Value& out) {
     if (!obj.isObject()) return false;
     const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
+    // A SUBCLASS instance stores its [[Prototype]] after all — on the box
+    // holding its ordinary half (runtime/native_base.h) — so it is asked
+    // FIRST, ahead of the fixed intrinsic answer below. Without this line
+    // `Object.getPrototypeOf(new (class extends Array)())` would report
+    // %Array.prototype% and skip the subclass's, which is the one link the
+    // program can see.
+    if (Value proto = rtExoticSubclassPrototype(obj); proto.isObject()) {
+        out = proto;
+        return true;
+    }
     if (kind == HeapKind::Array) {
         out = rtArrayPrototypeObject();
         return true;

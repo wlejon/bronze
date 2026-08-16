@@ -388,6 +388,13 @@ bool rtCheckAppliedArgumentCount(uint32_t count, const char* member);
 // this instead.
 bool rtMapStatic(Value fn, const std::string& key, Value& out);
 
+// The same table, written into the constructor's `properties` box so that a
+// SUBCLASS reaches it by the ordinary chain walk rather than by a code-pointer
+// match it can never make (runtime/native_base.h says why the two spellings of
+// one table are not a second list: both loops read `kMapStatics`). False when
+// this function is neither `Map` nor `Set`.
+bool rtInstallMapStatics(Rooted<Value>& ctor);
+
 // The `Array.prototype` OBJECT — the value the expression denotes, built from
 // the same method table an array answers beside itself, never a link on any
 // array's chain (builtin_array.cpp's comment above it says why both halves
@@ -435,6 +442,12 @@ Value rtNumberConstructorObject();
 // is diagnosed here and never returns, and everything else falls through to the
 // ordinary function-member path so `Array.call` keeps its own diagnosis.
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
+
+// The statics half of that table, written into the constructor's `properties`
+// box for the reason `rtInstallMapStatics` above is — `class MyArr extends
+// Array` must reach `Array.of` — and off the SAME `kCtors` entry the read path
+// answers from. False for a function that is not one of them.
+bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
 
 // The name of the intrinsic this function object IS, or null for any other
 // function. Two operations need to recognise one: `instanceof`, which cannot

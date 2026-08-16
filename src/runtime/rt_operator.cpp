@@ -30,6 +30,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/namespace.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
@@ -667,6 +668,16 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (rtIsArrayConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         }
+        // A Map and a Set are the same case as an array and were missing from
+        // it only because nothing could produce one whose chain a walk would
+        // find: `new (class extends Map)() instanceof Map` has to be true, and
+        // the kind IS the answer, since the intrinsic has no prototype OBJECT
+        // for the walk below to compare against.
+        if (const char* name = rtMapConstructorName(ctorRoot.get())) {
+            const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
+            return flags == (std::strcmp(name, "Set") == 0 ? MapHeader::kSetFlags
+                                                           : MapHeader::kMapFlags);
+        }
         if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
             const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
             if (std::strcmp(name, "ArrayBuffer") == 0) {
@@ -697,6 +708,19 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
             protoRoot.get().rawBits() == rtFunctionPrototypeObject().rawBits()) {
             return true;
+        }
+        // A SUBCLASS instance of an exotic kind does have a chain, on the box
+        // holding its ordinary half (runtime/native_base.h) — so `sub
+        // instanceof MySubArray` walks it here rather than answering the false
+        // that every shapeless receiver used to get. An instance that is not a
+        // subclass has no box and falls straight through, unchanged.
+        Rooted<Value> chain{rtExoticSubclassPrototype(objRoot.get())};
+        for (uint32_t depth = 0;
+             chain.get().isObject() && depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
+            if (protoRoot.get().rawBits() == chain.get().rawBits()) return true;
+            ObjectHeader* next = chain.get().asObject<ObjectHeader>()->protoAncestor(1);
+            if (!next) break;
+            chain.set(Value::fromObject(next));
         }
         return false;  // arrays, functions, typed arrays
     }

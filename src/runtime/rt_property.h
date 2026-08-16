@@ -143,6 +143,22 @@ bool rtIsArgumentsObject(Value v);
 // decided here.
 struct ObjectHeader* rtSymbolKeyHolder(Value objVal);
 
+// ---- what a symbol key names, for the receivers with no prototype object
+//      to name it on (rt_prop_symbol.cpp) ----
+
+// The answer a WELL-KNOWN symbol has on a receiver whose intrinsic prototype
+// bronze does not build. `handled` separates "no answer here" from "the answer
+// is undefined" — the same bits and different facts, since only the first may
+// fall through to the ordinary walk. ALLOCATES: several answers are heap
+// strings and one materializes an intrinsic, so the caller roots first.
+Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled);
+
+// Where a symbol-keyed READ starts its prototype walk. Deliberately not
+// `rtSymbolKeyHolder`: a primitive has no storage to write a symbol-keyed
+// property into, but it does have a chain to read one off. ALLOCATES, because
+// the first read of any intrinsic builds it.
+Value rtSymbolReadStart(Value v);
+
 // ---- an array's own properties that are not elements (rt_prop_array.cpp) ----
 //
 // `length` and the named ones. Six paths ask — a read, a write, `in`, `delete`,

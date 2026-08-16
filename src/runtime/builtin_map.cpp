@@ -17,6 +17,7 @@
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -249,15 +250,32 @@ uint64_t mapEntries(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 
 // ---- the constructors -------------------------------------------------------
 
-// `new Map(iterable)` and `new Set(iterable)`. The instance `bronze_construct`
-// built is discarded: a constructor that returns an object replaces it, which
-// is how a native constructor produces a header type of its own.
-// `arg` arrives through a ROOT, not by value: creating the collection is an
+// `new Map(iterable)` and `new Set(iterable)`. 24.1.1.1 step 2 is
+// OrdinaryCreateFromConstructor over NewTarget, and bronze performs it at the
+// one allocation site every construction goes through — so `receiver` is
+// ALREADY the collection this body has to fill, whether the program wrote
+// `new Map()` or `new (class extends Map)()`. Filling it in place rather than
+// building one and returning it is what makes the derived case work at all: the
+// derived constructor's `this` is that object, and its class fields initialize
+// on it after `super()` returns.
+//
+// A plain CALL — `Map()` — has no receiver and is a TypeError; the check is the
+// language's step 1 (NewTarget undefined), read through the only witness the
+// uniform calling convention offers.
+//
+// `arg` arrives through a ROOT, not by value: filling the collection is an
 // allocation, so an iterable held as raw bits would be read after a
 // collection had moved it — which is exactly what `new Set([3, 1, 3, 2])`
 // did under BRONZE_GC_STRESS=1 before it did.
-uint64_t buildCollection(Rooted<Value>& arg, uint16_t flags) {
-    Rooted<Value> self{Value::fromObject(MapHeader::create(rtHeap(), flags))};
+uint64_t buildCollection(Rooted<Value>& receiver, Rooted<Value>& arg, uint16_t flags) {
+    if (!rtIsNativeConstructReceiver(receiver.get()) ||
+        receiver.get().asObject<HeapObjectHeader>()->flags != flags) {
+        return rtThrowTypeError(std::string("Constructor ") +
+                                (flags == MapHeader::kSetFlags ? "Set" : "Map") +
+                                " requires 'new'")
+            .rawBits();
+    }
+    Rooted<Value> self{receiver.get()};
     if (arg.get().isUndefined() || arg.get().isNull()) return self.get().rawBits();
 
     Rooted<Value> rec{Value(bronze_iter_open(arg.get().rawBits()))};
@@ -283,16 +301,18 @@ uint64_t buildCollection(Rooted<Value>& arg, uint16_t flags) {
     return self.get().rawBits();
 }
 
-uint64_t mapConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t mapConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> arg{args[0]};
-    return buildCollection(arg, MapHeader::kMapFlags);
+    return buildCollection(receiver, arg, MapHeader::kMapFlags);
 }
 
-uint64_t setConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t setConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> arg{args[0]};
-    return buildCollection(arg, MapHeader::kSetFlags);
+    return buildCollection(receiver, arg, MapHeader::kSetFlags);
 }
 
 struct Method {
@@ -344,15 +364,52 @@ const char* rtMapConstructorName(Value fn) {
 }
 
 // 24.1.2.1 `Map.groupBy`, the one own member of the `Map` constructor beyond
-// the two ECMA-262 gives every function. It is answered here rather than
-// installed on the function object because that object is an interned
-// singleton with no property object of its own — the same arrangement
+// the two ECMA-262 gives every function. It is answered beside the value
+// rather than installed on the function object because that object is an
+// interned singleton with no property object of its own — the same arrangement
 // `rtTypedArrayStatic` answers `Float64Array.from` from. The body is 7.3.35 in
 // builtin_group_by.cpp, shared with `Object.groupBy`.
+//
+// A TABLE for one entry, because two loops read it: the answer below, and the
+// installer under it that makes the same member reachable from a subclass.
+// One array so the two can never come to disagree about what `Map` carries.
+struct ConstructorStatic {
+    const char* owner;
+    const char* name;
+    bronze_fn_code code;
+    uint32_t arity;
+};
+
+const ConstructorStatic kMapStatics[] = {
+    {"Map", "groupBy", rtMapGroupBy, 2},
+};
+
 bool rtMapStatic(Value fn, const std::string& key, Value& out) {
     const char* name = rtMapConstructorName(fn);
-    if (!name || std::string(name) != "Map" || key != "groupBy") return false;
-    out = rtNativeFunction(rtMapGroupBy, 2);
+    if (!name) return false;
+    for (const ConstructorStatic& s : kMapStatics) {
+        if (std::string(name) != s.owner || key != s.name) continue;
+        out = rtNativeFunction(s.code, s.arity);
+        return true;
+    }
+    return false;
+}
+
+bool rtInstallMapStatics(Rooted<Value>& ctor) {
+    const char* name = rtMapConstructorName(ctor.get());
+    if (!name) return false;
+    const std::string owner(name);
+    rtEnsureFunctionProperties(ctor);
+    Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
+    if (!props.get().isObject()) return false;
+    for (const ConstructorStatic& s : kMapStatics) {
+        if (owner != s.owner) continue;
+        Rooted<Value> key{rtMakeString(s.name)};
+        Rooted<Value> fn{rtNativeFunction(s.code, s.arity)};
+        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
+                                                     /*ic=*/nullptr, /*enumerable=*/false,
+                                                     /*defineOwn=*/true);
+    }
     return true;
 }
 

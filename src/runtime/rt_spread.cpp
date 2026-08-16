@@ -148,8 +148,17 @@ bool isArray(Value v) {
 // and it costs a shape lookup on the side object rather than a walk.
 bool rtIsArgumentsObject(Value v) {
     if (!isArray(v)) return false;
+    // Through a ROOT, and only because of the FIRST call in a program:
+    // `calleeKey` interns its name on first use, and interning starts with a
+    // heap string — so exactly one call per process allocates here, and a
+    // receiver held by value across it names a pre-collection address. The
+    // symptom was a segfault in whatever read the array next, in the one
+    // program whose first `Object.prototype.toString.call(anArray)` happened
+    // to be the first call of all, under GC stress.
+    Rooted<Value> self{v};
+    StringHeader* key = calleeKey();
     PropertyInfo info;
-    if (!rtArrayOwnNamed(v, calleeKey(), info)) return false;
+    if (!rtArrayOwnNamed(self.get(), key, info)) return false;
     return !info.enumerable;
 }
 
