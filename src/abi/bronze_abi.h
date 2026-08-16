@@ -15,6 +15,21 @@
  * codegen-llvm (see BRONZE_ABI_LLVM_TYPES there). Adding a helper is one
  * X(...) line; a signature drift between the two sides is therefore
  * structurally impossible.
+ *
+ * Drift between two BUILDS is a different failure, and it has its own
+ * tripwire: the build hashes this file into BRONZE_ABI_FINGERPRINT
+ * (src/abi/CMakeLists.txt), codegen stamps that value into every emitted
+ * object as `const uint32_t bronze_object_abi_fingerprint`, and both
+ * program entries (src/rt/rt.cpp's main, embed's runMain) compare the
+ * object's stamp against the runtime's own value before bronze_main runs
+ * (runtime/abi_guard.h). An object compiled by a bronze whose ABI differs
+ * from the runtime it is linked with therefore dies at startup with both
+ * values named — or at link, for an object old enough to carry no stamp —
+ * instead of reading garbage through a drifted signature. (The motivating
+ * failure: a host adopted a stale object after a helper grew a parameter,
+ * and the runtime read the missing argument as stack garbage — not a
+ * crash, but half-minute stalls at nondeterministic points.) Editing this
+ * header is what moves the version; there is no number to forget.
  */
 
 #include <stdbool.h>

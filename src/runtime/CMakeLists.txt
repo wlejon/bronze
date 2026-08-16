@@ -3,6 +3,7 @@ bronze_add_module(runtime
         profile.cpp
         ic_log.cpp
         fatal.cpp
+        abi_guard.cpp
         number_format.cpp
         value.cpp
         heap.cpp
@@ -80,6 +81,7 @@ bronze_add_module(runtime
         json
         regex
     TEST_SOURCES
+        ../../tests/runtime/abi_guard_test.cpp
         ../../tests/runtime/number_format_test.cpp
         ../../tests/runtime/value_test.cpp
         ../../tests/runtime/gc_test.cpp

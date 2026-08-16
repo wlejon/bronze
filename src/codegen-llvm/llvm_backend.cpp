@@ -19,6 +19,7 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/LegacyPassManager.h>
@@ -402,6 +403,18 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     AbiFns abi;
     AbiGlobals abiGlobals;
     codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals);
+
+    // The object's ABI stamp: the hash of the bronze_abi.h THIS compiler was
+    // built against, as a constant the runtime's program entry compares to
+    // its own before running the program (bronze_abi.h, "Drift between two
+    // BUILDS"). Data in the object rather than metadata, so an object from
+    // before the stamp existed fails the LINK on this very name instead of
+    // running unchecked.
+    new llvm::GlobalVariable(
+        *llvmModule, llvm::Type::getInt32Ty(ctx), /*isConstant=*/true,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), BRONZE_ABI_FINGERPRINT),
+        "bronze_object_abi_fingerprint");
 
     // The module's inline-cache table, one entry per property site lowering
     // numbered. It is data in THIS object file, which is what gives every site

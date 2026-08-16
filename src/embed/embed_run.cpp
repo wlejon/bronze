@@ -8,6 +8,7 @@
 // and out of every function the tests call — is what lets the same
 // bronze_embed.lib serve both a real host and a runtime-level test binary.
 
+#include <cstdint>
 #include <cstdio>
 
 #ifdef _WIN32
@@ -16,11 +17,13 @@
 #endif
 
 #include "embed/embed.h"
+#include "runtime/abi_guard.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
 
 extern "C" void bronze_main();
+extern "C" const uint32_t bronze_object_abi_fingerprint;
 
 namespace bronze::embed {
 
@@ -36,6 +39,12 @@ void setupIo() {
 }
 
 void runMain() {
+    // The object's ABI stamp against this runtime's, before any compiled code
+    // runs. The reference to the object's symbol lives in this TU under the
+    // same quarantine as bronze_main above — a host that adopted a stale
+    // object dies here with both fingerprints named, not thirty seconds into
+    // a helper reading a parameter the object never passed.
+    runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
     // Root frame for the program's top level: Rooted<> handles inside runtime
     // helpers register here, exactly as under the standalone main. Generated
     // code registers its own contiguous slot frames separately.

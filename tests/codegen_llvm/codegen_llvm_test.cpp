@@ -289,13 +289,16 @@ TEST_CASE("IL verification rejects a property site past the module's IC site cou
     CHECK(diags.hasErrors());
 }
 
-// The object exports bronze_main and NOTHING else. A program is compiled whole
-// into one object, so no other function has a caller outside it — and a JS
-// function's name is user-chosen text that must never meet the system linker's
-// namespace. three.js r160 defines module-local functions named `bind` and
-// `remove`; with external linkage they collided with ws2_32's and ucrt's
-// exports of those names and the app failed to link (LNK2005).
-TEST_CASE("LLVM backend exports only bronze_main") {
+// The object exports bronze_main, the ABI fingerprint stamp, and NOTHING
+// else. A program is compiled whole into one object, so no other function has
+// a caller outside it — and a JS function's name is user-chosen text that
+// must never meet the system linker's namespace. three.js r160 defines
+// module-local functions named `bind` and `remove`; with external linkage
+// they collided with ws2_32's and ucrt's exports of those names and the app
+// failed to link (LNK2005). `bronze_object_abi_fingerprint` is the one other
+// deliberate export: the runtime's program entry reads it (bronze_abi.h,
+// "Drift between two BUILDS"), so it must be a global definition.
+TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
     il::Module module;
     module.name = "test_linkage";
 
@@ -342,6 +345,7 @@ TEST_CASE("LLVM backend exports only bronze_main") {
     REQUIRE(obj != nullptr);
     auto* coff = llvm::dyn_cast<llvm::object::COFFObjectFile>(obj);
     bool sawMain = false;
+    bool sawStamp = false;
     for (const llvm::object::SymbolRef& sym : obj->symbols()) {
         auto flagsOrErr = sym.getFlags();
         REQUIRE(static_cast<bool>(flagsOrErr));
@@ -369,10 +373,12 @@ TEST_CASE("LLVM backend exports only bronze_main") {
             symName = symName.substr(1);
         }
         CAPTURE(symName);
-        CHECK(symName == "bronze_main");
+        CHECK((symName == "bronze_main" || symName == "bronze_object_abi_fingerprint"));
         if (symName == "bronze_main") sawMain = true;
+        if (symName == "bronze_object_abi_fingerprint") sawStamp = true;
     }
     CHECK(sawMain);
+    CHECK(sawStamp);
 
     std::filesystem::remove(outPath);
 }

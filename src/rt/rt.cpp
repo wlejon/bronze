@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstdio>
 
 #ifdef _WIN32
@@ -5,11 +6,13 @@
 #include <io.h>
 #endif
 
+#include "runtime/abi_guard.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
 
 extern "C" void bronze_main();
+extern "C" const uint32_t bronze_object_abi_fingerprint;
 
 int main() {
 #ifdef _WIN32
@@ -18,6 +21,10 @@ int main() {
     // Before anything can fail: a hard error must reach stderr and exit,
     // never block on a modal dialog (see fatal.h).
     bronze::disableCrashDialogs();
+    // The object's ABI stamp against this runtime's, before anything from the
+    // object runs (abi_guard.h says why; the symbol reference lives in this TU
+    // for the same reason bronze_main's does).
+    bronze::runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
     // Root frame for the whole program: Rooted<> handles inside runtime helpers
     // register here. Generated code registers its own contiguous slot frames
     // separately.
