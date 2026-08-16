@@ -233,6 +233,15 @@ PatternPtr Parser::patternFromLiteral(ExprPtr expr) {
         pat->isObject = false;
         for (size_t i = 0; i < arr->elements.size(); ++i) {
             PatternElement elem;
+            // An ELISION: `[, a] = xs`. An array literal spells a hole as a
+            // null element, and a hole is a target-less element that still
+            // steps the iterator — the same element `parseArrayPattern` builds
+            // for the binding form of the same text.
+            if (!arr->elements[i]) {
+                elem.span = expr->span;
+                pat->elements.push_back(std::move(elem));
+                continue;
+            }
             elem.span = arr->elements[i]->span;
             if (auto* spread = dynamic_cast<SpreadElement*>(arr->elements[i].get())) {
                 elem.isRest = true;

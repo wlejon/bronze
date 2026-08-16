@@ -150,6 +150,23 @@ TEST_CASE("a property reference is a destructuring assignment target") {
     }
 }
 
+TEST_CASE("an elision survives the refinement from an array LITERAL to a pattern") {
+    // `[, a] = xs` and `const [, a] = xs` are the same pattern reached two
+    // different ways: the binding form is parsed as a pattern, the assignment
+    // form is parsed as an array LITERAL and refined once the `=` arrives. A
+    // literal spells a hole as an absent element, so the refinement is the one
+    // place that has to turn "no element" into "an element that binds nothing
+    // and still steps the iterator" — and the two spellings must dump alike.
+    const auto refined = parseAndDump("[, a, , b] = xs;");
+    CHECK(refined.substr(0, 7) != "ERRORS:");
+    CHECK(refined.find("(destructuring-assign") != std::string::npos);
+    CHECK(refined.find("(hole)") != std::string::npos);
+
+    const auto nested = parseAndDump("({ k: [, a] } = xs);");
+    CHECK(nested.substr(0, 7) != "ERRORS:");
+    CHECK(nested.find("(hole)") != std::string::npos);
+}
+
 TEST_CASE("a cover-initialized name parses, and dumps as the pattern-only form it is") {
     // `{ x = 1 }` is legal ONLY as the left of a `=` (ECMA-262 13.2.5.1), and
     // the parser cannot know which it is until it reads on. So it parses, and
