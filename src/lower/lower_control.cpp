@@ -189,8 +189,11 @@ bool Lowerer::lowerIfStmt(const ast::IfStmt* ifStmt, il::Function& ilFn) {
     };
     auto restore = [&](const std::unordered_map<std::string, VarState>& snap) {
         for (const auto& [name, idx] : envBefore) {
-            varBindings_[idx].valueId = snap.at(name).valueId;
-            varBindings_[idx].type = snap.at(name).type;
+            auto it = snap.find(name);
+            if (it != snap.end()) {
+                varBindings_[idx].valueId = it->second.valueId;
+                varBindings_[idx].type = it->second.type;
+            }
         }
     };
     auto stateBefore = snapshot();

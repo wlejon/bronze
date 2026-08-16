@@ -580,9 +580,8 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
 
     if (!lowerParamBindings(params, paramBase, ilFn)) return false;
 
-    const auto topLevelVars = ast::getTopLevelVarDeclarations(stmts);
     const auto allHoistedVars = ast::getHoistedVarDeclarations(body);
-    for (const auto& varName : topLevelVars) {
+    for (const auto& varName : allHoistedVars) {
         if (activeVarMap_.find(varName) == activeVarMap_.end()) {
             il::ValueId undefVal = emitConstUndefined(ilFn);
             if (!declareVariable(varName, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
@@ -597,11 +596,6 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
         }
     }
     functionVarNames_.clear();
-    for (const auto& v : allHoistedVars) {
-        if (std::find(topLevelVars.begin(), topLevelVars.end(), v) == topLevelVars.end()) {
-            functionVarNames_.push_back(v);
-        }
-    }
 
     // A generator's body does not run here at all (15.5.3): what is left of
     // this function is to close the resume function over the frame the

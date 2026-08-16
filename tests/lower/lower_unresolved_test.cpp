@@ -102,15 +102,7 @@ TEST_CASE("a named function expression cannot name itself, and says so") {
           std::string::npos);
 }
 
-TEST_CASE("a `var` bronze failed to hoist is named, not reported as unresolved") {
-    // The same rule as the named function expression above, applied to the
-    // other declared-but-unbound name. 8.6.2 hoists a `var` to the enclosing
-    // FUNCTION at any block depth; bronze creates the slot only for the ones
-    // written at the top level, so a read of a nested one resolved to nothing
-    // and came out as `warning: unresolved name 'j'` plus a runtime throw. `j`
-    // IS declared — bronze can prove it — so it sits on the compile-error side
-    // of the line, and the message must name the hoisting rather than send the
-    // reader looking for a missing global.
+TEST_CASE("a `var` inside a block hoists to function scope and binds cleanly") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -118,11 +110,8 @@ TEST_CASE("a `var` bronze failed to hoist is named, not reported as unresolved")
         "console.log(g());\n",
         diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("'j' is declared by a `var` inside a block") != std::string::npos);
-    CHECK(rendered.find("unresolved name") == std::string::npos);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
 }
 
 TEST_CASE("a `var` at a function's top level still binds, and is not the error above") {

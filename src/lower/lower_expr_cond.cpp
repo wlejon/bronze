@@ -19,8 +19,11 @@ Lowerer::VarStateMap Lowerer::snapshotVarStates() const {
 
 void Lowerer::restoreVarStates(const VarStateMap& snap) {
     for (const auto& [name, idx] : activeVarMap_) {
-        varBindings_[idx].valueId = snap.at(name).valueId;
-        varBindings_[idx].type = snap.at(name).type;
+        auto it = snap.find(name);
+        if (it != snap.end()) {
+            varBindings_[idx].valueId = it->second.valueId;
+            varBindings_[idx].type = it->second.type;
+        }
     }
 }
 
@@ -31,12 +34,20 @@ Lowerer::ExprJoin Lowerer::makeExprJoin(const VarStateMap& a, const VarStateMap&
                                         il::BlockId joinBlock, il::Function& ilFn) {
     ExprJoin join;
     for (const auto& name : getActiveVarsInDeclOrder()) {
-        if (a.at(name).valueId != b.at(name).valueId) join.vars.push_back(name);
+        auto itA = a.find(name);
+        auto itB = b.find(name);
+        if (itA != a.end() && itB != b.end()) {
+            if (itA->second.valueId != itB->second.valueId) join.vars.push_back(name);
+        } else if (itA != a.end() || itB != b.end()) {
+            join.vars.push_back(name);
+        }
     }
     for (const auto& name : join.vars) {
         il::ValueId pId = ilFn.valueCount++;
-        il::Type tA = a.at(name).type;
-        il::Type tB = b.at(name).type;
+        auto itA = a.find(name);
+        auto itB = b.find(name);
+        il::Type tA = itA != a.end() ? itA->second.type : il::Type::Dynamic;
+        il::Type tB = itB != b.end() ? itB->second.type : il::Type::Dynamic;
         il::Type pType = (tA == tB) ? tA : il::Type::Dynamic;
         ilFn.blocks[joinBlock].params.push_back({pId, pType});
         join.paramId[name] = pId;
@@ -50,8 +61,13 @@ Lowerer::ExprJoin Lowerer::makeExprJoin(const VarStateMap& a, const VarStateMap&
 void Lowerer::appendExprJoinArgs(std::vector<il::ValueId>& args, const ExprJoin& join,
                                  const VarStateMap& state, il::Function& ilFn) {
     for (const auto& name : join.vars) {
-        Value v{state.at(name).valueId, state.at(name).type};
-        args.push_back(coerceToType(v, join.paramType.at(name), ilFn).id);
+        auto it = state.find(name);
+        Value v = (it != state.end() && it->second.valueId != il::kNoValue)
+                      ? Value{it->second.valueId, it->second.type}
+                      : Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+        auto ptIt = join.paramType.find(name);
+        il::Type targetType = ptIt != join.paramType.end() ? ptIt->second : il::Type::Dynamic;
+        args.push_back(coerceToType(v, targetType, ilFn).id);
     }
 }
 

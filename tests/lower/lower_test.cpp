@@ -609,3 +609,11 @@ TEST_CASE("logical assignment operators lower to conditional branching") {
     CHECK(printed.find("prop.set") != std::string::npos);
 }
 
+TEST_CASE("for-in inside try-catch lowers cleanly") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower("function f() { try { for (var k in {}) {} } catch (e) {} }", diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+}
+
