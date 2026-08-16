@@ -339,3 +339,32 @@ TEST_CASE("a UTF-8 BOM is whitespace, not a character the lexer rejects") {
     REQUIRE(sameLine.tokens.size() >= 2);
     CHECK_FALSE(sameLine.tokens[1].newlineBefore);
 }
+
+TEST_CASE("logical assignment operators") {
+    auto lexed = lexAll("a ||= b &&= c ??= d");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() == 8);
+    CHECK(tokens[1].kind == TokenKind::PipePipeAssign);
+    CHECK(tokens[1].text == "||=");
+    CHECK(tokens[3].kind == TokenKind::AmpAmpAssign);
+    CHECK(tokens[3].text == "&&=");
+    CHECK(tokens[5].kind == TokenKind::QuestionQuestionAssign);
+    CHECK(tokens[5].text == "??=");
+}
+
+TEST_CASE("numbers with BigInt suffix n") {
+    auto lexed = lexAll("0n 123n 0xE7C0DEn 0b101n 0o77n");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() == 6);
+    CHECK(tokens[0].kind == TokenKind::NumberLiteral);
+    CHECK(tokens[0].text == "0n");
+    CHECK(tokens[1].kind == TokenKind::NumberLiteral);
+    CHECK(tokens[1].text == "123n");
+    CHECK(tokens[2].kind == TokenKind::NumberLiteral);
+    CHECK(tokens[2].text == "0xE7C0DEn");
+    CHECK(tokens[3].kind == TokenKind::NumberLiteral);
+    CHECK(tokens[3].text == "0b101n");
+    CHECK(tokens[4].kind == TokenKind::NumberLiteral);
+    CHECK(tokens[4].text == "0o77n");
+}
+

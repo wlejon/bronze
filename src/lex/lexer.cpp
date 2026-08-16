@@ -103,6 +103,9 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::GreaterGreaterGreaterAssign: return ">>>=";
         case TokenKind::StarStar: return "**";
         case TokenKind::StarStarAssign: return "**=";
+        case TokenKind::PipePipeAssign: return "||=";
+        case TokenKind::AmpAmpAssign: return "&&=";
+        case TokenKind::QuestionQuestionAssign: return "??=";
     }
     return "unknown";
 }
@@ -240,6 +243,7 @@ Token Lexer::lexNumber() {
         // the end of all three and the parser rejects a digit the radix does
         // not have.
         takeDigits(isHexDigit);
+        if (peek() == 'n' || peek() == 'N') ++pos_;
         return make(TokenKind::NumberLiteral, begin);
     }
 
@@ -247,7 +251,9 @@ Token Lexer::lexNumber() {
     // `1.foo` is a property access on a number, not a literal ending in a
     // dot, so the dot is only part of the literal when a digit (or a
     // separator, which is an error the parser names) follows it.
+    bool hasDotOrExp = false;
     if (peek() == '.' && (isDigit(peek(1)) || peek(1) == '_')) {
+        hasDotOrExp = true;
         ++pos_;
         takeDigits(isDigit);
     }
@@ -260,8 +266,12 @@ Token Lexer::lexNumber() {
     if ((peek() == 'e' || peek() == 'E') &&
         (startsExponent(peek(1)) ||
          ((peek(1) == '+' || peek(1) == '-') && startsExponent(peek(2))))) {
+        hasDotOrExp = true;
         pos_ += 2;  // the `e`, and the sign or first digit
         takeDigits(isDigit);
+    }
+    if (!hasDotOrExp && (peek() == 'n' || peek() == 'N')) {
+        ++pos_;
     }
     return make(TokenKind::NumberLiteral, begin);
 }
@@ -302,6 +312,7 @@ Token Lexer::lexPunctuation() {
             if (peek(1) == '.' && peek(2) == '.') { pos_ += 3; return make(TokenKind::Ellipsis, begin); }
             ++pos_; return make(TokenKind::Dot, begin);
         case '?':
+            if (peek(1) == '?' && peek(2) == '=') { pos_ += 3; return make(TokenKind::QuestionQuestionAssign, begin); }
             if (peek(1) == '?') { pos_ += 2; return make(TokenKind::QuestionQuestion, begin); }
             // ECMA-262 12.8 spells the optional-chaining punctuator
             // `?.` [lookahead ∉ DecimalDigit], and the lookahead is the whole
@@ -314,10 +325,12 @@ Token Lexer::lexPunctuation() {
             }
             ++pos_; return make(TokenKind::Question, begin);
         case '&':
+            if (peek(1) == '&' && peek(2) == '=') { pos_ += 3; return make(TokenKind::AmpAmpAssign, begin); }
             if (peek(1) == '&') { pos_ += 2; return make(TokenKind::AmpAmp, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::AmpAssign, begin); }
             ++pos_; return make(TokenKind::Amp, begin);
         case '|':
+            if (peek(1) == '|' && peek(2) == '=') { pos_ += 3; return make(TokenKind::PipePipeAssign, begin); }
             if (peek(1) == '|') { pos_ += 2; return make(TokenKind::PipePipe, begin); }
             if (peek(1) == '=') { pos_ += 2; return make(TokenKind::PipeAssign, begin); }
             ++pos_; return make(TokenKind::Pipe, begin);

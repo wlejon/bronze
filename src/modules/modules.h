@@ -27,13 +27,23 @@
 // ReferenceError — which is what ECMA-262 says about each.
 namespace bronze::modules {
 
+struct ModuleRoot {
+    std::string prefix;
+    std::filesystem::path target;
+};
+
+struct ModuleOptions {
+    std::vector<ModuleRoot> moduleRoots;
+};
+
 // Reads, parses and links the graph rooted at `entryPath`. Every file read is
 // appended to `sources` (the entry first, so it is file 0), which the caller
 // owns because diagnostics have to render against it even when this fails.
 //
 // Null on a diagnosed error.
 std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet& sources,
-                                         DiagnosticSink& diags);
+                                         DiagnosticSink& diags,
+                                         const ModuleOptions& options = {});
 
 // A specifier as written, and the file it was written in, to the file it names.
 // Relative (`./x.js`) or BARE (`lib`, `@scope/pkg/sub.js`, resolved by walking
@@ -42,6 +52,7 @@ std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet
 // package resolution that has more than one answer — see `resolve.h`. False on
 // a diagnosed error.
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
-                      Span span, DiagnosticSink& diags, std::filesystem::path& out);
+                      Span span, DiagnosticSink& diags, std::filesystem::path& out,
+                      const std::vector<ModuleRoot>& moduleRoots = {});
 
 }  // namespace bronze::modules

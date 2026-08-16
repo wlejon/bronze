@@ -127,6 +127,9 @@ enum class TokenKind {
     GreaterGreaterGreaterAssign,  // >>>=
     StarStar,       // **
     StarStarAssign, // **=
+    PipePipeAssign, // ||=
+    AmpAmpAssign,   // &&=
+    QuestionQuestionAssign, // ??=
 };
 
 const char* tokenKindName(TokenKind kind);

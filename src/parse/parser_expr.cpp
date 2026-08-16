@@ -85,6 +85,9 @@ bool assignmentOp(TokenKind kind, BinaryOp& out) {
         case TokenKind::GreaterGreaterAssign: out = BinaryOp::ShrAssign; return true;
         case TokenKind::GreaterGreaterGreaterAssign: out = BinaryOp::UShrAssign; return true;
         case TokenKind::StarStarAssign: out = BinaryOp::ExpAssign; return true;
+        case TokenKind::PipePipeAssign: out = BinaryOp::LogicalOrAssign; return true;
+        case TokenKind::AmpAmpAssign: out = BinaryOp::LogicalAndAssign; return true;
+        case TokenKind::QuestionQuestionAssign: out = BinaryOp::NullishAssign; return true;
         default: return false;
     }
 }

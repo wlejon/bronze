@@ -592,3 +592,20 @@ TEST_CASE("a template substitution lowers to to.string, not to a bare concatenat
     CHECK(occurrences == 1);
     CHECK(printed.find("= add ") != std::string::npos);
 }
+
+TEST_CASE("logical assignment operators lower to conditional branching") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "let x = 1;\nx ||= 2;\nx &&= 3;\nx ??= 4;\n"
+        "const o = { a: 1 };\no.a ||= 2;\no.a &&= 3;\no.a ??= 4;\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("br ") != std::string::npos);
+    CHECK(printed.find("is.nullish") != std::string::npos);
+    CHECK(printed.find("prop.set") != std::string::npos);
+}
+

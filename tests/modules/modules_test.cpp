@@ -581,3 +581,22 @@ TEST_CASE("an entry module with strict early error is diagnosed as strict") {
     CHECK(contains(r.errors, "duplicate parameter name 'a'"));
 }
 
+TEST_CASE("virtual module root mapping resolves prefix imports") {
+    Sandbox box("modroot");
+    std::string libFile = box.write("shared/lib/math.js", "export function add(a, b) { return a + b; }\n");
+    std::filesystem::path libDir = std::filesystem::path(libFile).parent_path();
+    const std::string entry =
+        box.write("app/main.js", "import { add } from '/lib/math.js';\nconsole.log(add(1, 2));\n");
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    modules::ModuleOptions options;
+    options.moduleRoots.push_back({"/lib", libDir});
+    auto mod = modules::loadProgram(entry, sources, diags, options);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod != nullptr);
+    const std::string dump = ast::dump(*mod);
+    CHECK(contains(dump, "(function mod1.add"));
+}
+
+

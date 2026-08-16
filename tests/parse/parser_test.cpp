@@ -375,3 +375,19 @@ TEST_CASE("a module is never returned with input left unconsumed") {
         CHECK(mod == nullptr);
     }
 }
+
+TEST_CASE("parse logical assignment operators") {
+    const auto out = parseAndDump("a ||= 1; b &&= 2; c ??= 3;");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(binary ||=") != std::string::npos);
+    CHECK(out.find("(binary &&=") != std::string::npos);
+    CHECK(out.find("(binary ??=") != std::string::npos);
+}
+
+TEST_CASE("parse BigInt literal suffix n") {
+    const auto out = parseAndDump("let a = 0n; let b = 0xE7C0DEn; let c = 12345n;");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(number 0)") != std::string::npos);
+    CHECK(out.find("(number 12345)") != std::string::npos);
+}
+

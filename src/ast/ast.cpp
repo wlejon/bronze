@@ -129,6 +129,9 @@ const char* binaryOpName(BinaryOp op) {
         case BinaryOp::ShrAssign: return ">>=";
         case BinaryOp::UShrAssign: return ">>>=";
         case BinaryOp::ExpAssign: return "**=";
+        case BinaryOp::LogicalAndAssign: return "&&=";
+        case BinaryOp::LogicalOrAssign: return "||=";
+        case BinaryOp::NullishAssign: return "??=";
     }
     return "?";
 }
@@ -147,6 +150,9 @@ BinaryOp compoundAssignBase(BinaryOp op) {
         case BinaryOp::ShrAssign: return BinaryOp::Shr;
         case BinaryOp::UShrAssign: return BinaryOp::UShr;
         case BinaryOp::ExpAssign: return BinaryOp::Exp;
+        case BinaryOp::LogicalAndAssign: return BinaryOp::LogicalAnd;
+        case BinaryOp::LogicalOrAssign: return BinaryOp::LogicalOr;
+        case BinaryOp::NullishAssign: return BinaryOp::NullishCoalescing;
         default: return op;
     }
 }

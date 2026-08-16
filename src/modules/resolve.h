@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 
+#include "modules/modules.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
 

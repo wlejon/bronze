@@ -496,10 +496,11 @@ std::filesystem::path uniqueTempObjPath(const std::string& sourcePath) {
 
 }  // namespace
 
-int runTypes(const std::string& sourcePath, std::string* outString) {
+int runTypes(const std::string& sourcePath, std::string* outString,
+             const std::vector<modules::ModuleRoot>& moduleRoots) {
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
     if (!astModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -525,7 +526,8 @@ int runTypes(const std::string& sourcePath, std::string* outString) {
 }
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
-          const std::string& hostGlobalsPath) {
+          const std::string& hostGlobalsPath,
+          const std::vector<modules::ModuleRoot>& moduleRoots) {
     // The manifest is read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -544,7 +546,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // merged AST module every later stage already understands.
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
     if (!astModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -589,7 +591,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
-             bool inferStats, std::string* statsOut) {
+             bool inferStats, std::string* statsOut,
+             const std::vector<modules::ModuleRoot>& moduleRoots) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -599,6 +602,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)hostGlobalsPath;
     (void)inferStats;
     (void)statsOut;
+    (void)moduleRoots;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -623,7 +627,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags);
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
     timer.mark("load");
     if (!astModule) {
         std::string msg = diags.render(sources);
@@ -760,13 +764,39 @@ int runDriver(int argc, char** argv) {
 
     if (command == "types") {
         if (argc < 3) return fail("error: missing <file>\n");
-        return runTypes(argv[2]);
+        std::string sourcePath;
+        std::vector<modules::ModuleRoot> moduleRoots;
+        for (int i = 2; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--module-root") {
+                if (i + 1 < argc) {
+                    std::string val = argv[++i];
+                    size_t eq = val.find('=');
+                    if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                    moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+                } else {
+                    return fail("error: missing argument for --module-root\n");
+                }
+            } else if (arg.rfind("--module-root=", 0) == 0) {
+                std::string val = arg.substr(14);
+                size_t eq = val.find('=');
+                if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else if (sourcePath.empty()) {
+                sourcePath = arg;
+            } else {
+                return fail("error: unexpected argument " + arg + "\n");
+            }
+        }
+        if (sourcePath.empty()) return fail("error: missing <file>\n");
+        return runTypes(sourcePath, nullptr, moduleRoots);
     }
 
     if (command == "il") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string hostGlobalsPath;
+        std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -778,6 +808,20 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--module-root") {
+                if (i + 1 < argc) {
+                    std::string val = argv[++i];
+                    size_t eq = val.find('=');
+                    if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                    moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+                } else {
+                    return fail("error: missing argument for --module-root\n");
+                }
+            } else if (arg.rfind("--module-root=", 0) == 0) {
+                std::string val = arg.substr(14);
+                size_t eq = val.find('=');
+                if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
             } else if (sourcePath.empty()) {
                 sourcePath = arg;
             } else {
@@ -785,7 +829,7 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runIl(sourcePath, nullptr, infer, hostGlobalsPath);
+        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots);
     }
 
     if (command == "build") {
@@ -793,6 +837,7 @@ int runDriver(int argc, char** argv) {
         std::string sourcePath;
         std::string outputPath = "a.exe";
         std::string hostGlobalsPath;
+        std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         bool timings = false;
         bool emitObj = false;
@@ -814,6 +859,20 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--module-root") {
+                if (i + 1 < argc) {
+                    std::string val = argv[++i];
+                    size_t eq = val.find('=');
+                    if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                    moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+                } else {
+                    return fail("error: missing argument for --module-root\n");
+                }
+            } else if (arg.rfind("--module-root=", 0) == 0) {
+                std::string val = arg.substr(14);
+                size_t eq = val.find('=');
+                if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -829,7 +888,7 @@ int runDriver(int argc, char** argv) {
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath, inferStats);
+                        hostGlobalsPath, inferStats, nullptr, moduleRoots);
     }
 
     return fail(kUsage);

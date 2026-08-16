@@ -189,7 +189,8 @@ enum class BinaryOp {
     // `InstanceOf` are relational; `Comma` evaluates its left operand for
     // effect and yields its right.
     BitAnd, BitOr, BitXor, Shl, Shr, UShr, Exp, In, InstanceOf, Comma,
-    AmpAssign, PipeAssign, CaretAssign, ShlAssign, ShrAssign, UShrAssign, ExpAssign
+    AmpAssign, PipeAssign, CaretAssign, ShlAssign, ShrAssign, UShrAssign, ExpAssign,
+    LogicalAndAssign, LogicalOrAssign, NullishAssign
 };
 const char* binaryOpName(BinaryOp op);
 

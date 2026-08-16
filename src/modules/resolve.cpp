@@ -94,11 +94,33 @@ bool requireExistingFile(const std::filesystem::path& path, const std::string& w
 }
 
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
-                      Span span, DiagnosticSink& diags, std::filesystem::path& out) {
+                      Span span, DiagnosticSink& diags, std::filesystem::path& out,
+                      const std::vector<ModuleRoot>& moduleRoots) {
     if (specifier.empty()) {
         diags.error(span, "empty module specifier");
         return false;
     }
+
+    for (const auto& root : moduleRoots) {
+        if (!root.prefix.empty() && specifier.rfind(root.prefix, 0) == 0) {
+            std::string sub = specifier.substr(root.prefix.size());
+            while (!sub.empty() && (sub[0] == '/' || sub[0] == '\\')) {
+                sub.erase(0, 1);
+            }
+            std::error_code ec;
+            std::filesystem::path candidate = root.target / sub;
+            std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
+            if (ec) resolved = candidate;
+            if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
+                                                   root.prefix + "\"",
+                                     span, diags)) {
+                return false;
+            }
+            out = std::move(resolved);
+            return true;
+        }
+    }
+
     if (!isRelative(specifier)) {
         if (const char* kind = unsupportedSpecifierKind(specifier)) {
             diags.error(span, "unsupported module specifier \"" + specifier + "\": it is " +

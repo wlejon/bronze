@@ -1,10 +1,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
+
+#include "modules/resolve.h"
 
 namespace bronze::cli {
 
-int runTypes(const std::string& sourcePath, std::string* outString = nullptr);
+int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
+             const std::vector<modules::ModuleRoot>& moduleRoots = {});
 
 // `infer == false` skips inference entirely and lowers with the uniform dynamic
 // convention everywhere, reproducing the pre-inference calling convention
@@ -19,7 +23,8 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr);
 // it report an unreadable file or a bad line through the same error path as
 // everything else.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
-          const std::string& hostGlobalsPath = {});
+          const std::string& hostGlobalsPath = {},
+          const std::vector<modules::ModuleRoot>& moduleRoots = {});
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -31,7 +36,8 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
-             bool inferStats = false, std::string* statsOut = nullptr);
+             bool inferStats = false, std::string* statsOut = nullptr,
+             const std::vector<modules::ModuleRoot>& moduleRoots = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

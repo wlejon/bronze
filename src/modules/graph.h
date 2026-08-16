@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "modules/modules.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
 
@@ -46,7 +47,7 @@ struct Graph {
 // Reads, lexes and parses the entry and everything it reaches. False on a
 // diagnosed error, which includes an unresolvable specifier.
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
-               Graph& out);
+               Graph& out, const ModuleOptions& options = {});
 
 // Links the loaded graph into `out`: export tables, import bindings, the
 // renaming, the namespace objects, and the concatenation in evaluation order.

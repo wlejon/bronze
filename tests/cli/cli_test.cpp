@@ -236,6 +236,27 @@ TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
     if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
     std::filesystem::remove(jsPath, ec);
 }
+
+TEST_CASE("CLI driver accepts --module-root parameter") {
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "test_cli_modroot";
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir / "lib", ec);
+    std::filesystem::create_directories(tempDir / "app", ec);
+
+    std::filesystem::path libFile = tempDir / "lib" / "helper.js";
+    std::filesystem::path appFile = tempDir / "app" / "main.js";
+    writeTestFile(libFile, "export function helper() { return 99; }\n");
+    writeTestFile(appFile, "import { helper } from '/lib/helper.js';\nconsole.log(helper());\n");
+
+    std::string typesOutput;
+    int status = bronze::cli::runTypes(appFile.string(), &typesOutput, {{"/lib", tempDir / "lib"}});
+    CHECK(status == 0);
+    CHECK(typesOutput.find("func mod1.helper()") != std::string::npos);
+    CHECK(typesOutput.find("func main()") != std::string::npos);
+
+    std::filesystem::remove_all(tempDir, ec);
+}
 #endif
+
 
 

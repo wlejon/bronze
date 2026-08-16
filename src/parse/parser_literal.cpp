@@ -190,6 +190,13 @@ bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) 
         diags_.error(span, "empty numeric literal");
         return false;
     }
+    if (!raw.empty() && (raw.back() == 'n' || raw.back() == 'N')) {
+        raw = raw.substr(0, raw.size() - 1);
+    }
+    if (raw.empty()) {
+        diags_.error(span, "empty numeric literal");
+        return false;
+    }
 
     int radix = 10;
     size_t digitsBegin = 0;

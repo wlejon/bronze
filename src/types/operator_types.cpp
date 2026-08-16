@@ -97,6 +97,10 @@ Type binaryResult(ast::BinaryOp op, Type l, Type r) {
 }
 
 Type compoundResult(ast::BinaryOp plainOp, Type current, Type rhs) {
+    if (plainOp == ast::BinaryOp::LogicalAnd || plainOp == ast::BinaryOp::LogicalOr ||
+        plainOp == ast::BinaryOp::NullishCoalescing) {
+        return join(current, rhs);
+    }
     return isAlwaysNumericOp(plainOp) ? withBottom(current, rhs, Type::number())
                                       : arithResult(plainOp, current, rhs);
 }

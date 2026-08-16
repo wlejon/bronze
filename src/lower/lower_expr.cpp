@@ -587,6 +587,105 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
         uint32_t keyIdx = getKeyConstantIndex(mem->property);
 
+        const bool isLogical = bin->op == ast::BinaryOp::LogicalAndAssign ||
+                               bin->op == ast::BinaryOp::LogicalOrAssign ||
+                               bin->op == ast::BinaryOp::NullishAssign;
+
+        if (isLogical) {
+            il::ValueId curId = ilFn.valueCount++;
+            il::Instruction getInst;
+            getInst.op = il::Op::PropGet;
+            getInst.type = il::Type::Dynamic;
+            getInst.result = curId;
+            getInst.operands = {objBoxed.id};
+            getInst.keyIndex = keyIdx;
+            getInst.icIndex = icSiteCounter_++;
+            const bool mono = monomorphicPropSite(*mem->object);
+            recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
+            getInst.icMonomorphic = mono;
+            emitInst(ilFn, getInst);
+            Value curVal{curId, il::Type::Dynamic};
+
+            il::ValueId condId = il::kNoValue;
+            if (bin->op == ast::BinaryOp::NullishAssign) {
+                condId = ilFn.valueCount++;
+                il::Instruction nullishInst;
+                nullishInst.op = il::Op::IsNullish;
+                nullishInst.type = il::Type::Bool;
+                nullishInst.result = condId;
+                nullishInst.operands = {curVal.id};
+                emitInst(ilFn, nullishInst);
+            } else {
+                condId = lowerConditionFromVal(curVal, ilFn).id;
+            }
+
+            il::BlockId bRhs = createBlock(ilFn);
+            il::BlockId bJoin = createBlock(ilFn);
+            size_t entryBlockIdx = currentBlockIdx_;
+            auto stateEntry = snapshotVarStates();
+
+            setCurrentBlock(bRhs);
+            auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+            if (!rhsVal) return std::nullopt;
+            Value storedBoxed = boxValueIfNeeded(*rhsVal, ilFn);
+            il::Instruction setInst;
+            setInst.op = il::Op::PropSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {objBoxed.id, storedBoxed.id};
+            setInst.keyIndex = keyIdx;
+            setInst.icIndex = icSiteCounter_++;
+            setInst.icMonomorphic = monomorphicPropSite(*mem->object);
+            setInst.immI32 = strictFlag();
+            emitInst(ilFn, setInst);
+            auto stateRhs = snapshotVarStates();
+            bool rhsReaches = !currentBlockIsTerminated(ilFn);
+            size_t rhsEndBlockIdx = currentBlockIdx_;
+
+            il::Type joinType = il::Type::Dynamic;
+            il::ValueId resParamId = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+            ExprJoin join = makeExprJoin(stateEntry, stateRhs, bJoin, ilFn);
+
+            setCurrentBlock(entryBlockIdx);
+            std::vector<il::ValueId> skipArgs{curVal.id};
+            appendExprJoinArgs(skipArgs, join, stateEntry, ilFn);
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condId};
+            if (bin->op == ast::BinaryOp::LogicalAndAssign) {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            } else if (bin->op == ast::BinaryOp::LogicalOrAssign) {
+                brInst.target = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+                brInst.elseTarget = il::BlockTarget{.block = bRhs, .args = {}};
+            } else {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            }
+            ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+            if (rhsReaches) {
+                setCurrentBlock(rhsEndBlockIdx);
+                std::vector<il::ValueId> args{storedBoxed.id};
+                appendExprJoinArgs(args, join, stateRhs, ilFn);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
+                emitInst(ilFn, jmpInst);
+            }
+
+            setCurrentBlock(bJoin);
+            restoreVarStates(stateEntry);
+            bindExprJoinParams(join);
+            return Value{resParamId, joinType};
+        }
+
         // Compound assignment reads the current value before the
         // rhs is evaluated (JS evaluation order).
         std::optional<Value> curVal;
@@ -642,6 +741,121 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             auto indexVal = lowerExpr(*idxAccess->index, ilFn);
             if (!indexVal) return std::nullopt;
             idxBoxed = boxValueIfNeeded(*indexVal, ilFn);
+        }
+
+        const bool isLogical = bin->op == ast::BinaryOp::LogicalAndAssign ||
+                               bin->op == ast::BinaryOp::LogicalOrAssign ||
+                               bin->op == ast::BinaryOp::NullishAssign;
+
+        if (isLogical) {
+            il::ValueId curId = ilFn.valueCount++;
+            il::Instruction getInst;
+            if (literalKey) {
+                getInst.op = il::Op::PropGet;
+                getInst.operands = {objBoxed.id};
+                getInst.keyIndex = *literalKey;
+                getInst.icIndex = icSiteCounter_++;
+                const bool mono = monomorphicPropSite(*idxAccess->object);
+                recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
+                getInst.icMonomorphic = mono;
+            } else {
+                recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+                getInst.op = il::Op::ElemGet;
+                getInst.operands = {objBoxed.id, idxBoxed->id};
+            }
+            getInst.type = il::Type::Dynamic;
+            getInst.result = curId;
+            emitInst(ilFn, getInst);
+            Value curVal{curId, il::Type::Dynamic};
+
+            il::ValueId condId = il::kNoValue;
+            if (bin->op == ast::BinaryOp::NullishAssign) {
+                condId = ilFn.valueCount++;
+                il::Instruction nullishInst;
+                nullishInst.op = il::Op::IsNullish;
+                nullishInst.type = il::Type::Bool;
+                nullishInst.result = condId;
+                nullishInst.operands = {curVal.id};
+                emitInst(ilFn, nullishInst);
+            } else {
+                condId = lowerConditionFromVal(curVal, ilFn).id;
+            }
+
+            il::BlockId bRhs = createBlock(ilFn);
+            il::BlockId bJoin = createBlock(ilFn);
+            size_t entryBlockIdx = currentBlockIdx_;
+            auto stateEntry = snapshotVarStates();
+
+            setCurrentBlock(bRhs);
+            auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+            if (!rhsVal) return std::nullopt;
+            Value storedBoxed = boxValueIfNeeded(*rhsVal, ilFn);
+
+            il::Instruction setInst;
+            if (literalKey) {
+                const bool mono = monomorphicPropSite(*idxAccess->object);
+                recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
+                setInst.op = il::Op::PropSet;
+                setInst.operands = {objBoxed.id, storedBoxed.id};
+                setInst.keyIndex = *literalKey;
+                setInst.icIndex = icSiteCounter_++;
+                setInst.icMonomorphic = mono;
+            } else {
+                recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+                setInst.op = il::Op::ElemSet;
+                setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
+            }
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.immI32 = strictFlag();
+            emitInst(ilFn, setInst);
+
+            auto stateRhs = snapshotVarStates();
+            bool rhsReaches = !currentBlockIsTerminated(ilFn);
+            size_t rhsEndBlockIdx = currentBlockIdx_;
+
+            il::Type joinType = il::Type::Dynamic;
+            il::ValueId resParamId = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+            ExprJoin join = makeExprJoin(stateEntry, stateRhs, bJoin, ilFn);
+
+            setCurrentBlock(entryBlockIdx);
+            std::vector<il::ValueId> skipArgs{curVal.id};
+            appendExprJoinArgs(skipArgs, join, stateEntry, ilFn);
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condId};
+            if (bin->op == ast::BinaryOp::LogicalAndAssign) {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            } else if (bin->op == ast::BinaryOp::LogicalOrAssign) {
+                brInst.target = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+                brInst.elseTarget = il::BlockTarget{.block = bRhs, .args = {}};
+            } else {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            }
+            ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+            if (rhsReaches) {
+                setCurrentBlock(rhsEndBlockIdx);
+                std::vector<il::ValueId> args{storedBoxed.id};
+                appendExprJoinArgs(args, join, stateRhs, ilFn);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
+                emitInst(ilFn, jmpInst);
+            }
+
+            setCurrentBlock(bJoin);
+            restoreVarStates(stateEntry);
+            bindExprJoinParams(join);
+            return Value{resParamId, joinType};
         }
 
         // Compound assignment reads the current element before
@@ -737,46 +951,20 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
+        const bool isLogical = bin->op == ast::BinaryOp::LogicalAndAssign ||
+                               bin->op == ast::BinaryOp::LogicalOrAssign ||
+                               bin->op == ast::BinaryOp::NullishAssign;
         const bool compound = bin->op != ast::BinaryOp::Assign;
 
-        // ECMA-262 13.15.2: the target *reference* is evaluated first, and
-        // for a compound assignment its current value is read (GetValue)
-        // BEFORE the right-hand side is evaluated. So the target is resolved
-        // and read here, above `lowerExpr(*bin->rhs)`, exactly as the member
-        // and index targets above already do it.
-        //
-        // Lowering the rhs first is observably wrong whenever the rhs can write
-        // the target: `x += f()` where `f` assigns `x` read the post-call value
-        // through `env.get` (a captured binding is memory, so the read is a
-        // real instruction that moved with the code), and `x += (x = 3)` folded
-        // the inner assignment's value into both operands even for an
-        // SSA-backed binding.
         auto it = activeVarMap_.find(ident->name);
         const bool isLocal = it != activeVarMap_.end();
-        // An index, not a reference: lowering the rhs can lower a closure,
-        // which saves and restores `varBindings_` wholesale, so any reference
-        // taken now would be into a replaced vector. The index survives because
-        // the restore is of a snapshot taken after this lookup.
         const size_t bindingIdx = isLocal ? it->second : 0;
         uint32_t depth = 0;
         uint32_t index = 0;
         if (!isLocal) {
-            // Assignment to a variable captured from an enclosing scope: the
-            // closure writes through the environment, so the declaring scope
-            // sees it.
             if (currentEnvValue_ == il::kNoValue ||
                 !findEnclosingEnvVar(ident->name, depth, index)) {
                 if (!resolvesName(ident->name)) {
-                    // A module is strict code (16.2.1.6.4), so an assignment
-                    // to an unresolvable name is a ReferenceError rather than
-                    // sloppy mode's implicit global — bronze has no global
-                    // object to create one on either way.
-                    //
-                    // A COMPOUND assignment throws at its read, before the
-                    // right side is evaluated (13.15.4 step 1 is GetValue); a
-                    // simple one evaluates the right side first and throws at
-                    // PutValue (13.15.2 step 1.e), so its side effects still
-                    // happen.
                     if (!compound && !lowerExpr(*bin->rhs, ilFn)) return std::nullopt;
                     return emitReferenceError(ident->name, ident->span, ilFn);
                 }
@@ -785,25 +973,101 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             }
         }
 
+        if (isLogical) {
+            Value curVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
+                                   : emitEnvGet(depth, index, ilFn);
+            il::ValueId condId = il::kNoValue;
+            if (bin->op == ast::BinaryOp::NullishAssign) {
+                if (curVal.type != il::Type::Dynamic) {
+                    return curVal;
+                }
+                condId = ilFn.valueCount++;
+                il::Instruction nullishInst;
+                nullishInst.op = il::Op::IsNullish;
+                nullishInst.type = il::Type::Bool;
+                nullishInst.result = condId;
+                nullishInst.operands = {curVal.id};
+                emitInst(ilFn, nullishInst);
+            } else {
+                condId = lowerConditionFromVal(curVal, ilFn).id;
+            }
+
+            il::BlockId bRhs = createBlock(ilFn);
+            il::BlockId bJoin = createBlock(ilFn);
+            size_t entryBlockIdx = currentBlockIdx_;
+            auto stateEntry = snapshotVarStates();
+
+            setCurrentBlock(bRhs);
+            auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+            if (!rhsVal) return std::nullopt;
+            Value rhsStored = *rhsVal;
+            if (isLocal) {
+                writeBinding(varBindings_[bindingIdx], rhsStored, ilFn);
+            } else {
+                emitEnvSet(depth, index, rhsStored, ilFn, /*assigning=*/true);
+            }
+            auto stateRhs = snapshotVarStates();
+            bool rhsReaches = !currentBlockIsTerminated(ilFn);
+            size_t rhsEndBlockIdx = currentBlockIdx_;
+
+            il::Type joinType = (curVal.type == rhsStored.type) ? curVal.type : il::Type::Dynamic;
+            il::ValueId resParamId = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
+            ExprJoin join = makeExprJoin(stateEntry, stateRhs, bJoin, ilFn);
+
+            setCurrentBlock(entryBlockIdx);
+            Value curConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(curVal, ilFn)
+                                                            : unboxValueIfNeeded(curVal, joinType, ilFn);
+            std::vector<il::ValueId> skipArgs{curConv.id};
+            appendExprJoinArgs(skipArgs, join, stateEntry, ilFn);
+
+            il::Instruction brInst;
+            brInst.op = il::Op::Branch;
+            brInst.type = il::Type::Void;
+            brInst.result = il::kNoValue;
+            brInst.operands = {condId};
+            if (bin->op == ast::BinaryOp::LogicalAndAssign) {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            } else if (bin->op == ast::BinaryOp::LogicalOrAssign) {
+                brInst.target = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+                brInst.elseTarget = il::BlockTarget{.block = bRhs, .args = {}};
+            } else {
+                brInst.target = il::BlockTarget{.block = bRhs, .args = {}};
+                brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = std::move(skipArgs)};
+            }
+            ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+            if (rhsReaches) {
+                setCurrentBlock(rhsEndBlockIdx);
+                Value rhsConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(rhsStored, ilFn)
+                                                                : unboxValueIfNeeded(rhsStored, joinType, ilFn);
+                std::vector<il::ValueId> args{rhsConv.id};
+                appendExprJoinArgs(args, join, stateRhs, ilFn);
+                il::Instruction jmpInst;
+                jmpInst.op = il::Op::Jump;
+                jmpInst.type = il::Type::Void;
+                jmpInst.result = il::kNoValue;
+                jmpInst.target = il::BlockTarget{.block = bJoin, .args = std::move(args)};
+                emitInst(ilFn, jmpInst);
+            }
+
+            setCurrentBlock(bJoin);
+            restoreVarStates(stateEntry);
+            bindExprJoinParams(join);
+            return Value{resParamId, joinType};
+        }
+
         std::optional<Value> curVal;
         if (compound) {
             curVal = isLocal ? readBinding(varBindings_[bindingIdx], ilFn)
                              : emitEnvGet(depth, index, ilFn);
         }
 
-        // 13.15.2 step 1.d: a SIMPLE assignment whose target is an identifier
-        // and whose value is an anonymous function is a NamedEvaluation, so
-        // `f = function () {}` reports `f.name === "f"`. A compound assignment
-        // is not one — 13.15.4 has no such step, and `f += function () {}` is
-        // a string concatenation rather than a binding.
         auto rhsVal = compound ? lowerExpr(*bin->rhs, ilFn)
                                : lowerNamedEvaluation(*bin->rhs, ident->name, ilFn);
         if (!rhsVal) return std::nullopt;
 
-        // The combine decides numeric-vs-dynamic, and `+=` is numeric only
-        // where inference proved it. Before that proof existed this path
-        // unboxed both sides to f64 unconditionally, so `s += "a"` on a local
-        // read a string pointer as a double.
         Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
                                                       provenNumber(*bin), ilFn)
                                 : *rhsVal;

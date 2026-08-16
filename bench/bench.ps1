@@ -112,7 +112,7 @@ if (-not $Json) {
 
 # Helper to run timing in Python
 function Measure-CommandStats($exePath, $numRuns) {
-    $code = @"
+    $code = @'
 import sys, subprocess, time, statistics, json
 
 cmd = [sys.argv[1]]
@@ -168,13 +168,13 @@ print(json.dumps({
     "timings": [round(t, 2) for t in timings],
     "output": checksum_line
 }))
-"@
-    $res = python -c $code "$exePath" "$numRuns"
+'@
+    $res = $code | python - "$exePath" "$numRuns"
     return ($res | ConvertFrom-Json)
 }
 
 function Measure-ProfileStats($exePath) {
-    $code = @"
+    $code = @'
 import sys, subprocess, json, os
 
 cmd = [sys.argv[1]]
@@ -239,8 +239,8 @@ try:
     print(json.dumps(res))
 except Exception as e:
     print(json.dumps({"error": str(e)}))
-"@
-    $res = python -c $code "$exePath"
+'@
+    $res = $code | python - "$exePath"
     return ($res | ConvertFrom-Json)
 }
 
@@ -281,7 +281,7 @@ if (-not $RenderOnly) {
                          ((Get-Item $jsPath).LastWriteTimeUtc -gt (Get-Item $exeInfer).LastWriteTimeUtc) -or `
                          ((Get-Item $BronzeBin).LastWriteTimeUtc -gt (Get-Item $exeInfer).LastWriteTimeUtc)
             if ($needBuild) {
-                & $BronzeBin build $jsPath -o $exeInfer *> $null
+                cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeInfer`" 2>nul"
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeInfer)) {
                     Write-Warning "Failed to build $benchFile (infer mode)"
                     continue
@@ -295,7 +295,7 @@ if (-not $RenderOnly) {
                          ((Get-Item $jsPath).LastWriteTimeUtc -gt (Get-Item $exeNoInfer).LastWriteTimeUtc) -or `
                          ((Get-Item $BronzeBin).LastWriteTimeUtc -gt (Get-Item $exeNoInfer).LastWriteTimeUtc)
             if ($needBuild) {
-                & $BronzeBin build $jsPath -o $exeNoInfer --no-infer *> $null
+                cmd /c "`"$BronzeBin`" build `"$jsPath`" -o `"$exeNoInfer`" --no-infer 2>nul"
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeNoInfer)) {
                     Write-Warning "Failed to build $benchFile (--no-infer mode)"
                     continue

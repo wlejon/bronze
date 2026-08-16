@@ -191,8 +191,8 @@ bool hasModuleDeclaration(const ast::Module& mod) {
 
 class Loader {
 public:
-    Loader(SourceSet& sources, DiagnosticSink& diags, Graph& graph)
-        : sources_(sources), diags_(diags), graph_(graph) {}
+    Loader(SourceSet& sources, DiagnosticSink& diags, Graph& graph, const ModuleOptions& options)
+        : sources_(sources), diags_(diags), graph_(graph), options_(options) {}
 
     bool load(const std::filesystem::path& path, Span importSpan, uint16_t& outId) {
         const std::string key = path.generic_string();
@@ -330,7 +330,7 @@ private:
     bool follow(ModuleFile& file, const std::string& specifier, Span span) {
         if (file.deps.count(specifier)) return true;  // the same specifier twice is one edge
         std::filesystem::path target;
-        if (!resolveSpecifier(specifier, file.path, span, diags_, target)) return false;
+        if (!resolveSpecifier(specifier, file.path, span, diags_, target, options_.moduleRoots)) return false;
         uint16_t targetId = 0;
         if (!load(target, span, targetId)) return false;
         file.deps[specifier] = targetId;
@@ -340,13 +340,14 @@ private:
     SourceSet& sources_;
     DiagnosticSink& diags_;
     Graph& graph_;
+    const ModuleOptions& options_;
     std::map<std::string, uint16_t> byPath_;
 };
 
 }  // namespace
 
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
-               Graph& out) {
+               Graph& out, const ModuleOptions& options) {
     std::error_code ec;
     std::filesystem::path entry = std::filesystem::weakly_canonical(entryPath, ec);
     if (ec) entry = entryPath;
@@ -358,14 +359,15 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
         return false;
     }
     uint16_t entryId = 0;
-    if (!Loader(sources, diags, out).load(entry, Span{}, entryId)) return false;
+    if (!Loader(sources, diags, out, options).load(entry, Span{}, entryId)) return false;
     return entryId == 0;
 }
 
 std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet& sources,
-                                         DiagnosticSink& diags) {
+                                         DiagnosticSink& diags,
+                                         const ModuleOptions& options) {
     Graph graph;
-    if (!loadGraph(entryPath, sources, diags, graph)) return nullptr;
+    if (!loadGraph(entryPath, sources, diags, graph, options)) return nullptr;
 
     auto merged = std::make_unique<ast::Module>();
     merged->name = graph.modules[0]->displayName;
