@@ -186,7 +186,18 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal);
 void rtEnsureFunctionProperties(Rooted<Value>& fnVal);
 Value rtGlobalThisObject();
 Value rtReflectNamespace();
+// `Date` (builtin_date.cpp). The constructor object for the global ladder, its
+// identity for the `extends` refusal, and the two questions the printing paths
+// ask: is this a Date, and what does one print as. The BRAND itself and the
+// instance's internal slots are builtin_date_internal.h's, because only the two
+// Date translation units may read them.
 Value rtDateConstructor();
+bool rtIsDateConstructor(Value fn);
+// True — with `out` filled — for a Date. Neither allocates a JS value nor runs
+// user code, which is what lets `console.log`'s inspect walk (whose whole
+// contract is that it cannot move the heap) ask.
+bool rtDateInspectText(Value v, std::string& out);
+bool rtIsDateObject(Value v);
 // The builtin half of global resolution, shared by `bronze_global_get` and
 // the global object's population (rt_object.cpp) so the two cannot drift.
 bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out);
@@ -395,6 +406,11 @@ enum class ToPrimitiveHint { Default, Number, String };
 // must be reached from an IL op `il::canThrow` marks, or a TypeError raised
 // here propagates past the `catch` that should have taken it.
 Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
+// 7.1.1.1 OrdinaryToPrimitive alone — the `valueOf`/`toString` pair WITHOUT the
+// `@@toPrimitive` lookup in front of it. One caller, and it could not use the
+// whole algorithm: `Date.prototype[Symbol.toPrimitive]` IS the @@toPrimitive
+// hook, so asking for step 2 would find itself.
+Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
 Value rtToStringValue(Rooted<Value>& v);
 Value rtToPropertyKey(Rooted<Value>& key);
 

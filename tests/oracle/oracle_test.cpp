@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -224,6 +225,61 @@ unsigned int getWorkerJobCount() {
     return std::max(1u, std::min(4u, hw / 2));
 }
 
+// Does this case READ THE CLOCK? That is the thing a pinned expectation cannot
+// survive, and it is narrower than "mentions Date": `Date.UTC`, `Date.parse`,
+// the field constructor and every one of 21.4.4's members are pure functions of
+// their arguments, and pinning them is exactly how the Date implementation is
+// held to ECMA-262.
+//
+// The three clock reads are `Date.now`, `new Date()` and `Date()` — the two
+// no-argument constructor forms. A whitespace-tolerant match on the empty
+// argument list is what separates them from `new Date(0)`.
+//
+// The occurrence must be the IDENTIFIER `Date` and not a name that merely ends
+// in it: `d.getUTCDate()` is four characters of "Date" followed by an empty
+// argument list, and reading it as the constructor would ban the very getters
+// these cases exist to pin.
+//
+// (Local-TIMEZONE dependence is a second hazard this cannot see: a case may
+// call `getHours` only inside a relation that holds in every zone. That is a
+// rule for the author, stated in tests/oracle/README.md.)
+bool standsAlone(const std::string& code, size_t at) {
+    if (at == 0) return true;
+    const char before = code[at - 1];
+    // '.' rejects a member access, so a `getUTCDate`/`setDate` suffix and a
+    // user's own `foo.Date` are both something other than the global.
+    return !(std::isalnum(static_cast<unsigned char>(before)) || before == '_' || before == '$' ||
+             before == '.');
+}
+
+bool readsTheClock(const std::string& code) {
+    size_t now = 0;
+    while ((now = code.find("Date.now", now)) != std::string::npos) {
+        if (standsAlone(code, now)) return true;
+        now += 4;
+    }
+    size_t at = 0;
+    while ((at = code.find("Date", at)) != std::string::npos) {
+        if (!standsAlone(code, at)) {
+            at += 4;
+            continue;
+        }
+        size_t after = at + 4;
+        while (after < code.size() && (code[after] == ' ' || code[after] == '\t')) ++after;
+        if (after < code.size() && code[after] == '(') {
+            size_t inner = after + 1;
+            while (inner < code.size() &&
+                   (code[inner] == ' ' || code[inner] == '\t' || code[inner] == '\n' ||
+                    code[inner] == '\r')) {
+                ++inner;
+            }
+            if (inner < code.size() && code[inner] == ')') return true;
+        }
+        at = after;
+    }
+    return false;
+}
+
 struct CaseExecutionResult {
     OracleCase oracleCase;
     bool codeReadOk = false;
@@ -276,8 +332,8 @@ TEST_CASE("Oracle differential test suite") {
                 std::string code;
                 res.codeReadOk = readFileBytes(oracleCase.entry, code);
                 if (res.codeReadOk) {
-                    res.hasNonDeterminism = (code.find("Date") != std::string::npos ||
-                                             code.find("Math.random") != std::string::npos);
+                    res.hasNonDeterminism =
+                        readsTheClock(code) || code.find("Math.random") != std::string::npos;
                 }
 
                 std::filesystem::path expectedPath = oracleCase.entry;
@@ -336,7 +392,8 @@ TEST_CASE("Oracle differential test suite") {
     for (const auto& res : results) {
         SUBCASE(res.oracleCase.id.c_str()) {
             REQUIRE(res.codeReadOk);
-            CHECK_MESSAGE(!res.hasNonDeterminism, "Banned non-determinism (Date/Math.random) found in test case");
+            CHECK_MESSAGE(!res.hasNonDeterminism,
+                          "Banned non-determinism (a clock read or Math.random) in this case");
             REQUIRE_MESSAGE(res.expectedReadOk,
                             ("Missing pinned expectation " + res.expectedPathStr).c_str());
 
@@ -406,7 +463,7 @@ TEST_CASE("Oracle blocked test suite") {
         SUBCASE(oracleCase.id.c_str()) {
             std::string code;
             REQUIRE(readFileBytes(casePath, code));
-            CHECK(code.find("Date") == std::string::npos);
+            CHECK(!readsTheClock(code));
             CHECK(code.find("Math.random") == std::string::npos);
 
             std::filesystem::path expectedPath = casePath;

@@ -61,6 +61,10 @@ bronze_add_module(runtime
         iterator_delegate.cpp
         map.cpp
         builtin_map.cpp
+        builtin_date.cpp
+        builtin_date_accessors.cpp
+        date_math.cpp
+        date_text.cpp
         builtin_weak_map.cpp
         builtin_object.cpp
         builtin_object_descriptor.cpp
@@ -103,6 +107,7 @@ bronze_add_module(runtime
         ../../tests/runtime/microtask_test.cpp
         ../../tests/runtime/promise_test.cpp
         ../../tests/runtime/map_test.cpp
+        ../../tests/runtime/date_math_test.cpp
         ../../tests/runtime/weak_collection_test.cpp
         ../../tests/runtime/bound_function_test.cpp
         ../../tests/runtime/array_sort_test.cpp

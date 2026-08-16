@@ -158,6 +158,14 @@ private:
         // an internal slot, so `{}` would be a lie about the value rather than
         // a terse rendering of it. Tested by the brand, which reads two words
         // and allocates nothing, like everything else in this walk.
+        // A Date prints as its ISO form, bare — `2020-01-01T00:00:00.000Z`,
+        // with no quotes and no braces — which is node's rendering and the one
+        // form of a Date that is the same on every machine. `Invalid Date` for
+        // a NaN time value, again node's. The alternative was `toString`'s
+        // output, which carries the local zone offset and would make a printed
+        // Date depend on where the program ran.
+        if (std::string text; rtDateInspectText(v, text)) return text;
+
         if (Value data; rtStringWrapperData(v, data)) {
             return "[String: " + quoted(utf8Of(data.asString<StringHeader>())) + "]";
         }

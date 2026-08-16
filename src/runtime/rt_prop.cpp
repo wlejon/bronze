@@ -849,14 +849,24 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                     .rawBits();
             }
         }
-        bool handled = false;
-        const Value wellKnown = wellKnownSymbolMember(objVal, Value(idxBits), handled);
-        if (handled) return wellKnown.rawBits();
         // Rooted because a symbol-keyed property can be an accessor, and a
         // getter is a call — and because the walk below can build an intrinsic,
         // which allocates. No inline cache: a computed site has no entry.
+        //
+        // The roots are taken BEFORE the well-known dispatch rather than after
+        // it, and that order is load-bearing: `wellKnownSymbolMember` allocates
+        // on two routes — a well-known symbol is created on first use and its
+        // description is a heap string, and `toStringTagOf` builds its answer
+        // with `rtMakeString` — so a raw receiver held across the call is a
+        // pre-collection address. The first receiver to notice was a Date,
+        // whose `@@toPrimitive` lives on its PROTOTYPE, so the lookup falls past
+        // the own-shape probe above and through this dispatch before the walk
+        // that finds it.
         Rooted<Value> recv{objVal};
         Rooted<Value> key{Value(idxBits)};
+        bool handled = false;
+        const Value wellKnown = wellKnownSymbolMember(recv.get(), key.get(), handled);
+        if (handled) return wellKnown.rawBits();
         Rooted<Value> holderRoot{symbolReadStart(recv.get())};
         // A receiver with neither own symbol-keyed storage nor a chain: an
         // array, a Map, a RegExp. Those have no own symbol-keyed property and

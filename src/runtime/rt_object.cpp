@@ -319,6 +319,16 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // program BEING the intrinsic. A subclass's instances are exactly the
     // receiver that story has no answer for, and silently handing them
     // intrinsic capabilities would be a wrong answer rather than a missing one.
+    // `Date` is refused for the reason the intrinsics above are, and it is not
+    // covered by `rtIntrinsicConstructorName`: its constructor body builds a
+    // Date OBJECT of its own — internal slots and all — and returns it, so a
+    // subclass's instance would be the plain object the derived constructor
+    // made, with no [[DateValue]] and every one of 21.4.4's members raising a
+    // TypeError on it. Refusing is loud where subclassing is a wrong answer.
+    if (rtIsDateConstructor(baseVal)) {
+        fatal("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
+              "runtime's own constructor, so a subclass's instances would not carry one)");
+    }
     if (rtIsPromiseConstructor(baseVal)) {
         fatal("extending `Promise` is unsupported (bronze's promises are the intrinsic and "
               "only the intrinsic: there is no @@species, so a subclass's `then` could not "
@@ -911,42 +921,6 @@ Value rtReflectNamespace() {
         rtDefineMethods(ns, methods, std::size(methods));
     }
     return g_reflectNamespace;
-}
-
-// 21.4.4.2.1: milliseconds since the epoch, from the real clock. The
-// determinism rule is about the COMPILER's output, not a compiled program's:
-// a program that reads the clock reads the clock, exactly as it would under
-// node, and an oracle case that printed this value would be wrong for a
-// reason no fixed constant could fix.
-static uint64_t dateNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    const auto now = std::chrono::system_clock::now().time_since_epoch();
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-    return Value::fromDouble(static_cast<double>(ms)).rawBits();
-}
-
-// A Date OBJECT carries [[DateValue]] and some forty prototype methods, none
-// of which bronze has built — so constructing one is refused by name rather
-// than handed back as something that would misanswer every method call.
-static uint64_t dateConstructor(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: the Date constructor (Date.now() is built; a Date object and its "
-          "prototype methods are not)");
-}
-
-static Value g_dateConstructor = Value::fromUndefined();
-
-Value rtDateConstructor() {
-    if (g_dateConstructor.isUndefined()) {
-        Rooted<Value> ctor{rtNativeFunction(dateConstructor, 7)};
-        rtEnsureFunctionProperties(ctor);
-        Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
-        Rooted<Value> key{rtMakeString("now")};
-        Rooted<Value> nowFn{rtNativeFunction(dateNow, 0)};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, nowFn, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-        g_dateConstructor = ctor.get();
-        rtHeap().add_permanent_root(&g_dateConstructor);
-    }
-    return g_dateConstructor;
 }
 
 }  // namespace bronze::runtime

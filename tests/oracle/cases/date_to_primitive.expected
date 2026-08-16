@@ -1,0 +1,33 @@
+function
+1577836800000 1577836800000
+true
+true
+true
+0 true
+string
+true
+true
+true
+true
+string true
+86400000
+number
+3155673600000 788918400000 1577836800000 -1577836800000
+1577836800000 18262
+0
+true false true true false
+true
+true true false false
+true
+false
+true false
+false
+true
+false
+default NaN string
+number 1
+1970-01-01T00:00:00.000Z
+2020-01-01T02:03:04.005Z
+Invalid Date
+[ 1970-01-01T00:00:00.000Z, 1970-01-02T00:00:00.000Z ]
+{ at: 1970-01-01T00:00:00.000Z }

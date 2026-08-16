@@ -183,6 +183,15 @@ Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
         }
     }
 
+    return rtOrdinaryToPrimitive(input, hint);
+}
+
+// 7.1.1.1 OrdinaryToPrimitive, on its own so that the ONE caller which must
+// skip step 2 above can reach it: `Date.prototype[Symbol.toPrimitive]`
+// (21.4.4.45) is defined as a call to this, and going through `rtToPrimitive`
+// would find itself and recurse forever. Every other caller wants the whole
+// algorithm and asks for it above.
+Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
     // 7.1.1.1 step 1/2: "string" tries toString then valueOf, and both other
     // hints try valueOf then toString.
     const char* order[2] = {"valueOf", "toString"};

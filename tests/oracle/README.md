@@ -26,8 +26,17 @@ same either way: the entry's path with the extension replaced.
 
 Requirements the harness enforces:
 
-- **Deterministic.** No `Date`, no `Math.random` — checked by grep, not by
-  convention.
+- **Deterministic.** No clock read and no `Math.random` — checked by the
+  harness, not by convention. A clock read is `Date.now()`, `new Date()` or
+  `Date()`: the no-argument forms. The rest of `Date` is a pure function of its
+  arguments and IS pinned here — `Date.UTC`, `Date.parse`, the field
+  constructor, and every member of ECMA-262 21.4.4.
+- **Timezone-independent.** A pinned expectation must hold on a machine in any
+  zone, and no grep can check that. So a case pins UTC getters, ISO strings,
+  epoch arithmetic and parses of strings carrying an explicit offset; it may
+  exercise `getHours` and friends only inside a RELATION that holds in every
+  zone (`getTimezoneOffset()` is an integer in [-1440, 1440]; a local field and
+  its UTC twin differ by exactly that offset). Never pin an absolute local time.
 - **An `.expected` file must exist.** A case without one is a failure, never
   a skip.
 - **LF endings.** `.gitattributes` marks `*.expected -text` so CRLF

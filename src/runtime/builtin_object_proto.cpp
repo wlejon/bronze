@@ -376,6 +376,9 @@ const char* builtinTag(Value self) {
             break;
     }
     if (rtIsErrorInstance(self)) return "Error";
+    // Step 14's [[DateValue]] arm. A Date is an ordinary plain object with a
+    // slot, so nothing about the flags word above could have told it apart.
+    if (rtIsDateObject(self)) return "Date";
     if (Value data; rtStringWrapperData(self, data)) return "String";
     if (Value data; rtBooleanWrapperData(self, data)) return "Boolean";
     if (Value data; rtNumberWrapperData(self, data)) return "Number";
