@@ -70,11 +70,10 @@ Value rtSymbolKeyFor(Value symbol);
 // stale (runtime/symbol.h's opening note). Nothing about GC changes by adding
 // one, which is exactly why the arena was the right home for symbols.
 //
-// The other eleven names 20.4.2 defines are NOT here and are not stand-ins
-// either: they are in `kSymbolUnimplemented` (builtin_symbol.cpp), so
-// `Symbol.asyncIterator` is a diagnosed missing member rather than
-// `undefined`. These two exist because the hooks they name are built — the
-// iterator protocol, and 20.1.3.6's tag lookup.
+// A name 20.4.2 defines whose hook bronze has NOT built is not here and is not
+// a stand-in either: it is in `kSymbolUnimplemented` (builtin_symbol.cpp), so
+// reading it is a diagnosed missing member rather than `undefined`. Each one
+// below exists because the hook it names is built and something reads it.
 SymbolHeader* rtSymbolIterator();
 SymbolHeader* rtSymbolAsyncIterator();
 SymbolHeader* rtSymbolToStringTag();
@@ -82,6 +81,18 @@ SymbolHeader* rtSymbolToPrimitive();
 SymbolHeader* rtSymbolHasInstance();
 SymbolHeader* rtSymbolSpecies();
 SymbolHeader* rtSymbolIsConcatSpreadable();
+
+// The STRING/REGEXP protocol of 22.1.3 and 22.2.6: `"s".match(x)`,
+// `.matchAll`, `.replace`, `.replaceAll`, `.search` and `.split` each look
+// their argument up by one of these five keys and hand the whole algorithm over
+// to what they find. RegExp.prototype answers all five
+// (builtin_regexp_symbols.cpp), which is what makes a RegExp argument work and
+// what any other object imitates by defining one.
+SymbolHeader* rtSymbolMatch();
+SymbolHeader* rtSymbolMatchAll();
+SymbolHeader* rtSymbolReplace();
+SymbolHeader* rtSymbolSearch();
+SymbolHeader* rtSymbolSplit();
 
 // SymbolDescriptiveString (20.4.3.3.1): `Symbol(desc)`, with an EMPTY
 // description spelled `Symbol()` — the description of a `Symbol()` and of a

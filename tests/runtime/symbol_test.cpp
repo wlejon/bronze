@@ -1,7 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <cstddef>
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
@@ -252,4 +254,44 @@ TEST_CASE("a well-known symbol is one interned identity, described by its name")
     // for a well-known symbol, which is the observable half of "the table and
     // the registry are two different tables".
     CHECK(rtSymbolKeyFor(Value::fromSymbol(tag)).isUndefined());
+}
+
+// The five keys of the string/regexp protocol (22.1.3 dispatches on them,
+// 22.2.6 implements them), and the one drift this family can suffer.
+//
+// A well-known symbol has TWO spellings: the property `Symbol.replace` a
+// program writes, and the interned identity `rtSymbolReplace()` the dispatch
+// matches against. builtin_symbol.cpp's `kWellKnownSymbols` is what makes them
+// one line. If a row there ever named the wrong accessor nothing would crash —
+// `String.prototype.replace` would simply look every pattern up by a symbol no
+// program could name, and every dispatch would silently stop happening. The
+// second half of this case is that assertion.
+TEST_CASE("the five string/regexp keys are distinct well-known symbols") {
+    ShadowStackFrame frame;
+
+    SymbolHeader* const keys[] = {rtSymbolMatch(), rtSymbolMatchAll(), rtSymbolReplace(),
+                                  rtSymbolSearch(), rtSymbolSplit()};
+    const char* const descriptions[] = {"Symbol.match", "Symbol.matchAll", "Symbol.replace",
+                                        "Symbol.search", "Symbol.split"};
+    const char* const properties[] = {"match", "matchAll", "replace", "search", "split"};
+
+    for (size_t i = 0; i < 5; ++i) {
+        REQUIRE(keys[i] != nullptr);
+        REQUIRE(keys[i]->description != nullptr);
+        CHECK(rtUtf8Chars(keys[i]->description) == descriptions[i]);
+        // Told apart by ADDRESS, so these are the assertions that would fail if
+        // one stood in for another.
+        for (size_t j = i + 1; j < 5; ++j) CHECK(keys[i] != keys[j]);
+        CHECK(keys[i] != rtSymbolIterator());
+        CHECK(keys[i] != rtSymbolToStringTag());
+        CHECK(keys[i] != rtSymbolSpecies());
+    }
+
+    Rooted<Value> symbolFn{rtSymbolFunction()};
+    for (size_t i = 0; i < 5; ++i) {
+        Rooted<Value> name{rtMakeString(properties[i])};
+        const Value read = Value(bronze_elem_get(symbolFn.get().rawBits(), name.get().rawBits()));
+        REQUIRE(read.isSymbol());
+        CHECK(read.asSymbol<SymbolHeader>() == keys[i]);
+    }
 }

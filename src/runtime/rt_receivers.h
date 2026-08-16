@@ -173,6 +173,41 @@ Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inpu
                               const regex::MatchResult& match);
 void rtRegExpSetLastIndex(Value re, double value);
 double rtRegExpLastIndex(Value re);
+
+// ---- the string/regexp protocol (22.1.3 dispatches, 22.2.6 implements) ------
+//
+// `RegExp.prototype`'s five SYMBOL-keyed members, as ALGORITHMS
+// (builtin_regexp_symbols.cpp). `String.prototype.match` and its five siblings
+// call these directly for a RegExp argument rather than reading the symbol off
+// it, which is what keeps `"s".replace(/re/, "x")` free of a property read; the
+// function objects a program reaches through `/re/[Symbol.replace]` run exactly
+// these bodies.
+Value rtRegExpMatch(Rooted<Value>& re, Rooted<Value>& str);
+Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str);
+Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& replaceValue);
+Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str);
+Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limit);
+
+// The same five as FUNCTION OBJECTS, by key — what a symbol-keyed read of a
+// RegExp answers (rt_prop_symbol.cpp). `undefined` for any other symbol.
+// Interned on the code pointer, so `/a/[Symbol.split] === /b/[Symbol.split]`.
+Value rtRegExpSymbolMethod(Value symbolKey);
+
+// The well-known key a pattern-taking `String.prototype` member dispatches on.
+enum class PatternSymbol : uint8_t { Match, MatchAll, Replace, Search, Split };
+
+// 22.1.3's step 2, shared by all six members: GetMethod(argument, @@which).
+// `true` with `out` set to a CALLABLE method when the argument carries one.
+// `false` — with NO property read at all — for the two argument shapes that
+// cannot: a non-object, and a RegExp (whose five are answered beside the value
+// and cannot be shadowed, because it has no shape). `false` with an exception
+// pending when the property was present and not callable, or a getter threw.
+bool rtPatternMethod(Rooted<Value>& arg, PatternSymbol which, Rooted<Value>& out);
+
+// The call that dispatch makes: `Call(method, argument, «first[, second]»)`.
+// The receiver is the PATTERN ARGUMENT, which is where the method was found.
+Value rtCallPatternMethod(Rooted<Value>& method, Rooted<Value>& receiver, Rooted<Value>& first,
+                          Rooted<Value>& second, uint32_t argCount);
 // A RegExp from a source string and a flags string, which is what
 // `String.prototype.matchAll` needs to make its own `g` copy of a pattern.
 Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText);

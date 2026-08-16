@@ -86,6 +86,7 @@ bronze_add_module(runtime
         builtin_number_proto.cpp
         builtin_json.cpp
         builtin_regexp.cpp
+        builtin_regexp_symbols.cpp
         builtin_string_regexp.cpp
         json_stringify.cpp
         exact_decimal.cpp

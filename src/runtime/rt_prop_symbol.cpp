@@ -5,10 +5,11 @@
 // the receiver's kind, because each kind stores named properties somewhere
 // different. A symbol key stores the same way everywhere — one plain object,
 // found by `rtSymbolKeyHolder` — so the interesting question moves to the other
-// end: `@@toStringTag`, `@@species`, `@@iterator` and `@@hasInstance` are
-// properties of intrinsic PROTOTYPE OBJECTS that bronze does not build, so for
-// an array, a Map, a Set, a typed array or a collection there is no object for
-// the walk to find them on, and this file stands in for those objects.
+// end: `@@toStringTag`, `@@species`, `@@iterator`, `@@hasInstance` and the five
+// string/regexp keys of 22.2.6 are properties of intrinsic PROTOTYPE OBJECTS
+// that bronze does not build, so for an array, a Map, a Set, a typed array, a
+// collection or a RegExp there is no object for the walk to find them on, and
+// this file stands in for those objects.
 //
 // Nothing here overrides what a program installs. Every answer is guarded by
 // "the receiver has no shape to have installed it on", or — for `@@species`,
@@ -27,6 +28,7 @@
 #include "runtime/namespace.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -185,6 +187,23 @@ Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
             return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1);
         }
         return Value::fromUndefined();
+    }
+    // 22.2.6's five SYMBOL-keyed members — `[@@match]`, `[@@matchAll]`,
+    // `[@@replace]`, `[@@search]` and `[@@split]`. They belong to
+    // `RegExp.prototype`, which is exactly the object bronze does not build, so
+    // this file stands in for it the way it already does for a Map's tag and an
+    // array's iterator.
+    //
+    // Nothing a program installs is overridden: a RegExp has no shape, so there
+    // is no own or inherited symbol-keyed property for these to shadow —
+    // `rtSymbolKeyHolder` answers null for one — and `extends RegExp`, which is
+    // what would give an instance a chain, is refused by name (native_base.cpp).
+    if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags) {
+        const Value method = rtRegExpSymbolMethod(keyVal);
+        if (!method.isUndefined()) {
+            handled = true;
+            return method;
+        }
     }
     if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
     // A STRING is not this function's business: 22.1.3.36 puts its

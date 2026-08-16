@@ -25,7 +25,6 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -85,14 +84,13 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // table in rt_members.cpp: membership is ECMA-262's "does this exist?", never
 // "have we got round to it?".
 //
-// `iterator` and `toStringTag` are NOT here because they are BUILT: they are
-// the well-known symbols `rtSymbolIterator()` and `rtSymbolToStringTag()`
-// (runtime/symbol.h), read by every iteration bronze opens and by 20.1.3.6's
-// tag lookup. The other eleven are names ECMA-262 defines and bronze has not,
-// so `Symbol.toPrimitive` is a diagnosed missing member rather than
-// `undefined`.
+// Everything in `kWellKnownSymbols` below is NOT here because it is BUILT — the
+// key is an interned symbol and something in the runtime reads a hook off it.
+// `unscopables` is the one name 20.4.2 defines that bronze has no hook for
+// (`with` is not a construct bronze compiles), so it stays a diagnosed missing
+// member rather than `undefined`.
 const char* const kSymbolUnimplemented[] = {
-    "match", "matchAll", "replace", "search", "split", "unscopables",
+    "unscopables",
 };
 
 Value g_symbolFunction = Value::fromUndefined();
@@ -107,6 +105,35 @@ struct SymbolStatic {
 const SymbolStatic kSymbolStatics[] = {
     {"for", symbolForCall, 1},
     {"keyFor", symbolKeyForCall, 1},
+};
+
+// The well-known symbols of 20.4.2, as ONE table rather than a block of
+// installs each. The name a program reads and the interned identity every hook
+// matches on are two spellings of the same fact, and a table is what stops them
+// drifting: `Symbol.replace` and the key `rtSymbolReplace()` that
+// `String.prototype.replace` looks its argument up by are the same line.
+//
+// The ORDER is the order the properties are defined in, and that is observable
+// — `Object.getOwnPropertyNames(Symbol)` reports it — so the five that arrived
+// with the string/regexp protocol are appended rather than sorted in.
+struct WellKnownSymbol {
+    const char* name;
+    SymbolHeader* (*key)();
+};
+
+const WellKnownSymbol kWellKnownSymbols[] = {
+    {"iterator", rtSymbolIterator},
+    {"asyncIterator", rtSymbolAsyncIterator},
+    {"toStringTag", rtSymbolToStringTag},
+    {"toPrimitive", rtSymbolToPrimitive},
+    {"hasInstance", rtSymbolHasInstance},
+    {"species", rtSymbolSpecies},
+    {"isConcatSpreadable", rtSymbolIsConcatSpreadable},
+    {"match", rtSymbolMatch},
+    {"matchAll", rtSymbolMatchAll},
+    {"replace", rtSymbolReplace},
+    {"search", rtSymbolSearch},
+    {"split", rtSymbolSplit},
 };
 
 // ---- Symbol.prototype (20.4.3) ---------------------------------------------
@@ -242,46 +269,10 @@ Value rtSymbolFunction() {
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
-    // Well-known symbols:
-    {
-        Rooted<Value> key{rtMakeString("iterator")};
-        Rooted<Value> val{rtIteratorKey()};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("asyncIterator")};
-        Rooted<Value> val{rtAsyncIteratorKey()};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("toStringTag")};
-        Rooted<Value> val{Value::fromSymbol(rtSymbolToStringTag())};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("toPrimitive")};
-        Rooted<Value> val{Value::fromSymbol(rtSymbolToPrimitive())};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("hasInstance")};
-        Rooted<Value> val{Value::fromSymbol(rtSymbolHasInstance())};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("species")};
-        Rooted<Value> val{Value::fromSymbol(rtSymbolSpecies())};
-        props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
-    }
-    {
-        Rooted<Value> key{rtMakeString("isConcatSpreadable")};
-        Rooted<Value> val{Value::fromSymbol(rtSymbolIsConcatSpreadable())};
+    // Well-known symbols, off the one table above.
+    for (const WellKnownSymbol& w : kWellKnownSymbols) {
+        Rooted<Value> key{rtMakeString(w.name)};
+        Rooted<Value> val{Value::fromSymbol(w.key())};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

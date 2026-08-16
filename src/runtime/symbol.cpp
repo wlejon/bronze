@@ -128,6 +128,36 @@ SymbolHeader* rtSymbolIsConcatSpreadable() {
     return sym;
 }
 
+// The five keys of the STRING/REGEXP protocol (22.1.3 dispatches on them,
+// 22.2.6 implements them). They are one family and are written as one, because
+// what makes them well-known is that `"s".replace(x, r)` looks `x` up by
+// exactly this identity — a second interning of "Symbol.replace" would be a
+// different symbol and would silently never be found.
+SymbolHeader* rtSymbolMatch() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.match");
+    return sym;
+}
+
+SymbolHeader* rtSymbolMatchAll() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.matchAll");
+    return sym;
+}
+
+SymbolHeader* rtSymbolReplace() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.replace");
+    return sym;
+}
+
+SymbolHeader* rtSymbolSearch() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.search");
+    return sym;
+}
+
+SymbolHeader* rtSymbolSplit() {
+    static SymbolHeader* sym = wellKnownSymbol("Symbol.split");
+    return sym;
+}
+
 Value rtSymbolFor(Rooted<Value>& keyString) {
     if (!keyString.get().isString()) {
         fatal("internal: Symbol.for with a key that is not a string");

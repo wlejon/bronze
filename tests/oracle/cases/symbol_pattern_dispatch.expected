@@ -1,0 +1,26 @@
+symbol symbol symbol symbol symbol
+Symbol(Symbol.replace) Symbol(Symbol.split)
+true false
+P|match|abc
+4
+P,xy,3
+P,xy,undefined
+<hi/string:Z>
+<hi/number:7>
+AB AB qr
+mn-2
+a+b+c
+a|b
+TypeError: String.prototype.matchAll called with a non-global RegExp argument
+TypeError: String.prototype.replaceAll called with a non-global RegExp argument
+0
+reached
+1
+TypeError: String.prototype.matchAll called with a non-global RegExp argument
+TypeError: String.prototype.replaceAll called with a non-global RegExp argument
+all:s
+one:s!
+out:s
+TypeError: a pattern argument's [Symbol.split] is not callable
+a-b
+a#b#c a|b 2

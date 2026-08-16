@@ -426,13 +426,29 @@ uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "split");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (args[0].isObject()) {
+        // 22.1.3.23 step 2: a separator carrying its own `[Symbol.split]`
+        // decides the whole algorithm, and the literal-string walk below never
+        // runs. Only an OBJECT separator can carry one — a string reaches
+        // `String.prototype`, which defines none — which is why the dispatch
+        // sits inside this branch and costs `"a,b".split(",")` nothing.
+        Rooted<Value> separator{args[0]};
+        Rooted<Value> splitter;
+        if (rtPatternMethod(separator, PatternSymbol::Split, splitter)) {
+            // Step 2.b passes the LIMIT along, so the method sees both
+            // arguments the call site wrote.
+            Rooted<Value> str{stringFromUnits(self)};
+            Rooted<Value> limit{args[1]};
+            return rtCallPatternMethod(splitter, separator, str, limit, /*argCount=*/2).rawBits();
+        }
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         // A RegExp separator is a different algorithm entirely (22.2.6.14
         // SplitMatcher, which also yields the separator's captures), so it is
         // handed to the module that owns the matcher.
         if (rtIsRegExp(args[0])) return rtStringSplitWithRegExp(thisBits, argc, argv);
         fatal("unsupported: String.prototype.split with a separator that is neither a string "
-              "nor a RegExp is not implemented");
+              "nor a RegExp nor an object with a [Symbol.split] method is not implemented");
     }
 
     // Step 4, and it runs BEFORE the separator is looked at — which is the

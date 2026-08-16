@@ -10,6 +10,7 @@
 
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
@@ -19,6 +20,7 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -195,4 +197,77 @@ TEST_CASE("console.log prints a regular expression as its source form") {
     Rooted<Value> input{rtMakeString("ab")};
     Rooted<Value> match{rtRegExpExec(plain, input)};
     CHECK(rtInspect(match.get()) == "[ 'b', index: 1, input: 'ab', groups: undefined ]");
+}
+
+// 22.2.6's SYMBOL-keyed members. They are the one family of RegExp members
+// bronze answers by KEY rather than by name, because no string names them —
+// which puts them on a different road out of the property path
+// (rt_prop_symbol.cpp) and gives them a table of their own to get wrong.
+//
+// The property this pins is IDENTITY. 22.2.6 puts all five on
+// `RegExp.prototype`, so a program comparing `/a/[Symbol.replace]` with
+// `/b/[Symbol.replace]` must see one function object — which holds because
+// `rtNativeFunction` interns on the code pointer, and would stop holding the
+// day a row in the table were built per call instead.
+
+TEST_CASE("the five symbol-keyed members are one function object per key") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> match{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolMatch()))};
+    Rooted<Value> matchAll{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolMatchAll()))};
+    Rooted<Value> replace{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolReplace()))};
+    Rooted<Value> search{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSearch()))};
+    Rooted<Value> split{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSplit()))};
+
+    REQUIRE(match.get().isObject());
+    REQUIRE(matchAll.get().isObject());
+    REQUIRE(replace.get().isObject());
+    REQUIRE(search.get().isObject());
+    REQUIRE(split.get().isObject());
+
+    // Five keys, five DIFFERENT bodies. A table matched by symbol identity can
+    // only be wrong by pairing a key with another's code, and these ten are
+    // what that would show up as.
+    CHECK(match.get().rawBits() != matchAll.get().rawBits());
+    CHECK(match.get().rawBits() != replace.get().rawBits());
+    CHECK(match.get().rawBits() != search.get().rawBits());
+    CHECK(match.get().rawBits() != split.get().rawBits());
+    CHECK(matchAll.get().rawBits() != replace.get().rawBits());
+    CHECK(matchAll.get().rawBits() != search.get().rawBits());
+    CHECK(matchAll.get().rawBits() != split.get().rawBits());
+    CHECK(replace.get().rawBits() != search.get().rawBits());
+    CHECK(replace.get().rawBits() != split.get().rawBits());
+    CHECK(search.get().rawBits() != split.get().rawBits());
+
+    // Asked twice, the same object — the whole point of interning.
+    Rooted<Value> again{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolReplace()))};
+    CHECK(again.get().rawBits() == replace.get().rawBits());
+
+    // A symbol 22.2.6 does not define is not a member here, and neither is a
+    // string that spells one.
+    CHECK(rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolIterator())).isUndefined());
+    CHECK(rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSpecies())).isUndefined());
+    Rooted<Value> spelled{rtMakeString("replace")};
+    CHECK(rtRegExpSymbolMethod(spelled.get()).isUndefined());
+}
+
+TEST_CASE("a symbol-keyed read of a RegExp finds 22.2.6's members") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> key{Value::fromSymbol(rtSymbolReplace())};
+    Rooted<Value> fromTable{rtRegExpSymbolMethod(key.get())};
+    Rooted<Value> re{makeRegExp("a", "g")};
+    Rooted<Value> fromRead{Value(bronze_elem_get(re.get().rawBits(), key.get().rawBits()))};
+    CHECK(fromRead.get().rawBits() == fromTable.get().rawBits());
+
+    // A RegExp carries no shape, so there is nothing per instance for the
+    // answer to depend on: a second one reads the same object.
+    Rooted<Value> other{makeRegExp("b", "")};
+    Rooted<Value> fromOther{Value(bronze_elem_get(other.get().rawBits(), key.get().rawBits()))};
+    CHECK(fromOther.get().rawBits() == fromRead.get().rawBits());
+
+    // And only those five: a well-known key 22.2.6 does not define still reads
+    // `undefined` off a RegExp, which is what 20.1.3.6 relies on.
+    Rooted<Value> tag{Value::fromSymbol(rtSymbolToStringTag())};
+    CHECK(Value(bronze_elem_get(re.get().rawBits(), tag.get().rawBits())).isUndefined());
 }

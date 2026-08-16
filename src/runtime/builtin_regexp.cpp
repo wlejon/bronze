@@ -440,8 +440,9 @@ const RegExpMethod kRegExpMethods[] = {
 //
 // The SYMBOL-keyed members — `[Symbol.match]`, `[Symbol.replace]` and the rest
 // of 22.2.6 — are not here and cannot be: this table is matched against a
-// string, and no string names one of them. They are refused a step earlier, at
-// `Symbol.match` itself, which is in builtin_symbol.cpp's unimplemented list.
+// string, and no string names one of them. They live in
+// builtin_regexp_symbols.cpp and are answered by key, through
+// `rtRegExpSymbolMethod`, from the symbol-keyed read path.
 const char* const kRegExpMembers[] = {
     "compile", "constructor",
 };

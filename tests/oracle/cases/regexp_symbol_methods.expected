@@ -1,0 +1,21 @@
+function function function function function
+true
+false
+ayb ayb
+a#b# a#b#
+a|b|c a|b|c
+a|1|b
+2 -1
+o|o|o|o
+null
+1a
+0X2
+2 3
+bb 0
+p0;q1; 0
+1
+TypeError: RegExp.prototype[Symbol.replace] called on a receiver that is not a RegExp
+TypeError: RegExp.prototype[Symbol.split] called on a receiver that is not a RegExp
+[-1-2]
+<1>,<2>,<3>
+20
