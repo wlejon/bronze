@@ -1,6 +1,8 @@
-// ECMA-262 7.1.1 ToPrimitive and 7.1.1.1 OrdinaryToPrimitive, at the two places
-// a program reaches them: `+` (13.15.3) and ToString (7.1.17), which is what
-// `String(x)` and a template substitution (13.2.8.6) both are.
+// ECMA-262 7.1.1 ToPrimitive and 7.1.1.1 OrdinaryToPrimitive, at `+` (13.15.3)
+// and at ToString (7.1.17), which is what `String(x)` and a template
+// substitution (13.2.8.6) both are. The clause's other callers have cases of
+// their own: `to_primitive_relational`, `to_primitive_loose_equality`,
+// `to_primitive_to_number` and `to_primitive_property_key`.
 //
 // The HINT is the whole subject, because it is the only thing 7.1.1.1 varies
 // and it is the classic place to get this backwards. Hint "string" tries
@@ -15,17 +17,14 @@
 // what makes the second half get a turn. Step 4's TypeError is thrown and
 // catchable, and an exception from inside a user method propagates as itself.
 //
-// What is NOT here: `Symbol.toPrimitive`, 7.1.1's step 2 and the one part of
-// the clause bronze does not perform. It is refused by name at the only place a
-// program could reach the key (`cases/blocked/to_primitive_symbol_hook`), and
-// 20.4.2.1's registry hands back a different symbol — so no object in a bronze
-// program can carry the property, and the step provably finds nothing.
+// What is NOT here: `Symbol.toPrimitive`, 7.1.1's step 2, which wins outright
+// when an object carries it and so has its own case
+// (`cases/to_primitive_symbol_hook`). Every object below reaches step 3.
 //
-// Also not here: an object whose `toString` is an unimplemented member of a
-// nearer prototype. `'' + [1, 2]` is 23.1.3.30's `join` through
-// `Array.prototype.toString`, and bronze has neither — so it is that
-// prototype's named hard error, which is the honest answer and not
-// "[object Array]" (`cases/blocked/array_to_string_coercion`).
+// Also not here: an object whose `toString` comes from a nearer prototype than
+// `Object.prototype`. `'' + [1, 2]` is 23.1.3.34's delegation to
+// `Array.prototype.join`, which is why it is "1,2" and not "[object Array]";
+// `cases/array_to_string_coercion` is where that lives.
 
 const plain = {};
 console.log('' + plain, String(plain), `${plain}`, plain + '');

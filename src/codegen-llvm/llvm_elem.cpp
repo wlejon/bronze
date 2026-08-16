@@ -52,7 +52,18 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
     llvm::Value* ltMax = builder.CreateFCmpOLT(d, llvm::ConstantFP::get(dblTy, 4294967296.0));
     llvm::Value* inRange = builder.CreateAnd(ge0, ltMax);
 
-    llvm::Value* idx32 = builder.CreateFPToUI(d, builder.getInt32Ty(), "elem.idx");
+    // The conversion is fed a value the range check has ALREADY accepted, and
+    // the select is what makes that true rather than merely likely. `fptoui` of
+    // anything outside the destination range is POISON — not a wrong number, a
+    // value LLVM may assume never happens — and the poison flows through
+    // `isIntegral` into the branch condition below, where a branch on poison is
+    // undefined behaviour. For a key the optimizer can see is constant it
+    // folded exactly that way: `o[false]` bit-casts to a NaN, and the guard
+    // ladder collapsed into the ARRAY arm, which then read a plain object's
+    // words as an elements block. Ordering the checks is not enough when both
+    // live in one basic block; the operand has to be safe on every path.
+    llvm::Value* inRangeD = builder.CreateSelect(inRange, d, llvm::ConstantFP::get(dblTy, 0.0));
+    llvm::Value* idx32 = builder.CreateFPToUI(inRangeD, builder.getInt32Ty(), "elem.idx");
     llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
     llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, d);
 

@@ -470,7 +470,12 @@ bool rtRegExpHasMember(const std::string& key) {
 
 bool rtRegExpSetMember(Value re, const std::string& key, Value value) {
     if (key != "lastIndex") return false;
-    re.asObject<RegExpHeader>()->lastIndex = Value::fromDouble(rtToNumber(value));
+    // `re.lastIndex = {valueOf(){...}}` runs 7.1.4 on the value, which is user
+    // code: the receiver is rooted across it and the header taken afterwards.
+    Rooted<Value> reRoot{re};
+    const double num = rtToNumber(value);
+    if (rtExceptionPending()) return true;
+    reRoot.get().asObject<RegExpHeader>()->lastIndex = Value::fromDouble(num);
     return true;
 }
 

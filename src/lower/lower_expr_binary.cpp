@@ -27,6 +27,10 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn) {
     il::Instruction inst;
     inst.op = il::Op::ToInt32;
     inst.type = il::Type::I32;
+    // The operand's type, which is what tells the backend whether this
+    // conversion can throw: 7.1.6 step 1 is ToNumber, and for a BOXED operand
+    // that reaches a user `valueOf` and the Symbol TypeError.
+    inst.boxType = val.type;
     inst.result = res;
     inst.operands = {val.id};
     emitInst(ilFn, inst);

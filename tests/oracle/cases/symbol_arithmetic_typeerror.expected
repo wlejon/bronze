@@ -1,0 +1,25 @@
+mul true Cannot convert a Symbol value to a number
+sub true Cannot convert a Symbol value to a number
+div true Cannot convert a Symbol value to a number
+mod true Cannot convert a Symbol value to a number
+pow true Cannot convert a Symbol value to a number
+unary plus true Cannot convert a Symbol value to a number
+negate true Cannot convert a Symbol value to a number
+bitor true Cannot convert a Symbol value to a number
+bitnot true Cannot convert a Symbol value to a number
+shift true Cannot convert a Symbol value to a number
+Number true Cannot convert a Symbol value to a number
+Math.abs true Cannot convert a Symbol value to a number
+add number true Cannot convert a Symbol value to a number
+add string true Cannot convert a Symbol value to a string
+less than true Cannot convert a Symbol value to a number
+greater equal true Cannot convert a Symbol value to a number
+template true Cannot convert a Symbol value to a string
+Symbol(id) Symbol(id) id
+typed array write true Cannot convert a Symbol value to a number
+0
+false false true true
+kept true 0
+3
+nested Cannot convert a Symbol value to a number
+still running 42

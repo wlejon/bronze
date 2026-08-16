@@ -22,6 +22,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_internal.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -230,6 +231,110 @@ TEST_CASE("ToString asks for hint string where + asks for none") {
     Value added(bronze_dynamic_add(empty.get().rawBits(), obj.get().rawBits()));
     CHECK(joined() == "valueOf");
     CHECK(textOf(added) == "7");
+
+    reset();
+}
+
+// 7.1.4 ToNumber step 1 and 7.1.19 ToPropertyKey step 1 are the same
+// ToPrimitive call with different hints, and the hint is the thing an
+// answer-only test cannot see: an object defining both halves produces a
+// plausible number either way, and only the CALL LOG says which method made it.
+TEST_CASE("ToNumber asks for hint number and ToPropertyKey for hint string") {
+    ShadowStackFrame frame;
+    reset();
+
+    // `valueOf` answers a string so that both conversions have something usable
+    // to work from, and `toString` answers a different one — so the two hints
+    // cannot be told apart by luck.
+    Rooted<Value> seven{rtMakeString("7")};
+    Rooted<Value> eight{rtMakeString("8")};
+    g_valueOfResult = seven.get();
+    g_toStringResult = eight.get();
+
+    SUBCASE("ToNumber runs valueOf first") {
+        Rooted<Value> obj{probeObject()};
+        CHECK(rtToNumber(obj.get()) == 7.0);
+        CHECK(joined() == "valueOf");
+        CHECK_FALSE(rtExceptionPending());
+    }
+
+    SUBCASE("ToPropertyKey runs toString first") {
+        Rooted<Value> obj{probeObject()};
+        CHECK(textOf(rtToPropertyKey(obj)) == "8");
+        CHECK(joined() == "toString");
+    }
+
+    // A SYMBOL is already a property key, so 7.1.19 hands it back rather than
+    // running ToString on it — which would be the TypeError that makes
+    // `o[sym]` throw instead of reading.
+    SUBCASE("ToPropertyKey keeps a symbol as a symbol") {
+        Rooted<Value> desc{rtMakeString("s")};
+        Rooted<Value> sym{rtMakeSymbol(desc.get())};
+        g_toStringResult = sym.get();
+        Rooted<Value> obj{probeObject()};
+        Value key = rtToPropertyKey(obj);
+        CHECK(key.isSymbol());
+        CHECK(key.rawBits() == sym.get().rawBits());
+        CHECK_FALSE(rtExceptionPending());
+    }
+
+    // A primitive costs no conversion at all, which is the half of ToNumber's
+    // contract the builtins that hold a raw element pointer across it depend on.
+    SUBCASE("a primitive is converted without any call") {
+        CHECK(rtToNumber(rtMakeString("2.5")) == 2.5);
+        CHECK(rtToNumber(Value::fromBool(true)) == 1.0);
+        CHECK(joined().empty());
+    }
+
+    reset();
+}
+
+// 6.1.5.1: ToNumber of a Symbol is a TypeError, THROWN rather than fatal, so a
+// program can catch it. The value handed back is NaN and is never read — the
+// caller stores it and then tests the pending cell.
+TEST_CASE("ToNumber of a symbol leaves a catchable TypeError pending") {
+    ShadowStackFrame frame;
+    reset();
+
+    Rooted<Value> desc{rtMakeString("id")};
+    Rooted<Value> sym{rtMakeSymbol(desc.get())};
+    const double n = rtToNumber(sym.get());
+    CHECK(n != n);  // NaN
+    REQUIRE(rtExceptionPending());
+    rtClearException();
+    CHECK_FALSE(rtExceptionPending());
+
+    reset();
+}
+
+// 7.2.14 steps 11-12: an object against a primitive is ToPrimitive'd with NO
+// hint and the comparison restarts. Hint default is `valueOf` first, which is
+// what an answer-only check would miss — `String(o)` of the same object asks the
+// other way round.
+TEST_CASE("loose equality converts an object with hint default and restarts") {
+    ShadowStackFrame frame;
+    reset();
+
+    g_valueOfResult = Value::fromDouble(1.0);
+    Rooted<Value> obj{probeObject()};
+    Rooted<Value> one{Value::fromDouble(1.0)};
+    CHECK(bronze_loose_eq(obj.get().rawBits(), one.get().rawBits()));
+    CHECK(joined() == "valueOf");
+
+    // The restart is a real second pass: a BOOLEAN is ToNumber'd first (step 9)
+    // and only then is the object converted, so `o == true` reaches `1 == 1`.
+    g_calls.clear();
+    Rooted<Value> yes{Value::fromBool(true)};
+    CHECK(bronze_loose_eq(obj.get().rawBits(), yes.get().rawBits()));
+    CHECK(joined() == "valueOf");
+
+    // Two objects answer by IDENTITY at step 1, before any conversion — so
+    // neither method runs at all.
+    g_calls.clear();
+    Rooted<Value> other{probeObject()};
+    CHECK(bronze_loose_eq(obj.get().rawBits(), obj.get().rawBits()));
+    CHECK_FALSE(bronze_loose_eq(obj.get().rawBits(), other.get().rawBits()));
+    CHECK(joined().empty());
 
     reset();
 }

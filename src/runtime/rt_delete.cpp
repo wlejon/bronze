@@ -202,6 +202,18 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     }
     if (!objVal.isObject()) return true;
 
+    // 7.1.19 ToPropertyKey for an OBJECT key, before the receiver's header is
+    // read: the conversion is a user `toString` and can collect, so the
+    // receiver goes through a root and the helper is re-entered with the
+    // primitive key every branch below was written for.
+    if (idxVal.isObject()) {
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> keyRoot{idxVal};
+        keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return true;
+        return bronze_elem_delete(objRoot.get().rawBits(), keyRoot.get().rawBits(), strict);
+    }
+
     if (objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         Rooted<Value> arrRoot{objVal};
         std::string keyText;

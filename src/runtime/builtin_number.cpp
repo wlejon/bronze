@@ -359,16 +359,15 @@ uint64_t rtNumberConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64
 Value rtNumberValueOfArgument(Value v) {
     // 21.1.1.1 step 1 is ToNumeric, whose step 1 is ToPrimitive with hint
     // NUMBER — so an object is asked for `valueOf` before `toString`, and a
-    // program's override runs. This is an ordinary builtin, so it may: the
-    // hard-error shape `rtToNumber` gives an object belongs to the sites that
-    // hold a raw pointer across the call, and this is not one.
+    // program's override runs. Spelled out here rather than left to
+    // `rtToNumber`, which performs the same step, because the SYMBOL case below
+    // has to name `Number` in its message: 21.1.1.1 refuses one before any
+    // conversion is attempted.
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
     if (rtExceptionPending()) return Value::fromDouble(0.0);
-    // 6.1.5.1: ToNumber of a Symbol is a TypeError. Raised here rather than
-    // left to `rtToNumber`, which makes it a FATAL because its callers sit
-    // under ops `il::canThrow` does not mark — `Number(sym)` is an ordinary
-    // call and the language says it throws something a `catch` can hold.
+    // 6.1.5.1: ToNumber of a Symbol is a TypeError, and one a `catch` can
+    // hold — the hook the conversion is asked through does not change that.
     if (prim.get().isSymbol()) {
         return rtThrowTypeError("Cannot convert a Symbol value to a number");
     }

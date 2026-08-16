@@ -355,3 +355,39 @@ TEST_CASE("IL Verifier checks block arguments") {
               std::string::npos);
     }
 }
+
+// `canThrow` decides where the backend puts an exception test, and the list is
+// written the safe way round — the cases that answer FALSE are the ones that
+// provably cannot raise. Two of them turn on a field rather than on the op,
+// because the op is two different operations depending on it.
+TEST_CASE("the numeric coercions can throw exactly when they call ToNumber") {
+    // `unbox.f64` is 7.1.4 ToNumber, which runs ToPrimitive on an object and is
+    // a TypeError for a Symbol. `unbox.bool` is ToBoolean, which is total, and
+    // `unbox.i32` reads a number it has already tested for.
+    Instruction toNumber{Op::Unbox, Type::F64};
+    CHECK(canThrow(toNumber));
+
+    Instruction toBool{Op::Unbox, Type::Bool};
+    CHECK_FALSE(canThrow(toBool));
+
+    Instruction toI32{Op::Unbox, Type::I32};
+    CHECK_FALSE(canThrow(toI32));
+
+    // 7.1.6 ToInt32 step 1 is that same ToNumber, but only a BOXED operand
+    // reaches it — an f64 or i32 operand is a machine conversion with no call
+    // in it, which is what keeps a proven-numeric bitwise chain branch-free.
+    Instruction boxedBits{Op::ToInt32, Type::I32};
+    boxedBits.boxType = Type::Dynamic;
+    CHECK(canThrow(boxedBits));
+
+    Instruction numericBits{Op::ToInt32, Type::I32};
+    numericBits.boxType = Type::F64;
+    CHECK_FALSE(canThrow(numericBits));
+
+    // `add` is the same shape and was already written this way: dynamic `+` is
+    // ToPrimitive, and f64 `+` is an instruction.
+    Instruction dynamicAdd{Op::Add, Type::Dynamic};
+    CHECK(canThrow(dynamicAdd));
+    Instruction numericAdd{Op::Add, Type::F64};
+    CHECK_FALSE(canThrow(numericAdd));
+}

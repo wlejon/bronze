@@ -1,26 +1,29 @@
 // Type conversion: the boxing and unboxing entry points of the ABI, JS
-// ToString / ToNumber, truthiness, strict equality, and the two `+` helpers
-// that sit on top of them.
+// ToString / ToNumber / ToPropertyKey, truthiness, strict equality, and the two
+// `+` helpers that sit on top of them.
 //
-// ToPrimitive (7.1.1) lives here, and the two conversions below deliberately do
-// NOT call it.
+// ToPrimitive (7.1.1) lives here, and every clause that calls it reaches it: `+`
+// (13.15.3), ToString's own entry (`String(x)`, a template literal), ToNumber
+// (7.1.4 step 1), the four relational operators (13.10.1), `==` against a
+// primitive (7.2.14 steps 11-12) and a computed property key (7.1.19). It runs
+// a user `valueOf`, a user `toString` or a `Symbol.toPrimitive`, so a caller
+// must root everything it holds across the call and must sit under an IL op
+// `il::canThrow` marks.
 //
-// `valueToString` and `rtToNumber` are ToString and ToNumber for a value that
-// is ALREADY primitive, plus the objects whose answer is a pure function of
-// what they hold — a RegExp's source and flags, a pristine wrapper's internal
-// slot. Any other object is a hard error there, and stays one, because those
-// two are reached from places that must not run user code: `console.log` is on
-// `il::canThrow`'s cannot-throw list and `rtToNumber` is called with a raw
-// typed-array pointer held across it. Widening either would put a call to a
-// user `toString` inside both.
+// `valueToString` — the static below — is the REMAINDER: ToString for a value
+// that is already primitive, plus the two objects whose answer is a pure
+// function of what they hold (a RegExp's source and flags, a pristine wrapper's
+// internal slot). It is what `console.log` and `JSON.stringify` use, and an
+// object reaching it is an internal error rather than a program error: those
+// two have their own algorithms and must not run a user `toString` at all —
+// `Op::Print` is on `il::canThrow`'s cannot-throw list and inspect holds raw
+// heap pointers across every element it formats.
 //
-// So ToPrimitive is applied where ECMA-262 says it is applied — at `+`
-// (13.15.3) and at ToString's own entry (`String(x)`, a template literal) — and
-// those two sites hand a PRIMITIVE down to the conversions below, which is the
-// only kind of value they ever claimed to take. What still refuses an object by
-// name is every site whose clause also calls ToPrimitive and whose helper
-// cannot yet run user code: `rel.lt` and friends, `==` against a primitive, a
-// computed property key, and ToNumber. Each names itself.
+// The HINT is the thing to get right rather than the call: `'' + {}` is hint
+// DEFAULT, `String({})` is hint STRING, `{} * 2` and `{} < 1` are hint NUMBER,
+// and `o[{}]` is hint STRING again. Default and Number share an order (valueOf
+// first) and String reverses it, so a site that passes the wrong one produces a
+// plausible answer from the wrong method.
 
 #include <cerrno>
 #include <charconv>
@@ -84,30 +87,31 @@ static Value valueToString(Value v) {
     } else if (v.isUndefined()) {
         literal = "undefined";
     } else if (rtIsRegExp(v)) {
-        // The one object bronze can convert without ToPrimitive: a RegExp's
-        // `toString` is a pure function of its source and flags (22.2.6.13),
-        // so `"" + /a/g` is "/a/g" rather than a named error. Every other
-        // object still goes through ToPrimitive and is still refused.
+        // A RegExp, whose `toString` is a pure function of its source and flags
+        // (22.2.6.13) — so `console.log` and `JSON.stringify`, the two callers
+        // that must not run user code, can still name one. A program's `'' +
+        // /a/g` does not come here: it runs the real algorithm and finds
+        // 22.2.6.13 on the prototype.
         return rtMakeString(rtRegExpText(v));
     } else if (Value prim; rtWrapperPrimitive(v, prim)) {
-        // A primitive WRAPPER, which is the other object whose ToPrimitive
-        // answer bronze can give without the algorithm: OrdinaryToPrimitive
-        // would call `valueOf`, and for a pristine wrapper that is the internal
-        // slot. So `String(new String("ab"))` and `new String("ab") + "!"` are
-        // the characters rather than a named error.
+        // A primitive WRAPPER, for the same two callers: OrdinaryToPrimitive
+        // would call `valueOf`, and for a PRISTINE wrapper that call answers
+        // exactly the internal slot — so the answer is available without
+        // running anything. A wrapper whose `valueOf` the program replaced is
+        // named by `rtWrapperPrimitive` rather than answered wrongly.
         return valueToString(prim);
     } else {
-        // Every caller that is ALLOWED to run user code has already been
-        // through `rtToPrimitive`, so an object arriving here came from one
-        // that is not: `console.log` (whose `Op::Print` is on `il::canThrow`'s
-        // cannot-throw list), `JSON.stringify` (25.5.2 has its own algorithm
-        // and must not borrow this one), or a key conversion holding a raw
-        // header. Naming that beats calling a user `toString` from a place that
-        // cannot survive the collection or the throw.
-        fatal("unsupported: ToString on an object from a site that cannot run ToPrimitive "
-              "(7.1.17 step 1 calls a user `toString`, and this caller — console.log, "
-              "JSON.stringify, or a property-key conversion — holds state across it); "
-              "`+` and `String(x)` do run it");
+        // ToString's step 1 is ToPrimitive, and every entry point that performs
+        // it — `rtValueToString`, `rtToStringValue`, `bronze_dynamic_add` — has
+        // already run it before calling here. So an object at this point came
+        // from a caller that is NOT allowed to: `console.log` (whose `Op::Print`
+        // is on `il::canThrow`'s cannot-throw list, and whose inspect walk holds
+        // raw heap pointers) or `JSON.stringify`, which has its own algorithm in
+        // 25.5.2 and must not borrow this one. Reaching it is a bug in this
+        // file's own layering rather than something a program did.
+        fatal("internal: ToString of an object below ToPrimitive (7.1.17 step 1 runs it, and "
+              "every entry point here does; console.log and JSON.stringify have their own "
+              "algorithms and must not reach this one)");
     }
     return Value::fromString(StringHeader::createFromUTF8(rtHeap(), literal));
 }
@@ -116,21 +120,29 @@ Value rtMakeString(std::string_view utf8) {
     return Value::fromString(StringHeader::createFromUTF8(rtHeap(), utf8));
 }
 
-Value rtValueToString(Value v) { return valueToString(v); }
+// ECMA-262 7.1.17 ToString for a value that arrives as raw bits rather than
+// through a root the caller already holds. Step 1 is ToPrimitive with hint
+// STRING, so a user `toString` runs — which is what makes `new Error(obj)`,
+// `"ab".replace(obj, r)` and `Symbol(obj)` say what the object says.
+//
+// The primitive case does not root at all: nothing before the conversion can
+// collect, so `String(5)` costs exactly what it did.
+Value rtValueToString(Value v) {
+    if (!v.isObject()) return valueToString(v);
+    Rooted<Value> input{v};
+    return rtToStringValue(input);
+}
 
 // ECMA-262 7.1.1 ToPrimitive, with 7.1.1.1 OrdinaryToPrimitive under it.
 //
 // A primitive is already one and is returned untouched, which is the whole of
 // step 1 for every value that is not an object.
 //
-// STEP 2 — `GetMethod(input, @@toPrimitive)` — is not performed, and that is a
-// refusal rather than a silent skip. `Symbol.toPrimitive` is on
-// builtin_symbol.cpp's unimplemented list, so a program asking for the
-// well-known symbol gets a named hard error; and 20.4.2.1's registry hands back
-// a symbol that is NOT the well-known one, so `Symbol.for("Symbol.toPrimitive")`
-// cannot smuggle it in either. No bronze program can hold the key, therefore no
-// bronze object can carry the property, therefore the lookup provably finds
-// undefined. The day `Symbol.toPrimitive` lands, this is where its step goes.
+// STEP 2 is `GetMethod(input, @@toPrimitive)`, and it comes FIRST: an object
+// that defines `Symbol.toPrimitive` never has `valueOf` or `toString` called at
+// all, and the hint it receives is the hint this call was made with, spelled as
+// one of the three strings 7.1.1 names. The lookup is an ordinary property read
+// through the prototype chain, so an inherited one is found.
 //
 // The HINT decides only the order of the two calls, and getting it backwards is
 // the classic bug: `'' + {}` is hint DEFAULT (13.15.3 asks for no hint at all
@@ -138,8 +150,8 @@ Value rtValueToString(Value v) { return valueToString(v); }
 // two reach "[object Object]" by opposite routes. Default and number are the
 // same order, which is why 7.1.1.1 takes them together.
 //
-// Step 3's TypeError is thrown rather than fataled: the clause names it, both
-// callers are on `il::canThrow`'s list, and a program can catch it.
+// Step 3's TypeError is thrown rather than fataled: the clause names it, every
+// caller sits under an IL op `il::canThrow` marks, and a program can catch it.
 Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
     if (!input.get().isObject()) return input.get();
 
@@ -211,6 +223,24 @@ Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
 Value rtToStringValue(Rooted<Value>& v) {
     Rooted<Value> prim{rtToPrimitive(v, ToPrimitiveHint::String)};
     if (rtExceptionPending()) return rtMakeString("");
+    return valueToString(prim.get());
+}
+
+// ECMA-262 7.1.19 ToPropertyKey: ToPrimitive with hint STRING, and then ToString
+// UNLESS the result is a Symbol — a symbol already is a property key, and
+// running ToString on one is the TypeError that would turn `o[sym]` into a
+// throw. That exception is why this is not simply `rtToStringValue`.
+//
+// A value that is not an object is handed back UNTOUCHED rather than
+// stringified here, so `a[0]` still reaches the element fast paths with a
+// number in hand. The conversion those paths need is `rtElemKeyAsString`
+// (rt_key.cpp), which is the rest of step 2 for the primitives; this function's
+// whole job is to make sure an object never gets that far.
+Value rtToPropertyKey(Rooted<Value>& key) {
+    if (!key.get().isObject()) return key.get();
+    Rooted<Value> prim{rtToPrimitive(key, ToPrimitiveHint::String)};
+    if (rtExceptionPending()) return rtMakeString("");
+    if (prim.get().isSymbol()) return prim.get();
     return valueToString(prim.get());
 }
 
@@ -356,41 +386,47 @@ static double stringToNumber(const StringHeader* s) {
     return sign * magnitude;
 }
 
+// ECMA-262 7.1.4 ToNumber, entire.
+//
+// A PRIMITIVE costs what it always did: no root, no allocation, no call. That
+// half of the contract is load-bearing — `rtToNumber` is the conversion every
+// builtin runs on its numeric arguments, and several of them hold a raw view or
+// element pointer across it — so the allocating half is confined to the one tag
+// that can reach it, and every caller that can be handed an OBJECT has been
+// re-rooted (rt_prop_write.cpp's typed-array writes are the ones that had to
+// move).
+//
+// A Symbol THROWS rather than fatals: 6.1.5.1 makes ToNumber of a Symbol a
+// TypeError, and a program is entitled to catch it. That is what forced
+// `Op::Unbox` and `Op::ToInt32` off `il::canThrow`'s cannot-throw list — the
+// unbox is generated code's only numeric coercion, so without a cell test after
+// it the throw would have propagated past the `catch` that should have taken
+// it. NaN is what a raising path returns, and it is never a value a program
+// reads: the caller stores it and then tests the cell.
 double rtToNumber(Value v) {
-    // ToNumber of a Symbol is a TypeError in 6.1.5.1, and a HARD error here for
-    // the reason ToNumber of an object is one: `Op::Unbox` is on `canThrow`'s
-    // cannot-throw list, so generated code emits no cell test after it and a
-    // thrown TypeError would propagate past the `catch` that should have taken
-    // it. Naming the construct is the honest answer until the numeric path
-    // learns to unwind; guessing a number is not.
-    if (v.isSymbol()) {
-        fatal("unsupported: a Symbol in an arithmetic position (ECMA-262 6.1.5.1 makes "
-              "ToNumber of a Symbol a TypeError, and bronze's numeric path cannot yet "
-              "raise one; use sym.description or sym.toString())");
-    }
     if (v.isNumber()) return v.asNumber();
     if (v.isInt32()) return static_cast<double>(static_cast<int32_t>(v.payload()));
     if (v.isBool()) return v.asBool() ? 1.0 : 0.0;
     if (v.isNull()) return 0.0;
     if (v.isUndefined()) return std::numeric_limits<double>::quiet_NaN();
     if (v.isString()) return stringToNumber(v.asString<StringHeader>());
-    // A primitive wrapper, unwrapped from its internal slot rather than through
-    // ToPrimitive. This function ALLOCATES NOTHING — two typed-array writes in
-    // rt_prop.cpp hold a raw view pointer across a call to it — and the unwrap
-    // keeps that promise: reading a slot allocates nothing, and neither does
-    // the string or boolean conversion it hands back to.
-    if (Value prim; rtWrapperPrimitive(v, prim)) return rtToNumber(prim);
-    // Not a missing algorithm: 7.1.4 step 1 is ToPrimitive with hint number,
-    // and `rtToPrimitive` takes that hint. What blocks it is the sentence four
-    // lines up — this function allocates nothing, and two typed-array writes in
-    // rt_prop.cpp hold a raw view pointer across it — together with
-    // `bronze_unbox_f64`, which reaches here from `Op::Unbox` and is on
-    // `il::canThrow`'s cannot-throw list, so a TypeError raised inside would
-    // propagate past the `catch` that should have taken it. Both have to move
-    // before `+{}` can be a number.
-    fatal("unsupported: ToNumber on an object (7.1.4 step 1 runs ToPrimitive with hint "
-          "number, which bronze applies at `+` and `String(x)`; the numeric path allocates "
-          "nothing and cannot raise, so it cannot yet call it)");
+    if (v.isSymbol()) {
+        rtThrowTypeError("Cannot convert a Symbol value to a number");
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if (!v.isObject()) return std::numeric_limits<double>::quiet_NaN();
+    // Step 1: ToPrimitive with hint NUMBER, so `valueOf` is asked before
+    // `toString` and a `Symbol.toPrimitive` before either. The result is a
+    // primitive or the algorithm threw, so the recursion is one level deep.
+    //
+    // A primitive WRAPPER comes through here too rather than through
+    // `rtWrapperPrimitive`'s internal-slot shortcut, which is the point: a
+    // `new Number(1)` whose `valueOf` the program replaced answers with the
+    // replacement, where reading the slot would have quietly ignored it.
+    Rooted<Value> input{v};
+    Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
+    if (rtExceptionPending()) return std::numeric_limits<double>::quiet_NaN();
+    return rtToNumber(prim.get());
 }
 
 // A canonical array index: the decimal form must round-trip, so "0" and "42"
@@ -448,8 +484,11 @@ double bronze_unbox_f64(uint64_t bits) {
     // rest. It had its own copy that fataled on a string, so `+"5"` and
     // `o.k = "5", o.k--` were hard errors while `Number("5")` next to them was
     // 5, and an int32-tagged value fell all the way through to the fatal.
-    // Only ToPrimitive on an object is still unbuilt, and that stays a named
-    // hard error rather than a silent 0.
+    //
+    // An OBJECT operand runs ToPrimitive here, which is a call into user code
+    // from an unbox — the reason `il::canThrow` had to admit `Op::Unbox`. The
+    // operand needs no root of its own: it is the only live value this helper
+    // has, and the caller's is a frame slot the collector updates.
     return rtToNumber(Value(bits));
 }
 
@@ -550,11 +589,11 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     // 6.1.5.1 makes both a TypeError for a Symbol — so the string branch above
     // covers `"" + sym` and this covers the rest.
     //
-    // It is raised HERE rather than left to `rtToNumber` below because this
-    // helper is on `il::canThrow`'s list and the unbox is not: a throw from
-    // inside the arithmetic would propagate past the `catch` that should have
-    // taken it. `undefined` goes into the caller's root slot before it tests
-    // the pending cell, which is the contract every raising helper keeps.
+    // It is raised HERE rather than left to `rtToNumber` below so that the
+    // message names the operator's own step: 13.15.3 step 3 is where a Symbol
+    // operand of `+` fails, before either half of the addition is attempted.
+    // `undefined` goes into the caller's root slot before it tests the pending
+    // cell, which is the contract every raising helper keeps.
     if (aRoot.get().isSymbol() || bRoot.get().isSymbol()) {
         rtThrowTypeError("Cannot convert a Symbol value to a number");
         return Value::fromUndefined().rawBits();

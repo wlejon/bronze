@@ -51,6 +51,7 @@ bronze_add_module(runtime
         rt_members.cpp
         rt_object.cpp
         rt_operator.cpp
+        rt_key.cpp
         rt_prop.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp

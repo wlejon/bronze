@@ -1,0 +1,16 @@
+true false true false
+true false zzz
+true true false
+true false true
+true true true
+true false true false number,number,number,number
+L,R L,R
+L,R L,R
+L,stop,L,stop
+false false false false
+false false
+true true
+false true
+true Cannot convert object to primitive value
+true Cannot convert a Symbol value to a number
+true true true false

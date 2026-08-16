@@ -106,13 +106,14 @@ bool rtIsIntegerLikeKey(std::string_view key, uint32_t& out);
 // the caller writes it.
 std::string rtInspect(Value v);
 
-// A heap string from UTF-8 bytes, and JS ToString / ToNumber for a value that
-// is ALREADY primitive — plus the objects whose answer is a pure function of
-// what they hold. Any other object is a hard error in both, and deliberately:
-// these two are reached from places that must not run user code, so ToPrimitive
-// is applied by the CALLER (`rtToStringValue` below, `bronze_dynamic_add`)
-// rather than folded in here. rt_convert.cpp's header says which sites those
-// are and which still refuse.
+// A heap string from UTF-8 bytes, and JS ToString (7.1.17) / ToNumber (7.1.4)
+// entire — step 1 of each, ToPrimitive, included.
+//
+// So both RUN USER CODE for an OBJECT argument, and both can leave a TypeError
+// pending: a caller must root what it holds across them and be reached from an
+// IL op `il::canThrow` marks. For a PRIMITIVE neither allocates and only a
+// Symbol raises, which is what keeps them usable from the builtins that hold a
+// raw element pointer across a numeric argument conversion.
 Value rtMakeString(std::string_view utf8);
 Value rtValueToString(Value v);
 double rtToNumber(Value v);
@@ -385,14 +386,17 @@ bool rtObjectProtoHasMember(const std::string& key);
 // for no hint) where `String({})` is String.
 enum class ToPrimitiveHint { Default, Number, String };
 
-// ToPrimitive, and ToString with its step 1 attached. Both RUN USER CODE — a
-// `toString` or a `valueOf` on the input's chain — so a caller must have
-// everything it holds rooted, and must be reached from an IL op `il::canThrow`
-// marks, or a TypeError raised here propagates past the `catch` that should
-// have taken it. Today that means `+` (13.15.3) and `String(x)`; rt_convert.cpp
-// names the sites that still refuse an object and why.
+// ToPrimitive, ToString with its step 1 attached, and ToPropertyKey (7.1.19),
+// which is that same step 1 with the Symbol case carved out — a symbol IS a
+// key, so stringifying one would throw where `o[sym]` must simply read.
+//
+// All three RUN USER CODE — a `Symbol.toPrimitive`, a `valueOf` or a `toString`
+// on the input's chain — so a caller must have everything it holds rooted, and
+// must be reached from an IL op `il::canThrow` marks, or a TypeError raised
+// here propagates past the `catch` that should have taken it.
 Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
 Value rtToStringValue(Rooted<Value>& v);
+Value rtToPropertyKey(Rooted<Value>& key);
 
 // `[Symbol.toStringTag]: tag`, as the non-enumerable data property every clause
 // that defines one asks for (21.3.1.9 for `Math`, 25.5.3 for `JSON`, 27.5.1.5
@@ -435,8 +439,11 @@ inline struct InlineCache* rtAsCache(uint64_t* entry) noexcept {
 bool rtKeyAsIndex(const std::string& key, uint32_t& out);
 bool rtValueToElementIndex(Value idxVal, uint32_t& out);
 
-// ToPropertyKey (7.1.19) as a heap string, for a computed key that named no
-// element. ALLOCATES, so the caller must have the receiver rooted.
+// The REST of ToPropertyKey (7.1.19), for a computed key that named no element:
+// the ToString of a primitive, as a heap string. Step 1 — ToPrimitive, for an
+// object key — is not here and must already have run at the ABI entry point,
+// because it calls user code where this only allocates. rt_key.cpp says why the
+// split falls there.
 Value rtElemKeyAsString(Value idxVal);
 
 // Is this array the one an `arguments` binding holds (ECMA-262 10.2.11)? bronze
@@ -518,9 +525,10 @@ Value rtStringCharAsString(Value str, uint32_t index);
 // caller's named error for the general algorithm stands.
 //
 // It is what a site that CANNOT call `rtToPrimitive` uses instead — the one
-// that is allocation-free, which two typed-array writes in rt_prop.cpp depend
-// on, and which `rtToNumber` needs for the same reason. `+` and `String(x)`
-// run the real algorithm and never reach here.
+// that is allocation-free and cannot raise. `valueToString` (rt_convert.cpp) is
+// the last such site: console.log and JSON.stringify reach it, and a wrapper
+// they print must not become a call into user code. Every conversion a program
+// spells runs the real algorithm and never comes here.
 bool rtWrapperPrimitive(Value v, Value& out);
 
 // An own property 10.4.3 gives a String, computed from the CHARACTERS rather

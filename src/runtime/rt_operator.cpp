@@ -1,12 +1,17 @@
 // The operators whose meaning is an ALGORITHM rather than a machine
-// instruction: ToInt32, exponentiation, abstract (loose) equality, `typeof`,
-// `instanceof` and `in`.
+// instruction: ToInt32, exponentiation, the four relational comparisons,
+// abstract (loose) equality, `typeof`, `instanceof` and `in`.
 //
 // Each of these is a numbered sequence of steps in ECMA-262 that no single
 // target instruction implements. ToInt32 is the clearest case — `fptosi` is
 // poison for a double outside the int32 range, while the language demands a
 // wraparound modulo 2^32 — so the conversion is a call and the arithmetic
 // around it is not.
+//
+// The comparisons are the ones that run USER CODE. 13.10.1 step 1 and 7.2.14
+// steps 11-12 both call ToPrimitive, so `a < b` and `a == b` can collect and can
+// throw — which is why both are written over rooted operands and why the `==`
+// restart the spec spells as recursion is a loop over two root slots here.
 
 #include <cmath>
 #include <cstdint>
@@ -393,62 +398,154 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
     return rtObjectProtoHasMember(key);
 }
 
-// ToPrimitive with the NUMBER hint, for the two operands ECMA-262 13.10.1
-// step 1 asks for. A primitive is already one; a primitive WRAPPER answers
-// with its internal slot, which is what OrdinaryToPrimitive's `valueOf` call
-// would return, and is what makes `new String("a") < "b"` a string comparison
-// rather than a numeric one.
-//
-// Every other object is refused BY NAME, and what is missing is no longer the
-// algorithm: `rtToPrimitive` is built and takes this very hint. What is missing
-// is this function's licence to call it. Nothing here allocates, which is what
-// lets the comparison below hold raw StringHeader pointers across it, and
-// `rtToPrimitive` runs a user `valueOf` — it allocates, it collects, and it can
-// throw. Unblocking the four relational operators means re-rooting `isLessThan`
-// around both conversions, which is a change to the comparison and not to this
-// line.
-Value relationalToPrimitive(Value v) {
-    if (!v.isObject()) return v;
-    if (Value prim; rtWrapperPrimitive(v, prim)) return prim;
-    fatal("unsupported: a relational operator ('<', '>', '<=', '>=') on an object (13.10.1 "
-          "runs ToPrimitive, which bronze applies at `+` and `String(x)`; this comparison "
-          "holds raw string headers across the conversion and cannot yet call it)");
-}
-
 // ECMA-262 13.10.1 IsLessThan, whose result is a Boolean **or undefined**.
 // The third answer is the whole reason the four operators are not one compare
 // and its negation: 13.10 maps undefined to false for every one of them, while
 // `!` maps it to true for two of them.
 enum class LessThan { False, True, Undefined };
 
-// `x < y` in the spec's own terms. The LeftFirst flag of 13.10.1 orders the two
-// ToPrimitive calls and nothing else, and neither call above can run user code
-// or have an effect, so the order is unobservable here and is not threaded
-// through.
-LessThan isLessThan(Value x, Value y) {
-    if (x.isNumber() && y.isNumber()) {
-        const double nx = x.asNumber();
-        const double ny = y.asNumber();
+// `x < y` in the spec's own terms.
+//
+// `leftFirst` is 13.10.1's own flag, and it is observable now that step 1 runs
+// user code: `a > b` converts `a` before `b` even though it asks
+// IsLessThan(b, a), so the operand order of the two `valueOf` calls follows the
+// SOURCE and not the argument list. Both operands are rooted before either
+// conversion runs, because the second call can collect and move what the first
+// returned — the two-object comparison is where that shows up.
+//
+// Step 4 is ToNumeric rather than ToNumber, which is the seam a BigInt lands on:
+// its else-branch compares a mathematical value, not a double, so the two
+// conversions below become one numeric-kind dispatch rather than growing a case.
+LessThan isLessThan(Rooted<Value>& x, Rooted<Value>& y, bool leftFirst) {
+    // Two numbers convert to themselves, so the whole algorithm collapses to
+    // the compare — and this is the shape inference-typed code that stayed
+    // boxed arrives in.
+    if (x.get().isNumber() && y.get().isNumber()) {
+        const double nx = x.get().asNumber();
+        const double ny = y.get().asNumber();
         if (std::isnan(nx) || std::isnan(ny)) return LessThan::Undefined;
         return nx < ny ? LessThan::True : LessThan::False;
     }
-    const Value px = relationalToPrimitive(x);
-    const Value py = relationalToPrimitive(y);
+    Rooted<Value> px{Value::fromUndefined()};
+    Rooted<Value> py{Value::fromUndefined()};
+    if (leftFirst) {
+        px.set(rtToPrimitive(x, ToPrimitiveHint::Number));
+        if (rtExceptionPending()) return LessThan::Undefined;
+        py.set(rtToPrimitive(y, ToPrimitiveHint::Number));
+    } else {
+        py.set(rtToPrimitive(y, ToPrimitiveHint::Number));
+        if (rtExceptionPending()) return LessThan::Undefined;
+        px.set(rtToPrimitive(x, ToPrimitiveHint::Number));
+    }
+    if (rtExceptionPending()) return LessThan::Undefined;
     // Step 3: both Strings, compared by code unit with NOTHING converted. It
     // comes before ToNumeric, which is why `"2" < "10"` is true where
     // `2 < 10` is false — the digits are never read as digits.
-    if (px.isString() && py.isString()) {
-        return px.asString<StringHeader>()->lessThan(*py.asString<StringHeader>())
+    if (px.get().isString() && py.get().isString()) {
+        return px.get().asString<StringHeader>()->lessThan(*py.get().asString<StringHeader>())
                    ? LessThan::True
                    : LessThan::False;
     }
     // Step 4, the else-branch: ToNumeric on both, and step 4.c's undefined for
     // a NaN on either side — which includes the case where one operand is a
-    // string that does not parse as a number.
-    const double nx = rtToNumber(px);
-    const double ny = rtToNumber(py);
+    // string that does not parse as a number. Both operands are primitive by
+    // now, so neither conversion can allocate; a Symbol is the one that raises.
+    const double nx = rtToNumber(px.get());
+    if (rtExceptionPending()) return LessThan::Undefined;
+    const double ny = rtToNumber(py.get());
+    if (rtExceptionPending()) return LessThan::Undefined;
     if (std::isnan(nx) || std::isnan(ny)) return LessThan::Undefined;
     return nx < ny ? LessThan::True : LessThan::False;
+}
+
+// ECMA-262 7.2.14, IsLooselyEqual, in the order the spec states it. The
+// order is the specification: `null == 0` is false only because step 2
+// answers before any ToNumber can run, and reordering the coercions would
+// make it true.
+//
+// The RESTART the spec writes as recursion is a loop over two roots here, and
+// that is not a stylistic choice. Steps 9-12 each convert one operand and ask
+// the question again; a conversion can be a user `valueOf` and so can collect,
+// which would leave the operand it did NOT convert stale in any recursion that
+// passed raw bits. Two rooted slots, rewritten in place, is the shape that
+// survives. Each pass strictly reduces what is left to convert — an object
+// becomes a primitive, a boolean becomes a number — so the bound below is a
+// tripwire for a step that failed to make progress, not a real limit.
+bool looseEq(Rooted<Value>& aRoot, Rooted<Value>& bRoot) {
+    for (int pass = 0; pass < 8; ++pass) {
+        const Value a = aRoot.get();
+        const Value b = bRoot.get();
+
+        const bool aNullish = a.isNull() || a.isUndefined() || a.isHole();
+        const bool bNullish = b.isNull() || b.isUndefined() || b.isHole();
+        // null and undefined are loosely equal to each other and to NOTHING
+        // else — not to 0, not to false, not to "". This is checked before any
+        // conversion, which is exactly what makes that true.
+        if (aNullish || bNullish) return aNullish && bNullish;
+
+        const bool aNum = a.isNumber() || a.isInt32();
+        const bool bNum = b.isNumber() || b.isInt32();
+
+        // Same type: strict equality, NaN and signed zero included. The two
+        // numeric tags are one type here, which is the seam a BigInt does NOT
+        // join: 7.2.14 keeps Number and BigInt distinct and compares their
+        // mathematical values in steps 6-8, so that case needs its own arm
+        // rather than a wider `aNum`.
+        if (aNum && bNum) return rtToNumber(a) == rtToNumber(b);
+        if (a.isString() && b.isString()) {
+            return a.asString<StringHeader>()->equals(*b.asString<StringHeader>());
+        }
+        if (a.isBool() && b.isBool()) return a.asBool() == b.asBool();
+        if (a.isObject() && b.isObject()) return a.rawBits() == b.rawBits();
+
+        // A symbol is loosely equal to the same symbol and to nothing else.
+        // 7.2.14 reaches that by omission — no step converts a Symbol — so the
+        // answer for every mixed pairing is false WITHOUT a conversion, which
+        // keeps `sym == "Symbol(tag)"` false rather than a TypeError. An object
+        // on the other side is the one exception: steps 11 and 12 name Symbol
+        // among the types whose object counterpart is ToPrimitive'd, so
+        // `sym == { [Symbol.toPrimitive]: () => sym }` is true.
+        if ((a.isSymbol() || b.isSymbol()) && !a.isObject() && !b.isObject()) {
+            return a.rawBits() == b.rawBits();
+        }
+
+        // A boolean operand is ToNumber'd and the comparison restarts, so
+        // `true == "1"` becomes `1 == "1"` becomes `1 == 1`.
+        if (a.isBool()) {
+            aRoot.set(Value::fromDouble(a.asBool() ? 1.0 : 0.0));
+            continue;
+        }
+        if (b.isBool()) {
+            bRoot.set(Value::fromDouble(b.asBool() ? 1.0 : 0.0));
+            continue;
+        }
+
+        // Number against string: the STRING is converted, never the number, so
+        // `2 == "2.0"` is true and `1 == "1x"` is false.
+        if (aNum && b.isString()) return rtToNumber(a) == rtToNumber(b);
+        if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
+
+        // Steps 11 and 12: an object against a primitive is ToPrimitive'd with
+        // NO hint and the comparison restarts. Hint default is what makes
+        // `[1] == 1` true — `valueOf` is asked first, answers the array itself,
+        // and `toString` then gives "1" — and it is also what makes
+        // `new String("ab") == "ab"` true where `===` is false, which is the
+        // whole observable difference between a wrapper and what it wraps.
+        if (b.isObject()) {
+            bRoot.set(rtToPrimitive(bRoot, ToPrimitiveHint::Default));
+            if (rtExceptionPending()) return false;
+            continue;
+        }
+        if (a.isObject()) {
+            aRoot.set(rtToPrimitive(aRoot, ToPrimitiveHint::Default));
+            if (rtExceptionPending()) return false;
+            continue;
+        }
+        // Step 13: two primitives of types no step above paired up.
+        return false;
+    }
+    fatal("internal: '==' failed to reach an answer (7.2.14's restarts must strictly reduce "
+          "what is left to convert, and one of them did not)");
 }
 
 }  // namespace
@@ -532,9 +629,10 @@ extern "C" {
 int32_t bronze_to_int32_f64(double d) { return toInt32(d); }
 
 int32_t bronze_to_int32(uint64_t bits) {
-    // ToNumber first, which is where a string operand is parsed: `"12" & 10`
-    // is 8, not NaN-and-therefore-0. rtToNumber names the object case as a
-    // hard error rather than guessing at ToPrimitive.
+    // ToNumber first (7.1.6 step 1), which is where a string operand is parsed —
+    // `"12" & 10` is 8, not NaN-and-therefore-0 — and where an object runs
+    // ToPrimitive, so `({valueOf: () => 5}) | 0` is 5. Only the boxed form of
+    // `to.int32` reaches here, and `il::canThrow` marks exactly that form.
     return toInt32(rtToNumber(Value(bits)));
 }
 
@@ -620,93 +718,43 @@ bool bronze_has_property(uint64_t keyBits, uint64_t objBits) {
 // differ only in which of the three answers they call true — and `<=` calls
 // true exactly one of them, so the undefined a NaN produces lands on false
 // where a negation of the boolean would have put it on true.
+//
+// The LeftFirst argument is what keeps the SWAPPED pair honest: `a > b` hands
+// IsLessThan (b, a) and false, so the conversions still run on `a` first, which
+// is the order a program with a `valueOf` on both sides can watch.
 bool bronze_rel_lt(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_lt");
-    return isLessThan(Value(aBits), Value(bBits)) == LessThan::True;
+    Rooted<Value> a{Value(aBits)};
+    Rooted<Value> b{Value(bBits)};
+    return isLessThan(a, b, /*leftFirst=*/true) == LessThan::True;
 }
 
 bool bronze_rel_gt(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_gt");
-    return isLessThan(Value(bBits), Value(aBits)) == LessThan::True;
+    Rooted<Value> a{Value(aBits)};
+    Rooted<Value> b{Value(bBits)};
+    return isLessThan(b, a, /*leftFirst=*/false) == LessThan::True;
 }
 
 bool bronze_rel_le(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_le");
-    return isLessThan(Value(bBits), Value(aBits)) == LessThan::False;
+    Rooted<Value> a{Value(aBits)};
+    Rooted<Value> b{Value(bBits)};
+    return isLessThan(b, a, /*leftFirst=*/false) == LessThan::False;
 }
 
 bool bronze_rel_ge(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_rel_ge");
-    return isLessThan(Value(aBits), Value(bBits)) == LessThan::False;
+    Rooted<Value> a{Value(aBits)};
+    Rooted<Value> b{Value(bBits)};
+    return isLessThan(a, b, /*leftFirst=*/true) == LessThan::False;
 }
 
-// ECMA-262 7.2.14, IsLooselyEqual, in the order the spec states it. The
-// order is the specification: `null == 0` is false only because step 2
-// answers before any ToNumber can run, and reordering the coercions would
-// make it true.
 bool bronze_loose_eq(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_loose_eq");
-    Value a(aBits);
-    Value b(bBits);
-
-    const bool aNullish = a.isNull() || a.isUndefined() || a.isHole();
-    const bool bNullish = b.isNull() || b.isUndefined() || b.isHole();
-    // null and undefined are loosely equal to each other and to NOTHING
-    // else — not to 0, not to false, not to "". This is checked before any
-    // conversion, which is exactly what makes that true.
-    if (aNullish || bNullish) return aNullish && bNullish;
-
-    const bool aNum = a.isNumber() || a.isInt32();
-    const bool bNum = b.isNumber() || b.isInt32();
-
-    // Same type: strict equality, NaN and signed zero included.
-    if (aNum && bNum) return rtToNumber(a) == rtToNumber(b);
-    if (a.isString() && b.isString()) {
-        return a.asString<StringHeader>()->equals(*b.asString<StringHeader>());
-    }
-    if (a.isBool() && b.isBool()) return a.asBool() == b.asBool();
-    if (a.isObject() && b.isObject()) return aBits == bBits;
-
-    // A symbol is loosely equal to the same symbol and to nothing else. 7.2.14
-    // reaches that by omission — no step converts a Symbol — so the answer for
-    // every mixed pairing is false WITHOUT a conversion, which is what keeps
-    // `sym == "Symbol(tag)"` false rather than a TypeError. An object on the
-    // other side is the one exception and falls to the ToPrimitive error below.
-    if ((a.isSymbol() || b.isSymbol()) && !a.isObject() && !b.isObject()) {
-        return aBits == bBits;
-    }
-
-    // A boolean operand is ToNumber'd and the comparison restarts, so
-    // `true == "1"` becomes `1 == "1"` becomes `1 == 1`.
-    if (a.isBool()) return bronze_loose_eq(Value::fromDouble(a.asBool() ? 1.0 : 0.0).rawBits(), bBits);
-    if (b.isBool()) return bronze_loose_eq(aBits, Value::fromDouble(b.asBool() ? 1.0 : 0.0).rawBits());
-
-    // Number against string: the STRING is converted, never the number, so
-    // `2 == "2.0"` is true and `1 == "1x"` is false.
-    if (aNum && b.isString()) return rtToNumber(a) == rtToNumber(b);
-    if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
-
-    // What is left is an object against a primitive, which 7.2.14 steps 11-12
-    // settle by ToPrimitive'ing the object and restarting the comparison. A
-    // primitive WRAPPER is the one object bronze can take that step for — its
-    // internal slot is what OrdinaryToPrimitive's `valueOf` call would answer —
-    // and it is the step that makes `new String("ab") == "ab"` true where
-    // `===` is false, which is the whole observable difference between a
-    // wrapper and the primitive it wraps.
-    if (Value prim; rtWrapperPrimitive(a, prim)) {
-        return bronze_loose_eq(prim.rawBits(), bBits);
-    }
-    if (Value prim; rtWrapperPrimitive(b, prim)) {
-        return bronze_loose_eq(aBits, prim.rawBits());
-    }
-    // Every other object is refused by name for the reason the relational
-    // operators are: the algorithm exists, and this function cannot call it.
-    // `bronze_loose_eq` recurses through raw bits — every restart above passes
-    // `aBits` and `bBits` back into itself — so a conversion that collects
-    // would leave the operand it did not convert pointing into dead space.
-    fatal("unsupported: '==' between an object and a primitive (7.2.14 step 11 runs "
-          "ToPrimitive, which bronze applies at `+` and `String(x)`; this comparison "
-          "restarts itself through raw bits and cannot yet call it)");
+    Rooted<Value> a{Value(aBits)};
+    Rooted<Value> b{Value(bBits)};
+    return looseEq(a, b);
 }
 
 }  // extern "C"

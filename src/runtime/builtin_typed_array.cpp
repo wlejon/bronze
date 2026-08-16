@@ -67,8 +67,14 @@ Value fromLength(ElementKind kind, uint32_t length) {
 
 Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value lengthVal) {
     const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
+    // 23.2.5.1 runs ToIndex on the offset before it even looks at the length,
+    // and ToIndex is ToNumber: `new Int32Array(buf, {valueOf(){…}}, {valueOf(){…}})`
+    // runs user code between the two reads, so the length argument needs a root
+    // of its own — the caller's copy is a local the collector cannot update.
+    Rooted<Value> offsetRoot{offsetVal};
+    Rooted<Value> lengthRoot{lengthVal};
     uint32_t offset = 0;
-    if (!toIndex(offsetVal, "byte offset", 1, offset)) return Value::fromUndefined();
+    if (!toIndex(offsetRoot.get(), "byte offset", 1, offset)) return Value::fromUndefined();
     if (offset % bpe != 0) {
         rtThrowRangeError("start offset of " + std::string(elementKindInfo(kind).name) +
                           " should be a multiple of " + std::to_string(bpe));
@@ -87,7 +93,7 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
     }
 
     uint32_t length = 0;
-    if (lengthVal.isUndefined()) {
+    if (lengthRoot.get().isUndefined()) {
         if ((bufferLength - offset) % bpe != 0) {
             rtThrowRangeError("byte length of " + std::string(elementKindInfo(kind).name) +
                               " should be a multiple of " + std::to_string(bpe));
@@ -95,7 +101,7 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
         }
         length = (bufferLength - offset) / bpe;
     } else {
-        if (!toIndex(lengthVal, "typed array", bpe, length)) return Value::fromUndefined();
+        if (!toIndex(lengthRoot.get(), "typed array", bpe, length)) return Value::fromUndefined();
         if (static_cast<uint64_t>(offset) + static_cast<uint64_t>(length) * bpe > bufferLength) {
             rtThrowRangeError("Invalid typed array length: " + std::to_string(length));
             return Value::fromUndefined();

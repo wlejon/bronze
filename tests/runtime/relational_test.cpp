@@ -11,8 +11,11 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/rt_internal.h"
@@ -129,4 +132,104 @@ TEST_CASE("one string and one number is the numeric branch, step 4") {
     // A boolean is 1 or 0 in a numeric position.
     CHECK(bronze_rel_lt(Value::fromBool(false).rawBits(), Value::fromBool(true).rawBits()));
     CHECK(bronze_rel_le(Value::fromBool(true).rawBits(), num(1.0)));
+}
+
+// 13.10.1 step 1: an OBJECT operand is ToPrimitive'd with hint NUMBER, so
+// `valueOf` is asked before `toString`. The answers alone cannot show that — an
+// object defining both halves orders plausibly either way — so what is checked
+// here is the CALL LOG and the ORDER of the two conversions.
+//
+// LeftFirst is the part a whole-program case can only observe indirectly.
+// `a > b` asks IsLessThan(b, a) and passes LeftFirst false, which is what keeps
+// the SOURCE's left operand converting first for all four operators.
+namespace {
+
+std::vector<std::string> g_relCalls;
+
+// Never reached under hint number while `valueOf` answers a primitive, which
+// is exactly what the log below is checking.
+uint64_t relToString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    g_relCalls.push_back("toString");
+    return rtMakeString("s").rawBits();
+}
+
+// Two probes, told apart by the number their `valueOf` answers with and by the
+// name they log.
+double g_leftValue = 0.0;
+double g_rightValue = 0.0;
+
+uint64_t leftValueOf(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    g_relCalls.push_back("L");
+    return Value::fromDouble(g_leftValue).rawBits();
+}
+
+uint64_t rightValueOf(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    g_relCalls.push_back("R");
+    return Value::fromDouble(g_rightValue).rawBits();
+}
+
+const NativeMethod kLeftMethods[] = {{"valueOf", leftValueOf, 0}, {"toString", relToString, 0}};
+const NativeMethod kRightMethods[] = {{"valueOf", rightValueOf, 0}, {"toString", relToString, 0}};
+
+Value leftProbe() {
+    Rooted<Value> obj{Value(bronze_create_object())};
+    rtDefineMethods(obj, kLeftMethods, 2);
+    return obj.get();
+}
+
+Value rightProbe() {
+    Rooted<Value> obj{Value(bronze_create_object())};
+    rtDefineMethods(obj, kRightMethods, 2);
+    return obj.get();
+}
+
+std::string relLog() {
+    std::string out;
+    for (const std::string& s : g_relCalls) {
+        if (!out.empty()) out += ",";
+        out += s;
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("a relational operator converts an object with hint number") {
+    ShadowStackFrame frame;
+    g_leftValue = 1.0;
+    g_rightValue = 2.0;
+
+    Rooted<Value> left{leftProbe()};
+    Rooted<Value> right{rightProbe()};
+
+    // `valueOf` answers a primitive, so `toString` is never reached — which is
+    // the whole difference between hint number and hint string.
+    g_relCalls.clear();
+    CHECK(bronze_rel_lt(left.get().rawBits(), right.get().rawBits()));
+    CHECK(relLog() == "L,R");
+
+    // All four operators convert the source's LEFT operand first, including the
+    // two that swap IsLessThan's arguments.
+    g_relCalls.clear();
+    CHECK_FALSE(bronze_rel_gt(left.get().rawBits(), right.get().rawBits()));
+    CHECK(relLog() == "L,R");
+
+    g_relCalls.clear();
+    CHECK(bronze_rel_le(left.get().rawBits(), right.get().rawBits()));
+    CHECK(relLog() == "L,R");
+
+    g_relCalls.clear();
+    CHECK_FALSE(bronze_rel_ge(left.get().rawBits(), right.get().rawBits()));
+    CHECK(relLog() == "L,R");
+
+    // One object against a plain number converts only the object.
+    g_relCalls.clear();
+    CHECK(bronze_rel_lt(left.get().rawBits(), num(5.0)));
+    CHECK(relLog() == "L");
+
+    // Two numbers convert nothing at all, which is the shape a typed comparison
+    // that stayed boxed arrives in.
+    g_relCalls.clear();
+    CHECK(bronze_rel_lt(num(1.0), num(2.0)));
+    CHECK(relLog().empty());
 }

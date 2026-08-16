@@ -218,8 +218,15 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
         if (ki.isElemIndex) {
+            // 10.4.5.5 runs ToNumber on the VALUE, and for an object that is a
+            // user `valueOf` — so the view is reached through a root afterwards
+            // rather than through the header taken above, and its length is
+            // re-read: a collection during the conversion moves the object, and
+            // the conversion itself can leave a TypeError pending.
+            Rooted<Value> viewRoot{objVal};
             const double num = rtToNumber(Value(valBits));
-            auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+            if (rtExceptionPending()) return;
+            auto* view = viewRoot.get().asObject<TypedArrayHeader>();
             if (ki.elemIndex < view->length) view->set(ki.elemIndex, num);
             return;
         }
@@ -420,9 +427,16 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     if (!objVal.isObject()) {
         fatal("internal: a computed class method defined on a receiver that is not an object");
     }
-    Value keyVal(keyBits);
-    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    Rooted<Value> objRoot0{objVal};
     Rooted<Value> val{Value(valBits)};
+    Rooted<Value> keyRoot{Value(keyBits)};
+    // 7.1.19, whose step 1 can run a user `toString`: the receiver and the
+    // method are rooted across it, and the header below is re-derived after.
+    keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
+    objVal = objRoot0.get();
+    Value keyVal = keyRoot.get();
+    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
@@ -489,10 +503,16 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     if (!objVal.isObject()) {
         fatal("internal: an accessor defined on a value that is not an object");
     }
-    Value keyVal(keyBits);
-    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    Rooted<Value> objRoot0{objVal};
     Rooted<Value> getter{Value(getterBits)};
     Rooted<Value> setter{Value(setterBits)};
+    Rooted<Value> keyRoot{Value(keyBits)};
+    // 7.1.19 again, with both halves of the accessor rooted across it.
+    keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
+    objVal = objRoot0.get();
+    Value keyVal = keyRoot.get();
+    Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
@@ -513,6 +533,23 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
     recordElemCall("bronze_elem_set");
     Value objVal(objBits);
+
+    // 7.1.19 ToPropertyKey for an OBJECT key, at the entry and nowhere below,
+    // for the reason `bronze_elem_get` does it here: the key's `toString` is
+    // user code, and every branch past this point holds a raw receiver header
+    // across the key conversion. The receiver AND the value are rooted, because
+    // the value is just as movable as the receiver and is not touched again
+    // until the write itself.
+    if (Value(idxBits).isObject()) {
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> valRoot{Value(valBits)};
+        Rooted<Value> keyRoot{Value(idxBits)};
+        keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return;
+        bronze_elem_set(objRoot.get().rawBits(), keyRoot.get().rawBits(),
+                        valRoot.get().rawBits(), strict);
+        return;
+    }
 
     // Fast path: numeric index write on an Array or TypedArray without side-effects.
     if (objVal.isObject() && idxBits <= kNumberMaxBits) {
@@ -634,8 +671,12 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                     return;
                 }
                 if (hdr->flags == TypedArrayHeader::kFlags) {
+                    // The value's ToNumber can be a user `valueOf`; the view is
+                    // re-derived from a root after it for that reason.
+                    Rooted<Value> viewRoot{objVal};
                     const double num = rtToNumber(Value(valBits));
-                    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+                    if (rtExceptionPending()) return;
+                    auto* view = viewRoot.get().asObject<TypedArrayHeader>();
                     if (u < view->length) view->set(u, num);
                     return;
                 }
@@ -679,9 +720,10 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                    std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
                    ") are unsupported").c_str());
         }
-        // rtToNumber cannot allocate (see bronze_prop_set), so `hdr` is live.
+        Rooted<Value> viewRoot{objVal};
         const double num = rtToNumber(Value(valBits));
-        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (rtExceptionPending()) return;
+        auto* view = viewRoot.get().asObject<TypedArrayHeader>();
         if (idx < view->length) view->set(idx, num);
         return;  // out-of-bounds typed-array writes are discarded, per spec
     }

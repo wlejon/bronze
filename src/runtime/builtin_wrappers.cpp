@@ -114,8 +114,9 @@ Shape* g_stringWrapperShape = nullptr;
 Shape* g_booleanWrapperShape = nullptr;
 Shape* g_numberWrapperShape = nullptr;
 // `valueOf`, arena-interned once, so the ToPrimitive guard below can walk a
-// chain without allocating — which is what lets `rtToNumber` keep the promise
-// two callers in rt_prop.cpp rely on, that it cannot move the heap.
+// chain without allocating — which is what lets the shortcut be usable from
+// `console.log`'s inspect walk, whose whole contract is that it cannot move
+// the heap.
 StringHeader* g_valueOfKey = nullptr;
 // The two `valueOf` function objects as they were installed, so the guard can
 // ask whether the one a lookup finds today is still the builtin. Read back off
@@ -384,10 +385,13 @@ bool rtWrapperPrimitive(Value v, Value& out) {
     // because ignoring it is a wrong answer where changing this one was the
     // whole point of overriding it.
     //
-    // `+` and `String(x)` no longer come through here at all: they run the real
-    // algorithm, which calls the override. What is left are `rel.lt` and
-    // friends, `==`, and ToNumber, each of which holds something the collector
-    // would move or sits under an op `il::canThrow` does not mark.
+    // No conversion a PROGRAM spells comes through here any more: `+`,
+    // `String(x)`, ToNumber, the relational operators, `==` and a computed
+    // property key all run the real algorithm, which calls the override. What
+    // is left is `console.log` and `JSON.stringify`, which have their own
+    // algorithms and must not run user code at all — so a wrapper whose
+    // `valueOf` the program replaced is named there rather than silently
+    // printed from its slot.
     const Value pristine = data.isString()  ? g_pristineStringValueOf
                            : data.isBool() ? g_pristineBooleanValueOf
                                            : g_pristineNumberValueOf;
@@ -456,9 +460,7 @@ bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, 
     if (std::string_view(name) == "Number") {
         // 21.1.1.1 with NewTarget present: no argument at all is +0𝔽, and
         // anything else is ToNumeric — which for a SYMBOL is the TypeError
-        // 6.1.5.1 names. Thrown here rather than left to `rtToNumber`, which
-        // makes it a hard error because its callers cannot unwind; this one is
-        // an ordinary builtin and can.
+        // 6.1.5.1 names.
         if (args.count() == 0) {
             out = rtMakeNumberWrapper(0.0);
             return true;

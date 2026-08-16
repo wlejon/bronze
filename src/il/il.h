@@ -337,7 +337,12 @@ struct Instruction {
     double immF64 = 0;               // ConstF64
     int32_t immI32 = 0;              // ConstI32 / CreateArray length / CreateFunction arity
     uint32_t calleeIndex = 0;        // Call/CreateFunction: index into Module::functions
-    Type boxType = Type::Void;       // Box: input type being boxed (F64, I32, Bool, Str)
+    // The OPERAND's type, for the two ops whose behaviour turns on it and whose
+    // own `type` is the result: Box (what is being boxed) and ToInt32 (whether
+    // step 1's ToNumber is a machine conversion or a call that can throw).
+    // Not printed for ToInt32 — `to.int32 %n` names one operation either way,
+    // and the operand's own definition already says what type it is.
+    Type boxType = Type::Void;
     uint32_t keyIndex = 0;           // PropGet/PropSet: key constant index
     uint32_t icIndex = 0;            // PropGet/PropSet: IC site index
     // PropGet: inference proved this site's receiver has ONE shape class, so

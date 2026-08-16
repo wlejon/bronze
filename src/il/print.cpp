@@ -156,7 +156,6 @@ bool canThrow(const Instruction& inst) {
         case Op::Div:
         case Op::Mod:
         case Op::Pow:
-        case Op::ToInt32:
         case Op::BitAnd:
         case Op::BitOr:
         case Op::BitXor:
@@ -177,7 +176,6 @@ bool canThrow(const Instruction& inst) {
         case Op::IsNullish:
         case Op::TypeOf:
         case Op::Box:
-        case Op::Unbox:
         // Allocation and the environment: they can collect, and a failure to
         // allocate is fatal rather than catchable (there is no `RangeError:
         // out of memory` in bronze, and inventing one would let a program
@@ -209,6 +207,20 @@ bool canThrow(const Instruction& inst) {
         case Op::Add:
             // Dynamic `+` is bronze_dynamic_add, which is ToPrimitive.
             return inst.type == Type::Dynamic;
+        case Op::Unbox:
+            // `unbox.f64` is ToNumber (7.1.4) — generated code's only numeric
+            // coercion — and ToNumber runs ToPrimitive on an object and throws
+            // for a Symbol. `unbox.bool` is ToBoolean, which is total, and
+            // `unbox.i32` reads a number it has already tested for; neither
+            // calls anything.
+            return inst.type == Type::F64;
+        case Op::ToInt32:
+            // Same conversion under a different name: 7.1.6 step 1 is ToNumber,
+            // so `{} | 0` and `sym | 0` reach user code and the TypeError. Only
+            // a BOXED operand does — `boxType` carries the operand's type here,
+            // and an f64 or i32 one is a machine conversion with no call in it,
+            // which is what keeps a proven-numeric bitwise chain branch-free.
+            return inst.boxType == Type::Dynamic;
         default:
             return !isTerminator(inst.op);
     }

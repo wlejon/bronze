@@ -161,12 +161,17 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
                    "String.prototype.charCodeAt called on a value that is not a string")
             .rawBits();
     }
-    StringHeader* str = self.asString<StringHeader>();
+    // The index conversion runs 7.1.4 and so may call user code, which
+    // allocates and can move the string; the header is therefore taken AFTER
+    // it, out of a rooted slot the collector updates.
+    Rooted<Value> str{self};
     double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
-    if (idx < 0 || idx >= static_cast<double>(str->getLength())) {
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const StringHeader* s = str.get().asString<StringHeader>();
+    if (idx < 0 || idx >= static_cast<double>(s->getLength())) {
         return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
     }
-    return Value::fromDouble(str->charCodeAt(static_cast<uint32_t>(idx))).rawBits();
+    return Value::fromDouble(s->charCodeAt(static_cast<uint32_t>(idx))).rawBits();
 }
 
 // Out of range is `undefined` here and NaN in charCodeAt above. That is
@@ -188,16 +193,20 @@ uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uin
                    "String.prototype.codePointAt called on a value that is not a string")
             .rawBits();
     }
-    StringHeader* str = self.asString<StringHeader>();
-    const uint32_t size = str->getLength();
+    // As in charCodeAt: the header is only valid after the index conversion,
+    // which may run user code and move the string.
+    Rooted<Value> str{self};
     double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const StringHeader* s = str.get().asString<StringHeader>();
+    const uint32_t size = s->getLength();
     if (idx < 0 || idx >= static_cast<double>(size)) return Value::fromUndefined().rawBits();
     const uint32_t at = static_cast<uint32_t>(idx);
-    const uint32_t first = str->charCodeAt(at);
+    const uint32_t first = s->charCodeAt(at);
     if (first < 0xD800 || first > 0xDBFF || at + 1 == size) {
         return Value::fromDouble(first).rawBits();
     }
-    const uint32_t second = str->charCodeAt(at + 1);
+    const uint32_t second = s->charCodeAt(at + 1);
     if (second < 0xDC00 || second > 0xDFFF) return Value::fromDouble(first).rawBits();
     return Value::fromDouble((first - 0xD800) * 0x400 + (second - 0xDC00) + 0x10000).rawBits();
 }
@@ -540,8 +549,11 @@ uint64_t stringToWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_
 // 22.1.3.16 normalize
 uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value selfVal(thisBits);
-    Units self = thisUnits(selfVal, "normalize");
+    // Rooted, because this is the one member that answers with its RECEIVER
+    // rather than with a freshly built string: the form argument's ToString can
+    // be user code, and an unrooted receiver read afterwards is a moved one.
+    Rooted<Value> selfVal{Value(thisBits)};
+    thisUnits(selfVal.get(), "normalize");
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     std::string form = "NFC";
@@ -557,7 +569,7 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     }
 
     Value str;
-    rtThisStringValue(selfVal, str);
+    rtThisStringValue(selfVal.get(), str);
     return str.rawBits();
 }
 

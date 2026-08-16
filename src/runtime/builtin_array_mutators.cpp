@@ -104,21 +104,25 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 
 uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value self(thisBits);
-    if (!requireArray(self, "fill")) return Value::fromUndefined().rawBits();
-    ArrayHeader* arr = self.asObject<ArrayHeader>();
-    const uint32_t len = arr->length;
-    Value fillVal = args[0];
+    // Rooted, and the header taken only AFTER the index conversions: ToNumber
+    // of an object argument is ToPrimitive, so `a.fill(0, {valueOf(){...}})`
+    // runs user code and can move the array. The length is a copy and survives;
+    // the pointer would not.
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireArray(self.get(), "fill")) return Value::fromUndefined().rawBits();
+    const uint32_t len = self.get().asObject<ArrayHeader>()->length;
     uint32_t start = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
     uint32_t end = args.count() > 2 && !args[2].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                        : len;
-    if (start < end && !requireWritableElements(self, "fill")) {
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (start < end && !requireWritableElements(self.get(), "fill")) {
         return Value::fromUndefined().rawBits();
     }
-    Value* data = arr->elementsData();
+    const Value fillVal = args[0];
+    Value* data = self.get().asObject<ArrayHeader>()->elementsData();
     for (uint32_t i = start; i < end; ++i) data[i] = fillVal;
-    return self.rawBits();
+    return self.get().rawBits();
 }
 
 uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -191,23 +195,27 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 // 23.1.3.4 Array.prototype.copyWithin(target, start, end = this.length)
 uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value self(thisBits);
-    if (!requireArray(self, "copyWithin")) return Value::fromUndefined().rawBits();
-    ArrayHeader* arr = self.asObject<ArrayHeader>();
-    const uint32_t len = arr->length;
+    // Rooted for the reason `fill` is: the three index conversions can each be
+    // a user `valueOf`, and the elements pointer is taken after all of them.
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireArray(self.get(), "copyWithin")) return Value::fromUndefined().rawBits();
+    const uint32_t len = self.get().asObject<ArrayHeader>()->length;
 
     uint32_t to = args.count() > 0 ? relativeIndex(toInteger(rtToNumber(args[0])), len) : 0;
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
     uint32_t final = args.count() > 2 && !args[2].isUndefined()
                          ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                          : len;
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     uint32_t count = final > from ? std::min(final - from, len - to) : 0;
-    if (count == 0) return self.rawBits();
+    if (count == 0) return self.get().rawBits();
 
-    if (!requireWritableElements(self, "copyWithin")) return Value::fromUndefined().rawBits();
+    if (!requireWritableElements(self.get(), "copyWithin")) {
+        return Value::fromUndefined().rawBits();
+    }
 
-    Value* data = arr->elementsData();
+    Value* data = self.get().asObject<ArrayHeader>()->elementsData();
     if (from < to && to < from + count) {
         // Copy backwards to handle overlap
         for (uint32_t i = count; i > 0; --i) {
@@ -219,7 +227,7 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
             data[to + i] = data[from + i];
         }
     }
-    return self.rawBits();
+    return self.get().rawBits();
 }
 
 }  // namespace bronze::runtime

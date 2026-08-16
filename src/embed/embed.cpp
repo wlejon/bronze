@@ -133,7 +133,12 @@ Value fromUtf8(std::string_view utf8) {
     return runtime::rtMakeString(utf8);
 }
 
-double toDouble(Value v) { return runtime::rtToNumber(v); }
+// A frame, because ToNumber of an OBJECT is 7.1.4 step 1: ToPrimitive, which
+// calls the host's own JS and allocates. A primitive still costs nothing.
+double toDouble(Value v) {
+    ShadowStackFrame frame;
+    return runtime::rtToNumber(v);
+}
 
 bool toBool(Value v) { return bronze_truthy(v.rawBits()); }
 

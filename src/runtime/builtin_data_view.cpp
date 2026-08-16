@@ -189,12 +189,17 @@ bool requireDataView(Value v, const char* method) {
 // 25.3.1.1 GetViewValue.
 Value getViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg,
                    ElementKind kind) {
+    // Step 1's ToIndex is 7.1.4 under a different name, so `getInt32(obj)` runs
+    // a user `valueOf` — which allocates and moves the OTHER argument. The
+    // caller's `RootedArgs` roots its own slots, but the copies handed here are
+    // ordinary locals the collector cannot see, so they get roots of their own.
+    Rooted<Value> endianRoot{littleEndianArg};
     uint32_t getIndex = 0;
     if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
     // Step 4 is ToBoolean, not a strict test: `getUint16(0, 1)` is
     // little-endian, and an omitted argument is `undefined`, which is false —
     // which is the whole of "defaults to big-endian".
-    const bool littleEndian = bronze_truthy(littleEndianArg.rawBits());
+    const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
     const uint32_t elementSize = elementKindInfo(kind).bytesPerElement;
 
     // Derived after the last thing that could allocate, and used before the
@@ -210,14 +215,19 @@ Value getViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
 // 25.3.1.2 SetViewValue.
 Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg, ElementKind kind,
                    Value value) {
+    // Rooted for the reason getViewValue's are, and with one more operand at
+    // risk: `setInt32(objA, objB)` runs two conversions, and the first can move
+    // what the second is about to read.
+    Rooted<Value> endianRoot{littleEndianArg};
+    Rooted<Value> valueRoot{value};
     uint32_t getIndex = 0;
     if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
     // Step 4 runs ToNumber BEFORE the bounds test of step 11, so a `set` past
     // the end of the view still converts its value first — and a conversion
     // that throws is what such a call reports, not the RangeError.
-    const double num = rtToNumber(value);
+    const double num = rtToNumber(valueRoot.get());
     if (rtExceptionPending()) return Value::fromUndefined();
-    const bool littleEndian = bronze_truthy(littleEndianArg.rawBits());
+    const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
     const uint32_t elementSize = elementKindInfo(kind).bytesPerElement;
 
     auto* view = self.get().asObject<DataViewHeader>();

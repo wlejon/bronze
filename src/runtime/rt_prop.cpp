@@ -16,9 +16,9 @@
 // seam: a read asks every receiver the same question and takes each kind's
 // answer, while a write asks whether the receiver can hold the property at all
 // — so that file is almost entirely refusals and this one is almost entirely
-// lookups. What they share is the KEY, and it lives here: whether a key names
-// an element and what string a computed key names mean the same thing in either
-// direction, so rt_internal.h hands the write side these rather than letting it
+// lookups. What they SHARE is the key — whether it names an element and what
+// string a computed one names mean the same thing in either direction — and
+// that is rt_key.cpp, reached by both through rt_internal.h so that neither can
 // keep a second opinion about `a["01"]`.
 
 #include <cmath>
@@ -62,84 +62,6 @@ namespace bronze::runtime {
 // runtime's own property paths); ObjectHeader::getProp already treats a null
 // cache as "look it up and cache nothing", a difference in speed and not in
 // semantics.
-
-// Whether a key names an ELEMENT rather than a named property, for the
-// receivers that store their elements by index. This is `rtIsIntegerLikeKey`
-// and nothing else: the canonical-array-index test, the same one enumeration
-// order and `Object.keys` ask, so the two answers cannot drift. A
-// leading-digits parse would send `a["1x"]` and `a["01"]` to element 1, which
-// the language calls named properties (`index_keys`).
-bool rtKeyAsIndex(const std::string& key, uint32_t& out) {
-    return rtIsIntegerLikeKey(key, out);
-}
-
-// A computed index that names an element. ToPropertyKey makes `a[0]` and
-// `a["0"]` the same property, so a STRING index that is a canonical array
-// index has to reach the elements too — which is not an edge case: `for-in`
-// yields keys as strings, so `arr[k]` inside one is the ordinary way to write
-// this. Before the string branch existed, `for (const i in arr) arr[i]` died
-// with "computed index must be a number" on the loop's own idiom.
-//
-// A non-canonical string ("01", "1x") is a NAMED property, which arrays and
-// typed arrays do not carry; the caller answers `undefined` for it, exactly as
-// for an out-of-range index.
-bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
-    if (idxVal.isString()) {
-        const StringHeader* s = idxVal.asString<StringHeader>();
-        if (!s->isLatin1()) return false;
-        return rtIsIntegerLikeKey(std::string_view(s->latin1Data(), s->getLength()), out);
-    }
-    if (!idxVal.isNumber()) {
-        fatal("computed index must be a number or a string (object keys in [] are unsupported)");
-    }
-    double d = idxVal.asNumber();
-    if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) return false;
-    out = static_cast<uint32_t>(d);
-    return true;
-}
-
-// ToPropertyKey (ECMA-262 7.1.19) as a heap string: every property name is a
-// string, so `o[2]` and `o["2"]` name the same property and `{ [2]: v }` and `{
-// 2: v }` write the same one. ToString(Number) is `formatJsNumber` and not
-// console.log's inspect spelling — ToString(-0) is "0", where inspect says
-// "-0".
-//
-// ALLOCATES, so the caller must have the receiver rooted before it calls.
-Value rtElemKeyAsString(Value idxVal) {
-    if (idxVal.isString()) return idxVal;
-    char buf[64];
-    size_t len = 0;
-    if (idxVal.isNumber()) {
-        len = formatJsNumber(idxVal.asNumber(), buf);
-    } else if (idxVal.isBool()) {
-        len = idxVal.asBool() ? 4 : 5;
-        std::memcpy(buf, idxVal.asBool() ? "true" : "false", len);
-    } else if (idxVal.isUndefined()) {
-        len = 9;
-        std::memcpy(buf, "undefined", len);
-    } else if (idxVal.isNull()) {
-        len = 4;
-        std::memcpy(buf, "null", len);
-    } else {
-        // 7.1.19 ToPropertyKey runs ToPrimitive with hint string, which IS
-        // built (rt_convert.cpp) — what is missing is this function's licence
-        // to call it. It is documented as allocating and nothing more, and its
-        // callers hold raw headers across it; ToPrimitive runs a user
-        // `toString`, which can collect and can throw, and the write path
-        // reaches this from helpers `il::canThrow` does not mark. So the object
-        // key is refused by name here until those callers are re-rooted, rather
-        // than converted from under them.
-        //
-        // A SYMBOL never arrives here: it is ALREADY a property key, so every
-        // caller branches on it before conversion — converting one is the
-        // TypeError that would turn `o[sym]` into a throw.
-        fatal("unsupported: a computed property key that is an object (7.1.19 runs "
-              "ToPrimitive, which bronze applies at `+` and `String(x)` but not yet on the "
-              "property path, whose callers hold raw headers across the key conversion)");
-    }
-    return Value::fromString(
-        StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, len)));
-}
 
 // A member of a WeakMap or a WeakSet, by name. The Map arrangement below with
 // the `size` line missing — 24.3.3 and 24.4.3 define no such accessor, so its
@@ -835,6 +757,21 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     recordElemCall("bronze_elem_get");
     Value objVal(objBits);
+
+    // 7.1.19 ToPropertyKey, for the one key kind that has to run before
+    // anything else: an OBJECT, whose `toString` is user code. It is done here,
+    // at the entry, and nowhere below — every branch past this point holds a raw
+    // receiver header at some point, and a conversion that collects would move
+    // it. The receiver is rooted across the call and the whole helper is
+    // re-entered with the converted key, so the fast paths below see exactly the
+    // primitive they were written for.
+    if (Value(idxBits).isObject()) {
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> keyRoot{Value(idxBits)};
+        keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        return bronze_elem_get(objRoot.get().rawBits(), keyRoot.get().rawBits());
+    }
 
     // Fast path: numeric index access on an Array or TypedArray (the common case
     // in compute and math kernels). Checked before symbol or string conversion.

@@ -1,0 +1,23 @@
+1 1 1 true k
+by string by number by string 7
+7|name
+2 true
+3 3 true string,string,string
+symbol slot symbol slot string slot
+Symbol(tag)
+20 3
+99 3
+false true true
+hi 42 n
+lit lit2
+2 true
+set key
+get key
+delete key
+a
+true Cannot convert object to primitive value
+yes nothing missing fractional
+true,null,undefined,1.5
+flag flag nil 2
+10 20 0,1,true,null
+undefined undefined
