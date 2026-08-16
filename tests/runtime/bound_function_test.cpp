@@ -16,7 +16,8 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -173,7 +174,7 @@ TEST_CASE("a bound native carries no invented name or length") {
     ShadowStackFrame frame;
 
     // A native builtin records neither `name` nor `length`
-    // (rt_internal.h::rtNativeFunction says why), so a bound function over one
+    // (rt_builtins.h::rtNativeFunction says why), so a bound function over one
     // must inherit the ABSENCE — `name == nullptr` — rather than answer
     // "bound " over a name that was never recorded.
     Rooted<Value> target{rtNativeFunction(reportArg0, 0)};

@@ -1,4 +1,9 @@
 #include "runtime/builtin_array_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 
 namespace bronze::runtime {
 

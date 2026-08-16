@@ -12,7 +12,8 @@
 #include "runtime/heap.h"
 #include "runtime/integrity.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 
 namespace bronze::embed {
 

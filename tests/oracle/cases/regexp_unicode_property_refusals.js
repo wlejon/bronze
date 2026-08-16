@@ -1,15 +1,16 @@
 // What `\p{...}` still refuses, and why each refusal says what it says.
 //
-// bronze carries General_Category and nothing else, so a property escape has
-// three ways to fail and they are three different messages. Script is refused
-// BY NAME, because it is the property a reader reaches for next and because
-// letting it fall through to the value lookup would report a misspelling where
-// the truth is a missing table -- the generator behind bronze's tables reads
-// Python's `unicodedata`, which carries no Script property at all. A binary
-// property is refused with its own name and a list of what IS carried. And an
-// unknown or misspelled name is a syntax error naming the offender, never a
-// set that quietly matches nothing, which is the failure mode a property
-// escape has and `\d` does not.
+// bronze carries General_Category and Script, so a property escape has three
+// ways to fail and they are three different messages. A value that names no
+// SCRIPT is diagnosed against the script table it was looked up in, because
+// letting it fall through to the category lookup would report a misspelled
+// category and send the reader to the wrong table. A binary property is refused
+// with its own name and a list of what IS carried. And an unknown or misspelled
+// name is a syntax error naming the offender, never a set that quietly matches
+// nothing, which is the failure mode a property escape has and `\d` does not.
+//
+// What the sets MEAN, once they are accepted, is regexp_unicode_property and
+// regexp_script_properties; this file is only about the three refusals.
 //
 // The escape is also a +UnicodeMode production, so without `u` it is refused
 // rather than read as Annex B's `p` followed by a quantified `{L}`. That is
@@ -29,14 +30,17 @@ function names(f, text) {
   return message(f).indexOf(text) >= 0;
 }
 
-// Script, by name, and pointing at the data file it would need.
-console.log(names(function () { return new RegExp("\\p{Script=Greek}", "u"); }, "Script"),
-            names(function () { return new RegExp("\\p{Script=Greek}", "u"); }, "UAX #24"));
-console.log(names(function () { return new RegExp("\\p{scx=Greek}", "u"); },
+// An unknown SCRIPT, diagnosed as one and pointing at the report that defines
+// the property. Both spellings of the property reach the same message, which is
+// what stops `scx` from being the one that falls somewhere else.
+console.log(names(function () { return new RegExp("\\p{Script=Greeek}", "u"); }, "Script"),
+            names(function () { return new RegExp("\\p{Script=Greeek}", "u"); }, "UAX #24"));
+console.log(names(function () { return new RegExp("\\p{scx=Greeek}", "u"); },
                   "Script_Extensions"));
-// And NOT through the general refusal: `Greek` is no General_Category value,
-// so a lookup that fell through would call this a misspelling.
-console.log(names(function () { return new RegExp("\\p{Script=Greek}", "u"); }, "misspelling"));
+// And NOT through the General_Category refusal: `Greeek` is no category value
+// either, so a lookup that fell through would report a misspelled CATEGORY and
+// send the reader to the wrong table.
+console.log(names(function () { return new RegExp("\\p{Script=Greeek}", "u"); }, "misspelling"));
 
 // A binary property bronze cannot derive, named together with what it can.
 console.log(names(function () { return new RegExp("\\p{Alphabetic}", "u"); }, "Alphabetic"),

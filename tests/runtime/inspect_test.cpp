@@ -7,7 +7,7 @@
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_convert.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 

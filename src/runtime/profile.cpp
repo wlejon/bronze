@@ -17,7 +17,8 @@
 #include "abi/bronze_abi.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 

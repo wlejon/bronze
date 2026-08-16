@@ -21,7 +21,8 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {

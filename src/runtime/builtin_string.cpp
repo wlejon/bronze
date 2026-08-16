@@ -1,6 +1,6 @@
 // String.prototype's plain members: ordinary function objects over native code
 // pointers, every one of them opening with the RootedArgs prologue
-// (rt_internal.h). The table at the foot of the file is installed as
+// (rt_roots.h). The table at the foot of the file is installed as
 // non-enumerable own properties of the `String.prototype` OBJECT that
 // builtin_wrappers.cpp builds — a program can hold them, compare them and pass
 // them to `.call`, where an array's members are still answered beside the value
@@ -33,7 +33,11 @@
 #include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/number_format.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/unicode_case.h"
 #include "runtime/value.h"

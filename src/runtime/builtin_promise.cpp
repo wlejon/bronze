@@ -23,7 +23,11 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/value.h"
 

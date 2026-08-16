@@ -15,7 +15,7 @@
 #include <string>
 
 #include "runtime/fatal.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_property.h"
 
 namespace bronze::runtime {
 

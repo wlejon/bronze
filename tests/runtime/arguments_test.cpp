@@ -12,11 +12,9 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/gc.h"
-#include "runtime/rt_internal.h"
 #include "runtime/value.h"
 
 using namespace bronze;
-using namespace bronze::runtime;
 
 TEST_CASE("the arguments object holds every argument passed, in order") {
     ShadowStackFrame frame;

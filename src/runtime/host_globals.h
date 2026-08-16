@@ -10,9 +10,10 @@
 // names onto its provided-globals list at compile time, and the host registers
 // the values before `bronze_main` runs.
 //
-// Its own header rather than a line in rt_internal.h, because it has a caller
-// OUTSIDE src/runtime: the embed module wraps `rtRegisterHostGlobal` for hosts,
-// and rt_internal.h is the runtime's internal surface. The registry itself
+// Its own header rather than a line among the runtime's internal ones, because
+// it has a caller OUTSIDE src/runtime: the embed module wraps
+// `rtRegisterHostGlobal` for hosts, and the `rt_*.h` headers are the runtime's
+// internal surface. The registry itself
 // still lives in rt_state.cpp with the other root sources — embed only calls
 // it, and the runtime never learns the embed module exists.
 

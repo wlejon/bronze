@@ -47,4 +47,50 @@ struct FoldEntry {
 extern const FoldEntry kSimpleCaseFolds[];
 constexpr uint32_t kSimpleCaseFoldCount = 1484;
 
+// The Script of every code point (UAX #24), in exactly the shape the
+// General_Category runs take and for the same reason: Scripts.txt gives every
+// code point it does not list the value `Unknown`, so the runs partition
+// [0, 0x10FFFF] and `\p{Script=Unknown}` names the rest.
+struct ScriptRun {
+    uint32_t start;
+    uint16_t script;
+};
+
+extern const ScriptRun kScriptRuns[];
+constexpr uint32_t kScriptRunCount = 1708;
+
+// The 172 script values by their canonical long name, sorted, so the index
+// `ScriptRun::script` carries is stable across regenerations.
+extern const char* const kScriptNames[];
+constexpr uint32_t kScriptCount = 172;
+
+// Every spelling PropertyValueAliases.txt gives a script -- the four-letter
+// code, the long name, and the occasional third alias (`Qaac` for Coptic) --
+// sorted by name. 22.2.1 matches a property value EXACTLY, so this list is the
+// whole of what a pattern may write.
+struct ScriptAlias {
+    const char* name;
+    uint16_t script;
+};
+
+extern const ScriptAlias kScriptAliases[];
+constexpr uint32_t kScriptAliasCount = 338;
+
+// Script_Extensions, as the OVERRIDES it is: ScriptExtensions.txt lists only
+// the code points whose scx differs from their sc, and every other code point's
+// scx is the one-element set holding its Script. `set` is an offset into
+// `kScxScripts` and `count` is the length there. Sets are shared, so two
+// ranges with the same scripts name one run of the table.
+struct ScxRange {
+    uint32_t first;
+    uint32_t last;
+    uint32_t set;
+    uint32_t count;
+};
+
+extern const ScxRange kScxRanges[];
+constexpr uint32_t kScxRangeCount = 204;
+extern const uint16_t kScxScripts[];
+constexpr uint32_t kScxScriptCount = 501;
+
 }  // namespace bronze::regex::data

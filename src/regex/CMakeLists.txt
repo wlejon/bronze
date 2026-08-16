@@ -2,11 +2,14 @@ bronze_add_module(regex
     SOURCES
         chars.cpp
         parser.cpp
+        parser_class.cpp
         matcher.cpp
         unicode.cpp
         unicode_data_gc.cpp
         unicode_data_scf.cpp
+        unicode_data_script.cpp
     TEST_SOURCES
         ../../tests/regex/regex_test.cpp
         ../../tests/regex/chars_test.cpp
+        ../../tests/regex/class_set_test.cpp
 )

@@ -363,6 +363,57 @@ RangeList complementRanges(const RangeList& list, uint32_t ceiling) {
     return out;
 }
 
+// Both are one walk over two normalized lists, taking the overlap of the two
+// fronts and dropping whichever ends first. Written as a pair rather than as
+// `a - b == a & ~b` because the complement needs a ceiling and these must not:
+// a difference taken through a complement over the wrong alphabet would quietly
+// hand back every code point above it.
+RangeList intersectRanges(const RangeList& a, const RangeList& b) {
+    RangeList left = a;
+    RangeList right = b;
+    normalizeRanges(left);
+    normalizeRanges(right);
+    RangeList out;
+    size_t i = 0;
+    size_t j = 0;
+    while (i < left.size() && j < right.size()) {
+        const uint32_t lo = std::max(left[i].lo, right[j].lo);
+        const uint32_t hi = std::min(left[i].hi, right[j].hi);
+        if (lo <= hi) out.push_back(Range{lo, hi});
+        if (left[i].hi < right[j].hi) {
+            ++i;
+        } else {
+            ++j;
+        }
+    }
+    normalizeRanges(out);
+    return out;
+}
+
+RangeList subtractRanges(const RangeList& a, const RangeList& b) {
+    RangeList left = a;
+    RangeList right = b;
+    normalizeRanges(left);
+    normalizeRanges(right);
+    RangeList out;
+    size_t j = 0;
+    for (const Range& r : left) {
+        uint32_t next = r.lo;
+        // Every range of `right` that can overlap `r`, in order. `j` is never
+        // rewound: `right` is sorted and disjoint, so a range that ended before
+        // `r` began can never meet a later one.
+        while (j < right.size() && right[j].hi < r.lo) ++j;
+        for (size_t k = j; k < right.size() && right[k].lo <= r.hi; ++k) {
+            if (right[k].lo > next) out.push_back(Range{next, right[k].lo - 1});
+            if (right[k].hi >= next) next = right[k].hi + 1;
+            if (next > r.hi) break;
+        }
+        if (next <= r.hi) out.push_back(Range{next, r.hi});
+    }
+    normalizeRanges(out);
+    return out;
+}
+
 bool rangesContain(const RangeList& list, uint32_t code) {
     for (const Range& r : list) {
         if (code < r.lo) return false;  // normalized: sorted and disjoint

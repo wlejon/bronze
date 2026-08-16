@@ -12,7 +12,7 @@
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 

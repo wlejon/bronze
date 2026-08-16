@@ -2,7 +2,7 @@
 
 #include "runtime/fatal.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 
 namespace bronze {
 

@@ -19,7 +19,9 @@
 #include "runtime/builtin_date_internal.h"
 #include "runtime/date.h"
 #include "runtime/exception.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -199,7 +201,7 @@ uint64_t dateSetDateFields(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 }
 
 // Every arity is 0, and that is load-bearing rather than lazy. `arity` in a
-// NativeMethod is the count a SHORT CALL IS PADDED TO (rt_internal.h), and half
+// NativeMethod is the count a SHORT CALL IS PADDED TO (rt_builtins.h), and half
 // of 21.4.4's setters branch on whether a trailing argument was PRESENT — so
 // padding `d.setHours(1)` out to four `undefined`s would set the minutes,
 // seconds and milliseconds to NaN and invalidate the date. Nothing here reads

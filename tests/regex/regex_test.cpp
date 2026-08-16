@@ -27,13 +27,29 @@ TEST_CASE("flags parse in the order 22.2.6.5 pins") {
     CHECK(flags.text() == "giy");
 }
 
-TEST_CASE("unimplemented flags are refused by name") {
+TEST_CASE("every flag letter parses, and a bad one is refused by name") {
     regex::Flags flags;
     std::string error;
-    CHECK_FALSE(regex::parseFlags("d", flags, error));
-    CHECK(error.find("match indices") != std::string::npos);
-    CHECK_FALSE(regex::parseFlags("v", flags, error));
-    CHECK(error.find("`v` flag") != std::string::npos);
+    // `d` is 22.2.6.6's bit and nothing else: it carries no matching meaning,
+    // so the only things to pin about it are that it parses and where
+    // 22.2.6.5's order puts it, which is FIRST.
+    CHECK(regex::parseFlags("d", flags, error));
+    CHECK(flags.hasIndices);
+    CHECK(flags.text() == "d");
+    CHECK(regex::parseFlags("gd", flags, error));
+    CHECK(flags.text() == "dg");
+    // `v` is a mode of its own and reads as one: the two accessors stay apart
+    // (22.2.6.18 and 22.2.6.19) while `unicodeMode` is what the grammar asks.
+    CHECK(regex::parseFlags("v", flags, error));
+    CHECK(flags.unicodeSets);
+    CHECK_FALSE(flags.unicode);
+    CHECK(flags.unicodeMode());
+    CHECK(flags.text() == "v");
+    // 22.2.3.1: the one combination that is not legal, because `v` is `u` plus
+    // a second class grammar rather than an independent bit.
+    CHECK_FALSE(regex::parseFlags("uv", flags, error));
+    CHECK(error.find("`u` and `v` cannot both be set") != std::string::npos);
+    CHECK_FALSE(regex::parseFlags("vu", flags, error));
     CHECK_FALSE(regex::parseFlags("gg", flags, error));
     CHECK(error.find("more than once") != std::string::npos);
     CHECK_FALSE(regex::parseFlags("q", flags, error));

@@ -28,7 +28,11 @@
 #include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -214,7 +218,7 @@ size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
 
 // The same step applied to a RegExp's own `lastIndex`.
 void advanceLastIndex(Value re, const regex::Units& haystack) {
-    const bool unicode = regex::patternFlags(rtRegExpPattern(re)).unicode;
+    const bool unicode = regex::patternFlags(rtRegExpPattern(re)).unicodeMode();
     const auto index = static_cast<size_t>(rtRegExpLastIndex(re));
     rtRegExpSetLastIndex(re, static_cast<double>(advanceOver(haystack, index, unicode)));
 }
@@ -557,7 +561,7 @@ uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const 
         // 22.2.6.11 step 9.d: an empty match steps by AdvanceStringIndex, which
         // is what keeps the loop moving and, under `u`, keeps it landing on
         // character boundaries.
-        from = pieces.end == pieces.start ? advanceOver(haystack, pieces.end, flags.unicode)
+        from = pieces.end == pieces.start ? advanceOver(haystack, pieces.end, flags.unicodeMode())
                                           : pieces.end;
         if (!everyMatch) break;
     }
@@ -612,7 +616,7 @@ uint64_t stringSplitPattern(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     // 22.2.6.14's `q` walks the string by AdvanceStringIndex (steps 19.a and
     // 19.d.i), so under `u` the separator is never tried between the halves of
     // a surrogate pair and a piece never ends inside one.
-    const bool unicode = regex::patternFlags(pattern).unicode;
+    const bool unicode = regex::patternFlags(pattern).unicodeMode();
     size_t sliceStart = 0;
     size_t at = 0;
     while (at < input.size()) {

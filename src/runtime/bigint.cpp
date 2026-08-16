@@ -17,7 +17,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 
 namespace bronze::runtime {

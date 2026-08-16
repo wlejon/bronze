@@ -18,7 +18,8 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/value.h"
 
 namespace bronze::embed {
@@ -33,7 +34,7 @@ namespace {
 // interned.
 uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                         const uint64_t* argv) {
-    // The builtin prologue (rt_internal.h): copy the arguments into rooted
+    // The builtin prologue (rt_roots.h): copy the arguments into rooted
     // slots before anything can allocate, and never read `argv` again. A
     // frame of our own, because the nearest generated frame roots only its
     // own slots.

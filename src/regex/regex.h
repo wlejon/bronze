@@ -35,17 +35,34 @@ using UnitsView = std::u16string_view;
 // `split`'s walk past a non-separator, the scan `search` runs — is this.
 size_t advanceStringIndex(UnitsView input, size_t index, bool unicode);
 
-// `g i m s u y`, and nothing else — `v` and `d` are refused by name at compile
-// time. Every combination of the six compiles: `u` with `i` is the one that
+// `d g i m s u v y`, and nothing else. Every combination compiles but one:
+// 22.2.3.1 makes `u` with `v` a SyntaxError, because they are two readings of
+// the same mode rather than two bits. `u` with `i` is the combination that
 // changes what Canonicalize means (22.2.2.9 step 1 folds instead of
 // uppercasing) rather than what is legal.
 struct Flags {
+    // 22.2.6.6 hasIndices. It changes nothing about MATCHING — the capture
+    // extents the matcher records are the same either way — and only tells
+    // 22.2.7.2 to hand them on as an `indices` array. It is a flag rather than
+    // an argument to `exec` because a program reads it back off the RegExp.
+    bool hasIndices = false;
     bool global = false;
     bool ignoreCase = false;
     bool multiline = false;
     bool dotAll = false;
     bool unicode = false;
+    // 22.2.6.19 unicodeSets. It is `unicode` plus a second grammar for what a
+    // character class may say, so it is a separate BIT — a program reads the
+    // two accessors apart — and never a separate alphabet.
+    bool unicodeSets = false;
     bool sticky = false;
+
+    // Which grammar and which alphabet, which `u` and `v` answer identically:
+    // one code POINT per character, `\u{...}`, property escapes, and Annex B's
+    // leniencies off. Everything in the module that asks "is this +UnicodeMode?"
+    // asks this and not the `u` bit, so a `v` pattern cannot fall back to the
+    // code-unit reading in one place while using code points in another.
+    bool unicodeMode() const { return unicode || unicodeSets; }
 
     // The flags in the order 22.2.6.5 pins for `RegExp.prototype.flags`,
     // which is the order `source`/`flags` and `toString` all report.

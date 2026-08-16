@@ -70,10 +70,13 @@ TEST_CASE("a construct bronze refuses is named at the literal, not at the run") 
     CHECK(fold.find("U+1E9E") != std::string::npos);
     const auto property = parseRegExp("const re = /\\p{L}/;\n");
     CHECK(property.find("unicode property escapes") != std::string::npos);
-    // A property bronze has no table for is named at the literal too, and it
-    // names WHICH property rather than the escape in general.
-    const auto script = parseRegExp("const re = /\\p{Script=Greek}/u;\n");
-    CHECK(script.find("Script") != std::string::npos);
+    // A property VALUE that names nothing is named at the literal too, and it
+    // names the value rather than the escape in general.
+    const auto script = parseRegExp("const re = /\\p{Script=Greeek}/u;\n");
+    CHECK(script.find("Greeek") != std::string::npos);
+    // The spelling that does name a script compiles there, with no diagnostic.
+    const auto realScript = parseRegExp("const re = /\\p{Script=Greek}/u;\n");
+    CHECK(realScript.substr(0, 7) != "ERRORS:");
     // `u` is a mode bronze implements and so is `u` with `i`, so both literals
     // compile — the second reads a different Canonicalize, not a refusal.
     const auto unicode = parseRegExp("const re = /a/u;\n");

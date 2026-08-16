@@ -29,7 +29,9 @@
 #include "runtime/map.h"
 #include "runtime/typed_array.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/value.h"
 

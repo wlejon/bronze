@@ -13,7 +13,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/value.h"
 

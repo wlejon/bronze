@@ -6,7 +6,7 @@
 // and what string it names when it does not. Those two answers must not drift,
 // because a write that stored `a["01"]` as element 1 and a read that looked for
 // the named property "01" would lose the value silently. So they live together,
-// once, and both files reach them through rt_internal.h.
+// once, and both files reach them through rt_property.h.
 //
 // What is NOT here is 7.1.19's step 1. ToPropertyKey of an OBJECT is
 // ToPrimitive, which runs user code, and every function in this file promises to
@@ -24,7 +24,8 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/number_format.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 

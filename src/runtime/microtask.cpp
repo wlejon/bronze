@@ -14,7 +14,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/promise.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 
 namespace bronze::runtime {
 

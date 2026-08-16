@@ -18,7 +18,7 @@
 // — so that file is almost entirely refusals and this one is almost entirely
 // lookups. What they SHARE is the key — whether it names an element and what
 // string a computed one names mean the same thing in either direction — and
-// that is rt_key.cpp, reached by both through rt_internal.h so that neither can
+// that is rt_key.cpp, reached by both through rt_property.h so that neither can
 // keep a second opinion about `a["01"]`.
 
 #include <cmath>
@@ -45,7 +45,11 @@
 #include "runtime/namespace.h"
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
@@ -54,7 +58,7 @@
 namespace bronze::runtime {
 
 // The IC table is a zero-initialized global array in the GENERATED object file,
-// one entry per property site, and `rtAsCache` (rt_internal.h) takes the entry
+// one entry per property site, and `rtAsCache` (rt_property.h) takes the entry
 // pointer. That is what lets compiled code hold a stable address per site and
 // inline the shape check, which a std::vector — which reallocates — could never
 // offer.

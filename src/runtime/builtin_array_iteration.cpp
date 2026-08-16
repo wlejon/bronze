@@ -1,4 +1,5 @@
 #include "runtime/builtin_array_internal.h"
+#include "runtime/rt_roots.h"
 
 namespace bronze::runtime {
 

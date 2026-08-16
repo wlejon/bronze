@@ -13,7 +13,7 @@
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/value.h"

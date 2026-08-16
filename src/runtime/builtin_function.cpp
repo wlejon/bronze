@@ -22,7 +22,10 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -122,7 +125,7 @@ uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 // `f.apply(null, arrayLike)` is how a program spells "call with these
 // arguments" when it does not have an array in hand, and it is common enough in
 // library code that refusing it stopped real programs. The refusal it replaces
-// said bronze had no array-like protocol; it has one now (rt_internal.h), and
+// said bronze had no array-like protocol; it has one now (rt_builtins.h), and
 // `Array.from` and the typed-array constructors read the same one.
 uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);

@@ -2,13 +2,13 @@
 
 #include <cstddef>
 
-// BEFORE rt_internal.h, and the order is load-bearing: rt_internal.h names
+// BEFORE rt_builtins.h, and the order is load-bearing: rt_builtins.h names
 // `struct FunctionHeader` in a parameter list, which DECLARES a second,
 // incomplete `bronze::runtime::FunctionHeader` unless the real one in fn.h is
 // already visible. Every other builtin gets this by alphabetical luck.
 #include "runtime/fn.h"
 
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/value.h"
 
 // What the two halves of the Date builtin share. `builtin_date.cpp` owns the

@@ -92,7 +92,7 @@ public:
         : pattern_(pattern),
           input_(input),
           ignoreCase_(pattern.flags.ignoreCase),
-          unicode_(pattern.flags.unicode) {
+          unicode_(pattern.flags.unicodeMode()) {
         captures_.assign(static_cast<size_t>(pattern.groupCount + 1) * 2, MatchResult::kUnset);
     }
 
@@ -620,7 +620,7 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
     // halves of a surrogate pair: `/\uDE00/u` does not find the trailing half of
     // an astral character, because index 1 of a two-unit character is not a
     // position the scan visits.
-    const bool unicode = pattern.flags.unicode;
+    const bool unicode = pattern.flags.unicodeMode();
     for (size_t at = from; at <= input.size(); at = advanceStringIndex(input, at, unicode)) {
         const ExecStatus status = matcher.run(at, out, error);
         if (status != ExecStatus::NoMatch) return status;

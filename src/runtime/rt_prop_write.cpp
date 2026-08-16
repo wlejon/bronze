@@ -25,7 +25,7 @@
 //
 // The key decoding both halves share — is this key an element index, what
 // string does a computed key name — stays in rt_prop.cpp and is reached through
-// rt_internal.h, because a key means the same thing in either direction.
+// rt_property.h, because a key means the same thing in either direction.
 
 #include <string>
 
@@ -45,7 +45,11 @@
 #include "runtime/namespace.h"
 #include "runtime/proxy.h"
 #include "runtime/regexp.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"

@@ -1,6 +1,5 @@
-// BLOCKED: `unsupported: the RegExp `d` flag (match indices) is not
-// implemented` — raised by the pattern parser, so the `d` flag is a COMPILE
-// error today and not a runtime one.
+// The RegExp `d` flag: 22.2.6.6 hasIndices, and the `indices` array 22.2.7.2
+// attaches to a match.
 //
 // 22.2.6.4's `flags` getter spells the eight flags in a fixed order —
 // d, g, i, m, s, u, v, y — so `/a/dgimsy`.flags is "dgimsy" whatever order the
@@ -22,11 +21,11 @@
 // as `groups` itself is — keyed by group name. Without `d`, `indices` is not
 // there at all.
 //
-// Unblocking this means accepting `d` in the pattern parser, carrying the bit
-// on the compiled pattern, teaching the `flags` getter and `hasIndices` about
-// it, and building the pair array in RegExpBuiltinExec — the capture positions
-// the matcher already computes are what it is built from, so no new matching
-// work is involved.
+// Nothing here is a matching question. The capture extents the pair array is
+// built from are the ones the matcher already records to cut the captures out
+// of, so `d` changes what `exec` REPORTS and never what it finds —
+// `regexp_match_indices_edges` pins the other half of that, which is that the
+// positions are absolute and so survive a `lastIndex` the cursor has moved.
 const re = /a(b)/d;
 console.log(re.flags, re.hasIndices, /a(b)/.hasIndices);
 

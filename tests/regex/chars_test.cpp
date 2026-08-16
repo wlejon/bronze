@@ -1,6 +1,6 @@
 // The character data the pattern language reads: the case tables of 22.2.2.9,
-// the WordCharacters set of 22.2.2.7.1, and the General_Category and simple
-// case folding tables `tools/gen_unicode_tables.py` generates from the UCD.
+// the WordCharacters set of 22.2.2.7.1, and the General_Category, Script and
+// simple case folding tables `tools/gen_unicode_tables` generates from the UCD.
 //
 // Split from `regex_test.cpp` along the seam the module itself has. That file
 // asks what the grammar accepts and what the matcher does with it; this one
@@ -244,15 +244,23 @@ TEST_CASE("a property escape is a +UnicodeMode production, and refused without i
 }
 
 TEST_CASE("the properties bronze does not carry are refused by name") {
-    // Script is refused by NAME rather than through the general message, and
-    // above all is never read as a General_Category lookup that happens to find
-    // nothing. There is no honest source for it here at all.
-    const std::string script = compileError("\\p{Script=Greek}", "u");
-    CHECK(script.find("Script") != std::string::npos);
+    // A value that names no SCRIPT is diagnosed against the script table it was
+    // looked up in, and never falls through to the General_Category lookup —
+    // where it would be reported as a misspelled category and send the reader to
+    // the wrong table.
+    const std::string script = compileError("\\p{Script=Greeek}", "u");
+    CHECK(script.find("Greeek") != std::string::npos);
     CHECK(script.find("UAX #24") != std::string::npos);
-    CHECK(compileError("\\p{sc=Greek}", "u").find("Script") != std::string::npos);
-    CHECK(compileError("\\p{Script_Extensions=Greek}", "u").find("Script") != std::string::npos);
-    CHECK(compileError("\\p{scx=Greek}", "u").find("Script") != std::string::npos);
+    CHECK(script.find("misspelling") == std::string::npos);
+    CHECK(compileError("\\p{sc=Greeek}", "u").find("Greeek") != std::string::npos);
+    CHECK(compileError("\\p{scx=Greeek}", "u").find("Greeek") != std::string::npos);
+    // 22.2.1 matches a value EXACTLY, so a lowercase script code is a name that
+    // does not exist rather than a sloppy spelling of one that does.
+    CHECK(compileError("\\p{sc=grek}", "u").find("grek") != std::string::npos);
+    // And a script written in the LONE form is refused for what it is: 22.2.1
+    // reads that form as a category or a binary property, never as a script.
+    const std::string lone = compileError("\\p{Greek}", "u");
+    CHECK(lone.find("Script=Greek") != std::string::npos);
     // A binary property bronze cannot derive. The message names it and says
     // what IS carried, because "no" on its own cannot be acted on.
     const std::string binary = compileError("\\p{Alphabetic}", "u");
@@ -297,6 +305,71 @@ TEST_CASE("General_Category, by alias, by long name, and as a union") {
     CHECK(matches(*compileOk("\\p{ASCII}", "u"), unitsOf({'A'})));
     CHECK_FALSE(matches(*compileOk("\\p{ASCII}", "u"), unitsOf({0x00E9})));
     CHECK(matches(*compileOk("\\p{Any}", "u"), textOf({0x10FFFF})));
+}
+
+TEST_CASE("Script and Script_Extensions, by either spelling of either half") {
+    CHECK(matches(*compileOk("\\p{Script=Greek}", "u"), unitsOf({0x03B1})));
+    CHECK(matches(*compileOk("\\p{sc=Grek}", "u"), unitsOf({0x03B1})));
+    CHECK_FALSE(matches(*compileOk("\\p{Script=Latin}", "u"), unitsOf({0x03B1})));
+    // `Qaac` is a third alias for Coptic. It is here because the alias table is
+    // taken from PropertyValueAliases.txt whole rather than as the two-name
+    // subset a list written by hand would have carried.
+    CHECK(matches(*compileOk("\\p{sc=Qaac}", "u"), unitsOf({0x2C80})));
+    // Above the BMP, one code point per atom.
+    CHECK(matches(*compileOk("^\\p{Script=Deseret}$", "u"), textOf({0x10400})));
+
+    // The disagreement the two properties exist for. U+0342 COMBINING GREEK
+    // PERISPOMENI is Inherited by Script and Greek by Script_Extensions, so a
+    // scx that had been built as a copy of sc would answer false here.
+    CHECK_FALSE(matches(*compileOk("\\p{Script=Greek}", "u"), unitsOf({0x0342})));
+    CHECK(matches(*compileOk("\\p{Script_Extensions=Greek}", "u"), unitsOf({0x0342})));
+    CHECK(matches(*compileOk("\\p{scx=Grek}", "u"), unitsOf({0x0342})));
+    CHECK(matches(*compileOk("\\p{Script=Inherited}", "u"), unitsOf({0x0342})));
+    // And a set with TWO members: U+3099 is Hiragana and Katakana by scx.
+    CHECK(matches(*compileOk("\\p{scx=Hiragana}", "u"), unitsOf({0x3099})));
+    CHECK(matches(*compileOk("\\p{scx=Katakana}", "u"), unitsOf({0x3099})));
+    CHECK_FALSE(matches(*compileOk("\\p{Script=Hiragana}", "u"), unitsOf({0x3099})));
+
+    // Unknown is a Script value like any other, which is what makes the runs a
+    // partition rather than a table with holes in it.
+    CHECK(matches(*compileOk("\\p{Script=Unknown}", "u"), textOf({0x0378})));
+    CHECK(matches(*compileOk("\\p{Script=Common}", "u"), unitsOf({'!'})));
+}
+
+// The script tables' own agreement check, in the shape the General_Category one
+// takes below: every code point's Script must put it in exactly the sets that
+// name it, and its Script_Extensions must hold its Script wherever
+// ScriptExtensions.txt does not override it. Walked over all 1114112, because a
+// run boundary that is off by one is invisible in any smaller sample — and
+// because scx is DERIVED from sc plus an override list, which is exactly the
+// kind of derivation a spot check cannot hold.
+TEST_CASE("the script tables agree with themselves over the whole code space") {
+    std::string error;
+    regex::RangeList greek;
+    REQUIRE(regex::unicodePropertySet("Script", "Greek", greek, error));
+    regex::RangeList greekExt;
+    REQUIRE(regex::unicodePropertySet("scx", "Grek", greekExt, error));
+    regex::RangeList unknown;
+    REQUIRE(regex::unicodePropertySet("sc", "Zzzz", unknown, error));
+
+    size_t disagreements = 0;
+    size_t extraInExtensions = 0;
+    for (uint32_t c = 0; c <= regex::kMaxCodePoint; ++c) {
+        const std::string_view script = regex::scriptOf(c);
+        if (regex::rangesContain(greek, c) != (script == "Greek")) ++disagreements;
+        if (regex::rangesContain(unknown, c) != (script == "Unknown")) ++disagreements;
+        if (regex::rangesContain(greekExt, c) != regex::scriptExtensionsContain(c, "Greek")) {
+            ++disagreements;
+        }
+        // scx is a SUPERSET question, not an equal one: every Greek code point
+        // is Greek by extension, and the extension set may hold more.
+        if (script == "Greek" && !regex::rangesContain(greekExt, c)) ++disagreements;
+        if (regex::rangesContain(greekExt, c) && script != "Greek") ++extraInExtensions;
+    }
+    CHECK(disagreements == 0);
+    // If this were zero the two properties would be the same set and the
+    // distinction bronze carries two tables for would be decorative.
+    CHECK(extraInExtensions > 0);
 }
 
 // `\p{L}` must be the same set as `Lu | Ll | Lt | Lm | Lo`, and the sets must

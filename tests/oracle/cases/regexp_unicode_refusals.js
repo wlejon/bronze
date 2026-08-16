@@ -82,6 +82,18 @@ console.log(new RegExp("\\u017f", "iu").test("s"));
 console.log(message(function () { return new RegExp("a", "u"); }),
             message(function () { return new RegExp("a", "i"); }));
 
-// The flags bronze still does not implement at all, unchanged.
-console.log(names(function () { return new RegExp("a", "v"); }, "`v` flag"),
-            names(function () { return new RegExp("a", "d"); }, "match indices"));
+// `v` is the same story one edition later, and the same two halves. It takes
+// the class grammar away — `[(]` is a set expression's reserved punctuation
+// there, not the parenthesis — and hands back set operations for it. What it
+// does NOT hand back is the half that needs a CharSet whose members are
+// strings: `\q{...}` and the properties of strings are refused by name
+// together, since implementing one without the other would be a set that
+// sometimes matches two characters.
+//
+// The second is the flag pair 22.2.3.4 forbids. Both letters are legal on their
+// own and neither is a superset of the other's spelling, so the only place the
+// conflict can be reported is the parse, and bronze reports it by naming both.
+console.log(names(function () { return new RegExp("[\\q{ab}]", "v"); },
+                  "ClassStringDisjunction"),
+            names(function () { return new RegExp("a", "uv"); },
+                  "`u` and `v` cannot both be set"));

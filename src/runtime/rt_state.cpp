@@ -2,7 +2,7 @@
 // shapes, the property-key registry, and the two caches whose entries are
 // heap Values and therefore need root sources. All of it lives in this one
 // translation unit so the collector's roots never depend on cross-TU static
-// initialization order (rt_internal.h).
+// initialization order (rt_state.h).
 
 #include <string>
 #include <unordered_map>
@@ -21,7 +21,10 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/promise.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"

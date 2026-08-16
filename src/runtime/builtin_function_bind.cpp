@@ -32,7 +32,10 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -72,7 +75,7 @@ uint64_t boundCallTrampoline(uint64_t envBits, uint64_t thisBits, uint32_t argc,
     const uint32_t bound = boundArgs.get().asObject<ArrayHeader>()->length;
     // A RootedBlock, not a stack array: the callee may allocate before its
     // prologue copies, and this block was built by the runtime rather than by
-    // generated code's rooted frame (rt_internal.h's RootedBlock header says
+    // generated code's rooted frame (rt_roots.h's RootedBlock header says
     // why that combination is the one that needs it).
     RootedBlock block(bound + args.count());
     for (uint32_t i = 0; i < bound; ++i) {
@@ -145,7 +148,7 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
 
     // `name` = "bound " + target name and `length` = max(0, target length −
     // bound count) — 20.2.3.2 steps 2-4 — but only when the target CARRIES the
-    // pair. A native builtin records neither (rt_internal.h's rtNativeFunction
+    // pair. A native builtin records neither (rt_builtins.h's rtNativeFunction
     // says why), and a bound function over one inherits the same diagnosed
     // absence rather than two invented facts.
     const FunctionHeader* targetFn = target.get().asObject<FunctionHeader>();

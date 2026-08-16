@@ -20,7 +20,9 @@
 #include "runtime/heap.h"
 #include "runtime/host_globals.h"
 #include "runtime/microtask.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
 #include "runtime/string.h"
 
 namespace bronze::embed {
@@ -38,7 +40,7 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     Rooted<Value> fnRoot{fn};
     Rooted<Value> thisRoot{thisValue};
     // RootedBlock rather than a plain stack array for the same reason
-    // bronze_construct uses one (rt_internal.h): the collector must be able to
+    // bronze_construct uses one (rt_roots.h): the collector must be able to
     // update the argument slots if anything between here and the callee's
     // prologue collects — and a host calls from outside any generated frame,
     // so nothing else roots these.

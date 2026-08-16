@@ -17,7 +17,7 @@
 #include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/number_format.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_convert.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/value.h"

@@ -37,6 +37,18 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
 // builds and prove the two never disagree.
 std::string_view generalCategoryOf(uint32_t code);
 
+// The Script (UAX #24) of one code point, as its canonical long name, for the
+// same reason and with the same use: `Unknown` for every code point Scripts.txt
+// does not name, which is a real Script value and not a failure.
+std::string_view scriptOf(uint32_t code);
+
+// Does this code point's Script_Extensions set hold the script spelled `alias`?
+// The property is a SET per code point rather than a value, so membership is
+// the only question it answers — and `alias` is any spelling
+// PropertyValueAliases.txt gives, since that is what a pattern may write.
+// False for a spelling that names no script at all.
+bool scriptExtensionsContain(uint32_t code, std::string_view alias);
+
 // Simple case folding: CaseFolding.txt statuses C and S, which is what
 // 22.2.2.9 Canonicalize applies when `u` and `i` are both set. Identity for
 // every code point the table does not name, which includes every uncased one
@@ -49,6 +61,13 @@ uint32_t simpleCaseFold(uint32_t code);
 // SET holds a member canonicalizing to the input's canonicalization rather
 // than whether the input's canonicalization is in the set.
 const std::vector<uint32_t>& simpleCaseFoldCandidates(uint32_t folded);
+
+// The code points the fold DOES leave alone, as ranges. 22.2.2.9's
+// AllCharacters is exactly this set when `v` and `i` are both set, so it is
+// the alphabet a complement is taken over there — which is what makes
+// `[^\P{X}]` come back to `[\p{X}]` under `vi` where under `ui` it does not.
+// Built from `simpleCaseFoldSources` and therefore its exact complement.
+const RangeList& simpleCaseFoldFixedPoints();
 
 // Every code point the fold does NOT leave alone, ascending. It is exactly the
 // set over which `simpleCaseFold` can differ from the identity, so a search

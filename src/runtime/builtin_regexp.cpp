@@ -34,7 +34,12 @@
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
-#include "runtime/rt_internal.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -177,6 +182,62 @@ Value makeRegExp(Rooted<Value>& sourceStr, const std::string& flagsText) {
 
 // ---- exec -------------------------------------------------------------------
 
+// 22.2.7.8 MakeMatchIndicesIndexPairArray: the same captures as POSITIONS.
+// Entry i is the two-element array `[start, end]` — half-open, like every other
+// range in the language — or `undefined` for a group that did not participate,
+// which is the same distinction `m[i] === undefined` draws one array over.
+//
+// It needs no input string and no slicing: the extents are what the matcher
+// already recorded to cut the captures out of, so this reads the very numbers
+// `buildMatchArray` throws away.
+//
+// `groups` here is OrdinaryObjectCreate(NULL) (step 4), which is why it is
+// built from a null root shape rather than with `bronze_create_object`.
+Value buildMatchIndices(const regex::Pattern& pattern, const regex::MatchResult& match) {
+    const uint32_t groups = regex::captureCount(pattern);
+    Rooted<Value> array{Value(bronze_create_array(groups + 1))};
+
+    Rooted<Value> groupsObject;
+    if (regex::hasNamedGroups(pattern)) {
+        Rooted<Value> noPrototype{Value::fromNull()};
+        Value fresh = Value::fromObject(ObjectHeader::create(
+            rtHeap(), rtArena(), rtRootShapeForPrototype(noPrototype.get())));
+        fresh.asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+        groupsObject.set(fresh);
+    }
+
+    // Step 5 puts `groups` on the array BEFORE the pairs, so it is the first
+    // named property and the indices are the elements — the same shape the
+    // match array itself has, and the order both enumerate in.
+    ArrayHeader::ensureProperties(rtHeap(), rtArena(), array);
+    {
+        Rooted<Value> propsRoot{array.get().asObject<ArrayHeader>()->properties};
+        Rooted<Value> key{rtMakeString("groups")};
+        propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, groupsObject);
+    }
+
+    for (uint32_t i = 0; i <= groups; ++i) {
+        const int64_t from = match.captures[static_cast<size_t>(i) * 2];
+        const int64_t to = match.captures[static_cast<size_t>(i) * 2 + 1];
+        Rooted<Value> pair;
+        if (from != regex::MatchResult::kUnset) {
+            pair.set(Value(bronze_create_array(2)));
+            auto* header = pair.get().asObject<ArrayHeader>();
+            Rooted<Value> start{Value::fromDouble(static_cast<double>(from))};
+            header->setElem(rtHeap(), 0, start);
+            Rooted<Value> end{Value::fromDouble(static_cast<double>(to))};
+            pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 1, end);
+        }
+        array.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, pair);
+        if (i == 0 || !groupsObject.get().isObject()) continue;
+        const std::string& name = regex::groupName(pattern, i);
+        if (name.empty()) continue;
+        Rooted<Value> key{rtMakeString(name)};
+        groupsObject.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, pair);
+    }
+    return array.get();
+}
+
 // 22.2.7.2 steps 16-28: the captures as an array that also carries `index`,
 // `input` and `groups`. The three named properties are created in the order
 // the specification creates them, because that is the order they enumerate and
@@ -225,6 +286,14 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
         if (name.empty()) continue;
         Rooted<Value> key{rtMakeString(name)};
         groupsObject.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, element);
+    }
+
+    // Step 35, and last for the reason the other three are in their order: the
+    // pair array is built from the captures the loop above has just walked, so
+    // `indices` is the final named property and prints after `groups`.
+    if (regex::patternFlags(pattern).hasIndices) {
+        Rooted<Value> indices{buildMatchIndices(pattern, match)};
+        defineNamed("indices", indices);
     }
     return array.get();
 }
@@ -374,7 +443,7 @@ const RegExpMethod kRegExpMethods[] = {
 // string, and no string names one of them. They are refused a step earlier, at
 // `Symbol.match` itself, which is in builtin_symbol.cpp's unimplemented list.
 const char* const kRegExpMembers[] = {
-    "compile", "constructor", "hasIndices", "unicodeSets",
+    "compile", "constructor",
 };
 
 // The two groups of REAL members, as tables rather than as a ladder of `if`s,
@@ -407,11 +476,18 @@ struct FlagMember {
 };
 
 const FlagMember kRegExpFlagMembers[] = {
+    // 22.2.6.6: `d` decides whether `exec` attaches `indices`, and this is how
+    // a program asks which it will get without running a match.
+    {"hasIndices", &regex::Flags::hasIndices},
     {"global", &regex::Flags::global},       {"ignoreCase", &regex::Flags::ignoreCase},
     {"multiline", &regex::Flags::multiline}, {"dotAll", &regex::Flags::dotAll},
     // 22.2.6.18: a real accessor now that the flag is a real mode, and the one
     // way a program can ask which alphabet a pattern was compiled over.
-    {"unicode", &regex::Flags::unicode},     {"sticky", &regex::Flags::sticky},
+    {"unicode", &regex::Flags::unicode},
+    // 22.2.6.19: the second reading of the same mode, which is why it is a bit
+    // of its own and not `unicode` again — a program can tell `/a/u` from `/a/v`.
+    {"unicodeSets", &regex::Flags::unicodeSets},
+    {"sticky", &regex::Flags::sticky},
 };
 
 }  // namespace

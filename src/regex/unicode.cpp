@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <string_view>
 
 #include "regex/unicode_data.h"
 
@@ -193,6 +194,64 @@ bool binaryPropertySet(std::string_view value, RangeList& out) {
     return false;
 }
 
+// ---- Script and Script_Extensions (UAX #24) ---------------------------------
+
+// The script a spelling names, or `kScriptCount` for one that names none.
+// 22.2.1 UnicodeMatchPropertyValue matches EXACTLY against the names and
+// aliases PropertyValueAliases.txt lists, so this is a lookup in the generated
+// alias table and never a normalization of what was written: `\p{Script=greek}`
+// is a syntax error, not a sloppy `Greek`.
+uint16_t scriptIndex(std::string_view alias) {
+    const data::ScriptAlias* begin = data::kScriptAliases;
+    const data::ScriptAlias* end = begin + data::kScriptAliasCount;
+    const data::ScriptAlias* it =
+        std::lower_bound(begin, end, alias, [](const data::ScriptAlias& entry, std::string_view a) {
+            return std::string_view(entry.name) < a;
+        });
+    if (it == end || std::string_view(it->name) != alias) {
+        return static_cast<uint16_t>(data::kScriptCount);
+    }
+    return it->script;
+}
+
+RangeList scriptRanges(uint16_t script) {
+    RangeList list;
+    for (uint32_t i = 0; i < data::kScriptRunCount; ++i) {
+        if (data::kScriptRuns[i].script != script) continue;
+        const uint32_t hi = i + 1 < data::kScriptRunCount ? data::kScriptRuns[i + 1].start - 1
+                                                          : kMaxCodePoint;
+        addRange(list, data::kScriptRuns[i].start, hi);
+    }
+    normalizeRanges(list);
+    return list;
+}
+
+// Script_Extensions, assembled the way ScriptExtensions.txt is written: the
+// Script set, minus every code point the file OVERRIDES, plus the overrides
+// whose set names this script. Deriving it rather than carrying a second full
+// table is what makes the file's own rule — "all code points not explicitly
+// listed have as their value the corresponding Script property value" — a
+// consequence here instead of a claim.
+RangeList scriptExtensionRanges(uint16_t script) {
+    RangeList overridden;
+    RangeList named;
+    for (uint32_t i = 0; i < data::kScxRangeCount; ++i) {
+        const data::ScxRange& range = data::kScxRanges[i];
+        addRange(overridden, range.first, range.last);
+        for (uint32_t j = 0; j < range.count; ++j) {
+            if (data::kScxScripts[range.set + j] != script) continue;
+            addRange(named, range.first, range.last);
+            break;
+        }
+    }
+    normalizeRanges(overridden);
+    normalizeRanges(named);
+    RangeList out = subtractRanges(scriptRanges(script), overridden);
+    out.insert(out.end(), named.begin(), named.end());
+    normalizeRanges(out);
+    return out;
+}
+
 std::string quoted(std::string_view name, std::string_view value) {
     std::string out = "`\\p{";
     if (!name.empty()) {
@@ -208,10 +267,32 @@ std::string quoted(std::string_view name, std::string_view value) {
 // a message that only says "no" leaves the reader guessing which of the two
 // halves of UAX #44 is missing.
 const char* kSupported =
-    "bronze carries General_Category only: its 30 values by alias or long name "
-    "(`\\p{Lu}`, `\\p{Uppercase_Letter}`, `\\p{General_Category=Lu}`), the unions "
-    "`C L LC M N P S Z`, and the binary properties `ASCII`, `Any` and `Assigned`, "
-    "which follow from the same table";
+    "bronze carries General_Category and Script: General_Category's 30 values by "
+    "alias or long name (`\\p{Lu}`, `\\p{Uppercase_Letter}`, "
+    "`\\p{General_Category=Lu}`), the unions `C L LC M N P S Z`, the binary "
+    "properties `ASCII`, `Any` and `Assigned` which follow from the same table, "
+    "and `Script` / `Script_Extensions` by either spelling (`\\p{Script=Greek}`, "
+    "`\\p{scx=Grek}`)";
+
+// 22.2.1's Table 67, in full. Written out rather than derived because it IS a
+// list in the specification and not a slice of the UCD: each entry names a set
+// whose members may be sequences, and the list changes only when an edition
+// adds one.
+bool isPropertyOfStrings(std::string_view value) {
+    static constexpr std::string_view kNames[] = {
+        "Basic_Emoji",
+        "Emoji_Keycap_Sequence",
+        "RGI_Emoji",
+        "RGI_Emoji_Flag_Sequence",
+        "RGI_Emoji_Modifier_Sequence",
+        "RGI_Emoji_Tag_Sequence",
+        "RGI_Emoji_ZWJ_Sequence",
+    };
+    for (std::string_view known : kNames) {
+        if (value == known) return true;
+    }
+    return false;
+}
 
 const std::vector<std::pair<uint32_t, uint32_t>>& foldTable() {
     static const std::vector<std::pair<uint32_t, uint32_t>> table = [] {
@@ -241,19 +322,27 @@ const std::map<uint32_t, std::vector<uint32_t>>& reverseFoldTable() {
 
 bool unicodePropertySet(std::string_view name, std::string_view value, RangeList& out,
                         std::string& error) {
-    // Script first, and by name. It is the property a reader is most likely to
-    // reach for after General_Category works, and letting it fall through to
-    // the general refusal — or worse, to the lone-value lookup, where
-    // `\p{Script=Greek}` would find no `Greek` category and read as a
-    // misspelling — would hide which of the two tables is missing.
+    // Script first, and by name, because the two properties are one data file
+    // and a value that names no script must not fall through to the
+    // General_Category lookup — where `Greek` would find no category and be
+    // reported as a misspelling rather than as the script it is.
+    //
+    // `sc` and `scx` differ in exactly one thing: whether a code point that is
+    // COMMONLY used with a script but does not belong to it is a member. U+0342
+    // COMBINING GREEK PERISPOMENI is Inherited by Script and Greek by
+    // Script_Extensions, and a pattern that meant "Greek text" wants the second.
     if (name == "Script" || name == "sc" || name == "Script_Extensions" || name == "scx") {
-        error = "unsupported: " + quoted(name, value) +
-                " — the Unicode Script and Script_Extensions properties are not implemented. "
-                "They are a separate UAX #24 data file (Scripts.txt), and nothing under "
-                "tools/ucd carries a Script property at all, so there is no honest source "
-                "for one here. " +
-                kSupported;
-        return false;
+        const uint16_t script = scriptIndex(value);
+        if (script == data::kScriptCount) {
+            error = quoted(name, value) +
+                    " names no Unicode script. UAX #24's Script and Script_Extensions take a "
+                    "value PropertyValueAliases.txt lists — a long name such as `Greek` or its "
+                    "four-letter code `Grek` — matched exactly, since 22.2.1 is case sensitive";
+            return false;
+        }
+        out = (name == "Script" || name == "sc") ? scriptRanges(script)
+                                                 : scriptExtensionRanges(script);
+        return true;
     }
     if (!name.empty() && name != "General_Category" && name != "gc") {
         error = "unsupported: " + quoted(name, value) + " — `" + std::string(name) +
@@ -265,15 +354,45 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
 
     const uint32_t mask = maskOfName(value);
     if (mask == 0) {
+        // A SCRIPT written in the lone form is the one case that can be told
+        // apart, and it is told apart: 22.2.1's lone `\p{...}` reads a
+        // General_Category value or a binary property name and never a Script,
+        // so `\p{Greek}` is a syntax error about the FORM rather than a missing
+        // table — and saying which spelling would have worked is the whole of
+        // the fix.
+        if (name.empty() && scriptIndex(value) != data::kScriptCount) {
+            error = quoted(name, value) + " is a Script value, and 22.2.1's lone `\\p{...}` "
+                    "form reads only a General_Category value or a binary property name. "
+                    "Write `\\p{Script=" + std::string(value) + "}` for the script, or "
+                    "`\\p{Script_Extensions=" + std::string(value) + "}` for the characters "
+                    "commonly used with it";
+            return false;
+        }
+        // The properties of STRINGS, which are the one family of unknown
+        // property bronze can name exactly — 22.2.1's Table 67 is a closed list
+        // of seven, where the binary properties of Table 66 are a whole file of
+        // UAX #44. They are refused together with `\q{...}` and for its reason:
+        // all seven denote a set whose members are sequences, and a `--` over
+        // one could not say what it removed. Naming the family matters because
+        // the generic message would send a reader off to check their spelling
+        // of a name they spelled correctly.
+        if (name.empty() && isPropertyOfStrings(value)) {
+            error = "unsupported: " + quoted(name, value) +
+                    " is a property of STRINGS (22.2.1's Table 67), which is legal only under "
+                    "the `v` flag and which bronze does not implement — neither it nor the "
+                    "`\\q{...}` it shares a representation with, a CharSet whose members are "
+                    "not single characters";
+            return false;
+        }
         // One message for a misspelling and for a real property with no table,
-        // because bronze genuinely cannot tell them apart — it has no list of
-        // every UAX #44 property, and inventing one to sort the two cases would
-        // be a guess. What it can do is name the offender and say what it does
-        // have, which is what an unknown `\p{...}` most needs.
+        // because bronze genuinely cannot tell those two apart — it has no list
+        // of every UAX #44 property, and inventing one to sort them would be a
+        // guess. What it can do is name the offender and say what it does have,
+        // which is what an unknown `\p{...}` most needs.
         error = "unsupported: " + quoted(name, value) + " names no property value bronze "
-                "carries. It is either a misspelling or a UAX #44 property — a binary "
-                "property such as `Alphabetic` or `White_Space`, or a Script — whose data "
-                "bronze does not have. " + kSupported;
+                "carries. It is either a misspelling or a UAX #44 binary property — such as "
+                "`Alphabetic` or `White_Space` — whose data bronze does not have. " +
+                kSupported;
         return false;
     }
     out = rangesForMask(mask);
@@ -288,6 +407,34 @@ std::string_view generalCategoryOf(uint32_t code) {
     const data::GcRun* it = std::upper_bound(
         begin, end, code, [](uint32_t value, const data::GcRun& run) { return value < run.start; });
     return data::kGcAliases[(it - 1)->category];
+}
+
+std::string_view scriptOf(uint32_t code) {
+    const data::ScriptRun* begin = data::kScriptRuns;
+    const data::ScriptRun* end = begin + data::kScriptRunCount;
+    // The run CONTAINING `code`, which is the last one starting at or below it.
+    // `kScriptRuns[0].start` is 0, so there is always one.
+    const data::ScriptRun* it =
+        std::upper_bound(begin, end, code, [](uint32_t value, const data::ScriptRun& run) {
+            return value < run.start;
+        });
+    return data::kScriptNames[(it - 1)->script];
+}
+
+bool scriptExtensionsContain(uint32_t code, std::string_view alias) {
+    const uint16_t script = scriptIndex(alias);
+    if (script == data::kScriptCount) return false;
+    for (uint32_t i = 0; i < data::kScxRangeCount; ++i) {
+        const data::ScxRange& range = data::kScxRanges[i];
+        if (code < range.first) break;  // sorted and disjoint
+        if (code > range.last) continue;
+        for (uint32_t j = 0; j < range.count; ++j) {
+            if (data::kScxScripts[range.set + j] == script) return true;
+        }
+        return false;
+    }
+    // No override, so the set is the one-element set holding the Script.
+    return scriptOf(code) == data::kScriptNames[script];
 }
 
 uint32_t simpleCaseFold(uint32_t code) {
@@ -305,6 +452,16 @@ const std::vector<uint32_t>& simpleCaseFoldCandidates(uint32_t folded) {
     const auto& table = reverseFoldTable();
     const auto it = table.find(folded);
     return it == table.end() ? none : it->second;
+}
+
+const RangeList& simpleCaseFoldFixedPoints() {
+    static const RangeList fixed = [] {
+        RangeList moved;
+        for (uint32_t code : simpleCaseFoldSources()) addRange(moved, code, code);
+        normalizeRanges(moved);
+        return complementRanges(moved, kMaxCodePoint);
+    }();
+    return fixed;
 }
 
 const std::vector<uint32_t>& simpleCaseFoldSources() {

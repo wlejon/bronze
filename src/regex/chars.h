@@ -54,6 +54,20 @@ void normalizeRanges(RangeList& list);
 RangeList complementRanges(const RangeList& list, uint32_t ceiling);
 bool rangesContain(const RangeList& list, uint32_t code);
 
+// The other two set operations, which — unlike the complement — need no
+// ceiling: both only ever return members of `a`, so neither can name a code
+// point outside the alphabet its inputs came from.
+//
+// Two callers, and they are the reason these are operations rather than loops
+// written where they are needed. `\p{Script_Extensions=X}` is the Script set
+// with the code points ScriptExtensions.txt overrides taken OUT and the
+// overrides naming X put back (regex/unicode.cpp), and 22.2.1's
+// ClassSetExpression spells `--` and `&&` directly. One implementation, so a
+// v-mode class and a script set cannot come to disagree about a boundary.
+// Both normalize their inputs, so a caller need not.
+RangeList intersectRanges(const RangeList& a, const RangeList& b);
+RangeList subtractRanges(const RangeList& a, const RangeList& b);
+
 // One character read out of a UTF-16 sequence, and how many code units it
 // occupies. Without `u` that is always one unit and the two are the same
 // question; with `u` a surrogate PAIR is one character and everything that
