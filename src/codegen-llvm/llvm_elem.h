@@ -29,4 +29,11 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
 void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                  llvm::Value* idxBits, llvm::Value* valBits, bool strict);
 
+// Computes the element pointer for a typed array view.
+llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
+                                   llvm::Value* idx32, uint32_t elemSize);
+
+// Re-boxes a double value into a NaN-boxed 64-bit value.
+llvm::Value* emitBoxDouble(llvm::IRBuilder<>& builder, llvm::Value* d);
+
 }  // namespace bronze::codegen_llvm

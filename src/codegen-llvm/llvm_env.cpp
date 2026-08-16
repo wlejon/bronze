@@ -1,4 +1,5 @@
 #include "codegen-llvm/llvm_env.h"
+#include "codegen-llvm/llvm_alias.h"
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
@@ -9,6 +10,10 @@
 namespace bronze::codegen_llvm {
 
 namespace {
+
+static void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
+    load->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
+}
 
 // Resolves the record `depth` parent links up from `envBits` and returns the
 // address of slot `index`, mirroring resolveEnv + ancestor + the slot-range
@@ -35,13 +40,15 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
         llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "env.hdr");
         llvm::Value* flagsPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-        llvm::Value* flags =
+        auto* flags =
             builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "env.flags");
+        markInvariant(flags, ctx);
         llvm::Value* isEnv = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ENV));
 
         llvm::Value* sizePtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_HDR_SIZE_OFFSET);
-        llvm::Value* size = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "env.size");
+        auto* size = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "env.size");
+        markInvariant(size, ctx);
         const uint32_t needed = BRONZE_ABI_ENV_SLOTS_OFFSET + (index + 1) * 8;
         llvm::Value* inRange = builder.CreateICmpUGE(size, builder.getInt32(needed));
 
@@ -69,8 +76,9 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
         llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "env.hdr");
         llvm::Value* flagsPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-        llvm::Value* flags =
+        auto* flags =
             builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "env.flags");
+        markInvariant(flags, ctx);
         guard(builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ENV)),
               "env.isenv");
         return hdr;
@@ -80,15 +88,17 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
     for (uint32_t step = 0; step < depth; ++step) {
         llvm::Value* parentPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ENV_PARENT_OFFSET);
-        llvm::Value* parent =
+        auto* parent =
             builder.CreateAlignedLoad(i64Ty, parentPtr, llvm::Align(8), "env.parent");
+        markInvariant(parent, ctx);
         hdr = resolveRecord(parent);
     }
 
     // The slot-range tripwire: the record's total size must cover the slot.
     llvm::Value* sizePtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_HDR_SIZE_OFFSET);
-    llvm::Value* size = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "env.size");
+    auto* size = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "env.size");
+    markInvariant(size, ctx);
     const uint32_t needed = BRONZE_ABI_ENV_SLOTS_OFFSET + (index + 1) * 8;
     guard(builder.CreateICmpUGE(size, builder.getInt32(needed)), "env.inrange");
 
@@ -108,7 +118,8 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Val
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.get.done", fn);
 
     llvm::Value* slotPtr = emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
-    llvm::Value* fastVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "env.val");
+    auto* fastVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "env.val");
+    tagEnvRecordAccess(fastVal, ctx);
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     if (tdz) {
         // The one compare 9.1.1.1.6 is: the marker means the ReferenceError,
@@ -145,7 +156,8 @@ void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envB
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.set.done", fn);
 
     llvm::Value* slotPtr = emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
-    builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    auto* storeInst = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    tagEnvRecordAccess(storeInst, ctx);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);

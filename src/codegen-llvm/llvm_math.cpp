@@ -22,6 +22,10 @@ std::optional<MathIntrinsic> mathIntrinsicFor(std::string_view keyStr, uint32_t 
     return std::nullopt;
 }
 
+static void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
+    load->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
+}
+
 llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                 MathIntrinsic kind, llvm::Value* calleeBits,
                                 llvm::Value* thisBits, uint32_t argc, llvm::Value* argvPtr,
@@ -63,7 +67,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "math.hdr");
     llvm::Value* flagsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "math.kind");
+    auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "math.kind");
+    markInvariant(flags, ctx);
     llvm::Value* isFn =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
     builder.CreateCondBr(isFn, codeBb, slowBb);
@@ -73,7 +78,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.SetInsertPoint(codeBb);
     llvm::Value* codePtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_FN_CODE_OFFSET);
-    llvm::Value* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "math.codeptr");
+    auto* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "math.codeptr");
+    markInvariant(code, ctx);
     llvm::Value* codeOk = builder.CreateICmpEQ(code, expectedCode, "math.codeok");
     builder.CreateCondBr(codeOk, argsBb, slowBb);
 

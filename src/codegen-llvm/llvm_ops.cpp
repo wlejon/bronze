@@ -115,11 +115,55 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* src = operand(inst, 0, "Undefined value in Unbox instruction");
             if (!src) return false;
             if (inst.type == il::Type::I32) {
-                values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_i32, {src});
+                llvm::Value* isNum = builder_.CreateICmpULE(
+                    src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.i32.isnum");
+                llvm::Value* fastDouble = builder_.CreateBitCast(src, builder_.getDoubleTy());
+                llvm::Value* fastI32 = builder_.CreateFPToSI(fastDouble, builder_.getInt32Ty(), "unbox.i32.val");
+
+                llvm::LLVMContext& ctx = builder_.getContext();
+                llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+                llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "unbox.i32.slow", fn);
+                llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "unbox.i32.done", fn);
+                llvm::BasicBlock* curBb = builder_.GetInsertBlock();
+
+                builder_.CreateCondBr(isNum, doneBb, slowBb);
+
+                builder_.SetInsertPoint(slowBb);
+                llvm::Value* slowVal = builder_.CreateCall(abi.bronze_unbox_i32, {src});
+                llvm::BasicBlock* slowEndBb = builder_.GetInsertBlock();
+                builder_.CreateBr(doneBb);
+
+                builder_.SetInsertPoint(doneBb);
+                llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt32Ty(), 2, "unbox.i32.res");
+                phi->addIncoming(fastI32, curBb);
+                phi->addIncoming(slowVal, slowEndBb);
+                values_[inst.result] = phi;
                 return true;
             }
             if (inst.type == il::Type::Bool) {
-                values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_bool, {src});
+                llvm::Value* isNum = builder_.CreateICmpULE(
+                    src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.bool.isnum");
+                llvm::Value* fastDouble = builder_.CreateBitCast(src, builder_.getDoubleTy());
+                llvm::Value* fastTruthy = builder_.CreateFCmpONE(fastDouble, llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0), "unbox.bool.val");
+
+                llvm::LLVMContext& ctx = builder_.getContext();
+                llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+                llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "unbox.bool.slow", fn);
+                llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "unbox.bool.done", fn);
+                llvm::BasicBlock* curBb = builder_.GetInsertBlock();
+
+                builder_.CreateCondBr(isNum, doneBb, slowBb);
+
+                builder_.SetInsertPoint(slowBb);
+                llvm::Value* slowVal = builder_.CreateCall(abi.bronze_unbox_bool, {src});
+                llvm::BasicBlock* slowEndBb = builder_.GetInsertBlock();
+                builder_.CreateBr(doneBb);
+
+                builder_.SetInsertPoint(doneBb);
+                llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "unbox.bool.res");
+                phi->addIncoming(fastTruthy, curBb);
+                phi->addIncoming(slowVal, slowEndBb);
+                values_[inst.result] = phi;
                 return true;
             }
             if (inst.type == il::Type::F64) {

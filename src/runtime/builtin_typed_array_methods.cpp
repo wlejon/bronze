@@ -20,11 +20,18 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
         if (offset + srcLength > targetLength) {
             return rtThrowRangeError("offset is out of bounds").rawBits();
         }
+        auto* srcView = source.get().asObject<TypedArrayHeader>();
+        auto* targetView = self.get().asObject<TypedArrayHeader>();
+        if (srcView->elementKind() == targetView->elementKind()) {
+            const uint32_t bpe = targetView->bytesPerElement();
+            std::memmove(targetView->bytes() + static_cast<uint32_t>(offset) * bpe,
+                         srcView->bytes(), static_cast<size_t>(srcLength) * bpe);
+            return Value::fromUndefined().rawBits();
+        }
         std::vector<double> staged(srcLength);
         for (uint32_t i = 0; i < srcLength; ++i) staged[i] = elemOf(source.get(), i);
-        auto* view = self.get().asObject<TypedArrayHeader>();
         for (uint32_t i = 0; i < srcLength; ++i) {
-            view->set(static_cast<uint32_t>(offset) + i, staged[i]);
+            targetView->set(static_cast<uint32_t>(offset) + i, staged[i]);
         }
         return Value::fromUndefined().rawBits();
     }

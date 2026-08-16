@@ -141,6 +141,13 @@ static_assert(offsetof(TypedArrayHeader, buffer) == BRONZE_ABI_TA_BUFFER_OFFSET)
 static_assert(offsetof(TypedArrayHeader, byteOffset) == BRONZE_ABI_TA_BYTEOFFSET_OFFSET);
 static_assert(offsetof(TypedArrayHeader, length) == BRONZE_ABI_TA_LENGTH_OFFSET);
 static_assert(offsetof(TypedArrayHeader, kind) == BRONZE_ABI_TA_KIND_OFFSET);
+static_assert(static_cast<uint32_t>(ElementKind::Int8) == BRONZE_ABI_TA_KIND_INT8);
+static_assert(static_cast<uint32_t>(ElementKind::Uint8) == BRONZE_ABI_TA_KIND_UINT8);
+static_assert(static_cast<uint32_t>(ElementKind::Uint8Clamped) == BRONZE_ABI_TA_KIND_UINT8CLAMPED);
+static_assert(static_cast<uint32_t>(ElementKind::Int16) == BRONZE_ABI_TA_KIND_INT16);
+static_assert(static_cast<uint32_t>(ElementKind::Uint16) == BRONZE_ABI_TA_KIND_UINT16);
+static_assert(static_cast<uint32_t>(ElementKind::Int32) == BRONZE_ABI_TA_KIND_INT32);
+static_assert(static_cast<uint32_t>(ElementKind::Uint32) == BRONZE_ABI_TA_KIND_UINT32);
 static_assert(static_cast<uint32_t>(ElementKind::Float32) == BRONZE_ABI_TA_KIND_FLOAT32);
 static_assert(static_cast<uint32_t>(ElementKind::Float64) == BRONZE_ABI_TA_KIND_FLOAT64);
 static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,

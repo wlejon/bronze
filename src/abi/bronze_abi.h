@@ -388,6 +388,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_TA_BYTEOFFSET_OFFSET 16
 #define BRONZE_ABI_TA_LENGTH_OFFSET     20
 #define BRONZE_ABI_TA_KIND_OFFSET       24
+#define BRONZE_ABI_TA_KIND_INT8          0
+#define BRONZE_ABI_TA_KIND_UINT8         1
+#define BRONZE_ABI_TA_KIND_UINT8CLAMPED  2
+#define BRONZE_ABI_TA_KIND_INT16         3
+#define BRONZE_ABI_TA_KIND_UINT16        4
+#define BRONZE_ABI_TA_KIND_INT32         5
+#define BRONZE_ABI_TA_KIND_UINT32        6
 #define BRONZE_ABI_TA_KIND_FLOAT32       7
 #define BRONZE_ABI_TA_KIND_FLOAT64       8
 #define BRONZE_ABI_BUF_DATA_OFFSET      24
