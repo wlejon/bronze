@@ -1,0 +1,48 @@
+name: CodeQL
+
+# Static analysis for bronze's own C++ (compiler, runtime, embedding API).
+#
+# Build-mode: none (build-free extraction) — it needs no LLVM/vcpkg toolchain,
+# and it is the one C/C++ mode where paths-ignore is honored, which keeps the
+# vendored oracle milestone sources (unmodified three.js / pixi.js JavaScript)
+# out of the results. JavaScript analysis is deliberately not enabled: nearly
+# all JS in this repo is vendored library source or test fixtures whose
+# findings would be noise about code bronze compiles, not code bronze is.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # Monday 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze C++
+    runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: none
+          config: |
+            paths-ignore:
+              - tests/oracle/threejs
+              - tests/oracle/pixi
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:c-cpp"

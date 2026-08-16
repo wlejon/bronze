@@ -1,0 +1,151 @@
+name: CI
+
+# Build + full test suite on every push/PR, on all three platforms bronze
+# ships for. This is the signal behind the "CI" badge. The run includes the
+# oracle differential suite and both milestones (three.js, pixi.js) — those
+# are the tests that prove the project's stated bar, so CI runs exactly what
+# the pre-commit rule asks for locally: BRONZE_WITH_LLVM=ON and all of ctest.
+#
+# LLVM comes from this repo's own llvm-prebuilt-<ver> release (built by
+# llvm-prebuilt.yml), not from vcpkg — vcpkg builds LLVM from source, which
+# is hours, while the hosted tarball restores in about a minute.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Must match vcpkg.json's builtin-baseline — the manifest pins port versions,
+  # this pins the vcpkg tool + scripts to the same commit (the runner's
+  # preinstalled vcpkg drifts with every image update).
+  VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
+  # Which llvm-prebuilt-<ver> release to link against. Bump together with
+  # LLVM_VERSION in llvm-prebuilt.yml after publishing the new prerelease.
+  LLVM_VERSION: "22.1.8"
+  # Persist the sccache object cache in the GitHub Actions cache across runs.
+  # Without this sccache silently falls back to per-runner LOCAL DISK, which is
+  # wiped between runs — 0% hits, every object recompiled.
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-2022, llvm: windows-x64, triplet: x64-windows }
+          - { name: linux,   os: ubuntu-24.04, llvm: linux-x64,   triplet: x64-linux }
+          - { name: macos,   os: macos-15,     llvm: macos-arm64, triplet: arm64-osx }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      # The hosted LLVM tarball, cached extracted; on a cache miss it downloads
+      # from this repo's llvm-prebuilt-<ver> release. Keyed by version only —
+      # the release's assets are immutable for a given version.
+      - name: LLVM prebuilt cache
+        id: llvm-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/llvm-prebuilt
+          key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.llvm }}
+
+      - name: Fetch LLVM prebuilt
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/llvm-prebuilt"
+          gh release download "llvm-prebuilt-${LLVM_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" \
+            --dir "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" -C "$RUNNER_TEMP/llvm-prebuilt"
+
+      - name: Point LLVM_DIR at the prebuilt
+        shell: bash
+        run: echo "LLVM_DIR=$RUNNER_TEMP/llvm-prebuilt/llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      # doctest is the only default vcpkg dependency; clone vcpkg at the same
+      # commit the manifest baseline pins so tool + ports + scripts agree.
+      - name: vcpkg (pinned)
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout "$VCPKG_COMMIT"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          else
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-bincache" >> "$GITHUB_ENV"
+
+      # Persist vcpkg's built-package archives (just doctest today, but the
+      # scheme scales): per-run key + restore-keys pick the newest prior cache,
+      # avoiding the "exact key exists, skip save" trap after a rebuild.
+      - name: vcpkg binary cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-bincache
+          key: vcpkg-bin-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bin-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-bin-${{ matrix.triplet }}-
+
+      # Put cl.exe on PATH so Windows can use the dev preset's Ninja generator
+      # (this is what dev.cmd does locally). Also gives ctest's oracle cases
+      # link.exe, which `bronze build` invokes to link its test executables.
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Embedded debug info (/Z7) instead of a separate PDB (/Zi) is what
+            # lets sccache cache MSVC objects at all.
+            EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+          fi
+          cmake --preset dev -DBRONZE_WITH_LLVM=ON \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            $EXTRA
+
+      - name: Build
+        run: cmake --build --preset dev --parallel 4
+
+      # The full suite, milestones included — identical to the local
+      # pre-commit run. The oracle cases compile and link real executables,
+      # so this also exercises `bronze build` end to end on each platform.
+      - name: Test
+        run: ctest --preset dev

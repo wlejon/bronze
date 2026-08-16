@@ -1,5 +1,9 @@
 # bronze
 
+[![CI](https://github.com/wlejon/bronze/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/bronze/actions/workflows/ci.yml)
+[![Nightly](https://github.com/wlejon/bronze/actions/workflows/nightly.yml/badge.svg)](https://github.com/wlejon/bronze/releases/tag/nightly)
+[![CodeQL](https://github.com/wlejon/bronze/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/bronze/actions/workflows/codeql.yml)
+
 An ahead-of-time compiler that turns JavaScript into a native executable.
 
 ```
@@ -66,6 +70,16 @@ bronze version                            print the version
 specifiers pull in the rest. `--no-infer` compiles everything on the dynamic
 path; it exists as a debugging tool for isolating inference bugs
 ([docs/internals.md](docs/internals.md) has the details).
+
+## Getting bronze
+
+[Nightly builds](https://github.com/wlejon/bronze/releases/tag/nightly) are
+published for Windows x64, Linux x64, and macOS arm64 — each zip is the
+compiler plus the runtime libraries it links into compiled programs, tested
+against the full suite before publishing. Unzip anywhere and run
+`bronze build app.js -o app`. You need a system linker on your machine
+(Windows: MSVC's `link.exe`; Linux/macOS: `clang++` or `g++`); bronze does
+not ship one.
 
 ## Building bronze
 

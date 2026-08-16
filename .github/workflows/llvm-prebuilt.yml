@@ -1,0 +1,159 @@
+name: LLVM prebuilt
+
+# Builds the LLVM libraries bronze's backend links against — once per LLVM
+# version, per platform — and publishes them to a single `llvm-prebuilt-<ver>`
+# prerelease on this repo (same pattern as bro's skia-prebuilt-m147). CI and
+# nightly download these instead of building LLVM from source (hours via
+# vcpkg), and contributors can point LLVM_DIR at an extracted tarball.
+#
+# Manual-trigger only: this runs when the pinned LLVM version changes, not on a
+# schedule. Bump LLVM_VERSION below, run the workflow, then update the version
+# referenced in ci.yml / nightly.yml.
+#
+# The build is LLVM-only (no clang/lld — bronze uses the system linker) with
+# just the X86 and AArch64 backends: the codegen targets the host triple, so
+# x64 Windows/Linux need X86 and Apple Silicon needs AArch64; shipping both
+# everywhere keeps one artifact shape and leaves cross-emission open.
+# zlib/zstd/libxml2/terminfo are OFF so the produced static libs impose no
+# system-library requirements on the machines that link them.
+#
+# LLVM is Apache-2.0 WITH LLVM-exception, which permits binary redistribution;
+# LICENSE.TXT is included at the root of every tarball.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: llvm-prebuilt
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "22.1.8"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # jobs: bounded -j so the heaviest LLVM TUs don't OOM the runner
+          # (16 GB on linux/windows, ~7 GB on the arm64 macOS runner).
+          - { name: windows-x64, os: windows-2022, jobs: 4 }
+          - { name: linux-x64,   os: ubuntu-24.04, jobs: 4 }
+          - { name: macos-arm64, os: macos-15,     jobs: 3 }
+    steps:
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      # Put cl.exe on PATH so Windows can use the Ninja generator — the Visual
+      # Studio generator ignores compiler launchers and is slower to boot.
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Shallow clone at the release tag — faster and more reliable across
+      # platforms than extracting the 150 MB source tarball (Windows extraction
+      # of ~140k small files is where that route loses).
+      - name: Fetch LLVM source
+        shell: bash
+        run: git clone --depth 1 --branch "llvmorg-${LLVM_VERSION}" https://github.com/llvm/llvm-project "$RUNNER_TEMP/llvm-project"
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S "$RUNNER_TEMP/llvm-project/llvm" -B "$RUNNER_TEMP/llvm-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/dist/llvm" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INSTALL_UTILS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF
+
+      - name: Build & install
+        shell: bash
+        run: cmake --build "$RUNNER_TEMP/llvm-build" --target install --parallel ${{ matrix.jobs }}
+
+      - name: Package
+        shell: bash
+        run: |
+          cp "$RUNNER_TEMP/llvm-project/llvm/LICENSE.TXT" "$RUNNER_TEMP/dist/llvm/LICENSE.TXT"
+          ASSET="bronze-llvm-${LLVM_VERSION}-${{ matrix.name }}.tar.gz"
+          tar -czf "$ASSET" -C "$RUNNER_TEMP/dist" llvm
+          sha256sum "$ASSET" > "$ASSET.sha256" 2>/dev/null || shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: llvm-${{ matrix.name }}
+          path: bronze-llvm-*.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish prerelease
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7      # gh needs a repo context
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # One release per LLVM version; re-running the workflow for the same
+      # version replaces it wholesale so the assets and hashes always agree.
+      # Prerelease so it never claims Latest — that belongs to nightly.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="llvm-prebuilt-${LLVM_VERSION}"
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          {
+            echo "Prebuilt LLVM ${LLVM_VERSION} libraries for bronze's backend, so CI, nightly,"
+            echo "and contributors don't build LLVM from source. LLVM-only (no clang/lld),"
+            echo "Release, targets X86+AArch64, no zlib/zstd/libxml2 — the static libs link"
+            echo "with no extra system libraries. Extract and point LLVM_DIR at"
+            echo "\`llvm/lib/cmake/llvm\`."
+            echo
+            echo "| Asset | SHA-256 |"
+            echo "|---|---|"
+            for f in artifacts/*.sha256; do
+              read -r sha name < "$f"
+              echo "| \`$(basename "$name")\` | \`$sha\` |"
+            done
+            echo
+            echo "LLVM is Apache-2.0 WITH LLVM-exception, which permits binary"
+            echo "redistribution; LICENSE.TXT is included in each tarball. https://llvm.org"
+          } > notes.md
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "LLVM prebuilt (${LLVM_VERSION})" \
+            --notes-file notes.md \
+            --prerelease \
+            artifacts/*.tar.gz

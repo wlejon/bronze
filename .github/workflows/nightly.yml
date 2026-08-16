@@ -1,0 +1,219 @@
+name: Nightly
+
+# Builds bronze for Windows x64, Linux x64, and macOS arm64 every night, runs
+# the full test suite (oracle differential cases + the three.js and pixi.js
+# milestones), smoke-tests the packaged layout end to end, and publishes the
+# three zips to a single rolling "nightly" release marked Latest. The tag is
+# re-pointed each run, so downloaders always find one "latest nightly".
+#
+# A package is the compiler plus the static runtime libraries `bronze build`
+# links into compiled programs, laid out flat next to the exe — exactly where
+# the driver's findRuntimeLib searches first. Users still need a system
+# linker (link.exe / clang++ / g++) on their machine; bronze does not ship one.
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # 07:30 UTC daily
+  workflow_dispatch:        # manual "Run workflow" button
+
+# One nightly at a time; a newer trigger cancels an in-flight run.
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Same pins as ci.yml — see the comments there.
+  VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
+  LLVM_VERSION: "22.1.8"
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-2022, llvm: windows-x64, triplet: x64-windows }
+          - { name: linux-x64,   os: ubuntu-24.04, llvm: linux-x64,   triplet: x64-linux }
+          - { name: macos-arm64, os: macos-15,     llvm: macos-arm64, triplet: arm64-osx }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      # Shares ci.yml's caches — the keys are content-addressed per version /
+      # per package, not per workflow.
+      - name: LLVM prebuilt cache
+        id: llvm-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/llvm-prebuilt
+          key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.llvm }}
+
+      - name: Fetch LLVM prebuilt
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/llvm-prebuilt"
+          gh release download "llvm-prebuilt-${LLVM_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" \
+            --dir "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" -C "$RUNNER_TEMP/llvm-prebuilt"
+
+      - name: Point LLVM_DIR at the prebuilt
+        shell: bash
+        run: echo "LLVM_DIR=$RUNNER_TEMP/llvm-prebuilt/llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      - name: vcpkg (pinned)
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout "$VCPKG_COMMIT"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          else
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          mkdir -p "$RUNNER_TEMP/vcpkg-bincache"
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-bincache" >> "$GITHUB_ENV"
+
+      - name: vcpkg binary cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-bincache
+          key: vcpkg-bin-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bin-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-bin-${{ matrix.triplet }}-
+
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+          fi
+          cmake --preset dev -DBRONZE_WITH_LLVM=ON \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            $EXTRA
+
+      - name: Build
+        run: cmake --build --preset dev --parallel 4
+
+      # Nightly publishes only what passed the same full suite the pre-commit
+      # rule demands — a nightly that skipped the milestones would be a binary
+      # nobody proved.
+      - name: Test
+        run: ctest --preset dev
+
+      # Flat layout: the driver resolves bronze_rt next to the exe first, then
+      # the sibling runtime/json/regex libs beside it — so exe + four static
+      # libs in one directory is a complete, relocatable install.
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="nightly-$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          PKG="bronze-$VERSION-${{ matrix.name }}"
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+          mkdir -p "dist/$PKG"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; else EXE=""; fi
+          cp "build/dev/src/cli/bronze$EXE" "dist/$PKG/"
+          for mod in rt runtime json regex; do
+            cp build/dev/src/$mod/libbronze_$mod.a "dist/$PKG/" 2>/dev/null || \
+            cp build/dev/src/$mod/bronze_$mod.lib "dist/$PKG/"
+          done
+          cp LICENSE README.md "dist/$PKG/"
+
+      # Prove the packaged directory works from a neutral cwd: compile and run
+      # a program with the shipped compiler, resolving the runtime libs
+      # exe-relative (no repo, no build tree in sight). This is the one check
+      # that guards the package layout itself.
+      - name: Smoke test (packaged compiler end to end)
+        shell: bash
+        run: |
+          PKGDIR="$(pwd)/dist/$PKG"
+          cd "$RUNNER_TEMP"
+          echo 'const xs = [1, 2, 3].map(x => x * x); console.log("bronze " + xs.join("+"));' > smoke.js
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; else EXE=""; fi
+          "$PKGDIR/bronze$EXE" build smoke.js -o "smoke$EXE"
+          OUT="$("./smoke$EXE")"
+          echo "$OUT"
+          [ "$OUT" = "bronze 1+4+9" ]
+
+      - name: Zip
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "../$PKG.zip" "$PKG" >/dev/null
+          else
+            zip -qr "../$PKG.zip" "$PKG"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bronze-${{ matrix.name }}
+          path: bronze-nightly-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish rolling nightly
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7      # for the commit sha the release targets
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Re-point the single "nightly" tag/release at this run's commit and
+      # replace its assets. Deleting first (with --cleanup-tag) is the reliable
+      # way to move the tag. --latest is explicit and load-bearing: the
+      # llvm-prebuilt prerelease also exists on this repo, and without the flag
+      # GitHub could pick another release to serve at /releases/latest.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          NOTES="Automated nightly build from \`${GITHUB_SHA::7}\` on $(date -u +%Y-%m-%d), tested against the full oracle suite (three.js and pixi.js milestones included).
+
+          Each zip is the \`bronze\` compiler plus the runtime libraries it links into compiled programs — unzip anywhere and run \`bronze build app.js -o app\`. A system linker is required (Windows: MSVC's \`link.exe\`; Linux/macOS: \`clang++\` or \`g++\`)."
+          gh release create nightly \
+            --target "$GITHUB_SHA" \
+            --title "Nightly ($(date -u +%Y-%m-%d))" \
+            --notes "$NOTES" \
+            --latest \
+            artifacts/*.zip
