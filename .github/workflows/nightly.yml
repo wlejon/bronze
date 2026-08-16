@@ -21,8 +21,11 @@ concurrency:
   group: nightly
   cancel-in-progress: true
 
+# Workflow-level write, with the build job pinned back down below. Job-level
+# elevation above a read-only workflow default was refused with a 403 in
+# practice (llvm-prebuilt run 31924758912), so grant here and restrict per-job.
 permissions:
-  contents: read
+  contents: write
 
 env:
   # Same pins as ci.yml — see the comments there.

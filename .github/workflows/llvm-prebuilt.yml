@@ -27,8 +27,12 @@ concurrency:
   group: llvm-prebuilt
   cancel-in-progress: true
 
+# Workflow-level write, with the build job pinned back down to read below.
+# Job-level elevation above a read-only workflow default was refused with a
+# 403 in practice (run 31924758912's publish job), so grant at the workflow
+# level and restrict per-job — the shape bro's nightly has proven.
 permissions:
-  contents: read
+  contents: write
 
 env:
   LLVM_VERSION: "22.1.8"
@@ -38,6 +42,8 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +151,7 @@ jobs:
             echo "|---|---|"
             for f in artifacts/*.sha256; do
               read -r sha name < "$f"
+              name="${name#\*}"   # sha256sum on the Windows runner emits a binary-mode marker
               echo "| \`$(basename "$name")\` | \`$sha\` |"
             done
             echo
