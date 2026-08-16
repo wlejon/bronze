@@ -1,7 +1,30 @@
 # Deterministic checkouts. The repo is all-LF and the oracle suite compares
 # bytes; CI's Windows image sets core.autocrlf=true, which would hand the
-# lexer different bytes per platform. eol=lf overrides that everywhere.
+# lexer different bytes per platform. eol=lf overrides that everywhere; the
+# -text pins below override this global rule (last match wins).
 * text=auto eol=lf
+
+*.expected -text
+
+# The vendored three.js tree is checked in as published and is compared against
+# a pristine release tree when it is updated (docs/0031 decision 1). With
+# core.autocrlf on, a checkout would rewrite every line ending and "unmodified"
+# would stop being checkable.
+tests/oracle/threejs/three/** -text
+
+# The single-file renderer bundle, same rule and same reason as the tree above.
+tests/oracle/threejs/three.module.js -text
+
+# Vendored as published from the r160 examples tree; byte-for-byte identity
+# with upstream is the provenance check, so a checkout must not rewrite it.
+tests/oracle/threejs/OrbitControls.js -text
+
+# Vendored Unicode Character Database (UCD) 16.0.0 files; byte-for-byte identity
+# with published upstream is required, so a checkout must not rewrite line endings.
+tools/ucd/UnicodeData.txt -text
+tools/ucd/CaseFolding.txt -text
+# Vendored pixi.js bundle; byte-for-byte identity with upstream is checked.
+tests/oracle/pixi/** -text
 
 # This case IS its bytes: a CRLF-saved source file, committed as such, proving
 # templates normalize <CR><LF> per ECMA-262 12.9.6 whatever the platform.
