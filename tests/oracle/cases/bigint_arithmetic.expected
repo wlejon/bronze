@@ -1,0 +1,21 @@
+3n 99n 42n
+3n -3n -3n 3n
+1n -1n 1n -1n
+-1n -1n 1n -18446744073709551616n
+true
+4294967295n 4294967296n 18446744073709551616n 18446744073709551615n
+18446744073709551616n 12345n
+true 3n 2n
+true -3n -2n
+true -3n 2n
+true 3n -2n
+true 0n 1n
+true 0n -1n
+265252859812191058636308480000000n
+9007199254740994n bigint
+9007199254740992n
+6 number
+RangeError: Division by zero
+RangeError: Division by zero
+RangeError: Exponent must be non-negative
+8

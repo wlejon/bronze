@@ -194,6 +194,96 @@ std::string Parser::decodeStringLiteral(std::string_view raw, Span span) {
 //    outright. Reading it as decimal 17 or as octal 15 are both defensible
 //    and they differ, which is exactly the situation to diagnose rather
 //    than choose.
+bool Parser::hasBigIntSuffix(std::string_view raw) {
+    // `N` is not the suffix — the grammar spells it lowercase — but it is
+    // recognized here so that `10N` reaches decodeBigIntLiteral and is refused
+    // BY NAME, instead of lexing on as a number and a stray identifier.
+    return !raw.empty() && (raw.back() == 'n' || raw.back() == 'N');
+}
+
+// The digits a BigIntLiteral denotes (ECMA-262 12.9.3). Its own function
+// rather than a flag on decodeNumericLiteral, because the grammars differ:
+// there is no BigInt literal with a fraction, an exponent or a leading zero,
+// and each of those is a syntax error here where it is an ordinary number
+// there.
+bool Parser::decodeBigIntLiteral(std::string_view raw, Span span, std::string& out) {
+    out.clear();
+    const std::string text(raw);
+    if (raw.back() == 'N') {
+        diags_.error(span, "the BigInt suffix is a lowercase 'n', in '" + text + "'");
+        return false;
+    }
+    raw = raw.substr(0, raw.size() - 1);
+    if (raw.empty()) {
+        diags_.error(span, "empty BigInt literal");
+        return false;
+    }
+
+    int radix = 10;
+    size_t digitsBegin = 0;
+    if (raw.size() >= 2 && raw[0] == '0') {
+        switch (raw[1]) {
+            case 'x': case 'X': radix = 16; digitsBegin = 2; break;
+            case 'o': case 'O': radix = 8;  digitsBegin = 2; break;
+            case 'b': case 'B': radix = 2;  digitsBegin = 2; break;
+            default:
+                // `0123n` is not a legacy octal BigInt, it is not anything:
+                // BigIntLiteralSuffix attaches to a DecimalDigits with no
+                // leading zero, so there is no reading to choose between.
+                diags_.error(span, "a BigInt literal may not have a leading zero, in '" + text +
+                                       "' (write 0o" + std::string(raw.substr(1)) +
+                                       "n for octal)");
+                return false;
+        }
+    }
+
+    for (size_t i = digitsBegin; i < raw.size(); ++i) {
+        const char c = raw[i];
+        if (c == '.') {
+            diags_.error(span, "a BigInt literal may not have a fraction, in '" + text + "'");
+            return false;
+        }
+        // Only in a DECIMAL literal is `e` an exponent; in a hex one it is the
+        // digit fourteen, which is why this asks the radix rather than the
+        // character.
+        if (radix == 10 && (c == 'e' || c == 'E')) {
+            diags_.error(span, "a BigInt literal may not have an exponent, in '" + text + "'");
+            return false;
+        }
+        if (c == '_') {
+            // The separator rule is the number grammar's, unchanged: between
+            // two digits and nowhere else.
+            const auto isDigitOfRadix = [&](size_t at) {
+                if (at >= raw.size() || at < digitsBegin) return false;
+                const int v = digitValue(raw[at]);
+                return v >= 0 && v < radix;
+            };
+            if (i == digitsBegin || !isDigitOfRadix(i - 1) || !isDigitOfRadix(i + 1)) {
+                diags_.error(span, "numeric separator '_' must appear between two digits, in '" +
+                                       text + "'");
+                return false;
+            }
+            continue;
+        }
+        const int v = digitValue(c);
+        if (v < 0 || v >= radix) {
+            diags_.error(span, std::string("invalid digit '") + c + "' in the " + radixName(radix) +
+                                   " BigInt literal '" + text + "'");
+            return false;
+        }
+        out.push_back(c);
+    }
+    if (out.empty()) {
+        diags_.error(span, "the BigInt literal '" + text + "' has no digits");
+        return false;
+    }
+    // The prefix goes back on the front: StringToBigInt reads the same
+    // NonDecimalIntegerLiteral the source wrote, so the radix travels with the
+    // digits rather than in a second field nothing else carries.
+    if (digitsBegin == 2) out.insert(0, raw.substr(0, 2));
+    return true;
+}
+
 bool Parser::decodeNumericLiteral(std::string_view raw, Span span, double& out) {
     out = 0;
     if (raw.empty()) {
@@ -600,6 +690,18 @@ ExprPtr Parser::parseObjectLit() {
             obj->props.push_back(std::move(prop));
         } else if (check(TokenKind::NumberLiteral)) {
             const Token& numTok = advance();
+            if (hasBigIntSuffix(numTok.text)) {
+                // 13.2.5.5 makes the key ToPropertyKey of the literal's value,
+                // which for a BigInt is its decimal ToString — `{1n: 0}` has
+                // the key "1". Refused by name rather than computed, because
+                // computing it needs the arbitrary-precision decimal
+                // conversion and the parser may not depend on the runtime's
+                // bignum. `{[1n]: 0}` is the spelling that already works.
+                diags_.error(numTok.span,
+                             "unsupported: a BigInt literal as an object property key (write "
+                             "[" + std::string(numTok.text) + "] to compute the key)");
+                return nullptr;
+            }
             auto lit = std::make_unique<NumberLit>();
             lit->span = numTok.span;
             if (!decodeNumericLiteral(numTok.text, numTok.span, lit->value)) return nullptr;

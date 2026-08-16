@@ -436,6 +436,9 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr:
+        case il::Op::BitNot:
+        case il::Op::ToNumeric:
+        case il::Op::NumericStep:
             return emitArithmetic(inst);
 
         default:

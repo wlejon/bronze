@@ -80,6 +80,50 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     return result;
 }
 
+// `a - b`, `a * b`, `a / b`, `a % b` over boxed operands. Same shape as
+// `emitDynamicAdd` and for the same reason: the number/number case is the one
+// a loop carries, and it is one machine instruction. What the helper owns is
+// everything else — a string operand's ToNumber, an object's valueOf, and the
+// BigInt algorithm with 13.15.3's mixing TypeError in front of it.
+//
+// The result needs the canonicalizing NaN select for the same reason `+` does:
+// `inf - inf`, `0 * inf`, `0 / 0` and `x % 0` each produce a NaN out of two
+// finite-looking inputs, and an uncanonicalized NaN is a bit pattern the value
+// model does not admit.
+llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper, il::Op op,
+                              llvm::Value* lhs, llvm::Value* rhs) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* dblTy = builder.getDoubleTy();
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "darith.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "darith.done", fn);
+
+    branchIfBothNumbers(builder, lhs, rhs, slowBb, "darith.fast");
+    llvm::Value* l = builder.CreateBitCast(lhs, dblTy);
+    llvm::Value* r = builder.CreateBitCast(rhs, dblTy);
+    llvm::Value* num = op == il::Op::Sub   ? builder.CreateFSub(l, r)
+                       : op == il::Op::Mul ? builder.CreateFMul(l, r)
+                       : op == il::Op::Div ? builder.CreateFDiv(l, r)
+                                           : builder.CreateFRem(l, r);
+    llvm::Value* isNan = builder.CreateFCmpUNO(num, num);
+    llvm::Value* fastVal =
+        builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
+                             builder.CreateBitCast(num, builder.getInt64Ty()));
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "darith.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
 // The four relational operators over boxed operands: two numbers are one
 // ORDERED fcmp — false for a NaN on either side, which is exactly 13.10's
 // "undefined becomes false" for all four members of the family. Everything
@@ -115,7 +159,8 @@ llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, llvm::Function* helper,
 bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
     const char* op = il::opName(inst.op);
     const bool unary = inst.op == il::Op::Neg || inst.op == il::Op::ToInt32 ||
-                       inst.op == il::Op::NumTruthy;
+                       inst.op == il::Op::NumTruthy || inst.op == il::Op::BitNot ||
+                       inst.op == il::Op::ToNumeric || inst.op == il::Op::NumericStep;
     if (!require(inst.operands.size() >= (unary ? 1u : 2u) && inst.result != il::kNoValue,
                  (std::string("Invalid operands for ") + op).c_str())) {
         return false;
@@ -148,7 +193,68 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
             widenBool(builder_, lhs), llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0));
         return true;
     }
+    // 7.1.3 ToNumeric: a Number is already numeric and passes through
+    // UNCHANGED, so the common case costs one compare and no call. The helper
+    // owns the string parse, the object's valueOf and the BigInt row.
+    if (inst.op == il::Op::ToNumeric || inst.op == il::Op::NumericStep) {
+        llvm::LLVMContext& ctx = builder_.getContext();
+        llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+        llvm::Type* dblTy = builder_.getDoubleTy();
+        const bool step = inst.op == il::Op::NumericStep;
+        const char* tag = step ? "step" : "tonum";
+
+        llvm::BasicBlock* slowBb =
+            llvm::BasicBlock::Create(ctx, std::string(tag) + ".slow", fn);
+        llvm::BasicBlock* doneBb =
+            llvm::BasicBlock::Create(ctx, std::string(tag) + ".done", fn);
+        llvm::Value* isNum =
+            builder_.CreateICmpULE(lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+        llvm::BasicBlock* fastBb =
+            llvm::BasicBlock::Create(ctx, std::string(tag) + ".fast", fn);
+        builder_.CreateCondBr(isNum, fastBb, slowBb);
+
+        builder_.SetInsertPoint(fastBb);
+        llvm::Value* fastVal = lhs;
+        if (step) {
+            llvm::Value* one = llvm::ConstantFP::get(dblTy, inst.immI32 > 0 ? 1.0 : -1.0);
+            llvm::Value* sum = builder_.CreateFAdd(builder_.CreateBitCast(lhs, dblTy), one);
+            // NaN + 1 is NaN, and the operand may be any NaN the heap holds,
+            // so the sum needs the same canonicalizing select `+` emits.
+            llvm::Value* isNan = builder_.CreateFCmpUNO(sum, sum);
+            fastVal = builder_.CreateSelect(isNan,
+                                            builder_.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
+                                            builder_.CreateBitCast(sum, builder_.getInt64Ty()));
+        }
+        llvm::BasicBlock* fastEndBb = builder_.GetInsertBlock();
+        builder_.CreateBr(doneBb);
+
+        builder_.SetInsertPoint(slowBb);
+        llvm::Value* slowVal =
+            step ? builder_.CreateCall(shared_.abi.bronze_numeric_step,
+                                       {lhs, builder_.getInt1(inst.immI32 > 0)})
+                 : builder_.CreateCall(shared_.abi.bronze_to_numeric, {lhs});
+        builder_.CreateBr(doneBb);
+
+        builder_.SetInsertPoint(doneBb);
+        llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt64Ty(), 2,
+                                                std::string(tag) + ".result");
+        phi->addIncoming(fastVal, fastEndBb);
+        phi->addIncoming(slowVal, slowBb);
+        values_[inst.result] = phi;
+        return true;
+    }
+    if (inst.op == il::Op::BitNot) {
+        // No inline number path: `~x` on a proven number is lowered as
+        // `x ^ -1` and never reaches here, so every operand this op sees is
+        // one lowering could not type.
+        values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_dynamic_bitnot, {lhs});
+        return true;
+    }
     if (unary) {
+        if (inst.type == il::Type::Dynamic) {
+            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_dynamic_neg, {lhs});
+            return true;
+        }
         values_[inst.result] = builder_.CreateFNeg(widenBool(builder_, lhs));
         return true;
     }
@@ -183,6 +289,14 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                                                   llvm::CmpInst::FCMP_OGE, lhs, rhs);
             return true;
         case il::Op::Pow:
+            if (inst.type == il::Type::Dynamic) {
+                // No inline fast path, unlike the four below: even on two
+                // numbers `**` is a call (Number::exponentiate is not an
+                // instruction), so the branch would buy nothing.
+                values_[inst.result] =
+                    builder_.CreateCall(shared_.abi.bronze_dynamic_pow, {lhs, rhs});
+                return true;
+            }
             values_[inst.result] = builder_.CreateCall(
                 shared_.abi.bronze_pow, {widenBool(builder_, lhs), widenBool(builder_, rhs)});
             return true;
@@ -197,6 +311,20 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr: {
+            if (inst.type == il::Type::Dynamic) {
+                // Boxed operands, so the int32 conversion has not happened and
+                // must not: on a BigInt pair the operator is defined over the
+                // whole values, and ToInt32 would silently truncate them.
+                llvm::Function* helper =
+                    inst.op == il::Op::BitAnd   ? shared_.abi.bronze_dynamic_bitand
+                    : inst.op == il::Op::BitOr  ? shared_.abi.bronze_dynamic_bitor
+                    : inst.op == il::Op::BitXor ? shared_.abi.bronze_dynamic_bitxor
+                    : inst.op == il::Op::Shl    ? shared_.abi.bronze_dynamic_shl
+                    : inst.op == il::Op::Shr    ? shared_.abi.bronze_dynamic_shr
+                                                : shared_.abi.bronze_dynamic_ushr;
+                values_[inst.result] = builder_.CreateCall(helper, {lhs, rhs});
+                return true;
+            }
             if (!require(lhs->getType()->isIntegerTy(32) && rhs->getType()->isIntegerTy(32),
                          (std::string("Non-i32 operand in ") + op + " (lowering bug)").c_str())) {
                 return false;
@@ -244,6 +372,14 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::Mul:
         case il::Op::Div:
         case il::Op::Mod: {
+            if (inst.type == il::Type::Dynamic) {
+                llvm::Function* helper = inst.op == il::Op::Sub   ? shared_.abi.bronze_dynamic_sub
+                                         : inst.op == il::Op::Mul ? shared_.abi.bronze_dynamic_mul
+                                         : inst.op == il::Op::Div ? shared_.abi.bronze_dynamic_div
+                                                                  : shared_.abi.bronze_dynamic_mod;
+                values_[inst.result] = emitDynamicArith(builder_, helper, inst.op, lhs, rhs);
+                return true;
+            }
             const bool asDouble = isDoubleOperation(inst.type, lhs, rhs);
             if (asDouble) {
                 lhs = widenBool(builder_, lhs);

@@ -339,6 +339,16 @@ private:
     // resolved (see the definition: the lexer finds the literal's end, the
     // parser decides what it means). False on a diagnosed error.
     bool decodeNumericLiteral(std::string_view raw, Span span, double& out);
+    // Does this NumericLiteral token carry the BigInt suffix? The one question
+    // that decides WHICH node a numeric token becomes, asked in the two places
+    // that build one so neither can guess.
+    static bool hasBigIntSuffix(std::string_view raw);
+    // The digits a BigIntLiteral denotes, cleaned for StringToBigInt: `n` and
+    // separators removed, radix prefix kept. False on a diagnosed error — and
+    // the errors are the whole point, since 12.9.3's BigIntLiteralSuffix
+    // attaches only to an INTEGER (`1.5n` and `1e3n` are not literals) and
+    // never to a legacy octal (`0123n`).
+    bool decodeBigIntLiteral(std::string_view raw, Span span, std::string& out);
     ast::ExprPtr parseTemplateLiteral();
     // `/ab+/gi`. Splits the one token into its pattern and its flags and
     // COMPILES the pattern, so a malformed regular expression is a compile

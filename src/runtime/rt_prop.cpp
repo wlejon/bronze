@@ -29,6 +29,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/accessor.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
 #include "runtime/exception.h"
@@ -268,6 +269,10 @@ Value symbolReadStart(Value v) {
     if (v.isBool()) return rtBooleanPrototype();
     if (v.isNumber()) return rtNumberPrototype();
     if (v.isSymbol()) return rtSymbolPrototype();
+    // The same road as the four above it, and the reason a BigInt needs it:
+    // `Object.prototype.toString.call(1n)` reads @@toStringTag off the
+    // receiver, and 21.2.3.5 puts "BigInt" on `BigInt.prototype`.
+    if (v.isBigInt()) return rtBigIntPrototype();
     ObjectHeader* holder = rtSymbolKeyHolder(v);
     return holder ? Value::fromObject(holder) : Value::fromUndefined();
 }

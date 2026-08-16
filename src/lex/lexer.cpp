@@ -253,9 +253,7 @@ Token Lexer::lexNumber() {
     // `1.foo` is a property access on a number, not a literal ending in a
     // dot, so the dot is only part of the literal when a digit (or a
     // separator, which is an error the parser names) follows it.
-    bool hasDotOrExp = false;
     if (peek() == '.' && (isDigit(peek(1)) || peek(1) == '_')) {
-        hasDotOrExp = true;
         ++pos_;
         takeDigits(isDigit);
     }
@@ -268,13 +266,16 @@ Token Lexer::lexNumber() {
     if ((peek() == 'e' || peek() == 'E') &&
         (startsExponent(peek(1)) ||
          ((peek(1) == '+' || peek(1) == '-') && startsExponent(peek(2))))) {
-        hasDotOrExp = true;
         pos_ += 2;  // the `e`, and the sign or first digit
         takeDigits(isDigit);
     }
-    if (!hasDotOrExp && (peek() == 'n' || peek() == 'N')) {
-        ++pos_;
-    }
+    // The BigInt suffix, consumed even after a fraction or an exponent — where
+    // the grammar does not allow it — for the reason the whole of this function
+    // is permissive: `1.5n` and `1e3n` are errors that must be NAMED, and a
+    // diagnostic can only quote a literal it was handed whole. Leaving the `n`
+    // behind made them lex as a number followed by the identifier `n`, and the
+    // message that came out was about a stray identifier.
+    if (peek() == 'n' || peek() == 'N') ++pos_;
     return make(TokenKind::NumberLiteral, begin);
 }
 

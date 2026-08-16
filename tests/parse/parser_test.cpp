@@ -384,10 +384,34 @@ TEST_CASE("parse logical assignment operators") {
     CHECK(out.find("(binary ??=") != std::string::npos);
 }
 
+// A BigInt literal is its OWN node, not a NumberLit whose double happens to
+// agree: `9007199254740993n` has no double at all, and the digits are what the
+// node carries.
 TEST_CASE("parse BigInt literal suffix n") {
     const auto out = parseAndDump("let a = 0n; let b = 0xE7C0DEn; let c = 12345n;");
     CHECK(out.substr(0, 7) != "ERRORS:");
-    CHECK(out.find("(number 0)") != std::string::npos);
-    CHECK(out.find("(number 12345)") != std::string::npos);
+    CHECK(out.find("(bigint 0n)") != std::string::npos);
+    CHECK(out.find("(bigint 0xE7C0DEn)") != std::string::npos);
+    CHECK(out.find("(bigint 12345n)") != std::string::npos);
+    CHECK(out.find("(number ") == std::string::npos);
+    const auto sep = parseAndDump("let a = 1_000n;");
+    CHECK(sep.find("(bigint 1000n)") != std::string::npos);
+    const auto exact = parseAndDump("let a = 9007199254740993n;");
+    CHECK(exact.find("(bigint 9007199254740993n)") != std::string::npos);
+}
+
+// 12.9.3's BigIntLiteralSuffix attaches to an integer with no leading zero and
+// nothing else, and each of the four ways to get that wrong is NAMED — the
+// lexer hands the whole literal over precisely so the message can quote it.
+TEST_CASE("a BigInt literal with a fraction, an exponent or a leading zero is named") {
+    CHECK(parseAndDump("let a = 1.5n;").find("may not have a fraction") != std::string::npos);
+    CHECK(parseAndDump("let a = 1e3n;").find("may not have an exponent") != std::string::npos);
+    CHECK(parseAndDump("let a = 0123n;").find("may not have a leading zero") != std::string::npos);
+    CHECK(parseAndDump("let a = 10N;").find("lowercase 'n'") != std::string::npos);
+    CHECK(parseAndDump("let a = 0b12n;").find("invalid digit '2'") != std::string::npos);
+    CHECK(parseAndDump("let a = 1_n;").find("must appear between two digits") != std::string::npos);
+    // `{1n: 0}` needs the arbitrary-precision decimal conversion to know its
+    // key, which the parser may not depend on — so it is refused by name.
+    CHECK(parseAndDump("let o = {1n: 0};").find("as an object property key") != std::string::npos);
 }
 

@@ -14,9 +14,8 @@
 //
 // The rest of the case is the object itself: its slots, the identity of the
 // constructor and of the accessors, what `in` finds, and the inspect form.
-// `getBigInt64` is IN the object — 25.3.4 defines it — even though bronze has
-// no BigInt to give it; the name existing and the value being unavailable are
-// two different answers, and only the second is bronze's limitation.
+// `getBigInt64` is IN the object, the way every other member 25.3.4 defines
+// is — the four 64-bit accessors are ordinary members of the same table.
 
 const shared = new ArrayBuffer(8);
 const bytes = new Uint8Array(shared);

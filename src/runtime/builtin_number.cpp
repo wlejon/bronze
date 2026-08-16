@@ -22,6 +22,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -371,6 +372,12 @@ Value rtNumberValueOfArgument(Value v) {
     if (prim.get().isSymbol()) {
         return rtThrowTypeError("Cannot convert a Symbol value to a number");
     }
+    // Step 2: a BigInt CONVERTS here, where `rtToNumber` refuses it. That is
+    // the whole difference between the explicit conversion and the implicit
+    // one — `Number(1n)` is 1 and `1n * 1` is a TypeError — and it is why this
+    // clause is spelled out instead of delegating. The rounding is 6.1.6.2's
+    // ℝ -> Number, so a value past 2^53 lands on the nearest double.
+    if (prim.get().isBigInt()) return Value::fromDouble(rtBigIntToNumber(prim.get()));
     return Value::fromDouble(rtToNumber(prim.get()));
 }
 

@@ -184,6 +184,38 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_set_function_generator,     BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_string_concat,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* The rest of 13.15.3 ApplyStringOrNumericBinaryOperator over BOXED\
+     * operands, which `+` alone used to need. They exist because a BigInt\
+     * operand makes every one of these a two-algorithm operator: ToNumeric\
+     * (7.1.3) answers with a Number or a BigInt, the two must MATCH, and a\
+     * mixed pair is a TypeError rather than a coercion. The number/number\
+     * case is still inlined at the call site (llvm_arith.cpp), so these are\
+     * the off-the-fast-path half and nothing typed code reaches. */ \
+    X(bronze_dynamic_sub,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_mul,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_div,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_mod,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_pow,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_bitand,      BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_bitor,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_bitxor,      BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_shl,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_shr,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_ushr,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_dynamic_neg,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_dynamic_bitnot,      BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    /* A BigInt literal: the registered key index of its SOURCE TEXT in, the\
+     * value out. The text rather than a payload because a BigInt has no\
+     * width - there is no immediate field it would fit in - and the key pool\
+     * already carries compile-time strings to the runtime. */ \
+    X(bronze_bigint_literal,      BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
+    /* 7.1.3 ToNumeric and 13.4.4.1 step 3, the two halves of `x++`. They are\
+     * two helpers and not one because a POSTFIX update yields the coerced OLD\
+     * value, so the coercion is observable on its own. The step is an operator\
+     * rather than `x + 1` because its delta has the operand's type: 1 for a\
+     * Number and 1n for a BigInt, and the mixed pair would be a TypeError. */ \
+    X(bronze_to_numeric,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
+    X(bronze_numeric_step,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_print_value,         BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_values,        BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_print_string,        BRONZE_ABI_VOID, (BRONZE_ABI_CSTR)) \

@@ -1,0 +1,58 @@
+12n bigint
+8n bigint
+30n bigint
+3n bigint
+2n bigint
+18446744073709551616n bigint
+8n bigint
+15n bigint
+6n bigint
+18446744073709551616n bigint
+-1n bigint
+918632151292094001n
+12n
+8n
+40n
+13n
+6n
+216n
+0n
+9n
+10n
+10995116277760n
+2748779069440n
+101n
+98n
+196n
+49n
+9n
+-1000000n
+-3907n
+-3907n
+38654705664n
+9007199254740994n
+9007199254740992n
+18446744073709551617n
+18446744073709551615n
+18446744073709551617n
+18446744073709551615n
+5n 6n 6n 5n
+6n 6n 5n 5n
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '-' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '*' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '/' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '%' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '+' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '**' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '<<' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '-' operator needs two BigInts or two Numbers)
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '-' operator needs two BigInts or two Numbers)
+RangeError: Division by zero
+n=1 string
+1 string
+9 number
+26 number
+4 number
+30 number
+1 number
+a1true string

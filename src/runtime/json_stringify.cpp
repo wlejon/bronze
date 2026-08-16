@@ -298,6 +298,15 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
         quoteJsonString(rtStringUnits(v.asString<StringHeader>()), out);
         return true;
     }
+    // 25.5.2.2 step 10: a BigInt is a TypeError, not `null` and not its digits.
+    // JSON has one number type and it is a double, so writing a BigInt out
+    // would silently lose exactly the values the type exists to carry. A
+    // program that wants one serialized gives BigInt.prototype a `toJSON` or
+    // passes a replacer, both of which run before this step.
+    if (v.isBigInt()) {
+        rtThrowTypeError("Do not know how to serialize a BigInt");
+        return false;
+    }
     if (isNumberLike(v)) {
         const double d = numberOf(v);
         if (!std::isfinite(d)) {

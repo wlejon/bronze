@@ -11,6 +11,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -347,6 +348,8 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = rtDateConstructor();
     } else if (keyStr == "Symbol") {
         out = rtSymbolFunction();
+    } else if (Value bigint = rtBigIntConstructor(keyStr); bigint.isObject()) {
+        out = bigint;
     } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
         out = regexp;
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {

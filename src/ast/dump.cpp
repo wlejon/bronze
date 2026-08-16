@@ -26,6 +26,10 @@ public:
     void visit(const NumberLit& n) override {
         emit("(number " + formatNumber(n.value) + ")");
     }
+    // The digits as written, with the suffix that says which type this is:
+    // `(bigint 10n)` next to `(number 10)` is the whole difference the dump
+    // exists to show.
+    void visit(const BigIntLit& n) override { emit("(bigint " + n.digits + "n)"); }
     void visit(const StringLit& n) override { emit("(string \"" + n.value + "\")"); }
     void visit(const RegExpLit& n) override {
         emit("(regexp /" + n.pattern + "/" + n.flags + ")");

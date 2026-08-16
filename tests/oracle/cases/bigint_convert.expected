@@ -1,0 +1,31 @@
+42n -42n 0n 0n 9007199254740992n
+1n 0n
+RangeError: The number 1.5 cannot be converted to a BigInt because it is not an integer
+RangeError: The number NaN cannot be converted to a BigInt because it is not an integer
+RangeError: The number Infinity cannot be converted to a BigInt because it is not an integer
+TypeError: Cannot convert null to a BigInt
+TypeError: Cannot convert undefined to a BigInt
+TypeError: Cannot convert a Symbol value to a BigInt
+42n 42n 0n 0n
+5n -5n 16n 11n 15n
+123456789012345678901234567890n
+SyntaxError: Cannot convert this string to a BigInt
+SyntaxError: Cannot convert this string to a BigInt
+SyntaxError: Cannot convert this string to a BigInt
+SyntaxError: Cannot convert this string to a BigInt
+5n 7n
+1 -1 0 9007199254740992
+9007199254740992 9007199254740996
+Infinity -Infinity 8.98846567431158e+307
+TypeError: Cannot mix BigInt and other types, use explicit conversions (the '*' operator needs two BigInts or two Numbers)
+TypeError: Cannot convert a BigInt value to a number
+TypeError: Cannot convert a BigInt value to a number
+255 ff 11111111 73
+-ff 0 5n bigint
+true true
+RangeError: toString() radix must be between 2 and 36
+RangeError: toString() radix must be between 2 and 36
+false true true false n y
+TypeError: Do not know how to serialize a BigInt
+TypeError: Do not know how to serialize a BigInt
+{"a":"1"}

@@ -40,6 +40,7 @@
 #endif
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -68,6 +69,11 @@ static Value valueToString(Value v) {
         rtThrowTypeError("Cannot convert a Symbol value to a string");
         return rtMakeString("");
     }
+    // 6.1.6.2.20 BigInt::toString, which — unlike ToNumber above — is total:
+    // `String(1n)`, `"" + 1n` and `` `${1n}` `` are the digits with no suffix,
+    // where console.log prints `1n`. The two really are different formats and
+    // node draws the same line.
+    if (v.isBigInt()) return rtMakeString(rtBigIntToString(v, 10));
     char buf[64];
     if (v.isNumber()) {
         size_t len = formatJsNumber(v.asNumber(), buf);
@@ -423,6 +429,15 @@ double rtToNumber(Value v) {
         rtThrowTypeError("Cannot convert a Symbol value to a number");
         return std::numeric_limits<double>::quiet_NaN();
     }
+    // 7.1.4's BigInt row is a TypeError, and it is why `+1n`, `Math.abs(1n)`
+    // and `1n | 0` all throw where `Number(1n)` converts: ToNumber refuses,
+    // and 21.1.1.1's explicit conversion is a different operation with its own
+    // rounding (6.1.6.2's ℝ -> Number). Catchable for the same reason the
+    // Symbol row above is.
+    if (v.isBigInt()) {
+        rtThrowTypeError("Cannot convert a BigInt value to a number");
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     if (!v.isObject()) return std::numeric_limits<double>::quiet_NaN();
     // Step 1: ToPrimitive with hint NUMBER, so `valueOf` is asked before
     // `toString` and a `Symbol.toPrimitive` before either. The result is a
@@ -504,7 +519,12 @@ double bronze_unbox_f64(uint64_t bits) {
 int32_t bronze_unbox_i32(uint64_t bits) {
     Value v(bits);
     if (v.isInt32()) return static_cast<int32_t>(v.payload());
-    if (v.isNumber()) return static_cast<int32_t>(v.asNumber());
+    // ToInt32 and not a C cast: casting a double outside the int32 range is
+    // undefined behaviour in C++, and the language answers a WRAPAROUND modulo
+    // 2^32 there (`4294967296 | 0` is 0, `2147483648 | 0` is -2147483648).
+    // The inlined fast path at the call site sends exactly those values here
+    // for the same reason.
+    if (v.isNumber()) return bronze_to_int32_f64(v.asNumber());
     if (v.isBool()) return v.asBool() ? 1 : 0;
     return 0;
 }
@@ -522,6 +542,9 @@ bool bronze_truthy(uint64_t bits) {
         StringHeader* str = v.asString<StringHeader>();
         return str && (str->getLength() > 0);
     }
+    // 7.1.2's BigInt row: 0n is the ONE falsy BigInt, exactly as 0 is the one
+    // falsy integer Number.
+    if (v.isBigInt()) return !rtBigIntValue(v).isZero();
     return true;
 }
 
@@ -540,6 +563,15 @@ bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
     }
     if (a.isString() && b.isString()) {
         return a.asString<StringHeader>()->equals(*b.asString<StringHeader>());
+    }
+    // 7.2.15 step 2's BigInt row is BigInt::equal, which compares MATHEMATICAL
+    // values — so `===` on two BigInts is value equality and not the pointer
+    // compare below, and `0n === -0n` is true because there is only one zero
+    // (bignum.cpp's `trim` says why). A BigInt against a Number is false with
+    // no comparison at all: step 1 makes different types unequal, which is the
+    // whole of `10n === 10` being false where `10n == 10` is true.
+    if (a.isBigInt() && b.isBigInt()) {
+        return BigNum::compare(rtBigIntValue(a), rtBigIntValue(b)) == 0;
     }
     // Same tag + same payload: bools, null, undefined, object identity.
     // Different tags can never be strictly equal.
@@ -606,6 +638,13 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     if (aRoot.get().isSymbol() || bRoot.get().isSymbol()) {
         rtThrowTypeError("Cannot convert a Symbol value to a number");
         return Value::fromUndefined().rawBits();
+    }
+    // Step 3's ToNumeric: a BigInt on either side means the pair must be two
+    // BigInts, and this is BELOW the String branch on purpose — `"" + 1n` is
+    // the string "1" and never a mixing error, because 13.15.3 decides on
+    // Strings before it looks at numeric types at all.
+    if (Value bigResult; rtBigIntBinary(BigIntOp::Add, aRoot.get(), bRoot.get(), bigResult)) {
+        return bigResult.rawBits();
     }
     return Value::fromDouble(bronze_unbox_f64(aRoot.get().rawBits()) +
                              bronze_unbox_f64(bRoot.get().rawBits()))

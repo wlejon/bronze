@@ -12,6 +12,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -135,6 +136,10 @@ private:
         if (v.isNumber()) return numberText(v.asNumber());
         if (v.isString()) return quoted(utf8Of(v.asString<StringHeader>()));
         if (v.isBool()) return v.asBool() ? "true" : "false";
+        // The literal spelling, exactly as at the top level (rt_print.cpp says
+        // why the suffix is there); one formatter, so a bigint nested in an
+        // array prints as it would alone.
+        if (v.isBigInt()) return rtBigIntToString(v, 10) + "n";
         if (v.isNull()) return "null";
         if (v.isUndefined()) return "undefined";
         if (v.isHole()) fatal("internal: the hole sentinel reached console.log");

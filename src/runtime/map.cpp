@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/string.h"
 
@@ -45,6 +46,17 @@ uint32_t hashKey(Value v) noexcept {
         return mix64(std::bit_cast<uint64_t>(d));
     }
     if (v.isString()) return mix64(v.asString<StringHeader>()->hash());
+    // A BigInt hashes by its LIMBS, for exactly the reason a string hashes by
+    // its characters: SameValueZero on two BigInts is a value compare, so two
+    // separately allocated 1n are one key and must land in one bucket.
+    if (v.isBigInt()) {
+        const auto* big = v.asBigInt<runtime::BigIntHeader>();
+        uint64_t acc = big->negative;
+        for (uint32_t i = 0; i < big->limbCount; ++i) {
+            acc = mix64(acc ^ big->limbs()[i]);
+        }
+        return mix64(acc);
+    }
     // An object, a symbol, a boolean or a singleton: identity, which for a
     // heap pointer means its CURRENT address. That is what makes the epoch
     // check in reindex() load-bearing rather than defensive.
@@ -155,6 +167,12 @@ bool sameValueZero(Value a, Value b) noexcept {
     }
     if (a.isString() && b.isString()) {
         return a.asString<StringHeader>()->equals(*b.asString<StringHeader>());
+    }
+    // 7.2.10 delegates to 7.2.15 for two BigInts, which is BigInt::equal — a
+    // value compare. A BigInt against a NUMBER stays unequal (they are
+    // different types), which is what makes `new Set([1n, 1]).size` be 2.
+    if (a.isBigInt() && b.isBigInt()) {
+        return runtime::BigNum::compare(runtime::rtBigIntValue(a), runtime::rtBigIntValue(b)) == 0;
     }
     return a.rawBits() == b.rawBits();
 }

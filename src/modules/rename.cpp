@@ -281,7 +281,8 @@ private:
 
         if (auto* id = dynamic_cast<ast::Ident*>(&e)) {
             rewrite(id->name);
-        } else if (dynamic_cast<ast::NumberLit*>(&e) || dynamic_cast<ast::StringLit*>(&e) ||
+        } else if (dynamic_cast<ast::NumberLit*>(&e) || dynamic_cast<ast::BigIntLit*>(&e) ||
+                   dynamic_cast<ast::StringLit*>(&e) ||
                    dynamic_cast<ast::BoolLit*>(&e) || dynamic_cast<ast::NullLit*>(&e) ||
                    dynamic_cast<ast::UndefinedLit*>(&e) || dynamic_cast<ast::ThisExpr*>(&e) ||
                    dynamic_cast<ast::RegExpLit*>(&e)) {

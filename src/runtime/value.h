@@ -31,6 +31,15 @@ enum class Tag : uint16_t {
     // without checking for it is one lowering emitted for a binding that is
     // not lexical.
     Uninitialized = 0xFFFA,
+    // A BigInt (ECMA-262 6.1.6.2): a heap allocation whose payload is limbs,
+    // not Values. Its own tag rather than a `Tag::Object` heap kind, because
+    // `typeof` has to answer "bigint" and every numeric predicate in the value
+    // model has to answer no — a heap kind is discovered by dereferencing the
+    // pointer, and `isNumber()` must be decidable from the bits alone.
+    //
+    // Above the number range like every other tag here, so `isNumber()` is
+    // still the single unsigned compare it was.
+    BigInt = 0xFFFB,
     Forwarded = 0xFFFE,
 };
 
@@ -79,6 +88,11 @@ public:
     static Value fromString(const void* ptr) noexcept {
         auto addr = reinterpret_cast<uintptr_t>(ptr);
         return Value((static_cast<uint64_t>(Tag::String) << kTagShift) | (addr & kPayloadMask));
+    }
+
+    static Value fromBigInt(const void* ptr) noexcept {
+        auto addr = reinterpret_cast<uintptr_t>(ptr);
+        return Value((static_cast<uint64_t>(Tag::BigInt) << kTagShift) | (addr & kPayloadMask));
     }
 
     static Value fromSymbol(const void* ptr) noexcept {
@@ -167,8 +181,20 @@ public:
         return tag() == static_cast<uint16_t>(Tag::Int32);
     }
 
+    constexpr bool isBigInt() const noexcept {
+        return tag() == static_cast<uint16_t>(Tag::BigInt);
+    }
+
+    template <typename T = void>
+    T* asBigInt() const noexcept {
+        return reinterpret_cast<T*>(static_cast<uintptr_t>(payload()));
+    }
+
+    // Every tag whose payload is a HEAP ADDRESS the collector must forward. A
+    // BigInt is one of them: it moves like a string, and it is only its
+    // PAYLOAD that the collector must not read as Values.
     constexpr bool isPointer() const noexcept {
-        return isObject() || isString() || isSymbol();
+        return isObject() || isString() || isSymbol() || isBigInt();
     }
 
     constexpr bool operator==(const Value& other) const noexcept = default;

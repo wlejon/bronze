@@ -20,6 +20,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
@@ -108,6 +109,19 @@ Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, 
     return Value::fromUndefined();
 }
 
+Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+    Rooted<Value> self{bigVal};
+    const Value found = protoMember(rtBigIntPrototype(), self, key, ic);
+    if (!found.isUndefined()) return found;
+    // The two holders on this chain, nearest first, exactly as a number's:
+    // `BigInt.prototype` (21.2.3) and then `Object.prototype`. There is no
+    // index or `length` step above the walk — a BigInt has no own properties
+    // at all, which is what makes this the simplest of the five.
+    rtCheckBigIntProtoMember(keyStr);
+    rtObjectProtoCheckMissingMember(keyStr);
+    return Value::fromUndefined();
+}
+
 Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
     Rooted<Value> self{symVal};
     const Value found = protoMember(rtSymbolPrototype(), self, key, ic);
@@ -135,6 +149,7 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
     if (objVal.isBool()) return booleanMember(objVal, keyStr, key, ic);
     if (objVal.isNumber()) return numberMember(objVal, keyStr, key, ic);
     if (objVal.isSymbol()) return symbolMember(objVal, keyStr, key, ic);
+    if (objVal.isBigInt()) return bigintMember(objVal, keyStr, key, ic);
     // Everything a program can name has a branch above; what is left is a tag
     // no program can hold — a hole sentinel that escaped an array. That is not
     // "a property that happens to be absent", so it may not answer `undefined`.

@@ -24,6 +24,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -239,6 +240,91 @@ Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     return Value::fromUndefined();
 }
 
+// ---- the four 64-bit accessors (25.3.4.5, .6, .19, .20) ---------------------
+//
+// They are not `dvGet<K>`/`dvSet<K>` instantiations because their VALUE is a
+// BigInt: `ElementKind` has no 64-bit integer member, and the number half of
+// this file speaks in doubles, which cannot carry 2^63 - 1. What they share
+// with the sixteen above is everything else — the same ToIndex, the same
+// bounds test, the same explicit byte order.
+
+// 25.3.1.6 RawBytesToNumeric for the two BigInt64 rows: eight bytes read as a
+// two's-complement or an unsigned 64-bit integer.
+Value bigIntFromRawBits(uint64_t bits, bool isSigned) {
+    if (!isSigned) return rtMakeBigInt(BigNum::fromUint64(bits));
+    // Through the unsigned magnitude, because the negation of INT64_MIN is
+    // undefined behaviour and it is exactly the value the sign edge tests.
+    if ((bits >> 63) == 0) return rtMakeBigInt(BigNum::fromUint64(bits));
+    const uint64_t magnitude = ~bits + 1ULL;
+    return rtMakeBigInt(BigNum::negate(BigNum::fromUint64(magnitude)));
+}
+
+Value getBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg,
+                      bool isSigned) {
+    Rooted<Value> endianRoot{littleEndianArg};
+    uint32_t getIndex = 0;
+    if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
+    const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
+    auto* view = self.get().asObject<DataViewHeader>();
+    if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
+        return rtThrowRangeError(kOutOfBounds);
+    }
+    const uint64_t bits = readRawBytes(view->bytes() + getIndex, 8, littleEndian);
+    // The read is finished before this allocates, which is what lets the raw
+    // `view` pointer above be used and then dropped.
+    return bigIntFromRawBits(bits, isSigned);
+}
+
+Value setBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg,
+                      Value value, bool isSigned) {
+    Rooted<Value> endianRoot{littleEndianArg};
+    Rooted<Value> valueRoot{value};
+    uint32_t getIndex = 0;
+    if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
+    // Step 4 is ToBigInt and it runs BEFORE the bounds test, exactly as the
+    // number accessors' ToNumber does — so a `set` past the end of the view
+    // still refuses a Number argument first.
+    BigNum converted;
+    if (!rtToBigInt(valueRoot.get(), converted)) return Value::fromUndefined();
+    BigNumError err = BigNumError::None;
+    // 25.3.1.5 NumericToRawBytes for the BigInt rows is "modulo 2^64", which is
+    // asUintN — so an out-of-range value WRAPS rather than throwing, the same
+    // way `setInt32` wraps.
+    const BigNum wrapped = BigNum::asUintN(64, converted, err);
+    if (err != BigNumError::None) return rtThrowRangeError("Maximum BigInt size exceeded");
+    uint64_t bits = 0;
+    wrapped.magnitudeToUint64(bits);
+    (void)isSigned;  // the stored bits are the same 64 either way
+
+    const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
+    auto* view = self.get().asObject<DataViewHeader>();
+    if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
+        return rtThrowRangeError(kOutOfBounds);
+    }
+    writeRawBytes(view->bytes() + getIndex, 8, littleEndian, bits);
+    return Value::fromUndefined();
+}
+
+template <bool Signed>
+uint64_t dvGetBig(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireDataView(self.get(), Signed ? "getBigInt64" : "getBigUint64")) {
+        return Value::fromUndefined().rawBits();
+    }
+    return getBigViewValue(self, args[0], args[1], Signed).rawBits();
+}
+
+template <bool Signed>
+uint64_t dvSetBig(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireDataView(self.get(), Signed ? "setBigInt64" : "setBigUint64")) {
+        return Value::fromUndefined().rawBits();
+    }
+    return setBigViewValue(self, args[0], args[2], args[1], Signed).rawBits();
+}
+
 // ---- the accessors ----------------------------------------------------------
 //
 // The name each accessor answers to, derived from the element type rather than
@@ -347,14 +433,10 @@ const Accessor kAccessors[] = {
     {"setUint32", dvSet<ElementKind::Uint32>, 2},
     {"setFloat32", dvSet<ElementKind::Float32>, 2},
     {"setFloat64", dvSet<ElementKind::Float64>, 2},
-};
-
-// The four members of 25.3.4 bronze cannot build, and the one reason it cannot:
-// they are the only DataView accessors whose value is a BigInt, and bronze has
-// no BigInt at all. Named here rather than left off the list, because reading
-// `view.getBigInt64` as `undefined` would claim ECMA-262 does not define it.
-const char* const kBigIntAccessors[] = {
-    "getBigInt64", "getBigUint64", "setBigInt64", "setBigUint64",
+    {"getBigInt64", dvGetBig<true>, 1},
+    {"getBigUint64", dvGetBig<false>, 1},
+    {"setBigInt64", dvSetBig<true>, 2},
+    {"setBigUint64", dvSetBig<false>, 2},
 };
 
 const char* accessorName(ElementKind kind, bool isGet) noexcept {
@@ -404,13 +486,6 @@ Value rtDataViewMember(Value viewVal, const std::string& key) {
     for (const Accessor& a : kAccessors) {
         if (key == a.name) return rtNativeFunction(a.code, a.arity);
     }
-    for (const char* name : kBigIntAccessors) {
-        if (key != name) continue;
-        fatal((std::string("unsupported: DataView.prototype.") + key +
-               " is not implemented (it reads or writes a BigInt, and bronze has no BigInt "
-               "type for the value to be)")
-                  .c_str());
-    }
     return Value::fromUndefined();
 }
 
@@ -420,9 +495,6 @@ bool rtDataViewHasMember(const std::string& key) {
     }
     for (const Accessor& a : kAccessors) {
         if (key == a.name) return true;
-    }
-    for (const char* name : kBigIntAccessors) {
-        if (key == name) return true;
     }
     return false;
 }

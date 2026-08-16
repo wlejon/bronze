@@ -33,6 +33,13 @@ enum class Op : uint8_t {
     ConstBool,  // a = const.bool <imm>
     ConstUndefined, // a: dynamic = const.undefined
     ConstNull,      // a: dynamic = const.null
+    // A BigInt literal. `keyIndex` names its SOURCE TEXT in the key pool, not a
+    // payload: a BigInt has no width, so there is no immediate field the value
+    // would fit in, and the text is what the compiler already knows how to hand
+    // the runtime. The result is a boxed heap value like every other BigInt —
+    // there is no unboxed BigInt anywhere in the IL, which is exactly what
+    // keeps a typed f64 path from ever meeting one.
+    ConstBigInt,    // a: dynamic = const.bigint <key_const_index>
     Add,        // a = add b, c        (numeric, operands same type)
     Sub,
     // Unary minus, which is NOT `0 - x`: IEEE-754 says 0 - 0 is +0,
@@ -52,6 +59,16 @@ enum class Op : uint8_t {
     // i32 would leak a type inference has no element for into block joins and
     // calling conventions; the int32 is an intermediate of the operator and
     // never escapes it.
+    // 7.1.3 ToNumeric over a boxed value: a Number or a BigInt out, still
+    // boxed. Not `unbox.f64`, which is ToNumBER and refuses a BigInt — and the
+    // difference is observable, because a POSTFIX update yields this value.
+    ToNumeric,  // a: dynamic = to.numeric b
+    // `++` and `--`, whose delta has the operand's own type: 1 for a Number,
+    // 1n for a BigInt. `immI32` is 1 for an increment. It is an instruction
+    // rather than an `add` against a constant because there is no constant
+    // that would be right for both types — a Number 1 against a BigInt is the
+    // mixing TypeError.
+    NumericStep,// a: dynamic = numeric.step b, <+1|-1>
     ToInt32,    // a: i32 = to.int32 b        (b: f64, bool or dynamic)
     BitAnd,     // a: f64 = and b, c
     BitOr,
@@ -59,6 +76,11 @@ enum class Op : uint8_t {
     Shl,        // a: f64 = shl b, c          (count masked to 5 bits)
     Shr,        // arithmetic: the sign bit is replicated
     UShr,       // logical, and the ONE bitwise op whose result is ToUint32
+    // `~x` over a BOXED operand, and only over one. On numbers `~x` is `x ^ -1`
+    // and lowering still spells it that way; on a BigInt that spelling is a
+    // MIXING TypeError, because -1 is a Number. So the op exists for the case
+    // where the operand's type is not known — never for a proven-numeric one.
+    BitNot,     // a: dynamic = bitnot b      (b: dynamic)
     CmpLt,      // a: bool = cmp.lt b, c
     CmpGt,
     // The ORDERED `<=` and `>=` on numbers, which are not `!(a > b)` and
@@ -97,7 +119,7 @@ enum class Op : uint8_t {
     RelGt,
     RelLe,
     RelGe,
-    TypeOf,     // a: dynamic = typeof b      (one of six strings)
+    TypeOf,     // a: dynamic = typeof b      (one of eight strings)
     // ECMA-262 7.1.17 ToString, step 1 included: an OBJECT operand is
     // ToPrimitive'd with hint STRING first, so `toString` is tried before
     // `valueOf`. It is deliberately not spelled `"" + b`: 13.15.3 asks

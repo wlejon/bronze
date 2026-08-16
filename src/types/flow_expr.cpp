@@ -57,6 +57,11 @@ Type FlowAnalyzer::expr(const ast::Expr& e) {
 
 Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::NumberLit*>(&e)) return Type::number();
+    // DYNAMIC, and deliberately not `number`: the lattice has no BigInt
+    // element, and a BigInt typed as one would licence an f64 fast path to
+    // read a heap pointer's bits as a double. Dynamic is the designed
+    // fallback and the only answer here that cannot be wrong.
+    if (dynamic_cast<const ast::BigIntLit*>(&e)) return Type::dynamic();
     if (dynamic_cast<const ast::StringLit*>(&e)) return Type::string();
     // A regular expression literal is an OBJECT, and inference has no shape
     // class for one: a RegExp carries no shape at all, so every read off it

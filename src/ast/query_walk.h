@@ -50,6 +50,7 @@ public:
     std::unordered_set<std::string> names;
 
     void visit(const NumberLit&) override {}
+    void visit(const BigIntLit&) override {}
     void visit(const StringLit&) override {}
     void visit(const RegExpLit&) override {}
     void visit(const BoolLit&) override {}
@@ -258,6 +259,7 @@ public:
                          const std::vector<Param>* params = nullptr);
 
     void visit(const NumberLit&) override {}
+    void visit(const BigIntLit&) override {}
     void visit(const StringLit&) override {}
     void visit(const RegExpLit&) override {}
     void visit(const BoolLit&) override {}

@@ -27,12 +27,43 @@ bool isPrefix(ast::UnaryOp op) {
 }
 }  // namespace
 
-// ToNumeric(oldValue) ± 1, as an f64. Shared by all three reference kinds so
-// that `o.k = "5"; o.k++` and `let k = "5"; k++` cannot disagree about what
-// the old value was: both are ToNumeric first, so both leave a NUMBER behind
-// and both yield a NUMBER (13.4.2.1 step 2 — the coercion happens before the
-// arithmetic, not as part of it).
+// ToNumeric(oldValue), which every reference kind runs BEFORE the arithmetic
+// (13.4.2.1 step 2) so that `o.k = "5"; o.k++` and `let k = "5"; k++` agree
+// about what the old value was — and, for a postfix update, about what the
+// expression yields.
+//
+// A proven-numeric operand is unboxed and the whole update stays in f64s. A
+// BOXED one keeps its box: ToNumeric answers with a Number *or a BigInt*, and
+// `unbox.f64` is ToNumber, which refuses the second.
+Lowerer::Value Lowerer::emitUpdateOld(Value oldVal, il::Function& ilFn) {
+    if (oldVal.type != il::Type::Dynamic) {
+        return unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
+    }
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::ToNumeric;
+    inst.type = il::Type::Dynamic;
+    inst.result = res;
+    inst.operands = {oldVal.id};
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::Dynamic};
+}
+
+// ToNumeric(oldValue) ± 1. On a proven number that is an f64 add against a
+// constant; on a boxed value it is `numeric.step`, because the ONE to add has
+// the operand's own type — 1n for a BigInt — and no constant is right for both.
 Lowerer::Value Lowerer::emitUpdateStep(Value oldNumeric, ast::UnaryOp op, il::Function& ilFn) {
+    if (oldNumeric.type == il::Type::Dynamic) {
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::NumericStep;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.immI32 = isIncrement(op) ? 1 : -1;
+        inst.operands = {oldNumeric.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
     il::ValueId oneRes = ilFn.valueCount++;
     il::Instruction oneInst;
     oneInst.op = il::Op::ConstF64;
@@ -92,7 +123,7 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
     }
     Value oldVal =
         isLocal ? readBinding(varBindings_[bindingIdx], ilFn) : emitEnvGet(depth, index, ilFn);
-    Value numOld = unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
+    Value numOld = emitUpdateOld(oldVal, ilFn);
     Value newVal = emitUpdateStep(numOld, un.op, ilFn);
 
     if (isLocal) {
@@ -126,7 +157,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     getInst.icMonomorphic = mono;
     emitInst(ilFn, getInst);
 
-    Value numOld = unboxValueIfNeeded(Value{cur, il::Type::Dynamic}, il::Type::F64, ilFn);
+    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
     Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 
@@ -185,7 +216,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
     getInst.result = cur;
     emitInst(ilFn, getInst);
 
-    Value numOld = unboxValueIfNeeded(Value{cur, il::Type::Dynamic}, il::Type::F64, ilFn);
+    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
     Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 

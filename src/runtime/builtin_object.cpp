@@ -595,6 +595,16 @@ Value toObjectForAssign(Value v) {
     }
     if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
     if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
+    if (v.isBigInt()) {
+        // 7.1.18's BigInt row boxes it in a BigInt object, and bronze builds
+        // none: 21.2.3 makes `BigInt.prototype` an ORDINARY object with no
+        // [[BigIntData]] slot (builtin_bigint.cpp says why), so there is
+        // nothing for the box to be. Refused by name rather than answered with
+        // a plain object, which would report the value as `{}`.
+        fatal("unsupported: a BigInt wrapper object (7.1.18 ToObject boxes a BigInt, and bronze "
+              "builds no BigInt object — 21.2.3 gives BigInt.prototype no [[BigIntData]] slot "
+              "for one to carry)");
+    }
     if (!v.isObject()) {
         fatal("unsupported: Object.assign with a symbol as the target (7.1.18 boxes it in a "
               "Symbol object, and bronze builds none — 20.4.3 makes Symbol.prototype an "

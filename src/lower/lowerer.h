@@ -819,6 +819,7 @@ private:
                                           il::Function& ilFn);
     // The arithmetic half, shared so that the three reference kinds cannot
     // disagree about what ToNumeric produced.
+    Value emitUpdateOld(Value oldVal, il::Function& ilFn);
     Value emitUpdateStep(Value oldNumeric, ast::UnaryOp op, il::Function& ilFn);
 
     // --- lower_expr_binary.cpp: the binary operator families ---

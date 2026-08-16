@@ -5,6 +5,8 @@ bronze_add_module(runtime
         fatal.cpp
         abi_guard.cpp
         number_format.cpp
+        bignum.cpp
+        bigint.cpp
         value.cpp
         heap.cpp
         gc.cpp
@@ -12,6 +14,7 @@ bronze_add_module(runtime
         string.cpp
         symbol.cpp
         builtin_symbol.cpp
+        builtin_bigint.cpp
         shape.cpp
         dictionary.cpp
         accessor.cpp
@@ -51,6 +54,7 @@ bronze_add_module(runtime
         rt_members.cpp
         rt_object.cpp
         rt_operator.cpp
+        rt_numeric.cpp
         rt_key.cpp
         rt_prop.cpp
         rt_prop_primitive.cpp
@@ -114,6 +118,7 @@ bronze_add_module(runtime
         ../../tests/runtime/relational_test.cpp
         ../../tests/runtime/has_property_test.cpp
         ../../tests/runtime/exact_decimal_test.cpp
+        ../../tests/runtime/bignum_test.cpp
         ../../tests/runtime/regexp_test.cpp
         ../../tests/runtime/arguments_test.cpp
         ../../tests/runtime/integrity_test.cpp

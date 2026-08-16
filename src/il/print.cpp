@@ -23,6 +23,7 @@ const char* opName(Op op) {
         case Op::ConstBool: return "const.bool";
         case Op::ConstUndefined: return "const.undefined";
         case Op::ConstNull: return "const.null";
+        case Op::ConstBigInt: return "const.bigint";
         case Op::Add: return "add";
         case Op::Sub: return "sub";
         case Op::Neg: return "neg";
@@ -30,6 +31,8 @@ const char* opName(Op op) {
         case Op::Div: return "div";
         case Op::Mod: return "mod";
         case Op::Pow: return "pow";
+        case Op::ToNumeric: return "to.numeric";
+        case Op::NumericStep: return "numeric.step";
         case Op::ToInt32: return "to.int32";
         case Op::BitAnd: return "and";
         case Op::BitOr: return "or";
@@ -37,6 +40,7 @@ const char* opName(Op op) {
         case Op::Shl: return "shl";
         case Op::Shr: return "shr";
         case Op::UShr: return "ushr";
+        case Op::BitNot: return "bitnot";
         case Op::CmpLt: return "cmp.lt";
         case Op::CmpGt: return "cmp.gt";
         case Op::CmpLe: return "cmp.le";
@@ -150,18 +154,9 @@ bool canThrow(const Instruction& inst) {
         case Op::ConstBool:
         case Op::ConstUndefined:
         case Op::ConstNull:
-        case Op::Neg:
-        case Op::Sub:
-        case Op::Mul:
-        case Op::Div:
-        case Op::Mod:
-        case Op::Pow:
-        case Op::BitAnd:
-        case Op::BitOr:
-        case Op::BitXor:
-        case Op::Shl:
-        case Op::Shr:
-        case Op::UShr:
+        // The literal is a parse and an allocation, and a failure to allocate
+        // is fatal rather than catchable.
+        case Op::ConstBigInt:
         case Op::CmpLt:
         case Op::CmpGt:
         // The ordered compares are machine instructions on two numbers, like
@@ -205,8 +200,28 @@ bool canThrow(const Instruction& inst) {
         case Op::ExcTake:
             return false;
         case Op::Add:
-            // Dynamic `+` is bronze_dynamic_add, which is ToPrimitive.
+        // The rest of the arithmetic and bitwise family, for the same reason
+        // `add` is here: each is TWO operations. On machine numbers it is one
+        // instruction that cannot fail; on BOXED operands it is 13.15.3, which
+        // reaches ToPrimitive, refuses a mixed BigInt/Number pair by TypeError
+        // and divides by 0n by RangeError.
+        case Op::Neg:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Mod:
+        case Op::Pow:
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::UShr:
             return inst.type == Type::Dynamic;
+        // `bitnot` exists ONLY in its boxed form, so it has no cannot-throw
+        // half to test for.
+        case Op::BitNot:
+            return true;
         case Op::Unbox:
             // `unbox.f64` is ToNumber (7.1.4) — generated code's only numeric
             // coercion — and ToNumber runs ToPrimitive on an object and throws
@@ -312,6 +327,30 @@ std::string print(const Module& module) {
                     case Op::Neg:
                         out += "neg %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    // The DIGITS, not the key index: what the literal says is
+                    // the whole content of the instruction, and an index would
+                    // move whenever an unrelated key was registered ahead of
+                    // it. Same argument `global.get` makes for its name.
+                    case Op::ConstBigInt:
+                        out += "const.bigint " +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "n";
+                        break;
+                    case Op::BitNot:
+                        out += "bitnot %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::ToNumeric:
+                        out += "to.numeric %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    case Op::NumericStep:
+                        out += "numeric.step %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               (inst.immI32 > 0 ? ", +1" : ", -1");
                         break;
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +

@@ -21,6 +21,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/env.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -62,16 +63,16 @@ int32_t toInt32(double d) {
 // The strings `typeof` can produce, made once and rooted for the life of the
 // program. A fresh heap string per evaluation would put an allocation — and so
 // a possible collection — inside an operator that cannot fail.
-constexpr int kTypeOfCount = 7;
+constexpr int kTypeOfCount = 8;
 Value g_typeofStrings[kTypeOfCount] = {};
 bool g_typeofReady = false;
 
-enum TypeOfKind { kUndefined, kObject, kBoolean, kNumber, kString, kFunction, kSymbol };
+enum TypeOfKind { kUndefined, kObject, kBoolean, kNumber, kString, kFunction, kSymbol, kBigInt };
 
 Value typeofString(TypeOfKind kind) {
     if (!g_typeofReady) {
         static const char* const kNames[kTypeOfCount] = {
-            "undefined", "object", "boolean", "number", "string", "function", "symbol"};
+            "undefined", "object", "boolean", "number", "string", "function", "symbol", "bigint"};
         for (int i = 0; i < kTypeOfCount; ++i) {
             g_typeofStrings[i] = rtMakeString(kNames[i]);
             rtHeap().add_permanent_root(&g_typeofStrings[i]);
@@ -446,6 +447,48 @@ LessThan isLessThan(Rooted<Value>& x, Rooted<Value>& y, bool leftFirst) {
                    ? LessThan::True
                    : LessThan::False;
     }
+    // Steps 3.c and 3.d: a BigInt against a STRING parses the string with
+    // StringToBigInt rather than with ToNumber, and a string that is not a
+    // StringIntegerLiteral makes the whole comparison *undefined* — so
+    // `1n < "2"` is true and `1n < "2x"` is false for every one of the four
+    // operators. These come before step 4 for the same reason step 3 does.
+    if (px.get().isBigInt() && py.get().isString()) {
+        BigNum rhs;
+        if (!rtStringToBigInt(rtAsciiChars(py.get().asString<StringHeader>()), rhs)) {
+            return LessThan::Undefined;
+        }
+        return BigNum::compare(rtBigIntValue(px.get()), rhs) < 0 ? LessThan::True
+                                                                 : LessThan::False;
+    }
+    if (px.get().isString() && py.get().isBigInt()) {
+        BigNum lhs;
+        if (!rtStringToBigInt(rtAsciiChars(px.get().asString<StringHeader>()), lhs)) {
+            return LessThan::Undefined;
+        }
+        return BigNum::compare(lhs, rtBigIntValue(py.get())) < 0 ? LessThan::True
+                                                                 : LessThan::False;
+    }
+    if (px.get().isBigInt() && py.get().isBigInt()) {
+        return BigNum::compare(rtBigIntValue(px.get()), rtBigIntValue(py.get())) < 0
+                   ? LessThan::True
+                   : LessThan::False;
+    }
+    // Step 4's mixed BigInt/Number arm, which compares MATHEMATICAL values —
+    // the one place the two numeric types meet without an error. It is exact by
+    // construction: `9007199254740993n < 9007199254740992` is false and
+    // `9007199254740993n > 9007199254740992` is true, which converting either
+    // side to the other's type could not both give.
+    if (px.get().isBigInt() || py.get().isBigInt()) {
+        const bool leftIsBig = px.get().isBigInt();
+        const double other = rtToNumber(leftIsBig ? py.get() : px.get());
+        if (rtExceptionPending()) return LessThan::Undefined;
+        const int order = leftIsBig ? rtCompareBigIntWithNumber(px.get(), other)
+                                    : -rtCompareBigIntWithNumber(py.get(), other);
+        if (order == BigNum::kUnordered || order == -BigNum::kUnordered) {
+            return LessThan::Undefined;
+        }
+        return order < 0 ? LessThan::True : LessThan::False;
+    }
     // Step 4, the else-branch: ToNumeric on both, and step 4.c's undefined for
     // a NaN on either side — which includes the case where one operand is a
     // string that does not parse as a number. Both operands are primitive by
@@ -497,6 +540,24 @@ bool looseEq(Rooted<Value>& aRoot, Rooted<Value>& bRoot) {
         }
         if (a.isBool() && b.isBool()) return a.asBool() == b.asBool();
         if (a.isObject() && b.isObject()) return a.rawBits() == b.rawBits();
+        // Step 1 for two BigInts, which is BigInt::equal — a value compare, not
+        // the pointer compare `rawBits` would be.
+        if (a.isBigInt() && b.isBigInt()) {
+            return BigNum::compare(rtBigIntValue(a), rtBigIntValue(b)) == 0;
+        }
+        // Steps 7 and 8: a BigInt against a String parses the string with
+        // StringToBigInt, and a string that is not one makes the answer FALSE
+        // rather than an error. `0n == ""` is true, because StringToBigInt of
+        // the empty string is 0n.
+        if ((a.isBigInt() && b.isString()) || (a.isString() && b.isBigInt())) {
+            const Value bigVal = a.isBigInt() ? a : b;
+            const Value strVal = a.isBigInt() ? b : a;
+            BigNum parsed;
+            if (!rtStringToBigInt(rtAsciiChars(strVal.asString<StringHeader>()), parsed)) {
+                return false;
+            }
+            return BigNum::compare(rtBigIntValue(bigVal), parsed) == 0;
+        }
 
         // A symbol is loosely equal to the same symbol and to nothing else.
         // 7.2.14 reaches that by omission — no step converts a Symbol — so the
@@ -524,6 +585,17 @@ bool looseEq(Rooted<Value>& aRoot, Rooted<Value>& bRoot) {
         // `2 == "2.0"` is true and `1 == "1x"` is false.
         if (aNum && b.isString()) return rtToNumber(a) == rtToNumber(b);
         if (a.isString() && bNum) return rtToNumber(a) == rtToNumber(b);
+
+        // Step 13: a BigInt against a Number, compared as MATHEMATICAL values
+        // with no conversion in either direction. A non-finite Number is never
+        // equal to any BigInt (step 13.a), which the exact comparison already
+        // answers — an infinity is ordered against every magnitude and a NaN is
+        // unordered against all of them.
+        if ((a.isBigInt() && bNum) || (aNum && b.isBigInt())) {
+            const Value bigVal = a.isBigInt() ? a : b;
+            const Value numVal = a.isBigInt() ? b : a;
+            return rtCompareBigIntWithNumber(bigVal, rtToNumber(numVal)) == 0;
+        }
 
         // Steps 11 and 12: an object against a primitive is ToPrimitive'd with
         // NO hint and the comparison restarts. Hint default is what makes
@@ -652,6 +724,10 @@ uint64_t bronze_typeof(uint64_t bits) {
     if (v.isNumber() || v.isInt32()) return typeofString(kNumber).rawBits();
     if (v.isString()) return typeofString(kString).rawBits();
     if (v.isSymbol()) return typeofString(kSymbol).rawBits();
+    // 13.5.3's table gained a row with the type: "bigint", and it is the whole
+    // reason a BigInt is its own TAG rather than a heap kind under Tag::Object
+    // — this question has to be answerable from the bits.
+    if (v.isBigInt()) return typeofString(kBigInt).rawBits();
     if (isCallable(v)) return typeofString(kFunction).rawBits();
     return typeofString(kObject).rawBits();
 }

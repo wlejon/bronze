@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -338,7 +339,60 @@ TEST_CASE("a DataView and a typed array over one buffer are one store") {
     CHECK(view.get().asObject<DataViewHeader>()->buffer.rawBits() == buf.get().rawBits());
 }
 
-TEST_CASE("the sixteen accessors are sixteen function objects, and the four BigInt ones refuse") {
+// 25.3.4.5, .6, .19 and .20 — the only DataView accessors whose value is a
+// BigInt, and the only way eight raw bytes become a 64-bit integer without
+// passing through a double that cannot hold one.
+TEST_CASE("the 64-bit accessors round-trip a value no double holds") {
+    ShadowStackFrame frame;
+    ClearCell guard;
+
+    Rooted<Value> buf{newBuffer(16)};
+    Rooted<Value> view{newDataView({buf.get()})};
+
+    const auto big = [](const char* digits) {
+        BigNum v;
+        REQUIRE(rtStringToBigInt(digits, v));
+        return rtMakeBigInt(v);
+    };
+    const auto text = [](Value v) { return rtBigIntToString(v, 10); };
+
+    // 2^63 - 1 and -2^63: the two values the signed window ends at, and
+    // neither is representable as a double.
+    callAccessor(view, "setBigInt64", {num(0), big("9223372036854775807")});
+    CHECK(text(callAccessor(view, "getBigInt64", {num(0)})) == "9223372036854775807");
+    CHECK(text(callAccessor(view, "getBigUint64", {num(0)})) == "9223372036854775807");
+
+    callAccessor(view, "setBigInt64", {num(0), big("-9223372036854775808")});
+    CHECK(text(callAccessor(view, "getBigInt64", {num(0)})) == "-9223372036854775808");
+    CHECK(text(callAccessor(view, "getBigUint64", {num(0)})) == "9223372036854775808");
+
+    // The same eight bytes read the other way round: -1 is all ones.
+    callAccessor(view, "setBigUint64", {num(8), big("18446744073709551615")});
+    CHECK(text(callAccessor(view, "getBigInt64", {num(8)})) == "-1");
+    CHECK(text(callAccessor(view, "getBigUint64", {num(8)})) == "18446744073709551615");
+
+    // 25.3.1.5 NumericToRawBytes is modulo 2^64 for the BigInt rows, so a
+    // value too wide WRAPS rather than throwing — setInt32's rule, widened.
+    callAccessor(view, "setBigInt64", {num(0), big("18446744073709551621")});
+    CHECK(text(callAccessor(view, "getBigUint64", {num(0)})) == "5");
+
+    // Byte order, checked against the individual bytes rather than against
+    // the accessor that wrote them.
+    callAccessor(view, "setBigUint64", {num(0), big("72623859790382856")});
+    CHECK(callAccessor(view, "getUint8", {num(0)}).asNumber() == 1);
+    CHECK(callAccessor(view, "getUint8", {num(7)}).asNumber() == 8);
+    callAccessor(view, "setBigUint64", {num(0), big("72623859790382856"), Value::fromBool(true)});
+    CHECK(callAccessor(view, "getUint8", {num(0)}).asNumber() == 8);
+    CHECK(callAccessor(view, "getUint8", {num(7)}).asNumber() == 1);
+
+    // Step 4 is ToBigInt, and 7.1.13 has no Number row: there is no implicit
+    // widening of 1 to 1n, and the refusal is a catchable TypeError.
+    callAccessor(view, "setBigInt64", {num(0), num(1)});
+    CHECK(rtExceptionPending());
+    rtClearException();
+}
+
+TEST_CASE("the twenty accessors are twenty function objects, interned per name") {
     ShadowStackFrame frame;
     ClearCell guard;
 
@@ -358,22 +412,15 @@ TEST_CASE("the sixteen accessors are sixteen function objects, and the four BigI
     // A name 25.3.4 does not define really is absent.
     CHECK(rtDataViewMember(view.get(), "getInt24").isUndefined());
     CHECK_FALSE(rtDataViewHasMember("getInt24"));
-    // ...and one it DOES define is present to `in` even where reading it is a
-    // refusal, because "the language has no such member" and "bronze cannot
-    // give you this one" are different answers.
+    // The four 64-bit accessors are ordinary members of the same table, so they
+    // intern per name exactly as the sixteen number accessors do.
     CHECK(rtDataViewHasMember("getBigInt64"));
     CHECK(rtDataViewHasMember("setBigUint64"));
-
-    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
-    CHECK_THROWS_WITH_AS(rtDataViewMember(view.get(), "getBigInt64"),
-                         doctest::Contains("bronze has no BigInt"), std::runtime_error);
-    CHECK_THROWS_WITH_AS(rtDataViewMember(view.get(), "setBigInt64"),
-                         doctest::Contains("DataView.prototype.setBigInt64"), std::runtime_error);
-    CHECK_THROWS_WITH_AS(rtDataViewMember(view.get(), "getBigUint64"),
-                         doctest::Contains("DataView.prototype.getBigUint64"), std::runtime_error);
-    CHECK_THROWS_WITH_AS(rtDataViewMember(view.get(), "setBigUint64"),
-                         doctest::Contains("DataView.prototype.setBigUint64"), std::runtime_error);
-    setFatalHandler(nullptr);
+    const uint64_t getBig = rtDataViewMember(view.get(), "getBigInt64").rawBits();
+    CHECK(getBig == rtDataViewMember(other.get(), "getBigInt64").rawBits());
+    CHECK(getBig != rtDataViewMember(view.get(), "getBigUint64").rawBits());
+    CHECK(getBig != rtDataViewMember(view.get(), "setBigInt64").rawBits());
+    CHECK_FALSE(rtDataViewMember(view.get(), "setBigUint64").isUndefined());
 }
 
 TEST_CASE("the slot accessors report the WINDOW, not the buffer") {

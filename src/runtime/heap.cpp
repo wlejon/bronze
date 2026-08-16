@@ -323,7 +323,19 @@ void Heap::refill_inline_lab() {
 }
 
 static bool is_valid_object_tag(uint16_t tag) noexcept {
-    return (tag >= 0xFFF1 && tag <= 0xFFF9) || tag == static_cast<uint16_t>(Tag::Forwarded);
+    return (tag >= 0xFFF1 && tag <= 0xFFF9) ||
+           tag == static_cast<uint16_t>(Tag::BigInt) ||
+           tag == static_cast<uint16_t>(Tag::Forwarded);
+}
+
+// Does this object's payload hold Values the collector must trace? No for the
+// three whose payload is raw bytes — a string's code units, an ArrayBuffer's
+// storage, a BigInt's limbs — and reading any of them as Values would forward
+// whatever bit pattern happened to look like a heap pointer.
+static bool payload_holds_values(uint16_t tag) noexcept {
+    return tag != static_cast<uint16_t>(Tag::String) &&
+           tag != static_cast<uint16_t>(Tag::RawBytes) &&
+           tag != static_cast<uint16_t>(Tag::BigInt);
 }
 
 void Heap::forward_value(Value& val) {
@@ -432,8 +444,7 @@ void Heap::collect() {
         auto* scan_hdr = reinterpret_cast<HeapObjectHeader*>(scan_ptr);
         size_t obj_size = scan_hdr->size;
 
-        if (scan_hdr->tag != static_cast<uint16_t>(Tag::String) &&
-            scan_hdr->tag != static_cast<uint16_t>(Tag::RawBytes)) {
+        if (payload_holds_values(scan_hdr->tag)) {
             uint8_t* payload_start = reinterpret_cast<uint8_t*>(scan_hdr->payload());
             size_t payload_bytes = obj_size - sizeof(HeapObjectHeader);
             size_t num_slots = payload_bytes / sizeof(Value);

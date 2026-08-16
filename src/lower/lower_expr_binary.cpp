@@ -46,6 +46,22 @@ Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn) {
 // the two runs of the oracle suite would disagree about a program's types. The
 // int32 is an intermediate of the operator and never escapes it.
 Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn) {
+    // A boxed operand keeps its box and the operator becomes the dynamic form.
+    // ToInt32 is the NUMBER half of 13.15.3 only: on two BigInts these
+    // operators are defined over the whole values, and converting first would
+    // silently truncate `(1n << 64n) & mask` to 32 bits.
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+        Value lb = boxValueIfNeeded(lhs, ilFn);
+        Value rb = boxValueIfNeeded(rhs, ilFn);
+        il::ValueId dres = ilFn.valueCount++;
+        il::Instruction dinst;
+        dinst.op = op;
+        dinst.type = il::Type::Dynamic;
+        dinst.result = dres;
+        dinst.operands = {lb.id, rb.id};
+        emitInst(ilFn, dinst);
+        return Value{dres, il::Type::Dynamic};
+    }
     Value l = emitToInt32(lhs, ilFn);
     Value r = emitToInt32(rhs, ilFn);
     il::ValueId res = ilFn.valueCount++;
@@ -76,6 +92,18 @@ std::optional<il::Op> Lowerer::bitwiseOpFor(ast::BinaryOp op) {
 // `a ** b`: ToNumber on both operands, then the one exponentiation
 // algorithm the runtime owns (rt_operator.cpp), which `Math.pow` shares.
 Lowerer::Value Lowerer::emitPow(Value lhs, Value rhs, il::Function& ilFn) {
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+        Value lb = boxValueIfNeeded(lhs, ilFn);
+        Value rb = boxValueIfNeeded(rhs, ilFn);
+        il::ValueId dres = ilFn.valueCount++;
+        il::Instruction dinst;
+        dinst.op = il::Op::Pow;
+        dinst.type = il::Type::Dynamic;
+        dinst.result = dres;
+        dinst.operands = {lb.id, rb.id};
+        emitInst(ilFn, dinst);
+        return Value{dres, il::Type::Dynamic};
+    }
     Value l = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
     Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
     il::ValueId res = ilFn.valueCount++;
@@ -277,6 +305,11 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
             op = il::Op::Add;
             resType = il::Type::F64;
             break;
+        // The other four take the same fork `+` has always taken, and for the
+        // reason `+` did not used to need company: a boxed operand may be a
+        // BigInt, and 13.15.3 over a BigInt is a DIFFERENT algorithm — exact,
+        // and a TypeError against a Number — not ToNumber followed by an fsub.
+        // Unboxing first is what made `1n - 1n` produce 0 through two NaNs.
         case ast::BinaryOp::Sub:
             op = il::Op::Sub;
             resType = il::Type::F64;
@@ -298,11 +331,16 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
             return std::nullopt;
     }
 
-    // Arithmetic is numeric whatever came in: a dynamic operand goes through
-    // runtime-checked ToNumber first. The relational operators do NOT belong
-    // here — they left through lowerRelational above, because ToNumber is only
-    // one of their two branches.
-    if (resType == il::Type::F64) {
+    // A boxed operand keeps its box and the instruction becomes the dynamic
+    // form, whose helper owns ToNumeric, the BigInt algorithm and the mixing
+    // TypeError. The relational operators do NOT belong here — they left
+    // through lowerRelational above, because ToNumeric is only one of their
+    // two branches.
+    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+        lhs = boxValueIfNeeded(lhs, ilFn);
+        rhs = boxValueIfNeeded(rhs, ilFn);
+        resType = il::Type::Dynamic;
+    } else if (resType == il::Type::F64) {
         lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
         rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
     }

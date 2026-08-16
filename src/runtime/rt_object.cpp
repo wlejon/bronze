@@ -15,6 +15,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/env.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -403,6 +404,14 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         return wrapper.rawBits();
     }
 
+    // 21.2.1.1 step 1: `new BigInt(x)` is a TypeError. For the same reason the
+    // wrappers above are intercepted — the body returns a primitive and the
+    // rule at the foot of this function would discard it in favour of an empty
+    // instance — except that here the language's answer is the throw itself.
+    if (rtIsBigIntConstructor(fnVal)) {
+        return rtThrowTypeError("BigInt is not a constructor").rawBits();
+    }
+
     Rooted<Value> fnRoot{fnVal};
     rtEnsureFunctionPrototype(fnRoot);
 
@@ -752,7 +761,7 @@ static Value g_globalThisObject = Value::fromUndefined();
 // `globalThis` itself — which is written as a self-reference below — because
 // `Math` and `globalThis.Math` are one binding and must not drift.
 static const char* const kGlobalObjectNames[] = {
-    "Math", "Object", "Number", "JSON", "Array", "String", "Boolean", "Symbol", "RegExp",
+    "Math", "Object", "Number", "JSON", "Array", "String", "Boolean", "Symbol", "BigInt", "RegExp",
     "Promise", "Map", "Set", "WeakMap", "WeakSet", "Error", "TypeError", "AggregateError",
     "RangeError", "SyntaxError", "ReferenceError", "URIError", "isNaN", "isFinite", "parseInt",
     "parseFloat", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",

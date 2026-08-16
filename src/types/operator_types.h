@@ -27,15 +27,28 @@ Type withBottom(Type a, Type b, Type result);
 // observable, because it is the one arithmetic operator that concatenates.
 bool isNumericPrimitive(Type t);
 
-// `-`, `*`, `/` and `%` are ToNumber on both operands, so the result is a
-// number whatever came in (NaN is a number). `+` is concatenation as soon as
-// either side is a string, because ToPrimitive on a string operand wins
-// however the other side prints.
+// Can a value of this type still be a BigInt when an operator gets it? Only
+// `dynamic` and an object (whose `valueOf` may return one) can; a String
+// cannot, because 7.1.3 ToNumeric routes it through ToNumber and never through
+// StringToBigInt.
+bool isNeverBigInt(Type t);
+
+// The result of an operator whose two branches are Number::op and BigInt::op:
+// a number when neither operand can be a BigInt, and DYNAMIC otherwise, since
+// the lattice has no BigInt element and calling one a number would licence an
+// f64 fast path to read a heap pointer.
+Type numericOrDynamic(Type l, Type r);
+
+// `-`, `*`, `/` and `%` are ToNumERIC on both operands, so the result is a
+// number when neither operand can be a BigInt and dynamic when one can. `+` is
+// concatenation as soon as either side is a string, because ToPrimitive on a
+// string operand wins however the other side prints.
 Type arithResult(ast::BinaryOp op, Type l, Type r);
 
-// The bitwise, shift and exponentiation operators are ToInt32/ToNumber on
-// both operands, so the result is a number whatever came in — including a
-// string operand, which `+` is the only operator to treat differently.
+// The bitwise, shift and exponentiation operators, which are one family
+// because ToNumeric is their ONLY coercion — there is no string branch, the
+// way `+` has one. Their RESULT type is not shared: on two BigInts every one
+// of them produces a BigInt.
 bool isAlwaysNumericOp(ast::BinaryOp op);
 
 // The prefix and postfix operators. The update forms also SHARPEN the binding

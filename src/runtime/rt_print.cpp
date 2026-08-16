@@ -14,6 +14,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_internal.h"
@@ -93,6 +94,13 @@ void writeValue(uint64_t valBits, std::FILE* out) {
         // it prints as one rather than reaching the object branch if the fast
         // path ever lands.
         writeNumber(static_cast<double>(static_cast<int32_t>(v.payload())), out);
+    } else if (v.isBigInt()) {
+        // node prints a bigint with its literal suffix — `10n`, not `10` — so
+        // that output distinguishes it from the Number of the same value.
+        // `String(10n)` is still "10": ToString and the inspect format are two
+        // formats, exactly as they are for a string (quoted when nested).
+        const std::string text = rtBigIntToString(v, 10) + "n";
+        std::fwrite(text.data(), 1, text.size(), out);
     } else if (v.isString()) {
         writeString(v.asString<StringHeader>(), out);
     } else if (v.isBool()) {

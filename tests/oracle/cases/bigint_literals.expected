@@ -1,0 +1,16 @@
+bigint number bigint
+0n 1n 10n 1234567890123456789012345678901234567890n
+255n 511n 10n 1000000n
+9007199254740993n true
+18446744073709551616n 340282366920938463463374607431768211456n
+0n true true
+12345678901234567890n 24691357802469135780n 12345678901234567890n 12345678901234567890n
+true true true
+255 255 255
+[ 1n, 2n ] { v: 3n } Map(1) { 4n => 5n } Set(1) { 6n }
+bigint bigint bigint
+function function true
+object true
+[object BigInt] true
+false function function
+function function undefined

@@ -61,7 +61,7 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
     // name.
     return name == "Math" || name == "Object" || name == "Number" || name == "JSON" ||
            name == "Array" || name == "String" || name == "Boolean" ||
-           name == "Symbol" || name == "RegExp" || name == "Promise" ||
+           name == "Symbol" || name == "BigInt" || name == "RegExp" || name == "Promise" ||
            name == "Map" || name == "Set" || name == "WeakMap" || name == "WeakSet" ||
            name == "Error" || name == "TypeError" || name == "AggregateError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
@@ -145,12 +145,20 @@ Lowerer::Value Lowerer::unboxValueIfNeeded(Value val, il::Type targetType, il::F
 }
 
 // Combine the pre-read target value with the rhs of a compound assignment.
-// `-=`, `*=`, `/=` and `%=` are ToNumber on both operands whatever came in, so
-// they are always numeric. `+=` is not: JS `+` concatenates as soon as either
-// side is a string, so it routes through the dynamic add unless inference
-// *proved* the result is a Number. Unproven is the dynamic path, never the
-// numeric one — unboxing a string pointer as a double is a miscompile, not a
-// pessimisation.
+//
+// `x op= y` is `x op y` (13.15.2), so every operator here has to reach the
+// SAME instruction its plain binary form reaches — that identity is the whole
+// contract of this function, and it is the one that broke: `-=`, `*=`, `/=`
+// and `%=` were unboxed to f64 unconditionally on the belief that they are
+// "ToNumber on both operands whatever came in". They are ToNumERIC, and a
+// BigInt operand takes the other branch, so `x -= 2n` threw out of the unbox
+// while `x - 2n` next to it was exact.
+//
+// `+=` needs the extra proof the other four do not: JS `+` concatenates as
+// soon as either side is a string, so it routes through the dynamic add unless
+// inference *proved* the result is a Number. Unproven is the dynamic path,
+// never the numeric one — unboxing a string pointer as a double is a
+// miscompile, not a pessimisation.
 Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp binOp,
                                             bool provenNumeric, il::Function& ilFn) {
     if (binOp == ast::BinaryOp::PlusAssign && !provenNumeric) {
@@ -165,10 +173,11 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
         emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }
-    // `&=`, `|=`, `^=`, `<<=`, `>>=` and `>>>=` need no proof at all: they
-    // are ToInt32 on both operands whatever came in, so — unlike `+=` above
-    // — there is no reading of them under which a string operand
-    // concatenates. Same for `**=`, which is ToNumber on both.
+    // `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=` and `**=` need no proof of
+    // NUMBER-ness at all: unlike `+=` above, there is no reading of them under
+    // which a string operand concatenates. They still need the boxed/unboxed
+    // fork, and they get it inside `emitBitwise` and `emitPow`, which are the
+    // same two functions the plain binary forms call.
     const ast::BinaryOp plain = ast::compoundAssignBase(binOp);
     if (const auto bitOp = bitwiseOpFor(plain)) {
         return emitBitwise(*bitOp, cur, rhs, ilFn);
@@ -186,6 +195,22 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
         default:
             diags_.error(Span{}, "unsupported compound assignment operator");
             return cur;
+    }
+    // The same fork `lowerBinary` makes, and stated the same way round: a
+    // BOXED operand keeps its box and the instruction becomes the dynamic
+    // form, whose helper owns ToNumeric, the BigInt algorithm and the mixing
+    // TypeError. Only two proven-numeric operands may be unboxed.
+    if (cur.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+        Value l = boxValueIfNeeded(cur, ilFn);
+        Value r = boxValueIfNeeded(rhs, ilFn);
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = op;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {l.id, r.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
     }
     Value l = unboxValueIfNeeded(cur, il::Type::F64, ilFn);
     Value r = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);

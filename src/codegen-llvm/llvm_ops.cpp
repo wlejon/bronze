@@ -59,6 +59,17 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             }
             return true;
 
+        case il::Op::ConstBigInt:
+            // A call and not a constant: the value has no width, so there is
+            // no immediate to fold it into, and the runtime parses the source
+            // text the key index names. A fresh object per evaluation is
+            // unobservable — a BigInt is immutable and `===` compares value.
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = builder_.CreateCall(abi.bronze_bigint_literal,
+                                                           {builder_.getInt32(inst.keyIndex)});
+            }
+            return true;
+
         case il::Op::ExcTake: {
             // The first instruction of every handler block. Reading and
             // CLEARING together is what lets a `finally` run its body with
@@ -115,10 +126,33 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* src = operand(inst, 0, "Undefined value in Unbox instruction");
             if (!src) return false;
             if (inst.type == il::Type::I32) {
+                llvm::Type* dblTy = builder_.getDoubleTy();
                 llvm::Value* isNum = builder_.CreateICmpULE(
                     src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.i32.isnum");
-                llvm::Value* fastDouble = builder_.CreateBitCast(src, builder_.getDoubleTy());
-                llvm::Value* fastI32 = builder_.CreateFPToSI(fastDouble, builder_.getInt32Ty(), "unbox.i32.val");
+                llvm::Value* fastDouble = builder_.CreateBitCast(src, dblTy);
+                // "Is a number" is not enough to license the conversion, and
+                // this is the same defect emitElemGuards' fptoui had: `fptosi`
+                // of a double outside the destination range is POISON — not a
+                // wrong number, a value the optimizer may assume never occurs —
+                // and it flows straight into the phi below. ToInt32 also does
+                // not TRUNCATE out of range, it wraps modulo 2^32, so an
+                // in-range test is what the language wants anyway; everything
+                // else goes to the helper, which owns the wrap. NaN fails both
+                // ordered compares and takes the same road.
+                llvm::Value* ge = builder_.CreateFCmpOGE(
+                    fastDouble, llvm::ConstantFP::get(dblTy, -2147483648.0));
+                llvm::Value* lt = builder_.CreateFCmpOLT(
+                    fastDouble, llvm::ConstantFP::get(dblTy, 2147483648.0));
+                llvm::Value* inRange = builder_.CreateAnd(ge, lt);
+                // The select is what makes the operand safe on EVERY path
+                // rather than merely on the taken one: both live in this basic
+                // block, and ordering the checks does not stop the optimizer
+                // from folding the conversion first.
+                llvm::Value* safeDouble = builder_.CreateSelect(
+                    inRange, fastDouble, llvm::ConstantFP::get(dblTy, 0.0));
+                llvm::Value* fastI32 =
+                    builder_.CreateFPToSI(safeDouble, builder_.getInt32Ty(), "unbox.i32.val");
+                isNum = builder_.CreateAnd(isNum, inRange);
 
                 llvm::LLVMContext& ctx = builder_.getContext();
                 llvm::Function* fn = builder_.GetInsertBlock()->getParent();

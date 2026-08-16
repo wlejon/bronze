@@ -671,6 +671,15 @@ ExprPtr Parser::parsePrimary() {
     switch (t.kind) {
         case TokenKind::NumberLiteral: {
             advance();
+            // One token, two literal grammars. The suffix is what tells them
+            // apart, and it decides the NODE rather than a field on one node:
+            // `10n` and `10` denote values of different types.
+            if (hasBigIntSuffix(t.text)) {
+                auto lit = std::make_unique<BigIntLit>();
+                lit->span = t.span;
+                if (!decodeBigIntLiteral(t.text, t.span, lit->digits)) return nullptr;
+                return lit;
+            }
             auto lit = std::make_unique<NumberLit>();
             lit->span = t.span;
             if (!decodeNumericLiteral(t.text, t.span, lit->value)) return nullptr;

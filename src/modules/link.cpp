@@ -163,6 +163,7 @@ bool Linker::collectImports(ModuleFile& file) {
         }
 
         void visit(const ast::NumberLit&) override {}
+        void visit(const ast::BigIntLit&) override {}
         void visit(const ast::SpreadElement& s) override { scan(s.argument.get()); }
         void visit(const ast::StringLit&) override {}
         void visit(const ast::TemplateLit& t) override {

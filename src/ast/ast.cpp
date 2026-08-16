@@ -3,6 +3,7 @@
 namespace bronze::ast {
 
 void NumberLit::accept(Visitor& v) const { v.visit(*this); }
+void BigIntLit::accept(Visitor& v) const { v.visit(*this); }
 void SpreadElement::accept(Visitor& v) const { v.visit(*this); }
 void StringLit::accept(Visitor& v) const { v.visit(*this); }
 void RegExpLit::accept(Visitor& v) const { v.visit(*this); }

@@ -81,6 +81,23 @@ struct NumberLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// A BigInt literal: `10n`, `0xFFn`, `0b1010n`.
+//
+// Its own node rather than a flag on NumberLit, because a BigInt is a
+// different TYPE and not a differently-spelled number: nothing that reads a
+// NumberLit's `double` would be right about it (`9007199254740993n` is not
+// 9007199254740992), its operators are different ones, and a visitor that has
+// to remember to check a flag is a visitor that will forget.
+//
+// The value is kept as TEXT because it has no bound — there is no C++ type to
+// hold it, and the runtime's bignum is not a dependency the parser may take.
+// `digits` is the source text with the `n` and every separator removed and the
+// radix prefix left on, which is exactly what StringToBigInt reads.
+struct BigIntLit final : Expr {
+    std::string digits;
+    void accept(Visitor& v) const override;
+};
+
 // `...expr` in an argument list, an array literal or an object literal. Its own
 // node rather than a flag on the list, because it is not an expression that
 // produces one value: it contributes zero or more of them to the list it sits
@@ -736,6 +753,7 @@ class Visitor {
 public:
     virtual ~Visitor() = default;
     virtual void visit(const NumberLit&) = 0;
+    virtual void visit(const BigIntLit&) = 0;
     virtual void visit(const SpreadElement&) = 0;
     virtual void visit(const StringLit&) = 0;
     virtual void visit(const TemplateLit&) = 0;
