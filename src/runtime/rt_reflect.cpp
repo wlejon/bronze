@@ -34,6 +34,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
 
