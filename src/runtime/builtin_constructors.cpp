@@ -362,13 +362,8 @@ struct CtorEntry {
 // TypeError, which is a per-operation check the proxy kind does not carry —
 // so the whole member is refused here, by name, rather than handed out as a
 // pair whose `revoke` would quietly do nothing.
-uint64_t proxyRevocable(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: Proxy.revocable (a revoked proxy must refuse every operation, and "
-          "bronze's proxies have no revoked state to check)");
-}
-
 const StaticFn kProxyStatics[] = {
-    {"revocable", proxyRevocable, 2},
+    {"revocable", rtProxyRevocable, 2},
 };
 
 const CtorEntry kCtors[] = {
@@ -405,6 +400,23 @@ Value ctorObject(const CtorEntry& entry) {
         // leak a shape per call. Nothing ever builds an object from it —
         // `bronze_construct` does not reach the ordinary instance path for
         // these two.
+        live->instance_shape = rtRootShapeForPrototype(proto.get());
+    }
+    // The array constructor keeps its table slot NULL for the reason
+    // `rtGlobalConstructorMember` names — an entry with one joins
+    // `rtPrimitiveWrapperConstructorName`'s list — but its FunctionHeader slot
+    // still has to hold %Array.prototype%, because generated code reads
+    // `f.prototype` inline out of that slot (llvm_prop_get.cpp) and never
+    // reaches the property path that knows better. Leaving it empty let the
+    // first `new Array(...)` — or the species creation inside `[].map(...)` —
+    // mint a FRESH object through `rtEnsureFunctionPrototype`, after which
+    // `Array.prototype` was an empty object for the rest of the program and a
+    // method installed on it was found by nothing.
+    if (entry.code == arrayConstructor &&
+        !fn.get().asObject<FunctionHeader>()->prototype.isObject()) {
+        Rooted<Value> proto{rtArrayPrototypeObject()};
+        FunctionHeader* live = fn.get().asObject<FunctionHeader>();
+        live->prototype = proto.get();
         live->instance_shape = rtRootShapeForPrototype(proto.get());
     }
     if (entry.decorate) entry.decorate(fn);
@@ -519,6 +531,19 @@ const char* rtIntrinsicConstructorName(Value fn) {
         if (entry.code == code) return entry.name;
     }
     return nullptr;
+}
+
+// The intrinsic constructors bronze builds NO prototype object for. Their
+// `prototype` is a named refusal on the property path (rt_prop.cpp), and the
+// answer holds only while the FunctionHeader slot stays EMPTY: generated code
+// reads that slot inline, so anything that fills it turns the refusal into a
+// fresh empty object silently.
+const char* rtNoPrototypeObjectIntrinsic(Value fn) {
+    const char* name = rtMapConstructorName(fn);
+    if (!name) name = rtWeakCollectionConstructorName(fn);
+    if (!name) name = rtTypedArrayConstructorName(fn);
+    if (!name) name = rtDataViewConstructorName(fn);
+    return name;
 }
 
 bool rtIsArrayConstructor(Value fn) {

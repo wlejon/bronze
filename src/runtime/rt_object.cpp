@@ -1,7 +1,8 @@
 // Object, array and function construction, the two class links, environment
 // records, and the dynamic call path. Property access itself is rt_prop.cpp;
-// typed arrays build themselves through ordinary constructor objects and so
-// need nothing here.
+// the `Reflect` namespace is rt_reflect.cpp, whose members are forwards into
+// the same funnels this file calls; typed arrays build themselves through
+// ordinary constructor objects and so need nothing here.
 
 #include <algorithm>
 #include <charconv>
@@ -26,6 +27,7 @@
 #include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
 #include "runtime/promise.h"
@@ -115,6 +117,40 @@ static void rtInstallPrototypeConstructor(Rooted<Value>& fnVal) {
 void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     FunctionHeader* fn = fnVal.get().asObject<FunctionHeader>();
     if (fn->prototype.isObject() && fn->instance_shape) return;
+
+    // A function that already HAS a prototype object is missing only the
+    // instance shape, and the missing half is the half to build. The two
+    // conditions are separate because an INTRINSIC constructor is handed its
+    // prototype directly (`Array.prototype` and its methods are built by
+    // builtin_array.cpp, not by this function) and never gets a shape until
+    // something `new`s it — so treating the pair as one condition replaced
+    // %Array.prototype% with a fresh empty object the first time anything
+    // asked, and `Array.prototype.map` went undefined after the first
+    // `[].map(...)` in the program.
+    if (fn->prototype.isObject()) {
+        Rooted<Value> proto{fn->prototype};
+        if (ObjectHeader* protoObj = proto.get().asObject<ObjectHeader>();
+            protoObj->shape != nullptr) {
+            protoObj->shape->used_as_prototype = true;
+        }
+        fnVal.get().asObject<FunctionHeader>()->instance_shape = rtNewRootShape(proto.get());
+        return;
+    }
+
+    // An intrinsic bronze builds no prototype object for must keep an EMPTY
+    // slot: generated code reads `f.prototype` straight out of it, so minting
+    // one here would answer `Map.prototype` with a fresh empty object instead
+    // of reaching rt_prop.cpp's refusal — and would do it from the first
+    // `new Map()` onwards, silently. Only the instance shape is built, which
+    // is all `bronze_construct` needs from this function; nothing is ever
+    // allocated from it, because each of these constructors returns its own
+    // exotic object and the ordinary instance is discarded.
+    if (rtNoPrototypeObjectIntrinsic(fnVal.get())) {
+        if (!fn->instance_shape) {
+            fn->instance_shape = rtRootShapeForPrototype(Value::fromNull());
+        }
+        return;
+    }
 
     Shape* protoShape = rtNewRootShape(rtObjectPrototype());
     protoShape->used_as_prototype = true;
@@ -368,6 +404,13 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
 uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBits) {
     recordCallSite("bronze_construct", fnBits);
     Value fnVal(fnBits);
+    // 10.5.13: a Proxy has [[Construct]] exactly when its target had one, and
+    // the operation is the `construct` trap or the forwarded construction —
+    // never the ordinary path below, which would read a ProxyHeader as a
+    // FunctionHeader.
+    if (fnVal.isObject() && fnVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtProxyConstruct(fnVal, argc, argvBits);
+    }
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
             .rawBits();
@@ -570,18 +613,61 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags ||
-        hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags ||
-        hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
+    if (rtIsMapLike(objVal)) {
+        // A Map's and a Set's ENTRIES are internal slots reached by
+        // `get`/`add` and are never keys — but 24.1.4 makes the collection an
+        // ordinary object besides, so anything a program ASSIGNED to it is an
+        // own enumerable key and belongs here. Empty for a collection that
+        // never took a named write, which is the common case and the classic
+        // `Object.keys(map)` surprise.
+        Value props = objVal.asObject<MapHeader>()->properties;
+        if (!props.isObject()) return bronze_create_array(0);
+        Rooted<Value> propsRoot{props};
+        const std::vector<StringHeader*> named =
+            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
+        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
+        uint32_t at = 0;
+        for (StringHeader* k : named) {
+            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        return out.get().rawBits();
+    }
+    if (hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
         hdr->flags == DataViewHeader::kFlags) {
         // None of these has an own enumerable string-keyed property, and that
         // is a fact about the LANGUAGE rather than about bronze's storage: a
-        // Map's and a Set's entries are internal slots reached by `get`/`add`,
-        // a RegExp's `lastIndex` is an own property but non-enumerable
+        // RegExp's `lastIndex` is an own property but non-enumerable
         // (22.2.6.9), and an ArrayBuffer's and a DataView's `byteLength` and
         // friends are accessors on their prototypes. So `[]` is the complete
         // answer, and refusing it named bronze's coverage instead.
         return bronze_create_array(0);
+    }
+    if (hdr->flags == ProxyHeader::kFlags) {
+        // 20.1.2.17 is 7.3.23 EnumerableOwnProperties, which on a proxy is
+        // [[OwnPropertyKeys]] filtered by [[GetOwnProperty]]'s `enumerable` —
+        // the `ownKeys` and `getOwnPropertyDescriptor` traps, in that order.
+        Rooted<Value> proxyRoot{objVal};
+        // Rooted and re-read per iteration: the descriptor trap below is user
+        // code that allocates, so a raw list of key Values would hold
+        // from-space strings by the second key.
+        Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
+        if (rtExceptionPending()) return bronze_create_array(0);
+        Rooted<Value> out{Value(bronze_create_array(0))};
+        uint32_t at = 0;
+        const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
+        for (uint32_t ki = 0; ki < keyCount; ++ki) {
+            Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(ki)};
+            // 7.3.23 takes the STRING half only; a symbol is never one of the
+            // names `Object.keys` reports.
+            if (!key.get().isString()) continue;
+            bool enumerable = false;
+            const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), enumerable);
+            if (rtExceptionPending()) return out.get().rawBits();
+            if (!present || !enumerable) continue;
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        return out.get().rawBits();
     }
     if (hdr->flags != HeapKind::Plain) {
         // An iteration record and an environment record are the remainder, and
@@ -693,6 +779,12 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
             .rawBits();
     }
     auto* hdr = calleeVal.asObject<HeapObjectHeader>();
+    // 10.5.12 [[Call]]: the `apply` trap, or the forwarded call. Before the
+    // function check below, because a callable proxy is not a function object
+    // and `typeof` already reports it as one.
+    if (hdr->flags == ProxyHeader::kFlags) {
+        return rtProxyCall(calleeVal, Value(thisBits), argc, argvBits);
+    }
     if (hdr->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
             .rawBits();
@@ -833,116 +925,6 @@ bool rtGlobalThisOwnLookup(const std::string& name, Value& out) {
     if (!obj->shape || !obj->shape->lookupProperty(pkey, slot)) return false;
     out = g_globalThisObject.asObject<ObjectHeader>()->getProp(rtHeap(), key);
     return true;
-}
-
-static uint64_t reflectApply(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    if (argc < 3) {
-        return rtThrowTypeError("Reflect.apply requires at least 3 arguments").rawBits();
-    }
-    Value target(argv[0]);
-    Value thisArg(argv[1]);
-    Value argsList(argv[2]);
-    if (!target.isObject() || target.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        return rtThrowTypeError("Reflect.apply: target must be a function").rawBits();
-    }
-    if (!argsList.isObject()) {
-        // 28.1.1 step 2's CreateListFromArrayLike (7.3.19) step 1: a primitive
-        // argument list is a TypeError, and `null` is not the "no arguments"
-        // spelling here that it is for `Function.prototype.apply` — 20.2.3.1
-        // has an extra step for it that 28.1.1 does not.
-        return rtThrowTypeError("Reflect.apply: arguments must be an object").rawBits();
-    }
-    // 7.3.19 over ANY object with a `length`, the same walk
-    // `Function.prototype.apply` takes. Both reads can run a getter, so the
-    // list is held through a root and the argument block is rooted with it.
-    Rooted<Value> targetRoot{target};
-    Rooted<Value> thisRoot{thisArg};
-    Rooted<Value> listRoot{argsList};
-    const uint32_t count = rtArrayLikeLength(listRoot);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    if (!rtCheckAppliedArgumentCount(count, "Reflect.apply")) {
-        return Value::fromUndefined().rawBits();
-    }
-    RootedBlock block(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        block.set(i, rtArrayLikeElement(listRoot, i));
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    }
-    return bronze_dynamic_call(targetRoot.get().rawBits(), thisRoot.get().rawBits(), count,
-                               block.data());
-}
-
-static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    if (argc < 2) return BRONZE_ABI_UNDEFINED_BITS;
-    // 28.1.6 step 4: with a receiver, a GETTER found on the target runs
-    // against the receiver instead. bronze's read path would run it against
-    // the target, so a distinct receiver is refused rather than misanswered.
-    if (argc > 2 && argv[2] != argv[0]) {
-        fatal("unsupported: Reflect.get with a receiver distinct from the target");
-    }
-    return bronze_elem_get(argv[0], argv[1]);
-}
-
-static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    if (argc < 3) return Value::fromBool(false).rawBits();
-    if (argc > 3 && argv[3] != argv[0]) {
-        fatal("unsupported: Reflect.set with a receiver distinct from the target");
-    }
-    bronze_elem_set(argv[0], argv[1], argv[2], /*strict=*/false);
-    return Value::fromBool(true).rawBits();
-}
-
-static uint64_t reflectHas(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    if (argc < 2) return Value::fromBool(false).rawBits();
-    return Value::fromBool(bronze_has_property(argv[1], argv[0])).rawBits();
-}
-
-static uint64_t reflectOwnKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    if (argc == 0) return rtThrowTypeError("Reflect.ownKeys called on non-object").rawBits();
-    const uint64_t call[1] = {argv[0]};
-    return rtObjectGetOwnPropertyNames(0, 0, 1, call);
-}
-
-static uint64_t reflectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return objectGetPrototypeOf(0, 0, argc, argv);
-}
-
-static uint64_t reflectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return objectSetPrototypeOf(0, 0, argc, argv);
-}
-
-static uint64_t reflectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return rtObjectGetOwnPropertyDescriptor(0, 0, argc, argv);
-}
-
-static uint64_t reflectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return rtObjectDefineProperty(0, 0, argc, argv);
-}
-
-static Value g_reflectNamespace = Value::fromUndefined();
-
-Value rtReflectNamespace() {
-    if (g_reflectNamespace.isUndefined()) {
-        Rooted<Value> ns{Value::fromObject(
-            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
-        ns.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
-        g_reflectNamespace = ns.get();
-        rtHeap().add_permanent_root(&g_reflectNamespace);
-
-        const NativeMethod methods[] = {
-            {"apply", reflectApply, 3},
-            {"get", reflectGet, 2},
-            {"set", reflectSet, 3},
-            {"has", reflectHas, 2},
-            {"ownKeys", reflectOwnKeys, 1},
-            {"getPrototypeOf", reflectGetPrototypeOf, 1},
-            {"setPrototypeOf", reflectSetPrototypeOf, 2},
-            {"getOwnPropertyDescriptor", reflectGetOwnPropertyDescriptor, 2},
-            {"defineProperty", reflectDefineProperty, 3},
-        };
-        rtDefineMethods(ns, methods, std::size(methods));
-    }
-    return g_reflectNamespace;
 }
 
 }  // namespace bronze::runtime

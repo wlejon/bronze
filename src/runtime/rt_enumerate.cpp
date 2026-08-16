@@ -21,6 +21,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/namespace.h"
@@ -86,6 +87,14 @@ ObjectHeader* namedPropertyHolder(Value v) {
     }
     if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
+        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    }
+    // A Map or a Set, whose ordinary properties live in a side object of the
+    // same shape (rt_prop_map.cpp). Its ENTRIES are not properties, so a
+    // `for-in` over a Map visits what a program assigned to it and nothing
+    // else — which is exactly what 24.1 says it should.
+    if (rtIsMapLike(v)) {
+        Value props = v.asObject<MapHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;

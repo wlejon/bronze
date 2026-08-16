@@ -86,11 +86,12 @@ Value typeofString(TypeOfKind kind) {
     return g_typeofStrings[kind];
 }
 
-// Whether an object-tagged value can be the right operand of `instanceof`.
-// The spec asks for a callable, and the only callable bronze builds is a
-// function object.
+// ECMA-262 7.2.3 IsCallable, which `typeof`, `instanceof` and @@hasInstance
+// all ask. A function object — or a Proxy whose target was callable when it
+// was created, which 10.5.14 makes callable in exactly the same sense, and
+// which is why the question lives beside the proxy (runtime/proxy.h).
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
 // A key as the string the language would use to look it up. `in` takes an
@@ -325,18 +326,28 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         case HeapKind::DataView:
             if (rtDataViewHasMember(key)) return true;
             break;
+        // The collections answer from two places, and `in` has to ask both:
+        // an ORDINARY own property a program assigned (24.1.4 leaves a Map an
+        // ordinary object), then the members 24.1.3 and its siblings put on the
+        // prototype. An entry is neither — `m.set("k", 1)` does not make
+        // `"k" in m` true, and that is the language and not a gap.
         case HeapKind::Map:
-            if (rtMapHasMember(/*isSetReceiver=*/false, key)) return true;
-            break;
         case HeapKind::Set:
-            if (rtMapHasMember(/*isSetReceiver=*/true, key)) return true;
-            break;
         case HeapKind::WeakMap:
-            if (rtWeakCollectionHasMember(/*isWeakSetReceiver=*/false, key)) return true;
+        case HeapKind::WeakSet: {
+            Rooted<Value> keyStr{rtMakeString(key)};
+            if (PropertyInfo info;
+                rtMapOwnNamed(objRoot.get(), keyStr.get().asString<StringHeader>(), info)) {
+                return true;
+            }
+            const uint16_t k = objRoot.get().asObject<HeapObjectHeader>()->flags;
+            if (k == HeapKind::Map || k == HeapKind::Set) {
+                if (rtMapHasMember(k == HeapKind::Set, key)) return true;
+            } else if (rtWeakCollectionHasMember(k == HeapKind::WeakSet, key)) {
+                return true;
+            }
             break;
-        case HeapKind::WeakSet:
-            if (rtWeakCollectionHasMember(/*isWeakSetReceiver=*/true, key)) return true;
-            break;
+        }
         case HeapKind::RegExp:
             if (rtRegExpHasMember(key)) return true;
             break;

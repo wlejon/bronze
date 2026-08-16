@@ -68,10 +68,27 @@ namespace bronze::runtime {
 // cache as "look it up and cache nothing", a difference in speed and not in
 // semantics.
 
+// An own named property of one of the four MapHeader kinds, read through the
+// receiver so that an accessor stored there sees the collection and not the box
+// its properties live in. False means the collection has no such own property
+// and the member tables below are the answer.
+static bool mapOwnNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out) {
+    if (!keyHeader) return false;
+    PropertyInfo info;
+    if (!rtMapOwnNamed(recv.get(), keyHeader, info)) return false;
+    Rooted<Value> propsRoot{recv.get().asObject<MapHeader>()->properties};
+    Rooted<Value> key{Value::fromString(keyHeader)};
+    out = propsRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
+                                                           recv.slot_ptr());
+    return true;
+}
+
 // A member of a WeakMap or a WeakSet, by name. The Map arrangement below with
 // the `size` line missing — 24.3.3 and 24.4.3 define no such accessor, so its
 // absence is the language's answer and not a gap.
-static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& keyStr) {
+static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& keyStr,
+                                        StringHeader* keyHeader) {
+    if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
     const bool weakSet =
         recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kWeakSetFlags;
     Value method = rtWeakCollectionMethod(weakSet, keyStr);
@@ -84,7 +101,15 @@ static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& 
 // and `m[k]` reach it: a Map's keys are values and its members are names, so
 // the computed-index path cannot treat the key as an element the way it does
 // for an array.
-static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr) {
+static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
+                             StringHeader* keyHeader) {
+    // An ORDINARY own property first, because it shadows everything below it:
+    // 24.1.3's members are `Map.prototype`'s and an own property of the
+    // receiver is found before its prototype's. The presence test is the
+    // shape's, not "the value is not undefined" — `m.get = undefined` is an
+    // own property, and answering the builtin for it would un-shadow one the
+    // program really created.
+    if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
     const bool set = recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags;
     // `size` is an ACCESSOR in the specification (24.1.3.10) and a plain read
     // here: bronze has no Map.prototype for a getter to live on, and the
@@ -250,6 +275,10 @@ ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     }
     if (hdr->flags == HeapKind::Array) {
         Value props = objVal.asObject<ArrayHeader>()->properties;
+        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    }
+    if (rtIsMapLike(objVal)) {
+        Value props = objVal.asObject<MapHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
@@ -495,11 +524,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         Rooted<Value> recv{objVal};
-        return mapMemberByName(recv, keyStr).rawBits();
+        return mapMemberByName(recv, keyStr, keyHeader).rawBits();
     }
     if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
         Rooted<Value> recv{objVal};
-        return weakCollectionMemberByName(recv, keyStr).rawBits();
+        return weakCollectionMemberByName(recv, keyStr, keyHeader).rawBits();
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // Every member of a RegExp is computed from the header and the
@@ -566,10 +595,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // about every intrinsic that is not one of the three. Named here
             // rather than by adding `prototype` to nine more tables, because
             // the property is absent for the same one reason each time.
-            const char* intrinsic = rtMapConstructorName(recv.get());
-            if (!intrinsic) intrinsic = rtWeakCollectionConstructorName(recv.get());
-            if (!intrinsic) intrinsic = rtTypedArrayConstructorName(recv.get());
-            if (!intrinsic) intrinsic = rtDataViewConstructorName(recv.get());
+            const char* intrinsic = rtNoPrototypeObjectIntrinsic(recv.get());
             if (intrinsic) {
                 fatal((std::string("unsupported: ") + intrinsic +
                        ".prototype is not implemented (bronze has no prototype OBJECT for this "

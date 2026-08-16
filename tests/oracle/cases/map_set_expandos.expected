@@ -1,0 +1,15 @@
+property entry 1 foo
+{"foo":"property"}
+true true true false
+foo
+true undefined entry 0
+function entry 1
+7 function
+{"bar":1,"get":7}
+t 2 true tag
+{"tag":"t"}
+n 1 note
+w note
+5 2
+2
+true 2

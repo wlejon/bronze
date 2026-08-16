@@ -235,6 +235,13 @@ enum class Op : uint8_t {
     // and the block's handler is what the backend's exception test after it
     // branches to.
     RefError,   // a: dynamic = ref.error <key_const_index>
+    // An assignment to an IMMUTABLE binding, in STRICT code. 9.1.1.1.5
+    // SetMutableBinding step 4 throws a TypeError there and returns quietly
+    // otherwise, so sloppy code emits nothing at all and this instruction is
+    // the strict half alone. The one immutable binding bronze creates is a
+    // named function expression's own name (15.2.5). Not a terminator, for
+    // the reason ref.error is not.
+    ImmutableAssign,  // a: dynamic = immutable.assign <key_const_index>
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
  // be made together, before any method is stored.

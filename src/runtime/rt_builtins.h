@@ -311,6 +311,14 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key);
 // constructors, else nullptr. The property path needs the NAME, not just the
 // fact, so that the intrinsic bronze has not built can be refused by it.
 const char* rtMapConstructorName(Value fn);
+
+// The intrinsic constructors bronze builds no prototype OBJECT for — the Map
+// family, the nine views, DataView — by name, else nullptr. One list, because
+// two facts depend on it: the property path answers `X.prototype` with a named
+// refusal, and `rtEnsureFunctionPrototype` must leave the FunctionHeader slot
+// empty so that generated code's inline read of it misses and reaches that
+// refusal instead of a fresh empty object.
+const char* rtNoPrototypeObjectIntrinsic(Value fn);
 void rtCheckMapMember(bool isSetReceiver, const std::string& key);
 // Whether 24.1.3 / 24.2.3 give the receiver `key` at all — what `in` asks. It
 // reads the same tables `rtMapMethod` does and ends at the same named refusal,

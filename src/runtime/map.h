@@ -53,6 +53,14 @@ struct MapHeader {
     // address; the anchor catches a collector that bypassed the epoch), so
     // the index is valid only when BOTH agree.
     Value indexAnchor;
+    // Undefined, or a plain object holding this collection's ORDINARY named
+    // properties. A Map is an ordinary object with internal slots (24.1.4):
+    // `m.foo = 1` defines a property and changes nothing about the entry
+    // table, so the two stores are separate and `m.get("foo")` still answers
+    // `undefined`. Lazily created — a Map that never takes a named write is
+    // the header it always was — and traced for free, because it is a Value
+    // in the payload the generic scan already forwards.
+    Value properties;
 
     static constexpr uint16_t kMapFlags = HeapKind::Map;
     static constexpr uint16_t kSetFlags = HeapKind::Set;
@@ -65,6 +73,11 @@ struct MapHeader {
     static constexpr uint16_t kWeakSetFlags = HeapKind::WeakSet;
 
     static MapHeader* create(Heap& heap, uint16_t flags);
+
+    // The side object above, built on first use. Rooted operand, not a Value:
+    // the allocation inside can move the collection.
+    static struct ObjectHeader* ensureProperties(Heap& heap, class NonMovingArena& arena,
+                                                 Rooted<Value>& self);
 
     uint32_t liveSize() const noexcept { return static_cast<uint32_t>(liveCount.asNumber()); }
     uint32_t used() const noexcept { return static_cast<uint32_t>(usedCount.asNumber()); }

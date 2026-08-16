@@ -19,6 +19,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
@@ -76,6 +77,24 @@ uint64_t argumentsCalleePill(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return rtThrowTypeError("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them").rawBits();
 }
 
+// The other half of the same gap, and the reason it is a second pill rather
+// than an `undefined`.
+//
+// The callee a wrapper hands `bronze_arguments_object` is its own first
+// parameter — the closure ENVIRONMENT — which is the function object only
+// because `bronze_create_function` points `env_record` at the function itself
+// when there is nothing to capture. A function that DOES capture is entered
+// with a real environment record there, so a sloppy `arguments.callee` inside
+// one would answer with an internal object that is not a JavaScript value at
+// all: `typeof` says "object", and any property read on it is a hard error
+// naming an unknown object kind. One loud refusal instead, at the read.
+uint64_t argumentsCalleeCapturedPill(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtThrowTypeError("'callee' on the arguments object of a closure that captures an "
+                            "enclosing binding is unsupported: bronze's calling convention "
+                            "passes the captured environment where the function object would go")
+        .rawBits();
+}
+
 // The arena-interned `callee` key. Interned once because every call that owns
 // an `arguments` object defines this property, and a heap string per call would
 // be an allocation the property never keeps.
@@ -97,9 +116,9 @@ void installArgumentsCallee(Rooted<Value>& args, Value calleeVal, bool strict) {
     ArrayHeader::ensureProperties(rtHeap(), rtArena(), args);
     Rooted<Value> props{args.get().asObject<ArrayHeader>()->properties};
     Rooted<Value> key{Value::fromString(calleeKey())};
-    if (strict) {
-        Rooted<Value> pill{rtNativeFunction(
-            reinterpret_cast<bronze_fn_code>(&argumentsCalleePill), 0)};
+    if (strict || !rtIsCallableValue(calleeVal)) {
+        auto* code = strict ? &argumentsCalleePill : &argumentsCalleeCapturedPill;
+        Rooted<Value> pill{rtNativeFunction(reinterpret_cast<bronze_fn_code>(code), 0)};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
                                      /*enumerable=*/false);
     } else {
@@ -431,25 +450,63 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         }
         return;
     }
-    // A proxy SOURCE: CopyDataProperties takes the proxy's OwnPropertyKeys —
-    // which is the target's own list, because a vetted handler carries no
-    // ownKeys trap (proxy.cpp's construction gate) — and reads each one with
-    // [[Get]] THROUGH the proxy, so a `get` trap observes every read.
+    // A proxy SOURCE, as 7.3.25 CopyDataProperties spells it: the proxy's
+    // [[OwnPropertyKeys]] (the `ownKeys` trap or the target's list), then for
+    // each key its [[GetOwnProperty]] (the `getOwnPropertyDescriptor` trap or
+    // the target's) to decide enumerability, then [[Get]] THROUGH the proxy so
+    // a `get` trap observes every read. Three traps, in that order, because a
+    // handler may carry any subset of them and CopyDataProperties asks all
+    // three.
     if (srcVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
-        Rooted<Value> inner{srcVal.asObject<ProxyHeader>()->target};
-        if (!isPlainObject(inner.get())) {
-            fatal((std::string("unsupported: object spread of a Proxy over ") +
-                   rtObjectKindName(inner.get()) +
-                   " (only a proxy over a plain object answers own keys here)")
-                      .c_str());
+        // The key list is ROOTED and re-read per iteration: the descriptor
+        // trap, the [[Get]] and the write below all allocate, and a raw list
+        // would be holding from-space strings by the second key.
+        Rooted<Value> keys{rtProxyOwnKeys(src.get())};
+        if (rtExceptionPending()) return;
+        const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
+        for (uint32_t ki = 0; ki < keyCount; ++ki) {
+            Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(ki)};
+            if (stringTarget.get().isString() && key.get().isString() &&
+                stringTargetRefuses(stringTarget.get(),
+                                    rtUtf8Chars(key.get().asString<StringHeader>()))) {
+                return;
+            }
+            bool enumerable = false;
+            const bool present = rtProxyGetOwnProperty(src.get(), key.get(), enumerable);
+            if (rtExceptionPending()) return;
+            // 7.3.25 step 5.b.ii: absent, or present and non-enumerable, and
+            // the key contributes nothing — the trap's own answer, which is
+            // the only reason a handler can hide a key from a spread.
+            if (!present || !enumerable) continue;
+            Rooted<Value> val{
+                Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+            if (rtExceptionPending()) return;
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            /*strict=*/false);
+            if (rtExceptionPending()) return;
         }
-        for (PropertyKey name : rtOwnKeysOrdered(inner.get().asObject<ObjectHeader>())) {
+        return;
+    }
+    // A Map, a Set or a weak one: an ordinary object with internal slots
+    // (24.1.4), so its own keys are the ones a program ASSIGNED to it and its
+    // entries are not among them. `{ ...map }` is `{}` for a map full of
+    // entries, which is the language's answer and the classic surprise, not a
+    // gap. The keys live in the same side object every other path reads
+    // (rt_prop_map.cpp), so this is the plain-object walk over that box with
+    // the reads taken THROUGH the collection.
+    if (rtIsMapLike(srcVal)) {
+        Rooted<Value> box{srcVal.asObject<MapHeader>()->properties};
+        if (!box.get().isObject()) return;
+        for (PropertyKey name : rtOwnKeysOrdered(box.get().asObject<ObjectHeader>())) {
             if (stringTarget.get().isString() && !name.isSymbol() &&
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
                 return;
             }
             Rooted<Value> key{name.isSymbol() ? name.toValue()
                                               : rtCopyKeyToHeap(name.string())};
+            // Read through the COLLECTION, not through the box: an accessor
+            // stored there must see the Map as its receiver, which is the same
+            // rule `rtMapNamedSet` writes under.
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
@@ -461,8 +518,8 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     }
     // Every PRIMITIVE now has an answer, so what is left is an object kind
     // whose own keys are not in a shape. It is named rather than reported
-    // empty, because "no properties" is a wrong answer about a Map with
-    // entries in it and not a missing one.
+    // empty, because "no properties" is a wrong answer about a typed array
+    // with elements in it and not a missing one.
     if (!isPlainObject(srcVal)) {
         fatal((std::string("object spread of ") + rtObjectKindName(srcVal) +
                " (its own keys are not in a property table a spread could read)")

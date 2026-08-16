@@ -84,11 +84,12 @@ TEST_CASE("typeof of a MEMBER of an unresolvable name still throws") {
     CHECK(il::print(*optMod).find("ref.error \"__DEVTOOLS__\"") != std::string::npos);
 }
 
-TEST_CASE("a named function expression cannot name itself, and says so") {
-    // A DECLARED name bronze fails to bind is bronze's own gap, not an
-    // unresolvable reference — so it must not be swept into the
-    // provable/unprovable rule's runtime throw, which a program could even
-    // catch.
+TEST_CASE("a named function expression names itself through an env binding") {
+    // Supersedes "a named function expression cannot name itself, and says so",
+    // which pinned the refusal this replaces. 15.2.5 binds the name in a
+    // declarative environment created AROUND the function, so the self
+    // reference is an ordinary capture — an `env.get`, not the `ref.error` an
+    // unresolvable name lowers to, and not a compile error either.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -96,10 +97,36 @@ TEST_CASE("a named function expression cannot name itself, and says so") {
         "console.log(f(3));\n",
         diags, buf);
 
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    CHECK(diags.render(buf).find("named function expression cannot refer to itself") !=
-          std::string::npos);
+    REQUIRE(optMod.has_value());
+    CHECK_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("ref.error \"rec\"") == std::string::npos);
+    CHECK(text.find("env.get") != std::string::npos);
+}
+
+TEST_CASE("only STRICT code emits the immutable-assignment throw") {
+    // 9.1.1.1.5 step 4 throws for an immutable binding in strict code and
+    // returns quietly otherwise, so the sloppy write lowers to NOTHING at all.
+    // An instruction that decided at runtime would put a helper call on every
+    // write to a name that merely shares a spelling with the function.
+    DiagnosticSink strictDiags;
+    SourceBuffer strictBuf("strict.ts", "");
+    const auto strictMod = parseAndLower(
+        "\"use strict\";\n"
+        "const f = function rec() { rec = 1; return 0; };\n"
+        "console.log(f());\n",
+        strictDiags, strictBuf);
+    REQUIRE(strictMod.has_value());
+    CHECK(il::print(*strictMod).find("immutable.assign \"rec\"") != std::string::npos);
+
+    DiagnosticSink sloppyDiags;
+    SourceBuffer sloppyBuf("sloppy.ts", "");
+    const auto sloppyMod = parseAndLower(
+        "const f = function rec() { rec = 1; return 0; };\n"
+        "console.log(f());\n",
+        sloppyDiags, sloppyBuf);
+    REQUIRE(sloppyMod.has_value());
+    CHECK(il::print(*sloppyMod).find("immutable.assign") == std::string::npos);
 }
 
 TEST_CASE("a `var` inside a block hoists to function scope and binds cleanly") {

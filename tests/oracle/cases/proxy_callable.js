@@ -1,14 +1,10 @@
-// BLOCKED: `unsupported: Proxy over a callable target (calling through a Proxy
-// is not built)`. It fires the moment such a proxy is CREATED, so even
-// `typeof new Proxy(function () {}, {})` dies today.
+// A Proxy over a CALLABLE target: 10.5.14 gives the proxy [[Call]] and
+// [[Construct]] exactly when the target has them, and `typeof` reports that —
+// "function" over a function target, "object" over anything else. The last two
+// lines pin both halves, because a proxy that reports "function" and then
+// refuses to be called would be worse than one that refuses outright.
 //
-// A Proxy is callable exactly when its target is (10.5.14 makes [[Call]] and
-// [[Construct]] present only then), and `typeof` reports that: "function" over
-// a function target, "object" over anything else. The last two lines pin both
-// halves, because a proxy that reports "function" and then refuses to be called
-// would be worse than one that refuses outright.
-//
-// 10.5.12 [[Call]]: with no `apply` trap, the call FORWARDS — same `this`, same
+// 10.5.12 [[Call]]: with no `apply` trap the call FORWARDS — same `this`, same
 // arguments, and `Function.prototype.call` over the proxy reaches the target's
 // body. With one, the trap is called as `trap(target, thisArgument,
 // argumentsList)`, and `argumentsList` is a real ARRAY (step 6 is
@@ -16,16 +12,11 @@
 // received an `arguments` object would look right until it called `.map`.
 //
 // 10.5.13 [[Construct]]: with no `construct` trap, `new` over the proxy
-// constructs the TARGET with the proxy as newTarget — so the instance's
-// prototype comes from `Get(proxy, "prototype")`, which forwards, and
-// `p instanceof Point` holds. With a trap, the trap's return value is the
+// constructs the TARGET, so the instance's prototype is the target's and
+// `p instanceof Point` holds. With a trap, the trap's return value IS the
 // instance, and step 9 makes a non-object return a TypeError rather than a
 // silently discarded value.
-//
-// Unblocking this means giving bronze's proxies [[Call]] and [[Construct]],
-// which is a change to the CALL path and not only to the property path: the
-// call sites and `bronze_construct` both have to recognise a proxy and route
-// through the trap or to the target, and `typeof` has to ask the target.
+
 function add(a, b) {
   return a + b;
 }

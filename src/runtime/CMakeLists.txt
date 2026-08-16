@@ -56,12 +56,14 @@ bronze_add_module(runtime
         rt_convert.cpp
         rt_members.cpp
         rt_object.cpp
+        rt_reflect.cpp
         rt_operator.cpp
         rt_numeric.cpp
         rt_key.cpp
         rt_prop.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp
+        rt_prop_map.cpp
         rt_prop_write.cpp
         rt_delete.cpp
         iterator.cpp
@@ -89,6 +91,7 @@ bronze_add_module(runtime
         rt_print.cpp
         namespace.cpp
         proxy.cpp
+        proxy_array.cpp
     DEPS
         abi
         json

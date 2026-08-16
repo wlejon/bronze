@@ -25,8 +25,10 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/proxy.h"
 #include "runtime/namespace.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -49,6 +51,14 @@ ObjectHeader* namedPropertyOwner(Value v) {
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
     if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
+        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
+    }
+    // A Map or a Set keeps its ordinary properties in a side object too
+    // (rt_prop_map.cpp), and `delete m.foo` is the ordinary delete over it.
+    // Its ENTRIES are not properties and `delete` never reaches them, which is
+    // why there is nothing here about the entry table.
+    if (rtIsMapLike(v)) {
+        Value props = v.asObject<MapHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
@@ -188,6 +198,13 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
         return reportRefusedDelete(!exported, strict, rtKeyString(keyIndex));
     }
 
+    // 10.5.10 [[Delete]]: the `deleteProperty` trap, or the target's delete.
+    // Returns rather than falling through, because the whole question moves —
+    // the proxy has no property table of its own for the tail below to walk.
+    if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtProxyDelete(objVal, Value::fromString(keyHeader), strict);
+    }
+
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
     return reportRefusedDelete(owner->deleteProperty(rtArena(), keyHeader), strict,
@@ -221,6 +238,10 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         Rooted<Value> arrRoot{objVal};
         std::string keyText;
         return reportRefusedDelete(deleteArrayProperty(arrRoot, idxVal, keyText), strict, keyText);
+    }
+
+    if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtProxyDelete(objVal, idxVal, strict);
     }
 
     ObjectHeader* owner = namedPropertyOwner(objVal);

@@ -100,6 +100,7 @@ const char* opName(Op op) {
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
         case Op::RefError: return "ref.error";
+        case Op::ImmutableAssign: return "immutable.assign";
         case Op::ClassExtend: return "class.extend";
         case Op::IterOpen: return "iter.open";
         case Op::AsyncIterOpen: return "async_iter.open";
@@ -591,6 +592,15 @@ std::string print(const Module& module) {
                     // which name failed to resolve IS the instruction.
                     case Op::RefError:
                         out += "ref.error \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
+                        break;
+                    // The NAME for the same reason ref.error prints one: which
+                    // binding was written to IS the instruction.
+                    case Op::ImmutableAssign:
+                        out += "immutable.assign \"" +
                                (inst.keyIndex < module.keyConstants.size()
                                     ? module.keyConstants[inst.keyIndex]
                                     : std::string("?")) +

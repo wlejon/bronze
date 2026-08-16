@@ -24,6 +24,7 @@
 #include "runtime/fn.h"
 #include "runtime/namespace.h"
 #include "runtime/number_format.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -343,16 +344,18 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             case ModuleNamespaceHeader::kFlags:
             case TypedArrayHeader::kFlags:
                 return serializeObject(state, value, out);
-            // A Map, a Set, a RegExp, an ArrayBuffer and a DataView keep
-            // everything they hold in internal slots, so they have no own
-            // enumerable string properties and `{}` is what 25.5.2.4 produces.
-            // It is a real answer rather than a fallback, and the reason
-            // `JSON.stringify(map)` is the classic surprise it is in every
-            // engine.
+            // A Map's and a Set's ENTRIES live in internal slots and are not
+            // properties, so 25.5.2.4's EnumerableOwnPropertyNames never sees
+            // them and `{}` is what an empty one serializes to — the classic
+            // surprise in every engine. It is not a fallback: an ordinary
+            // property ASSIGNED to the collection IS an own enumerable key and
+            // does appear, which is why this shares the object serializer
+            // rather than printing a literal `{}`.
             case HeapKind::Map:
             case HeapKind::Set:
             case HeapKind::WeakMap:
             case HeapKind::WeakSet:
+                return serializeObject(state, value, out);
             case HeapKind::RegExp:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:

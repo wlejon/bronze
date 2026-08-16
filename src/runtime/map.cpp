@@ -5,6 +5,8 @@
 
 #include "runtime/bigint.h"
 #include "runtime/fatal.h"
+#include "runtime/object.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 
 namespace bronze {
@@ -193,7 +195,25 @@ MapHeader* MapHeader::create(Heap& heap, uint16_t flags) {
     map->usedCount = Value::fromDouble(0.0);
     map->indexEpoch = Value::fromDouble(-1.0);
     map->indexAnchor = Value::fromDouble(-1.0);
+    map->properties = Value::fromUndefined();
     return map;
+}
+
+ObjectHeader* MapHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
+                                          Rooted<Value>& self) {
+    if (self.get().asObject<MapHeader>()->properties.isObject()) {
+        return self.get().asObject<MapHeader>()->properties.asObject<ObjectHeader>();
+    }
+    // A root shape with NO prototype, for the reason ArrayHeader::ensureProperties
+    // gives: this object is STORAGE, and the property path consults it before
+    // the collection's own members. With `Object.prototype` behind it the box
+    // would answer every name that object carries, so `m.valueOf` would find
+    // the box's inherited answer instead of the one the receiver gives.
+    ObjectHeader* props =
+        ObjectHeader::create(heap, arena, runtime::rtRootShapeForPrototype(Value::fromNull()));
+    props->header.flags = HeapKind::Plain;
+    self.get().asObject<MapHeader>()->properties = Value::fromObject(props);
+    return props;
 }
 
 uint32_t MapHeader::find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {

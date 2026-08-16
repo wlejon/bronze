@@ -39,6 +39,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/proxy.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -207,13 +208,21 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
         case HeapKind::Map:
         case HeapKind::Set:
         case HeapKind::WeakMap:
-        case HeapKind::WeakSet:
+        case HeapKind::WeakSet: {
+            // 24.1.3 and its siblings put every MEMBER on a prototype, so
+            // `size`, `get` and `add` are never own — but 24.1.4 leaves the
+            // collection an ordinary object, and a property a program assigned
+            // to it is own like any other.
+            PropertyInfo info;
+            if (!rtMapOwnNamed(self.get(), PropertyKey::fromValue(keyVal), info)) return false;
+            enumerable = info.enumerable;
+            return true;
+        }
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView:
-            // 24.1.3, 24.2.3, 24.3.3, 24.4.3, 25.1.6 and 25.3.4 put every
-            // member on a prototype. These six carry internal slots and no own
-            // property at all — `size` and `byteLength` included, which are
-            // accessors.
+            // 25.1.6 and 25.3.4 put every member on a prototype. Both carry
+            // internal slots and no own property at all — `byteLength`
+            // included, which is an accessor.
             return false;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and
@@ -226,15 +235,12 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             enumerable = true;
             return true;
         }
-        case HeapKind::Proxy: {
-            // 10.5.11 [[OwnPropertyKeys]] would be the `ownKeys` trap, and
-            // 10.5.5 the `getOwnPropertyDescriptor` trap — both of which the
-            // construction gate refused (runtime/proxy.h), so the target's
-            // answer IS the proxy's answer. Recursion, because the target can
-            // be any kind this switch already has an arm for.
-            Rooted<Value> targetRoot{self.get().asObject<ProxyHeader>()->target};
-            return ownProperty(targetRoot, keyVal, enumerable);
-        }
+        case HeapKind::Proxy:
+            // 10.5.5 [[GetOwnProperty]]: the `getOwnPropertyDescriptor` trap,
+            // or the target's answer. The forward path re-enters this switch
+            // through `rtOwnPropertyOf`, because a target can be any kind it
+            // already has an arm for.
+            return rtProxyGetOwnProperty(self.get(), keyVal, enumerable);
         case HeapKind::Iterator:
         case HeapKind::Env:
             // Not JS values: nothing hands a program one, so reaching this is a
@@ -395,6 +401,14 @@ const char* builtinTag(Value self) {
 
 }  // namespace
 
+// The own-property question, for the callers outside this file that must ask
+// it exactly as `hasOwnProperty` does — a proxy's forwarded [[GetOwnProperty]]
+// is the one, and two copies of "does this receiver have an own `k`" is
+// precisely what the switch above exists to prevent.
+bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, bool& enumerable) {
+    return ownProperty(self, keyVal, enumerable);
+}
+
 // 20.1.3.6 Object.prototype.toString.
 //
 // Its receiver rule is the one thing here that is not the ordinary one: steps 1
@@ -493,10 +507,17 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const u
     // prototype those kinds answer with is not a shape word a write here
     // could change. Refused by name rather than quietly returned, which
     // would leave the program believing the chain moved.
-    if (self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    // Step 5 is [[SetPrototypeOf]], and `Object.setPrototypeOf` is the same
+    // operation — including its one non-storing success, a write of the
+    // prototype the object already has. Delegating rather than restating is
+    // what keeps `a.__proto__ = Array.prototype` and
+    // `Object.setPrototypeOf(a, Array.prototype)` from disagreeing.
+    if (self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN &&
+        !rtSamePrototypeAsCurrent(self.get(), protoVal)) {
         fatal((std::string("unsupported: __proto__ write on ") +
                rtObjectKindName(self.get()) +
-               " (only a plain object's prototype can be replaced)")
+               " to a DIFFERENT prototype (only a plain object's prototype is a shape word "
+               "a write can replace)")
                   .c_str());
     }
     const uint64_t args[2] = {self.get().rawBits(), protoVal.rawBits()};

@@ -70,21 +70,6 @@ void Lowerer::warnUnresolved(const std::string& name, Span span) {
 // IL verifier exists to catch.
 Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
                                            il::Function& ilFn) {
-    // A name that IS declared and that bronze fails to bind is not an
-    // unresolvable reference — it is bronze's own gap, and the
-    // provable/unprovable rule ("unprovable gets the spec's runtime behaviour")
-    // does not cover it. Letting `const f = function rec(n) { return rec(n - 1)
-    // }` compile to a throw would hide a compiler limitation behind a language
-    // error the program could even catch.
-    if (std::find(namedFunctionExprs_.begin(), namedFunctionExprs_.end(), name) !=
-        namedFunctionExprs_.end()) {
-        diags_.error(span, "unsupported construct: a named function expression cannot refer "
-                           "to itself by name ('" + name + "')");
-        // The value is never used: the caller stops at the first error. It is
-        // still well-formed, so a caller that goes on to lower a sibling
-        // expression does not trip the verifier before the error is reported.
-        return Value{il::kNoValue, il::Type::Dynamic};
-    }
     // A `var` written inside a block of this function. 8.6.2 hoists it to the
     // function whatever depth it sits at; bronze creates the slot only for the
     // ones written at the function's top level, so a read of any other one

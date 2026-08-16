@@ -150,6 +150,12 @@ bool Lowerer::envSlotIsLexical(uint32_t depth, uint32_t index) const {
     return index < scope.slotIsLexical.size() && scope.slotIsLexical[index];
 }
 
+bool Lowerer::envSlotIsImmutable(uint32_t depth, uint32_t index) const {
+    if (depth >= envScopes_.size()) return false;
+    const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
+    return index < scope.slotIsImmutable.size() && scope.slotIsImmutable[index];
+}
+
 // Every read of an environment slot passes through here, so this is the one
 // place 9.1.1.1.6's check has to be decided. A lexical slot gets the checked
 // form UNCONDITIONALLY — not only where lowering can see a read above the
@@ -223,6 +229,15 @@ void Lowerer::openLexicalBindings(size_t scopeIndex,
 // discarded: what is wanted from it is the throw.
 void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn,
                          bool assigning) {
+    // 9.1.1.1.5 step 4, the immutable arm: strict code throws and sloppy code
+    // returns without storing. Both are DROPS of the store, which is why this
+    // is decided here and not at each of the three call sites that assign to a
+    // name (assignment, update, destructuring) — a store that reached the slot
+    // from any of them would let a program rename its own function.
+    if (assigning && envSlotIsImmutable(depth, index)) {
+        if (strictCode_) emitImmutableAssign(envScopes_[envScopes_.size() - 1 - depth].slotNames[index], ilFn);
+        return;
+    }
     if (assigning && envSlotIsLexical(depth, index)) emitEnvGet(depth, index, ilFn);
     Value boxed = boxValueIfNeeded(val, ilFn);
     il::Instruction inst;
@@ -232,6 +247,18 @@ void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function
     inst.operands = {currentEnv(ilFn), boxed.id};
     inst.envDepth = depth;
     inst.envIndex = index;
+    emitInst(ilFn, inst);
+}
+
+// The strict half of the rule above, as an instruction. Its result is
+// discarded: what is wanted from it is the throw, and the backend's exception
+// test after it is what carries control to the handler.
+void Lowerer::emitImmutableAssign(const std::string& name, il::Function& ilFn) {
+    il::Instruction inst;
+    inst.op = il::Op::ImmutableAssign;
+    inst.type = il::Type::Dynamic;
+    inst.result = ilFn.valueCount++;
+    inst.keyIndex = getKeyConstantIndex(name);
     emitInst(ilFn, inst);
 }
 
@@ -320,6 +347,7 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
+    info.slotIsImmutable.assign(slots.size(), false);
     const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
     const uint32_t parentChildSlot =
         generator_ ? envScopes_.back().childSlot : UINT32_MAX;
@@ -393,7 +421,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::vector<ast::Param>& params,
                                                     const std::string& returnTypeAnn,
                                                     const std::vector<ast::StmtPtr>& body,
-                                                    Span span, il::Function& ilFn, bool isArrow) {
+                                                    Span span, il::Function& ilFn, bool isArrow,
+                                                    bool bindsOwnName) {
     std::string fnName = declaredName;
     if (fnName.empty()) {
         fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
@@ -505,6 +534,39 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerVarNames = functionVarNames_;
     size_t outerEnvDepth = envScopes_.size();
 
+    // 15.2.5 InstantiateOrdinaryFunctionExpression, the named branch: a
+    // function expression that wrote its own name is created in a declarative
+    // environment of its own holding ONE immutable binding of that name, and
+    // that record — not the enclosing one — is the closure's scope. So the
+    // recursive reference in `(function fact(n) { return n * fact(n - 1) })` is
+    // an ordinary capture: the body resolves `fact` through the environment
+    // chain like any other free name, one hop further out than its own record.
+    //
+    // Built only where the body (or a parameter default, which is code of this
+    // function that the body does not contain) actually mentions the name. The
+    // binding is unobservable otherwise, and paying a record per evaluation for
+    // it would change the IL of every `function f() {}` in the program.
+    il::ValueId nfeEnv = il::kNoValue;
+    if (bindsOwnName && !isArrow && !declaredName.empty()) {
+        auto referenced = ast::getReferencedNames(body);
+        for (auto& name : ast::getParamReferencedNames(params)) {
+            referenced.insert(std::move(name));
+        }
+        if (referenced.contains(declaredName)) {
+            nfeEnv = emitEnvCreate(1, ilFn);
+            EnvScopeInfo info;
+            info.slotOf[declaredName] = 0;
+            info.slotNames = {declaredName};
+            info.slotIsLexical.assign(1, false);
+            // The whole point of the record: 15.2.5 step 3 is
+            // CreateImmutableBinding, so an inner `fact = x` stores nothing.
+            info.slotIsImmutable.assign(1, true);
+            info.envValue = nfeEnv;
+            envScopes_.push_back(std::move(info));
+            currentEnvValue_ = nfeEnv;
+        }
+    }
+
     // The body is lowered into a DIFFERENT function, so every piece of state
     // saved above now describes the nested one — and that has to be undone on
     // the failure path as well. Returning early from here once left the
@@ -514,12 +576,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // report a second diagnostic resolved names against the wrong scope. The
     // caller stops at the first error either way, so this restores and then
     // reports rather than reporting and leaving the wreckage.
-    // A named function EXPRESSION only: a nested function declaration's name
-    // is a binding of the enclosing scope and resolves through it, so it must
-    // not be caught by the limitation this records (see emitReferenceError).
-    const bool isNamedFunctionExpr =
-        !isArrow && !declaredName.empty() && dynamic_cast<const ast::FunctionExpr*>(&site);
-    if (isNamedFunctionExpr) namedFunctionExprs_.push_back(declaredName);
     const auto* siteFnExpr = dynamic_cast<const ast::FunctionExpr*>(&site);
     const auto* siteFnDecl = dynamic_cast<const ast::FunctionDecl*>(&site);
     const bool isGenerator = (siteFnExpr && siteFnExpr->isGenerator) ||
@@ -527,7 +583,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     const bool isAsync =
         (siteFnExpr && siteFnExpr->isAsync) || (siteFnDecl && siteFnDecl->isAsync);
     const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
-    if (isNamedFunctionExpr) namedFunctionExprs_.pop_back();
+    // The name's record is visible to the BODY and to nothing else — 15.2.5
+    // creates it around the closure, not in the scope that wrote the
+    // expression — so it leaves the stack the moment the body is lowered, and
+    // before the balance check below counts what is left.
+    if (nfeEnv != il::kNoValue) envScopes_.pop_back();
 
     generator_ = std::move(outerGenerator);
     strictCode_ = outerStrict;
@@ -572,8 +632,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     ilModule_.functions.push_back(std::move(newFn));
 
     // The closure captures the environment that is innermost right
-    // here, at its creation site.
-    const il::ValueId enclosingEnv = currentEnv(ilFn);
+    // here, at its creation site — or, for a named function expression, the
+    // one-slot record built above, which chains to it. `currentEnv` cannot
+    // answer that: the record left the scope stack with the body, because
+    // nothing outside the closure may resolve a name through it.
+    const il::ValueId enclosingEnv = nfeEnv != il::kNoValue ? nfeEnv : currentEnv(ilFn);
     il::ValueId envArg =
         enclosingEnv == il::kNoValue ? emitConstUndefined(ilFn) : enclosingEnv;
     il::ValueId res = ilFn.valueCount++;
@@ -594,6 +657,21 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                             (params.empty() || !params.back().isRest ? 0 : 1);
     inst.operands = {envArg};
     emitInst(ilFn, inst);
+    // 15.2.5 step 5, InitializeBinding: the record holds the closure it is the
+    // scope of, which is what closes the cycle the recursion walks. Written
+    // through the record VALUE rather than through `emitEnvSet`, because the
+    // scope that owns the slot is no longer on the stack a (depth, index) pair
+    // is counted against.
+    if (nfeEnv != il::kNoValue) {
+        il::Instruction bind;
+        bind.op = il::Op::EnvSet;
+        bind.type = il::Type::Void;
+        bind.result = il::kNoValue;
+        bind.operands = {nfeEnv, res};
+        bind.envDepth = 0;
+        bind.envIndex = 0;
+        emitInst(ilFn, bind);
+    }
     return Value{res, il::Type::Dynamic};
 }
 

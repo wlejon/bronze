@@ -356,9 +356,15 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         // NamedEvaluation position goes through `lowerNamedEvaluation` instead —
         // so an anonymous function here really has `name === ""` (10.2.9 step 4
         // via OrdinaryFunctionCreate's default).
+        // The one site that reaches `lowerClosure` for a function EXPRESSION
+        // evaluated as an expression, which is what makes it the one site that
+        // may bind the function's own name inside it (15.2.5). A method's
+        // FunctionExpr also carries a name and is lowered from
+        // `lower_object`/`lower_class` instead — its name is a property key
+        // and binds nothing in the body.
         return lowerClosure(*fnExpr, fnExpr->name, fnExpr->name, fnExpr->params,
                             fnExpr->returnType, fnExpr->body, fnExpr->span, ilFn,
-                            fnExpr->isArrow);
+                            fnExpr->isArrow, /*bindsOwnName=*/true);
     }
 
     if (const auto* clsExpr = dynamic_cast<const ast::ClassExpr*>(&expr)) {

@@ -8,7 +8,9 @@ llvm_map_components_to_libnames(llvm_libs Core ExecutionEngine Target native nat
 bronze_add_module(codegen_llvm
     SOURCES
         llvm_abi.cpp
-        llvm_prop.cpp
+        llvm_prop_ic.cpp
+        llvm_prop_get.cpp
+        llvm_prop_set.cpp
         llvm_cache.cpp
         llvm_call.cpp
         llvm_construct.cpp

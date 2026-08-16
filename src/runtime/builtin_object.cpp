@@ -39,6 +39,7 @@
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/namespace.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -133,7 +134,33 @@ const char* propertyStoreReason(Value v) {
 // saying what it is and what about its storage bronze cannot reach —
 // `getOwnPropertyNames`'s precedent, which named the kinds before any of the
 // rest of them did.
+// The trap 10.5 routes an `Object` member through — for the ones bronze has
+// not built. A proxy refused with the reason above would be describing the
+// TARGET's storage, which is not what is missing: 10.5 asks the HANDLER first,
+// and the gap is the ask. Naming the trap says what a handler would have to
+// provide and what bronze would have to call.
+const char* proxyTrapFor(const std::string& member) {
+    if (member == "defineProperty" || member == "defineProperties") return "defineProperty";
+    if (member == "setPrototypeOf") return "setPrototypeOf";
+    if (member == "freeze" || member == "seal" || member == "preventExtensions") {
+        return "preventExtensions";
+    }
+    if (member == "isFrozen" || member == "isSealed" || member == "isExtensible") {
+        return "isExtensible";
+    }
+    return nullptr;
+}
+
 [[noreturn]] void refuseObjectKind(Value v, const char* member) {
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        const char* trap = proxyTrapFor(member);
+        fatal((std::string("unsupported: Object.") + member + " on a Proxy (10.5 routes it " +
+               (trap ? std::string("through the `") + trap + "` trap, which bronze has not built"
+                     : std::string("through a trap bronze has not built")) +
+               "; forwarding to the target behind the handler's back would be the one thing a "
+               "proxy must never do, so this refuses instead)")
+                  .c_str());
+    }
     fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
            propertyStoreReason(v) + ")")
               .c_str());
@@ -197,6 +224,32 @@ std::string rtObjectKeyTextOf(Value keyVal) {
 // `Array.prototype` to return and `null` would be a lie about a chain that
 // really does have methods on it.
 //
+// The [[Prototype]] of a receiver that keeps no shape — an array and a
+// function, whose prototypes are FIXED by 23.1.6.1 and 20.2.3 and so need no
+// storage to be known. False for every other such kind, whose prototype is an
+// intrinsic bronze builds no object for.
+//
+// One function because two operations must agree about it: `getPrototypeOf`
+// answers with it, and `setPrototypeOf` compares against it to decide whether a
+// write changes anything (10.1.2 step 2).
+bool rtShapelessPrototypeOf(Value obj, Value& out) {
+    if (!obj.isObject()) return false;
+    const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
+    if (kind == HeapKind::Array) {
+        out = rtArrayPrototypeObject();
+        return true;
+    }
+    if (kind != HeapKind::Function) return false;
+    // %Function.prototype% is itself a function object (20.2.3), and its own
+    // [[Prototype]] is Object.prototype. Without this line the general rule
+    // below would answer with the object being asked about, and a chain walk
+    // over it would never terminate.
+    out = bronze_strict_eq(obj.rawBits(), rtFunctionPrototypeObject().rawBits())
+              ? rtObjectPrototype()
+              : rtFunctionPrototypeObject();
+    return true;
+}
+
 // Step 1 of 20.1.2.12 is ToObject, which is the whole reason a PRIMITIVE has an
 // answer here at all: `Object.getPrototypeOf("x")` is String.prototype, and
 // only `null` and `undefined` are the TypeError (7.1.18). All four primitive
@@ -220,8 +273,30 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // immutable — so this is the language's own answer and not the "no
         // prototype object exists" that an array's `null` would have been.
         if (rtIsModuleNamespace(args[0])) return Value::fromNull().rawBits();
-        fatal("unsupported: Object.getPrototypeOf of an array or a function needs "
-              "Array.prototype / Function.prototype, which bronze does not provide");
+        // An array's and a function's [[Prototype]] is not stored anywhere —
+        // neither header carries a shape — but it is not unknown either: it is
+        // the intrinsic, fixed by 23.1.6.1 and 20.2.3, and bronze builds both
+        // objects. So the answer is the intrinsic, and what an array's chain
+        // does NOT do (walk through it — an array's members are answered beside
+        // the value) is a separate fact, already refused by name where a
+        // program could act on it: decorating Array.prototype.
+        if (Value proto; rtShapelessPrototypeOf(args[0], proto)) return proto.rawBits();
+        if (args[0].isObject() &&
+            args[0].asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            // 10.5.1 [[GetPrototypeOf]]: the `getPrototypeOf` trap, or the
+            // target's prototype. A revoked proxy throws here like everywhere.
+            return rtProxyGetPrototypeOf(args[0]).rawBits();
+        }
+        // What is left is a kind whose prototype IS an intrinsic bronze has
+        // never built as an object: `Map.prototype`, `Set.prototype`,
+        // `RegExp.prototype` and the typed-array pair are answered by the
+        // property path from a C table beside the value, so there is no object
+        // to hand back and `null` would be a lie about a chain that works.
+        fatal((std::string("unsupported: Object.getPrototypeOf of ") +
+               rtObjectKindName(args[0]) +
+               " (bronze builds no prototype OBJECT for this intrinsic; its members are "
+               "answered from a table beside the value)")
+                  .c_str());
     }
     Shape* shape = args[0].asObject<ObjectHeader>()->shape;
     const Value proto = shape ? shape->prototypeValue() : Value::fromUndefined();
@@ -361,6 +436,17 @@ uint64_t objectIs(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return Value::fromBool(bronze_strict_eq(a.rawBits(), b.rawBits())).rawBits();
 }
 
+// Does `proto` name the prototype this receiver already has? Asked only of the
+// kinds that carry no shape, so that a [[SetPrototypeOf]] which changes nothing
+// can succeed the way 10.1.2 step 2 says it does, without anything having to be
+// stored. False for a kind whose prototype bronze cannot name at all — the
+// caller refuses those, which is the honest answer for "I cannot tell".
+bool rtSamePrototypeAsCurrent(Value obj, Value proto) {
+    Value current;
+    if (!rtShapelessPrototypeOf(obj, current)) return false;
+    return bronze_strict_eq(proto.rawBits(), current.rawBits());
+}
+
 // 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
@@ -373,8 +459,19 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
                 .rawBits();
         }
         if (!args[0].isObject()) return args[0].rawBits();  // 20.1.2.21 step 3
-        fatal("unsupported: Object.setPrototypeOf on an array, a function, a Map or a Set "
-              "(only a plain object carries its prototype on a shape bronze can replace)");
+        // 10.1.2 OrdinarySetPrototypeOf step 2: a write of the prototype the
+        // object ALREADY has succeeds and changes nothing. That is the whole
+        // of `Object.setPrototypeOf(arr, Array.prototype)`, a defensive idiom
+        // real code writes, and answering it needs no storage — only the
+        // getter above, which now knows what an array's and a function's
+        // prototype is.
+        if (rtSamePrototypeAsCurrent(args[0], args[1])) return args[0].rawBits();
+        fatal((std::string("unsupported: Object.setPrototypeOf on ") +
+               rtObjectKindName(args[0]) +
+               " to a DIFFERENT prototype (this kind carries no shape, and its prototype is "
+               "the intrinsic its members are answered from; only a plain object's is a "
+               "shape word a write could replace)")
+                  .c_str());
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> proto{args[1]};
@@ -393,8 +490,11 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
     }
     if (args[0].isObject() && !isPlainObject(args[0])) {
-        fatal("unsupported: Object.create with an array, a function, a Map or a Set as the "
-              "prototype (only a plain object may be one)");
+        fatal((std::string("unsupported: Object.create with ") + rtObjectKindName(args[0]) +
+               " as the prototype (a prototype is walked by every read that misses, and this "
+               "kind answers its members from a table beside the value rather than from a "
+               "shape a walk can step through; only a plain object may be one)")
+                  .c_str());
     }
     Rooted<Value> proto{args[0]};
     Rooted<Value> out{Value::fromObject(

@@ -474,6 +474,18 @@ uint64_t bronze_reference_error(uint32_t keyIndex) {
     return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
 }
 
+// An assignment to an immutable binding from STRICT code. 9.1.1.1.5
+// SetMutableBinding step 4: when the binding is immutable and S is true, throw
+// a TypeError. Sloppy code reaches no helper at all — the same step returns
+// without storing — so this exists only for the mode that observes it.
+//
+// The message is the one every engine gives for the same step, because a
+// program that prints `e.message` is pinning what the language says happened
+// and not which engine said it.
+uint64_t bronze_immutable_assign(void) {
+    return rtThrowTypeError("Assignment to constant variable.").rawBits();
+}
+
 // The end of a program with an exception still pending. Reported on STDERR,
 // which is what node does and what keeps an uncaught-throw oracle case
 // pinnable: stdout holds exactly what the program printed before it died.

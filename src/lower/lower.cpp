@@ -368,6 +368,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
+    info.slotIsImmutable.assign(slots.size(), false);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
@@ -443,6 +444,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // `main` exists, and a read of a module-level `const` from inside one has
     // to know it is reading a slot that can be uninitialized.
     info.slotIsLexical.assign(moduleEnvSlots_.size(), false);
+    info.slotIsImmutable.assign(moduleEnvSlots_.size(), false);
     for (const auto& name : ast::getLexicalDeclarations(topLevelStmts)) {
         auto slot = info.slotOf.find(name);
         if (slot != info.slotOf.end()) info.slotIsLexical[slot->second] = true;

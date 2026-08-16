@@ -83,4 +83,21 @@ uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 
+// Does `proto` name the prototype `obj` already has, for a receiver kind that
+// carries no shape? The one question `Object.setPrototypeOf` and the
+// `__proto__` setter must answer the same way, so that 10.1.2 step 2's
+// non-storing success is one rule and not two.
+bool rtSamePrototypeAsCurrent(Value obj, Value proto);
+
+// The [[Prototype]] of an array or a function — the two kinds whose prototype
+// is fixed by the specification and therefore needs no storage. False for
+// anything else.
+bool rtShapelessPrototypeOf(Value obj, Value& out);
+
+// 10.1.5-shaped [[GetOwnProperty]] reduced to what bronze's callers need: does
+// this receiver have an own property under `keyVal`, and is it enumerable?
+// One implementation, in builtin_object_proto.cpp, so that `hasOwnProperty`,
+// `propertyIsEnumerable` and a proxy's forwarded descriptor read cannot drift.
+bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, bool& enumerable);
+
 }  // namespace bronze::runtime

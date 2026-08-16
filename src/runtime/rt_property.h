@@ -173,6 +173,37 @@ bool rtArrayNamedDelete(Value arrVal, PropertyKey name);
 // elements refusing to be deleted.
 SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal);
 
+// ---- a Map's, Set's, WeakMap's or WeakSet's own named properties
+//      (rt_prop_map.cpp) ----
+//
+// The same seam as the array block above, for the four collections that share
+// MapHeader. A Map is an ordinary object with internal slots (24.1.4): its
+// ENTRIES are reached by `get`/`set` and are not properties, and its
+// PROPERTIES are ordinary and have nothing to do with the entry table. Both
+// stores exist, they never see each other, and the same six paths ask this
+// one question about the second.
+
+// Is `name` an own named property of this collection? No allocation, so the
+// answer is good until the next one. The receiver must be one of the four
+// kinds; every caller has already dispatched.
+bool rtMapOwnNamed(Value mapVal, PropertyKey name, PropertyInfo& out);
+
+// Its own named keys in insertion order — 6.1.7.1's, with no integer-like key
+// to order ahead of them, because an index on a Map is an ordinary name.
+std::vector<StringHeader*> rtMapOwnNamedKeys(Value mapVal, bool enumerableOnly = true);
+
+// `m.foo = v`, creating the side object on first use. Allocates and may run an
+// inherited setter, so the collection arrives through a root.
+SetRefusal rtMapNamedSet(Rooted<Value>& map, Rooted<Value>& key, Rooted<Value>& val);
+
+// `delete m.foo`. Absent is already the state `delete` wants, so a collection
+// that never took a named write answers true (13.5.1).
+bool rtMapNamedDelete(Value mapVal, PropertyKey name);
+
+// Whether this receiver is one of the four MapHeader kinds — the one test the
+// paths above share, so that "a Map or a Set or a weak one" is spelled once.
+bool rtIsMapLike(Value v);
+
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the
 // language's own answer for a property that does not exist. An array's members

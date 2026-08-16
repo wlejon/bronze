@@ -212,6 +212,14 @@ private:
         // A parameter, a `var`, a hoisted `function` and the synthetic `this`
         // and `arguments` slots are never among them.
         std::vector<bool> slotIsLexical;
+        // Which slots hold an IMMUTABLE binding (9.1.1.1.3
+        // CreateImmutableBinding). Exactly one such slot exists in bronze: a
+        // named function expression's own name, in the one-slot record 15.2.5
+        // wraps the closure in. A write to one is a quiet no-op in sloppy code
+        // and a TypeError in strict, which is a different rule from `const`'s
+        // — a `const` is refused at COMPILE time because lowering owns the
+        // declaration, and this binding's writes are not always visible to it.
+        std::vector<bool> slotIsImmutable;
         il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
         // GENERATORS ONLY: the slot in THIS record that holds the record of the
         // scope nested directly inside it. The environment chain runs upward —
@@ -465,7 +473,6 @@ private:
     // is what keeps it a compile error: without it the name would fall off the
     // resolution ladder and become an unresolvable reference, turning a bug
     // bronze reports into a ReferenceError a program could catch.
-    std::vector<std::string> namedFunctionExprs_;
     // Every name the function being lowered declares with `var`, at any block
     // depth. Same job as the stack above and for the same reason: 8.6.2 hoists
     // a `var` to the enclosing FUNCTION however deeply it is written, bronze
@@ -515,6 +522,10 @@ private:
     // path — a local, a free variable of a closure, a compound assignment's
     // read half — gets the check without knowing it exists.
     bool envSlotIsLexical(uint32_t depth, uint32_t index) const;
+    // The same question for 9.1.1.1.3's immutable bindings, asked by
+    // `emitEnvSet` alone — see EnvScopeInfo::slotIsImmutable.
+    bool envSlotIsImmutable(uint32_t depth, uint32_t index) const;
+    void emitImmutableAssign(const std::string& name, il::Function& ilFn);
     // The scope innermost right now takes its lexical bindings: each slot
     // marked, filled with the uninitialized marker, and BOUND under its name.
     // `scopeIndex` is the entry in `envScopes_` that owns them.
@@ -560,7 +571,8 @@ private:
                                       const std::vector<ast::Param>& params,
                                       const std::string& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
-                                      il::Function& ilFn, bool isArrow = false);
+                                      il::Function& ilFn, bool isArrow = false,
+                                      bool bindsOwnName = false);
 
     // ECMA-262 8.6.2 NamedEvaluation: an ANONYMOUS function expression in one
     // of the positions where the surrounding syntax names it — `const f = () =>

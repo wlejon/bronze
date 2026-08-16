@@ -22,6 +22,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -85,9 +86,11 @@ void ensureFunctionIntrinsics() {
 }
 
 bool requireFunctionReceiver(Value self, const char* method) {
-    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        return true;
-    }
+    // 20.2.3.1 and 20.2.3.3 step 1 are "If IsCallable(func) is false, throw" —
+    // IsCallable, not "is a function object", which is what lets
+    // `proxyOverFunction.call(...)` reach the proxy's [[Call]] instead of
+    // being refused for a receiver the language considers callable.
+    if (rtIsCallableValue(self)) return true;
     rtThrowTypeError(std::string("Function.prototype.") + method +
                      " called on a value that is not a function");
     return false;
