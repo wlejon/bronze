@@ -19,3 +19,12 @@ bronze_add_module(lower
     # neither (see the note on TEST_DEPS in cmake/bronze_module.cmake).
     TEST_DEPS lex parse
 )
+
+# GCC 13's -Wmaybe-uninitialized cannot see through std::optional's engaged
+# flag when the generator context is saved/restored by move (GCC bug 80635
+# family) and reports the payload members as maybe-uninitialized under
+# -Werror. False positive — every member has a default initializer. Scoped to
+# the one file with the save/restore rather than losing the warning
+# everywhere; GCC-only, so clang and MSVC still watch this file.
+set_source_files_properties(lower_generator.cpp PROPERTIES
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-maybe-uninitialized>")

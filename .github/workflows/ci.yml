@@ -83,7 +83,10 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --pattern "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" \
             --dir "$RUNNER_TEMP"
-          tar -xzf "$RUNNER_TEMP/bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" -C "$RUNNER_TEMP/llvm-prebuilt"
+          # cd first: $RUNNER_TEMP is a D:\... path on Windows, and GNU tar
+          # reads the colon in an -f argument as a remote-host separator.
+          cd "$RUNNER_TEMP"
+          tar -xzf "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" -C llvm-prebuilt
 
       - name: Point LLVM_DIR at the prebuilt
         shell: bash
