@@ -92,6 +92,16 @@ std::string Parser::decodeStringLiteral(std::string_view raw, Span span) {
     out.reserve(raw.size());
     for (size_t i = 0; i < raw.size(); ++i) {
         if (raw[i] != '\\') {
+            // A template's value normalizes <CR><LF> and a lone <CR> to <LF>
+            // (ECMA-262 12.9.6 TV) — a CRLF-saved source file must cook the
+            // same string an LF-saved one does. Only a template can carry an
+            // unescaped line terminator into this decoder: the lexer rejects
+            // them in quoted literals.
+            if (raw[i] == '\r') {
+                out.push_back('\n');
+                if (i + 1 < raw.size() && raw[i + 1] == '\n') ++i;
+                continue;
+            }
             out.push_back(raw[i]);
             continue;
         }
@@ -301,8 +311,22 @@ ExprPtr Parser::parseTemplateLiteral() {
     const Token& headTok = peek();
     lit->span = headTok.span;
 
+    // TRV keeps escapes unresolved but still normalizes <CR><LF> and <CR> to
+    // <LF> (ECMA-262 12.9.6): a tag function's `strings.raw` must not see
+    // carriage returns from a CRLF-saved source file.
     auto raw = [&](const Token& tok, size_t trailing) {
-        return std::string(tok.text.substr(1, tok.text.size() - 1 - trailing));
+        std::string_view text = tok.text.substr(1, tok.text.size() - 1 - trailing);
+        std::string out;
+        out.reserve(text.size());
+        for (size_t i = 0; i < text.size(); ++i) {
+            if (text[i] == '\r') {
+                out.push_back('\n');
+                if (i + 1 < text.size() && text[i + 1] == '\n') ++i;
+                continue;
+            }
+            out.push_back(text[i]);
+        }
+        return out;
     };
     auto cook = [&](const Token& tok, size_t trailing) {
         return decodeStringLiteral(tok.text.substr(1, tok.text.size() - 1 - trailing), tok.span);

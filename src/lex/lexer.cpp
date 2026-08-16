@@ -143,7 +143,9 @@ bool Lexer::skipTrivia() {
     for (;;) {
         const char c = peek();
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-            if (c == '\n') sawNewline = true;
+            // <CR> is a LineTerminator (ECMA-262 12.3), so a CRLF or lone-CR
+            // file triggers ASI exactly as an LF file does.
+            if (c == '\n' || c == '\r') sawNewline = true;
             ++pos_;
         } else if (static_cast<unsigned char>(c) == 0xEF &&
                    static_cast<unsigned char>(peek(1)) == 0xBB &&
@@ -280,8 +282,15 @@ Token Lexer::lexString() {
     const uint32_t begin = pos_;
     const char quote = peek();
     ++pos_;
-    while (!atEnd() && peek() != quote && peek() != '\n') {
-        if (peek() == '\\') ++pos_;  // escape: consume the backslash + next
+    // <CR> terminates like <LF>: both are LineTerminators, and a quoted
+    // literal cannot contain an unescaped one (ECMA-262 12.9.4).
+    while (!atEnd() && peek() != quote && peek() != '\n' && peek() != '\r') {
+        if (peek() == '\\') {
+            ++pos_;  // escape: consume the backslash, then what it escapes
+            // An escaped CRLF is one LineContinuation: take both characters,
+            // or the loop would read the LF half as a terminator.
+            if (peek() == '\r' && peek(1) == '\n') ++pos_;
+        }
         ++pos_;
     }
     if (atEnd() || peek() != quote) {
