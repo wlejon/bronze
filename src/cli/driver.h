@@ -33,11 +33,18 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // the object file, exactly as given, and no linker runs. It is the embedding
 // seam: a host build links the object against bronze's runtime and its own
 // code, so bronze must not insist on producing an executable.
+//
+// `entrySymbol` names the object's exported entry point. Empty means the
+// default `bronze_main`, which is what src/rt/rt.cpp and embed's runMain call.
+// It exists so a host can link MORE THAN ONE compiled module into one image:
+// the entry and the ABI stamp are the only two names an object exports, so
+// distinct entry symbols are what keep two modules from colliding at link.
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
              bool inferStats = false, std::string* statsOut = nullptr,
-             const std::vector<modules::ModuleRoot>& moduleRoots = {});
+             const std::vector<modules::ModuleRoot>& moduleRoots = {},
+             const std::string& entrySymbol = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

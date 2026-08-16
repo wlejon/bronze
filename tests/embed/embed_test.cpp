@@ -81,18 +81,20 @@ TEST_CASE("a registered host global answers bronze_global_get") {
     // collection, so this checks the registry is a real root source and not a
     // cache of stale bits.
     embed::registerGlobal("engineName", embed::fromUtf8("bro"));
-    bronze_register_key_string(0, "engineName");
+    const uint32_t key = bronze_register_key_string("engineName");
 
     runtime::rtHeap().collect();
 
-    Value v{bronze_global_get(0)};
+    // No cache cell: the runtime's own callers have no module to hold one, and
+    // a host global is never cached anyway.
+    Value v{bronze_global_get(key, nullptr)};
     CHECK(v.isString());
     CHECK(embed::toUtf8(v) == "bro");
 
     // Re-registration replaces, and the read sees the replacement — the
     // reason host globals stay out of the builtin cache.
     embed::registerGlobal("engineName", embed::fromDouble(2.0));
-    Value replaced{bronze_global_get(0)};
+    Value replaced{bronze_global_get(key, nullptr)};
     CHECK(replaced.isNumber());
     CHECK(replaced.asNumber() == 2.0);
 }

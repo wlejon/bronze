@@ -26,6 +26,14 @@ static_assert(BRONZE_ABI_IC_SHAPE_OFFSET == 0, "word 0 of an entry is the cached
 static_assert(BRONZE_ABI_IC_SLOTWORD_OFFSET == 8, "word 1 of an entry is (depth << 32) | slot");
 static_assert(BRONZE_ABI_IC_EPOCH_OFFSET == 16, "word 2 of an entry is the fill epoch");
 
+// The fn-singleton table is i64 words for the same reason as the IC table: the
+// helper takes `uint64_t*` and the two field offsets are ABI constants.
+static constexpr unsigned kFnSlotWords = BRONZE_ABI_FNSLOT_SIZE / sizeof(uint64_t);
+static_assert(BRONZE_ABI_FNSLOT_SIZE % sizeof(uint64_t) == 0,
+              "the fn-singleton table is emitted as i64 words, so an entry must be whole ones");
+static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0, "word 0 of a slot is the code pointer");
+static_assert(BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8, "word 1 of a slot is the Value");
+
 void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
                        AbiGlobals& globals) {
     auto getOrDeclareFunc = [&](const char* name, llvm::FunctionType* fty) -> llvm::Function* {
@@ -79,21 +87,95 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #undef BRONZE_ABI_NOARGS
 }
 
-llvm::GlobalVariable* createIcTable(llvm::Module& llvmModule, llvm::LLVMContext& ctx,
-                                    uint32_t siteCount) {
-    if (siteCount == 0) return nullptr;
-    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-    llvm::ArrayType* tableTy =
-        llvm::ArrayType::get(i64Ty, static_cast<uint64_t>(siteCount) * kIcEntryWords);
-    // Internal linkage: the table belongs to this object file, and its
-    // address never crosses a module boundary — generated code passes entry
-    // pointers to the helpers and nothing else ever names it.
-    auto* table = new llvm::GlobalVariable(llvmModule, tableTy, /*isConstant=*/false,
-                                           llvm::GlobalValue::InternalLinkage,
-                                           llvm::ConstantAggregateZero::get(tableTy),
-                                           "__bronze_ic_table");
-    table->setAlignment(llvm::Align(8));
+namespace {
+
+// Internal linkage on every one of these: a table belongs to its object file
+// and its address never crosses a module boundary — generated code passes cell
+// pointers to the helpers and nothing else ever names it. It is also what lets
+// two compiled modules link into one image, which external linkage here would
+// turn into a duplicate-symbol error per table.
+llvm::GlobalVariable* createTable(llvm::Module& llvmModule, llvm::Type* ty,
+                                  llvm::Constant* init, const char* name, unsigned align) {
+    auto* table = new llvm::GlobalVariable(llvmModule, ty, /*isConstant=*/false,
+                                           llvm::GlobalValue::InternalLinkage, init, name);
+    table->setAlignment(llvm::Align(align));
     return table;
+}
+
+// One module-local global-cache slot per DISTINCT key a `global.get` names,
+// rather than one per key in the pool. The pool carries every property name in
+// the program and a program names a couple of dozen globals, so indexing the
+// cache by key would put thousands of permanently-undefined cells in the
+// object's data and walk every one of them at every collection.
+//
+// Assigned in IL order — functions, then blocks, then instructions — so the
+// table's layout is a function of the module and nothing else.
+std::vector<uint32_t> assignGlobalCacheSlots(const il::Module& module, uint32_t& countOut) {
+    std::vector<uint32_t> slotOf(module.keyConstants.size(), ModuleTables::kNoGlobalCacheSlot);
+    uint32_t next = 0;
+    for (const auto& func : module.functions) {
+        for (const auto& block : func.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op != il::Op::GlobalGet) continue;
+                if (inst.keyIndex >= slotOf.size()) continue;
+                if (slotOf[inst.keyIndex] != ModuleTables::kNoGlobalCacheSlot) continue;
+                slotOf[inst.keyIndex] = next++;
+            }
+        }
+    }
+    countOut = next;
+    return slotOf;
+}
+
+}  // namespace
+
+ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx,
+                                const il::Module& module) {
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+    ModuleTables tables;
+    tables.keyCount = static_cast<uint32_t>(module.keyConstants.size());
+    tables.fnSlotCount = static_cast<uint32_t>(module.functions.size());
+    tables.globalCacheSlotOf = assignGlobalCacheSlots(module, tables.globalCacheCount);
+
+    if (module.icSiteCount > 0) {
+        llvm::ArrayType* ty = llvm::ArrayType::get(
+            i64Ty, static_cast<uint64_t>(module.icSiteCount) * kIcEntryWords);
+        tables.icTable = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
+                                     "__bronze_ic_table", 8);
+    }
+
+    if (tables.keyCount > 0) {
+        llvm::ArrayType* ty = llvm::ArrayType::get(i32Ty, tables.keyCount);
+        tables.keyMap = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
+                                    "__bronze_key_map", 4);
+    }
+
+    if (tables.globalCacheCount > 0) {
+        // Undefined and not zero: `undefined` is what the fast path reads as
+        // "unfilled", and zero is the double 0.0. A zeroed cache would answer
+        // every global with 0 rather than falling into the helper.
+        llvm::ArrayType* ty = llvm::ArrayType::get(i64Ty, tables.globalCacheCount);
+        std::vector<uint64_t> undef(tables.globalCacheCount, BRONZE_ABI_UNDEFINED_BITS);
+        tables.globalCache =
+            createTable(llvmModule, ty, llvm::ConstantDataArray::get(ctx, undef),
+                        "__bronze_global_cache", 8);
+    }
+
+    // Undefined for the same reason the global cache is: zero is the double
+    // 0.0, and the module env is read before it can be proven set.
+    tables.moduleEnv = createTable(llvmModule, i64Ty,
+                                   llvm::ConstantInt::get(i64Ty, BRONZE_ABI_UNDEFINED_BITS),
+                                   "__bronze_module_env", 8);
+
+    if (tables.fnSlotCount > 0) {
+        llvm::ArrayType* ty = llvm::ArrayType::get(
+            i64Ty, static_cast<uint64_t>(tables.fnSlotCount) * kFnSlotWords);
+        tables.fnSlots = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
+                                     "__bronze_fn_slots", 8);
+    }
+    return tables;
 }
 
 llvm::Value* icEntryPtr(llvm::IRBuilder<>& builder, llvm::GlobalVariable* icTable,
@@ -101,6 +183,34 @@ llvm::Value* icEntryPtr(llvm::IRBuilder<>& builder, llvm::GlobalVariable* icTabl
     return builder.CreateConstInBoundsGEP2_32(icTable->getValueType(), icTable, 0,
                                               icIndex * kIcEntryWords,
                                               "ic" + std::to_string(icIndex));
+}
+
+llvm::Value* emitKeyId(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                       uint32_t keyIndex) {
+    if (keyIndex == BRONZE_ABI_FN_NAME_NONE || !tables.keyMap || keyIndex >= tables.keyCount) {
+        return builder.getInt32(keyIndex);
+    }
+    llvm::Value* cell = builder.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(),
+                                                           tables.keyMap, 0, keyIndex);
+    return builder.CreateAlignedLoad(llvm::Type::getInt32Ty(builder.getContext()), cell,
+                                     llvm::Align(4), "key" + std::to_string(keyIndex));
+}
+
+llvm::Value* globalCacheCellPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                                uint32_t keyIndex) {
+    if (!tables.globalCache || keyIndex >= tables.globalCacheSlotOf.size()) return nullptr;
+    const uint32_t slot = tables.globalCacheSlotOf[keyIndex];
+    if (slot == ModuleTables::kNoGlobalCacheSlot) return nullptr;
+    return builder.CreateConstInBoundsGEP2_32(tables.globalCache->getValueType(),
+                                              tables.globalCache, 0, slot,
+                                              "gbl" + std::to_string(slot));
+}
+
+llvm::Value* fnSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables, uint32_t slot) {
+    if (!tables.fnSlots || slot >= tables.fnSlotCount) return nullptr;
+    return builder.CreateConstInBoundsGEP2_32(tables.fnSlots->getValueType(), tables.fnSlots, 0,
+                                              slot * kFnSlotWords,
+                                              "fnslot" + std::to_string(slot));
 }
 
 }  // namespace bronze::codegen_llvm

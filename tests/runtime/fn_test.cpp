@@ -71,8 +71,7 @@ TEST_CASE("a function object's name and length are separate from its call arity"
 
     // A real name key. The key registry is what makes the string immortal and
     // non-moving, which is why the header may hold a raw pointer to it.
-    const uint32_t nameKey = 4001;
-    bronze_register_key_string(nameKey, "adder");
+    const uint32_t nameKey = bronze_register_key_string("adder");
     Rooted<FunctionHeader*> named(FunctionHeader::create(heap, dummyAdd, Value::fromUndefined(), 2));
     runtime::rtSetFunctionNameAndLength(named.get(), nameKey, 1);
     REQUIRE(named.get()->name != nullptr);

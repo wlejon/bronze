@@ -1,0 +1,12 @@
+A count=0 items=alpha secret=a0
+A Shape(first) alphaOnly=true betaOnly=undefined
+B count=41 items=alpha,beta
+B alphaOnly=true betaOnly=true
+B Shape(circle)+r3 isShape=true
+B secret=b1 bump=42
+B caught(TypeError: thrown in B)
+B ok(no throw)
+B acc=372 count=50
+host secret=b1
+host bump=51
+host items.length=2

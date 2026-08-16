@@ -65,8 +65,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // text the key index names. A fresh object per evaluation is
             // unobservable — a BigInt is immutable and `===` compares value.
             if (inst.result != il::kNoValue) {
-                values_[inst.result] = builder_.CreateCall(abi.bronze_bigint_literal,
-                                                           {builder_.getInt32(inst.keyIndex)});
+                values_[inst.result] = builder_.CreateCall(
+                    abi.bronze_bigint_literal, {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             }
             return true;
 
@@ -90,7 +90,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // the string itself is a compile-time constant.
             if (inst.boxType == il::Type::Str) {
                 values_[inst.result] =
-                    builder_.CreateCall(abi.bronze_box_str_key, {builder_.getInt32(inst.keyIndex)});
+                    builder_.CreateCall(abi.bronze_box_str_key,
+                                        {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
                 return true;
             }
             if (!needs(1, true, "Invalid operands for Box")) return false;
@@ -320,7 +321,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* value = operand(inst, 1, what);
             if (!target || !value) return false;
             callWith(abi.bronze_method_def,
-                     {target, builder_.getInt32(inst.keyIndex), value});
+                     {target, emitKeyId(builder_, shared_.tables, inst.keyIndex), value});
             return true;
         }
         case il::Op::MethodDefComputed: {
@@ -341,7 +342,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* setter = operand(inst, 2, what);
             if (!target || !getter || !setter) return false;
             callWith(abi.bronze_accessor_def,
-                     {target, builder_.getInt32(inst.keyIndex), getter, setter,
+                     {target, emitKeyId(builder_, shared_.tables, inst.keyIndex), getter, setter,
                       builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
@@ -368,7 +369,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         // operand.
         case il::Op::ImportMeta:
             if (inst.result != il::kNoValue) {
-                callWith(abi.bronze_import_meta, {builder_.getInt32(inst.keyIndex)});
+                callWith(abi.bronze_import_meta,
+                         {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             }
             return true;
         case il::Op::SuperGet: {
@@ -378,7 +380,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* thisArg = operand(inst, 1, what);
             if (!proto || !thisArg) return false;
             callWith(abi.bronze_super_get,
-                     {proto, builder_.getInt32(inst.keyIndex), thisArg});
+                     {proto, emitKeyId(builder_, shared_.tables, inst.keyIndex), thisArg});
             return true;
         }
         case il::Op::SuperSet: {
@@ -389,7 +391,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* val = operand(inst, 2, what);
             if (!proto || !thisArg || !val) return false;
             builder_.CreateCall(abi.bronze_super_set,
-                                {proto, builder_.getInt32(inst.keyIndex), thisArg, val});
+                                {proto, emitKeyId(builder_, shared_.tables, inst.keyIndex),
+                                 thisArg, val});
             return true;
         }
         case il::Op::PropDelete: {
@@ -397,7 +400,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* target = operand(inst, 0, "Undefined operand in PropDelete instruction");
             if (!target) return false;
             callWith(abi.bronze_prop_delete,
-                     {target, builder_.getInt32(inst.keyIndex), builder_.getInt1(inst.immI32 != 0)});
+                     {target, emitKeyId(builder_, shared_.tables, inst.keyIndex),
+                      builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::ElemDelete: {
@@ -415,7 +419,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 // cell — read inline off the published rooted table; the
                 // helper keeps every fill and every fallthrough.
                 values_[inst.result] =
-                    emitGlobalGetCached(builder_, abi, shared_.globals, inst.keyIndex);
+                    emitGlobalGetCached(builder_, abi, shared_.tables, inst.keyIndex);
             }
             return true;
         // The result is `undefined` and nothing reads it: the exception check
@@ -423,7 +427,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         // never reaches a use. It is still materialized, because a value id
         // with no definition is exactly what the verifier exists to catch.
         case il::Op::RefError:
-            callWith(abi.bronze_reference_error, {builder_.getInt32(inst.keyIndex)});
+            callWith(abi.bronze_reference_error,
+                     {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             return true;
         // Same shape as ref.error above and for the same reason: the helper
         // always raises, the exception check after it always fires, and the
@@ -604,7 +609,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_create_function,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32),
                       builder_.getInt32(created.requiredArgs),
-                      builder_.getInt32(created.nameKeyIndex), env});
+                      emitKeyId(builder_, shared_.tables, created.nameKeyIndex), env});
             if (created.isGenerator && inst.result != il::kNoValue) {
                 builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
             }
@@ -625,7 +630,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // every mention of one declaration, which is exactly what a
             // singleton's cache line wants to be keyed by.
             values_[inst.result] = emitFunctionSingletonCached(
-                builder_, abi, shared_.globals, shared_.wrappers[inst.calleeIndex], arity,
+                builder_, abi, shared_.tables, shared_.wrappers[inst.calleeIndex], arity,
                 target.requiredArgs, target.nameKeyIndex, inst.calleeIndex);
             if (target.isGenerator && inst.result != il::kNoValue) {
                 builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
@@ -645,16 +650,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, true, "Invalid operands for EnvGet")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGet");
             if (!env) return false;
-            values_[inst.result] = emitEnvGet(builder_, abi, env, inst.envDepth, inst.envIndex,
-                                              /*tdz=*/false, inst.keyIndex);
+            values_[inst.result] = emitEnvGet(builder_, abi, shared_.tables, env, inst.envDepth,
+                                              inst.envIndex, /*tdz=*/false, inst.keyIndex);
             return true;
         }
         case il::Op::EnvGetTdz: {
             if (!needs(1, true, "Invalid operands for EnvGetTdz")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGetTdz");
             if (!env) return false;
-            values_[inst.result] = emitEnvGet(builder_, abi, env, inst.envDepth, inst.envIndex,
-                                              /*tdz=*/true, inst.keyIndex);
+            values_[inst.result] = emitEnvGet(builder_, abi, shared_.tables, env, inst.envDepth,
+                                              inst.envIndex, /*tdz=*/true, inst.keyIndex);
             return true;
         }
         // The marker goes in as a plain constant: it has no helper of its own,
@@ -678,15 +683,22 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
+        // A store and a load of the module's own cell, not a helper call: the
+        // record belongs to THIS module (llvm_abi.h ModuleTables::moduleEnv),
+        // so there is nothing for a helper to arbitrate and nothing a second
+        // module in the process can overwrite.
         case il::Op::ModuleEnvSet: {
             if (!needs(1, false, "Invalid operands for ModuleEnvSet")) return false;
             llvm::Value* env = operand(inst, 0, "Undefined environment in ModuleEnvSet");
             if (!env) return false;
-            builder_.CreateCall(abi.bronze_module_env_set, {env});
+            builder_.CreateAlignedStore(env, shared_.tables.moduleEnv, llvm::Align(8));
             return true;
         }
         case il::Op::ModuleEnvGet:
-            if (inst.result != il::kNoValue) callWith(abi.bronze_module_env_get, {});
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = builder_.CreateAlignedLoad(
+                    i64Ty_, shared_.tables.moduleEnv, llvm::Align(8), "module.env");
+            }
             return true;
 
         case il::Op::Print:
@@ -733,7 +745,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
             values_[inst.result] =
-                emitPropGet(builder_, abi, shared_.globals, shared_.icTable, obj, inst.keyIndex,
+                emitPropGet(builder_, abi, shared_.globals, shared_.tables, obj, inst.keyIndex,
                             inst.icIndex, inst.icMonomorphic, keyStr);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
@@ -746,7 +758,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
-            emitPropSet(builder_, abi, shared_.globals, shared_.icTable, obj, inst.keyIndex, val,
+            emitPropSet(builder_, abi, shared_.globals, shared_.tables, obj, inst.keyIndex, val,
                         inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, keyStr);
             return true;
         }

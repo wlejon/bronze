@@ -25,11 +25,11 @@
 namespace bronze::codegen_llvm {
 
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
-                 llvm::GlobalVariable* icTable, llvm::Value* objBits, uint32_t keyIndex,
+                 const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
                  llvm::Value* valBits, uint32_t icIndex, bool strict, bool monomorphic,
                  std::string_view keyStr) {
     (void)monomorphic;
-    llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
+    llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
@@ -453,7 +453,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     // 5. Fallback call
     builder.SetInsertPoint(slowBb);
     builder.CreateCall(abi.bronze_prop_set,
-                       {objBits, builder.getInt32(keyIndex), valBits, entry,
+                       {objBits, emitKeyId(builder, tables, keyIndex), valBits, entry,
                         builder.getInt1(strict)});
     builder.CreateBr(doneBb);
 

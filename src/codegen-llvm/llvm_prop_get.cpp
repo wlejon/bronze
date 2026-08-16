@@ -27,16 +27,17 @@ namespace bronze::codegen_llvm {
 
 static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                     llvm::Value* entry, llvm::Value* objBits,
-                                    uint32_t keyIndex) {
+                                    const ModuleTables& tables, uint32_t keyIndex) {
     return builder.CreateCall(abi.bronze_prop_get,
-                              {objBits, builder.getInt32(keyIndex), entry}, "prop.slow");
+                              {objBits, emitKeyId(builder, tables, keyIndex), entry},
+                              "prop.slow");
 }
 
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
-                         llvm::GlobalVariable* icTable, llvm::Value* objBits, uint32_t keyIndex,
+                         const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
                          uint32_t icIndex, bool monomorphic, std::string_view keyStr) {
     (void)monomorphic;
-    llvm::Value* entry = icEntryPtr(builder, icTable, icIndex);
+    llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
@@ -532,7 +533,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     // 5. Fallback call
     builder.SetInsertPoint(slowBb);
-    llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, keyIndex);
+    llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, tables, keyIndex);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);

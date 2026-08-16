@@ -61,7 +61,8 @@ namespace {
 // types are the signature, so a direct call passes an f64 in a register rather
 // than boxing it.
 bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
-                    std::vector<llvm::Function*>& out, DiagnosticSink& diags) {
+                    const std::string& entrySymbol, std::vector<llvm::Function*>& out,
+                    DiagnosticSink& diags) {
     out.reserve(module.functions.size());
     for (const auto& func : module.functions) {
         llvm::Type* retTy = mapILType(func.returnType, ctx);
@@ -79,14 +80,16 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
             }
             paramTys.push_back(pTy);
         }
-        // `main` is the runtime's entry point by name, so the IL function of
-        // that name gets the runtime's spelling — and it is the ONLY function
+        // `main` is the program's entry point by name, so the IL function of
+        // that name gets the caller's spelling — and it is the ONLY function
         // the object exports. A program is compiled whole into one object, so
         // every other function is internal; external linkage here handed a JS
         // function named `bind` to the system linker, where it collided with
-        // ws2_32's export of the same name.
+        // ws2_32's export of the same name. That internal-by-default rule is
+        // also what lets two compiled modules link into one image: the entry
+        // and the ABI stamp are the only two names that have to be distinct.
         const bool isEntry = (func.name == "main");
-        const std::string symbol = isEntry ? "bronze_main" : func.name;
+        const std::string symbol = isEntry ? entrySymbol : func.name;
         out.push_back(llvm::Function::Create(llvm::FunctionType::get(retTy, paramTys, false),
                                              isEntry ? llvm::Function::ExternalLinkage
                                                      : llvm::Function::InternalLinkage,
@@ -163,6 +166,7 @@ llvm::Value* emitWrapperArrayCall(llvm::IRBuilder<>& builder, llvm::LLVMContext&
 
 void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
                       const AbiFns& abi, const AbiGlobals& globals,
+                      const std::string& entrySymbol,
                       const std::vector<llvm::Function*>& entries,
                       std::vector<llvm::Function*>& out) {
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -173,7 +177,7 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
     out.resize(module.functions.size());
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& func = module.functions[i];
-        std::string name = "__wrapper_" + (func.name == "main" ? "bronze_main" : func.name);
+        std::string name = "__wrapper_" + (func.name == "main" ? entrySymbol : func.name);
         llvm::Function* wrapper = llvm::Function::Create(
             wrapperTy, llvm::Function::InternalLinkage, name, &llvmModule);
         out[i] = wrapper;
@@ -410,25 +414,34 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     // BUILDS"). Data in the object rather than metadata, so an object from
     // before the stamp existed fails the LINK on this very name instead of
     // running unchecked.
+    //
+    // Named after the entry symbol, because the stamp is the object's SECOND
+    // exported name and two compiled modules in one image must not collide on
+    // it. The default entry keeps the historical spelling, which is the name
+    // src/rt/rt.cpp and embed_run.cpp link against — and those two entries are
+    // only ever handed the module they run as `bronze_main`.
+    const std::string stampSymbol = entrySymbol_ == "bronze_main"
+                                        ? std::string("bronze_object_abi_fingerprint")
+                                        : entrySymbol_ + "_abi_fingerprint";
     new llvm::GlobalVariable(
         *llvmModule, llvm::Type::getInt32Ty(ctx), /*isConstant=*/true,
         llvm::GlobalValue::ExternalLinkage,
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), BRONZE_ABI_FINGERPRINT),
-        "bronze_object_abi_fingerprint");
+        stampSymbol);
 
-    // The module's inline-cache table, one entry per property site lowering
-    // numbered. It is data in THIS object file, which is what gives every site
-    // a stable address and lets the check be inlined; the IL verifier has
-    // already checked every icIndex against the count, so the table cannot be
-    // indexed out of range.
-    llvm::GlobalVariable* icTable =
-        codegen_llvm::createIcTable(*llvmModule, ctx, module.icSiteCount);
+    // The tables this object file owns: the inline-cache sites, the key remap,
+    // and the module-local global and function-singleton caches. All are data
+    // in THIS object, which is what gives every site a stable address and lets
+    // the checks be inlined; the IL verifier has already checked every icIndex
+    // against the count, so the table cannot be indexed out of range.
+    const codegen_llvm::ModuleTables tables =
+        codegen_llvm::createModuleTables(*llvmModule, ctx, module);
 
     std::vector<llvm::Function*> entries;
-    if (!declareEntries(module, *llvmModule, ctx, entries, diags)) return false;
+    if (!declareEntries(module, *llvmModule, ctx, entrySymbol_, entries, diags)) return false;
 
     std::vector<llvm::Function*> wrappers;
-    emitCallWrappers(module, *llvmModule, ctx, abi, abiGlobals, entries, wrappers);
+    emitCallWrappers(module, *llvmModule, ctx, abi, abiGlobals, entrySymbol_, entries, wrappers);
 
     // One `new.target` anywhere disables the inline `new` fast path for the
     // whole module: the fast path skips the NewTargetScope push, and
@@ -445,7 +458,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     }
 
     const FunctionEmitter::Context shared{ctx,      module,   abi,      abiGlobals,
-                                          icTable,  entries,  wrappers, diags,
+                                          tables,   entries,  wrappers, diags,
                                           moduleHasNewTarget};
     for (size_t i = 0; i < module.functions.size(); ++i) {
         FunctionEmitter emitter(shared, module.functions[i], entries[i]);

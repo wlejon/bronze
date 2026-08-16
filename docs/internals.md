@@ -85,7 +85,7 @@ means inference is.
 
 ## Embedding
 
-Two flags exist for embedding a compiled program in a host process rather
+Three flags exist for embedding a compiled program in a host process rather
 than shipping it as an executable. `--emit-obj` stops `build` after object
 emission — `-o` names the object file, written exactly where given, and no
 linker runs; the host's build links it against bronze's runtime and the
@@ -93,8 +93,23 @@ host's own code. `--host-globals <path>` names a manifest (one identifier
 per line, `#` comments) of globals the host promises to register with the
 runtime before the program runs: each joins the provided-globals set, so a
 read lowers to the same `global.get` a builtin's does instead of the
-unresolved-name warning and runtime ReferenceError. Both are lowering- and
-link-level facts, so `--no-infer` changes nothing about either.
+unresolved-name warning and runtime ReferenceError. `--entry-symbol <name>` names the object's exported entry point,
+which defaults to `bronze_main`. All three are lowering- and link-level facts,
+so `--no-infer` changes nothing about any of them.
+
+An object exports exactly two symbols — its entry and its ABI stamp, which is
+named after the entry — and everything else it defines is internal. That is
+what lets a host link **more than one** compiled module into one image and
+enter them in turn. The runtime is shared, and what each module owns privately
+is its inline-cache table, its key remap, its global cache, its
+function-singleton slots and its module-environment cell; all of them are
+arrays in the module's own data, and the Value-holding ones are handed to the
+collector as root spans at module init. Property-key identity is the one thing
+that must be process-wide, so key registration INTERNS: two modules that both
+mention `position` are handed one id, and a module's own numbering survives
+only in its remap. `tests/two_module` is the worked example — two objects, two
+entry symbols, one runtime, with cross-module prototype chains, closures and
+exceptions pinned byte-for-byte.
 
 `src/embed` is the host-facing C++ API: run a compiled program in-process,
 register host globals, wrap native functions and objects, hold GC-safe

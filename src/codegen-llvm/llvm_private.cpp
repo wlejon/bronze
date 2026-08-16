@@ -37,11 +37,10 @@ bool FunctionEmitter::emitPrivateOp(const il::Instruction& inst) {
             llvm::Value* table = operand(inst, 0, what);
             llvm::Value* obj = operand(inst, 1, what);
             if (!table || !obj) return false;
+            llvm::Value* nameKey = emitKeyId(builder_, shared_.tables, inst.keyIndex);
             values_[inst.result] =
-                isGet ? builder_.CreateCall(abi.bronze_private_get,
-                                            {table, obj, builder_.getInt32(inst.keyIndex)})
-                      : builder_.CreateCall(abi.bronze_private_has,
-                                            {table, obj, builder_.getInt32(inst.keyIndex)});
+                isGet ? builder_.CreateCall(abi.bronze_private_get, {table, obj, nameKey})
+                      : builder_.CreateCall(abi.bronze_private_has, {table, obj, nameKey});
             return true;
         }
         case il::Op::PrivateAdd:
@@ -57,7 +56,8 @@ bool FunctionEmitter::emitPrivateOp(const il::Instruction& inst) {
                 builder_.CreateCall(abi.bronze_private_add, {table, obj, val});
             } else {
                 builder_.CreateCall(abi.bronze_private_set,
-                                    {table, obj, val, builder_.getInt32(inst.keyIndex)});
+                                    {table, obj, val,
+                                     emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             }
             return true;
         }
@@ -67,7 +67,7 @@ bool FunctionEmitter::emitPrivateOp(const il::Instruction& inst) {
         case il::Op::PrivateMisuse: {
             llvm::Value* res = builder_.CreateCall(
                 abi.bronze_private_misuse,
-                {builder_.getInt32(inst.keyIndex),
+                {emitKeyId(builder_, shared_.tables, inst.keyIndex),
                  builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
             if (inst.result != il::kNoValue) values_[inst.result] = res;
             return true;

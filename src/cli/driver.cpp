@@ -122,6 +122,12 @@ constexpr const char* kUsage =
     "                                      statistics per module to stdout (property\n"
     "                                      accesses, calls, and element operations\n"
     "                                      native vs dynamic, with top bail reasons).\n"
+    "  --entry-symbol <name>               Name the object exported entry point\n"
+    "                                      (default bronze_main). The entry and the\n"
+    "                                      ABI stamp are the only two symbols an\n"
+    "                                      object exports, so distinct names here\n"
+    "                                      are what let a host link more than one\n"
+    "                                      compiled module into one image.\n"
     "  --emit-obj                          Stop after object emission: -o names the\n"
     "                                      object file, written exactly where given,\n"
     "                                      and no linker runs. The embedding seam —\n"
@@ -597,7 +603,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
 int runBuild(const std::string& sourcePath, const std::string& outputPath, std::string* errOut,
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
              bool inferStats, std::string* statsOut,
-             const std::vector<modules::ModuleRoot>& moduleRoots) {
+             const std::vector<modules::ModuleRoot>& moduleRoots,
+             const std::string& entrySymbol) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -608,6 +615,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)inferStats;
     (void)statsOut;
     (void)moduleRoots;
+    (void)entrySymbol;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -685,6 +693,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // object is destined for embedding.
     if (emitObj) {
         LLVMBackend objBackend;
+        if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -700,6 +709,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     std::filesystem::path tempObj = uniqueTempObjPath(sourcePath);
 
     LLVMBackend backend;
+    if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);
     timer.mark("codegen");
     if (!emitted) {
@@ -842,6 +852,7 @@ int runDriver(int argc, char** argv) {
         std::string sourcePath;
         std::string outputPath = "a.exe";
         std::string hostGlobalsPath;
+        std::string entrySymbol;
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         bool timings = false;
@@ -858,6 +869,17 @@ int runDriver(int argc, char** argv) {
                 inferStats = true;
             } else if (arg == "--emit-obj") {
                 emitObj = true;
+            } else if (arg == "--entry-symbol") {
+                if (i + 1 < argc) {
+                    entrySymbol = argv[++i];
+                } else {
+                    return fail("error: missing argument for --entry-symbol\n");
+                }
+            } else if (arg.rfind("--entry-symbol=", 0) == 0) {
+                entrySymbol = arg.substr(15);
+                if (entrySymbol.empty()) {
+                    return fail("error: missing argument for --entry-symbol\n");
+                }
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -893,7 +915,7 @@ int runDriver(int argc, char** argv) {
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath, inferStats, nullptr, moduleRoots);
+                        hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol);
     }
 
     return fail(kUsage);

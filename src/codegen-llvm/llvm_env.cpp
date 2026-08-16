@@ -108,8 +108,9 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
 
 }  // namespace
 
-llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                        uint32_t depth, uint32_t index, bool tdz, uint32_t keyIndex) {
+llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                        const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
+                        uint32_t index, bool tdz, uint32_t keyIndex) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -135,7 +136,7 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Val
     llvm::Value* slowVal =
         tdz ? builder.CreateCall(abi.bronze_env_get_tdz,
                                  {envBits, builder.getInt32(depth), builder.getInt32(index),
-                                  builder.getInt32(keyIndex)})
+                                  emitKeyId(builder, tables, keyIndex)})
             : builder.CreateCall(abi.bronze_env_get,
                                  {envBits, builder.getInt32(depth), builder.getInt32(index)});
     builder.CreateBr(doneBb);

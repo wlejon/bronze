@@ -271,15 +271,49 @@ void FunctionEmitter::createBlockPhis() {
     }
 }
 
-// Key strings are registered once, from the entry block of `main`, because the
-// property path indexes them by the number lowering assigned.
-void FunctionEmitter::emitKeyRegistration() {
+// Everything this object file has to tell the runtime before any of its code
+// runs, emitted into the top of `main`.
+//
+// The span registrations come first: they hand the collector the module's own
+// Value-holding data — its global cache, its module-environment cell, and its
+// function-singleton slots — and the key registration below is the first thing
+// that can allocate, so registering after it would leave one collection's worth
+// of cells untraced. (They are all empty at that point, so nothing would have
+// been lost today; the ordering is what keeps that from being load-bearing.)
+//
+// Key registration then INTERNS each string and records the process-wide id in
+// the module's remap. The module's own numbering stays 0..n-1 and stays an
+// immediate everywhere; only the value handed to a helper is the interned id.
+// Two modules that both mention "position" therefore agree on the property, and
+// two modules that number the same string differently no longer collide.
+void FunctionEmitter::emitModuleInit() {
     if (func_.name != "main" || blocks_.empty()) return;
+    const ModuleTables& tables = shared_.tables;
     builder_.SetInsertPoint(blocks_[0]);
+
+    if (tables.globalCache) {
+        builder_.CreateCall(shared_.abi.bronze_register_value_cells,
+                            {builder_.CreateConstInBoundsGEP2_32(
+                                 tables.globalCache->getValueType(), tables.globalCache, 0, 0),
+                             builder_.getInt64(tables.globalCacheCount)});
+    }
+    builder_.CreateCall(shared_.abi.bronze_register_value_cells,
+                        {tables.moduleEnv, builder_.getInt64(1)});
+    if (tables.fnSlots) {
+        builder_.CreateCall(shared_.abi.bronze_register_fn_slots,
+                            {builder_.CreateConstInBoundsGEP2_32(
+                                 tables.fnSlots->getValueType(), tables.fnSlots, 0, 0),
+                             builder_.getInt64(tables.fnSlotCount)});
+    }
     for (size_t k = 0; k < shared_.module.keyConstants.size(); ++k) {
         llvm::Value* text = builder_.CreateGlobalString(shared_.module.keyConstants[k]);
-        builder_.CreateCall(shared_.abi.bronze_register_key_string,
-                            {builder_.getInt32(static_cast<uint32_t>(k)), text});
+        llvm::Value* id =
+            builder_.CreateCall(shared_.abi.bronze_register_key_string, {text});
+        builder_.CreateAlignedStore(
+            id,
+            builder_.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(), tables.keyMap, 0,
+                                                static_cast<uint32_t>(k)),
+            llvm::Align(4));
     }
 }
 
@@ -300,7 +334,7 @@ bool FunctionEmitter::emit() {
     planRootFrame();
     emitPrologue();
     createBlockPhis();
-    emitKeyRegistration();
+    emitModuleInit();
 
     for (size_t bIdx = 0; bIdx < func_.blocks.size(); ++bIdx) {
         if (!emitBlock(bIdx)) return false;

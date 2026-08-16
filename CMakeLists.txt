@@ -114,5 +114,8 @@ endif()
 
 if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     add_subdirectory(tests/oracle)
+    # Compiles JS to objects and links two of them into one host, so it needs
+    # both the backend and the test registration — the same pair as the oracle.
+    add_subdirectory(tests/two_module)
 endif()
 

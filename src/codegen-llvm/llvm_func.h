@@ -32,7 +32,9 @@ public:
         const il::Module& module;
         const AbiFns& abi;
         const AbiGlobals& globals;
-        llvm::GlobalVariable* icTable;
+        // The tables this object file owns (llvm_abi.h): the IC sites, the key
+        // remap, and the two module-local caches.
+        const ModuleTables& tables;
         // Indexed by IL function index: the typed entry point, and the
         // uniform-convention wrapper that adapts to it.
         const std::vector<llvm::Function*>& entries;
@@ -54,7 +56,7 @@ private:
     void planRootFrame();
     void emitPrologue();
     void createBlockPhis();
-    void emitKeyRegistration();
+    void emitModuleInit();
     bool emitBlock(size_t blockIndex);
     bool emitInstruction(const il::Instruction& inst);
 

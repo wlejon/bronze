@@ -1,8 +1,8 @@
 // The runtime's process-wide state: the heap, the non-moving arena, the root
-// shapes, the property-key registry, and the two caches whose entries are
-// heap Values and therefore need root sources. All of it lives in this one
-// translation unit so the collector's roots never depend on cross-TU static
-// initialization order (rt_state.h).
+// shapes, the property-key INTERN table, and the caches and module spans whose
+// entries are heap Values and therefore need root sources. All of it lives in
+// this one translation unit so the collector's roots never depend on cross-TU
+// static initialization order (rt_state.h).
 
 #include <string>
 #include <unordered_map>
@@ -147,6 +147,13 @@ static std::vector<std::string> g_keyStrings;
 // nothing on the path that reaches one.
 static std::vector<StringHeader*> g_keyHeaders;
 static std::vector<KeyInfo> g_keyInfos;
+// Text -> id, which is what makes the registry an INTERN table rather than an
+// array a module fills by index. Two modules that both mention "position" must
+// come out holding one id: shapes, inline caches and `Object.keys` all identify
+// a property by its key id, so the same string arriving as two ids would give
+// one object two indistinguishable properties. Nothing iterates this map, so
+// its ordering never reaches output.
+static std::unordered_map<std::string, uint32_t> g_keyIndex;
 static const std::string g_emptyKey;
 static const KeyInfo g_emptyKeyInfo{};
 
@@ -175,11 +182,10 @@ const KeyInfo& rtKeyInfo(uint32_t index) {
 static std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
 static std::unordered_map<void*, size_t> g_functionSingletonIndex;
 
-// The slot cache generated code reads inline: one {code, value} entry per
-// slot index the backend numbered (one per IL function). A CACHE and not the
-// authority — an entry answers only when its code word matches the mention's
-// own function pointer, so a second program in the process (the embed API)
-// colliding on a slot evicts and refills, never breaks identity.
+// One {code, value} entry of a module's fn-singleton table. The layout is the
+// ABI's, because generated code reads the two words inline; this declaration
+// exists so the runtime's writes and the collector's walk go through the same
+// description the fast path does.
 struct FnSingletonSlot {
     bronze_fn_code code{nullptr};
     Value value{Value::fromUndefined()};
@@ -187,46 +193,26 @@ struct FnSingletonSlot {
 static_assert(sizeof(FnSingletonSlot) == BRONZE_ABI_FNSLOT_SIZE);
 static_assert(offsetof(FnSingletonSlot, code) == BRONZE_ABI_FNSLOT_CODE_OFFSET);
 static_assert(offsetof(FnSingletonSlot, value) == BRONZE_ABI_FNSLOT_VALUE_OFFSET);
-static std::vector<FnSingletonSlot> g_fnSingletonSlots;
-
-// The free identifiers lowering is allowed to resolve, cached per key index:
-// every mention of `Math` in the source is one lookup, including one inside a
-// loop, so a string compare per reference is not a thing to leave in a hot
-// path.
-static std::vector<Value> g_globalCache;
-
-// The published views of the two tables above, for the inline fast paths.
-// Republished after every resize; the CELLS need no republication, because
-// the collector forwards them in place through the root source below.
-extern "C" {
-uint64_t* bronze_global_cache_tbl = nullptr;
-uint64_t bronze_global_cache_len = 0;
-uint64_t* bronze_fn_singleton_tbl = nullptr;
-uint64_t bronze_fn_singleton_len = 0;
-}
 
 static_assert(sizeof(Value) == sizeof(uint64_t),
-              "the published cache tables are read as raw u64 cells");
+              "module cache spans are registered as raw u64 cells");
 
-static void publishGlobalCache() {
-    bronze_global_cache_tbl = reinterpret_cast<uint64_t*>(g_globalCache.data());
-    bronze_global_cache_len = g_globalCache.size();
-}
-
-static void publishFnSingletonSlots() {
-    bronze_fn_singleton_tbl = reinterpret_cast<uint64_t*>(g_fnSingletonSlots.data());
-    bronze_fn_singleton_len = g_fnSingletonSlots.size();
-}
-
-// The module scope's environment record. The top level runs exactly once, so
-// this scope has exactly one activation and its record is a singleton — which
-// is what lets a top-level function declaration reach module-level
-// `let`/`const` while staying a direct-call target, instead of being handed the
-// record through a calling convention it does not have.
+// The global cache and the fn-singleton slots are arrays in each MODULE's own
+// data, and a module hands the runtime its two spans at init. The runtime holds
+// only the spans, because the only thing it needs from them is to trace the
+// Values they hold: the collector moves objects, so a cell holding pre-move
+// bits after a collection is the whole failure these roots exist to prevent.
 //
-// `main` publishes it before any statement runs; the module functions that
-// need it load it at entry.
-static Value g_moduleEnv = Value::fromUndefined();
+// A span is never removed. There is no unload — a compiled module's code and
+// data live for the process — so an unregister would be a way to hand the
+// collector a dangling span and nothing else.
+template <typename Cell>
+struct ModuleSpan {
+    Cell* cells;
+    uint64_t count;
+};
+static std::vector<ModuleSpan<Value>> g_moduleValueCells;
+static std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
 
 // Globals an embedding host registered (host_globals.h). A vector of pairs
 // rather than a map: registration happens a handful of times at host startup,
@@ -234,19 +220,31 @@ static Value g_moduleEnv = Value::fromUndefined();
 // builtin ladder did not answer.
 static std::vector<std::pair<std::string, Value>> g_hostGlobals;
 
-// All four hold heap Values, so all four are root SOURCES rather than fixed
-// slots: the objects live in the moving heap and cached raw bits would go stale
-// at the first collection. The module environment is the one whose absence here
-// would be invisible until a collection ran with a closure alive over it, which
-// is exactly what oracle-gc-stress forces at every allocation.
+// All of these hold heap Values, so all of them are root SOURCES rather than
+// fixed slots: the objects live in the moving heap and cached raw bits would go
+// stale at the first collection.
+//
+// The two module-span walks are what make a compiled module's own tables real
+// roots — its global cache, its module-environment cell, and its
+// function-singleton slots. Their absence would be invisible until a collection
+// ran with a closure alive over one, which is exactly what oracle-gc-stress
+// forces at every allocation. A fn slot whose code word is null was never
+// filled, and its value word is whatever the module's .bss started as rather
+// than a Value — so the code word, not the value, is what says an entry is
+// worth tracing.
 static const bool g_valueCachesRegistered = [] {
     g_heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
-        for (FnSingletonSlot& slot : g_fnSingletonSlots) visit(slot.value);
-        for (Value& v : g_globalCache) visit(v);
+        for (const auto& span : g_moduleFnSlots) {
+            for (uint64_t i = 0; i < span.count; ++i) {
+                if (span.cells[i].code) visit(span.cells[i].value);
+            }
+        }
+        for (const auto& span : g_moduleValueCells) {
+            for (uint64_t i = 0; i < span.count; ++i) visit(span.cells[i]);
+        }
         for (auto& entry : g_hostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
-        visit(g_moduleEnv);
     });
     return true;
 }();
@@ -285,12 +283,18 @@ void rtSetFunctionNameAndLength(FunctionHeader* fn, uint32_t nameKey, uint32_t l
 
 extern "C" {
 
-void bronze_module_env_set(uint64_t envBits) { g_moduleEnv = Value(envBits); }
+void bronze_register_value_cells(uint64_t* cells, uint64_t count) {
+    if (!cells || count == 0) return;
+    g_moduleValueCells.push_back({reinterpret_cast<Value*>(cells), count});
+}
 
-uint64_t bronze_module_env_get() { return g_moduleEnv.rawBits(); }
+void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
+    if (!cells || count == 0) return;
+    g_moduleFnSlots.push_back({reinterpret_cast<FnSingletonSlot*>(cells), count});
+}
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
-                                   uint32_t nameKey, uint32_t slot) {
+                                   uint32_t nameKey, uint64_t* slotCell) {
     recordHelperCall("bronze_function_singleton");
     // The by-code-pointer map is the authority; it replaced a linear scan
     // that every native builtin ever interned lengthened for every mention of
@@ -309,14 +313,11 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         g_functionSingletonIndex.emplace(reinterpret_cast<void*>(code),
                                          g_functionSingletons.size() - 1);
     }
-    // Fill the slot cache so the NEXT mention at this slot needs no call at
-    // all. The runtime's own native interning has no slot to fill.
-    if (slot != BRONZE_ABI_FN_SLOT_NONE) {
-        if (slot >= g_fnSingletonSlots.size()) {
-            g_fnSingletonSlots.resize(slot + 1);
-            publishFnSingletonSlots();
-        }
-        g_fnSingletonSlots[slot] = FnSingletonSlot{code, result};
+    // Fill the calling module's slot so the NEXT mention at this slot needs no
+    // call at all. The runtime's own native interning passes null: it has no
+    // module, and the by-code-pointer map above already answered.
+    if (slotCell) {
+        *reinterpret_cast<FnSingletonSlot*>(slotCell) = FnSingletonSlot{code, result};
     }
     return result.rawBits();
 }
@@ -331,7 +332,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 }  // extern "C"
 
 // The builtin half of global resolution, name in and value out, with no
-// cache: `bronze_global_get` caches by key index, and `rtGlobalThisObject`
+// cache: `bronze_global_get` fills the calling module's cell, and `rtGlobalThisObject`
 // walks this same ladder to give the global object real properties — two
 // callers, one list, so `Math` and `globalThis.Math` cannot drift.
 bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
@@ -381,11 +382,8 @@ const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries() { return
 
 extern "C" {
 
-uint64_t bronze_global_get(uint32_t keyIndex) {
+uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     recordPropCall("bronze_global_get", keyIndex, nullptr);
-    if (keyIndex < g_globalCache.size() && !g_globalCache[keyIndex].isUndefined()) {
-        return g_globalCache[keyIndex].rawBits();
-    }
     const std::string& keyStr = rtKeyString(keyIndex);
     Value resolved = Value::fromUndefined();
     if (!rtResolveBuiltinGlobal(keyStr, resolved)) {
@@ -411,21 +409,24 @@ uint64_t bronze_global_get(uint32_t keyIndex) {
         }
         fatal(("internal: no global named " + keyStr).c_str());
     }
-    if (keyIndex >= g_globalCache.size()) {
-        g_globalCache.resize(keyIndex + 1, Value::fromUndefined());
-        publishGlobalCache();
-    }
-    g_globalCache[keyIndex] = resolved;
+    // Only a BUILTIN reaches here, and only a builtin is ever written back: the
+    // two fallthroughs above returned directly, which is what keeps their
+    // scan-per-read semantics. The cell belongs to the calling module; the
+    // runtime's own callers pass none.
+    if (cacheCell) *cacheCell = resolved.rawBits();
     return resolved.rawBits();
 }
 
-void bronze_register_key_string(uint32_t index, const char* str) {
-    if (index >= g_keyStrings.size()) {
-        g_keyStrings.resize(index + 1);
-        g_keyHeaders.resize(index + 1, nullptr);
-        g_keyInfos.resize(index + 1);
-    }
-    g_keyStrings[index] = str ? str : "";
+uint32_t bronze_register_key_string(const char* str) {
+    const std::string text = str ? str : "";
+    if (auto it = g_keyIndex.find(text); it != g_keyIndex.end()) return it->second;
+
+    const uint32_t index = static_cast<uint32_t>(g_keyStrings.size());
+    g_keyStrings.push_back(text);
+    g_keyHeaders.push_back(nullptr);
+    g_keyInfos.emplace_back();
+    g_keyIndex.emplace(text, index);
+
     StringHeader* tmp = StringHeader::createFromUTF8(g_heap, std::string_view(g_keyStrings[index]));
     g_keyHeaders[index] = StringHeader::internToArena(g_arena, tmp);
 
@@ -440,6 +441,7 @@ void bronze_register_key_string(uint32_t index, const char* str) {
     }
     info.isLength = (g_keyStrings[index] == "length");
     g_keyInfos[index] = info;
+    return index;
 }
 
 }  // extern "C"

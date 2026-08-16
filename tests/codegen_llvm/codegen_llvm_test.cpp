@@ -12,7 +12,10 @@ constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <string>
+#include <vector>
 
 #include "codegen-llvm/llvm_backend.h"
 #include "il/il.h"
@@ -298,7 +301,14 @@ TEST_CASE("IL verification rejects a property site past the module's IC site cou
 // failed to link (LNK2005). `bronze_object_abi_fingerprint` is the one other
 // deliberate export: the runtime's program entry reads it (bronze_abi.h,
 // "Drift between two BUILDS"), so it must be a global definition.
-TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
+// Emits a two-function module under `entrySymbol` and returns every global
+// symbol the object DEFINES. Shared by the two linkage cases below, because the
+// claim they make is one claim about one emitter, asserted twice: once for the
+// default entry a standalone program is linked through, and once for a named
+// one, which is the case that decides whether two compiled modules can live in
+// one image.
+std::vector<std::string> definedExports(const std::string& entrySymbol,
+                                        const char* objName) {
     il::Module module;
     module.name = "test_linkage";
 
@@ -330,22 +340,22 @@ TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
     };
     module.functions.push_back(mainFunc);
 
-    std::filesystem::path outPath =
-        std::filesystem::temp_directory_path() / "bronze_test_linkage.obj";
+    std::filesystem::path outPath = std::filesystem::temp_directory_path() / objName;
     std::filesystem::remove(outPath);
 
     DiagnosticSink diags;
     LLVMBackend backend;
+    if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     REQUIRE(backend.emitObject(module, outPath.string(), diags));
     REQUIRE_FALSE(diags.hasErrors());
+
+    std::vector<std::string> exports;
 
     auto binOrErr = llvm::object::ObjectFile::createObjectFile(outPath.string());
     REQUIRE(static_cast<bool>(binOrErr));
     auto* obj = llvm::dyn_cast<llvm::object::ObjectFile>(binOrErr->getBinary());
     REQUIRE(obj != nullptr);
     auto* coff = llvm::dyn_cast<llvm::object::COFFObjectFile>(obj);
-    bool sawMain = false;
-    bool sawStamp = false;
     for (const llvm::object::SymbolRef& sym : obj->symbols()) {
         auto flagsOrErr = sym.getFlags();
         REQUIRE(static_cast<bool>(flagsOrErr));
@@ -372,13 +382,28 @@ TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
         if (symName.starts_with('_')) {
             symName = symName.substr(1);
         }
-        CAPTURE(symName);
-        CHECK((symName == "bronze_main" || symName == "bronze_object_abi_fingerprint"));
-        if (symName == "bronze_main") sawMain = true;
-        if (symName == "bronze_object_abi_fingerprint") sawStamp = true;
+        exports.push_back(symName);
     }
-    CHECK(sawMain);
-    CHECK(sawStamp);
 
     std::filesystem::remove(outPath);
+    std::sort(exports.begin(), exports.end());
+    return exports;
+}
+
+TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
+    const std::vector<std::string> exports = definedExports({}, "bronze_test_linkage.obj");
+    CAPTURE(exports);
+    CHECK(exports == std::vector<std::string>{"bronze_main", "bronze_object_abi_fingerprint"});
+}
+
+// The same two exports under a name the caller chose, which is what makes more
+// than one compiled module linkable into one image: the stamp is named AFTER
+// the entry, so neither of an object's two exports can collide with another
+// object's. Everything else stays internal, so nothing else can either.
+TEST_CASE("a named entry symbol renames both of the object's exports") {
+    const std::vector<std::string> exports =
+        definedExports("bronze_module_a", "bronze_test_linkage_named.obj");
+    CAPTURE(exports);
+    CHECK(exports ==
+          std::vector<std::string>{"bronze_module_a", "bronze_module_a_abi_fingerprint"});
 }

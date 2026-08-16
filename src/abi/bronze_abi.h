@@ -62,13 +62,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * they can disagree. */
 #define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
 
-/* A singleton mention with no cache slot: what the RUNTIME's own callers pass
- * for `bronze_function_singleton`'s slot index. Generated code always numbers
- * its mentions (one slot per IL function, so every mention of one declaration
- * shares one cache line); the runtime's native-builtin interning has no module
- * to number slots in, and the sentinel keeps it on the by-code-pointer map. */
-#define BRONZE_ABI_FN_SLOT_NONE 0xFFFFFFFFu
-
 /* A function object whose `name` was never recorded, as the key index
  * `bronze_create_function` and `bronze_function_singleton` take.
  *
@@ -145,7 +138,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_array_append_hole,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_prop_delete,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
     X(bronze_elem_delete,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
-    X(bronze_global_get,          BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
+    /* A provided global by interned key id, plus the CALLING MODULE's own cache
+     * cell for that global (null from the runtime's own callers, which have no
+     * module). The helper owns the decision to fill: only a builtin resolution
+     * is written back, so a host-registered name and a `globalThis.x` the
+     * program can reassign keep their scan-per-read semantics by never
+     * reaching a cell. */ \
+    X(bronze_global_get,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_reference_error,     BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_arguments_object,    BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
@@ -172,8 +171,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_set,             BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
-    X(bronze_module_env_set,      BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
-    X(bronze_module_env_get,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_prop_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_super_get,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_super_set,           BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -197,7 +194,12 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_elem_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_dynamic_call,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_construct,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
-    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
+    /* The one function object for a mention of a declaration. The last argument
+     * is the calling module's own {code, value} cache slot for this mention, or
+     * null: the runtime's native-builtin interning has no module to hold a slot
+     * in, and passing null keeps it on the by-code-pointer map, which is the
+     * authority either way. */ \
+    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_set_function_generator,     BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_string_concat,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -240,7 +242,30 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_values_err,    BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_print_spread,        BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_spread_err,    BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
-    X(bronze_register_key_string, BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_CSTR)) \
+    /* INTERNS a compile-time key string and answers its process-wide id. Two
+     * modules that both mention "position" get the same id, which is what makes
+     * shapes, inline caches and property identity mean the same thing on both
+     * sides of a module boundary. A module numbers its own keys 0..n-1 and
+     * stores the answers in a module-local remap array, so the number in its
+     * instruction stream stays an immediate and only the value handed to a
+     * helper is process-wide. */ \
+    X(bronze_register_key_string, BRONZE_ABI_U32,  (BRONZE_ABI_CSTR)) \
+    /* A module's own root spans, handed over at module init and never taken
+     * back — there is no unload, so there is no unregister. Both hold Values in
+     * the module's .data/.bss, and the collector forwards them in place, which
+     * is what lets generated code read a cell through a compile-time constant
+     * address and still see current bits after a collection.
+     *
+     * `bronze_register_value_cells` takes `count` plain Value cells: a module
+     * calls it for its global cache and for its module-environment cell, which
+     * are the two places its own data holds a Value outright.
+     *
+     * `bronze_register_fn_slots` takes `count` {code, value} pairs
+     * (BRONZE_ABI_FNSLOT_SIZE bytes each), of which only the value word is a
+     * Value — the code word is a raw function pointer the collector must not
+     * touch, and a null one means the slot was never filled. */ \
+    X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     /* The six Math members generated code can dispatch directly: exported so a
      * call site can compare a callee's FunctionHeader::code against the symbol
@@ -276,24 +301,16 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     /* The prototype-mutation epoch (runtime/object.h): what makes a cached
      * depth > 0 property hit sound, read inline by the proto-hit fast path. */ \
     X(bronze_proto_epoch,    BRONZE_ABI_U64) \
-    /* The provided-globals cache (rt_state.cpp g_globalCache), published as a
-     * raw table so a `global.get` can read its own committed fast path — a
-     * cached, non-undefined Value IS the answer — without the call. The
-     * pointer is republished on every resize, and the cells are GC ROOTS the
-     * collector forwards in place, so a load through the live pointer is
-     * always current bits. Undefined marks an unfilled cell; the helper owns
-     * filling, and the two host-registry/globalThis fallthroughs it never
-     * caches keep their scan-per-read semantics by never appearing here. */ \
-    X(bronze_global_cache_tbl, BRONZE_ABI_MU64) \
-    X(bronze_global_cache_len, BRONZE_ABI_U64) \
-    /* The function-singleton slot cache: one 16-byte {code, value} entry per
-     * slot index generated code numbered (one per IL function). An entry
-     * answers a mention only when its code word matches the mention's own
-     * function pointer, so two programs in one process (the embed API) can
-     * collide on a slot and cost a refill, never an identity break — the
-     * by-code-pointer map in rt_state.cpp stays the authority. */ \
-    X(bronze_fn_singleton_tbl, BRONZE_ABI_MU64) \
-    X(bronze_fn_singleton_len, BRONZE_ABI_U64) \
+    /* The provided-globals cache and the function-singleton slot cache used to
+     * live here, as runtime-owned vectors republished as raw pointers. They are
+     * now arrays in the MODULE's own data, sized at compile time and registered
+     * with the runtime at module init (bronze_register_value_cells /
+     * bronze_register_fn_slots above). Two compiled modules in one process is
+     * why: a runtime-owned table indexed by module-assigned numbers has exactly
+     * one owner, and a second module's index 7 is not the first's. Module-owned
+     * also makes the fast path cheaper rather than dearer — the length is a
+     * compile-time fact, so the bounds check and the table-pointer load both
+     * disappear and the cell is a constant address. */ \
     /* The inline-allocation window: [cursor, limit) is heap memory the
      * runtime has carved out of from-space for generated code to bump-
      * allocate plain `new` instances from (heap.cpp owns both). The inline
@@ -509,7 +526,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * exact amount the bump cursor advances. Pinned in runtime/object.cpp. */
 #define BRONZE_ABI_PLAIN_OBJECT_BYTES    56
 
-/* One bronze_fn_singleton_tbl entry: the code pointer, then the Value. */
+/* One entry of a module's fn-singleton table: the code pointer, then the Value.
+ * An entry answers a mention only when its code word matches the mention's own
+ * function pointer, so a slot that was never filled (a zeroed table) misses,
+ * and the by-code-pointer map in rt_state.cpp stays the authority on identity
+ * across every module in the process. */
 #define BRONZE_ABI_FNSLOT_SIZE          16
 #define BRONZE_ABI_FNSLOT_CODE_OFFSET    0
 #define BRONZE_ABI_FNSLOT_VALUE_OFFSET   8

@@ -8,75 +8,80 @@
 namespace bronze::codegen_llvm {
 
 llvm::Value* emitGlobalGetCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                                 const AbiGlobals& globals, uint32_t keyIndex) {
+                                 const ModuleTables& tables, uint32_t keyIndex) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "gbl.load", fn);
+    llvm::Value* cellPtr = globalCacheCellPtr(builder, tables, keyIndex);
+    if (!cellPtr) {
+        // No cell was assigned, which means no `global.get` in this module
+        // names this key — so this is not one. Nothing to read; the helper
+        // answers, and passing it a null cell tells it not to cache.
+        return builder.CreateCall(abi.bronze_global_get,
+                                  {emitKeyId(builder, tables, keyIndex),
+                                   llvm::ConstantPointerNull::get(ptrTy)});
+    }
+
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "gbl.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "gbl.done", fn);
 
-    llvm::Value* len = builder.CreateAlignedLoad(i64Ty, globals.bronze_global_cache_len,
-                                                 llvm::Align(8), "gbl.len");
-    llvm::Value* inRange = builder.CreateICmpUGT(len, builder.getInt64(keyIndex), "gbl.inrange");
-    builder.CreateCondBr(inRange, loadBb, slowBb);
-
-    builder.SetInsertPoint(loadBb);
-    llvm::Value* tbl = builder.CreateAlignedLoad(ptrTy, globals.bronze_global_cache_tbl,
-                                                 llvm::Align(8), "gbl.tbl");
-    llvm::Value* cellPtr = builder.CreateConstInBoundsGEP1_32(i64Ty, tbl, keyIndex);
+    // One load at a constant address, one compare. The cell's address is known
+    // at compile time because the table is this module's own data, so there is
+    // no length to check and no table pointer to chase.
     llvm::Value* cached = builder.CreateAlignedLoad(i64Ty, cellPtr, llvm::Align(8), "gbl.cell");
     // Undefined marks an unfilled cell; anything else is the cached builtin.
     llvm::Value* filled = builder.CreateICmpNE(
         cached, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), "gbl.filled");
+    llvm::BasicBlock* fastBb = builder.GetInsertBlock();
     builder.CreateCondBr(filled, doneBb, slowBb);
 
     builder.SetInsertPoint(slowBb);
-    llvm::Value* slowVal =
-        builder.CreateCall(abi.bronze_global_get, {builder.getInt32(keyIndex)});
+    llvm::Value* slowVal = builder.CreateCall(
+        abi.bronze_global_get, {emitKeyId(builder, tables, keyIndex), cellPtr});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
     llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "gbl.result");
-    result->addIncoming(cached, loadBb);
+    result->addIncoming(cached, fastBb);
     result->addIncoming(slowVal, slowBb);
     return result;
 }
 
 llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                                         const AbiGlobals& globals, llvm::Function* wrapper,
+                                         const ModuleTables& tables, llvm::Function* wrapper,
                                          uint32_t arity, uint32_t length, uint32_t nameKey,
                                          uint32_t slot) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::BasicBlock* entryBb = llvm::BasicBlock::Create(ctx, "fnsingle.entry", fn);
+    llvm::Value* codePtr = fnSlotPtr(builder, tables, slot);
+    if (!codePtr) {
+        return builder.CreateCall(abi.bronze_function_singleton,
+                                  {wrapper, builder.getInt32(arity), builder.getInt32(length),
+                                   emitKeyId(builder, tables, nameKey),
+                                   llvm::ConstantPointerNull::get(ptrTy)});
+    }
+
     llvm::BasicBlock* valueBb = llvm::BasicBlock::Create(ctx, "fnsingle.value", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "fnsingle.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "fnsingle.done", fn);
 
-    llvm::Value* len = builder.CreateAlignedLoad(i64Ty, globals.bronze_fn_singleton_len,
-                                                 llvm::Align(8), "fnsingle.len");
-    llvm::Value* inRange = builder.CreateICmpUGT(len, builder.getInt64(slot), "fnsingle.inrange");
-    builder.CreateCondBr(inRange, entryBb, slowBb);
-
-    builder.SetInsertPoint(entryBb);
-    llvm::Value* tbl = builder.CreateAlignedLoad(ptrTy, globals.bronze_fn_singleton_tbl,
-                                                 llvm::Align(8), "fnsingle.tbl");
-    static_assert(BRONZE_ABI_FNSLOT_SIZE == 2 * sizeof(uint64_t) &&
-                  BRONZE_ABI_FNSLOT_CODE_OFFSET == 0 &&
-                  BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8);
-    llvm::Value* codePtr = builder.CreateConstInBoundsGEP1_32(i64Ty, tbl, slot * 2);
+    // The entry's address is a compile-time constant, so the guard is the code
+    // word alone: it matches this mention's own wrapper, or the helper runs.
+    // A zeroed entry — the table's initial state — has a null code word and
+    // therefore always misses.
     llvm::Value* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "fnsingle.code");
     llvm::Value* codeOk = builder.CreateICmpEQ(code, wrapper, "fnsingle.codeok");
     builder.CreateCondBr(codeOk, valueBb, slowBb);
 
     builder.SetInsertPoint(valueBb);
-    llvm::Value* valuePtr = builder.CreateConstInBoundsGEP1_32(i64Ty, tbl, slot * 2 + 1);
+    static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0 && BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8,
+                  "the Value is the word after the code pointer");
+    llvm::Value* valuePtr = builder.CreateConstInBoundsGEP1_32(i64Ty, codePtr, 1);
     llvm::Value* cached =
         builder.CreateAlignedLoad(i64Ty, valuePtr, llvm::Align(8), "fnsingle.cached");
     builder.CreateBr(doneBb);
@@ -84,8 +89,8 @@ llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFn
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(
         abi.bronze_function_singleton,
-        {wrapper, builder.getInt32(arity), builder.getInt32(length), builder.getInt32(nameKey),
-         builder.getInt32(slot)});
+        {wrapper, builder.getInt32(arity), builder.getInt32(length),
+         emitKeyId(builder, tables, nameKey), codePtr});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);

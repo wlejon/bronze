@@ -6,6 +6,7 @@ bronze_add_module(embed
     SOURCES
         embed.cpp
         embed_run.cpp
+        embed_io.cpp
         embed_function.cpp
         embed_object.cpp
         embed_handle.cpp

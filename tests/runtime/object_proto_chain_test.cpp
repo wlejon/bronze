@@ -223,8 +223,7 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
     ShadowStackFrame frame;
 
     SUBCASE("a function: 10.2.9, 10.2.10 and 10.2.11, all non-enumerable") {
-        const uint32_t nameKey = 4101;
-        bronze_register_key_string(nameKey, "adder");
+        const uint32_t nameKey = bronze_register_key_string("adder");
         Rooted<Value> f{rtNativeFunction(nothing, 2)};
         rtSetFunctionNameAndLength(f.get().asObject<FunctionHeader>(), nameKey, 1);
 

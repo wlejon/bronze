@@ -67,9 +67,12 @@ void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uin
 // hard error it has always been while a function bronze COMPILED answers, which
 // is the split rt_members.cpp's tables already draw everywhere else.
 inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
+    // No slot cell: a native builtin belongs to no compiled module, so there
+    // is no module-local table to cache it in. The by-code-pointer map is the
+    // authority regardless, and it is what answers here.
     return Value(bronze_function_singleton(code, arity, /*length=*/0,
                                            BRONZE_ABI_FN_NAME_NONE,
-                                           BRONZE_ABI_FN_SLOT_NONE));
+                                           /*slotCell=*/nullptr));
 }
 
 // ---- builtin namespaces ---------------------------------------------------

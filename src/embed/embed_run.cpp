@@ -9,16 +9,9 @@
 // bronze_embed.lib serve both a real host and a runtime-level test binary.
 
 #include <cstdint>
-#include <cstdio>
-
-#ifdef _WIN32
-#include <fcntl.h>
-#include <io.h>
-#endif
 
 #include "embed/embed.h"
 #include "runtime/abi_guard.h"
-#include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
 
@@ -26,17 +19,6 @@ extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
 
 namespace bronze::embed {
-
-void setupIo() {
-#ifdef _WIN32
-    _setmode(_fileno(stdout), _O_BINARY);
-#endif
-    // Before anything can fail: a hard error must reach stderr and exit,
-    // never block on a modal dialog (fatal.h). Idempotent, so a host that
-    // already called it — or calls runProgram after its own setup — loses
-    // nothing.
-    bronze::disableCrashDialogs();
-}
 
 void runMain() {
     // The object's ABI stamp against this runtime's, before any compiled code
@@ -64,9 +46,11 @@ void runProgram() {
     runMain();
 }
 
-// `drainMicrotasks` and `microtasksPending` are deliberately NOT here: this
-// translation unit is the one that names `bronze_main`, and a test binary
-// calling either of them would pull this object in and fail to link (the
-// file header says why the reference is quarantined). They live in embed.cpp.
+// `drainMicrotasks`, `microtasksPending` and `setupIo` are deliberately NOT
+// here: this translation unit is the one that names `bronze_main`, and a caller
+// of any of them would pull this object in and fail to link (the file header
+// says why the reference is quarantined). The first two live in embed.cpp, and
+// `setupIo` — which a multi-module host needs and `bronze_main` is exactly what
+// such a host does not have — lives in embed_io.cpp.
 
 }  // namespace bronze::embed

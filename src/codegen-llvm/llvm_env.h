@@ -21,8 +21,9 @@ namespace bronze::codegen_llvm {
 // Emits an environment slot read and returns its i64 (NaN-boxed) result.
 // With `tdz` set, a slot still holding the uninitialized marker takes the
 // helper path, which raises the ReferenceError `keyIndex` names.
-llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                        uint32_t depth, uint32_t index, bool tdz, uint32_t keyIndex);
+llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                        const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
+                        uint32_t index, bool tdz, uint32_t keyIndex);
 
 // Emits an environment slot write.
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
