@@ -66,6 +66,7 @@ bronze_add_module(runtime
         rt_prop_map.cpp
         rt_prop_write.cpp
         rt_delete.cpp
+        rt_private.cpp
         iterator.cpp
         iterator_delegate.cpp
         map.cpp

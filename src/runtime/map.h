@@ -71,6 +71,12 @@ struct MapHeader {
     // would hang.
     static constexpr uint16_t kWeakMapFlags = HeapKind::WeakMap;
     static constexpr uint16_t kWeakSetFlags = HeapKind::WeakSet;
+    // A private element's table (rt_private.cpp) reuses the layout for the
+    // same reason the weak pair does — an object-keyed table with a hash index
+    // the collector rebuilds — under a kind of its own, so that nothing which
+    // dispatches on a collection's flags can ever be handed one. It is not a
+    // value: no program can hold it, and only the private helpers touch it.
+    static constexpr uint16_t kPrivateFlags = HeapKind::PrivateTable;
 
     static MapHeader* create(Heap& heap, uint16_t flags);
 

@@ -246,6 +246,17 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
         return lowerExpr(*bin->rhs, ilFn);
     }
 
+    // `#x in o` (13.10.1) is a BRAND check, not a property lookup: it asks
+    // whether the object carries the private element, which nothing on the
+    // property path can answer. The parser admits a PrivateIdentifier in this
+    // one operand of this one operator, so recognizing it here is total.
+    if (bin->op == ast::BinaryOp::In) {
+        if (const auto* nameIdent = dynamic_cast<const ast::Ident*>(bin->lhs.get());
+            nameIdent && !nameIdent->name.empty() && nameIdent->name[0] == '#') {
+            return lowerPrivateIn(*bin->lhs, *bin->rhs, ilFn);
+        }
+    }
+
     auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
     if (!lhsOpt) return std::nullopt;
     auto rhsOpt = lowerExpr(*bin->rhs, ilFn);

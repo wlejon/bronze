@@ -432,6 +432,13 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::ImmutableAssign:
             callWith(abi.bronze_immutable_assign, {});
             return true;
+        case il::Op::PrivateNew:
+        case il::Op::PrivateHas:
+        case il::Op::PrivateGet:
+        case il::Op::PrivateAdd:
+        case il::Op::PrivateSet:
+        case il::Op::PrivateMisuse:
+            return emitPrivateOp(inst);
         case il::Op::ClassExtend: {
             if (!needs(2, false, "Invalid operands for ClassExtend")) return false;
             llvm::Value* derived = operand(inst, 0, "Undefined operand in ClassExtend instruction");

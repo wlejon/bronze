@@ -397,6 +397,9 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
     if (mem->optional) emitChainShortCircuit(objBoxed, ilFn);
+    // `o.#x` reads no property and consults no inline cache: a private element
+    // has no shape and no slot (lower_private.cpp).
+    if (mem->isPrivate) return lowerPrivateRead(*mem, objBoxed, ilFn);
 
     uint32_t keyIdx = getKeyConstantIndex(mem->property);
     uint32_t icIdx = icSiteCounter_++;
@@ -712,6 +715,16 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         thisArgVal = boxValueIfNeeded(*objVal, ilFn);
         if (mem->optional) emitChainShortCircuit(thisArgVal, ilFn);
 
+        // `o.#m(...)` — the same rule 13.3.6.1 gives `o.m(...)`: the base is
+        // evaluated once and is the receiver. What differs is only where the
+        // callee is found.
+        if (mem->isPrivate) {
+            recordCall(call->span.file, false, "callee is a private member");
+            auto fnVal = lowerPrivateRead(*mem, thisArgVal, ilFn);
+            if (!fnVal) return std::nullopt;
+            calleeVal = boxValueIfNeeded(*fnVal, ilFn);
+        } else {
+
         uint32_t keyIdx = getKeyConstantIndex(mem->property);
         uint32_t icIdx = icSiteCounter_++;
 
@@ -729,6 +742,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         inst.icMonomorphic = mono;
         emitInst(ilFn, inst);
         calleeVal = Value{getRes, il::Type::Dynamic};
+        }
     } else if (const auto* idx = dynamic_cast<const ast::IndexAccess*>(call->callee.get())) {
         // `o[k](...)` — the same rule as `o.m(...)`: 13.3.6.1 evaluates the
         // MemberExpression once and passes its BASE as the this value. Read

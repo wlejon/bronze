@@ -13,6 +13,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::TemplateMiddle: return "template-middle";
         case TokenKind::TemplateTail: return "template-tail";
         case TokenKind::RegExpLiteral: return "regexp";
+        case TokenKind::PrivateName: return "private-name";
         case TokenKind::KwBreak: return "break";
         case TokenKind::KwCase: return "case";
         case TokenKind::KwCatch: return "catch";
@@ -527,6 +528,16 @@ std::vector<Token> Lexer::lex() {
         const char c = peek();
         if (isIdentStart(c)) {
             tokens.push_back(lexIdentifierOrKeyword());
+        } else if (c == '#' && isIdentStart(peek(1))) {
+            // 12.7.2 PrivateIdentifier: `#` and the name it prefixes are one
+            // token, and the `#` alone is not a token at all — a `#` followed
+            // by anything else still reaches lexPunctuation's refusal below,
+            // so `a # b` names the stray character rather than an empty
+            // private name.
+            const uint32_t begin = pos_;
+            ++pos_;  // '#'
+            while (isIdentPart(peek())) ++pos_;
+            tokens.push_back(make(TokenKind::PrivateName, begin));
         } else if (isDigit(c) || (c == '.' && isDigit(peek(1)))) {
             // A DecimalLiteral may begin with the point (`.5`). The digit
             // lookahead is what keeps `...` a spread and `a.b` a member

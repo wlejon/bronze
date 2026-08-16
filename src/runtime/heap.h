@@ -89,6 +89,13 @@ enum : uint16_t {
     // every OTHER internal method forwardable.
     Proxy,
 
+    // One private class element's per-evaluation table (ECMA-262 6.2.12): the
+    // Map/Set LAYOUT again, keyed by the object that carries the element. Its
+    // own kind because it is NOT a JS value — nothing hands a program one, and
+    // every dispatch that meets one is a bug rather than something a program
+    // did, exactly as for an environment record.
+    PrivateTable,
+
     // Not a kind: how many there are. It exists so that a dispatch which must
     // be TOTAL over the registry can pin the registry's size and break the
     // build when a kind is added. `flags` is a `uint16_t` and this enum is

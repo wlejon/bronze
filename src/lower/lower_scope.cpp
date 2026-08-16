@@ -372,6 +372,39 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     openLexicalBindings(envScopes_.size() - 1, lexical, ilFn);
 }
 
+void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilFn) {
+    currentScopeDepth_++;
+    EnvScopeInfo info;
+    // The generator's downward link, for the reason `enterScope` adds one: a
+    // resume edge defines no SSA value, so the chain of child slots is the only
+    // way from the frame to the record innermost at a suspension point.
+    if (generator_) {
+        info.childSlot = static_cast<uint32_t>(slots.size());
+        slots.emplace_back(generatorEnvSlotName());
+    }
+    for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
+    info.slotNames = slots;
+    info.slotIsLexical.assign(slots.size(), false);
+    info.slotIsImmutable.assign(slots.size(), false);
+    const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
+    const uint32_t parentChildSlot = generator_ ? envScopes_.back().childSlot : UINT32_MAX;
+    info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
+    if (generator_) {
+        il::Instruction link;
+        link.op = il::Op::EnvSet;
+        link.type = il::Type::Void;
+        link.result = il::kNoValue;
+        link.operands = {parentRecord, info.envValue};
+        link.envDepth = 0;
+        link.envIndex = parentChildSlot;
+        emitInst(ilFn, link);
+    }
+    envScopes_.push_back(std::move(info));
+    savedEnvValues_.push_back(currentEnvValue_);
+    currentEnvValue_ = envScopes_.back().envValue;
+    scopeHasEnv_.push_back(true);
+}
+
 void Lowerer::exitScope() {
     // Leaving a scope UNCOVERS what its declarations shadowed; it does not
     // delete the name. Erasing outright made an inner `let x` remove the

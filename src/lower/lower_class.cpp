@@ -46,6 +46,30 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         return std::nullopt;
     }
 
+    // The private names this class declares, and the record that holds them.
+    // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's
+    // private environment is created at step 2 and the heritage evaluated at
+    // step 5) and also what the constructor needs: its closure is created below
+    // and must capture this record.
+    const std::vector<PrivateElement> privateElements = collectPrivateElements(methods);
+    bool hasStaticBlock = false;
+    for (const auto& m : methods) hasStaticBlock = hasStaticBlock || m.isStaticBlock;
+    // A class with neither private names nor a static block needs no record at
+    // all, and gets exactly the IL it always had.
+    const bool hasPrivate = !privateElements.empty() || hasStaticBlock;
+    if (hasPrivate && !openClassScope(name, privateElements, ilFn)) return std::nullopt;
+    // Everything from here on may leave through a `return std::nullopt`, and
+    // the record must come off both stacks when it does.
+    struct PrivateScopeGuard {
+        Lowerer* self;
+        bool active;
+        ~PrivateScopeGuard() {
+            if (!active) return;
+            self->privateScopes_.pop_back();
+            self->exitScope();
+        }
+    } privateGuard{this, hasPrivate};
+
     // The heritage is READ before the class binding is initialized. 15.7.14
     // evaluates ClassHeritage at step 5 and initializes `classBinding` only at
     // step 17, which is what makes `class C extends C {}` a ReferenceError
@@ -61,47 +85,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
     }
 
-    // Instance fields injection:
-    // Build the constructor body with instance fields injected.
-    std::vector<ast::StmtPtr> fieldStmts;
-    for (const auto& m : methods) {
-        if (m.isField && !m.isStatic) {
-            auto thisExpr = std::make_unique<ast::ThisExpr>();
-            thisExpr->span = m.fn ? m.fn->span : span;
-
-            ast::ExprPtr target;
-            if (m.keyExpr) {
-                auto idx = std::make_unique<ast::IndexAccess>();
-                idx->span = thisExpr->span;
-                idx->object = std::move(thisExpr);
-                idx->index = ast::cloneExpr(*m.keyExpr);
-                target = std::move(idx);
-            } else {
-                auto mem = std::make_unique<ast::MemberAccess>();
-                mem->span = thisExpr->span;
-                mem->object = std::move(thisExpr);
-                mem->property = m.name;
-                target = std::move(mem);
-            }
-
-            auto bin = std::make_unique<ast::Binary>();
-            bin->span = target->span;
-            bin->op = ast::BinaryOp::Assign;
-            bin->lhs = std::move(target);
-            if (m.init) {
-                bin->rhs = ast::cloneExpr(*m.init);
-            } else {
-                auto undef = std::make_unique<ast::UndefinedLit>();
-                undef->span = bin->span;
-                bin->rhs = std::move(undef);
-            }
-
-            auto stmt = std::make_unique<ast::ExprStmt>();
-            stmt->span = bin->span;
-            stmt->expr = std::move(bin);
-            fieldStmts.push_back(std::move(stmt));
-        }
-    }
+    // The constructor's prologue: brand adds for the private methods and
+    // accessors, then every field initializer — public and private alike — in
+    // definition order (lower_private.cpp says why the order is observable).
+    std::vector<ast::StmtPtr> fieldStmts =
+        buildFieldInitStatements(methods, privateElements, span);
 
     std::vector<ast::StmtPtr> ctorBody;
     if (fieldStmts.empty()) {
@@ -151,15 +139,43 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         emitInst(ilFn, inst);
     }
 
+    // A PRIVATE method is not stored on the prototype and a static block is
+    // not stored anywhere, so neither makes a class need one read.
     bool needsPrototype = false;
     for (const auto& m : methods) {
-        if (!m.isConstructor && !m.isStatic && !m.isField) needsPrototype = true;
+        if (!m.isConstructor && !m.isStatic && !m.isField && !m.isStaticBlock && !m.isPrivate()) {
+            needsPrototype = true;
+        }
     }
     Value protoVal{il::kNoValue, il::Type::Dynamic};
     if (needsPrototype) protoVal = emitPrototypeOf(*ctorVal, ilFn);
 
     for (const auto& m : methods) {
-        if (m.isConstructor || m.isField) continue;
+        if (m.isConstructor || m.isField || m.isStaticBlock) continue;
+        // A private method or accessor is SHARED — one closure per class
+        // evaluation, not one per instance — so it is created here, once, and
+        // parked in the class-evaluation record. What each object gets is the
+        // brand: an entry in the name's table pointing at this same closure,
+        // which is why `a.#m === b.#m` for two instances of one evaluation.
+        // It is deliberately NOT on the prototype: a private name is not a
+        // property key, and a prototype slot would be reachable.
+        if (m.isPrivate()) {
+            auto fnVal = lowerClosure(*m.fn, m.fn->name, std::optional<std::string>{m.name},
+                                      m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
+            if (!fnVal) return std::nullopt;
+            const std::string slot = m.accessor == ast::AccessorKind::Setter
+                                         ? privateSetterFnSlot(m.name)
+                                         : privateFnSlot(m.name);
+            uint32_t depth = 0;
+            uint32_t index = 0;
+            if (!findEnclosingEnvVar(slot, depth, index)) {
+                diags_.error(m.fn->span, "internal: no environment slot for private member '" +
+                                             m.name + "'");
+                return std::nullopt;
+            }
+            emitEnvSet(depth, index, *fnVal, ilFn);
+            continue;
+        }
         const il::ValueId homeObject = m.isStatic ? ctorVal->id : protoVal.id;
 
         // A class accessor is NON-enumerable — ECMA-262 15.7.14 defines it
@@ -218,9 +234,56 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         emitInst(ilFn, setInst);
     }
 
-    // Static fields evaluation:
+    // 15.7.14 step 28: the class binding is initialized once every method is
+    // defined and before any static element is evaluated, which is what makes
+    // `static { C.#x = 1 }` reach the class by name.
+    if (hasPrivate && !name.empty() && !initClassNameBinding(name, *ctorVal, span, ilFn)) {
+        return std::nullopt;
+    }
+
+    // Static private methods and accessors are carried by the CONSTRUCTOR, and
+    // their brand is added before any static initializer runs — 15.7.14 does it
+    // at step 32, ahead of the element evaluation below, so a static block may
+    // call `X.#m()`.
+    if (hasPrivate && !emitStaticPrivateBrands(privateElements, *ctorVal, span, ilFn)) {
+        return std::nullopt;
+    }
+
+    // Static elements, in DEFINITION order: 15.7.14 step 33 walks the element
+    // list once, so a static block and a static field initializer written
+    // around it run in the order the source wrote them and not in two passes.
     for (const auto& m : methods) {
+        // `static { ... }` — a body evaluated once with the constructor as its
+        // receiver. It is a closure and a call, because that is exactly what it
+        // is: 15.7.11 makes the block a function whose [[HomeObject]] is the
+        // class and whose `this` is the constructor.
+        if (m.isStaticBlock) {
+            auto blockFn = lowerClosure(*m.fn, m.fn->name, std::optional<std::string>{""},
+                                        m.fn->params, m.fn->returnType, m.fn->body, m.fn->span,
+                                        ilFn);
+            if (!blockFn) return std::nullopt;
+            emitPrivateCall(boxValueIfNeeded(*blockFn, ilFn), *ctorVal, {}, ilFn);
+            continue;
+        }
         if (!m.isField || !m.isStatic) continue;
+        // A static PRIVATE field: the constructor is the object that carries
+        // it, so this is the same definition an instance field makes, against
+        // the class itself.
+        if (m.isPrivate()) {
+            std::optional<Value> initVal =
+                m.init ? lowerExpr(*m.init, ilFn)
+                       : std::optional<Value>{Value{emitConstUndefined(ilFn), il::Type::Dynamic}};
+            if (!initVal) return std::nullopt;
+            auto table = emitPrivateSlotRead(privateTableSlot(m.name), span, ilFn);
+            if (!table) return std::nullopt;
+            il::Instruction addInst;
+            addInst.op = il::Op::PrivateAdd;
+            addInst.type = il::Type::Void;
+            addInst.result = il::kNoValue;
+            addInst.operands = {table->id, ctorVal->id, boxValueIfNeeded(*initVal, ilFn).id};
+            emitInst(ilFn, addInst);
+            continue;
+        }
         if (m.keyExpr) {
             auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
             if (!keyOpt) return std::nullopt;

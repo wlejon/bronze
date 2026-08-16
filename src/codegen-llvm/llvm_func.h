@@ -62,6 +62,9 @@ private:
     bool emitTerminator(const il::Instruction& inst);
     bool emitRuntimeOp(const il::Instruction& inst);
     bool emitArithmetic(const il::Instruction& inst);
+    // The private-element family (llvm_private.cpp). Its own unit because it
+    // is one mechanism with six instructions, not six unrelated helpers.
+    bool emitPrivateOp(const il::Instruction& inst);
 
     // Reloads a Dynamic value from its root slot at the point of use: if
     // anything collected since the def, the slot was forwarded and the SSA

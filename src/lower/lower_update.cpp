@@ -139,6 +139,7 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
 // setter and `f().k++` calls `f` once.
 std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess& mem,
                                                          ast::UnaryOp op, il::Function& ilFn) {
+    if (mem.isPrivate) return lowerPrivateUpdate(mem, op, ilFn);
     auto objVal = lowerExpr(*mem.object, ilFn);
     if (!objVal) return std::nullopt;
     Value objBoxed = boxValueIfNeeded(*objVal, ilFn);

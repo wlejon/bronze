@@ -171,11 +171,58 @@ private:
     bool parseForBindingHead(ForBindingHead& head, bool hasDecl = true);
     ast::StmtPtr parseTry();
     ast::StmtPtr parseThrow();
+    // --- parser_class.cpp: class bodies and private elements --------------
     // `defaultName`, as for parseFunctionDecl: `export default class {}`.
     ast::StmtPtr parseClass(const std::string& defaultName = "");
     ast::ExprPtr parseClassExpr();
     bool parseClassBodyCommon(const std::string& name, const std::string& superName,
                               std::vector<ast::ClassMethod>& methods, Span span);
+    // One class body's private names. ECMA-262 15.7.1 states BOTH private-name
+    // early errors over the whole ClassBody rather than over one element: a
+    // duplicate is a duplicate wherever the two spellings are, and a reference
+    // may stand ABOVE the declaration it resolves to (`m() { return this.#x }
+    // #x = 1`). So the declared names are collected by a scan of the body's
+    // tokens before any member is parsed, and the reference check consults
+    // that set — which is also what makes an inner class's reference to an
+    // OUTER private name resolve, since the stack is searched innermost first.
+    struct PrivateNameScope {
+        // Every name the body declares, `#` included. From the pre-scan, so it
+        // is complete before the first member is parsed.
+        std::vector<std::string> declared;
+        // How each name is bound, filled in as the members are parsed. 15.7.1
+        // admits one repetition and one only — a getter and a setter of the
+        // same name, both static or both not — so counting the three kinds
+        // separately is exactly the rule, and one flag would not be.
+        struct Binding {
+            std::string name;
+            uint32_t getters = 0;
+            uint32_t setters = 0;
+            uint32_t others = 0;  // fields, methods, and anything else
+            bool isStatic = false;
+            Span first;
+        };
+        std::vector<Binding> bindings;
+    };
+    std::vector<PrivateNameScope> privateScopes_;
+    // The declared names of the class body whose `{` is at `braceIndex`,
+    // collected by walking its tokens. A `#x` at the body's OWN brace depth is
+    // a declaration unless it is the `.#x` of a reference or the `#x` of
+    // `#x in o`; anything deeper belongs to a nested body and is that body's
+    // scan to make.
+    void scanPrivateDeclarations(size_t braceIndex, PrivateNameScope& scope) const;
+    // Records how `name` is bound in the innermost open class body, reporting
+    // 15.7.1's duplicate error against `span`. False on a diagnosed error.
+    bool declarePrivateName(const std::string& name, ast::AccessorKind accessor, bool isStatic,
+                            Span span);
+    // Is `name` declared by any class body currently open? The reference half
+    // of 15.7.1 (AllPrivateIdentifiersValid).
+    bool privateNameInScope(const std::string& name) const;
+    // `.#x` / `?.#x`, with the `#x` token current. Appends the private member
+    // link to `expr` and checks the reference. False on a diagnosed error.
+    bool parsePrivateMemberLink(ast::ExprPtr& expr, bool optional);
+    // `#x` where an expression may start, which 13.10.1 admits in exactly one
+    // position: the left operand of `in`. Null on a diagnosed error.
+    ast::ExprPtr parsePrivateNameOperand();
     ast::ExprPtr parseSuper();
     bool parseParams(std::vector<ast::Param>& out);
     // `get k() {}` / `set k(v) {}`, with the `get`/`set` already consumed. One

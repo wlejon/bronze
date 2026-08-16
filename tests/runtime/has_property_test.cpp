@@ -50,10 +50,12 @@ using namespace bronze::runtime;
 // about the kind you happened to run. Pinning the registry's SIZE in both
 // places is what makes adding a kind a build failure at the dispatch AND at the
 // test that covers it, rather than a segfault a year later.
-static_assert(HeapKind::Count == 15,
+static_assert(HeapKind::Count == 16,
               "a HeapKind was added or removed: give `in` an arm for it in rt_operator.cpp, "
               "and give it a receiver in `everyKind` below — a kind with no arm is exactly "
-              "what used to read its payload's first word as a Shape*");
+              "what used to read its payload's first word as a Shape*. A kind no program can "
+              "hold (an environment record, an iteration record, a private-element table) "
+              "earns its arm in `refuseInternalKind` instead, and gets no receiver here.");
 
 namespace {
 
@@ -87,10 +89,11 @@ Value namespaceExporting(const char* name) {
 
 }  // namespace
 
-// The ten kinds a JS program can be holding. The two it cannot — an iteration
-// record and an environment record — are refused by name in the dispatch, which
-// is a `fatal` and so is not callable from a test that intends to return; that
-// they have arms at all is what the static_assert above protects.
+// The ten kinds a JS program can be holding. The three it cannot — an iteration
+// record, an environment record and a private element's table — are refused by
+// name in the dispatch, which is a `fatal` and so is not callable from a test
+// that intends to return; that they have arms at all is what the static_assert
+// above protects.
 TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     ShadowStackFrame frame;
 

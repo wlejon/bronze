@@ -246,6 +246,41 @@ enum class Op : uint8_t {
     // D's static properties to B's. One op because both links have to
  // be made together, before any method is stored.
     ClassExtend, // class.extend derived, base
+    // ---- private class elements (ECMA-262 6.2.12) ----------------------
+    // A private name is not a property key, so none of the ops above can
+    // express one: no shape carries it, no enumeration may see it, and the
+    // brand check that guards every access has no equivalent on the property
+    // path. What a private name IS here is a TABLE — one per name per class
+    // EVALUATION, minted by `private.new` — mapping each object that carries
+    // the element to its value. Two evaluations of one class expression mint
+    // two tables, which is exactly why an instance of the first fails the
+    // second's brand check.
+    //
+    // The table is reached through an environment slot of the record the class
+    // evaluation created, so a method body resolves `#x` by the same
+    // (depth, index) walk a captured variable takes, and a nested class's `#x`
+    // shadows an outer one's for free.
+    PrivateNew,  // a: dynamic = private.new
+    // `#x in o` (13.10.1). Never throws: an object without the element is
+    // exactly what the operator exists to report.
+    PrivateHas,  // a: bool = private.has table, obj
+    // PrivateGet (6.2.12.2) minus the accessor step, which lowering resolves
+    // at compile time — it knows whether the name is a field, a method or an
+    // accessor pair. An object with no such element is a TypeError naming the
+    // private name, which is what `key_const_index` carries.
+    PrivateGet,  // a: dynamic = private.get table, obj, <key_const_index>
+    // PrivateFieldAdd / PrivateMethodOrAccessorAdd (6.2.12.4): installs the
+    // element, which is what makes every later access brand-check. The one op
+    // with no brand check of its own, because it is what establishes the brand.
+    PrivateAdd,  // private.add table, obj, value
+    // PrivateSet (6.2.12.3) for a field: the element must already be there,
+    // and a receiver that never got one is the same TypeError a get gives.
+    PrivateSet,  // private.set table, obj, value, <key_const_index>
+    // The three ways a private access is well formed and still a TypeError:
+    // writing a method, reading a set-only accessor, writing a get-only one.
+    // Which one is a compile-time fact, so this carries the code rather than
+    // re-deriving it; the brand check has already been emitted before it.
+    PrivateMisuse,  // a: dynamic = private.misuse <key_const_index>, <code>
     // The iterator protocol. One iteration is a CURSOR — opened once, stepped,
     // read, and closed if it is abandoned — rather than an index and a length,
     // because a Map, a Set and a user-defined iterable have no length to

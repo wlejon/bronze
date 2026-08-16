@@ -389,6 +389,13 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{res, il::Type::Dynamic};
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&expr)) {
+        // A private-environment slot rather than a binding. No identifier a
+        // program can write begins with `#`, so this cannot shadow a name:
+        // it is either `#x` from `#x in o` or one of the slot names the class
+        // desugar synthesizes (lower_private.cpp).
+        if (!ident->name.empty() && ident->name[0] == '#') {
+            return emitPrivateSlotRead(ident->name, ident->span, ilFn);
+        }
         auto it = activeVarMap_.find(ident->name);
         if (it == activeVarMap_.end()) {
             // Global value properties (shadowable by local declarations,

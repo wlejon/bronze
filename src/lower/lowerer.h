@@ -536,6 +536,12 @@ private:
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
     void enterScope();
+    // A scope whose slots no declaration spells: the class-evaluation record
+    // that holds a class body's private names. Everything `enterScope` does to
+    // create a record — the generator's downward child link included — with the
+    // slot list given rather than derived from statements. Undone by
+    // `exitScope`, which is why it keeps that function's invariants.
+    void pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilFn);
     // `extraDeclarations` names bindings the scope owns that its statement list
     // does not spell — a for-of head's, which is written outside the body but
     // belongs to it. A LIST because a destructuring head binds several. They
@@ -614,9 +620,16 @@ private:
         uint32_t keyIndex = 0;
         bool hasKeyIndex = false;
         Value index{il::kNoValue, il::Type::Dynamic};
+        // `({ a: this.#x } = v)` — a PRIVATE member as the target. Not a key of
+        // any kind: the store is a private-element write, so the node that
+        // names the element is carried here and `keyIndex` means nothing. Held
+        // as a pointer to the AST rather than a resolved element because the
+        // kind dispatch (field / method / accessor) belongs to one place, and
+        // that place is `lowerPrivateWrite`.
+        const ast::MemberAccess* privateTarget = nullptr;
     };
     std::optional<PatternRef> evalPatternRef(const ast::Expr& target, il::Function& ilFn);
-    void storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn);
+    bool storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn);
     // `current === undefined ? <default>: current`, as a real branch rather
     // than a select: the default's side effects must happen only when it fires,
     // and only `undefined` fires it — `null` does not.
@@ -661,6 +674,93 @@ private:
                                     const std::vector<ast::ClassMethod>& methods, Span span,
                                     il::Function& ilFn);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
+
+    // --- lower_private.cpp: private class elements ------------------------
+    // How one private name is stored, which is fixed by its declaration and so
+    // is a compile-time fact at every access: a field's value is per object, a
+    // method's is one closure shared by every object that carries the brand,
+    // and an accessor's is a pair of them. `private.get` therefore answers only
+    // the storage question — the kind dispatch 6.2.12.2 writes as a run-time
+    // step is resolved here instead.
+    enum class PrivateKind { Field, Method, Accessor };
+    struct PrivateElement {
+        std::string name;  // `#x`, the `#` kept
+        PrivateKind kind = PrivateKind::Field;
+        bool isStatic = false;
+        bool hasGetter = false;
+        bool hasSetter = false;
+    };
+    // The private names of each class body being lowered, innermost last. A
+    // mention resolves against it exactly as the parser resolved the reference:
+    // innermost class first, so a nested class shadows an outer name it repeats
+    // and reaches an outer name it does not.
+    std::vector<std::vector<PrivateElement>> privateScopes_;
+    const PrivateElement* findPrivateElement(const std::string& name) const;
+    // The four environment slots a private name can own, named so that no
+    // source identifier and no other private name can collide with one (`\x01`
+    // is unspellable in an IdentifierName). The class-evaluation record holds
+    // them, which is what makes every one of them per EVALUATION.
+    static std::string privateTableSlot(const std::string& name);
+    static std::string privateSetterTableSlot(const std::string& name);
+    static std::string privateFnSlot(const std::string& name);
+    static std::string privateSetterFnSlot(const std::string& name);
+    // The value in one of those slots, read through the environment chain.
+    // `nullopt` with a diagnostic when no enclosing record owns the slot, which
+    // is a lowering bug: the parser has already refused every undeclared name.
+    std::optional<Value> emitPrivateSlotRead(const std::string& slotName, Span span,
+                                             il::Function& ilFn);
+    // `o.#x`, with the receiver already lowered and boxed.
+    std::optional<Value> lowerPrivateRead(const ast::MemberAccess& mem, Value objBoxed,
+                                          il::Function& ilFn);
+    // `o.#x = v` and the definition form the class body's initializers use.
+    bool lowerPrivateWrite(const ast::MemberAccess& mem, Value objBoxed, Value valBoxed,
+                           il::Function& ilFn);
+    std::optional<Value> lowerPrivateAssignment(const ast::Binary* bin, il::Function& ilFn);
+    std::optional<Value> lowerPrivateUpdate(const ast::MemberAccess& mem, ast::UnaryOp op,
+                                            il::Function& ilFn);
+    // `#x in o` (13.10.1), which answers a boolean and never throws.
+    std::optional<Value> lowerPrivateIn(const ast::Expr& nameExpr, const ast::Expr& objExpr,
+                                        il::Function& ilFn);
+    // The always-throwing tail of a well-branded access that is still a
+    // TypeError: writing a method, reading a set-only accessor, writing a
+    // get-only one.
+    Value emitPrivateMisuse(const std::string& name, int32_t code, il::Function& ilFn);
+    Value emitPrivateCall(Value fnVal, Value thisVal, const std::vector<il::ValueId>& args,
+                          il::Function& ilFn);
+    // The private names a class body declares, in declaration order, with the
+    // accessor halves of one name merged into one element.
+    static std::vector<PrivateElement> collectPrivateElements(
+        const std::vector<ast::ClassMethod>& methods);
+    // The class-evaluation record: one slot per private table, one per shared
+    // closure, and one for the class's OWN NAME — minted here so that two
+    // evaluations of one class expression share nothing. Pushed onto the
+    // environment stack, so a method body resolves `#x` by the same walk a
+    // captured variable takes.
+    //
+    // The name slot is 15.7.14's classEnv binding (step 3), which is what lets
+    // a static block say `C.#x`: the outer binding a `class C {}` declaration
+    // introduces is still in its dead zone while the class is being evaluated.
+    // It is lexical, so `class C extends C {}` is still the ReferenceError
+    // 15.7.14 makes it. `className` may be empty (an anonymous class
+    // expression), and then there is no slot.
+    bool openClassScope(const std::string& className,
+                        const std::vector<PrivateElement>& elements, il::Function& ilFn);
+    // Fills that slot once the constructor exists — 15.7.14 step 28, after
+    // every method is defined and before any static element runs.
+    bool initClassNameBinding(const std::string& className, Value ctorVal, Span span,
+                              il::Function& ilFn);
+    // The statements a constructor runs before its own body: the brand adds for
+    // every private method and accessor (6.2.12.4, which is what makes a later
+    // access brand-check), then each field initializer in DEFINITION order.
+    // Public fields are here too, because the order is one order.
+    std::vector<ast::StmtPtr> buildFieldInitStatements(
+        const std::vector<ast::ClassMethod>& methods,
+        const std::vector<PrivateElement>& elements, Span span);
+    // The static half of the same, emitted at class evaluation against the
+    // constructor: static private methods and accessors get their brand there,
+    // because the constructor IS the object that carries them.
+    bool emitStaticPrivateBrands(const std::vector<PrivateElement>& elements, Value ctorVal,
+                                 Span span, il::Function& ilFn);
     std::optional<Value> lowerSuperMember(const ast::SuperMember* sm, il::Function& ilFn);
     std::optional<Value> lowerSuperCall(const ast::SuperCall* sc, il::Function& ilFn);
     // The receiver of the function being lowered, wherever it comes from: a

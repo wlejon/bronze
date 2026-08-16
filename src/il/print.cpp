@@ -102,6 +102,12 @@ const char* opName(Op op) {
         case Op::RefError: return "ref.error";
         case Op::ImmutableAssign: return "immutable.assign";
         case Op::ClassExtend: return "class.extend";
+        case Op::PrivateNew: return "private.new";
+        case Op::PrivateHas: return "private.has";
+        case Op::PrivateGet: return "private.get";
+        case Op::PrivateAdd: return "private.add";
+        case Op::PrivateSet: return "private.set";
+        case Op::PrivateMisuse: return "private.misuse";
         case Op::IterOpen: return "iter.open";
         case Op::AsyncIterOpen: return "async_iter.open";
         case Op::AsyncIterNext: return "async_iter.next";
@@ -193,6 +199,11 @@ bool canThrow(const Instruction& inst) {
         case Op::EnvInitTdz:
         case Op::ModuleEnvSet:
         case Op::ModuleEnvGet:
+        // Minting a private name's table is an allocation and nothing else.
+        // The other five private ops CAN throw and are not here — `#x in o`
+        // included, because 13.10.1 step 6 refuses a non-object right operand
+        // before it ever asks about the element.
+        case Op::PrivateNew:
         case Op::GlobalGet:
         // console.log never runs user code: inspect does not call a getter.
         case Op::Print:
@@ -583,6 +594,37 @@ std::string print(const Module& module) {
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" +
                                std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
+                        break;
+                    // The private-element family, which prints its operands
+                    // and — for the two that can raise — the NAME the
+                    // TypeError would carry, for the reason ref.error prints
+                    // one: which private name was reached IS the instruction.
+                    case Op::PrivateNew:
+                        out += "private.new";
+                        break;
+                    case Op::PrivateHas:
+                    case Op::PrivateGet:
+                    case Op::PrivateAdd:
+                    case Op::PrivateSet: {
+                        out += std::string(opName(inst.op));
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            out += (i == 0 ? " %" : ", %") + std::to_string(inst.operands[i]);
+                        }
+                        if (inst.op != Op::PrivateAdd) {
+                            out += ", \"" +
+                                   (inst.keyIndex < module.keyConstants.size()
+                                        ? module.keyConstants[inst.keyIndex]
+                                        : std::string("?")) +
+                                   "\"";
+                        }
+                        break;
+                    }
+                    case Op::PrivateMisuse:
+                        out += "private.misuse \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\", " + std::to_string(inst.immI32);
                         break;
                     // The NAME, not the key index: which global is being
                     // resolved is the whole content of the instruction, and

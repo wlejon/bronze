@@ -1,0 +1,12 @@
+1 2 1
+true false true false
+false false
+true false false
+100 100
+block-1,field,block-2
+block-1,field,block-2
+false 5 5
+TypeError: Cannot read private member #n from an object whose class did not declare it
+TypeError: Cannot use 'in' operator to search for #n in a value that is not an object
+set-by-block true
+inner/outer

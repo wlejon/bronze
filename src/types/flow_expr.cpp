@@ -33,7 +33,12 @@ public:
     void visit(const ast::Binary& n) override {
         if (n.op == ast::BinaryOp::Assign) {
             if (const auto* member = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
-                if (dynamic_cast<const ast::ThisExpr*>(member->object.get())) {
+                // `this.#x = v` installs no PROPERTY: a private element lives
+                // in a side table keyed by the class evaluation, and no shape
+                // ever carries its name. A shape class that listed it would
+                // describe a layout no instance has.
+                if (!member->isPrivate &&
+                    dynamic_cast<const ast::ThisExpr*>(member->object.get())) {
                     if (std::find(properties.begin(), properties.end(), member->property) ==
                         properties.end()) {
                         properties.push_back(member->property);

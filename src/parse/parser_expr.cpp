@@ -328,6 +328,19 @@ ExprPtr Parser::parseUnaryPrefix() {
                              "' is not allowed (ECMA-262 13.5.1.1)");
             return nullptr;
         }
+        // 13.5.1.1: `delete o.#x` is a Syntax Error. A private element is not
+        // a property and there is no [[Delete]] that could remove one — the
+        // list an object carries them in has no removal step at all — so the
+        // error is stated over the syntax rather than left to a run-time
+        // answer that could not be right either way.
+        if (const auto* mem = dynamic_cast<const MemberAccess*>(operand.get());
+            mem && mem->isPrivate) {
+            diags_.error({kw.span.begin, operand->span.end},
+                         "'delete' of the private member '" + mem->property +
+                             "' is a SyntaxError (ECMA-262 13.5.1.1): a private element cannot "
+                             "be removed");
+            return nullptr;
+        }
         auto del = std::make_unique<Unary>();
         del->span = {kw.span.begin, operand->span.end};
         del->op = UnaryOp::Delete;
@@ -426,6 +439,9 @@ ExprPtr Parser::parseUnaryPostfix() {
 // what `new a.b[c]()` constructs. False on a diagnosed error.
 bool Parser::parseMemberLink(ExprPtr& expr) {
     if (match(TokenKind::Dot)) {
+        // `o.#x` — a private reference, which is a different mechanism and not
+        // a property name (parser_class.cpp).
+        if (check(TokenKind::PrivateName)) return parsePrivateMemberLink(expr, /*optional=*/false);
         const Token* member = expectPropertyName("property name");
         if (!member) return false;
         const auto* baseIdent = dynamic_cast<const ast::Ident*>(expr.get());
@@ -508,6 +524,10 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
                 // "tag it, unless a is nullish".
                 error("a tagged template may not be part of an optional chain");
                 return nullptr;
+            }
+            if (check(TokenKind::PrivateName)) {
+                if (!parsePrivateMemberLink(expr, /*optional=*/true)) return nullptr;
+                continue;
             }
             const Token* member = expectPropertyName("property name after '?.'");
             if (!member) return nullptr;
@@ -812,6 +832,13 @@ ExprPtr Parser::parsePrimary() {
             error("unsupported construct: `super` is only supported as `super.x` or "
                   "`super(...)` directly inside a class method");
             return nullptr;
+        // 13.10.1's RelationalExpression : PrivateIdentifier `in` ShiftExpression
+        // is the one production where a private name stands where an expression
+        // would. It is admitted here rather than at the `in` rung because the
+        // operand is parsed before the operator is seen; what makes it legal is
+        // the `in` that follows, which the handler checks.
+        case TokenKind::PrivateName:
+            return parsePrivateNameOperand();
         default:
             error("expected expression");
             return nullptr;

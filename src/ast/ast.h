@@ -143,6 +143,13 @@ struct RegExpLit final : Expr {
     void accept(Visitor& v) const override;
 };
 
+// A reference to a binding by name — and, in exactly one place, to a PRIVATE
+// NAME: `#x in o` (13.10.1) has a PrivateIdentifier on its left, and lowering
+// resolves a `name` that begins with `#` against the private environment of
+// the enclosing class rather than against the variable scopes. No identifier a
+// program can write begins with `#`, so the two uses cannot collide, and the
+// alternative — a node kind meaningful in one operand of one operator — would
+// have cost every visitor in the tree an override for it.
 struct Ident final : Expr {
     std::string name;
     void accept(Visitor& v) const override;
@@ -244,6 +251,22 @@ struct MemberAccess final : Expr {
     ExprPtr object;
     std::string property;
     bool optional = false;
+    // `o.#x` — a PRIVATE reference (ECMA-262 13.3.2, MemberExpression
+    // `.` PrivateIdentifier). `property` is the private name with its `#`
+    // still on it, which is what makes this a flag rather than a node: every
+    // consumer that only wants "which member is named" reads the same field,
+    // and the ones for which private state is a different mechanism entirely —
+    // lowering, and the shape analysis that must not record `#x` as a
+    // property — ask this one question. A private name is NOT a property key:
+    // no shape carries it, `Object.keys` cannot see it, and `delete` is a
+    // syntax error on it.
+    bool isPrivate = false;
+    // A private DEFINITION rather than a write (6.2.12.4 PrivateFieldAdd vs
+    // PrivateSet). Set only on the nodes lowering synthesizes for a field
+    // initializer, and never by the parser: source has no spelling for it.
+    // The difference is the brand check — a definition installs the element,
+    // a write requires it to be there already.
+    bool isPrivateDefine = false;
     void accept(Visitor& v) const override;
 };
 
@@ -651,9 +674,24 @@ struct ClassMethod {
     // ordinary expression: the key is whatever it evaluates to.
     ExprPtr keyExpr;
     bool computed() const { return keyExpr != nullptr; }
+    // A PRIVATE element, whose `name` keeps its leading `#`. No property name
+    // can begin with one — a ClassElementName is either a PropertyName or a
+    // PrivateIdentifier, and only the second spelling has the `#` — so the
+    // character IS the distinction, and carrying a second field that could
+    // disagree with the name would be one field too many.
+    bool isPrivate() const { return !name.empty() && name[0] == '#'; }
     bool isStatic = false;
     bool isConstructor = false;
     bool isField = false;
+    // `static { ... }` (ECMA-262 15.7, ClassStaticBlockDefinition). The block's
+    // statements live in `fn`, which is a function in every way that matters
+    // here — it has a body, it is evaluated once, and its `this` is the
+    // constructor — but it takes no parameters and is reachable from nothing:
+    // the class body is its only mention. `isStatic` is true beside it, so the
+    // one loop that evaluates static elements in definition order (15.7.14
+    // step 33) sees blocks and static fields in the order the source wrote
+    // them, which is the whole of what interleaving means.
+    bool isStaticBlock = false;
     ExprPtr init;
     // A class accessor, which differs from an object literal's in exactly
     // one attribute: ECMA-262 15.7.14 defines it non-enumerable, the same

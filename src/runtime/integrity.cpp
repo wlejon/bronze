@@ -274,6 +274,7 @@ const char* rtObjectKindName(Value v) {
         case MapHeader::kSetFlags: return "a Set";
         case MapHeader::kWeakMapFlags: return "a WeakMap";
         case MapHeader::kWeakSetFlags: return "a WeakSet";
+        case MapHeader::kPrivateFlags: return "a private-element table";
         case TypedArrayHeader::kFlags: return "a typed array";
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         case DataViewHeader::kFlags: return "a DataView";

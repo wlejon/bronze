@@ -197,6 +197,17 @@ public:
         emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
+                // A static block has no name and no key, so none of the heads
+                // below describe it: it is a body and its position in the
+                // member list, and both are what the dump has to show.
+                if (m.isStaticBlock) {
+                    emit("(static-block");
+                    indented([&] {
+                        if (m.fn) m.fn->accept(*this);
+                    });
+                    emit(")");
+                    continue;
+                }
                 if (m.isField) {
                     const char* head = m.computed()
                                            ? (m.isStatic ? "(static-field-computed"
@@ -236,6 +247,17 @@ public:
              (n.superName.empty() ? "" : " extends " + n.superName));
         indented([&] {
             for (const auto& m : n.methods) {
+                // A static block has no name and no key, so none of the heads
+                // below describe it: it is a body and its position in the
+                // member list, and both are what the dump has to show.
+                if (m.isStaticBlock) {
+                    emit("(static-block");
+                    indented([&] {
+                        if (m.fn) m.fn->accept(*this);
+                    });
+                    emit(")");
+                    continue;
+                }
                 if (m.isField) {
                     const char* head = m.computed()
                                            ? (m.isStatic ? "(static-field-computed"

@@ -42,6 +42,7 @@ ClassMethod cloneClassMethod(const ClassMethod& method) {
     res.isStatic = method.isStatic;
     res.isConstructor = method.isConstructor;
     res.isField = method.isField;
+    res.isStaticBlock = method.isStaticBlock;
     if (method.init) res.init = cloneExpr(*method.init);
     res.accessor = method.accessor;
     if (method.fn) {
@@ -166,6 +167,8 @@ ExprPtr cloneExpr(const Expr& expr) {
         if (mem->object) res->object = cloneExpr(*mem->object);
         res->property = mem->property;
         res->optional = mem->optional;
+        res->isPrivate = mem->isPrivate;
+        res->isPrivateDefine = mem->isPrivateDefine;
         return res;
     }
     if (const auto* idx = dynamic_cast<const IndexAccess*>(&expr)) {

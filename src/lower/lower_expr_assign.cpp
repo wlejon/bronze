@@ -17,6 +17,11 @@ namespace bronze::lower {
 std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                                                        il::Function& ilFn) {
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get())) {
+        // A private target is a different mechanism end to end — no key, no
+        // inline cache, a brand check instead of a shape one, and a setter
+        // reached through the class-evaluation record rather than the
+        // prototype chain (lower_private.cpp).
+        if (mem->isPrivate) return lowerPrivateAssignment(bin, ilFn);
         auto objVal = lowerExpr(*mem->object, ilFn);
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);

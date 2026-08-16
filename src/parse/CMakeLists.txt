@@ -4,6 +4,7 @@ bronze_add_module(parse
         parser_expr.cpp
         parser_literal.cpp
         parser_func.cpp
+        parser_class.cpp
         parser_generator.cpp
         parser_async.cpp
         parser_pattern.cpp
@@ -26,4 +27,5 @@ bronze_add_module(parse
                  ../../tests/parse/parser_literal_test.cpp
                  ../../tests/parse/parser_stmt_test.cpp
                  ../../tests/parse/parser_strict_test.cpp
+                 ../../tests/parse/parser_class_test.cpp
 )

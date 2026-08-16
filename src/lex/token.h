@@ -31,6 +31,15 @@ enum class TokenKind {
     // PREVIOUS token — see `Lexer::regexAllowedAfter`.
     RegExpLiteral,
 
+    // A PrivateIdentifier (ECMA-262 12.7.2): `#` immediately followed by an
+    // IdentifierName, with no whitespace between them. ONE token rather than
+    // `#` plus an identifier, because the two are only ever legal together and
+    // the `#` is part of the name — `#x` and `x` are different names, and a
+    // parser handed two tokens would have to re-check the adjacency the lexer
+    // already knows. `text` keeps the `#`, so the name a diagnostic prints and
+    // the name the class body declared are the same string.
+    PrivateName,
+
     // Keywords (kept alphabetical).
     KwBreak,
     KwCase,

@@ -165,6 +165,16 @@ std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& targ
         auto objVal = lowerExpr(*mem->object, ilFn);
         if (!objVal) return std::nullopt;
         ref.object = boxValueIfNeeded(*objVal, ilFn);
+        // A private member is not a property, so it cannot take the key path:
+        // `mem->property` still spells `#x` and using it as a key would store an
+        // ordinary own property under that name — invisible to every private
+        // read and visible to `Object.getOwnPropertyNames`. Only the receiver is
+        // evaluated here, which is the whole of 6.2.12's reference: the element
+        // a private name denotes is fixed at parse time.
+        if (mem->isPrivate) {
+            ref.privateTarget = mem;
+            return ref;
+        }
         ref.keyIndex = getKeyConstantIndex(mem->property);
         ref.hasKeyIndex = true;
         return ref;
@@ -191,8 +201,14 @@ std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& targ
     return ref;
 }
 
-void Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn) {
+bool Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn) {
     Value boxed = boxValueIfNeeded(value, ilFn);
+    // 13.15.5.6 step 5 sends a private target through PrivateSet, the same
+    // write `this.#x = v` performs — brand check, kind dispatch and all, which
+    // is why it is that function and not a second copy of it here.
+    if (ref.privateTarget != nullptr) {
+        return lowerPrivateWrite(*ref.privateTarget, ref.object, boxed, ilFn);
+    }
     il::Instruction inst;
     if (ref.hasKeyIndex) {
         inst.op = il::Op::PropSet;
@@ -210,6 +226,7 @@ void Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& 
     // the pattern, not by anything about the pattern.
     inst.immI32 = strictFlag();
     emitInst(ilFn, inst);
+    return true;
 }
 
 bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
@@ -288,7 +305,7 @@ bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source
         if (elem.pattern) {
             if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
         } else if (ref) {
-            storePatternRef(*ref, value, ilFn);
+            if (!storePatternRef(*ref, value, ilFn)) return false;
         } else if (!elem.name.empty()) {
             if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) return false;
         }
@@ -345,7 +362,7 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
             if (elem.pattern) {
                 if (!lowerPattern(*elem.pattern, restVal, target, ilFn)) return false;
             } else if (ref) {
-                storePatternRef(*ref, restVal, ilFn);
+                if (!storePatternRef(*ref, restVal, ilFn)) return false;
             } else if (!elem.name.empty()) {
                 if (!bindPatternName(elem.name, restVal, target, elem.span, ilFn)) {
                     return false;
@@ -407,7 +424,7 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
         if (elem.pattern) {
             if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
         } else if (ref) {
-            storePatternRef(*ref, value, ilFn);
+            if (!storePatternRef(*ref, value, ilFn)) return false;
         } else if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) {
             return false;
         }
