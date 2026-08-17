@@ -146,12 +146,19 @@ static bool symbolKeyOnChain(Value objVal, SymbolHeader* sym) {
     return false;
 }
 
-Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
+Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& handled) {
+    // Through ROOTS, not by value: the `rtSymbol*()` accessors this function
+    // compares against intern their symbol on FIRST use, and the description is
+    // a heap string — an allocation. A by-value receiver held across one of
+    // those comparisons names a pre-collection address, and the checks below
+    // then read a moved-out header: the first symbol-keyed read of a RegExp in
+    // a process answered `undefined` under GC stress for exactly this reason.
+    // Every read below goes through `.get()`, which is always current.
     handled = false;
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
-        return toStringTagOf(objVal, handled);
+    if (key.get().asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
+        return toStringTagOf(obj.get(), handled);
     }
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolSpecies()) {
+    if (key.get().asSymbol<SymbolHeader>() == rtSymbolSpecies()) {
         // Every intrinsic that defines one defines it the same way — 23.1.2.5,
         // 24.1.2.2, 24.2.2.2, 25.1.5.4, 27.2.4.6 and 23.2.2.4 are all
         // `get [@@species]() { return this }` — so the answer is the RECEIVER
@@ -164,25 +171,23 @@ Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
         // `Promise` and every class reaching one of them through `extends` are
         // one line rather than five predicates and a chain walk.
         //
-        // Through a ROOT, because two of these probes BUILD an intrinsic on
-        // first use — `rtIsRegExpConstructor` materializes `RegExp` — and the
-        // receiver is read again afterwards, both by the chain walk and by the
-        // answer itself. A by-value receiver held across that allocation names
-        // a pre-collection address, which is the exact shape of bug the
-        // roots-before-the-dispatch comment in `bronze_elem_get` records.
-        Rooted<Value> ctor{objVal};
-        const bool inheritsSpecies = rtNativeBaseOf(ctor.get()) != NativeBase::None ||
-                                     rtIsArrayBufferConstructor(ctor.get()) ||
-                                     rtIsTypedArrayConstructor(ctor.get()) ||
-                                     rtIsRegExpConstructor(ctor.get());
-        if (inheritsSpecies && !symbolKeyOnChain(ctor.get(), rtSymbolSpecies())) {
+        // Two of these probes BUILD an intrinsic on first use —
+        // `rtIsRegExpConstructor` materializes `RegExp` — and the receiver is
+        // read again afterwards, both by the chain walk and by the answer
+        // itself; `obj` being a root is what keeps every read current.
+        const bool inheritsSpecies = rtNativeBaseOf(obj.get()) != NativeBase::None ||
+                                     rtIsArrayBufferConstructor(obj.get()) ||
+                                     rtIsTypedArrayConstructor(obj.get()) ||
+                                     rtIsRegExpConstructor(obj.get());
+        if (inheritsSpecies && !symbolKeyOnChain(obj.get(), rtSymbolSpecies())) {
             handled = true;
-            return ctor.get();
+            return obj.get();
         }
         return Value::fromUndefined();
     }
-    if (keyVal.asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
-        if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+    if (key.get().asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
+        if (obj.get().isObject() &&
+            obj.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
             handled = true;
             return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1);
         }
@@ -198,21 +203,22 @@ Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled) {
     // is no own or inherited symbol-keyed property for these to shadow —
     // `rtSymbolKeyHolder` answers null for one — and `extends RegExp`, which is
     // what would give an instance a chain, is refused by name (native_base.cpp).
-    if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags) {
-        const Value method = rtRegExpSymbolMethod(keyVal);
+    if (obj.get().isObject() &&
+        obj.get().asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags) {
+        const Value method = rtRegExpSymbolMethod(key.get());
         if (!method.isUndefined()) {
             handled = true;
             return method;
         }
     }
-    if (keyVal.asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
+    if (key.get().asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
     // A STRING is not this function's business: 22.1.3.36 puts its
     // `[Symbol.iterator]` on the real `String.prototype` object
     // (builtin_string_iterator.cpp), and the ordinary symbol-keyed walk below
     // this dispatch finds it there — `handled` stays false, exactly as it does
     // for every other member a string reaches through its intrinsic.
-    if (!objVal.isObject()) return Value::fromUndefined();
-    switch (objVal.asObject<HeapObjectHeader>()->flags) {
+    if (!obj.get().isObject()) return Value::fromUndefined();
+    switch (obj.get().asObject<HeapObjectHeader>()->flags) {
         case HeapKind::Array:
             // 23.1.3.41 makes it the same function object as
             // `Array.prototype.values` — an IDENTITY, not a twin, and it holds

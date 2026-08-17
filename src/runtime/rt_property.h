@@ -150,8 +150,11 @@ struct ObjectHeader* rtSymbolKeyHolder(Value objVal);
 // bronze does not build. `handled` separates "no answer here" from "the answer
 // is undefined" — the same bits and different facts, since only the first may
 // fall through to the ordinary walk. ALLOCATES: several answers are heap
-// strings and one materializes an intrinsic, so the caller roots first.
-Value rtWellKnownSymbolMember(Value objVal, Value keyVal, bool& handled);
+// strings, one materializes an intrinsic, and even the well-known-symbol
+// COMPARISONS intern on first use — which is why the receiver and key arrive
+// as roots rather than values: every internal read stays current across
+// those allocations.
+Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& handled);
 
 // Where a symbol-keyed READ starts its prototype walk. Deliberately not
 // `rtSymbolKeyHolder`: a primitive has no storage to write a symbol-keyed

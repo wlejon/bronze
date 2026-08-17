@@ -724,7 +724,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> recv{objVal};
         Rooted<Value> key{Value(idxBits)};
         bool handled = false;
-        const Value wellKnown = rtWellKnownSymbolMember(recv.get(), key.get(), handled);
+        const Value wellKnown = rtWellKnownSymbolMember(recv, key, handled);
         if (handled) return wellKnown.rawBits();
         Rooted<Value> holderRoot{rtSymbolReadStart(recv.get())};
         // A receiver with neither own symbol-keyed storage nor a chain: an
