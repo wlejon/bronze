@@ -38,8 +38,20 @@ struct FinalizerEntry {
     HeapObjectHeader* cell;  // the handle cell's CURRENT header address
     void* data;
     HandleDestructor dtor;
+    Finalize when;
 };
 thread_local std::vector<FinalizerEntry> g_finalizers;
+
+// Deferred destructors between the collection that queued them and the drain
+// that runs them. Plain host pointers only — nothing here is a GC value, so
+// the queue needs no rooting and survives any number of collections between
+// checkpoints.
+struct PendingFinalizer {
+    void* data;
+    HandleDestructor dtor;
+};
+thread_local std::vector<PendingFinalizer> g_pendingFinalizers;
+thread_local bool g_drainingFinalizers = false;
 
 // The handle cells' own root shape, and the brand handleData checks. Null
 // prototype on purpose, like the namespace objects' root shapes: a handle
@@ -58,7 +70,7 @@ void sweepFinalizers() {
         if (entry.cell->tag == static_cast<uint16_t>(Tag::Forwarded)) {
             entry.cell = *reinterpret_cast<HeapObjectHeader**>(entry.cell->payload());
             g_finalizers[keep++] = entry;
-        } else {
+        } else if (entry.when == Finalize::InSweep) {
             // Dead. The destructor gets the pointer the registry duplicated at
             // creation rather than one read out of the dead payload — the
             // forwarding protocol clobbers a payload's first word for LIVE
@@ -66,6 +78,13 @@ void sweepFinalizers() {
             // on the safe side of that. It must not touch the bronze heap: the
             // collection is mid-flight (heap.h).
             entry.dtor(entry.data);
+        } else {
+            // Dead, Deferred: queue for drainFinalizers. Only the host pair
+            // survives — the cell is from-space garbage the moment this sweep
+            // returns, which is precisely what licenses the destructor to do
+            // anything it likes later: there is no heap state left to
+            // resurrect or corrupt.
+            g_pendingFinalizers.push_back({entry.data, entry.dtor});
         }
     }
     g_finalizers.resize(keep);
@@ -176,7 +195,7 @@ void Persistent::set(Value v) {
 
 // ---- opaque native handles -------------------------------------------------
 
-Value makeHandle(void* data, HandleDestructor dtor) {
+Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
     if (!dtor) fatal("embed: a native handle needs a destructor (pass a no-op explicitly)");
     ShadowStackFrame frame;
     ensureRegistries();
@@ -196,9 +215,28 @@ Value makeHandle(void* data, HandleDestructor dtor) {
                                                          "handle destructor")));
     // No allocation between the create above and this push, so `cell` cannot
     // have moved: the entry records the address the collector will next see.
-    g_finalizers.push_back({&cell->header, data, dtor});
+    g_finalizers.push_back({&cell->header, data, dtor, when});
     return Value::fromObject(cell);
 }
+
+void drainFinalizers() {
+    // Reentrancy is absorbed, not recursed: a Deferred destructor may
+    // allocate, collect, and thereby queue more, and it may itself reach
+    // drainMicrotasks — the inner drain returns and the loop below, indexing
+    // rather than iterating, picks up whatever got appended.
+    if (g_drainingFinalizers) return;
+    g_drainingFinalizers = true;
+    for (size_t i = 0; i < g_pendingFinalizers.size(); ++i) {
+        // By copy: the vector may reallocate under a destructor's own
+        // collections appending to it.
+        PendingFinalizer pending = g_pendingFinalizers[i];
+        pending.dtor(pending.data);
+    }
+    g_pendingFinalizers.clear();
+    g_drainingFinalizers = false;
+}
+
+bool finalizersPending() { return !g_pendingFinalizers.empty(); }
 
 void* handleData(Value handle) {
     if (!handle.isObject()) return nullptr;

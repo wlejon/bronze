@@ -19,9 +19,44 @@
 // a C++ host, and the boundary it sits on is host <-> runtime, not
 // codegen <-> runtime.
 //
-// Threading: single-threaded by design, like the runtime itself (bronze has no
-// threads and no design for them). The host owns the frame loop and calls in
-// from one thread.
+// ---- THE THREADING CONTRACT ------------------------------------------------
+//
+// The runtime is PER-THREAD, and a thread needs no ceremony to get one. Every
+// piece of mutable runtime state — heap, arena, the interning tables, the
+// intrinsics, the microtask queue, the Persistent slots and finalizer
+// registries below — is thread_local and built lazily on first touch, so a
+// worker that simply calls in owns a fresh, fully independent runtime from
+// that first call. There is no attach step, no init ordering between threads,
+// and no cross-thread locking, because there is nothing shared to lock.
+//
+// What that buys, and what it imposes:
+//
+//  * A Value is THREAD-BOUND. It points into the heap of the thread that made
+//    it, and so does everything reachable from it — a Persistent included,
+//    which is a slot in its creating thread's registry. Handing either to
+//    another thread is not a data race to synchronize away, it is nonsense:
+//    the other thread's runtime has never heard of the value, and the
+//    collector that owns it moves it without telling anyone else. Cross-thread
+//    data travel is the HOST's job — serialize on one side, re-create on the
+//    other.
+//
+//  * A compiled MODULE is thread-bound too. Its entry registers the module
+//    image's own .data — its inline caches, global cache, function-singleton
+//    slots, environment cell, key remap — with the CALLING thread's runtime,
+//    and those tables are per-image, not per-thread. So one module image
+//    belongs to one thread: the thread that ran its entry (its HOME thread)
+//    is the only thread that may ever enter it, call its functions, or touch
+//    values it produced. A host that wants the same script on N workers loads
+//    N copies of the image from N distinct paths — the same fresh-image rule
+//    the unload section below already imposes for hot swap.
+//
+//  * There is NO TEARDOWN. A thread's runtime lives until its thread exits and
+//    its memory until process exit — deliberately leaked, because proving no
+//    reference escaped would cost more than the memory does. Pool and reuse
+//    worker threads rather than churning them.
+//
+// tests/threaded_modules is this contract in executable form: two compiled
+// modules on two threads, concurrently, each against its own runtime.
 //
 // THE GC CONTRACT, which every function below is written against: the heap is
 // a moving semispace collector, so any allocation may relocate every heap
@@ -248,6 +283,28 @@ BRONZE_EMBED_API bool microtasksPending();
 // the value. The value is rooted for the life of the process.
 BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 
+// Is `name` in the host-global registry? The load-time half of a manifest
+// check: a module's `<entry>_host_globals` manifest names every global the
+// program was compiled to expect from its host, and a manifest name nobody
+// registered is a fatal at first READ, mid-run. A loader that walks the
+// manifest and probes here can refuse the module at load time with a message
+// naming the gap instead.
+BRONZE_EMBED_API bool hasHostGlobal(std::string_view name);
+
+// The value a free read of `name` in compiled code would see: the builtin
+// ladder first (Math, the constructors — a host cannot shadow those, exactly
+// as the compiled path cannot), then the host-global registry, then own
+// properties of globalThis (a program that assigned `globalThis.foo = ...`
+// created the global its next free `foo` reads). `found` is false where a
+// compiled read would fatal — the probe-and-degrade answer a host binding
+// wants. MAY ALLOCATE (the builtin namespaces build lazily), so the usual
+// Persistent rules apply to the result.
+struct GlobalValue {
+    Value value;  // undefined when !found
+    bool found{false};
+};
+BRONZE_EMBED_API GlobalValue globalValue(std::string_view name);
+
 // ---- persistent handles (embed_handle.cpp) ---------------------------------
 
 // A heap-safe root the host may hold across frames and collections: the
@@ -319,9 +376,15 @@ BRONZE_EMBED_API Value throwRangeError(const std::string& message);
 // on the same inline-cache paths as program-built ones. ALLOCATES.
 BRONZE_EMBED_API Value createObject();
 
-// Define an own data property (enumerable, like an assignment). ALLOCATES and
-// may move `obj`: the return value is the object's post-call address, and any
-// OTHER Value the host holds must be re-read from a Persistent.
+// Define an own data property (enumerable, like an assignment). The receiver
+// may be a plain object or a FUNCTION: `URL.createObjectURL` is a property on
+// a function value, and a host shipping such a namespace has to be able to
+// spell it. On a function the definition lands where a class `static` member's
+// would; `name`, `length` and `prototype` are slot-backed or non-writable
+// (10.2.9, 10.2.10, 10.2.4) and are refused by name, loudly — hard errors
+// over a property the reads would then lie about. ALLOCATES and may move
+// `obj`: the return value is the receiver's post-call address, and any OTHER
+// Value the host holds must be re-read from a Persistent.
 BRONZE_EMBED_API Value setProperty(Value obj, std::string_view key, Value v);
 
 // `obj[3] = v` spelled from the host, for any receiver the program could
@@ -376,16 +439,46 @@ BRONZE_EMBED_API Value getElement(Value obj, uint32_t index);
 // a C++ object (an Engine*, a GL wrapper) off a bronze value. The destructor
 // runs when the collector proves the cell dead — via the finalizer registry
 // swept after each collection, because a moving collector never visits dead
-// objects — and does NOT run at process exit for cells still alive then. It
-// runs MID-COLLECTION, so it must not touch the bronze heap or call back into
-// this API; freeing host memory is its whole job. ALLOCATES.
+// objects — and does NOT run at process exit for cells still alive then.
+// ALLOCATES.
 //
 // The cell is a real plain object as far as the program is concerned: opaque
 // by convention, not enforcement. A program that writes properties on one
 // gets an ordinary object with properties; the payload stays invisible either
 // way (internal slots have no property names).
 using HandleDestructor = void (*)(void* data);
-BRONZE_EMBED_API Value makeHandle(void* data, HandleDestructor dtor);
+
+// WHEN the destructor runs, which decides what it may do:
+enum class Finalize : uint8_t {
+    // Inside the collection that proved the cell dead. The destructor must
+    // not touch the bronze heap or call back into this API — the collection
+    // is mid-flight; freeing host memory is its whole job. The default,
+    // because it needs no pumping from the host.
+    InSweep,
+    // Queued at that same moment, run at the next drainFinalizers() — which
+    // drainMicrotasks() performs, so a host already pumping the checkpoint
+    // gets it free. By then the cell is long gone and only the {data, dtor}
+    // pair survives, so there is nothing to resurrect — which is what makes
+    // it safe for the destructor to allocate, make any embed call, even call
+    // into compiled code: it runs on a plain host stack like any other host
+    // code. For teardown that must NOTIFY something (an observer list, a
+    // cache invalidation in the program) rather than merely free memory.
+    Deferred,
+};
+BRONZE_EMBED_API Value makeHandle(void* data, HandleDestructor dtor,
+                                  Finalize when = Finalize::InSweep);
+
+// Run the destructors of Deferred handles whose cells a collection has since
+// proved dead. RUNS HOST CODE that may allocate, collect, and thereby queue
+// more — the drain keeps going until the queue is empty. A drain begun while
+// one is already running on this thread returns immediately (the outer drain
+// will pick up whatever was queued), so a destructor that reaches
+// drainMicrotasks does not recurse. Safe to call with an empty queue.
+BRONZE_EMBED_API void drainFinalizers();
+
+// Anything queued? microtasksPending's twin, for the same shutdown-quiescence
+// loop.
+BRONZE_EMBED_API bool finalizersPending();
 
 // The pointer a handle carries, or nullptr for a value that is not one.
 BRONZE_EMBED_API void* handleData(Value handle);
@@ -524,6 +617,15 @@ struct CallResult {
 // the host boundary is where propagation ends, the way `main`'s uncaught
 // handler ends it for a standalone program. ALLOCATES (roots the arguments).
 BRONZE_EMBED_API CallResult call(Value fn, Value thisValue, std::span<const Value> args);
+
+// `new fn(...args)` through the same machinery a compiled `new` uses
+// (bronze_construct): bound functions unwrap, a Proxy takes its `construct`
+// trap, and a non-constructor is the TypeError that path already raises,
+// reported as a thrown result. With globalValue above, this is how a host
+// reaches anything only a constructor can make — the program's own classes
+// off globalThis, or `new Proxy(target, traps)` for a dataset/style-shaped
+// binding. Same boundary contract as `call`. ALLOCATES.
+BRONZE_EMBED_API CallResult construct(Value fn, std::span<const Value> args);
 
 // Parse a UTF-8 JSON string into bronze heap values (objects, arrays, primitives).
 // Returns the parsed Value, or thrown=true with an Error instance on syntax error.

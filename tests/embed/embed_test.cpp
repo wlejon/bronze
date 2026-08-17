@@ -568,3 +568,189 @@ TEST_CASE("a host-built typed array survives collections and round-trips through
     CHECK(!result.thrown);
     CHECK(result.value.asNumber() == 30.0);
 }
+
+TEST_CASE("globalValue resolves the ladder a compiled read resolves, and reports absence") {
+    // A builtin answers first and cannot be shadowed by the host — the same
+    // rule bronze_global_get applies, which is the point of sharing its order.
+    embed::registerGlobal("Math", embed::fromDouble(13.0));
+    embed::GlobalValue math = embed::globalValue("Math");
+    REQUIRE(math.found);
+    CHECK(embed::isObject(math.value));
+    CHECK(embed::toDouble(embed::getProperty(math.value, "E")) > 2.7);
+
+    // A host-registered name answers where no builtin does.
+    embed::registerGlobal("engineHandle", embed::fromDouble(7.0));
+    embed::GlobalValue host = embed::globalValue("engineHandle");
+    REQUIRE(host.found);
+    CHECK(host.value.asNumber() == 7.0);
+
+    // An own property of globalThis IS a global (9.1.1.4.1), and the probe
+    // sees one the moment it exists — here written through the embed API
+    // itself, standing in for a program's `globalThis.assigned = ...`.
+    embed::Persistent globalThis{embed::globalValue("globalThis").value};
+    embed::setProperty(globalThis.get(), "assignedGlobal", embed::fromDouble(3.0));
+    embed::GlobalValue assigned = embed::globalValue("assignedGlobal");
+    REQUIRE(assigned.found);
+    CHECK(assigned.value.asNumber() == 3.0);
+
+    // Absence is an answer, not a fatal — the whole reason this exists beside
+    // bronze_global_get.
+    embed::GlobalValue missing = embed::globalValue("noSuchGlobalAnywhere");
+    CHECK(!missing.found);
+    CHECK(embed::isUndefined(missing.value));
+}
+
+TEST_CASE("hasHostGlobal probes the registry and only the registry") {
+    CHECK(!embed::hasHostGlobal("neverRegisteredName"));
+    // Registry membership is what a manifest diff needs, so a registered
+    // undefined still counts — the host DID answer the manifest.
+    embed::registerGlobal("registeredUndefined", embed::undefined());
+    CHECK(embed::hasHostGlobal("registeredUndefined"));
+    // Builtins are not host globals: `JSON` resolves for a program without
+    // any host at all, and a loader diffing a manifest must not be told the
+    // host provided it. (Not `Math`: the globalValue case above registers
+    // that name on purpose, and cases share one process.)
+    CHECK(!embed::hasHostGlobal("JSON"));
+}
+
+TEST_CASE("construct reaches a builtin constructor the way a compiled `new` does") {
+    embed::GlobalValue errorCtor = embed::globalValue("Error");
+    REQUIRE(errorCtor.found);
+    embed::Persistent ctor{errorCtor.value};
+
+    embed::Persistent message{embed::fromUtf8("made by the host")};
+    const embed::Value arg = message.get();
+    embed::CallResult made = embed::construct(ctor.get(), {&arg, 1});
+    REQUIRE(!made.thrown);
+    CHECK(embed::isObject(made.value));
+    embed::Persistent err{made.value};
+    CHECK(embed::toUtf8(embed::getProperty(err.get(), "message")) == "made by the host");
+
+    // A non-constructor is the TypeError the construct path already raises,
+    // reported as a thrown result rather than a fatal.
+    embed::CallResult bad = embed::construct(embed::fromDouble(3.0), {});
+    CHECK(bad.thrown);
+    CHECK(embed::isObject(bad.value));
+}
+
+TEST_CASE("globalValue plus construct builds a live Proxy from the host") {
+    // The pair this API exists for: dataset, el.style, getComputedStyle and
+    // localStorage are all "a Proxy whose traps are host functions", and a
+    // host can now build one without a line of compiled JS.
+    embed::GlobalValue proxyCtor = embed::globalValue("Proxy");
+    REQUIRE(proxyCtor.found);
+    embed::Persistent ctor{proxyCtor.value};
+
+    embed::Persistent target{embed::createObject()};
+    embed::Persistent getTrap{embed::makeFunction(
+        [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            // get(target, key, receiver): answer "trap:<key>" for any key.
+            if (args.size() < 2) return embed::undefined();
+            return embed::fromUtf8("trap:" + embed::toUtf8(args[1]));
+        },
+        3)};
+    embed::Persistent traps{embed::createObject()};
+    traps.set(embed::setProperty(traps.get(), "get", getTrap.get()));
+
+    embed::Value ctorArgs[2] = {target.get(), traps.get()};
+    embed::CallResult made = embed::construct(ctor.get(), ctorArgs);
+    REQUIRE(!made.thrown);
+    embed::Persistent proxy{made.value};
+
+    // A read through the generic property path runs the host trap.
+    CHECK(embed::toUtf8(embed::getProperty(proxy.get(), "fontSize")) == "trap:fontSize");
+    CHECK(embed::toUtf8(embed::getProperty(proxy.get(), "color")) == "trap:color");
+}
+
+TEST_CASE("setProperty defines properties on a function value") {
+    // URL.createObjectURL: a namespace that IS a function, carrying statics.
+    embed::Persistent url{embed::makeFunction(
+        [](embed::Value, std::span<const embed::Value>) -> embed::Value {
+            return embed::fromUtf8("url-instance");
+        },
+        1)};
+    embed::Persistent createObjectURL{embed::makeFunction(
+        [](embed::Value, std::span<const embed::Value>) -> embed::Value {
+            return embed::fromUtf8("blob:bronze");
+        })};
+
+    url.set(embed::setProperty(url.get(), "createObjectURL", createObjectURL.get()));
+    url.set(embed::setProperty(url.get(), "version", embed::fromDouble(2.0)));
+
+    runtime::rtHeap().collect();
+
+    // Both land where a class `static` would, and read back through the same
+    // path a program's `URL.createObjectURL` read takes.
+    CHECK(embed::toDouble(embed::getProperty(url.get(), "version")) == 2.0);
+    embed::Persistent method{embed::getProperty(url.get(), "createObjectURL")};
+    REQUIRE(embed::isFunction(method.get()));
+    embed::CallResult result = embed::call(method.get(), url.get(), {});
+    CHECK(!result.thrown);
+    CHECK(embed::toUtf8(result.value) == "blob:bronze");
+
+    // The function is still a function: callable, and its statics did not
+    // disturb that.
+    embed::CallResult called = embed::call(url.get(), embed::undefined(), {});
+    CHECK(!called.thrown);
+    CHECK(embed::toUtf8(called.value) == "url-instance");
+}
+
+namespace {
+// The deferred-finalizer probe: written through `data` by a capture-free
+// lambda, because HandleDestructor is a plain function pointer.
+struct DeferredProbe {
+    int freed = 0;
+    std::string echoed;
+};
+}  // namespace
+
+TEST_CASE("a Deferred handle destructor waits for the drain and may make embed calls") {
+    DeferredProbe probe;
+    embed::makeHandle(
+        &probe,
+        [](void* p) {
+            auto* state = static_cast<DeferredProbe*>(p);
+            state->freed++;
+            // The whole point of Deferred: this ALLOCATES on the bronze heap,
+            // which an InSweep destructor must never do.
+            state->echoed = embed::toUtf8(embed::fromUtf8("allocated in a finalizer"));
+        },
+        embed::Finalize::Deferred);
+    // The handle value was dropped on the floor above, so the collection
+    // proves it dead — and the destructor still must NOT have run yet.
+    embed::collectGarbage();
+    CHECK(probe.freed == 0);
+    CHECK(embed::finalizersPending());
+
+    embed::drainFinalizers();
+    CHECK(probe.freed == 1);
+    CHECK(probe.echoed == "allocated in a finalizer");
+    CHECK(!embed::finalizersPending());
+
+    // A second collection must not run it again: the sweep dropped the entry
+    // when it queued it.
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    CHECK(probe.freed == 1);
+}
+
+TEST_CASE("drainMicrotasks runs deferred finalizers, and InSweep still runs in the sweep") {
+    DeferredProbe deferred;
+    embed::makeHandle(
+        &deferred,
+        [](void* p) { static_cast<DeferredProbe*>(p)->freed++; },
+        embed::Finalize::Deferred);
+    DeferredProbe inSweep;
+    embed::makeHandle(&inSweep, [](void* p) { static_cast<DeferredProbe*>(p)->freed++; });
+
+    embed::collectGarbage();
+    // The default ran inside the collection, exactly as before this enum
+    // existed; the deferred one is still waiting on the checkpoint.
+    CHECK(inSweep.freed == 1);
+    CHECK(deferred.freed == 0);
+
+    // The checkpoint a frame loop already pumps is enough — no new call for
+    // the host to learn.
+    embed::drainMicrotasks();
+    CHECK(deferred.freed == 1);
+}

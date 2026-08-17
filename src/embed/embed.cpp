@@ -33,6 +33,25 @@ void registerGlobal(std::string_view name, Value value) {
     runtime::rtRegisterHostGlobal(std::string(name), value);
 }
 
+bool hasHostGlobal(std::string_view name) {
+    Value ignored = Value::fromUndefined();
+    return runtime::rtHostGlobalLookup(std::string(name), ignored);
+}
+
+GlobalValue globalValue(std::string_view name) {
+    // A frame: the builtin ladder constructs its namespaces lazily, so the
+    // first ask for "Math" in a process allocates it.
+    ShadowStackFrame frame;
+    const std::string key(name);
+    Value out = Value::fromUndefined();
+    // The same order bronze_global_get resolves in, so this probe and a
+    // compiled read cannot answer differently for a name both can see.
+    if (runtime::rtResolveBuiltinGlobal(key, out)) return {out, true};
+    if (runtime::rtHostGlobalLookup(key, out)) return {out, true};
+    if (runtime::rtGlobalThisOwnLookup(key, out)) return {out, true};
+    return {Value::fromUndefined(), false};
+}
+
 // ---- calling into compiled code --------------------------------------------
 
 CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
@@ -57,6 +76,26 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     // propagation ends: there is no enclosing JS frame left to unwind to, and
     // a pending cell left set would make the NEXT call into compiled code
     // appear to throw its predecessor's exception.
+    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+        return out;
+    }
+    return CallResult{result.get(), /*thrown=*/false};
+}
+
+CallResult construct(Value fn, std::span<const Value> args) {
+    ShadowStackFrame frame;
+    Rooted<Value> fnRoot{fn};
+    // The same RootedBlock discipline as call(), for the same reason: nothing
+    // outside this frame roots the arguments, and everything between here and
+    // the instance allocation may collect.
+    runtime::RootedBlock block(static_cast<uint32_t>(args.size()));
+    for (uint32_t i = 0; i < args.size(); ++i) block.set(i, args[i]);
+
+    Rooted<Value> result{
+        Value(bronze_construct(fnRoot.get().rawBits(), block.count(), block.data()))};
+
     if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
         CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
         bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
@@ -195,8 +234,16 @@ CallResult parseJson(std::string_view jsonUtf8) {
 // to link the compiled program. Its own root frame, per this file's rooting
 // pattern, so a host may pump from a stack with no bronze frame on it.
 void drainMicrotasks() {
-    ShadowStackFrame frame;
-    runtime::rtDrainMicrotasks();
+    {
+        ShadowStackFrame frame;
+        runtime::rtDrainMicrotasks();
+    }
+    // Deferred handle destructors ride the same checkpoint (embed.h says why
+    // they exist), AFTER the job queue: the frame's teardown notifications
+    // come after the frame's work. Outside the frame above — the destructors
+    // are plain host code and reach the heap only through embed entry points,
+    // each of which opens its own frame.
+    drainFinalizers();
 }
 
 bool microtasksPending() { return runtime::rtMicrotasksPending(); }
