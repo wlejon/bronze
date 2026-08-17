@@ -4,18 +4,36 @@
 
 #include "codegen-llvm/llvm_backend.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
+#include <llvm/ADT/SmallString.h>
+// The bitcode headers instantiate LLVM templates inside MSVC's own STL
+// headers, which sit outside the -external:W0 shield the LLVM include dir
+// gets — so the truncation warnings those instantiations raise are LLVM's,
+// not bronze's, and are silenced for exactly these two includes.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4244 4267)
+#endif
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -40,6 +58,8 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/MemoryBufferRef.h>
+#include <llvm/Transforms/Utils/SplitModule.h>
 
 static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
 
@@ -321,11 +341,11 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
     }
 }
 
-// Host target machine → object file. Runs LLVM's PassBuilder O3 optimization pipeline
+// Host target machine → object file(s). Runs LLVM's PassBuilder O3 pipeline
 // and targets the host CPU and instruction set extensions.
 //
 // `pic` asks for position-independent code, and it is the one thing about this
-// function that `--emit-shared` changes. bronze's ordinary output is NOT
+// path that `--emit-shared` changes. bronze's ordinary output is NOT
 // position-independent — which is why the driver links executables `-no-pie` on
 // Linux and why tests/two_module links its host the same way — and on ELF
 // x86-64 a non-PIC object simply cannot go into a shared object: GNU ld refuses
@@ -335,75 +355,272 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
 // such concept, so this is a no-op on both; asking for it uniformly under the
 // shared flag is still right, because what it expresses is "this object is
 // going into a library", which is true on all three.
-bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bool pic,
-                     DiagnosticSink& diags) {
-    llvm::InitializeNativeTarget();
-    llvm::InitializeNativeTargetAsmPrinter();
-    llvm::InitializeNativeTargetAsmParser();
 
-    llvm::Triple targetTriple(llvm::sys::getDefaultTargetTriple());
-    llvmModule.setTargetTriple(targetTriple);
+std::once_flag nativeTargetOnce;
 
+// Everything a worker needs to build a TargetMachine of its own. A
+// TargetMachine holds per-compilation state, so threads may not share one;
+// the description is captured once and each worker constructs from it.
+struct TargetDesc {
+    std::string triple;
+    std::string cpu;
+    std::string features;
+    bool pic = false;
+};
+
+std::unique_ptr<llvm::TargetMachine> makeTargetMachine(const TargetDesc& desc,
+                                                       std::string& errOut) {
     std::string lookupError;
-    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTriple, lookupError);
+    const llvm::Target* target =
+        llvm::TargetRegistry::lookupTarget(llvm::Triple(desc.triple), lookupError);
     if (!target) {
-        diags.error(Span{}, "Failed to lookup host target: " + lookupError);
-        return false;
+        errOut = "Failed to lookup host target: " + lookupError;
+        return nullptr;
     }
-
-    std::string cpu = std::string(llvm::sys::getHostCPUName());
-    llvm::SubtargetFeatures features;
-    for (const auto& [feature, enabled] : llvm::sys::getHostCPUFeatures()) {
-        features.AddFeature(feature, enabled);
-    }
-
     llvm::TargetOptions opt;
     // std::nullopt is LLVM's "pick the target's default", which is what every
     // static build has always emitted and what must not change here.
     const std::optional<llvm::Reloc::Model> reloc =
-        pic ? std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_) : std::nullopt;
-    std::unique_ptr<llvm::TargetMachine> targetMachine(target->createTargetMachine(
-        targetTriple, cpu, features.getString(), opt,
-        reloc, std::nullopt, llvm::CodeGenOptLevel::Aggressive));
-    if (!targetMachine) {
-        diags.error(Span{}, "Failed to create LLVM target machine");
-        return false;
-    }
-    llvmModule.setDataLayout(targetMachine->createDataLayout());
+        desc.pic ? std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_) : std::nullopt;
+    std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
+        llvm::Triple(desc.triple), desc.cpu, desc.features, opt, reloc, std::nullopt,
+        llvm::CodeGenOptLevel::Aggressive));
+    if (!tm) errOut = "Failed to create LLVM target machine";
+    return tm;
+}
 
-    // Run LLVM middle-end optimization pipeline (PassBuilder O3)
+// O3 middle-end + MC backend for one module: the whole pipeline for a small
+// module, one partition's pipeline for a large one. `timing` may be true only
+// on the single-module path — parallel workers would interleave the laps.
+bool optimizeAndEmitOne(llvm::Module& m, llvm::TargetMachine& tm, const std::string& path,
+                        bool timing, std::string& errOut) {
+    auto t0 = std::chrono::steady_clock::now();
+    auto lap = [&t0, timing](const char* what) {
+        if (!timing) return;
+        auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "      %-12s %8.1f ms\n", what,
+                     std::chrono::duration<double, std::milli>(now - t0).count());
+        t0 = now;
+    };
+
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;
     llvm::CGSCCAnalysisManager cgam;
     llvm::ModuleAnalysisManager mam;
-
-    llvm::PassBuilder pb(targetMachine.get());
-
+    llvm::PassBuilder pb(&tm);
     pb.registerModuleAnalyses(mam);
     pb.registerCGSCCAnalyses(cgam);
     pb.registerFunctionAnalyses(fam);
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
-
     llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
-    mpm.run(llvmModule, mam);
+    mpm.run(m, mam);
+    lap("opt-O3");
 
     std::error_code ec;
-    llvm::raw_fd_ostream dest(outputPath, ec, llvm::sys::fs::OF_None);
+    llvm::raw_fd_ostream dest(path, ec, llvm::sys::fs::OF_None);
     if (ec) {
-        diags.error(Span{}, "Could not open output file " + outputPath + ": " + ec.message());
+        errOut = "Could not open output file " + path + ": " + ec.message();
         return false;
     }
-
-    constexpr auto kObjFileType = llvm::CodeGenFileType::ObjectFile;
-
     llvm::legacy::PassManager pass;
-    if (targetMachine->addPassesToEmitFile(pass, dest, nullptr, kObjFileType)) {
-        diags.error(Span{}, "Target machine cannot emit object file for this target");
+    if (tm.addPassesToEmitFile(pass, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+        errOut = "Target machine cannot emit object file for this target";
         return false;
     }
-    pass.run(llvmModule);
+    pass.run(m);
     dest.flush();
+    lap("mc-emit");
+    return true;
+}
+
+// Partition symbol hygiene for shared objects on non-COFF targets. Splitting
+// promotes module-internal symbols to external so partitions can reach each
+// other, and on ELF and Mach-O every default-visibility external in a shared
+// object is EXPORTED — so two loaded modules could resolve each other's
+// promoted internals by name. Everything a partition defines except the
+// module's published names goes hidden. COFF ignores visibility and exports
+// only what is dllexport-marked, so this changes nothing there; the published
+// names are skipped so their dllexport marking stays verifier-legal.
+void hideUnpublished(llvm::Module& m, const std::vector<std::string>& published) {
+    for (llvm::GlobalValue& gv : m.global_values()) {
+        if (gv.isDeclaration() || gv.hasLocalLinkage()) continue;
+        bool keep = false;
+        for (const std::string& name : published) {
+            if (gv.getName() == name) {
+                keep = true;
+                break;
+            }
+        }
+        if (!keep) gv.setVisibility(llvm::GlobalValue::HiddenVisibility);
+    }
+}
+
+// Emission cost is LINEAR in instruction count: ~50 µs/inst through O3 + MC,
+// measured on the three.js bundle at both 1.7M and 7.2M instructions, with no
+// single pass or function dominating (an optnone entry function and O1/O2
+// pipelines all landed within noise). So the one lever that matters for a
+// large module is running partitions of it in PARALLEL, and the split is by
+// symbol-name hash (llvm::SplitModule), so the same input always produces the
+// same partitions with the same contents.
+//
+// Below the threshold — every ordinary program — the single-object path runs
+// exactly as it always has and writes exactly `outputPath`. Above it, only
+// when the caller passed `emittedPaths` (i.e. it can link a LIST), the module
+// is split and each partition is optimized and emitted on its own thread, in
+// its own LLVMContext, handed over as bitcode because a worker may not touch
+// the shared context. `emittedPaths` records what was actually written.
+bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bool pic,
+                     const std::vector<std::string>& publishedNames,
+                     std::vector<std::string>* emittedPaths, DiagnosticSink& diags) {
+    std::call_once(nativeTargetOnce, [] {
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
+    });
+
+    TargetDesc desc;
+    desc.triple = llvm::sys::getDefaultTargetTriple();
+    desc.cpu = std::string(llvm::sys::getHostCPUName());
+    llvm::SubtargetFeatures features;
+    for (const auto& [feature, enabled] : llvm::sys::getHostCPUFeatures()) {
+        features.AddFeature(feature, enabled);
+    }
+    desc.features = features.getString();
+    desc.pic = pic;
+
+    llvmModule.setTargetTriple(llvm::Triple(desc.triple));
+
+    std::string tmErr;
+    std::unique_ptr<llvm::TargetMachine> targetMachine = makeTargetMachine(desc, tmErr);
+    if (!targetMachine) {
+        diags.error(Span{}, tmErr);
+        return false;
+    }
+    llvmModule.setDataLayout(targetMachine->createDataLayout());
+
+    size_t instCount = 0;
+    {
+        size_t fnCount = 0, maxInsts = 0;
+        std::string maxName;
+        for (const llvm::Function& f : llvmModule) {
+            if (f.isDeclaration()) continue;
+            ++fnCount;
+            size_t insts = 0;
+            for (const llvm::BasicBlock& bb : f) insts += bb.size();
+            instCount += insts;
+            if (insts > maxInsts) {
+                maxInsts = insts;
+                maxName = std::string(f.getName());
+            }
+        }
+        if (support::timingsEnabled()) {
+            std::fprintf(stderr, "      scale: %zu fns, %zu insts, largest %s (%zu insts)\n",
+                         fnCount, instCount, maxName.c_str(), maxInsts);
+        }
+    }
+
+    // ~20 s of serial pipeline is where splitting starts paying for its
+    // constant costs (split, bitcode round-trip, link of N objects); half the
+    // threshold per partition keeps every partition big enough to be worth a
+    // thread. The cap bounds peak memory: each worker holds a parsed
+    // partition plus its analyses.
+    constexpr size_t kPartitionThresholdInsts = 400'000;
+    constexpr unsigned kMaxPartitions = 16;
+    unsigned parts = 1;
+    if (emittedPaths && instCount >= kPartitionThresholdInsts) {
+        const unsigned byInsts =
+            static_cast<unsigned>(instCount / (kPartitionThresholdInsts / 2));
+        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+        parts = std::min({kMaxPartitions, hw, std::max(2u, byInsts)});
+    }
+
+    if (parts <= 1) {
+        std::string err;
+        if (!optimizeAndEmitOne(llvmModule, *targetMachine, outputPath,
+                                support::timingsEnabled(), err)) {
+            diags.error(Span{}, err);
+            return false;
+        }
+        if (emittedPaths) *emittedPaths = {outputPath};
+        return true;
+    }
+
+    // Partition files sit beside the requested output as `<stem>.p<N><ext>`.
+    std::vector<std::string> paths;
+    {
+        const std::filesystem::path base(outputPath);
+        const std::string ext = base.extension().string();
+        std::filesystem::path stem = base;
+        stem.replace_extension();
+        for (unsigned i = 0; i < parts; ++i) {
+            paths.push_back(stem.string() + ".p" + std::to_string(i) + ext);
+        }
+    }
+
+    std::vector<std::string> bitcodes(parts);
+    {
+        unsigned idx = 0;
+        llvm::SplitModule(llvmModule, parts, [&](std::unique_ptr<llvm::Module> part) {
+            if (pic) hideUnpublished(*part, publishedNames);
+            llvm::SmallString<0> buf;
+            llvm::raw_svector_ostream os(buf);
+            llvm::WriteBitcodeToFile(*part, os);
+            bitcodes[idx++] = std::string(buf.str());
+        });
+    }
+
+    std::vector<std::string> errors(parts);
+    std::vector<size_t> partInsts(parts, 0);
+    std::vector<double> partMillis(parts, 0.0);
+    std::vector<std::thread> workers;
+    workers.reserve(parts);
+    for (unsigned i = 0; i < parts; ++i) {
+        workers.emplace_back([&, i] {
+            const auto begin = std::chrono::steady_clock::now();
+            llvm::LLVMContext ctx;
+            llvm::MemoryBufferRef buf(bitcodes[i], "partition");
+            llvm::Expected<std::unique_ptr<llvm::Module>> part =
+                llvm::parseBitcodeFile(buf, ctx);
+            if (!part) {
+                errors[i] = "partition " + std::to_string(i) +
+                            ": bitcode parse failed: " + llvm::toString(part.takeError());
+                return;
+            }
+            for (const llvm::Function& f : **part) {
+                for (const llvm::BasicBlock& bb : f) partInsts[i] += bb.size();
+            }
+            std::string err;
+            std::unique_ptr<llvm::TargetMachine> tm = makeTargetMachine(desc, err);
+            if (!tm) {
+                errors[i] = "partition " + std::to_string(i) + ": " + err;
+                return;
+            }
+            if (!optimizeAndEmitOne(**part, *tm, paths[i], /*timing=*/false, err)) {
+                errors[i] = "partition " + std::to_string(i) + ": " + err;
+            }
+            partMillis[i] = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+        });
+    }
+    for (std::thread& w : workers) w.join();
+
+    if (support::timingsEnabled()) {
+        std::fprintf(stderr, "      partitions: %u\n", parts);
+        for (unsigned i = 0; i < parts; ++i) {
+            std::fprintf(stderr, "        p%-2u %9zu insts %10.1f ms\n", i, partInsts[i],
+                         partMillis[i]);
+        }
+    }
+    bool ok = true;
+    for (const std::string& err : errors) {
+        if (err.empty()) continue;
+        diags.error(Span{}, err);
+        ok = false;
+    }
+    if (!ok) return false;
+    *emittedPaths = std::move(paths);
     return true;
 }
 
@@ -552,7 +769,13 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     }
     lap("llvm-verify");
 
-    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_, diags);
+    // The three names the object publishes, in the sense writeObjectFile
+    // needs them: partitioned emission must not hide these, whatever else it
+    // hides (hideUnpublished says why anything is hidden at all).
+    const std::vector<std::string> publishedNames{entrySymbol_, stampSymbol,
+                                                  entrySymbol_ + "_host_globals"};
+    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_, publishedNames,
+                              emittedPathsOut_, diags);
     lap("obj-emit");
     return ok;
 }

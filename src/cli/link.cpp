@@ -332,8 +332,16 @@ bool runFirstWorkingCommand(LinkerState& state, int totalCommands,
 
 }  // namespace
 
-bool linkExecutable(const std::string& objPath, const std::string& outputPath,
+bool linkExecutable(const std::vector<std::string>& objPaths, const std::string& outputPath,
                     DiagnosticSink& diags) {
+    // Every command below wraps `objPath` in exactly one pair of quotes, so
+    // joining the list with `" "` splices N quoted paths into that pair and
+    // no command line needs to know how many objects there are.
+    std::string objPath;
+    for (size_t i = 0; i < objPaths.size(); ++i) {
+        if (i) objPath += "\" \"";
+        objPath += objPaths[i];
+    }
     auto rtLib = findRuntimeLib();
     auto rtCpp = findRuntimeCpp();
 
@@ -464,8 +472,14 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath,
     return false;
 }
 
-bool linkSharedModule(const std::string& objPath, const std::string& outputPath,
+bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
                       DiagnosticSink& diags) {
+    // Quote-splice join, exactly as linkExecutable does it.
+    std::string objPath;
+    for (size_t i = 0; i < objPaths.size(); ++i) {
+        if (i) objPath += "\" \"";
+        objPath += objPaths[i];
+    }
     auto sharedRt = findSharedRuntime();
     if (!sharedRt) {
         diags.error(Span{},

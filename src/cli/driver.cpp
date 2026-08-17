@@ -436,6 +436,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(hostGlobals);
     backend.setSharedRuntime(emitShared);
+    // Handing the backend somewhere to record its outputs is what ALLOWS it
+    // to emit a large module as parallel partition objects; the temp path is
+    // then the stem the partition files are named from.
+    std::vector<std::string> objPaths;
+    backend.setEmittedPathsOut(&objPaths);
     const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);
     timer.mark("codegen");
     if (!emitted) {
@@ -447,14 +452,18 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    bool linked = emitShared ? linkSharedModule(tempObj.string(), outputPath, diags)
-                             : linkExecutable(tempObj.string(), outputPath, diags);
+    bool linked = emitShared ? linkSharedModule(objPaths, outputPath, diags)
+                             : linkExecutable(objPaths, outputPath, diags);
     timer.mark("link");
     timer.total();
 
     std::error_code ec;
     if (std::filesystem::exists(tempObj, ec)) {
         std::filesystem::remove(tempObj, ec);
+    }
+    for (const std::string& obj : objPaths) {
+        std::filesystem::path p(obj);
+        if (std::filesystem::exists(p, ec)) std::filesystem::remove(p, ec);
     }
 
     if (!linked) {

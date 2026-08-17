@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "support/diagnostics.h"
 
@@ -18,7 +19,10 @@ namespace bronze::cli {
 // src/rt/rt.cpp. Tries the toolchains it knows in order and remembers the
 // first that worked, because a build compiles hundreds of programs and the
 // misses are process launches.
-bool linkExecutable(const std::string& objPath, const std::string& outputPath,
+// Both linkers take a LIST of objects because a large module is emitted as
+// several partition objects in parallel (llvm_backend.cpp, writeObjectFile);
+// an ordinary program's list has one entry.
+bool linkExecutable(const std::vector<std::string>& objPaths, const std::string& outputPath,
                     DiagnosticSink& diags);
 
 // Object -> loadable module (DLL / .so / .dylib), against the SHARED runtime.
@@ -33,7 +37,7 @@ bool linkExecutable(const std::string& objPath, const std::string& outputPath,
 // override, never a silent fall through to the static path — a module linked
 // against a static runtime would load, run, and quietly allocate out of a
 // second heap.
-bool linkSharedModule(const std::string& objPath, const std::string& outputPath,
+bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
                       DiagnosticSink& diags);
 
 // A temp object path unique per process and per call, for the two commands

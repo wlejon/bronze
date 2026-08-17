@@ -36,6 +36,13 @@ public:
     // symbol; bronze_abi.h documents the layout and why a loader needs it.
     void setHostGlobals(std::vector<std::string> names) { hostGlobals_ = std::move(names); }
 
+    // Where to record the object files actually written. When set, a large
+    // module MAY be emitted as several linkable partition objects, optimized
+    // and written in parallel; the caller links every path recorded here.
+    // When null — the `--emit-obj` contract, where the host's build owns
+    // naming — exactly one object is written, to the requested path.
+    void setEmittedPathsOut(std::vector<std::string>* out) { emittedPathsOut_ = out; }
+
     bool emitObject(const il::Module& module, const std::string& outputPath,
                     DiagnosticSink& diags) override;
 
@@ -43,6 +50,7 @@ private:
     std::string entrySymbol_ = "bronze_main";
     bool sharedRuntime_ = false;
     std::vector<std::string> hostGlobals_;
+    std::vector<std::string>* emittedPathsOut_ = nullptr;
 };
 
 }  // namespace bronze
