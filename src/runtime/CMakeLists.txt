@@ -82,6 +82,9 @@ bronze_add_module(runtime
         date_math.cpp
         date_text.cpp
         builtin_weak_map.cpp
+        weak_ref.cpp
+        builtin_shared_memory.cpp
+    builtin_weak_ref.cpp
         builtin_object.cpp
         builtin_object_descriptor.cpp
         builtin_object_proto.cpp
@@ -128,6 +131,7 @@ bronze_add_module(runtime
         ../../tests/runtime/map_test.cpp
         ../../tests/runtime/date_math_test.cpp
         ../../tests/runtime/weak_collection_test.cpp
+        ../../tests/runtime/weak_ref_test.cpp
         ../../tests/runtime/bound_function_test.cpp
         ../../tests/runtime/array_sort_test.cpp
         ../../tests/runtime/relational_test.cpp

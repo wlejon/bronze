@@ -388,6 +388,26 @@ void Heap::forward_value(Value& val) {
     val = Value::fromTagAndPayload(val.tag(), reinterpret_cast<uintptr_t>(new_hdr));
 }
 
+HeapObjectHeader* Heap::survivor_of(HeapObjectHeader* header) const noexcept {
+    auto* raw_ptr = reinterpret_cast<uint8_t*>(header);
+    // Outside from-space it is not this collection's business at all: an
+    // arena-interned key, a to-space address a caller already updated. Reported
+    // as a survivor unchanged, because "not in the space being collected" and
+    // "died" are different facts and only the second may clear a weak slot.
+    if (raw_ptr < from_space_.base || raw_ptr >= from_space_.bump_ptr) {
+        return header;
+    }
+    if (!is_valid_object_tag(header->tag)) {
+        return header;
+    }
+    if (header->tag == static_cast<uint16_t>(Tag::Forwarded)) {
+        return *reinterpret_cast<HeapObjectHeader**>(header->payload());
+    }
+    // Its header still carries the tag it was allocated with, so the copy phase
+    // never reached it: nothing live refers to it any more.
+    return nullptr;
+}
+
 void Heap::collect() {
     if (in_gc_) {
         return;
@@ -462,8 +482,8 @@ void Heap::collect() {
     // not, which is exactly the question a finalizer sweep has to ask. It runs
     // BEFORE the swap because that is when "from-space" still names the space
     // the registered pointers point into.
-    if (post_collection_hook_) {
-        post_collection_hook_();
+    for (const PostCollectionHook& hook : post_collection_hooks_) {
+        hook();
     }
 
     if (g_gcLog.enabled) {

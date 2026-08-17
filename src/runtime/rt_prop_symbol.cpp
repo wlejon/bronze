@@ -38,6 +38,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -107,10 +108,21 @@ static Value toStringTagOf(Value objVal, bool& handled) {
         }
         case ArrayBufferHeader::kFlags:
             handled = true;
-            return rtMakeString("ArrayBuffer");
+            // 25.1.6.6 and 25.2.5.6 are two different accessors on two
+            // different prototypes, and bronze's one header carries both -- so
+            // the tag follows the FLAG, not the kind.
+            return rtMakeString(objVal.asObject<ArrayBufferHeader>()->isShared()
+                                    ? "SharedArrayBuffer"
+                                    : "ArrayBuffer");
         case DataViewHeader::kFlags:
             handled = true;
             return rtMakeString("DataView");
+        case HeapKind::WeakRef:
+            handled = true;
+            return rtMakeString("WeakRef");  // 26.1.3.3
+        case HeapKind::FinalizationRegistry:
+            handled = true;
+            return rtMakeString("FinalizationRegistry");  // 26.2.3.3
         case ModuleNamespaceHeader::kFlags:
             handled = true;
             return rtMakeString("Module");
@@ -178,6 +190,7 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         // pointer and allocate nothing.
         const bool inheritsSpecies = rtNativeBaseOf(obj.get()) != NativeBase::None ||
                                      rtIsArrayBufferConstructor(obj.get()) ||
+                                     rtSharedArrayBufferConstructorName(obj.get()) != nullptr ||
                                      rtIsTypedArrayConstructor(obj.get()) ||
                                      rtIsRegExpConstructor(obj.get());
         if (inheritsSpecies && !symbolKeyOnChain(obj.get(), rtSymbolSpecies())) {

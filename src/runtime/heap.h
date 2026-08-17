@@ -96,6 +96,20 @@ enum : uint16_t {
     // did, exactly as for an environment record.
     PrivateTable,
 
+    // A WeakRef (26.1) and a FinalizationRegistry (26.2). Their own kinds for
+    // the reason the weak pair above has its own: every dispatch in the runtime
+    // is an exact flags compare, and neither is a plain object — a WeakRef's
+    // one slot is a reference the collector must NOT trace, and a
+    // FinalizationRegistry's cells are half strong and half weak.
+    //
+    // The WeakRef is also the first Tag::Object-shaped VALUE whose heap header
+    // carries Tag::RawBytes (an ArrayBuffer was the first object to do that at
+    // all): the payload scan is exactly what a weak slot must escape, and the
+    // tag is the only thing that keeps it away. runtime/weak_ref.h owns both
+    // layouts and the sweep that makes them weak.
+    WeakRef,
+    FinalizationRegistry,
+
     // Not a kind: how many there are. It exists so that a dispatch which must
     // be TOTAL over the registry can pin the registry's size and break the
     // build when a kind is added. `flags` is a `uint16_t` and this enum is
@@ -145,13 +159,31 @@ public:
     // address in its payload) and a dead object's header is untouched. A moving
     // semispace collector never visits dead objects, so a finalizer registry —
     // pairs of (heap pointer, callback) that must run callbacks for the dead
-    // and re-point entries at survivors — has no other window to sweep in. One
-    // slot, like collection_hook_ above; the hook must not allocate on this
-    // heap (the collection is mid-flight).
+    // and re-point entries at survivors — has no other window to sweep in. The
+    // hook must not allocate on this heap (the collection is mid-flight).
+    //
+    // A LIST, and it became one the day a second consumer appeared: embed's
+    // native-handle destructors were the first, the weak-reference sweep
+    // (runtime/weak_ref.cpp) the second, and neither knows the other exists.
+    // A single slot would have made the second registration silently retire
+    // the first — destructors that stop running, with nothing to say so.
+    // Hooks run in registration order.
     using PostCollectionHook = std::function<void()>;
-    void set_post_collection_hook(PostCollectionHook hook) {
-        post_collection_hook_ = std::move(hook);
+    void add_post_collection_hook(PostCollectionHook hook) {
+        post_collection_hooks_.push_back(std::move(hook));
     }
+
+    // Where the object whose header was at `header` before this collection
+    // lives now, or null when it died. Meaningful ONLY from inside a
+    // post-collection hook: it reads the forwarding mark the copy phase left
+    // in from-space, which the swap at the end of collect() abandons.
+    //
+    // It is a Heap method rather than four lines at each weak table, because
+    // the three things it has to get right — the from-space bounds test, the
+    // tag validity test, and the fact that a heap reference names the HEADER
+    // and never the payload — are the collector's own invariants and belong
+    // beside forward_value that also relies on them.
+    HeapObjectHeader* survivor_of(HeapObjectHeader* header) const noexcept;
 
     // A root that outlives every frame: runtime-owned caches of heap
     // objects (lazily created builtins, and later the global object). The
@@ -237,7 +269,7 @@ private:
     uint64_t collections_{0};
     uint64_t relocations_{0};
     CollectionHook collection_hook_;
-    PostCollectionHook post_collection_hook_;
+    std::vector<PostCollectionHook> post_collection_hooks_;
 };
 
 class NonMovingArena {

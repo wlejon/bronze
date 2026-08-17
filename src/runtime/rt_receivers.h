@@ -109,7 +109,22 @@ Value rtArrayBufferMember(Value buffer, const std::string& key);
 // one takes the receiver's constructor name for the same reason
 // `rtCheckTypedArrayMember` does.
 bool rtTypedArrayHasMember(const char* kindName, const std::string& key);
-bool rtArrayBufferHasMember(const std::string& key);
+bool rtArrayBufferHasMember(bool shared, const std::string& key);
+
+// ---- SharedArrayBuffer (ECMA-262 25.2) -------------------------------------
+//
+// The same two questions for the SHARED brand, which is a flag on the same
+// header and a different member set: `grow`/`growable` where a plain buffer has
+// `resize`/`resizable`/`transfer`/`detached`. `rtArrayBufferMember` delegates
+// here, so nothing outside builtin_shared_memory.cpp needs to know which is
+// which.
+Value rtSharedArrayBufferMember(Value buffer, const std::string& key);
+bool rtSharedArrayBufferHasMember(const std::string& key);
+// %SharedArrayBuffer% by name for the global ladder, and its identity by CODE
+// POINTER for `instanceof`, `@@toStringTag` and `@@species` -- never by building
+// one to compare against.
+Value rtSharedArrayBufferConstructor(const std::string& name);
+const char* rtSharedArrayBufferConstructorName(Value fn);
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table.
 Value rtTypedArrayMethod(const std::string& key);

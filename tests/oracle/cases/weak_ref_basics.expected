@@ -1,0 +1,28 @@
+function function
+true kept
+true
+function
+true false true
+[object WeakRef]
+WeakRef
+0 {"w":{}}
+false
+true
+true
+true
+[object FinalizationRegistry]
+FinalizationRegistry
+function function
+true true false
+0 {}
+undefined
+true false
+undefined
+true
+true
+true
+true
+true
+true
+WeakRef { <target unknown> }
+FinalizationRegistry { <items unknown> }

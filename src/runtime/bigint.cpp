@@ -205,4 +205,40 @@ bool rtBigIntBitNot(Value operand, Value& out) {
     return true;
 }
 
+std::string rtBigIntDecimalOfRawBits64(uint64_t bits, bool isSigned) {
+    // Sixty-four bits fit a machine integer, so no BigNum is needed and none is
+    // built: the two-s complement reinterpretation is well defined in C++20 and
+    // is exactly what 25.3.1.6 says the bytes mean.
+    if (!isSigned) return std::to_string(bits);
+    return std::to_string(static_cast<int64_t>(bits));
+}
+
+Value rtBigIntFromRawBits64(uint64_t bits, bool isSigned) {
+    if (!isSigned) return rtMakeBigInt(BigNum::fromUint64(bits));
+    // Through the unsigned MAGNITUDE, because negating INT64_MIN is undefined
+    // behaviour and it is exactly the value the sign edge tests.
+    if ((bits >> 63) == 0) return rtMakeBigInt(BigNum::fromUint64(bits));
+    const uint64_t magnitude = ~bits + 1ULL;
+    return rtMakeBigInt(BigNum::negate(BigNum::fromUint64(magnitude)));
+}
+
+bool rtBigIntToRawBits64(Value v, uint64_t& out) {
+    BigNum converted;
+    // 7.1.13, whose table has no Number row: `a[0] = 1` on a BigInt64Array is a
+    // TypeError, and that is the whole reason these two views are a separate
+    // element KIND rather than two more widths.
+    if (!rtToBigInt(v, converted)) return false;
+    BigNumError err = BigNumError::None;
+    const BigNum wrapped = BigNum::asUintN(64, converted, err);
+    if (err != BigNumError::None) {
+        rtThrowRangeError("Maximum BigInt size exceeded");
+        return false;
+    }
+    out = 0;
+    wrapped.magnitudeToUint64(out);
+    // Signed and unsigned store the SAME eight bytes; only the read direction
+    // has to know which it is.
+    return true;
+}
+
 }  // namespace bronze::runtime

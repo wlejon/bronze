@@ -53,6 +53,7 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -228,10 +229,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             // re-read: a collection during the conversion moves the object, and
             // the conversion itself can leave a TypeError pending.
             Rooted<Value> viewRoot{objVal};
-            const double num = rtToNumber(Value(valBits));
-            if (rtExceptionPending()) return;
-            auto* view = viewRoot.get().asObject<TypedArrayHeader>();
-            if (ki.elemIndex < view->length) view->set(ki.elemIndex, num);
+            rtTypedArraySetElement(viewRoot, ki.elemIndex, Value(valBits));
             return;
         }
         fatal(("named property writes on a typed array (" +
@@ -249,6 +247,18 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // something.
         fatal(("named property writes on a DataView are unsupported (its bytes are written "
                "through setInt8/setFloat64 and the rest; tried to write `" + keyStr + "`)")
+                  .c_str());
+    }
+    if (hdr->flags == WeakRefHeader::kFlags ||
+        hdr->flags == FinalizationRegistryHeader::kFlags) {
+        // 26.1.3 and 26.2.3 give neither a writable property, and there is no
+        // shape here for a named one to go in. Diagnosed rather than discarded,
+        // which is what would leave a program believing it stored something —
+        // and the mistake this catches is a real one: a program that means to
+        // remember what a WeakRef points at writes it beside the ref.
+        fatal((std::string("named property writes on a ") +
+               (hdr->flags == WeakRefHeader::kFlags ? "WeakRef" : "FinalizationRegistry") +
+               " are unsupported (tried to write `" + keyStr + "`)")
                   .c_str());
     }
     if (hdr->flags == RegExpHeader::kFlags) {
@@ -590,6 +600,14 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                 }
             } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {
                 auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+                // A NUMBER into a BIGINT view is the one store that throws
+                // (7.1.13), so this fast path — whose whole premise is that a
+                // Number needs no conversion — is not for those two kinds.
+                if (isBigIntElementKind(view->elementKind())) {
+                    Rooted<Value> viewRoot{objVal};
+                    rtTypedArraySetElement(viewRoot, idx, Value(valBits));
+                    return;
+                }
                 const double num = std::bit_cast<double>(valBits);
                 if (idx < view->length) {
                     view->set(idx, num);
@@ -703,13 +721,11 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                     return;
                 }
                 if (hdr->flags == TypedArrayHeader::kFlags) {
-                    // The value's ToNumber can be a user `valueOf`; the view is
-                    // re-derived from a root after it for that reason.
+                    // The conversion (ToNumber, or ToBigInt for the two 64-bit
+                    // integer views) can be a user `valueOf`; the funnel
+                    // re-derives the view from the root after it.
                     Rooted<Value> viewRoot{objVal};
-                    const double num = rtToNumber(Value(valBits));
-                    if (rtExceptionPending()) return;
-                    auto* view = viewRoot.get().asObject<TypedArrayHeader>();
-                    if (u < view->length) view->set(u, num);
+                    rtTypedArraySetElement(viewRoot, u, Value(valBits));
                     return;
                 }
             }
@@ -753,10 +769,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                    ") are unsupported").c_str());
         }
         Rooted<Value> viewRoot{objVal};
-        const double num = rtToNumber(Value(valBits));
-        if (rtExceptionPending()) return;
-        auto* view = viewRoot.get().asObject<TypedArrayHeader>();
-        if (idx < view->length) view->set(idx, num);
+        rtTypedArraySetElement(viewRoot, idx, Value(valBits));
         return;  // out-of-bounds typed-array writes are discarded, per spec
     }
     if (hdr->flags == HeapKind::Function) {

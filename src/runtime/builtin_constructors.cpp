@@ -45,6 +45,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -699,7 +700,9 @@ const char* rtIntrinsicConstructorName(Value fn) {
 const char* rtNoPrototypeObjectIntrinsic(Value fn) {
     const char* name = rtMapConstructorName(fn);
     if (!name) name = rtWeakCollectionConstructorName(fn);
+    if (!name) name = rtWeakRefConstructorName(fn);
     if (!name) name = rtTypedArrayConstructorName(fn);
+    if (!name) name = rtSharedArrayBufferConstructorName(fn);
     if (!name) name = rtDataViewConstructorName(fn);
     return name;
 }

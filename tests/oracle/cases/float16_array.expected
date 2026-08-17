@@ -1,0 +1,20 @@
+4 2 8 0 0
+1.5 0.0999755859375 65504 Infinity
+Float16Array(4) [ 1.5, 0.0999755859375, 65504, Infinity ]
+1.5 0.0999755859375 0.333251953125
+65504 65504 Infinity
+5.960464477539063e-8 0
+NaN Infinity -Infinity
+2050 2050
+2048 2052
+-0 -Infinity Infinity
+NaN false
+4 0.0999755859375 1,2.5,-3.25,0.0999755859375
+4 true
+[object Float16Array] true
+2 2
+true
+2 0 60
+0.0999755859375 true
+true 46
+126 true

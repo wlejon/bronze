@@ -68,8 +68,8 @@ Value createArrayBuffer(std::span<const uint8_t> bytes) {
 }
 
 // The kind constants embed.h spells for a host that includes only that header,
-// against the enumeration that actually lives in every view's header. Nine
-// asserts rather than a count, so the failure names the kind that moved.
+// against the enumeration that actually lives in every view's header. One
+// assert per kind rather than a count, so the failure names the kind that moved.
 static_assert(elements::Int8 == ElementKind::Int8);
 static_assert(elements::Uint8 == ElementKind::Uint8);
 static_assert(elements::Uint8Clamped == ElementKind::Uint8Clamped);
@@ -79,6 +79,9 @@ static_assert(elements::Int32 == ElementKind::Int32);
 static_assert(elements::Uint32 == ElementKind::Uint32);
 static_assert(elements::Float32 == ElementKind::Float32);
 static_assert(elements::Float64 == ElementKind::Float64);
+static_assert(elements::Float16 == ElementKind::Float16);
+static_assert(elements::BigInt64 == ElementKind::BigInt64);
+static_assert(elements::BigUint64 == ElementKind::BigUint64);
 
 Value createTypedArray(ElementKind kind, uint32_t length) {
     ShadowStackFrame frame;

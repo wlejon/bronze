@@ -40,6 +40,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -50,7 +51,7 @@ using namespace bronze::runtime;
 // about the kind you happened to run. Pinning the registry's SIZE in both
 // places is what makes adding a kind a build failure at the dispatch AND at the
 // test that covers it, rather than a segfault a year later.
-static_assert(HeapKind::Count == 16,
+static_assert(HeapKind::Count == 18,
               "a HeapKind was added or removed: give `in` an arm for it in rt_operator.cpp, "
               "and give it a receiver in `everyKind` below — a kind with no arm is exactly "
               "what used to read its payload's first word as a Shape*. A kind no program can "
@@ -164,6 +165,27 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
         CHECK(hasName("byteOffset", v));
         CHECK(hasName("getInt8", v));
         CHECK_FALSE(hasName("missing", v));
+    }
+
+    // A WeakRef's payload word is not a `Value` at all — it is the untraced
+    // target under a RawBytes header — so the old fall-through would have read
+    // a target ADDRESS as a `Shape*`. Its member table is the whole of what
+    // 26.1.3 gives it, and the chain past it is Object.prototype's.
+    SUBCASE("a WeakRef and a FinalizationRegistry") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        Rooted<Value> wr{rtMakeWeakRef(target)};
+        CHECK(hasName("deref", wr));
+        CHECK(hasName("hasOwnProperty", wr));
+        CHECK_FALSE(hasName("register", wr));
+        CHECK_FALSE(hasName("missing", wr));
+
+        Rooted<Value> callback{rtNativeFunction(nothing, 1)};
+        Rooted<Value> reg{rtMakeFinalizationRegistry(callback)};
+        CHECK(hasName("register", reg));
+        CHECK(hasName("unregister", reg));
+        CHECK(hasName("valueOf", reg));
+        CHECK_FALSE(hasName("deref", reg));
+        CHECK_FALSE(hasName("missing", reg));
     }
 
     // The two that used to be the crash: a MapHeader's first payload word is a

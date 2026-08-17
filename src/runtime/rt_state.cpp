@@ -29,6 +29,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -362,8 +363,14 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = collection;
     } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {
         out = weak;
+    } else if (Value weakRef = rtWeakRefConstructor(keyStr); weakRef.isObject()) {
+        out = weakRef;
     } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
         out = typed;
+    } else if (Value shared = rtSharedArrayBufferConstructor(keyStr); shared.isObject()) {
+        out = shared;
+    } else if (keyStr == "Atomics") {
+        out = rtAtomicsObject();
     } else if (Value dataView = rtDataViewConstructor(keyStr); dataView.isObject()) {
         out = dataView;
     } else if (Value global = rtGlobalConstructor(keyStr); global.isObject()) {

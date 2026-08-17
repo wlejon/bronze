@@ -15,6 +15,7 @@
 #include "runtime/heap.h"
 #include "runtime/promise.h"
 #include "runtime/rt_state.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -105,7 +106,25 @@ void rtEnqueueThenableJob(Value promise, Value thenable, Value thenFn) {
 bool rtMicrotasksPending() { return !g_queue.empty(); }
 
 void rtDrainMicrotasks() {
-    while (!g_queue.empty()) {
+    // The synchronous half of the program is itself a job, and it has just
+    // ended: 9.13 ClearKeptObjects runs "when no ECMAScript code is running",
+    // so whatever a `WeakRef.prototype.deref` in the main script pinned is
+    // released HERE and can be collected from now on. Doing it at the top of
+    // the drain rather than at the bottom is what lets a cleanup callback fire
+    // in the same drain for an object the main script deref'd.
+    rtClearKeptObjects();
+    while (!g_queue.empty() || rtFinalizationCleanupPending()) {
+        // A FinalizationRegistry cleanup job is a HOST job (26.2.1.2's caller is
+        // the host, not the language), so it runs at a checkpoint the microtask
+        // queue has already reached quiescence at — a cleanup callback must
+        // never be interleaved with a promise reaction the program was already
+        // waiting on. It may enqueue microtasks of its own, which the outer loop
+        // then drains before the next batch of cleanups.
+        if (g_queue.empty()) {
+            rtRunFinalizationCleanupJob();
+            rtClearKeptObjects();
+            continue;
+        }
         // The in-flight job's captures move from the queue (rooted by the
         // source above) into these frame roots BEFORE the pop — at no point
         // is the job's data outside the collector's view, and the job body
@@ -136,6 +155,10 @@ void rtDrainMicrotasks() {
         if (rtExceptionPending()) {
             fatal("internal: an exception escaped a microtask job");
         }
+        // Between jobs is the other "no ECMAScript code is running" point, so
+        // a target a reaction handler deref'd stops being kept here rather than
+        // at the end of the whole drain.
+        rtClearKeptObjects();
     }
     reportParkedRejections();
 }

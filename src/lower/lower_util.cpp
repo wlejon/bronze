@@ -63,6 +63,12 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "Array" || name == "String" || name == "Boolean" ||
            name == "Symbol" || name == "BigInt" || name == "RegExp" || name == "Promise" ||
            name == "Map" || name == "Set" || name == "WeakMap" || name == "WeakSet" ||
+           // `WeakRef` and `FinalizationRegistry` (26.1, 26.2). Both are
+           // FEATURE-DETECTED far more often than they are used — a library
+           // writes `typeof WeakRef === 'function' ? cacheWeakly() :
+           // cacheStrongly()` — so the NAME has to resolve to a value even in a
+           // program that never constructs one.
+           name == "WeakRef" || name == "FinalizationRegistry" ||
            name == "Error" || name == "TypeError" || name == "AggregateError" ||
            name == "RangeError" || name == "SyntaxError" || name == "ReferenceError" ||
            name == "isNaN" || name == "isFinite" || name == "parseInt" || name == "parseFloat" ||
@@ -70,6 +76,15 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "Uint8ClampedArray" || name == "Int16Array" || name == "Uint16Array" ||
            name == "Int32Array" || name == "Uint32Array" || name == "Float32Array" ||
            name == "Float64Array" || name == "DataView" || name == "Function" ||
+           // The three views 23.2 has that bronze had not built: half-precision
+           // floats, and the two whose elements are BigInts rather than Numbers.
+           name == "Float16Array" || name == "BigInt64Array" ||
+           name == "BigUint64Array" ||
+           // 25.2 and 25.4. bronze runs one agent, so the memory a
+           // SharedArrayBuffer names is shared with nobody and every `Atomics`
+           // operation is an ordinary access — the surface is real, the three
+           // operations that need a second agent are named refusals.
+           name == "SharedArrayBuffer" || name == "Atomics" ||
            name == "globalThis" || name == "Proxy" || name == "URIError" ||
            name == "Reflect" || name == "Date" || name == "encodeURI" ||
            name == "encodeURIComponent" || name == "decodeURI" ||

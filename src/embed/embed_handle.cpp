@@ -82,10 +82,10 @@ void ensureRegistries() {
         runtime::rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& slot : g_persistentSlots) visit(slot);
         });
-        // The hook is a single slot and this module is its one consumer; a
-        // second consumer means widening the hook to a list, not chaining
-        // around this one.
-        runtime::rtHeap().set_post_collection_hook(sweepFinalizers);
+        // One of the hook LIST's entries now (heap.h says why it stopped being
+        // a slot): the weak-reference sweep registers its own, and the two are
+        // independent — this one only ever reads handle cells.
+        runtime::rtHeap().add_post_collection_hook(sweepFinalizers);
         return true;
     }();
     (void)registered;

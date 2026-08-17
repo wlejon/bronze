@@ -44,6 +44,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 namespace {
@@ -140,7 +141,7 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
 // fails the BUILD when a kind is added, at the one place that has to have an
 // opinion about it, which is the property a runtime `default:` alone cannot
 // give.
-static_assert(HeapKind::Count == 16,
+static_assert(HeapKind::Count == 18,
               "a HeapKind was added or removed: give `in` an arm for it in the two switches "
               "below, or refuse it there by name. A kind with no arm used to fall through to "
               "a cast that read its payload's first word as a Shape*.");
@@ -187,6 +188,13 @@ bool shapelessHasSymbol(uint16_t kind, Value key) {
             case HeapKind::ArrayBuffer:
             case HeapKind::DataView:
             case HeapKind::ModuleNamespace:
+                return true;
+            // 26.1.3.3 and 26.2.3.3 put one on each prototype, which is the
+            // only reason `Object.prototype.toString.call(wr)` reads "[object
+            // WeakRef]" — 20.1.3.6's builtin-tag list has no entry for either,
+            // so step 14 would have said "Object" without it.
+            case HeapKind::WeakRef:
+            case HeapKind::FinalizationRegistry:
                 return true;
             // An array and a RegExp: 23.1.3 and 22.2.6 define none, which is
             // why 20.1.3.6 keeps a builtin-tag list for them.
@@ -240,6 +248,8 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::WeakSet:
         case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
+        case HeapKind::WeakRef:
+        case HeapKind::FinalizationRegistry:
             return shapelessHasSymbol(kind, key);
         case HeapKind::Proxy:
             // 10.5.7: the handler's question, or the target's — either way the
@@ -323,7 +333,10 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             break;
         }
         case HeapKind::ArrayBuffer:
-            if (rtArrayBufferHasMember(key)) return true;
+            if (rtArrayBufferHasMember(reinterpret_cast<ArrayBufferHeader*>(hdr)->isShared(),
+                                       key)) {
+                return true;
+            }
             break;
         // A DataView's members all live on its prototype, which bronze answers
         // on the property path — so `in`, which walks the chain, must ask the
@@ -355,6 +368,12 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         }
         case HeapKind::RegExp:
             if (rtRegExpHasMember(key)) return true;
+            break;
+        // Both answer from the one member table their READ answers from, so
+        // `'deref' in wr` and `wr.deref` cannot disagree.
+        case HeapKind::WeakRef:
+        case HeapKind::FinalizationRegistry:
+            if (rtWeakRefHasMember(objRoot.get(), key)) return true;
             break;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.4 [[HasProperty]] is exactly "is this an export name":
@@ -678,10 +697,19 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
             return flags == (std::strcmp(name, "Set") == 0 ? MapHeader::kSetFlags
                                                            : MapHeader::kMapFlags);
         }
+        // 25.2 gives a SharedArrayBuffer its own prototype, so it is NOT an
+        // `instanceof ArrayBuffer` -- the two brands share a header in bronze and
+        // nothing else.
+        if (rtSharedArrayBufferConstructorName(ctorRoot.get())) {
+            auto* sabHdr = objRoot.get().asObject<HeapObjectHeader>();
+            return sabHdr->flags == ArrayBufferHeader::kFlags &&
+                   reinterpret_cast<ArrayBufferHeader*>(sabHdr)->isShared();
+        }
         if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
             const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
             if (std::strcmp(name, "ArrayBuffer") == 0) {
-                return flags == ArrayBufferHeader::kFlags;
+                return flags == ArrayBufferHeader::kFlags &&
+                       !objRoot.get().asObject<ArrayBufferHeader>()->isShared();
             }
             if (flags == TypedArrayHeader::kFlags) {
                 auto* view = objRoot.get().asObject<TypedArrayHeader>();

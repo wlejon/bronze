@@ -100,6 +100,9 @@ constexpr uint32_t kQuietNaN32 = 0x7FC00000u;
 constexpr uint64_t kQuietNaN64 = 0x7FF8000000000000ull;
 
 uint64_t numericToRawBits(ElementKind kind, double value) noexcept {
+    // binary16 is typed_array.cpp's conversion — computed from the double,
+    // round-half-to-even, NaN already canonical — so the two stores agree.
+    if (kind == ElementKind::Float16) return doubleToFloat16Bits(value);
     if (kind == ElementKind::Float32) {
         const float narrowed = static_cast<float>(value);
         if (std::isnan(narrowed)) return kQuietNaN32;
@@ -129,6 +132,7 @@ double rawBitsToNumeric(ElementKind kind, uint64_t bits) noexcept {
         case ElementKind::Uint16: return static_cast<uint16_t>(bits);
         case ElementKind::Int32: return static_cast<int32_t>(static_cast<uint32_t>(bits));
         case ElementKind::Uint32: return static_cast<uint32_t>(bits);
+        case ElementKind::Float16: return float16BitsToDouble(static_cast<uint16_t>(bits));
         case ElementKind::Float32:
             return static_cast<double>(std::bit_cast<float>(static_cast<uint32_t>(bits)));
         case ElementKind::Float64: return std::bit_cast<double>(bits);
@@ -252,17 +256,6 @@ Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
 // with the sixteen above is everything else — the same ToIndex, the same
 // bounds test, the same explicit byte order.
 
-// 25.3.1.6 RawBytesToNumeric for the two BigInt64 rows: eight bytes read as a
-// two's-complement or an unsigned 64-bit integer.
-Value bigIntFromRawBits(uint64_t bits, bool isSigned) {
-    if (!isSigned) return rtMakeBigInt(BigNum::fromUint64(bits));
-    // Through the unsigned magnitude, because the negation of INT64_MIN is
-    // undefined behaviour and it is exactly the value the sign edge tests.
-    if ((bits >> 63) == 0) return rtMakeBigInt(BigNum::fromUint64(bits));
-    const uint64_t magnitude = ~bits + 1ULL;
-    return rtMakeBigInt(BigNum::negate(BigNum::fromUint64(magnitude)));
-}
-
 Value getBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg,
                       bool isSigned) {
     Rooted<Value> endianRoot{littleEndianArg};
@@ -275,8 +268,10 @@ Value getBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
     }
     const uint64_t bits = readRawBytes(view->bytes() + getIndex, 8, littleEndian);
     // The read is finished before this allocates, which is what lets the raw
-    // `view` pointer above be used and then dropped.
-    return bigIntFromRawBits(bits, isSigned);
+    // `view` pointer above be used and then dropped. The conversion is
+    // bigint.h's, shared with the BigInt64Array element path so that the two
+    // cannot disagree about a sign bit.
+    return rtBigIntFromRawBits64(bits, isSigned);
 }
 
 Value setBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianArg,
@@ -287,17 +282,10 @@ Value setBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
     if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
     // Step 4 is ToBigInt and it runs BEFORE the bounds test, exactly as the
     // number accessors' ToNumber does — so a `set` past the end of the view
-    // still refuses a Number argument first.
-    BigNum converted;
-    if (!rtToBigInt(valueRoot.get(), converted)) return Value::fromUndefined();
-    BigNumError err = BigNumError::None;
-    // 25.3.1.5 NumericToRawBytes for the BigInt rows is "modulo 2^64", which is
-    // asUintN — so an out-of-range value WRAPS rather than throwing, the same
-    // way `setInt32` wraps.
-    const BigNum wrapped = BigNum::asUintN(64, converted, err);
-    if (err != BigNumError::None) return rtThrowRangeError("Maximum BigInt size exceeded");
+    // still refuses a Number argument first. The conversion and the modulo-2^64
+    // wrap are bigint.h's, shared with the BigInt64Array element path.
     uint64_t bits = 0;
-    wrapped.magnitudeToUint64(bits);
+    if (!rtBigIntToRawBits64(valueRoot.get(), bits)) return Value::fromUndefined();
     (void)isSigned;  // the stored bits are the same 64 either way
 
     const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
@@ -441,6 +429,8 @@ const Accessor kAccessors[] = {
     {"getBigUint64", dvGetBig<false>, 1},
     {"setBigInt64", dvSetBig<true>, 2},
     {"setBigUint64", dvSetBig<false>, 2},
+    {"getFloat16", dvGet<ElementKind::Float16>, 1},
+    {"setFloat16", dvSet<ElementKind::Float16>, 2},
 };
 
 const char* accessorName(ElementKind kind, bool isGet) noexcept {
@@ -451,6 +441,7 @@ const char* accessorName(ElementKind kind, bool isGet) noexcept {
         case ElementKind::Uint16: return isGet ? "getUint16" : "setUint16";
         case ElementKind::Int32: return isGet ? "getInt32" : "setInt32";
         case ElementKind::Uint32: return isGet ? "getUint32" : "setUint32";
+        case ElementKind::Float16: return isGet ? "getFloat16" : "setFloat16";
         case ElementKind::Float32: return isGet ? "getFloat32" : "setFloat32";
         case ElementKind::Float64: return isGet ? "getFloat64" : "setFloat64";
         case ElementKind::Uint8Clamped:

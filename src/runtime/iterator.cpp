@@ -32,6 +32,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/symbol.h"
+#include "runtime/bigint.h"
 #include "runtime/typed_array.h"
 
 namespace bronze {
@@ -161,6 +162,20 @@ bool stepFast(IterRecordHeader* rec) {
         case IterRecordHeader::TypedArray: {
             auto* view = rec->target.asObject<TypedArrayHeader>();
             if (i >= view->length) return false;
+            if (isBigIntElementKind(view->elementKind())) {
+                // The one fast kind whose element ALLOCATES: a BigInt is a heap
+                // value. So the bytes are read first, the record is held
+                // through a root across the allocation, and both the record and
+                // the caller's pointer to it are re-derived afterwards.
+                const uint64_t bits = view->rawBits64(i);
+                const bool isSigned = view->elementKind() == ElementKind::BigInt64;
+                Rooted<Value> recRoot{Value::fromObject(rec)};
+                Rooted<Value> elem{rtBigIntFromRawBits64(bits, isSigned)};
+                auto* live = recRoot.get().asObject<IterRecordHeader>();
+                live->current = elem.get();
+                live->cursor = Value::fromDouble(static_cast<double>(i + 1));
+                return true;
+            }
             rec->current = Value::fromDouble(view->get(i));
             rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
             return true;
@@ -463,7 +478,11 @@ bool bronze_iter_step(uint64_t recBits) {
         rec->target.asObject<HeapObjectHeader>()->flags == MapHeader::kMapFlags) {
         // A Map's default iterator yields [key, value] pairs (24.1.3.12), so
         // this is the one fast kind that allocates per element.
-        if (!stepFast(rec)) {
+        const bool stepped = stepFast(rec);
+        // stepFast can allocate (a BigInt view's element), so the pointer taken
+        // before it is not the record any more.
+        rec = recRoot.get().asObject<IterRecordHeader>();
+        if (!stepped) {
             rec->done = Value::fromBool(true);
             rec->current = Value::fromUndefined();
             return false;
@@ -479,7 +498,9 @@ bool bronze_iter_step(uint64_t recBits) {
     }
 
     if (kind != IterRecordHeader::Protocol) {
-        if (stepFast(rec)) return true;
+        const bool stepped = stepFast(rec);
+        rec = recRoot.get().asObject<IterRecordHeader>();
+        if (stepped) return true;
         rec->done = Value::fromBool(true);
         rec->current = Value::fromUndefined();
         return false;

@@ -81,6 +81,12 @@ inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
 // member loud instead of `undefined`.
 
 Value rtMathObject();
+
+// The `Atomics` namespace object (ECMA-262 25.4), built once on first use like
+// `Math`, and the named refusal for the three operations on it that need an
+// agent cluster bronze does not have.
+Value rtAtomicsObject();
+void rtAtomicsCheckMissingMember(Value obj, const std::string& key);
 void rtMathCheckMissingMember(Value obj, const std::string& key);
 
 Value rtObjectNamespace();
@@ -344,6 +350,18 @@ Value rtMapDefaultIterator(bool isSetReceiver);
 // `in`'s predicate off the same tables, and the named refusal for a member
 // ECMA-262 defines and bronze has not built. No default iterator, because
 // 24.3 and 24.4 define none — a WeakMap is not iterable.
+// One typed-array element as a JS value, and one store into one
+// (builtin_typed_array.cpp). They exist as a pair because the two BigInt views
+// answer BigInts where the other ten answer Numbers, and every read and write
+// path in the runtime — the keyed fast path, the computed path, `from`, `of`,
+// construction from an array-like — has to make the same distinction. One
+// funnel, so none of them can come to believe every element is a double.
+//
+// The read ALLOCATES for a BigInt kind; the write runs ToNumber or ToBigInt and
+// so can run user code and can throw, which is why it takes the view rooted.
+Value rtTypedArrayElement(Value viewVal, uint32_t index);
+void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value);
+
 Value rtWeakCollectionConstructor(const std::string& name);
 const char* rtWeakCollectionConstructorName(Value fn);
 Value rtWeakCollectionMethod(bool isWeakSetReceiver, const std::string& key);

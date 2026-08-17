@@ -93,6 +93,27 @@ bool rtBigIntBitNot(Value operand, Value& out);
 // 6.1.6.2's ℝ -> Number, which is what `Number(bigint)` is.
 double rtBigIntToNumber(Value v) noexcept;
 
+// 25.3.1.6 RawBytesToNumeric and 25.3.1.5 NumericToRawBytes, for the two
+// 64-bit BigInt rows of table 71 and nothing else. They live here rather than
+// beside either caller because there are now THREE — a DataView's four 64-bit
+// accessors, a BigInt64Array element, and Atomics over one — and "what does
+// -1n look like in eight bytes" must have one answer.
+//
+// The read direction ALLOCATES (a BigInt is a heap value). The write direction
+// runs 7.1.13 ToBigInt, which means it can run USER CODE for an object argument
+// and can leave a TypeError pending for a Number — which is the one place a
+// typed-array store throws instead of truncating. The wrap itself is
+// BigInt::asUintN over 64 bits, so an out-of-range value wraps exactly as
+// `setInt32` does. False means an exception is pending.
+Value rtBigIntFromRawBits64(uint64_t bits, bool isSigned);
+bool rtBigIntToRawBits64(Value v, uint64_t& out);
+
+// The DECIMAL TEXT of the same eight bytes, without building a BigInt at all.
+// `console.log` of a BigInt64Array needs it and must not allocate: it is walking
+// a view through a raw pointer, and one heap BigInt per element would relocate
+// that view under the loop.
+std::string rtBigIntDecimalOfRawBits64(uint64_t bits, bool isSigned);
+
 // 7.1.13 ToBigInt entire, step 1's ToPrimitive included — so it RUNS USER CODE
 // for an object argument and the caller must root what it holds. A NUMBER is
 // the TypeError the clause's table names and never a conversion: `BigInt(1)`

@@ -37,6 +37,7 @@
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -278,6 +279,8 @@ const char* rtObjectKindName(Value v) {
         case TypedArrayHeader::kFlags: return "a typed array";
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         case DataViewHeader::kFlags: return "a DataView";
+        case HeapKind::WeakRef: return "a WeakRef";
+        case HeapKind::FinalizationRegistry: return "a FinalizationRegistry";
         case RegExpHeader::kFlags: return "a RegExp";
         case ModuleNamespaceHeader::kFlags: return "a module namespace object";
         default: return "this object";

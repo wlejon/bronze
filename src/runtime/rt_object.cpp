@@ -43,6 +43,7 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -79,6 +80,8 @@ static const char* valueKindName(Value v) {
                 return v.asObject<TypedArrayHeader>()->kindName();
             case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
             case DataViewHeader::kFlags: return "a DataView";
+            case HeapKind::WeakRef: return "a WeakRef";
+            case HeapKind::FinalizationRegistry: return "a FinalizationRegistry";
             default: return "an object";
         }
     }
@@ -659,7 +662,8 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         return out.get().rawBits();
     }
     if (hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
-        hdr->flags == DataViewHeader::kFlags) {
+        hdr->flags == DataViewHeader::kFlags || hdr->flags == WeakRefHeader::kFlags ||
+        hdr->flags == FinalizationRegistryHeader::kFlags) {
         // None of these has an own enumerable string-keyed property, and that
         // is a fact about the LANGUAGE rather than about bronze's storage: a
         // RegExp's `lastIndex` is an own property but non-enumerable
@@ -888,8 +892,9 @@ static const char* const kGlobalObjectNames[] = {
     "RangeError", "SyntaxError", "ReferenceError", "URIError", "isNaN", "isFinite", "parseInt",
     "parseFloat", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
     "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "DataView",
+    "Float16Array", "BigInt64Array", "BigUint64Array", "SharedArrayBuffer", "Atomics",
     "Function", "Proxy", "Reflect", "Date", "encodeURI", "encodeURIComponent", "decodeURI",
-    "decodeURIComponent", "escape", "unescape", "Iterator",
+    "decodeURIComponent", "escape", "unescape", "Iterator", "WeakRef", "FinalizationRegistry",
 };
 
 Value rtGlobalThisObject() {

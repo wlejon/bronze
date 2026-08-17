@@ -25,6 +25,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -136,6 +137,17 @@ double unaryAsinh(double x) { return std::asinh(x); }
 double unaryAcosh(double x) { return std::acosh(x); }
 double unaryAtanh(double x) { return std::atanh(x); }
 double unaryFround(double x) { return static_cast<double>(static_cast<float>(x)); }
+
+// 21.3.2.26 Math.f16round: the nearest IEEE binary16, widened back. The round
+// trip lives in typed_array.cpp beside the Float16Array element it shares its
+// rounding with — one implementation, so `Math.f16round(x)` and
+// `new Float16Array([x])[0]` cannot disagree, which is the whole point of the
+// member. Round-to-nearest-EVEN, computed from the double and not through a
+// float (a double rounding gets a binary16 tie wrong).
+double unaryF16round(double x) {
+    if (std::isnan(x)) return x;  // step 2 keeps NaN a NaN rather than canonicalizing here
+    return float16BitsToDouble(doubleToFloat16Bits(x));
+}
 
 uint64_t mathClz32(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (argc == 0) return Value::fromDouble(32.0).rawBits();
@@ -272,6 +284,7 @@ const MathFn kMathFunctions[] = {
     {"tanh", mathUnary<unaryTanh>, 1},   {"asinh", mathUnary<unaryAsinh>, 1},
     {"acosh", mathUnary<unaryAcosh>, 1}, {"atanh", mathUnary<unaryAtanh>, 1},
     {"fround", mathUnary<unaryFround>, 1},
+    {"f16round", mathUnary<unaryF16round>, 1},
     {"clz32", mathClz32, 1},             {"imul", mathImul, 2},
     {"atan2", mathAtan2, 2},             {"pow", mathPow, 2},
     // Arity 0 is not "takes nothing": FunctionHeader::arity is the count a
@@ -297,7 +310,11 @@ const MathConst kMathConstants[] = {
 // tables in rt_helpers.cpp — membership here is ECMA-262's "does this exist?",
 // never "have we got round to it?".
 const char* const kMathUnimplemented[] = {
-    "f16round", "sumPrecise",
+    // `Math.sumPrecise` is 21.3.2.27, and what it asks for is a sum with a
+    // SINGLE rounding over an arbitrary number of terms — a full-precision
+    // accumulator, not a fold of `+`. Refused by name until that exists rather
+    // than answered with a fold whose result differs in the last bit.
+    "sumPrecise",
 };
 
 Value g_mathObject = Value::fromUndefined();

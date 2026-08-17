@@ -30,6 +30,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 namespace {
@@ -224,6 +225,13 @@ private:
             // entries would be the one place in the language they leak.
             case MapHeader::kWeakMapFlags: return "WeakMap { <items unknown> }";
             case MapHeader::kWeakSetFlags: return "WeakSet { <items unknown> }";
+            // node's spelling for both. A WeakRef's TARGET is withheld for the
+            // reason a WeakMap's entries are, and more sharply: printing it
+            // would be an observation of liveness that `deref` is the only
+            // sanctioned road to, and one that a console.log could make change
+            // from run to run.
+            case HeapKind::WeakRef: return "WeakRef { <target unknown> }";
+            case HeapKind::FinalizationRegistry: return "FinalizationRegistry { <items unknown> }";
             // node prints a RegExp as its source form, and so does bronze:
             // `/ab+/gi`, with no quotes, which is what distinguishes it in
             // output from the string of the same characters.
@@ -320,8 +328,18 @@ private:
         if (view->length == 0) return out + "[]";
         if (depth > kMaxDepth) return out + "[Array]";
         std::string body;
+        const bool bigints = isBigIntElementKind(view->elementKind());
         for (uint32_t i = 0; i < view->length; ++i) {
             if (i) body += ", ";
+            if (bigints) {
+                // The `n` suffix, because that is how a BigInt prints
+                // everywhere else in this file — the element IS a BigInt and
+                // printing it as a Number would misstate its type.
+                body += rtBigIntDecimalOfRawBits64(
+                    view->rawBits64(i), view->elementKind() == ElementKind::BigInt64);
+                body += 'n';
+                continue;
+            }
             body += numberText(view->get(i));
         }
         return out + "[ " + body + " ]";
@@ -356,8 +374,12 @@ private:
             const uint32_t rest = length - shown;
             body += " ... " + std::to_string(rest) + (rest == 1 ? " more byte" : " more bytes");
         }
-        return "ArrayBuffer { [Uint8Contents]: <" + body +
-               ">, byteLength: " + std::to_string(length) + " }";
+        // The two brands print as themselves: a SharedArrayBuffer is a
+        // different type to a program (25.2 gives it different members), and a
+        // dump that called it an ArrayBuffer would be the one place that
+        // difference vanished.
+        return std::string(buf->isShared() ? "SharedArrayBuffer" : "ArrayBuffer") +
+               " { [Uint8Contents]: <" + body + ">, byteLength: " + std::to_string(length) + " }";
     }
 
     // The three slots 25.3.4.1..25.3.4.3 expose, in that order, and the buffer

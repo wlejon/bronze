@@ -52,6 +52,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -88,7 +89,7 @@ bool requireNonNullish(Value self, const char* method) {
 // name rather than reported absent. There is exactly one: a String exotic
 // OBJECT, whose 10.4.3.4 index properties are synthesised on the property path
 // and live in no shape (rt_object.cpp carries the reasoning).
-static_assert(HeapKind::Count == 16,
+static_assert(HeapKind::Count == 18,
               "a HeapKind was added or removed: give the own-property switch below an arm for "
               "it. `hasOwnProperty` and `propertyIsEnumerable` are reachable from EVERY "
               "receiver now that the chain runs past the member tables, so a kind with no arm "
@@ -223,6 +224,12 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // 25.1.6 and 25.3.4 put every member on a prototype. Both carry
             // internal slots and no own property at all — `byteLength`
             // included, which is an accessor.
+            return false;
+        case HeapKind::WeakRef:
+        case HeapKind::FinalizationRegistry:
+            // 26.1.3 and 26.2.3 likewise: `deref`, `register` and `unregister`
+            // are prototype methods, and the target and the cells are internal
+            // slots rather than properties.
             return false;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and

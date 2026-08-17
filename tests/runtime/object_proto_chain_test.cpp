@@ -42,6 +42,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -105,7 +106,7 @@ Value aRegExp() {
 // compiler checks can prove that switch total — and `hasOwnProperty` is now
 // reachable from EVERY receiver, so a kind with no arm there is a receiver
 // those clauses cannot answer about.
-static_assert(HeapKind::Count == 16,
+static_assert(HeapKind::Count == 18,
               "a HeapKind was added or removed: give it an arm in the own-property switch in "
               "builtin_object_proto.cpp, and a receiver in the subcases below — unless it is "
               "a kind no program can hold (an environment record, an iteration record, a "
@@ -386,4 +387,33 @@ TEST_CASE("a WeakMap and a WeakSet reach Object.prototype") {
     CHECK_FALSE(hasOwn(wm, "has"));
     CHECK_FALSE(hasOwn(ws, "add"));
     CHECK_FALSE(enumerableOwn(wm, "get"));
+}
+
+// The two kinds that joined with the weak REFERENCES, checked for the same
+// three things: the chain reaches `Object.prototype`, the members found there
+// are the same function objects a plain object finds, and the own-property
+// switch answers rather than crashing. A WeakRef has no own property at all
+// (26.1.3 puts `deref` on a prototype), and its one payload word is the
+// untraced target — the word the own-property switch would have read as a
+// `Shape*` without an arm of its own.
+TEST_CASE("a WeakRef and a FinalizationRegistry reach Object.prototype") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> hasOwnProperty{protoMember("hasOwnProperty")};
+    Rooted<Value> valueOf{protoMember("valueOf")};
+    REQUIRE(isFunction(hasOwnProperty.get()));
+
+    Rooted<Value> target{Value(bronze_create_object())};
+    Rooted<Value> wr{rtMakeWeakRef(target)};
+    Rooted<Value> callback{protoMember("valueOf")};
+    Rooted<Value> reg{rtMakeFinalizationRegistry(callback)};
+
+    CHECK(member(wr, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
+    CHECK(member(reg, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
+    CHECK(member(wr, "valueOf").rawBits() == valueOf.get().rawBits());
+    CHECK(member(reg, "valueOf").rawBits() == valueOf.get().rawBits());
+
+    CHECK_FALSE(hasOwn(wr, "deref"));
+    CHECK_FALSE(hasOwn(reg, "register"));
+    CHECK_FALSE(enumerableOwn(wr, "deref"));
 }

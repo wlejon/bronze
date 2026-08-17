@@ -10,6 +10,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -29,40 +30,6 @@
 namespace bronze::runtime {
 
 namespace {
-
-bool isBuffer(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == ArrayBufferHeader::kFlags;
-}
-
-bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_t& out) {
-    if (v.isUndefined()) {
-        out = 0;
-        return true;
-    }
-    const double n = rtToNumber(v);
-    double integer = std::isnan(n) ? 0.0 : std::trunc(n);
-    if (integer == 0.0) integer = 0.0;
-    if (integer < 0.0 || integer > 9007199254740991.0) {
-        rtThrowRangeError(std::string("Invalid ") + what + " length");
-        return false;
-    }
-    if (integer > static_cast<double>(kMaxByteLength) / bytesPerElement) {
-        rtThrowRangeError(std::string(what) + " allocation failed: length is too large");
-        return false;
-    }
-    out = static_cast<uint32_t>(integer);
-    return true;
-}
-
-bool checkAllocatable(uint32_t byteLength) {
-    const size_t semispace = rtHeap().reserved_size() / 2;
-    if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
-        rtThrowRangeError("Array buffer allocation failed: " + std::to_string(byteLength) +
-                          " bytes does not fit in the heap");
-        return false;
-    }
-    return true;
-}
 
 Value fromLength(ElementKind kind, uint32_t length) {
     const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
@@ -117,10 +84,30 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
 }
 
 Value fromTypedArray(ElementKind kind, Rooted<Value>& source) {
+    const ElementKind srcKind = source.get().asObject<TypedArrayHeader>()->elementKind();
+    // 23.2.5.1 step 5 -> InitializeTypedArrayFromTypedArray step 5: mixing a
+    // BigInt view with a Number one is a TypeError, because there is no
+    // conversion between the two content types at all (23.2.5.13 goes through
+    // ToBigInt and 23.2.5.14 through ToNumber, and neither accepts the other's
+    // values).
+    if (isBigIntElementKind(kind) != isBigIntElementKind(srcKind)) {
+        return rtThrowTypeError(std::string("Cannot construct a ") +
+                                elementKindInfo(kind).name + " from a " +
+                                elementKindInfo(srcKind).name +
+                                " (one holds BigInts and the other Numbers)");
+    }
     const uint32_t length = source.get().asObject<TypedArrayHeader>()->length;
     Rooted<Value> out{fromLength(kind, length)};
     if (rtExceptionPending()) return Value::fromUndefined();
     for (uint32_t i = 0; i < length; ++i) {
+        if (isBigIntElementKind(kind)) {
+            // Both views are 8 bytes wide and the stored bits are the same 64
+            // whichever signedness each has, so this is a copy and never a
+            // conversion — which is also why it cannot allocate.
+            const uint64_t bits = source.get().asObject<TypedArrayHeader>()->rawBits64(i);
+            out.get().asObject<TypedArrayHeader>()->setRawBits64(i, bits);
+            continue;
+        }
         const double v = source.get().asObject<TypedArrayHeader>()->get(i);
         out.get().asObject<TypedArrayHeader>()->set(i, v);
     }
@@ -134,8 +121,11 @@ Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
         if (rtExceptionPending()) return Value::fromUndefined();
         for (uint32_t i = 0; i < length; ++i) {
             Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
-            const double v = rtToNumber(elem.get());
-            out.get().asObject<TypedArrayHeader>()->set(i, v);
+            // The store's conversion is the element kind's, so a Number in a
+            // BigInt view's source array is the TypeError 7.1.13 names rather
+            // than a truncation.
+            rtTypedArraySetElement(out, i, elem.get());
+            if (rtExceptionPending()) return Value::fromUndefined();
         }
         return out.get();
     }
@@ -159,9 +149,8 @@ Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
             // than through a pointer taken before the loop.
             Rooted<Value> elem{rtArrayLikeElement(source, i)};
             if (rtExceptionPending()) return Value::fromUndefined();
-            const double v = rtToNumber(elem.get());
+            rtTypedArraySetElement(out, i, elem.get());
             if (rtExceptionPending()) return Value::fromUndefined();
-            out.get().asObject<TypedArrayHeader>()->set(i, v);
         }
         return out.get();
     }
@@ -255,6 +244,9 @@ const CtorEntry kCtors[] = {
     {ElementKind::Uint32, typedArrayCtor<ElementKind::Uint32>},
     {ElementKind::Float32, typedArrayCtor<ElementKind::Float32>},
     {ElementKind::Float64, typedArrayCtor<ElementKind::Float64>},
+    {ElementKind::Float16, typedArrayCtor<ElementKind::Float16>},
+    {ElementKind::BigInt64, typedArrayCtor<ElementKind::BigInt64>},
+    {ElementKind::BigUint64, typedArrayCtor<ElementKind::BigUint64>},
 };
 
 static_assert(std::size(kCtors) == static_cast<size_t>(ElementKind::Count),
@@ -421,14 +413,13 @@ uint64_t typedArrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         Rooted<Value> out{fromLength(kind, len)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         for (uint32_t i = 0; i < len; ++i) {
-            double v = elemOf(source.get(), i);
+            Rooted<Value> val{rtTypedArrayElement(source.get(), i)};
             if (hasMap) {
-                Rooted<Value> val{Value::fromDouble(v)};
-                Rooted<Value> mapped{callBack(mapFn, thisArg, val, i, source)};
+                val.set(callBack(mapFn, thisArg, val, i, source));
                 if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-                v = rtToNumber(mapped.get());
             }
-            out.get().asObject<TypedArrayHeader>()->set(i, v);
+            rtTypedArraySetElement(out, i, val.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         return out.get().rawBits();
     }
@@ -439,15 +430,12 @@ uint64_t typedArrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         for (uint32_t i = 0; i < len; ++i) {
             Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
-            double v = 0.0;
             if (hasMap) {
-                Rooted<Value> mapped{callBack(mapFn, thisArg, elem, i, source)};
+                elem.set(callBack(mapFn, thisArg, elem, i, source));
                 if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-                v = rtToNumber(mapped.get());
-            } else {
-                v = rtToNumber(elem.get());
             }
-            out.get().asObject<TypedArrayHeader>()->set(i, v);
+            rtTypedArraySetElement(out, i, elem.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         return out.get().rawBits();
     }
@@ -488,9 +476,8 @@ uint64_t typedArrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     Rooted<Value> out{fromLength(kind, args.count())};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < args.count(); ++i) {
-        double v = rtToNumber(args[i]);
+        rtTypedArraySetElement(out, i, args[i]);
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        out.get().asObject<TypedArrayHeader>()->set(i, v);
     }
     return out.get().rawBits();
 }
@@ -550,6 +537,47 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     return false;
 }
 
+// One element as a JS VALUE, which is where the two BigInt views stop being
+// "two more widths": ten kinds answer a Number and these two answer a BigInt, so
+// every read path in the runtime funnels through here rather than each one
+// keeping its own opinion about `view->get`.
+//
+// ALLOCATES for a BigInt kind, and the bytes are therefore read BEFORE the
+// allocation — the raw `view` pointer is dead from that line on. Out of range is
+// `undefined`, which 10.4.5.4 makes an absence rather than an error.
+Value rtTypedArrayElement(Value viewVal, uint32_t index) {
+    auto* view = viewVal.asObject<TypedArrayHeader>();
+    if (index >= view->length) return Value::fromUndefined();
+    const ElementKind kind = view->elementKind();
+    if (!isBigIntElementKind(kind)) return Value::fromDouble(view->get(index));
+    const uint64_t bits = view->rawBits64(index);
+    return rtBigIntFromRawBits64(bits, kind == ElementKind::BigInt64);
+}
+
+// 10.4.5.16 IntegerIndexedElementSet. The conversion is ToNumber for the ten
+// numeric kinds and ToBigInt for the two 64-bit integer ones — 23.2.5.13's
+// split, and the one place in the language where a typed-array write THROWS
+// (7.1.13 has no Number row) instead of truncating.
+//
+// Either conversion can run user code, so the view is re-derived through the
+// root afterwards and its length re-read; an index that is out of range by then
+// is a discarded write, not an error.
+void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
+    const ElementKind kind = view.get().asObject<TypedArrayHeader>()->elementKind();
+    Rooted<Value> val{value};
+    if (isBigIntElementKind(kind)) {
+        uint64_t bits = 0;
+        if (!rtBigIntToRawBits64(val.get(), bits)) return;
+        auto* live = view.get().asObject<TypedArrayHeader>();
+        if (index < live->length) live->setRawBits64(index, bits);
+        return;
+    }
+    const double num = rtToNumber(val.get());
+    if (rtExceptionPending()) return;
+    auto* live = view.get().asObject<TypedArrayHeader>();
+    if (index < live->length) live->set(index, num);
+}
+
 Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     auto* view = viewVal.asObject<TypedArrayHeader>();
     if (key == "length") return Value::fromDouble(view->length);
@@ -560,6 +588,23 @@ Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());
 
     const char* kindName = view->kindName();
+    // 23.2.3's methods over a BIGINT view are not built. Every one of them in
+    // this runtime speaks `double` — the loops hold a raw view pointer and a
+    // numeric element — and a 64-bit integer element is neither representable
+    // as one nor convertible to one without losing the low bits. So they are
+    // refused BY NAME here rather than answered with an approximation, which is
+    // the silent wrong answer the project's rules exist to prevent.
+    //
+    // What IS built for these two views is the whole of what makes them
+    // different: construction from every source 23.2.5.1 lists, `from` and
+    // `of`, element reads and writes with ToBigInt, iteration, and printing.
+    if (isBigIntElementKind(view->elementKind()) && rtTypedArrayHasMethod(key)) {
+        fatal((std::string("unsupported: ") + kindName + ".prototype." + key +
+               " is not implemented (bronze's %TypedArray% methods convert every element "
+               "through a double, which cannot carry a 64-bit integer; the two BigInt views "
+               "support construction, element access, iteration and `from`/`of`)")
+                  .c_str());
+    }
     Value method = rtTypedArrayMethod(key);
     if (!method.isUndefined()) return method;
     rtCheckTypedArrayMember(kindName, key);
@@ -574,6 +619,11 @@ void rtCheckTypedArrayMember(const char* kindName, const std::string& key) {
 
 Value rtArrayBufferMember(Value bufferVal, const std::string& key) {
     auto* buf = bufferVal.asObject<ArrayBufferHeader>();
+    // One kind, two surfaces: 25.2's SharedArrayBuffer members are a different
+    // set from 25.1's and live with the rest of the shared-memory surface
+    // (builtin_shared_memory.cpp). Delegated here rather than branched at the
+    // property path so `in`, the reads and the printer cannot disagree.
+    if (buf->isShared()) return rtSharedArrayBufferMember(bufferVal, key);
     if (key == "byteLength") {
         return Value::fromDouble(buf->isDetached() ? 0.0 : static_cast<double>(buf->byteLength));
     }
@@ -606,7 +656,8 @@ bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
     return false;
 }
 
-bool rtArrayBufferHasMember(const std::string& key) {
+bool rtArrayBufferHasMember(bool shared, const std::string& key) {
+    if (shared) return rtSharedArrayBufferHasMember(key);
     if (key == "byteLength" || key == "maxByteLength" || key == "resizable" ||
         key == "detached" || key == "resize" || key == "transfer" ||
         key == "transferToFixedLength" || key == "slice" || key == "constructor") {

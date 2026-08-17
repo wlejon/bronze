@@ -15,11 +15,14 @@ namespace bronze {
 // construction, the conversion on store, printing, iteration — is written once
 // and reads a table.
 
-// ECMA-262 table 71's element types, in the order the specification lists
-// them. The order is pinned: `kind` is a stored field and the runtime tests
-// compare the numbers, so inserting one in the middle would silently
-// reinterpret every view a previous build produced (which matters only inside
-// one run today, and is the kind of thing that stops being harmless).
+// ECMA-262 table 71's element types. The first nine are in the order the
+// specification lists them and the last three are APPENDED, which is a
+// deliberate divergence: `kind` is a stored field, generated code's inline
+// element access switches on the NUMBER (BRONZE_ABI_TA_KIND_* below), and the
+// runtime tests compare them — so inserting Float16 and the two BigInt rows
+// where 23.2 puts them would silently reinterpret every view every previously
+// built object file creates. The table order is the enum's, not the
+// specification's, and the specification's order is not otherwise load-bearing.
 enum class ElementKind : uint32_t {
     Int8 = 0,
     Uint8,
@@ -30,8 +33,24 @@ enum class ElementKind : uint32_t {
     Uint32,
     Float32,
     Float64,
+    // IEEE 754 binary16. Not an ABI kind: generated code's inline switch names
+    // only the nine above and everything else takes the helper.
+    Float16,
+    // The two rows whose element values are BIGINTS rather than Numbers, which
+    // is the one fact that makes them different in kind and not just in width:
+    // `get`/`set` below speak `double` and CANNOT carry these, so both refuse
+    // them by name and the raw-bits pair is the only road to their bytes.
+    BigInt64,
+    BigUint64,
     Count,
 };
+
+// Do this kind's elements read and write as BigInts? 23.2.5.13 goes through
+// ToBigInt rather than ToNumber for exactly these two, which is why a Number
+// written into one is a TypeError instead of a truncation.
+inline constexpr bool isBigIntElementKind(ElementKind kind) noexcept {
+    return kind == ElementKind::BigInt64 || kind == ElementKind::BigUint64;
+}
 
 struct ElementKindInfo {
     const char* name;      // the constructor's name, which is also what inspect prints
@@ -70,15 +89,36 @@ struct ArrayBufferHeader {
 
     static constexpr uint32_t kFlagResizable = 1U << 0;
     static constexpr uint32_t kFlagDetached = 1U << 1;
+    // A SharedArrayBuffer (25.2). A FLAG and not a HeapKind of its own, and the
+    // reason is that every difference between the two is in the API SURFACE
+    // rather than in the storage: 25.2.5 gives a SAB `grow` and `growable`
+    // where 25.1.6 gives an ArrayBuffer `resize`, `transfer` and `detached`,
+    // and every view over either addresses the same bytes the same way. A kind
+    // of its own would fork every `flags == ArrayBufferHeader::kFlags` test in
+    // the runtime — the typed-array constructor, the DataView constructor, the
+    // collector's raw-bytes handling — to no purpose.
+    //
+    // bronze runs ONE agent: there are no workers, no `postMessage` and no
+    // second thread, so "shared" here names the brand and the API, and the
+    // memory is shared with nobody. That is what makes 25.4's `wait` and
+    // `notify` refusals rather than implementations (builtin_shared_memory.cpp).
+    static constexpr uint32_t kFlagShared = 1U << 2;
 
     // Zero-filled, as 25.1.3.1 AllocateArrayBuffer requires. `byte_length` is
     // the caller's business to validate; this allocates what it is asked for.
     static ArrayBufferHeader* create(Heap& heap, uint32_t byte_length);
     static ArrayBufferHeader* createResizable(Heap& heap, uint32_t byte_length,
                                               uint32_t max_byte_length);
+    // 25.2.3.1 AllocateSharedArrayBuffer. `max_byte_length` equal to
+    // `byte_length` means not growable; anything larger reserves the maximum up
+    // front, exactly as a resizable ArrayBuffer does, because a moving collector
+    // cannot hand out a block that later moves under a view.
+    static ArrayBufferHeader* createShared(Heap& heap, uint32_t byte_length,
+                                           uint32_t max_byte_length);
 
     bool isResizable() const noexcept { return (bufferFlags & kFlagResizable) != 0; }
     bool isDetached() const noexcept { return (bufferFlags & kFlagDetached) != 0; }
+    bool isShared() const noexcept { return (bufferFlags & kFlagShared) != 0; }
     void setDetached() noexcept {
         bufferFlags |= kFlagDetached;
         byteLength = 0;
@@ -122,8 +162,19 @@ struct TypedArrayHeader {
     // narrowing 23.2.5.2 SetTypedArrayFromNumber requires; the caller has
     // already done ToNumber, because that can call user code and therefore
     // allocate, and this must not.
+    //
+    // A NUMERIC kind only. On a BigInt64/BigUint64 view both are a named fatal
+    // rather than a lossy conversion: a `double` cannot carry 2^63 - 1, so any
+    // path that reaches here with one is a path that has not been taught about
+    // BigInt elements, and answering approximately would hide that forever.
     double get(uint32_t index) const noexcept;
     void set(uint32_t index, double value) noexcept;
+
+    // The eight stored bytes of a 64-bit element, in host byte order. The
+    // BigInt kinds' only accessor, and deliberately raw: converting to and from
+    // a BigInt VALUE allocates, and nothing in this header may.
+    uint64_t rawBits64(uint32_t index) const noexcept;
+    void setRawBits64(uint32_t index, uint64_t bits) noexcept;
 
     // A view over a fresh zero-filled buffer of `length` elements.
     static TypedArrayHeader* create(Heap& heap, ElementKind kind, uint32_t length);
@@ -206,5 +257,17 @@ static_assert(sizeof(DataViewHeader) == 24,
 // from another typed array converts element by element without materialising
 // a view. `value` has already been through ToNumber.
 double convertForStore(ElementKind kind, double value) noexcept;
+
+// IEEE 754 binary16, both directions, exposed because `Math.f16round` (21.3.2.26)
+// is the round trip and nothing else about it is Math's business.
+//
+// The store direction rounds to nearest with ties to EVEN, which 6.1.6.1 makes
+// the rule for every float element type, and it is computed from the double
+// rather than through a `float` — a double-rounding through binary32 gives the
+// wrong answer for values near a binary16 tie. A NaN stores as 0x7E00, the
+// canonical quiet half, so two different input NaNs cannot be told apart by
+// reading the bytes back.
+uint16_t doubleToFloat16Bits(double value) noexcept;
+double float16BitsToDouble(uint16_t bits) noexcept;
 
 }  // namespace bronze

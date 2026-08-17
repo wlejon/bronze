@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -189,4 +190,106 @@ TEST_CASE("a zero-length buffer is a real object with a real header") {
     heap.collect();
     CHECK(view.get().asObject<TypedArrayHeader>()->buffer.asObject<ArrayBufferHeader>()
               ->byteLength == 0);
+}
+
+TEST_CASE("a shared buffer is the same storage with a different brand") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    // 25.2's SharedArrayBuffer is `kFlagShared` on the ordinary buffer header,
+    // so the brand has to be readable off the header and must NOT be readable
+    // off a plain one — that predicate is what splits the two member surfaces.
+    Rooted<Value> fixed(Value::fromObject(ArrayBufferHeader::createShared(heap, 8, 8)));
+    auto* f = fixed.get().asObject<ArrayBufferHeader>();
+    CHECK(f->header.flags == ArrayBufferHeader::kFlags);
+    CHECK(f->isShared());
+    CHECK_FALSE(f->isResizable());  // not growable: max == length
+    CHECK_FALSE(f->isDetached());
+    CHECK(f->byteLength == 8);
+    CHECK(f->maxByteLength == 8);
+    for (uint32_t i = 0; i < 8; ++i) {
+        CHECK(f->data()[i] == 0);
+    }
+
+    Rooted<Value> plain(Value::fromObject(ArrayBufferHeader::create(heap, 8)));
+    CHECK_FALSE(plain.get().asObject<ArrayBufferHeader>()->isShared());
+
+    // A GROWABLE one reserves its maximum up front, for the reason a resizable
+    // ArrayBuffer does: a view holds a byte offset into this block, and a
+    // moving collector cannot reallocate it under the view.
+    Rooted<Value> growable(Value::fromObject(ArrayBufferHeader::createShared(heap, 4, 12)));
+    auto* g = growable.get().asObject<ArrayBufferHeader>();
+    CHECK(g->isShared());
+    CHECK(g->isResizable());
+    CHECK(g->byteLength == 4);
+    CHECK(g->maxByteLength == 12);
+    for (uint32_t i = 0; i < 12; ++i) {
+        CHECK(g->data()[i] == 0);
+    }
+
+    // And the brand survives a collection, which a flag word in the header only
+    // does if the copy phase copies the whole header rather than rebuilding it.
+    g->data()[11] = 0x5A;
+    heap.collect();
+    auto* moved = growable.get().asObject<ArrayBufferHeader>();
+    CHECK(moved->isShared());
+    CHECK(moved->isResizable());
+    CHECK(moved->maxByteLength == 12);
+    CHECK(moved->data()[11] == 0x5A);
+    CHECK(fixed.get().asObject<ArrayBufferHeader>()->isShared());
+    CHECK_FALSE(plain.get().asObject<ArrayBufferHeader>()->isShared());
+}
+
+TEST_CASE("binary16 rounds to nearest even and is computed from the double") {
+    // IEEE 754 binary16 has an 11-bit significand, so the interesting cases are
+    // the ties — and the reason the conversion takes a `double` rather than
+    // narrowing through a `float` first is that a float rounds ONCE before the
+    // half rounds again, which turns a value above a tie into the tie itself.
+    CHECK(doubleToFloat16Bits(1.0) == 0x3C00);
+    CHECK(doubleToFloat16Bits(-1.0) == 0xBC00);
+    CHECK(doubleToFloat16Bits(0.0) == 0x0000);
+    CHECK(doubleToFloat16Bits(-0.0) == 0x8000);
+    CHECK(doubleToFloat16Bits(65504.0) == 0x7BFF);  // the largest finite half
+    CHECK(doubleToFloat16Bits(65520.0) == 0x7C00);  // the tie above it: to even, = inf
+    CHECK(doubleToFloat16Bits(65519.0) == 0x7BFF);  // below the tie
+    CHECK(doubleToFloat16Bits(std::numeric_limits<double>::infinity()) == 0x7C00);
+
+    // NaN canonicalises to one quiet pattern, as the other float kinds do.
+    CHECK(doubleToFloat16Bits(std::numeric_limits<double>::quiet_NaN()) == 0x7E00);
+    CHECK(std::isnan(float16BitsToDouble(0x7E00)));
+
+    // Subnormals, and the tie at half the smallest one going to +0.
+    CHECK(float16BitsToDouble(0x0001) == std::ldexp(1.0, -24));
+    CHECK(doubleToFloat16Bits(std::ldexp(1.0, -24)) == 0x0001);
+    CHECK(doubleToFloat16Bits(std::ldexp(1.0, -25)) == 0x0000);
+    CHECK(doubleToFloat16Bits(std::ldexp(1.5, -25)) == 0x0001);
+
+    // The double-rounding witness. 2049 + 2^-30 is above the 2048/2050 tie, so
+    // one correct rounding gives 2050 (0x6801). Narrowed through binary32 it
+    // becomes exactly 2049 — the tie — and would round to 2048 (0x6800).
+    const double witness = 2049.0 + std::ldexp(1.0, -30);
+    CHECK(static_cast<double>(static_cast<float>(witness)) == 2049.0);
+    CHECK(doubleToFloat16Bits(witness) == 0x6801);
+    CHECK(float16BitsToDouble(doubleToFloat16Bits(witness)) == 2050.0);
+    // The two ties either side, which go in OPPOSITE directions because
+    // ties-to-even is about the significand and not about magnitude: the quantum
+    // here is 2, so 2049 ties 2048 (significand 1024, even) against 2050 (1025,
+    // odd) and lands on 2048, while 2051 ties 2050 against 2052 (1026, even)
+    // and lands on 2052.
+    CHECK(doubleToFloat16Bits(2049.0) == 0x6800);
+    CHECK(doubleToFloat16Bits(2051.0) == 0x6802);
+
+    // A Float16Array element agrees with the free functions by construction.
+    Heap heap;
+    ShadowStackFrame frame;
+    Rooted<Value> view(Value::fromObject(TypedArrayHeader::create(heap, ElementKind::Float16, 4)));
+    auto* v = view.get().asObject<TypedArrayHeader>();
+    CHECK(v->bytesPerElement() == 2);
+    v->set(0, witness);
+    CHECK(v->get(0) == 2050.0);
+    v->set(1, 0.1);
+    CHECK(v->get(1) == float16BitsToDouble(doubleToFloat16Bits(0.1)));
+    v->set(2, -0.0);
+    CHECK(v->get(2) == 0.0);
+    CHECK(std::signbit(v->get(2)));
 }

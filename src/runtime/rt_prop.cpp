@@ -61,6 +61,7 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -205,9 +206,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         } else if (fastHdr->flags == TypedArrayHeader::kFlags) {
             const KeyInfo& ki = rtKeyInfo(keyIndex);
             if (ki.isElemIndex) {
-                const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
-                if (ki.elemIndex >= view->length) return Value::fromUndefined().rawBits();
-                return Value::fromDouble(view->get(ki.elemIndex)).rawBits();
+                // Through rtTypedArrayElement rather than `view->get`, because
+                // a BigInt64/BigUint64 element is a BigInt and has to be
+                // allocated: one funnel, so no read path can come to believe
+                // every element is a double.
+                return rtTypedArrayElement(Value(objBits), ki.elemIndex).rawBits();
             }
             if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const TypedArrayHeader*>(fastHdr)->length).rawBits();
@@ -312,15 +315,13 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     if (hdr->flags == TypedArrayHeader::kFlags) {
         // The index is tried FIRST: `v[0]` is the whole point of a typed array
         // and must not walk a member table on the way to the element.
-        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
         if (rtKeyAsIndex(keyStr, idx)) {
             // Out of range is `undefined` and not an error — a typed array has
             // no elements outside its length and nowhere to continue the search
             // (10.4.5.4 makes a canonical numeric string absent rather than
             // inherited, which is why this returns instead of falling through
             // to the chain below).
-            if (idx >= view->length) return Value::fromUndefined().rawBits();
-            return Value::fromDouble(view->get(idx)).rawBits();
+            return rtTypedArrayElement(objVal, idx).rawBits();
         }
         Rooted<Value> recv{objVal};
         const Value found = rtTypedArrayMember(recv.get(), keyStr);
@@ -349,6 +350,15 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
         Rooted<Value> recv{objVal};
         return weakCollectionMemberByName(recv, keyStr, keyHeader).rawBits();
+    }
+    if (hdr->flags == WeakRefHeader::kFlags ||
+        hdr->flags == FinalizationRegistryHeader::kFlags) {
+        // Neither carries a shape, so a name the member table does not know
+        // continues up `Object.prototype` exactly as an ArrayBuffer's does.
+        Rooted<Value> recv{objVal};
+        const Value found = rtWeakRefMember(recv.get(), keyStr);
+        if (!found.isUndefined()) return found.rawBits();
+        return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // Every member of a RegExp is computed from the header and the
@@ -566,6 +576,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // on the miss, so the hit path is untouched.
     if (result.isUndefined()) {
         rtMathCheckMissingMember(objRoot.get(), keyStr);
+        rtAtomicsCheckMissingMember(objRoot.get(), keyStr);
         rtObjectCheckMissingMember(objRoot.get(), keyStr);
         rtJsonCheckMissingMember(objRoot.get(), keyStr);
         // The `Array.prototype` object, whose misses are Array's table: a name
@@ -686,8 +697,12 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                         return Value::fromDouble(static_cast<double>(*p)).rawBits();
                     case ElementKind::Int8:
                         return Value::fromDouble(static_cast<double>(*reinterpret_cast<const int8_t*>(p))).rawBits();
+                    // Float16 and the two BigInt kinds fall out to the funnel
+                    // below: one needs a bit-pattern decode and the others
+                    // allocate, and neither belongs in a switch whose whole
+                    // point is loading a machine type inline.
                     default:
-                        break;
+                        return rtTypedArrayElement(objVal, idx).rawBits();
                 }
             }
         }
@@ -770,9 +785,7 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
                         return reinterpret_cast<ArrayHeader*>(hdr)->getElem(u).rawBits();
                     }
                     if (hdr->flags == TypedArrayHeader::kFlags) {
-                        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-                        if (u >= view->length) return Value::fromUndefined().rawBits();
-                        return Value::fromDouble(view->get(u)).rawBits();
+                        return rtTypedArrayElement(objVal, u).rawBits();
                     }
                 }
             }
@@ -781,10 +794,8 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
             return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
         }
         if (hdr->flags == TypedArrayHeader::kFlags && rtValueToElementIndex(Value(idxBits), idx)) {
-            auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
             // Out of range is `undefined`, not an error — 10.4.5.4 again.
-            if (idx >= view->length) return Value::fromUndefined().rawBits();
-            return Value::fromDouble(view->get(idx)).rawBits();
+            return rtTypedArrayElement(objVal, idx).rawBits();
         }
     }
     // Everything that is not an index NAMES something, and what a name means

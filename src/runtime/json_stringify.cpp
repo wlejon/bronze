@@ -31,6 +31,7 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -359,6 +360,12 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             case HeapKind::RegExp:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:
+            // A WeakRef's target and a registry's cells are internal slots, so
+            // EnumerableOwnPropertyNames finds nothing and `{}` is the whole
+            // answer — and neither may serialize its target, for the liveness
+            // reason inspect.cpp gives.
+            case HeapKind::WeakRef:
+            case HeapKind::FinalizationRegistry:
                 appendAscii(out, "{}");
                 return true;
             // An iteration record and an environment are bronze's own, and a

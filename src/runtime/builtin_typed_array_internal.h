@@ -24,6 +24,44 @@
 namespace bronze::runtime {
 namespace typed_array_internal {
 
+// The three questions BOTH buffer surfaces ask -- the plain one in
+// builtin_typed_array.cpp and the shared one in builtin_shared_memory.cpp -- so
+// they live here rather than being answered twice with two opinions about what
+// fits in the heap.
+inline bool isBuffer(Value v) {
+    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == ArrayBufferHeader::kFlags;
+}
+
+inline bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_t& out) {
+    if (v.isUndefined()) {
+        out = 0;
+        return true;
+    }
+    const double n = rtToNumber(v);
+    double integer = std::isnan(n) ? 0.0 : std::trunc(n);
+    if (integer == 0.0) integer = 0.0;
+    if (integer < 0.0 || integer > 9007199254740991.0) {
+        rtThrowRangeError(std::string("Invalid ") + what + " length");
+        return false;
+    }
+    if (integer > static_cast<double>(kMaxByteLength) / bytesPerElement) {
+        rtThrowRangeError(std::string(what) + " allocation failed: length is too large");
+        return false;
+    }
+    out = static_cast<uint32_t>(integer);
+    return true;
+}
+
+inline bool checkAllocatable(uint32_t byteLength) {
+    const size_t semispace = rtHeap().reserved_size() / 2;
+    if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
+        rtThrowRangeError("Array buffer allocation failed: " + std::to_string(byteLength) +
+                          " bytes does not fit in the heap");
+        return false;
+    }
+    return true;
+}
+
 inline bool isTypedArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags;
 }

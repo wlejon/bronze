@@ -20,6 +20,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -202,6 +203,14 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
         fatal((std::string("extending `") + name +
                "` is unsupported (its instances carry [[WeakMapData]]/[[WeakSetData]], which "
                "bronze allocates only for the intrinsic, so a subclass's would carry none)")
+                  .c_str());
+    }
+    if (const char* name = rtWeakRefConstructorName(base.get())) {
+        fatal((std::string("extending `") + name +
+               "` is unsupported (its instances carry a slot the COLLECTOR owns — a WeakRef's "
+               "[[WeakRefTarget]] is an untraced word and a FinalizationRegistry's [[Cells]] "
+               "are a table the post-collection sweep walks — and bronze allocates both only "
+               "for the intrinsic, so a subclass's instances would carry neither)")
                   .c_str());
     }
     if (rtIsArrayBufferConstructor(base.get())) {

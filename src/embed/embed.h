@@ -419,6 +419,14 @@ inline constexpr ElementKind Int32 = static_cast<ElementKind>(5);
 inline constexpr ElementKind Uint32 = static_cast<ElementKind>(6);
 inline constexpr ElementKind Float32 = static_cast<ElementKind>(7);
 inline constexpr ElementKind Float64 = static_cast<ElementKind>(8);
+// Appended in the runtime's enumeration order and not 23.2's, because the
+// numbers are ABI for generated code and could not be renumbered. A host that
+// creates one of the last two gets a view whose ELEMENTS are BigInts; the
+// byte-level `fillTypedArray` works on it like any other, and there is no
+// double-based host accessor for a 64-bit integer element by design.
+inline constexpr ElementKind Float16 = static_cast<ElementKind>(9);
+inline constexpr ElementKind BigInt64 = static_cast<ElementKind>(10);
+inline constexpr ElementKind BigUint64 = static_cast<ElementKind>(11);
 }  // namespace elements
 
 // A view of `length` elements over a fresh zero-filled buffer of its own —
