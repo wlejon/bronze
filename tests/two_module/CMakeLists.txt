@@ -27,8 +27,9 @@ bronze_two_module_object(${_two_src}/mod_b.js bronze_module_b ${_two_bin}/mod_b.
 
 # Handed to the linker as objects rather than compiled from source. If the two
 # ever collide on a symbol, THIS is where it surfaces — a duplicate-symbol error
-# at link, which is the check that everything but the entry and the ABI stamp
-# really does have internal linkage.
+# at link, which is the check that everything but the three symbols named after
+# the entry (the entry, the ABI stamp, the host-globals manifest) really does
+# have internal linkage.
 set_source_files_properties(${_two_bin}/mod_a.obj ${_two_bin}/mod_b.obj
     PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 
@@ -37,6 +38,12 @@ add_executable(bronze_two_module_host
     ${_two_bin}/mod_a.obj
     ${_two_bin}/mod_b.obj)
 target_link_libraries(bronze_two_module_host PRIVATE bronze::embed)
+# bronze emits non-PIC objects (its own driver links executables -no-pie on
+# Linux, link.cpp); a distro-default PIE link of them dies in GNU ld with
+# "failed to set dynamic section sizes: bad value".
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(bronze_two_module_host PRIVATE -no-pie)
+endif()
 if(MSVC)
     target_compile_options(bronze_two_module_host PRIVATE /W4 /WX /permissive-)
 else()
