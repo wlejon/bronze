@@ -32,6 +32,12 @@ void rejectPromise(Value promise, Value reason) {
 }
 
 bool isPromise(Value v) {
+    // A frame even though this only answers a question: rtIsPromise reads the
+    // promise prototype, and taking it can BUILD the intrinsics — an
+    // allocation, which is why that function roots its receiver. Rooting into
+    // no frame is rooting into nothing, so the brand check would compare a
+    // pre-collection address on the one call that triggers the build.
+    ShadowStackFrame frame;
     return runtime::rtIsPromise(v);
 }
 

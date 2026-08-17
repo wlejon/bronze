@@ -1,6 +1,7 @@
 #include "runtime/gc.h"
 
 #include "abi/bronze_abi.h"
+#include "runtime/fatal.h"
 
 extern "C" {
 bronze_gc_frame* bronze_gc_frame_top = nullptr;
@@ -21,6 +22,17 @@ ShadowStackFrame::~ShadowStackFrame() noexcept {
 
 ShadowStackFrame* ShadowStackFrame::current() noexcept {
     return top_frame_;
+}
+
+ShadowStackFrame* requireFrameForRoot() {
+    ShadowStackFrame* frame = ShadowStackFrame::current();
+    if (!frame) {
+        fatal("Rooted<> with no ShadowStackFrame open: every entry into bronze opens "
+              "one (rt.cpp's main, embed::runMain, embed::runEntry, and each embed:: "
+              "API function), and generated code is only reached through them — a host "
+              "calling raw bronze_* helpers must open a bronze::ShadowStackFrame first");
+    }
+    return frame;
 }
 
 void ShadowStackFrame::push(Value* slot) {

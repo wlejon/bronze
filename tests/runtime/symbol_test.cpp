@@ -29,6 +29,10 @@ Value symbolNamed(const char* text) {
 }  // namespace
 
 TEST_CASE("A symbol is identity, not content") {
+    // The frame the Rooted<>s below register into — without it they registered
+    // into nothing, which is the shape of root the case next door explains.
+    ShadowStackFrame frame;
+
     Rooted<Value> a{symbolNamed("tag")};
     Rooted<Value> b{symbolNamed("tag")};
 

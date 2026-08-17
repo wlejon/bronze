@@ -76,6 +76,19 @@ TEST_CASE("calling a non-function reports the TypeError as a thrown result") {
 }
 
 TEST_CASE("a registered host global answers bronze_global_get") {
+    // A root frame, because this case calls a GENERATED-CODE helper directly
+    // and generated code never arrives without one. Rooted<> registers into
+    // ShadowStackFrame::current(), and with no frame open it registers
+    // nothing at all — so the builtin namespaces that the first
+    // bronze_global_get in a process builds (rtResolveBuiltinGlobal's ladder
+    // constructs them lazily) would be collected while still half-built. It
+    // is invisible until this case runs BEFORE anything else has built that
+    // ladder, and under BRONZE_GC_STRESS, where the collection comes at every
+    // allocation: an order-dependent crash rather than a constant one. Every
+    // embed:: entry point opens its own frame for this reason; a test that
+    // reaches past them owes the same.
+    ShadowStackFrame frame;
+
     // The two halves a compiled read arrives with: the key string registered
     // under the index lowering assigned it, and the host's value in the
     // registry. A heap STRING value on purpose — it moves at every

@@ -32,10 +32,10 @@ class RootedArgs {
 public:
     RootedArgs(uint32_t argc, const uint64_t* argv) : slots_(argc) {
         for (uint32_t i = 0; i < argc; ++i) slots_[i] = Value(argv[i]);
-        frame_ = ShadowStackFrame::current();
-        if (frame_) {
-            for (Value& slot : slots_) frame_->push(&slot);
-        }
+        // Rooted<>'s rule, for the same reason (gc.h): a block that roots
+        // nothing is worse than no block at all, because it reads as safe.
+        frame_ = requireFrameForRoot();
+        for (Value& slot : slots_) frame_->push(&slot);
     }
 
     ~RootedArgs() {
@@ -88,10 +88,8 @@ private:
 class RootedBlock {
 public:
     explicit RootedBlock(uint32_t count) : slots_(count, Value::fromUndefined()) {
-        frame_ = ShadowStackFrame::current();
-        if (frame_) {
-            for (Value& slot : slots_) frame_->push(&slot);
-        }
+        frame_ = requireFrameForRoot();
+        for (Value& slot : slots_) frame_->push(&slot);
     }
 
     ~RootedBlock() {

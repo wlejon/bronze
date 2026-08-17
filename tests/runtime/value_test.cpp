@@ -170,6 +170,11 @@ TEST_CASE("pointer encoding and decoding for 48-bit address range") {
 }
 
 TEST_CASE("bronze_truthy tests") {
+    // bronze_create_object and bronze_box_str below are generated-code helpers
+    // that root internally, so this case has to bring the frame compiled code
+    // would have brought.
+    ShadowStackFrame frame;
+
     CHECK_FALSE(bronze_truthy(Value::fromUndefined().rawBits()));
     CHECK_FALSE(bronze_truthy(Value::fromNull().rawBits()));
     CHECK_FALSE(bronze_truthy(Value::fromBool(false).rawBits()));
