@@ -127,6 +127,9 @@ if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     # linked against and what the harness loads it into.
     if(BRONZE_BUILD_SHARED_RUNTIME)
         add_subdirectory(tests/shared_load)
+        # The unload half of the same story: retire a loaded module, load its
+        # replacement, one runtime throughout.
+        add_subdirectory(tests/hot_swap)
     endif()
 endif()
 

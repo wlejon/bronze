@@ -57,4 +57,14 @@ uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);
 void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 
+// Module load epochs: the unregister half of the module root spans. A host
+// (embed.h's beginModuleLoad/unloadModule) brackets a module's entry with an
+// epoch; every span the module registers during its entry is tagged with it,
+// and dropping the epoch removes those spans — and the function singletons
+// interned through the module's own fn slots — from the collector's roots.
+// Epoch 0 is "no bracket": spans registered outside any bracket (a linked
+// program's, a host that never unloads) are permanent, exactly as before.
+uint64_t rtBeginModuleEpoch();
+void rtDropModuleEpoch(uint64_t epoch);
+
 }  // namespace bronze::runtime

@@ -204,16 +204,59 @@ static_assert(sizeof(Value) == sizeof(uint64_t),
 // Values they hold: the collector moves objects, so a cell holding pre-move
 // bits after a collection is the whole failure these roots exist to prevent.
 //
-// A span is never removed. There is no unload — a compiled module's code and
-// data live for the process — so an unregister would be a way to hand the
-// collector a dangling span and nothing else.
+// The epoch is what makes a span removable: a host brackets a module's entry
+// with rtBeginModuleEpoch, every span registered inside the bracket carries
+// that epoch, and rtDropModuleEpoch takes them back out. Epoch 0 marks a span
+// registered outside any bracket — a linked program's — and those are
+// permanent. Removal is safe ONLY because the unload contract (embed.h) keeps
+// the module's image mapped: a dropped span stops being a ROOT, it does not
+// start being dangling memory.
 template <typename Cell>
 struct ModuleSpan {
     Cell* cells;
     uint64_t count;
+    uint64_t epoch;
 };
 static std::vector<ModuleSpan<Value>> g_moduleValueCells;
 static std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
+
+static uint64_t g_moduleEpochCounter = 0;
+static uint64_t g_currentModuleEpoch = 0;
+
+uint64_t rtBeginModuleEpoch() {
+    g_currentModuleEpoch = ++g_moduleEpochCounter;
+    return g_currentModuleEpoch;
+}
+
+void rtDropModuleEpoch(uint64_t epoch) {
+    if (epoch == 0) return;
+    // The function singletons this module interned die with it. Their code
+    // pointers are 1:1 with declarations in the module's image, and every
+    // intern a module performs fills a cell in its own slot span — so the
+    // spans being dropped name exactly the by-code-pointer map entries whose
+    // last mentioner is going away. The runtime's own interning (null slot
+    // cell) lands in no span and is untouched.
+    for (const auto& span : g_moduleFnSlots) {
+        if (span.epoch != epoch) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            if (span.cells[i].code) {
+                g_functionSingletonIndex.erase(reinterpret_cast<void*>(span.cells[i].code));
+            }
+        }
+    }
+    std::erase_if(g_functionSingletons, [](const std::pair<bronze_fn_code, Value>& entry) {
+        return !g_functionSingletonIndex.contains(reinterpret_cast<void*>(entry.first));
+    });
+    // The erase shifted vector positions; the map's indices must follow.
+    for (size_t i = 0; i < g_functionSingletons.size(); ++i) {
+        g_functionSingletonIndex[reinterpret_cast<void*>(g_functionSingletons[i].first)] = i;
+    }
+    std::erase_if(g_moduleValueCells,
+                  [epoch](const ModuleSpan<Value>& s) { return s.epoch == epoch; });
+    std::erase_if(g_moduleFnSlots,
+                  [epoch](const ModuleSpan<FnSingletonSlot>& s) { return s.epoch == epoch; });
+    if (g_currentModuleEpoch == epoch) g_currentModuleEpoch = 0;
+}
 
 // Globals an embedding host registered (host_globals.h). A vector of pairs
 // rather than a map: registration happens a handful of times at host startup,
@@ -286,12 +329,14 @@ extern "C" {
 
 void bronze_register_value_cells(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
-    g_moduleValueCells.push_back({reinterpret_cast<Value*>(cells), count});
+    g_moduleValueCells.push_back(
+        {reinterpret_cast<Value*>(cells), count, g_currentModuleEpoch});
 }
 
 void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
-    g_moduleFnSlots.push_back({reinterpret_cast<FnSingletonSlot*>(cells), count});
+    g_moduleFnSlots.push_back(
+        {reinterpret_cast<FnSingletonSlot*>(cells), count, g_currentModuleEpoch});
 }
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,

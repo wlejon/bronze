@@ -287,11 +287,17 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * instruction stream stays an immediate and only the value handed to a
      * helper is process-wide. */ \
     X(bronze_register_key_string, BRONZE_ABI_U32,  (BRONZE_ABI_CSTR)) \
-    /* A module's own root spans, handed over at module init and never taken
-     * back — there is no unload, so there is no unregister. Both hold Values in
-     * the module's .data/.bss, and the collector forwards them in place, which
-     * is what lets generated code read a cell through a compile-time constant
-     * address and still see current bits after a collection.
+    /* A module's own root spans, handed over at module init. Both hold Values
+     * in the module's .data/.bss, and the collector forwards them in place,
+     * which is what lets generated code read a cell through a compile-time
+     * constant address and still see current bits after a collection.
+     *
+     * Registration-only, on purpose: generated code never unregisters. The
+     * unregister half is a HOST seam (embed.h's beginModuleLoad/unloadModule
+     * bracket an entry and can later drop everything it registered), because
+     * only the host knows when a module's life ends — and because unload is
+     * only sound under the host-side contract stated there (the image is
+     * never freed).
      *
      * `bronze_register_value_cells` takes `count` plain Value cells: a module
      * calls it for its global cache and for its module-environment cell, which

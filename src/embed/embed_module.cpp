@@ -40,6 +40,13 @@ void runEntry(ModuleEntry entry) {
     runtime::rtDrainMicrotasks();
 }
 
+// The unload seam is one call each way because the mechanism lives with the
+// spans it removes (rt_state.cpp): what belongs HERE is the contract, and
+// embed.h carries it — the bracket discipline, the leak-the-image rule, and
+// what "unload" does and does not free.
+ModuleHandle beginModuleLoad() { return runtime::rtBeginModuleEpoch(); }
+void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
+
 void collectGarbage() { runtime::rtHeap().collect(); }
 
 }  // namespace bronze::embed

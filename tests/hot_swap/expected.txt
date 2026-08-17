@@ -1,0 +1,10 @@
+abi: v1 stamp matches the runtime
+v1: ready checksum=606
+host: version=v1
+host: checksum=606
+host: v1 unloaded
+abi: v2 stamp matches the runtime
+v2: ready checksum=6009
+host: version=v2
+host: checksum=6009
+host: keepsake tag=v1 n=42

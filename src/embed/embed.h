@@ -168,6 +168,50 @@ using ModuleEntry = void (*)();
 // setup in disguise.
 BRONZE_EMBED_API void runEntry(ModuleEntry entry);
 
+// ---- module unload / hot swap ----------------------------------------------
+//
+// A module's entry registers the module's own root spans (its global cache,
+// its module-environment cell, its function-singleton slots) with the
+// collector. The pair below is how a host takes them back out, which is the
+// runtime's whole share of hot swap:
+//
+//     ModuleHandle h = beginModuleLoad();
+//     runEntry(entry);            // spans registered here carry the handle
+//     ...
+//     unloadModule(h);            // the spans stop being roots
+//
+// beginModuleLoad is called immediately BEFORE the entry it brackets and
+// nothing else runs a module entry in between: the bracket is what ties the
+// registrations to the handle. A host that never brackets (or a linked
+// program) gets permanent registrations, exactly as before.
+//
+// WHAT UNLOAD MEANS — AND WHAT IT DOES NOT:
+//
+//  * The module's .data stops being a ROOT SOURCE. Heap values the module
+//    created live exactly as long as something else references them: a host
+//    Persistent, another module, a property on globalThis. Nothing is freed
+//    eagerly; the next collection simply stops tracing through the module's
+//    own tables. In particular, functions the module assigned onto globalThis
+//    are still referenced BY globalThis — the new version overwriting those
+//    names is what actually lets the old module's environment die.
+//
+//  * THE HOST MUST NEVER FreeLibrary/dlclose THE IMAGE. Function objects and
+//    closures hold raw code pointers into the module's .text, and proving no
+//    such reference survives would be a whole-heap analysis. The image is
+//    deliberately leaked — a few MB per swap is the price of soundness, and a
+//    dev-loop host swaps a bounded number of times per run. Load the NEW
+//    version from a distinct path (or copy) so the loader maps a fresh image
+//    rather than handing back the old one.
+//
+//  * Interned property keys and hidden-class shapes the module minted are
+//    immortal by design and are not reclaimed.
+//
+// Calling unloadModule while a call into the module's code is on the stack is
+// a host error, exactly as freeing any object mid-use is.
+using ModuleHandle = uint64_t;
+BRONZE_EMBED_API ModuleHandle beginModuleLoad();
+BRONZE_EMBED_API void unloadModule(ModuleHandle module);
+
 // Collect now. A host that has just released a large graph — a level torn
 // down, a frame's scratch objects dropped — knows something the heap's own
 // growth heuristic does not, and this is how it says so. Everything the host
