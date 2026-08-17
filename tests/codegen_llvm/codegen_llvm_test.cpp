@@ -390,20 +390,24 @@ std::vector<std::string> definedExports(const std::string& entrySymbol,
     return exports;
 }
 
-TEST_CASE("LLVM backend exports only bronze_main and the ABI stamp") {
+TEST_CASE("LLVM backend exports only the entry, the ABI stamp, and the manifest") {
     const std::vector<std::string> exports = definedExports({}, "bronze_test_linkage.obj");
     CAPTURE(exports);
-    CHECK(exports == std::vector<std::string>{"bronze_main", "bronze_object_abi_fingerprint"});
+    CHECK(exports == std::vector<std::string>{"bronze_main", "bronze_main_host_globals",
+                                              "bronze_object_abi_fingerprint"});
 }
 
-// The same two exports under a name the caller chose, which is what makes more
-// than one compiled module linkable into one image: the stamp is named AFTER
-// the entry, so neither of an object's two exports can collide with another
-// object's. Everything else stays internal, so nothing else can either.
-TEST_CASE("a named entry symbol renames both of the object's exports") {
+// The same three exports under a name the caller chose, which is what makes
+// more than one compiled module linkable into one image: the stamp and the
+// host-globals manifest are named AFTER the entry, so none of an object's
+// exports can collide with another object's. Everything else stays internal,
+// so nothing else can either. (The default entry's stamp keeps its historical
+// name, which rt.cpp and embed_run.cpp link against.)
+TEST_CASE("a named entry symbol renames all of the object's exports") {
     const std::vector<std::string> exports =
         definedExports("bronze_module_a", "bronze_test_linkage_named.obj");
     CAPTURE(exports);
-    CHECK(exports ==
-          std::vector<std::string>{"bronze_module_a", "bronze_module_a_abi_fingerprint"});
+    CHECK(exports == std::vector<std::string>{"bronze_module_a",
+                                              "bronze_module_a_abi_fingerprint",
+                                              "bronze_module_a_host_globals"});
 }
