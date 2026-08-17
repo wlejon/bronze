@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -27,6 +28,7 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/CodeGen.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
@@ -86,8 +88,9 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
         // every other function is internal; external linkage here handed a JS
         // function named `bind` to the system linker, where it collided with
         // ws2_32's export of the same name. That internal-by-default rule is
-        // also what lets two compiled modules link into one image: the entry
-        // and the ABI stamp are the only two names that have to be distinct.
+        // also what lets two compiled modules link into one image: the entry,
+        // the ABI stamp and the host-globals manifest are the only names that
+        // have to be distinct, and the latter two are named after the entry.
         const bool isEntry = (func.name == "main");
         const std::string symbol = isEntry ? entrySymbol : func.name;
         out.push_back(llvm::Function::Create(llvm::FunctionType::get(retTy, paramTys, false),
@@ -315,7 +318,19 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
 
 // Host target machine → object file. Runs LLVM's PassBuilder O3 optimization pipeline
 // and targets the host CPU and instruction set extensions.
-bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
+//
+// `pic` asks for position-independent code, and it is the one thing about this
+// function that `--emit-shared` changes. bronze's ordinary output is NOT
+// position-independent — which is why the driver links executables `-no-pie` on
+// Linux and why tests/two_module links its host the same way — and on ELF
+// x86-64 a non-PIC object simply cannot go into a shared object: GNU ld refuses
+// the R_X86_64_32S relocations with "can not be used when making a shared
+// object; recompile with -fPIC". A loadable module IS a shared object, so it is
+// compiled as one. Mach-O is position-independent throughout and COFF has no
+// such concept, so this is a no-op on both; asking for it uniformly under the
+// shared flag is still right, because what it expresses is "this object is
+// going into a library", which is true on all three.
+bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bool pic,
                      DiagnosticSink& diags) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
@@ -338,9 +353,13 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath,
     }
 
     llvm::TargetOptions opt;
+    // std::nullopt is LLVM's "pick the target's default", which is what every
+    // static build has always emitted and what must not change here.
+    const std::optional<llvm::Reloc::Model> reloc =
+        pic ? std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_) : std::nullopt;
     std::unique_ptr<llvm::TargetMachine> targetMachine(target->createTargetMachine(
         targetTriple, cpu, features.getString(), opt,
-        std::nullopt, std::nullopt, llvm::CodeGenOptLevel::Aggressive));
+        reloc, std::nullopt, llvm::CodeGenOptLevel::Aggressive));
     if (!targetMachine) {
         diags.error(Span{}, "Failed to create LLVM target machine");
         return false;
@@ -406,7 +425,30 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 
     AbiFns abi;
     AbiGlobals abiGlobals;
-    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals);
+    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals,
+                                    sharedRuntime_
+                                        ? codegen_llvm::RuntimeLinkage::Shared
+                                        : codegen_llvm::RuntimeLinkage::Static);
+
+    // The three names a loadable module publishes and the marking that
+    // publishes them. On COFF nothing leaves a DLL unnamed, so the export
+    // storage class is set HERE rather than through a .def: the compiler is
+    // the only side that knows what the entry is called. Everything else this
+    // object defines already has internal linkage (declareEntries and
+    // createTable say why), so `/DLL` over an object marked this way exports
+    // exactly the entry, its stamp and its manifest — and on ELF and Mach-O,
+    // where every global symbol is exported by default, the same three are the
+    // only globals there are.
+    auto publish = [&](llvm::GlobalValue* gv) {
+#ifdef _WIN32
+        if (sharedRuntime_) gv->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+#else
+        // ELF and Mach-O have no such storage class, and asking LLVM to emit
+        // one for them is a question about a concept the format does not have.
+        // They need nothing: a global symbol in a shared object is exported.
+        (void)gv;
+#endif
+    };
 
     // The object's ABI stamp: the hash of the bronze_abi.h THIS compiler was
     // built against, as a constant the runtime's program entry compares to
@@ -423,11 +465,42 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     const std::string stampSymbol = entrySymbol_ == "bronze_main"
                                         ? std::string("bronze_object_abi_fingerprint")
                                         : entrySymbol_ + "_abi_fingerprint";
-    new llvm::GlobalVariable(
+    publish(new llvm::GlobalVariable(
         *llvmModule, llvm::Type::getInt32Ty(ctx), /*isConstant=*/true,
         llvm::GlobalValue::ExternalLinkage,
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), BRONZE_ABI_FINGERPRINT),
-        stampSymbol);
+        stampSymbol));
+
+    // The host-globals manifest: `{ uint32_t count; char names[]; }` with the
+    // names NUL-terminated and back to back, exactly as bronze_abi.h's
+    // loadable-module section specifies. Emitted unconditionally — a module
+    // built without `--host-globals` gets one with count 0 — because a loader
+    // that cannot find the symbol has learned nothing: "compiled against no
+    // globals" and "not a bronze module at all" would be the same observation.
+    //
+    // Bytes rather than a struct type with a string in it: this is data a
+    // loader parses with a memcpy of four bytes and a walk, and the emitted
+    // form has to be exactly what that reader expects on every target.
+    {
+        std::vector<uint8_t> manifest;
+        const uint32_t count = static_cast<uint32_t>(hostGlobals_.size());
+        for (unsigned i = 0; i < 4; ++i) {
+            manifest.push_back(static_cast<uint8_t>((count >> (8 * i)) & 0xFFu));
+        }
+        for (const std::string& name : hostGlobals_) {
+            manifest.insert(manifest.end(), name.begin(), name.end());
+            manifest.push_back(0);
+        }
+        llvm::Constant* init = llvm::ConstantDataArray::get(ctx, manifest);
+        auto* manifestVar =
+            new llvm::GlobalVariable(*llvmModule, init->getType(), /*isConstant=*/true,
+                                     llvm::GlobalValue::ExternalLinkage, init,
+                                     entrySymbol_ + "_host_globals");
+        // The count is read as a uint32_t through the symbol's address, so the
+        // symbol has to be aligned for one.
+        manifestVar->setAlignment(llvm::Align(4));
+        publish(manifestVar);
+    }
 
     // The tables this object file owns: the inline-cache sites, the key remap,
     // and the module-local global and function-singleton caches. All are data
@@ -439,6 +512,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 
     std::vector<llvm::Function*> entries;
     if (!declareEntries(module, *llvmModule, ctx, entrySymbol_, entries, diags)) return false;
+    if (llvm::Function* entryFn = llvmModule->getFunction(entrySymbol_)) publish(entryFn);
 
     std::vector<llvm::Function*> wrappers;
     emitCallWrappers(module, *llvmModule, ctx, abi, abiGlobals, entrySymbol_, entries, wrappers);
@@ -478,7 +552,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     }
     lap("llvm-verify");
 
-    bool ok = writeObjectFile(*llvmModule, outputPath, diags);
+    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_, diags);
     lap("obj-emit");
     return ok;
 }

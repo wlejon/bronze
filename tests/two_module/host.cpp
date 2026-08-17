@@ -4,9 +4,9 @@
 // What each piece is proving:
 //
 //  * Two objects, two entry symbols. `--entry-symbol` names the entry, and the
-//    object's ABI stamp is named after it, so the only two symbols a compiled
-//    object exports are distinct per module. Everything else it defines is
-//    internal, which is what makes the link work at all.
+//    object's ABI stamp and host-globals manifest are named after it, so every
+//    symbol a compiled object exports is distinct per module. Everything else
+//    it defines is internal, which is what makes the link work at all.
 //
 //  * One key registry. Each module numbers its own key strings 0..n-1; at init
 //    the runtime INTERNS them and the module records the process-wide ids in

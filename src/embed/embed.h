@@ -29,6 +29,56 @@
 // the next allocating call; a value that must survive one — or survive between
 // frames — lives in a `Persistent`. Functions here that allocate say so, and
 // the ones that take a receiver and allocate return its post-call address.
+//
+// ---- THE TWO BOUNDARIES ----------------------------------------------------
+//
+// A host and a bronze runtime meet along two seams with very different rules,
+// and confusing them is how a process ends up with two heaps.
+//
+//  1. The GENERATED-CODE ABI (src/abi/bronze_abi.h). Pure C, primitives only,
+//     u64 in and u64 out. It is FINGERPRINT-CHECKED: every compiled object
+//     carries the hash of the header it was built against, and the runtime
+//     refuses to run a module whose stamp is not its own. That check is what
+//     makes it safe to load a module built by a different bronze, on a
+//     different day, with a different compiler — the check either passes or
+//     names both versions and stops.
+//
+//  2. THIS header, the host↔runtime C++ boundary. It carries C++ types —
+//     std::string, std::span, std::function, a class with a destructor — and
+//     C++ has no stable ABI. There is NO fingerprint here and there cannot be
+//     one, because the failures are not versioned facts about bronze: they are
+//     facts about the two compilations. The host and the runtime must be built
+//     BY THE SAME COMPILER, at the same major version, against the SAME C
+//     RUNTIME (on MSVC: the same /MD or /MT, the same debug/release CRT). A
+//     std::string crossing between two CRTs is freed by an allocator that
+//     never allocated it, and a Persistent destroyed against a different
+//     runtime's slot registry frees a root that is not there.
+//
+// A host that cannot guarantee (2) has one supported option and it is a good
+// one: use only (1) — dlopen the module, resolve the three symbols
+// bronze_abi.h documents, and drive it through the C ABI.
+//
+// BRONZE_EMBED_API is what makes (2) reachable across a shared runtime at all,
+// and this header is THE ONE PLACE in bronze that may carry such an
+// annotation. The C ABI's export list is generated from the registry
+// (cmake/bronze_abi_exports.cmake) precisely so no runtime source ever grows
+// one; the exception is here because this boundary has no registry to generate
+// from — the declarations below ARE the list.
+//
+//   (neither defined)          the static path: expands to nothing, unchanged.
+//   BRONZE_EMBED_SHARED_BUILD  building the shared runtime: export.
+//   BRONZE_EMBED_SHARED        a host linking the shared runtime: import.
+#if defined(BRONZE_EMBED_SHARED_BUILD)
+#  if defined(_WIN32)
+#    define BRONZE_EMBED_API __declspec(dllexport)
+#  else
+#    define BRONZE_EMBED_API __attribute__((visibility("default")))
+#  endif
+#elif defined(BRONZE_EMBED_SHARED) && defined(_WIN32)
+#  define BRONZE_EMBED_API __declspec(dllimport)
+#else
+#  define BRONZE_EMBED_API
+#endif
 
 namespace bronze {
 // runtime/typed_array.h owns the definition; this is the opaque redeclaration,
@@ -49,17 +99,61 @@ using Value = bronze::Value;
 
 // Binary stdout and crash dialogs routed to stderr — the setup a standalone
 // bronze executable performs before anything can fail. Idempotent.
-void setupIo();
+BRONZE_EMBED_API void setupIo();
 
 // Run the compiled program: a GC root frame for the call, then
 // `bronze_main()`. The host registers its globals and functions BEFORE this —
 // the program's top level runs here, and a read of a host global it performs
 // must find the value already registered.
-void runMain();
+BRONZE_EMBED_API void runMain();
 
 // setupIo() then runMain(): the whole of the standalone `main`, for a host
 // with no stdio opinions.
-void runProgram();
+//
+// runMain and runProgram are NOT in the shared runtime. They name `bronze_main`
+// at link time, and a shared runtime's modules arrive at RUN time under
+// whatever names --entry-symbol gave them, so the symbol could never be
+// resolved in that library. runEntry below is the same sequence with the entry
+// passed in — which is what a host that loaded its module has.
+BRONZE_EMBED_API void runProgram();
+
+// ---- loadable modules (embed_module.cpp) -----------------------------------
+//
+// runMain() names `bronze_main` at LINK time, which is precisely what a host
+// that loads its modules cannot do: it has a function POINTER, resolved from a
+// module it opened, and a process may hold several. The two below are the same
+// sequence with the entry as an argument.
+
+// This runtime's ABI fingerprint — the hash of the bronze_abi.h it was built
+// against. A loader compares it against the module's own `<entry>_abi_fingerprint`
+// (bronze_abi.h documents that symbol) BEFORE calling the entry, and refuses
+// the module naming both values when they differ. The comparison must read
+// this at RUN time rather than compile the constant into the host: a host that
+// baked in its own build's value would be checking the module against itself
+// and would sail straight into the drift the stamp exists to catch.
+BRONZE_EMBED_API uint32_t abiFingerprint();
+
+// A compiled module's entry: `void(void)`, the shape `--entry-symbol` names.
+using ModuleEntry = void (*)();
+
+// Run one module's top level: a GC root frame for the call, then `entry()`,
+// then the microtask checkpoint — exactly what runMain() does for the linked
+// `bronze_main`. The host registers its globals BEFORE this, and checks the
+// module's fingerprint before this, for the reasons both are stated above.
+//
+// Called once per module, in the host's chosen order. Everything a module
+// needs at run time it registers itself at entry (the key remap, its own root
+// spans), so ordering is the host's to decide and nothing here is per-process
+// setup in disguise.
+BRONZE_EMBED_API void runEntry(ModuleEntry entry);
+
+// Collect now. A host that has just released a large graph — a level torn
+// down, a frame's scratch objects dropped — knows something the heap's own
+// growth heuristic does not, and this is how it says so. Everything the host
+// holds in a Persistent survives and is updated in place; every raw pointer
+// the host obtained from typedArrayInfo or arrayBufferInfo is DEAD after this,
+// by the pointer contract those functions carry.
+BRONZE_EMBED_API void collectGarbage();
 
 // ---- the microtask checkpoint (embed_run.cpp) ------------------------------
 //
@@ -73,13 +167,13 @@ void runProgram();
 // Draining RUNS USER CODE and ALLOCATES, so every Value the host holds across
 // one must live in a Persistent. It is safe to call with an empty queue, and
 // safe to call from a stack with no bronze frame on it.
-void drainMicrotasks();
+BRONZE_EMBED_API void drainMicrotasks();
 
 // Is there anything queued? For a host that wants to know whether a frame's
 // work actually finished — and for a shutdown path that drains to quiescence
 // before tearing the runtime down. Never necessary before drainMicrotasks(),
 // which is a no-op on an empty queue.
-bool microtasksPending();
+BRONZE_EMBED_API bool microtasksPending();
 
 // ---- host globals ----------------------------------------------------------
 
@@ -87,7 +181,7 @@ bool microtasksPending();
 // `--host-globals`: a name must be in the manifest the program was compiled
 // with for its reads to reach the registry at all. Registering again replaces
 // the value. The value is rooted for the life of the process.
-void registerGlobal(std::string_view name, Value value);
+BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 
 // ---- persistent handles (embed_handle.cpp) ---------------------------------
 
@@ -101,7 +195,7 @@ void registerGlobal(std::string_view name, Value value);
 // captures, where "copying a handle" reading as "one more root" costs a slot
 // and surprises nobody, while a deleted copy constructor turns every capture
 // into a std::move audit.
-class Persistent {
+class BRONZE_EMBED_API Persistent {
 public:
     Persistent();  // holds undefined
     explicit Persistent(Value v);
@@ -123,8 +217,8 @@ private:
 // The bits bridge, for a host that stores u64 (a component table, a script
 // field). Raw bits are NOT a root — bits held across an allocation name a
 // pre-collection address. Round-trip through a Persistent to keep them live.
-uint64_t toBits(Value v);
-Value fromBits(uint64_t bits);
+BRONZE_EMBED_API uint64_t toBits(Value v);
+BRONZE_EMBED_API Value fromBits(uint64_t bits);
 
 // ---- native functions (embed_function.cpp) ---------------------------------
 
@@ -143,42 +237,57 @@ using NativeFn = std::function<Value(Value thisValue, std::span<const Value> arg
 // (see below), so it survives collections and is destroyed when the function
 // object dies. `arity` is the count short calls are padded to (undefined
 // fill), not the JS `length`. ALLOCATES.
-Value makeFunction(NativeFn fn, uint32_t arity = 0);
+BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity = 0);
 
 // Raise into the compiled program through the runtime's pending-exception
 // cell, exactly as the builtins in src/runtime/builtin_*.cpp do. Each returns
 // `undefined`, which the callback returns in turn — the caller's exception
 // check does the rest.
-Value throwValue(Value thrown);
-Value throwError(const std::string& message);
-Value throwTypeError(const std::string& message);
-Value throwRangeError(const std::string& message);
+BRONZE_EMBED_API Value throwValue(Value thrown);
+BRONZE_EMBED_API Value throwError(const std::string& message);
+BRONZE_EMBED_API Value throwTypeError(const std::string& message);
+BRONZE_EMBED_API Value throwRangeError(const std::string& message);
 
 // ---- object building (embed_object.cpp) ------------------------------------
 
 // A plain `{}` with the shape every literal shares, so host-built objects sit
 // on the same inline-cache paths as program-built ones. ALLOCATES.
-Value createObject();
+BRONZE_EMBED_API Value createObject();
 
 // Define an own data property (enumerable, like an assignment). ALLOCATES and
 // may move `obj`: the return value is the object's post-call address, and any
 // OTHER Value the host holds must be re-read from a Persistent.
-Value setProperty(Value obj, std::string_view key, Value v);
+BRONZE_EMBED_API Value setProperty(Value obj, std::string_view key, Value v);
 
-// The same, under an integer key — `obj[3]` spelled from the host. A plain
-// object stores it as the canonical numeric string, which is what enumeration
-// order keys off. ALLOCATES; same return contract as setProperty.
-Value setElement(Value obj, uint32_t index, Value v);
+// `obj[3] = v` spelled from the host, for any receiver the program could
+// write through: an Array grows and renumbers, a typed array converts and
+// stores (or drops the write, out of range, exactly as JS does), a plain
+// object takes the canonical numeric string, which is what enumeration order
+// keys off.
+//
+// The two halves have different SEMANTICS and that is deliberate. A plain
+// object is DEFINED onto, like setProperty and for the same reason: a host
+// building an object must not run an inherited setter. Everything else goes
+// through the generic element-set path a compiled `arr[i] = v` takes, because
+// an array's length bookkeeping and a typed array's narrowing conversion are
+// that path's, and reimplementing either here would be a second, drifting
+// answer to a question the runtime already answers.
+//
+// A throw from that path (a frozen array, a detached buffer) is handled the
+// way getProperty handles a throwing getter: the pending cell is cleared at
+// the host boundary and the write is dropped. ALLOCATES; same return contract
+// as setProperty.
+BRONZE_EMBED_API Value setElement(Value obj, uint32_t index, Value v);
 
 // `get key()` / `set key(v)` as one accessor property; pass undefined for a
 // half the host does not provide. ALLOCATES; same return contract.
-Value defineAccessor(Value obj, std::string_view key, Value getter, Value setter,
+BRONZE_EMBED_API Value defineAccessor(Value obj, std::string_view key, Value getter, Value setter,
                      bool enumerable = true);
 
 // Object.freeze, for a host handing the program a namespace it must not be
 // able to redecorate. Returns the object (freezing does not move it, but the
 // uniform shape keeps call sites chainable).
-Value freeze(Value obj);
+BRONZE_EMBED_API Value freeze(Value obj);
 
 // ---- property reads (embed.cpp) --------------------------------------------
 
@@ -189,12 +298,12 @@ Value freeze(Value obj);
 // accessor has no JS frame to propagate into). MAY ALLOCATE and MAY RUN USER
 // CODE (a getter), so every other Value the host holds must be re-read from a
 // Persistent afterwards.
-Value getProperty(Value obj, std::string_view key);
+BRONZE_EMBED_API Value getProperty(Value obj, std::string_view key);
 
 // `obj[3]` spelled from the host — the numeric key takes the same path a
 // program's `arr[i]` does, so it answers for real arrays, typed arrays and
 // plain objects alike. Same allocation and throw contract as getProperty.
-Value getElement(Value obj, uint32_t index);
+BRONZE_EMBED_API Value getElement(Value obj, uint32_t index);
 
 // ---- opaque native handles (embed_handle.cpp) ------------------------------
 
@@ -211,10 +320,10 @@ Value getElement(Value obj, uint32_t index);
 // gets an ordinary object with properties; the payload stays invisible either
 // way (internal slots have no property names).
 using HandleDestructor = void (*)(void* data);
-Value makeHandle(void* data, HandleDestructor dtor);
+BRONZE_EMBED_API Value makeHandle(void* data, HandleDestructor dtor);
 
 // The pointer a handle carries, or nullptr for a value that is not one.
-void* handleData(Value handle);
+BRONZE_EMBED_API void* handleData(Value handle);
 
 // ---- typed-array access (embed_typed_array.cpp) ----------------------------
 
@@ -244,7 +353,7 @@ struct TypedArrayInfo {
 // element 0. Answers a null-data result for anything that is not a typed
 // array (an ArrayBuffer and a DataView included: each has its own accessor
 // or deliberately none, below).
-TypedArrayInfo typedArrayInfo(Value v);
+BRONZE_EMBED_API TypedArrayInfo typedArrayInfo(Value v);
 
 struct ArrayBufferInfo {
     uint8_t* data{nullptr};  // nullptr: the value was not an ArrayBuffer
@@ -258,25 +367,73 @@ struct ArrayBufferInfo {
 // view, exactly as typedArrayInfo answers null for a bare buffer. A DataView
 // has no accessor here on purpose: nothing a host binding consumes arrives as
 // one, and exposing it would be surface without a caller.
-ArrayBufferInfo arrayBufferInfo(Value v);
+BRONZE_EMBED_API ArrayBufferInfo arrayBufferInfo(Value v);
 
 // Allocate a fresh zero-filled ArrayBuffer of `byteLength` bytes. ALLOCATES.
-Value createArrayBuffer(size_t byteLength);
+BRONZE_EMBED_API Value createArrayBuffer(size_t byteLength);
 
 // Allocate an ArrayBuffer initialized with a copy of `bytes`. ALLOCATES.
-Value createArrayBuffer(std::span<const uint8_t> bytes);
+BRONZE_EMBED_API Value createArrayBuffer(std::span<const uint8_t> bytes);
+
+// ---- typed-array construction (embed_typed_array.cpp) ----------------------
+//
+// The write half of the seam above: a host that PRODUCES binary data for the
+// program — a decoded image, a mesh the engine built, a block of audio — makes
+// the view itself and hands it over, rather than asking the program to
+// allocate one and filling it afterwards.
+//
+// The element kind is the same enumeration typedArrayInfo reports, spelled
+// here so a host that includes only this header can name one without pulling
+// in runtime/typed_array.h. The values are pinned against that header by
+// static_asserts in embed_typed_array.cpp — the enum's numbering is stored
+// data (an ElementKind lives in every view's header), so it could not move
+// even if these constants did not exist.
+namespace elements {
+inline constexpr ElementKind Int8 = static_cast<ElementKind>(0);
+inline constexpr ElementKind Uint8 = static_cast<ElementKind>(1);
+inline constexpr ElementKind Uint8Clamped = static_cast<ElementKind>(2);
+inline constexpr ElementKind Int16 = static_cast<ElementKind>(3);
+inline constexpr ElementKind Uint16 = static_cast<ElementKind>(4);
+inline constexpr ElementKind Int32 = static_cast<ElementKind>(5);
+inline constexpr ElementKind Uint32 = static_cast<ElementKind>(6);
+inline constexpr ElementKind Float32 = static_cast<ElementKind>(7);
+inline constexpr ElementKind Float64 = static_cast<ElementKind>(8);
+}  // namespace elements
+
+// A view of `length` elements over a fresh zero-filled buffer of its own —
+// `new Float32Array(n)` spelled from the host, and the same object the program
+// would have got from that expression: same prototype, same element paths, and
+// indistinguishable to the compiled code that receives it.
+//
+// A length whose byte size exceeds what bronze will allocate for one buffer is
+// the RangeError the constructor raises, reported through the pending cell.
+// ALLOCATES.
+BRONZE_EMBED_API Value createTypedArray(ElementKind kind, uint32_t length);
+
+// Fill from raw bytes: `bytes` is copied into the view's storage starting at
+// element 0, in the HOST's byte order and layout — a memcpy, not a conversion,
+// so the caller's buffer must already hold the element type's bit patterns
+// (float for Float32, int32_t for Int32). This is the fast path a decoder or a
+// mesh builder wants; per-element conversion from a JS number is setElement's
+// job.
+//
+// Refuses, writing nothing, if `view` is not a typed array or if `bytes` does
+// not fit — a partial fill would leave the program holding half a texture with
+// nothing to distinguish it from a whole one. Does NOT allocate, and therefore
+// cannot move anything: the copy is the whole of it.
+BRONZE_EMBED_API bool fillTypedArray(Value view, std::span<const uint8_t> bytes);
 
 // ---- promises (embed_promise.cpp) ------------------------------------------
 
 // A fresh pending intrinsic promise. ALLOCATES.
-Value createPromise();
+BRONZE_EMBED_API Value createPromise();
 
 // Resolve/reject a promise with `value`/`reason`. Settling schedules reaction
 // jobs into the microtask queue (the same queue drainMicrotasks() drains).
 // First settle wins (the [[AlreadyResolved]] latch). ALLOCATES (may run user
 // thenable getters on resolve).
-void resolvePromise(Value promise, Value value);
-void rejectPromise(Value promise, Value reason);
+BRONZE_EMBED_API void resolvePromise(Value promise, Value value);
+BRONZE_EMBED_API void rejectPromise(Value promise, Value reason);
 
 // ---- calling into compiled code (embed.cpp) --------------------------------
 
@@ -293,44 +450,44 @@ struct CallResult {
 // as a thrown result. The pending-exception cell is checked and CLEARED here:
 // the host boundary is where propagation ends, the way `main`'s uncaught
 // handler ends it for a standalone program. ALLOCATES (roots the arguments).
-CallResult call(Value fn, Value thisValue, std::span<const Value> args);
+BRONZE_EMBED_API CallResult call(Value fn, Value thisValue, std::span<const Value> args);
 
 // Parse a UTF-8 JSON string into bronze heap values (objects, arrays, primitives).
 // Returns the parsed Value, or thrown=true with an Error instance on syntax error.
 // ALLOCATES.
-CallResult parseJson(std::string_view jsonUtf8);
+BRONZE_EMBED_API CallResult parseJson(std::string_view jsonUtf8);
 
 // ---- value conversions (embed.cpp) -----------------------------------------
 
-Value undefined();
-Value null();
-Value fromDouble(double d);
-Value fromBool(bool b);
+BRONZE_EMBED_API Value undefined();
+BRONZE_EMBED_API Value null();
+BRONZE_EMBED_API Value fromDouble(double d);
+BRONZE_EMBED_API Value fromBool(bool b);
 // UTF-8 in, heap string out. ALLOCATES — root the result before the next
 // allocating call.
-Value fromUtf8(std::string_view utf8);
+BRONZE_EMBED_API Value fromUtf8(std::string_view utf8);
 
 // ToNumber over primitives (an object here is the hard error rt_convert.cpp
 // documents — conversions that run user code are the program's business, not
 // a host accessor's).
-double toDouble(Value v);
+BRONZE_EMBED_API double toDouble(Value v);
 // JS truthiness — the `if (v)` answer, never a strict-bool unbox.
-bool toBool(Value v);
+BRONZE_EMBED_API bool toBool(Value v);
 // The string's bytes as UTF-8 for a string value; ToString for the other
 // primitives. An object is the same hard error toDouble's is. ALLOCATES for
 // non-string inputs.
-std::string toUtf8(Value v);
+BRONZE_EMBED_API std::string toUtf8(Value v);
 
-bool isUndefined(Value v);
-bool isNull(Value v);
+BRONZE_EMBED_API bool isUndefined(Value v);
+BRONZE_EMBED_API bool isNull(Value v);
 // A function object — callable through `call` above.
-bool isFunction(Value v);
+BRONZE_EMBED_API bool isFunction(Value v);
 // Any Object-tagged heap value (functions and arrays included), which is the
 // `typeof v === "object" || typeof v === "function"` envelope a host binding
 // usually wants before reading properties.
-bool isObject(Value v);
-bool isPromise(Value v);
-bool isArrayBuffer(Value v);
-bool isTypedArray(Value v);
+BRONZE_EMBED_API bool isObject(Value v);
+BRONZE_EMBED_API bool isPromise(Value v);
+BRONZE_EMBED_API bool isArrayBuffer(Value v);
+BRONZE_EMBED_API bool isTypedArray(Value v);
 
 }  // namespace bronze::embed

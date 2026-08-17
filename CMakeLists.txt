@@ -108,6 +108,12 @@ add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
 add_subdirectory(src/cli)
 
+# The runtime again, as a DLL/.so/.dylib. After every module it is built from,
+# because it reads their source lists off the targets rather than relisting
+# them. It needs no LLVM: the backend is what EMITS a loadable module, the
+# runtime is only what one links against.
+include(cmake/bronze_shared_runtime.cmake)
+
 if(BRONZE_IS_TOP_LEVEL)
     add_subdirectory(tools)
 endif()
@@ -117,5 +123,10 @@ if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     # Compiles JS to objects and links two of them into one host, so it needs
     # both the backend and the test registration — the same pair as the oracle.
     add_subdirectory(tests/two_module)
+    # The same pair plus the shared runtime itself, which is what the module is
+    # linked against and what the harness loads it into.
+    if(BRONZE_BUILD_SHARED_RUNTIME)
+        add_subdirectory(tests/shared_load)
+    endif()
 endif()
 

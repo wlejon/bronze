@@ -1,4 +1,4 @@
-add_library(bronze_cli STATIC driver.cpp)
+add_library(bronze_cli STATIC driver.cpp link.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

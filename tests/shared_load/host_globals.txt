@@ -1,0 +1,5 @@
+# The globals tests/shared_load/mod.js is compiled against. The same two names
+# come back out of the module as `bronze_shared_demo_host_globals`, which is
+# how a loader that never saw this file learns what the module needs.
+hostLabel
+hostTick

@@ -35,7 +35,19 @@ static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0, "word 0 of a slot is the code 
 static_assert(BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8, "word 1 of a slot is the Value");
 
 void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
-                       AbiGlobals& globals) {
+                       AbiGlobals& globals, RuntimeLinkage linkage) {
+    // Import storage is a COFF concept, and bronze emits for the host triple
+    // and only the host triple (writeObjectFile takes getDefaultTargetTriple),
+    // so the host's own platform is the answer to "is this object COFF". On
+    // ELF and Mach-O a shared runtime needs no marking at all: a data
+    // reference goes through the GOT whether the definition turns out to be in
+    // this image or another one, which is why only this branch exists.
+#ifdef _WIN32
+    const bool importData = (linkage == RuntimeLinkage::Shared);
+#else
+    const bool importData = false;
+    (void)linkage;
+#endif
     auto getOrDeclareFunc = [&](const char* name, llvm::FunctionType* fty) -> llvm::Function* {
         llvm::Function* fn = llvmModule.getFunction(name);
         if (!fn) {
@@ -68,7 +80,10 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #define BRONZE_ABI_LLVM_DECLARE_GLOBAL(name, TYPE)                                     \
     globals.name = new llvm::GlobalVariable(llvmModule, TYPE, /*isConstant=*/false,    \
                                             llvm::GlobalValue::ExternalLinkage,        \
-                                            /*Initializer=*/nullptr, #name);
+                                            /*Initializer=*/nullptr, #name);           \
+    if (importData) {                                                                  \
+        globals.name->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);     \
+    }
     BRONZE_ABI_GLOBALS(BRONZE_ABI_LLVM_DECLARE_GLOBAL)
 #undef BRONZE_ABI_LLVM_DECLARE_GLOBAL
 

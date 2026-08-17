@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <vector>
@@ -380,3 +381,162 @@ TEST_CASE("parseJson parses valid JSON and rejects invalid syntax") {
     CHECK(embed::isObject(bad.value));
 }
 
+
+TEST_CASE("createTypedArray builds views indistinguishable from the program's own") {
+    struct Case {
+        ElementKind kind;
+        uint32_t bytesPerElement;
+    };
+    // The five a host binding actually produces — a texture's bytes, a clamped
+    // image plane, indices, positions, doubles — and the widths they promise.
+    const Case cases[] = {
+        {embed::elements::Uint8, 1},   {embed::elements::Uint8Clamped, 1},
+        {embed::elements::Int32, 4},   {embed::elements::Float32, 4},
+        {embed::elements::Float64, 8},
+    };
+
+    for (const Case& c : cases) {
+        embed::Persistent view{embed::createTypedArray(c.kind, 4)};
+        CHECK(embed::isTypedArray(view.get()));
+        embed::TypedArrayInfo info = embed::typedArrayInfo(view.get());
+        REQUIRE(static_cast<bool>(info));
+        CHECK(info.elementCount == 4);
+        CHECK(info.bytesPerElement == c.bytesPerElement);
+        CHECK(info.byteLength == 4 * c.bytesPerElement);
+        CHECK(info.elementKind == c.kind);
+        // 23.2.5.1 allocates a zero-filled buffer, and a host handing the
+        // program a half-initialized view would be handing it whatever the
+        // allocator last wrote there.
+        for (uint32_t i = 0; i < info.byteLength; ++i) CHECK(info.data[i] == 0);
+        // And the program's own view of it: `length` is a property, not just a
+        // header field, which is what makes this a real typed array rather
+        // than something that only looks like one from C++.
+        CHECK(embed::toDouble(embed::getProperty(view.get(), "length")) == 4.0);
+    }
+}
+
+TEST_CASE("createTypedArray refuses a length the heap cannot hold") {
+    // The constructor's RangeError, through the host path: a length whose byte
+    // size overflows 32 bits if it is multiplied carelessly. The refusal is
+    // what must happen; a heap that dies mid-copy is what must not.
+    embed::Value refused = embed::createTypedArray(embed::elements::Float64, 0xFFFFFFFFu);
+    CHECK(embed::isUndefined(refused));
+    CHECK(bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
+    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
+TEST_CASE("fillTypedArray copies host bytes in and refuses what does not fit") {
+    embed::Persistent view{embed::createTypedArray(embed::elements::Float32, 3)};
+
+    const float source[3] = {1.5f, -2.25f, 4.0f};
+    uint8_t raw[sizeof(source)];
+    std::memcpy(raw, source, sizeof(source));
+    CHECK(embed::fillTypedArray(view.get(), raw));
+
+    // Read back as the PROGRAM sees it — element by element through the
+    // generic element path, not by reinterpreting the same bytes again.
+    CHECK(embed::toDouble(embed::getElement(view.get(), 0)) == 1.5);
+    CHECK(embed::toDouble(embed::getElement(view.get(), 1)) == -2.25);
+    CHECK(embed::toDouble(embed::getElement(view.get(), 2)) == 4.0);
+
+    // Too many bytes writes NOTHING: a partial fill would leave the program
+    // holding half a texture with nothing to say so.
+    const uint8_t tooMany[sizeof(source) + 1] = {};
+    CHECK(!embed::fillTypedArray(view.get(), tooMany));
+    CHECK(embed::toDouble(embed::getElement(view.get(), 0)) == 1.5);
+
+    // A receiver that is not a view is refused rather than reinterpreted.
+    embed::Persistent notAView{embed::createObject()};
+    CHECK(!embed::fillTypedArray(notAView.get(), raw));
+    CHECK(!embed::fillTypedArray(embed::fromDouble(1.0), raw));
+}
+
+TEST_CASE("setElement writes typed-array elements with the kind's conversion") {
+    embed::Persistent bytes{embed::createTypedArray(embed::elements::Uint8, 2)};
+    bytes.set(embed::setElement(bytes.get(), 0, embed::fromDouble(7.0)));
+    // 7.1.6 ToUint8 wraps, and the host path must not invent its own answer.
+    bytes.set(embed::setElement(bytes.get(), 1, embed::fromDouble(300.0)));
+    CHECK(embed::toDouble(embed::getElement(bytes.get(), 0)) == 7.0);
+    CHECK(embed::toDouble(embed::getElement(bytes.get(), 1)) == 44.0);
+
+    // The clamped kind is a different conversion on the same path.
+    embed::Persistent clamped{embed::createTypedArray(embed::elements::Uint8Clamped, 1)};
+    clamped.set(embed::setElement(clamped.get(), 0, embed::fromDouble(300.0)));
+    CHECK(embed::toDouble(embed::getElement(clamped.get(), 0)) == 255.0);
+
+    // Out of range is DROPPED, which is what a typed array does — not an
+    // exception, and not a property named "9" appearing on the view.
+    bytes.set(embed::setElement(bytes.get(), 9, embed::fromDouble(1.0)));
+    CHECK(embed::isUndefined(embed::getElement(bytes.get(), 9)));
+    CHECK(embed::toDouble(embed::getProperty(bytes.get(), "length")) == 2.0);
+}
+
+TEST_CASE("setElement fills an Array, length and all") {
+    // A real Array, built the way a host has one to hand: parsed rather than
+    // constructed, so nothing here reaches past the embed API for a fixture.
+    embed::CallResult parsed = embed::parseJson("[10,20,30]");
+    REQUIRE(!parsed.thrown);
+    embed::Persistent arr{parsed.value};
+
+    // Overwrite in range...
+    arr.set(embed::setElement(arr.get(), 1, embed::fromUtf8("two")));
+    CHECK(embed::toUtf8(embed::getElement(arr.get(), 1)) == "two");
+    CHECK(embed::toDouble(embed::getProperty(arr.get(), "length")) == 3.0);
+
+    // ...and past the end, which GROWS it. This is the gap the generic element
+    // path closed: setElement used to reach requirePlainObject's fatal here,
+    // so a host could READ an array element and could not write one.
+    arr.set(embed::setElement(arr.get(), 3, embed::fromDouble(40.0)));
+    CHECK(embed::toDouble(embed::getProperty(arr.get(), "length")) == 4.0);
+    CHECK(embed::toDouble(embed::getElement(arr.get(), 3)) == 40.0);
+
+    // The plain-object half is unchanged: an integer key is the canonical
+    // numeric string, and the write is a definition rather than an assignment.
+    embed::Persistent obj{embed::createObject()};
+    obj.set(embed::setElement(obj.get(), 3, embed::fromUtf8("third")));
+    CHECK(embed::toUtf8(embed::getElement(obj.get(), 3)) == "third");
+}
+
+TEST_CASE("a host-built typed array survives collections and round-trips through a call") {
+    embed::Persistent view{embed::createTypedArray(embed::elements::Int32, 4)};
+    for (uint32_t i = 0; i < 4; ++i) {
+        view.set(embed::setElement(view.get(), i, embed::fromDouble((i + 1) * 3.0)));
+    }
+
+    const uint64_t bitsBefore = view.get().rawBits();
+    runtime::rtHeap().collect();
+    runtime::rtHeap().collect();
+    // A moving collector relocated it and the Persistent answers the new
+    // address: the identity survived, the pointer did not.
+    CHECK(view.get().rawBits() != bitsBefore);
+    CHECK(embed::isTypedArray(view.get()));
+
+    embed::TypedArrayInfo info = embed::typedArrayInfo(view.get());
+    REQUIRE(static_cast<bool>(info));
+    CHECK(info.elementCount == 4);
+    for (uint32_t i = 0; i < 4; ++i) {
+        int32_t element = 0;
+        std::memcpy(&element, info.data + i * sizeof(int32_t), sizeof(int32_t));
+        CHECK(element == static_cast<int32_t>((i + 1) * 3));
+    }
+
+    // And read back the way the PROGRAM would: through the dynamic-call path,
+    // which is this file's stand-in for compiled code. The callback sums the
+    // view it is handed, so a wrong address answers a wrong number rather than
+    // crashing — the failure a rooting bug actually has.
+    embed::Persistent sum{embed::makeFunction(
+        [](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+            if (args.empty()) return embed::fromDouble(-1.0);
+            double total = 0.0;
+            const uint32_t count = embed::typedArrayInfo(args[0]).elementCount;
+            for (uint32_t i = 0; i < count; ++i) {
+                total += embed::toDouble(embed::getElement(args[0], i));
+            }
+            return embed::fromDouble(total);
+        },
+        1)};
+    const embed::Value arg = view.get();
+    embed::CallResult result = embed::call(sum.get(), embed::undefined(), {&arg, 1});
+    CHECK(!result.thrown);
+    CHECK(result.value.asNumber() == 30.0);
+}

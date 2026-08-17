@@ -1,32 +1,19 @@
 #include "cli/driver.h"
 
-#include <atomic>
 #include <chrono>
-#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
-#include <unistd.h>
-#else
-#include <unistd.h>
-#endif
-
-
 #include "ast/dump.h"
+#include "cli/link.h"
 #include "codegen/backend.h"
 #if BRONZE_WITH_LLVM
 #include "codegen-llvm/llvm_backend.h"
@@ -133,6 +120,17 @@ constexpr const char* kUsage =
     "                                      and no linker runs. The embedding seam —\n"
     "                                      the host build links the object against\n"
     "                                      bronze's runtime and its own code.\n"
+    "  --emit-shared                       Link a loadable module (DLL/.so/.dylib)\n"
+    "                                      against the SHARED bronze runtime instead\n"
+    "                                      of an executable against the static one.\n"
+    "                                      It exports three names, all after the\n"
+    "                                      entry: <entry>, <entry>_abi_fingerprint\n"
+    "                                      and <entry>_host_globals. A host opens it\n"
+    "                                      at run time, checks the stamp against the\n"
+    "                                      runtime's, and calls the entry. One\n"
+    "                                      runtime in the process means one heap, so\n"
+    "                                      a missing shared runtime is an error and\n"
+    "                                      never a fall back to the static one.\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
     "discarded with a warning and the value stays dynamic.\n";
@@ -202,302 +200,6 @@ bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std
         out.push_back(std::move(name));
     }
     return true;
-}
-
-std::filesystem::path getExecutableDir() {
-#ifdef _WIN32
-    char buffer[MAX_PATH];
-    DWORD len = GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    if (len > 0) {
-        return std::filesystem::path(buffer).parent_path();
-    }
-#elif defined(__linux__)
-    char buffer[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-    if (len > 0) {
-        buffer[len] = '\0';
-        return std::filesystem::path(buffer).parent_path();
-    }
-#elif defined(__APPLE__)
-    char buffer[PATH_MAX];
-    uint32_t size = sizeof(buffer);
-    if (_NSGetExecutablePath(buffer, &size) == 0) {
-        char realBuffer[PATH_MAX];
-        if (realpath(buffer, realBuffer) != nullptr) {
-            return std::filesystem::path(realBuffer).parent_path();
-        }
-        return std::filesystem::path(buffer).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
-}
-
-std::optional<std::filesystem::path> findRuntimeLib() {
-    static std::optional<std::filesystem::path> s_cached;
-    static std::once_flag s_once;
-    std::call_once(s_once, [] {
-#ifdef _WIN32
-        char* envBuffer = nullptr;
-        size_t envLen = 0;
-        if (_dupenv_s(&envBuffer, &envLen, "BRONZE_RT_LIB") == 0 && envBuffer != nullptr) {
-            std::filesystem::path p(envBuffer);
-            std::free(envBuffer);
-            std::error_code ec;
-            if (std::filesystem::exists(p, ec)) {
-                s_cached = p;
-                return;
-            }
-        }
-#else
-        if (const char* envPath = std::getenv("BRONZE_RT_LIB")) {
-            std::filesystem::path p(envPath);
-            std::error_code ec;
-            if (std::filesystem::exists(p, ec)) {
-                s_cached = p;
-                return;
-            }
-        }
-#endif
-
-        std::vector<std::filesystem::path> candidates;
-        std::filesystem::path exeDir = getExecutableDir();
-
-        const std::vector<const char*> libNames = {
-#ifdef _WIN32
-            "bronze_rt.lib", "libbronze_rt.a"
-#else
-            "libbronze_rt.a", "bronze_rt.lib"
-#endif
-        };
-
-        for (const char* name : libNames) {
-            candidates.push_back(exeDir / name);
-            candidates.push_back(exeDir / "../rt" / name);
-            candidates.push_back(exeDir / "src/rt" / name);
-            candidates.push_back(exeDir / "../../src/rt" / name);
-
-            std::filesystem::path cwd = std::filesystem::current_path();
-            candidates.push_back(cwd / name);
-            candidates.push_back(cwd / "src/rt" / name);
-            candidates.push_back(cwd / "build/dev/src/rt" / name);
-            candidates.push_back(cwd / "build/src/rt" / name);
-            candidates.push_back(cwd / "build/Release/src/rt" / name);
-        }
-
-        for (const auto& cand : candidates) {
-            std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
-                return;
-            }
-        }
-    });
-    return s_cached;
-}
-
-std::optional<std::filesystem::path> findRuntimeCpp() {
-    static std::optional<std::filesystem::path> s_cached;
-    static std::once_flag s_once;
-    std::call_once(s_once, [] {
-        std::vector<std::filesystem::path> candidates;
-        std::filesystem::path exeDir = getExecutableDir();
-
-        candidates.push_back(exeDir / "../../src/rt/rt.cpp");
-        candidates.push_back(exeDir / "../src/rt/rt.cpp");
-        candidates.push_back(exeDir / "src/rt/rt.cpp");
-
-        std::filesystem::path cwd = std::filesystem::current_path();
-        candidates.push_back(cwd / "src/rt/rt.cpp");
-
-        for (const auto& cand : candidates) {
-            std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
-                return;
-            }
-        }
-    });
-    return s_cached;
-}
-
-struct LinkerState {
-    int workingIndex = -1;
-    std::string libStr;
-    std::string runtimeLibStr;
-    std::string runtimeWholeStr;
-    std::string unixRuntimeLibs;
-    std::string cppStr;
-    std::mutex mutex;
-};
-
-bool linkExecutable(const std::string& objPath, const std::string& outputPath, DiagnosticSink& diags) {
-    auto rtLib = findRuntimeLib();
-    auto rtCpp = findRuntimeCpp();
-
-    if (!rtLib && !rtCpp) {
-        diags.error(Span{}, "Runtime library (libbronze_rt.a/bronze_rt.lib) or runtime source (rt.cpp) not found");
-        return false;
-    }
-
-    static LinkerState s_state;
-    static std::once_flag s_stringsOnce;
-    std::call_once(s_stringsOnce, [&] {
-        if (rtLib) {
-            s_state.libStr = rtLib->string();
-            static const char* const kRuntimeLibs[][3] = {
-                {"runtime", "libbronze_runtime.a", "bronze_runtime.lib"},
-                {"json", "libbronze_json.a", "bronze_json.lib"},
-                {"regex", "libbronze_regex.a", "bronze_regex.lib"},
-            };
-            for (const auto& lib : kRuntimeLibs) {
-                std::filesystem::path path;
-                for (int nameIdx = 1; nameIdx <= 2; ++nameIdx) {
-                    std::filesystem::path p1 = rtLib->parent_path() / lib[nameIdx];
-                    if (std::filesystem::exists(p1)) {
-                        path = p1;
-                        break;
-                    }
-                    std::filesystem::path p2 = rtLib->parent_path() / ".." / lib[0] / lib[nameIdx];
-                    if (std::filesystem::exists(p2)) {
-                        path = p2;
-                        break;
-                    }
-                }
-                if (path.empty()) continue;
-                const std::string quoted = "\"" + path.string() + "\"";
-                s_state.runtimeLibStr += (s_state.runtimeLibStr.empty() ? "" : " ") + quoted;
-                s_state.runtimeWholeStr += (s_state.runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
-                s_state.unixRuntimeLibs += (s_state.unixRuntimeLibs.empty() ? "" : " ") + quoted;
-            }
-        }
-        if (rtCpp) {
-            s_state.cppStr = rtCpp->string();
-        }
-    });
-
-    auto makeCommand = [&](int index) -> std::string {
-#ifdef _WIN32
-        switch (index) {
-            case 0:
-                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
-            case 1:
-                return "lld-link /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
-            case 2:
-                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
-            case 3:
-                return "link.exe /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
-            case 4:
-                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
-            case 5:
-                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
-            case 6:
-                return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 7:
-                return "g++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 8:
-                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
-            case 9:
-                return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
-            case 10:
-                return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 11:
-                return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#elif defined(__APPLE__)
-        switch (index) {
-            case 0:
-                return "clang++ -w \"" + objPath + "\" -Wl,-force_load,\"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
-            case 1:
-                return "clang++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
-            case 2:
-                return "clang++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
-            case 3:
-                return "g++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
-            case 4:
-                return "g++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
-            case 5:
-                return "clang++ -w -Wl,-all_load \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#else
-        switch (index) {
-            case 0:
-                return "clang++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 1:
-                return "g++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 2:
-                return "clang++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 3:
-                return "g++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 4:
-                return "clang++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 5:
-                return "g++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 6:
-                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
-            case 7:
-                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
-            default:
-                return "";
-        }
-#endif
-    };
-
-    int cachedIndex = -1;
-    {
-        std::lock_guard<std::mutex> lock(s_state.mutex);
-        cachedIndex = s_state.workingIndex;
-    }
-
-    if (cachedIndex >= 0) {
-        std::string cmd = makeCommand(cachedIndex);
-        int res = std::system(cmd.c_str());
-        std::error_code ec;
-        if (res == 0 && std::filesystem::exists(outputPath, ec)) {
-            return true;
-        }
-    }
-
-    const int totalCommands = 12;
-    for (int i = 0; i < totalCommands; ++i) {
-        if (i == cachedIndex) continue;
-        std::string cmd = makeCommand(i);
-        if (cmd.empty()) continue;
-        int res = std::system(cmd.c_str());
-        std::error_code ec;
-        if (res == 0 && std::filesystem::exists(outputPath, ec)) {
-            std::lock_guard<std::mutex> lock(s_state.mutex);
-            s_state.workingIndex = i;
-            return true;
-        }
-    }
-
-    diags.error(Span{}, "Failed to link executable with available toolchain (clang++, g++, lld-link, link, clang-cl, cl)");
-    return false;
-}
-
-std::atomic<uint64_t> g_tempObjCounter{0};
-
-std::filesystem::path uniqueTempObjPath(const std::string& sourcePath) {
-    uint64_t pid = 0;
-#ifdef _WIN32
-    pid = static_cast<uint64_t>(GetCurrentProcessId());
-#else
-    pid = static_cast<uint64_t>(getpid());
-#endif
-    uint64_t count = g_tempObjCounter.fetch_add(1, std::memory_order_relaxed);
-    std::string stem = std::filesystem::path(sourcePath).stem().string();
-#ifdef _WIN32
-    std::string filename =
-        stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + "_temp.obj";
-#else
-    std::string filename =
-        stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + "_temp.o";
-#endif
-    return std::filesystem::temp_directory_path() / filename;
 }
 
 }  // namespace
@@ -604,7 +306,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
-             const std::string& entrySymbol) {
+             const std::string& entrySymbol, bool emitShared) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -616,11 +318,25 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)statsOut;
     (void)moduleRoots;
     (void)entrySymbol;
+    (void)emitShared;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
     return 1;
 #else
+    // Two output kinds, named on one command line: a fact about the
+    // INVOCATION, so it is refused here, before anything is read or compiled,
+    // and it names both flags rather than silently letting one win.
+    if (emitObj && emitShared) {
+        std::string msg =
+            "error: --emit-obj and --emit-shared name two different outputs "
+            "(an object for a host's own link step, and a linked loadable module); "
+            "pass one\n";
+        if (errOut) *errOut = msg;
+        else std::fputs(msg.c_str(), stderr);
+        return 1;
+    }
+
     // The backend reports the inside of its own phase, and it is reached
     // through `codegen::Backend`, which no debugging concern belongs in.
     support::setTimingsEnabled(timings);
@@ -694,6 +410,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (emitObj) {
         LLVMBackend objBackend;
         if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
+        objBackend.setHostGlobals(hostGlobals);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -706,10 +423,19 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 0;
     }
 
+    // Everything else — an executable, and `--emit-shared`'s loadable module —
+    // is the same object emission followed by a different link. The only
+    // compile-time difference between the two is where the runtime will be:
+    // `setSharedRuntime` is what makes the object reach the runtime's data
+    // symbols through import slots (llvm_abi.h) and marks the three names a
+    // module publishes, and with it off this is byte for byte the object
+    // bronze has always emitted.
     std::filesystem::path tempObj = uniqueTempObjPath(sourcePath);
 
     LLVMBackend backend;
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
+    backend.setHostGlobals(hostGlobals);
+    backend.setSharedRuntime(emitShared);
     const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);
     timer.mark("codegen");
     if (!emitted) {
@@ -721,7 +447,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    bool linked = linkExecutable(tempObj.string(), outputPath, diags);
+    bool linked = emitShared ? linkSharedModule(tempObj.string(), outputPath, diags)
+                             : linkExecutable(tempObj.string(), outputPath, diags);
     timer.mark("link");
     timer.total();
 
@@ -857,6 +584,7 @@ int runDriver(int argc, char** argv) {
         bool infer = true;
         bool timings = false;
         bool emitObj = false;
+        bool emitShared = false;
         bool inferStats = false;
 
         for (int i = 2; i < argc; ++i) {
@@ -869,6 +597,8 @@ int runDriver(int argc, char** argv) {
                 inferStats = true;
             } else if (arg == "--emit-obj") {
                 emitObj = true;
+            } else if (arg == "--emit-shared") {
+                emitShared = true;
             } else if (arg == "--entry-symbol") {
                 if (i + 1 < argc) {
                     entrySymbol = argv[++i];
@@ -915,7 +645,8 @@ int runDriver(int argc, char** argv) {
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol);
+                        hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
+                        emitShared);
     }
 
     return fail(kUsage);

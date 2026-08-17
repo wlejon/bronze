@@ -85,7 +85,7 @@ means inference is.
 
 ## Embedding
 
-Three flags exist for embedding a compiled program in a host process rather
+Four flags exist for embedding a compiled program in a host process rather
 than shipping it as an executable. `--emit-obj` stops `build` after object
 emission — `-o` names the object file, written exactly where given, and no
 linker runs; the host's build links it against bronze's runtime and the
@@ -94,11 +94,13 @@ per line, `#` comments) of globals the host promises to register with the
 runtime before the program runs: each joins the provided-globals set, so a
 read lowers to the same `global.get` a builtin's does instead of the
 unresolved-name warning and runtime ReferenceError. `--entry-symbol <name>` names the object's exported entry point,
-which defaults to `bronze_main`. All three are lowering- and link-level facts,
+which defaults to `bronze_main`. `--emit-shared` links a loadable module
+instead of an executable (below). All four are lowering- and link-level facts,
 so `--no-infer` changes nothing about any of them.
 
-An object exports exactly two symbols — its entry and its ABI stamp, which is
-named after the entry — and everything else it defines is internal. That is
+An object exports exactly three symbols — its entry, its ABI stamp and its
+host-globals manifest, the last two named after the entry — and everything
+else it defines is internal. That is
 what lets a host link **more than one** compiled module into one image and
 enter them in turn. The runtime is shared, and what each module owns privately
 is its inline-cache table, its key remap, its global cache, its
@@ -110,6 +112,35 @@ mention `position` are handed one id, and a module's own numbering survives
 only in its remap. `tests/two_module` is the worked example — two objects, two
 entry symbols, one runtime, with cross-module prototype chains, closures and
 exceptions pinned byte-for-byte.
+
+### Loading a module instead of linking one
+
+`--emit-shared` links the object into a DLL/.so/.dylib against the SHARED
+bronze runtime (`bronze_runtime_shared`, `cmake/bronze_shared_runtime.cmake`)
+rather than into an executable against the static one. A host opens it at run
+time and learns everything it needs from three exported symbols, all named
+after the entry: `<entry>`, `<entry>_abi_fingerprint`, and
+`<entry>_host_globals` — the `--host-globals` manifest the module was compiled
+against, as a count and a run of NUL-terminated names. `src/abi/bronze_abi.h`
+is the contract for all three, including the layout. A loader checks the stamp
+against `embed::abiFingerprint()` before calling anything, diffs the manifest
+against what it has registered, and enters the module through
+`embed::runEntry`.
+
+One runtime in the process is the whole point, and it is why a missing shared
+runtime is a diagnosed error rather than a fall back to the static archives: a
+second copy would mean a second heap, and a value handed from a loaded module
+to its host would be an address in a semispace the other collector is free to
+reuse. Two boundaries meet here and they have different rules — the C ABI is
+fingerprint-checked and safe across compilers, while the C++ embed API needs
+the host and the runtime built by the same compiler against the same C runtime
+(`src/embed/embed.h` states both). The shared runtime's C export list is
+generated from the ABI registry at configure time
+(`cmake/bronze_abi_exports.cmake`), so a new `X(...)` line is still the only
+edit a new helper needs. `tests/shared_load` is the worked example: a module
+compiled with `--emit-shared`, opened by a host linked only against the shared
+runtime, plus a fake module whose wrong stamp must be refused before its entry
+runs.
 
 `src/embed` is the host-facing C++ API: run a compiled program in-process,
 register host globals, wrap native functions and objects, hold GC-safe

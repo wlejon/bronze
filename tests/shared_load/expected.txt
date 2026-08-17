@@ -1,0 +1,12 @@
+manifest: hostLabel hostTick
+abi: module stamp matches the runtime
+module: label=harness tick=7
+module: ready
+host: record=1,2
+host: readItems=alpha,beta
+host: sumBytes(uint8)=15
+host: sumBytes(float32)=10
+host: lastSum=10
+host: steps=3 6 9 12
+host: steps after gc=3 6 9 12
+refused: fake module stamp does not match the runtime, entry not called

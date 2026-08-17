@@ -39,10 +39,30 @@ struct AbiGlobals {
 #undef BRONZE_ABI_GLOBAL_FIELD
 };
 
+// Where the runtime this object will run against lives.
+//
+// It changes exactly one thing, and only on Windows: how the registry's DATA
+// symbols are reached. A DLL's exported data is not at a link-time address —
+// the loader writes the real address into an import slot, and a reference
+// compiled as if the symbol were in this image reads the slot itself instead
+// of what it points at. `dllimport` is what makes the reference an indirect
+// load through that slot. FUNCTIONS need nothing: the linker synthesizes a
+// thunk for an imported call, which is why only the globals are marked.
+//
+// A MODE and not a default, because the marking is not free — every inline
+// fast path that reads bronze_alloc_cursor or bronze_proto_epoch pays an extra
+// load — and because the static output has to stay exactly what it was. With
+// `Static` this function emits what it has always emitted, byte for byte.
+enum class RuntimeLinkage {
+    Static,
+    Shared,
+};
+
 // Declares every registry symbol into `llvmModule`. Declarations only: the
 // runtime owns every definition.
 void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
-                       AbiGlobals& globals);
+                       AbiGlobals& globals,
+                       RuntimeLinkage linkage = RuntimeLinkage::Static);
 
 // The four tables a compiled module owns, all internal to its object file.
 //

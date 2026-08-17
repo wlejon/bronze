@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -58,10 +59,37 @@ Value setProperty(Value obj, std::string_view key, Value v) {
 }
 
 Value setElement(Value obj, uint32_t index, Value v) {
-    // On a plain object an integer key IS the canonical numeric string —
-    // enumeration order and the element paths both key off the spelling, and
-    // std::to_string of a uint32 is exactly canonical.
-    return setProperty(obj, std::to_string(index), v);
+    // A plain object keeps the definition semantics setProperty has, for the
+    // reason setProperty has them: a host building an object must not run an
+    // inherited setter. On a plain object an integer key IS the canonical
+    // numeric string — enumeration order and the element paths both key off
+    // the spelling, and std::to_string of a uint32 is exactly canonical.
+    if (obj.isObject() && obj.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+        return setProperty(obj, std::to_string(index), v);
+    }
+
+    // Everything else — an Array, a typed array, a wrapper, a proxy — goes
+    // through the generic element-set the compiled `arr[i] = v` takes. The
+    // alternative was requirePlainObject's fatal, which is what this call used
+    // to reach through setProperty: a host could READ an array element
+    // (getElement has always been generic) and could not write one, so filling
+    // an array meant handing the program a function to do it. Length
+    // bookkeeping, hole semantics and a typed array's narrowing conversion all
+    // live on this path; a second implementation here would be a second answer
+    // to a question with one right one.
+    ShadowStackFrame frame;
+    Rooted<Value> self{obj};
+    Rooted<Value> val{v};
+    bronze_elem_set(self.get().rawBits(), Value::fromDouble(index).rawBits(),
+                    val.get().rawBits(), /*strict=*/false);
+    // The host boundary is where propagation ends — getProperty's rule, and
+    // for the same reason: there is no enclosing JS frame to unwind into, and
+    // a cell left set would make the next entry into compiled code appear to
+    // throw this write's exception.
+    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    }
+    return self.get();
 }
 
 Value defineAccessor(Value obj, std::string_view key, Value getter, Value setter,

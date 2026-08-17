@@ -22,7 +22,9 @@ binary with bronze's runtime linked in.
 
 **An app embedded in a larger program.** `--emit-obj` produces an object
 file for your own build to link, and `--host-globals` lists the globals your
-host provides (`document`, `requestAnimationFrame`, and so on). The bro
+host provides (`document`, `requestAnimationFrame`, and so on).
+`--emit-shared` produces a module your host opens at run time instead, linked
+against a shared bronze runtime so one process can load several. The bro
 engine uses this to run compiled three.js apps against its DOM and WebGL.
 The app's scene graph and render loop run as machine code while the engine
 supplies the browser surface. `src/embed` is the C++ API a host uses to
@@ -60,6 +62,8 @@ bronze build <entry.js> -o <exe>          compile and link an executable
 bronze build <entry.js> -o <obj> \
              --emit-obj \
              --host-globals <manifest>    compile to an object for a host build
+bronze build <entry.js> -o <lib> \
+             --emit-shared                compile a module a host loads at run time
 bronze types <entry.js>                   show what inference proved
 bronze il    <entry.js>                   dump the typed IL
 bronze lex / bronze parse                 earlier pipeline stages

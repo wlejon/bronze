@@ -39,12 +39,20 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // It exists so a host can link MORE THAN ONE compiled module into one image:
 // the entry and the ABI stamp are the only two names an object exports, so
 // distinct entry symbols are what keep two modules from colliding at link.
+// (The manifest below is the third; it is derived from the entry too, so the
+// property that matters — no two modules collide — is unchanged.)
+//
+// `emitShared` links a LOADABLE MODULE instead of an executable: the same
+// object, linked with /DLL or -shared against the SHARED bronze runtime, so a
+// host opens it at run time rather than at its own link step. bronze_abi.h's
+// loadable-module section is the contract it publishes. Incoherent with
+// `emitObj` — two different outputs — and refused by name.
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
              bool inferStats = false, std::string* statsOut = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
-             const std::string& entrySymbol = {});
+             const std::string& entrySymbol = {}, bool emitShared = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

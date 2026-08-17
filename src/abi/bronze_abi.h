@@ -32,6 +32,43 @@
  * header is what moves the version; there is no number to forget.
  */
 
+/*
+ * ---- the loadable-module surface ----------------------------------------
+ *
+ * A compiled module is not only an object for a host's own link step: with
+ * `--emit-shared` it is a DLL/.so/.dylib a host LOADS at run time, and a
+ * loader that cannot see the host's build has to learn everything it needs
+ * from symbols. There are exactly three, all named after the module's entry
+ * (`--entry-symbol`, default `bronze_main`), and this is the whole contract:
+ *
+ *   <entry>                    void(void) — the module's top level.
+ *   <entry>_abi_fingerprint    const uint32_t — the stamp described above.
+ *                              Spelled `bronze_object_abi_fingerprint` for
+ *                              the default entry, which is the historical
+ *                              name src/rt/rt.cpp and embed_run.cpp link.
+ *   <entry>_host_globals       const, 4-byte aligned:
+ *
+ *                                  uint32_t count;
+ *                                  char     names[];  // `count` NUL-terminated
+ *                                                     // UTF-8 names, back to back
+ *
+ * The manifest is what the module was compiled against — the `--host-globals`
+ * list, verbatim and in the order the manifest gave it. It exists because
+ * `--host-globals` is a CONTRACT between two builds: a name in it compiled
+ * into a plain provided-global read, so a host that forgets to register that
+ * name hands the program a global read with nothing behind it. A loader diffs
+ * this list against what it has registered and refuses by name, before the
+ * entry runs, instead of failing somewhere inside the program's top level.
+ *
+ * A module compiled with no manifest still DEFINES the symbol, with count 0.
+ * "No manifest" and "not a bronze module" must not be the same observation,
+ * and the absence of a symbol cannot tell them apart.
+ *
+ * Primitives only, exactly as the registry below is: a count and bytes. The
+ * loader is not necessarily C++, and even when it is, the sret rule the top
+ * of this header states applies to everything a module exports.
+ */
+
 #include <stdbool.h>
 #include <stdint.h>
 
