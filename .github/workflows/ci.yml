@@ -1,10 +1,10 @@
 name: CI
 
-# Build + full test suite on every push/PR, on all three platforms bronze
-# ships for. This is the signal behind the "CI" badge. The run includes the
-# oracle differential suite and both milestones (three.js, pixi.js) — those
-# are the tests that prove the project's stated bar, so CI runs exactly what
-# the pre-commit rule asks for locally: BRONZE_WITH_LLVM=ON and all of ctest.
+# Build + test on every push/PR, on all three platforms bronze ships for.
+# This is the signal behind the "CI" badge. The run includes the oracle
+# differential suite and the three.js milestone; the pixi milestone is
+# excluded here for wall time (it alone is ~80% of the test step) and runs
+# in the Nightly workflow's full suite instead, same three platforms.
 #
 # LLVM comes from this repo's own llvm-prebuilt-<ver> release (built by
 # llvm-prebuilt.yml), not from vcpkg — vcpkg builds LLVM from source, which
@@ -147,8 +147,13 @@ jobs:
       - name: Build
         run: cmake --build --preset dev --parallel 4
 
-      # The full suite, milestones included — identical to the local
-      # pre-commit run. The oracle cases compile and link real executables,
-      # so this also exercises `bronze build` end to end on each platform.
+      # Everything except the pixi milestone. Compiling the 2 MB pixi bundle
+      # twice plus its gc-stress re-runs is ~80% of this job's wall time on
+      # these runners (~36 of 45 test-minutes on Windows); the Nightly
+      # workflow runs the full suite, pixi included, on all three platforms
+      # daily. threejs stays per-push: it is ~10% of the cost and the only
+      # real-library smoke left in this job. The oracle cases compile and
+      # link real executables, so this still exercises `bronze build` end to
+      # end on each platform.
       - name: Test
-        run: ctest --preset dev
+        run: ctest --preset dev -LE pixi
