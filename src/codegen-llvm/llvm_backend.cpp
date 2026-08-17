@@ -58,8 +58,9 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/ADT/DenseMap.h>
 #include <llvm/Support/MemoryBufferRef.h>
-#include <llvm/Transforms/Utils/SplitModule.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 
 static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
 
@@ -434,25 +435,31 @@ bool optimizeAndEmitOne(llvm::Module& m, llvm::TargetMachine& tm, const std::str
     return true;
 }
 
-// Partition symbol hygiene for shared objects on non-COFF targets. Splitting
-// promotes module-internal symbols to external so partitions can reach each
-// other, and on ELF and Mach-O every default-visibility external in a shared
-// object is EXPORTED — so two loaded modules could resolve each other's
-// promoted internals by name. Everything a partition defines except the
-// module's published names goes hidden. COFF ignores visibility and exports
-// only what is dllexport-marked, so this changes nothing there; the published
-// names are skipped so their dllexport marking stays verifier-legal.
-void hideUnpublished(llvm::Module& m, const std::vector<std::string>& published) {
+// Promote every module-local symbol so a partition can reference a definition
+// that landed in another partition. Three properties of the promotion carry
+// the correctness:
+//
+// - The NEW NAME is prefixed. An internal symbol's name was never a contract —
+//   a JS `function malloc(){}` lowers to an internal symbol spelled `malloc` —
+//   and externalizing it under its own spelling would collide with (or worse,
+//   silently satisfy) the C runtime's symbol at link. Nothing resolves these
+//   symbols by name at runtime; only the partition objects' relocations use
+//   them, and those go through the rename together.
+// - HIDDEN visibility. On ELF and Mach-O every default-visibility external in
+//   a shared object is exported, so two loaded modules could resolve each
+//   other's promoted internals. Hidden keeps the promotion inside the image;
+//   COFF ignores visibility and exports only dllexport names, so it changes
+//   nothing there.
+// - Published names are untouched: they were never local, so they never enter
+//   this loop, and their dllexport marking stays verifier-legal.
+void promoteLocalsForSplit(llvm::Module& m) {
+    unsigned anon = 0;
     for (llvm::GlobalValue& gv : m.global_values()) {
-        if (gv.isDeclaration() || gv.hasLocalLinkage()) continue;
-        bool keep = false;
-        for (const std::string& name : published) {
-            if (gv.getName() == name) {
-                keep = true;
-                break;
-            }
-        }
-        if (!keep) gv.setVisibility(llvm::GlobalValue::HiddenVisibility);
+        if (!gv.hasLocalLinkage()) continue;
+        const std::string base = gv.hasName() ? gv.getName().str() : std::to_string(anon++);
+        gv.setName("__bronze_part$" + base);
+        gv.setLinkage(llvm::GlobalValue::ExternalLinkage);
+        gv.setVisibility(llvm::GlobalValue::HiddenVisibility);
     }
 }
 
@@ -471,7 +478,6 @@ void hideUnpublished(llvm::Module& m, const std::vector<std::string>& published)
 // its own LLVMContext, handed over as bitcode because a worker may not touch
 // the shared context. `emittedPaths` records what was actually written.
 bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bool pic,
-                     const std::vector<std::string>& publishedNames,
                      std::vector<std::string>* emittedPaths, DiagnosticSink& diags) {
     std::call_once(nativeTargetOnce, [] {
         llvm::InitializeNativeTarget();
@@ -558,24 +564,73 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
         }
     }
 
-    std::vector<std::string> bitcodes(parts);
+    promoteLocalsForSplit(llvmModule);
+
+    // Partition assignment is bronze's own rather than llvm::SplitModule's:
+    // SplitModule buckets by NAME HASH, which landed 2.4x the mean instruction
+    // count in one bucket on the three.js bundle and made that bucket the
+    // whole critical path. Greedy largest-first into the least-loaded bin is
+    // within one function of optimal here, and the sort's name tie-break keeps
+    // the assignment deterministic. The floor it cannot beat is the single
+    // biggest function — the bundle's top level — which is the next lever, in
+    // lowering, not here. Everything that is not a function goes to partition
+    // 0: data is near-free to emit and this keeps the module's tables in one
+    // object.
+    llvm::DenseMap<const llvm::GlobalValue*, unsigned> binOf;
     {
-        unsigned idx = 0;
-        llvm::SplitModule(llvmModule, parts, [&](std::unique_ptr<llvm::Module> part) {
-            if (pic) hideUnpublished(*part, publishedNames);
-            llvm::SmallString<0> buf;
-            llvm::raw_svector_ostream os(buf);
-            llvm::WriteBitcodeToFile(*part, os);
-            bitcodes[idx++] = std::string(buf.str());
+        struct Def {
+            llvm::Function* fn;
+            size_t insts;
+        };
+        std::vector<Def> defs;
+        for (llvm::Function& f : llvmModule) {
+            if (f.isDeclaration()) continue;
+            size_t insts = 0;
+            for (const llvm::BasicBlock& bb : f) insts += bb.size();
+            defs.push_back({&f, insts});
+        }
+        std::stable_sort(defs.begin(), defs.end(), [](const Def& a, const Def& b) {
+            if (a.insts != b.insts) return a.insts > b.insts;
+            return a.fn->getName() < b.fn->getName();
         });
+        std::vector<size_t> load(parts, 0);
+        for (const Def& d : defs) {
+            unsigned best = 0;
+            for (unsigned i = 1; i < parts; ++i) {
+                if (load[i] < load[best]) best = i;
+            }
+            binOf[d.fn] = best;
+            load[best] += d.insts;
+        }
     }
 
+    // Clone, serialize and DISPATCH one partition at a time, so the first
+    // worker is optimizing while later partitions are still being cloned.
+    // Bitcode is the handoff because a worker may not touch the shared
+    // LLVMContext; the buffers are pre-sized so a worker's read never races a
+    // later push_back.
+    std::vector<std::string> bitcodes(parts);
     std::vector<std::string> errors(parts);
     std::vector<size_t> partInsts(parts, 0);
     std::vector<double> partMillis(parts, 0.0);
     std::vector<std::thread> workers;
     workers.reserve(parts);
     for (unsigned i = 0; i < parts; ++i) {
+        {
+            llvm::ValueToValueMapTy vmap;
+            std::unique_ptr<llvm::Module> part =
+                llvm::CloneModule(llvmModule, vmap, [&](const llvm::GlobalValue* gv) {
+                    if (const auto* f = llvm::dyn_cast<llvm::Function>(gv)) {
+                        auto it = binOf.find(f);
+                        return it != binOf.end() && it->second == i;
+                    }
+                    return i == 0;
+                });
+            llvm::SmallString<0> buf;
+            llvm::raw_svector_ostream os(buf);
+            llvm::WriteBitcodeToFile(*part, os);
+            bitcodes[i] = std::string(buf.str());
+        }
         workers.emplace_back([&, i] {
             const auto begin = std::chrono::steady_clock::now();
             llvm::LLVMContext ctx;
@@ -769,12 +824,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     }
     lap("llvm-verify");
 
-    // The three names the object publishes, in the sense writeObjectFile
-    // needs them: partitioned emission must not hide these, whatever else it
-    // hides (hideUnpublished says why anything is hidden at all).
-    const std::vector<std::string> publishedNames{entrySymbol_, stampSymbol,
-                                                  entrySymbol_ + "_host_globals"};
-    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_, publishedNames,
+    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_,
                               emittedPathsOut_, diags);
     lap("obj-emit");
     return ok;
