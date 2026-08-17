@@ -94,10 +94,51 @@ bool rtSamePrototypeAsCurrent(Value obj, Value proto);
 // anything else.
 bool rtShapelessPrototypeOf(Value obj, Value& out);
 
-// 10.1.5-shaped [[GetOwnProperty]] reduced to what bronze's callers need: does
-// this receiver have an own property under `keyVal`, and is it enumerable?
-// One implementation, in builtin_object_proto.cpp, so that `hasOwnProperty`,
-// `propertyIsEnumerable` and a proxy's forwarded descriptor read cannot drift.
+// What an own-property test found BESIDES "it is there": the attributes 6.2.6
+// gives the property, and the values behind it.
+//
+// `writable` and `configurable` default TRUE because that is what a receiver
+// kind whose storage cannot express either actually has: every kind that keeps
+// no integrity level (integrity.h names them — a Map, a Set, a typed array, an
+// ArrayBuffer, a RegExp) has no route to non-configurable at all, so the
+// default is the fact and not a guess. They are also the only two fields
+// 10.5's invariant checks gate on, so the permissive default can only ever
+// fail to fire a check, never fire a wrong one.
+//
+// `enumerable` defaults FALSE and is filled positively, which is the
+// convention the switch was written against: the non-enumerable own properties
+// (an array's `length`, a function's `name`) are the ones that say nothing.
+struct OwnPropertyDetail {
+    bool accessor{false};
+    bool writable{true};
+    bool enumerable{false};
+    bool configurable{true};
+    // The data property's value, or the accessor's pair. Read off a slot
+    // without allocating, so a caller that goes on to allocate must root them
+    // first.
+    //
+    // `valueKnown` is false where producing the value would ALLOCATE, and this
+    // question is answered without allocating on purpose — a string exotic
+    // object's index, a function's `name`, an array's named property. The one
+    // check that reads `value` (10.5.8's, against a non-writable
+    // non-configurable data property) skips itself when the value is unknown,
+    // so the flag can only cost a check that does not fire.
+    bool valueKnown{false};
+    Value value{Value::fromUndefined()};
+    Value getter{Value::fromUndefined()};
+    Value setter{Value::fromUndefined()};
+};
+
+// 10.1.5-shaped [[GetOwnProperty]]: does this receiver have an own property
+// under `keyVal`, and with what attributes? One implementation, in
+// builtin_object_proto.cpp, so that `hasOwnProperty`, `propertyIsEnumerable`,
+// a proxy's forwarded descriptor read and 10.5's invariant checks cannot drift
+// about what a receiver owns.
+bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out);
+
+// The same question asked by the two callers that want only the enumerability
+// — `hasOwnProperty` and `propertyIsEnumerable`. A thin forward, so the narrow
+// spelling cannot become a second implementation.
 bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, bool& enumerable);
 
 }  // namespace bronze::runtime

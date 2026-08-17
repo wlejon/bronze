@@ -779,7 +779,13 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
         if (keyText == "prototype") {
             if (!rtFunctionPrototypeWritable(objVal)) {
-                fatal("assigning a non-object to a function's `prototype` is unsupported");
+                // A REFUSAL, not a diagnosis of the value: 10.1.9.2 discards
+                // the write in sloppy code and 13.15.2 throws in strict, and
+                // that is true whatever was being assigned. The `fatal` that
+                // used to stand here said "assigning a non-object", which was
+                // the wrong sentence about the right situation.
+                rtReportSetRefusal(SetRefusal::NotWritable, strict, keyText);
+                return;
             }
             auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
             fn->prototype = val.get();

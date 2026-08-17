@@ -20,7 +20,9 @@
 // what makes `[^\P{Lowercase_Letter}]` come back to `[\p{Lowercase_Letter}]`
 // under `vi`, where the same pattern under `ui` matches nothing of the sort.
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 #include "regex/parser_internal.h"
 #include "regex/pattern.h"
@@ -167,29 +169,103 @@ RangeList PatternParser::complementInMode(const RangeList& set) const {
     return complementRanges(set, alphabetCeiling(flags_.unicodeMode()));
 }
 
+// ---- the string members' half of the same algebra ---------------------------
+//
+// 22.2.2.9's CharSet operations are set operations over SEQUENCES, so each of
+// the three has to say what it does to the members that are not characters.
+// Union takes both lists; intersection keeps a string both sides hold;
+// difference drops a string the right side holds. The zero-length member follows
+// exactly the same three rules, which is why it rides along as a flag rather
+// than as an empty vector in the list — an empty `std::vector` in `strings`
+// would have to be kept distinct from "no strings at all".
+
+namespace {
+
+using ClassString = std::vector<uint32_t>;
+
+bool hasString(const std::vector<ClassString>& list, const ClassString& s) {
+    for (const ClassString& candidate : list) {
+        if (candidate == s) return true;
+    }
+    return false;
+}
+
+void addString(std::vector<ClassString>& list, const ClassString& s) {
+    if (!hasString(list, s)) list.push_back(s);
+}
+
+// LONGEST FIRST, then by code points, which is 22.2.2.9.6's order made TOTAL.
+// The specification only requires the longest match to win; ordering the ties
+// makes the tree — and therefore every diagnostic and every dump of it —
+// independent of the order the alternatives happened to be written in.
+void sortLongestFirst(std::vector<ClassString>& list) {
+    std::sort(list.begin(), list.end(), [](const ClassString& a, const ClassString& b) {
+        if (a.size() != b.size()) return a.size() > b.size();
+        return a < b;
+    });
+}
+
+}  // namespace
+
 // ---- ClassSetExpression (22.2.1, +UnicodeSetsMode) --------------------------
 
-NodePtr PatternParser::parseClassSet() {
+// `[ ClassSetExpression ]` or `[^ ClassSetExpression ]`, at the top of a pattern
+// or nested inside another class — 22.2.1's CharacterClass and its NestedClass
+// are the same two productions, and the early error below is written twice in
+// the specification for exactly that reason.
+bool PatternParser::readNestedClass(ClassSetValue& out) {
+    out = ClassSetValue{};
     ++pos_;  // '['
     const bool negated = eat('^');
-    RangeList set;
-    if (!readClassSetExpression(set)) return nullptr;
-    if (!eat(']')) return fail("`]` was expected to close a character class");
+    ClassSetValue set;
+    if (!readClassSetExpression(set)) return false;
+    if (!eat(']')) return refuse("`]` was expected to close a character class");
 
-    NodePtr node = make(NodeKind::Class);
+    // 22.2.1's static semantics: a NEGATED class whose contents MayContainStrings
+    // is an early SyntaxError. It is not an implementation limit — there is no
+    // answer for it. A complement is taken over an alphabet of characters, and
+    // the complement of a set containing "abc" would have to be every sequence
+    // of every length that is not "abc".
+    if (negated && set.mayContainStrings) {
+        return refuse("a negated `v`-mode character class cannot contain a set of strings "
+                      "(22.2.1 makes `[^...\\q{...}...]` an early error, because the complement "
+                      "of a set of sequences is not a set of characters)");
+    }
+
     // A `v`-mode class complements its SET and never its answer. That is the
     // whole of the difference from `[^...]` under `u`, where 22.2.2.7.1 inverts
-    // the membership test after canonicalizing — and it is why this node is
-    // never `negated`: the complement has already been taken, over the alphabet
+    // the membership test after canonicalizing.
+    out.ranges = negated ? complementInMode(set.ranges) : set.ranges;
+    normalizeRanges(out.ranges);
+    out.strings = std::move(set.strings);
+    out.empty = set.empty;
+    // 22.2.1 gives `[^...]` MayContainStrings false outright — it is the one
+    // production that CANNOT contain strings, since the line above just refused
+    // the case where its contents could. Everywhere else the answer is passed
+    // through untouched, and never recomputed from `strings`: `[\q{ab}--\q{ab}]`
+    // may contain strings although its value holds none, which is what makes
+    // `[^[\q{ab}--\q{ab}]]` an early error rather than an empty class.
+    out.mayContainStrings = negated ? false : set.mayContainStrings;
+    return true;
+}
+
+NodePtr PatternParser::parseClassSet() {
+    ClassSetValue set;
+    if (!readNestedClass(set)) return nullptr;
+
+    NodePtr node = make(NodeKind::Class);
+    // Never `negated`: the complement has already been taken, over the alphabet
     // `complementInMode` picks.
     node->negated = false;
-    node->ranges = negated ? complementInMode(set) : set;
-    normalizeRanges(node->ranges);
+    node->ranges = std::move(set.ranges);
+    node->strings = std::move(set.strings);
+    node->matchesEmpty = set.empty;
+    sortLongestFirst(node->strings);
     return node;
 }
 
-bool PatternParser::readClassSetExpression(RangeList& out) {
-    out.clear();
+bool PatternParser::readClassSetExpression(ClassSetValue& out) {
+    out = ClassSetValue{};
     // `[]` is an empty set and `[^]` its complement. 22.2.1 lets ClassContents
     // be empty in both grammars, and it is the one class that is legal with no
     // members at all.
@@ -197,7 +273,7 @@ bool PatternParser::readClassSetExpression(RangeList& out) {
 
     bool isCharacter = false;
     uint32_t code = 0;
-    RangeList first;
+    ClassSetValue first;
     if (!readClassSetOperand(first, isCharacter, code)) return false;
 
     // Which of the three productions this is, decided by what follows the FIRST
@@ -205,13 +281,25 @@ bool PatternParser::readClassSetExpression(RangeList& out) {
     // with no precedence between them, so `[[a]--[b]&&[c]]` has no parse and is
     // a syntax error rather than a guess about which binds tighter.
     if (peek() == '&' && peek(1) == '&') {
-        RangeList acc = std::move(first);
+        ClassSetValue acc = std::move(first);
         while (eatTwo('&')) {
-            RangeList rhs;
+            ClassSetValue rhs;
             bool rhsIsCharacter = false;
             uint32_t rhsCode = 0;
             if (!readClassSetOperand(rhs, rhsIsCharacter, rhsCode)) return false;
-            acc = intersectRanges(foldedForOperation(acc), foldedForOperation(rhs));
+            acc.ranges = intersectRanges(foldedForOperation(acc.ranges),
+                                         foldedForOperation(rhs.ranges));
+            // A string survives an intersection only if BOTH sides hold it, and
+            // 22.2.1's MayContainStrings for `&&` is likewise the AND of its
+            // operands': an intersection with anything that cannot hold a string
+            // cannot either.
+            std::vector<ClassString> kept;
+            for (const ClassString& s : acc.strings) {
+                if (hasString(rhs.strings, s)) kept.push_back(s);
+            }
+            acc.strings = std::move(kept);
+            acc.empty = acc.empty && rhs.empty;
+            acc.mayContainStrings = acc.mayContainStrings && rhs.mayContainStrings;
         }
         if (peek() == '-' && peek(1) == '-') {
             return refuse("`--` and `&&` cannot be mixed in one `v`-mode character class "
@@ -222,13 +310,23 @@ bool PatternParser::readClassSetExpression(RangeList& out) {
         return true;
     }
     if (peek() == '-' && peek(1) == '-') {
-        RangeList acc = std::move(first);
+        ClassSetValue acc = std::move(first);
         while (eatTwo('-')) {
-            RangeList rhs;
+            ClassSetValue rhs;
             bool rhsIsCharacter = false;
             uint32_t rhsCode = 0;
             if (!readClassSetOperand(rhs, rhsIsCharacter, rhsCode)) return false;
-            acc = subtractRanges(foldedForOperation(acc), foldedForOperation(rhs));
+            acc.ranges = subtractRanges(foldedForOperation(acc.ranges),
+                                        foldedForOperation(rhs.ranges));
+            // A difference drops what the RIGHT side holds and asks nothing of
+            // it, which is also why 22.2.1 takes MayContainStrings for `--` from
+            // the first operand alone.
+            std::vector<ClassString> kept;
+            for (const ClassString& s : acc.strings) {
+                if (!hasString(rhs.strings, s)) kept.push_back(s);
+            }
+            acc.strings = std::move(kept);
+            acc.empty = acc.empty && !rhs.empty;
         }
         if (peek() == '&' && peek(1) == '&') {
             return refuse("`--` and `&&` cannot be mixed in one `v`-mode character class "
@@ -245,10 +343,10 @@ bool PatternParser::readClassSetExpression(RangeList& out) {
 // A range is a ClassSetRange and so takes two ClassSetCharacters — a nested
 // class or a class escape on either side is not a parse, which is the same rule
 // `[a-\d]` already lives under in the other grammar.
-bool PatternParser::readClassSetUnion(RangeList& out, RangeList first, bool firstIsCharacter,
-                                      uint32_t firstCode) {
-    out.clear();
-    RangeList pending = std::move(first);
+bool PatternParser::readClassSetUnion(ClassSetValue& out, ClassSetValue first,
+                                      bool firstIsCharacter, uint32_t firstCode) {
+    out = ClassSetValue{};
+    ClassSetValue pending = std::move(first);
     bool isCharacter = firstIsCharacter;
     uint32_t code = firstCode;
 
@@ -273,54 +371,126 @@ bool PatternParser::readClassSetUnion(RangeList& out, RangeList first, bool firs
             if (code > hi) {
                 return refuse("a character class range whose start is after its end");
             }
-            addRange(out, code, hi);
+            addRange(out.ranges, code, hi);
         } else {
-            out.insert(out.end(), pending.begin(), pending.end());
+            out.ranges.insert(out.ranges.end(), pending.ranges.begin(), pending.ranges.end());
+            for (const ClassString& s : pending.strings) addString(out.strings, s);
+            out.empty = out.empty || pending.empty;
+            // Union: MayContainStrings if ANY operand's does.
+            out.mayContainStrings = out.mayContainStrings || pending.mayContainStrings;
         }
         if (atEnd() || peek() == ']') break;
-        pending.clear();
+        pending = ClassSetValue{};
         isCharacter = false;
         code = 0;
         if (!readClassSetOperand(pending, isCharacter, code)) return false;
     }
-    normalizeRanges(out);
+    normalizeRanges(out.ranges);
     return true;
 }
 
-// ClassSetOperand: a nested class, a class escape, or one character. The
-// `\q{...}` form — a set whose members are STRINGS — is refused inside
-// `readEscapeValue` together with the properties of strings, because they are
-// one feature and half of it would be a set that sometimes matches two
-// characters.
-bool PatternParser::readClassSetOperand(RangeList& out, bool& isCharacter, uint32_t& code) {
-    out.clear();
+// ClassSetOperand: a nested class, `\q{...}`, a class escape, or one character.
+// `\q` is taken HERE rather than in `readEscapeValue`, because it is the one
+// escape whose value is not an `EscapeValue`: a character or a set of characters
+// cannot express "abc".
+bool PatternParser::readClassSetOperand(ClassSetValue& out, bool& isCharacter, uint32_t& code) {
+    out = ClassSetValue{};
     isCharacter = false;
     code = 0;
     if (atEnd()) return refuse("`]` was expected to close a character class");
 
-    if (peek() == '[') {
-        NodePtr nested = parseClassSet();
-        if (!nested) return false;
-        out = std::move(nested->ranges);
-        return true;
-    }
+    // A nested class carries both its value and 22.2.1's syntactic answer up.
+    if (peek() == '[') return readNestedClass(out);
     if (peek() == '\\') {
+        if (peek(1) == 'q') {
+            pos_ += 2;  // `\q`
+            return readClassStringDisjunction(out);
+        }
         ++pos_;
         if (atEnd()) return refuse("a trailing `\\` with nothing to escape");
         EscapeValue value;
         if (!readEscapeValue(value, /*inClass=*/true)) return false;
         if (value.isSet) {
-            out = std::move(value.set);
+            out.ranges = std::move(value.set);
             return true;
         }
         isCharacter = true;
         code = value.code;
-        addRange(out, code, code);
+        addRange(out.ranges, code, code);
         return true;
     }
     if (!readClassSetCharacter(code)) return false;
     isCharacter = true;
-    addRange(out, code, code);
+    addRange(out.ranges, code, code);
+    return true;
+}
+
+// ClassStringDisjunction (22.2.1): `{ alt | alt | ... }`, each alternative a run
+// of ClassSetCharacters — so every character that must be escaped in a `v`-mode
+// class must be escaped here too, and `|` and `}` are what end an alternative.
+//
+// An alternative of exactly ONE character is not a string: it is a member of
+// `ranges` like any other character, which is what makes `[\q{a}]` and `[a]`
+// the same class and lets the set operators work over both without a special
+// case. Length 0 and length 2+ are the members a CharSet of characters could
+// not hold.
+bool PatternParser::readClassStringDisjunction(ClassSetValue& out) {
+    if (!eat('{')) {
+        return refuse("`{` was expected after `\\q` (22.2.1's ClassStringDisjunction is "
+                      "`\\q{...}`)");
+    }
+    // 22.2.1 gives ClassStringDisjunction MayContainStrings when any of its
+    // alternatives is not exactly one character long. Decided from the SYNTAX,
+    // so `\q{ab}` sets it whatever the surrounding algebra later does.
+    while (true) {
+        ClassString alternative;
+        while (!atEnd() && peek() != '|' && peek() != '}') {
+            if (peek() == '\\') {
+                ++pos_;
+                if (atEnd()) return refuse("a trailing `\\` with nothing to escape");
+                EscapeValue value;
+                if (!readEscapeValue(value, /*inClass=*/true)) return false;
+                if (value.isSet) {
+                    return refuse("a character class escape cannot appear inside `\\q{...}` "
+                                  "(22.2.1's ClassString is a run of single characters)");
+                }
+                alternative.push_back(value.code);
+                continue;
+            }
+            uint32_t c = 0;
+            if (!readClassSetCharacter(c)) return false;
+            alternative.push_back(c);
+        }
+        if (alternative.size() == 1) {
+            addRange(out.ranges, alternative[0], alternative[0]);
+        } else {
+            out.mayContainStrings = true;
+            if (alternative.empty()) {
+                out.empty = true;
+            } else {
+                addString(out.strings, alternative);
+            }
+        }
+        if (eat('|')) continue;
+        if (eat('}')) break;
+        return refuse("`}` was expected to close `\\q{...}`");
+    }
+    normalizeRanges(out.ranges);
+    // Under `i` a string member would have to go through 22.2.2.9's
+    // MaybeSimpleCaseFolding element by element, and the matcher would have to
+    // fold each input character it compares against one — which is a second
+    // canonicalization path beside `classMatches`'s, and a second path is how
+    // the two would come to disagree. Refused by name rather than left to fold
+    // the characters and not the strings, which would match "ABC" against
+    // `[\q{abc}]` only sometimes.
+    //
+    // The EMPTY member is exempt, and not by leniency: it has no element to fold,
+    // so `[\q{|a}]` under `i` is the same set folded or not.
+    if (flags_.ignoreCase && !out.strings.empty()) {
+        return refuse("unsupported: `\\q{...}` with a member longer than one character, under "
+                      "the `i` flag (22.2.2.9 folds each element of each member, and bronze "
+                      "canonicalizes characters only)");
+    }
     return true;
 }
 

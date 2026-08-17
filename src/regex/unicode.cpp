@@ -371,17 +371,19 @@ bool unicodePropertySet(std::string_view name, std::string_view value, RangeList
         // The properties of STRINGS, which are the one family of unknown
         // property bronze can name exactly — 22.2.1's Table 67 is a closed list
         // of seven, where the binary properties of Table 66 are a whole file of
-        // UAX #44. They are refused together with `\q{...}` and for its reason:
-        // all seven denote a set whose members are sequences, and a `--` over
-        // one could not say what it removed. Naming the family matters because
-        // the generic message would send a reader off to check their spelling
-        // of a name they spelled correctly.
+        // UAX #44. What is missing is the DATA and no longer the representation:
+        // a class set holds members that are sequences since `\q{...}` does, so
+        // each of the seven needs its list of emoji sequences from UTS #51's
+        // `emoji-sequences.txt` and `emoji-zwj-sequences.txt` — thousands of
+        // them, and a generated table per property. Naming the family matters
+        // because the generic message would send a reader off to check their
+        // spelling of a name they spelled correctly.
         if (name.empty() && isPropertyOfStrings(value)) {
             error = "unsupported: " + quoted(name, value) +
                     " is a property of STRINGS (22.2.1's Table 67), which is legal only under "
-                    "the `v` flag and which bronze does not implement — neither it nor the "
-                    "`\\q{...}` it shares a representation with, a CharSet whose members are "
-                    "not single characters";
+                    "the `v` flag. bronze holds class members that are strings — `\\q{...}` "
+                    "works — but carries no table for any of the seven, each of which is a list "
+                    "of emoji sequences from UTS #51";
             return false;
         }
         // One message for a misspelling and for a real property with no table,

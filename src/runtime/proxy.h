@@ -61,12 +61,25 @@ bool rtIsCallableValue(Value v);
 
 // [[Get]] (10.5.8): the `get` trap if the handler has one, else the target's
 // own read through the ordinary funnel.
-Value rtProxyGet(Value proxyVal, Value keyVal);
+//
+// `receiver` is step 8's third trap argument — what `this` is bound to if the
+// read finds an accessor. For an ordinary `p.k` it IS the proxy, which is what
+// the two-argument spelling means; `Reflect.get(p, k, other)` is the one caller
+// that has a different one, and passing it through is the whole of what the
+// third parameter of 28.1.6 does.
+Value rtProxyGet(Value proxyVal, Value keyVal, Value receiver);
+inline Value rtProxyGet(Value proxyVal, Value keyVal) {
+    return rtProxyGet(proxyVal, keyVal, proxyVal);
+}
 
 // [[Set]] (10.5.9): the `set` trap or the forwarded write. The trap's
 // boolean result is read the way 13.15.2 reads it: false under strict is a
-// TypeError, false otherwise is a quiet refusal.
-void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict);
+// TypeError, false otherwise is a quiet refusal. `receiver` is step 7's fourth
+// trap argument, on the same terms as [[Get]]'s above.
+void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver);
+inline void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict) {
+    rtProxySet(proxyVal, keyVal, val, strict, proxyVal);
+}
 
 // [[HasProperty]] (10.5.7): the `has` trap or the forwarded `in`.
 bool rtProxyHas(Value proxyVal, Value keyVal);
@@ -78,7 +91,7 @@ bool rtProxyDelete(Value proxyVal, Value keyVal, bool strict);
 // [[OwnPropertyKeys]] (10.5.11): the `ownKeys` trap's list through 7.3.18
 // CreateListFromArrayLike, or the target's own keys. Order is the trap's own,
 // which is what 10.5.11 gives — a trap may reorder, and only the invariant
-// checks (not built; the file header names them) constrain what it may omit.
+// checks below constrain what it may omit.
 //
 // An ARRAY, not a vector of Values, because every caller then does something
 // that allocates FOR EACH KEY — a descriptor trap, a [[Get]], a write into
@@ -87,10 +100,20 @@ bool rtProxyDelete(Value proxyVal, Value keyVal, bool strict);
 // re-reads the element it is on.
 Value rtProxyOwnKeys(Value proxyVal);
 
-// [[GetOwnProperty]] (10.5.5), reduced to the two facts every caller in bronze
-// needs: does the property exist, and is it enumerable. False means absent (or
-// that the trap threw — the caller must test the pending cell).
-bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, bool& enumerable);
+// The TARGET's own keys — what the forward arm of [[OwnPropertyKeys]] above
+// hands back when a handler has no `ownKeys` trap. Public because 10.5.11's
+// invariant check needs the same list, and a check that asked a different
+// question than the forward it guards could refuse a key list the forward
+// would have produced.
+Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot);
+
+// [[GetOwnProperty]] (10.5.5). False means absent (or that the trap threw — the
+// caller must test the pending cell). The attributes come back in `out`, which
+// is what lets a proxy stand where an ordinary object stands in the invariant
+// checks below: a proxy over a proxy asks its own trap and reports the
+// descriptor the trap built, rather than reporting only that something is
+// there.
+bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, struct OwnPropertyDetail& out);
 
 // [[GetPrototypeOf]] (10.5.1): the `getPrototypeOf` trap, or the target's.
 Value rtProxyGetPrototypeOf(Value proxyVal);
@@ -109,6 +132,50 @@ uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv);
 // reach a proxy without going through one of them. True means a TypeError is
 // now pending and the caller must stop.
 bool rtProxyRefuseIfRevoked(Value proxyVal, const char* operation);
+
+// ---- the essential invariants (proxy_invariant.cpp) ------------------------
+//
+// 10.5's internal methods do not merely CALL a trap: each one then checks the
+// answer against the target, and throws a TypeError when the two contradict.
+// The checks are what make a proxy safe to hand out — a non-configurable
+// non-writable property cannot be made to read two different values, an
+// unextensible target cannot be made to appear to gain a key — so they are the
+// operations' second half and not a nicety.
+//
+// Every one of them is a THROW POINT and (through the target's own
+// [[GetOwnProperty]], which may itself be a trap) a GC POINT, which is why each
+// takes roots. Each leaves a pending TypeError and answers nothing; the caller
+// tests the pending cell exactly as it does after a trap call.
+//
+// The whole family is on the TRAPPED path only. A handler with no trap for an
+// operation forwards to the target, and a forward cannot contradict the target
+// by construction — so a proxy used as a plain forwarder pays for none of this.
+
+// 10.5.8 step 10 and 10.5.9 step 9: what a `get` may answer, and what a `set`
+// may claim to have written, for a non-configurable target property.
+void rtProxyCheckGet(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& trapResult);
+void rtProxyCheckSet(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& value);
+
+// 10.5.7 step 9 and 10.5.10 steps 11-13: a `has` that denies a
+// non-configurable property (or any property of a non-extensible target), and a
+// `deleteProperty` that claims to have removed one.
+void rtProxyCheckHas(Rooted<Value>& target, Rooted<Value>& key, bool trapAnswer);
+void rtProxyCheckDelete(Rooted<Value>& target, Rooted<Value>& key, bool trapAnswer);
+
+// 10.5.5 steps 9-17, over the descriptor object the trap returned (or a
+// `Rooted` holding undefined for the absent answer). This is the one check that
+// runs 6.2.6's IsCompatiblePropertyDescriptor.
+void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
+                                Rooted<Value>& desc);
+
+// 10.5.11 steps 9-23: the trap's key list against the target's non-configurable
+// keys, and — for a non-extensible target — against ALL of them, in both
+// directions. `keys` is the array 10.5.11 built from the trap's result.
+void rtProxyCheckOwnKeys(Rooted<Value>& target, Rooted<Value>& keys);
+
+// 10.5.1 steps 7-9: a `getPrototypeOf` trap may answer freely for an
+// extensible target and must answer the truth for one that is not.
+void rtProxyCheckPrototype(Rooted<Value>& target, Rooted<Value>& trapResult);
 
 // What a forwarded read of an array MEMBER hands back, for a proxy whose
 // target is an array (proxy_array.cpp). Public because [[Get]] is the only

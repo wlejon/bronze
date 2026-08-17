@@ -255,12 +255,40 @@ private:
     NodePtr parseCharacterClass();
     bool readClassAtom(EscapeValue& out);
 
+    // A ClassSetExpression's value: 22.2.2.9's CharSet, whose members are
+    // SEQUENCES of code points rather than characters.
+    //
+    // `ranges` holds every ONE-character member, because a one-element sequence
+    // IS a character and set algebra with two places to look for one is how the
+    // two would come to disagree. `strings` holds the members of length two or
+    // more and `empty` the zero-length one — the two things a CharSet of
+    // characters could not hold, and the whole of what `\q{...}` adds.
+    //
+    // `mayContainStrings` is 22.2.1's static semantics of that name, and it is
+    // deliberately NOT `empty || !strings.empty()`: the specification decides it
+    // from the SYNTAX, so `[\q{ab}--\q{ab}]` may contain strings even though
+    // its value holds none — which is what makes `[^[\q{ab}--\q{ab}]]` an early
+    // SyntaxError. Computing it from the contents would quietly admit that
+    // pattern.
+    struct ClassSetValue {
+        RangeList ranges;
+        std::vector<std::vector<uint32_t>> strings;
+        bool empty = false;
+        bool mayContainStrings = false;
+    };
+
     NodePtr parseClassSet();
-    bool readClassSetExpression(RangeList& out);
-    bool readClassSetUnion(RangeList& out, RangeList first, bool firstIsCharacter,
+    bool readNestedClass(ClassSetValue& out);
+    bool readClassSetExpression(ClassSetValue& out);
+    bool readClassSetUnion(ClassSetValue& out, ClassSetValue first, bool firstIsCharacter,
                            uint32_t firstCode);
-    bool readClassSetOperand(RangeList& out, bool& isCharacter, uint32_t& code);
+    bool readClassSetOperand(ClassSetValue& out, bool& isCharacter, uint32_t& code);
     bool readClassSetCharacter(uint32_t& out);
+
+    // ClassStringDisjunction (22.2.1): `\q{ alt | alt | ... }`, where an
+    // alternative of exactly one character is an ordinary member of `ranges` and
+    // one of any other length is a string. The `\q` has already been consumed.
+    bool readClassStringDisjunction(ClassSetValue& out);
 
     // 22.2.2.9's MaybeSimpleCaseFolding, which `&&` and `--` apply to both
     // their operands. It is the identity without `i`, so the two operators can

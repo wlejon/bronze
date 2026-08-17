@@ -554,6 +554,48 @@ private:
         return runCont(k, pos + step.width);
     }
 
+    // 22.2.2.7.1's answer for a CharSet whose members are not all characters:
+    // the members are tried LONGEST FIRST, each as a whole alternative, and one
+    // that matches but whose continuation fails is GIVEN BACK. `/^[\q{abc|a}]bc$/v`
+    // matches "abc" only because of that — "abc" is tried, `bc$` fails at the end
+    // of the input, and the shorter member is tried in its place.
+    //
+    // That backtracking is the whole reason this is not folded into
+    // `matchOneCharacter`: a class of characters has one way to match at a
+    // position, and this has as many ways as it has members.
+    bool matchClassSet(const Node& node, size_t pos, const Cont* k, bool backward) {
+        for (const std::vector<uint32_t>& member : node.strings) {
+            size_t at = pos;
+            bool consumed = true;
+            for (size_t i = 0; i < member.size() && consumed; ++i) {
+                if (backward) {
+                    // Read right to left, so the member is consumed from its END:
+                    // its last character is the one nearest `pos`.
+                    if (at == 0) { consumed = false; break; }
+                    const CodePointStep step = characterBefore(at);
+                    if (step.code != member[member.size() - 1 - i]) { consumed = false; break; }
+                    at -= step.width;
+                } else {
+                    if (at >= input_.size()) { consumed = false; break; }
+                    const CodePointStep step = characterAt(at);
+                    if (step.code != member[i]) { consumed = false; break; }
+                    at += step.width;
+                }
+            }
+            if (!consumed) continue;
+            if (runCont(k, at)) return true;
+            if (failed_) return false;
+        }
+        // The one-character members next, and the zero-length one last: the same
+        // descending order by length, continued past where `strings` stops.
+        if (!node.ranges.empty()) {
+            if (matchOneCharacter(node, pos, k, backward)) return true;
+            if (failed_) return false;
+        }
+        if (node.matchesEmpty) return runCont(k, pos);
+        return false;
+    }
+
     bool matchNodeInner(const Node& node, size_t pos, const Cont* k, bool backward) {
         switch (node.kind) {
             case NodeKind::Alternation:
@@ -564,8 +606,12 @@ private:
                 return false;
             case NodeKind::Sequence:
                 return matchSequence(node.children, 0, pos, k, backward);
-            case NodeKind::Char:
             case NodeKind::Class:
+                if (!node.strings.empty() || node.matchesEmpty) {
+                    return matchClassSet(node, pos, k, backward);
+                }
+                return matchOneCharacter(node, pos, k, backward);
+            case NodeKind::Char:
             case NodeKind::Dot:
                 return matchOneCharacter(node, pos, k, backward);
             case NodeKind::Assertion:

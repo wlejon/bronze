@@ -102,6 +102,7 @@ bronze_add_module(runtime
         namespace.cpp
         proxy.cpp
         proxy_array.cpp
+        proxy_invariant.cpp
     DEPS
         abi
         json

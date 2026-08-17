@@ -4,11 +4,12 @@
 // Two things are pinned here and they pull in opposite directions. The first is
 // that the grammar computes — a class is a set EXPRESSION, so `[[a-z]--[aeiou]]`
 // is a difference and `[[0-9a-f]&&[a-z]]` an intersection, and both compose with
-// nesting and with a complement. The second is that it REFUSES: every character
-// that could begin a future operator is a syntax error written bare, which is
-// the only way a pattern spelled for a later edition cannot quietly match under
-// this one. A test suite that only checked the first half would let the second
-// rot away one lenient reading at a time.
+// nesting and with a complement — over sets whose members may be STRINGS rather
+// than characters, which is what `\q{...}` writes. The second is that it
+// REFUSES: every character that could begin a future operator is a syntax error
+// written bare, which is the only way a pattern spelled for a later edition
+// cannot quietly match under this one. A test suite that only checked the first
+// half would let the second rot away one lenient reading at a time.
 //
 // Case folding under `v` with `i` has its own section at the bottom, because it
 // is not the same operation `u` performs and the difference is observable.
@@ -109,28 +110,120 @@ TEST_CASE("the `v` class reserves the characters a later operator could use") {
     CHECK(compileError("[a-]", "v").find("must be escaped") != std::string::npos);
 }
 
-TEST_CASE("`\\q{...}` and the properties of strings are refused together, by name") {
-    // They are one feature — a CharSet whose members are not single characters
-    // — and bronze implements neither. The refusal names both halves so that a
-    // reader who arrived from either one finds the other.
-    const std::string q = compileError("[\\q{ab}]", "v");
-    CHECK(q.find("ClassStringDisjunction") != std::string::npos);
-    CHECK(q.find("properties of strings") != std::string::npos);
-    // Even the empty disjunction, which is a set containing the empty string.
-    CHECK(compileError("[\\q{}]", "v").find("ClassStringDisjunction") != std::string::npos);
+TEST_CASE("`\\q{...}` is a class member that is a STRING, and the longest one wins") {
+    // The whole of what it adds: a class that consumes three characters, or
+    // none. `firstMatch` rather than `matches` throughout, because the answer
+    // this feature gets wrong is HOW MUCH it consumed.
+    CHECK(firstMatch(*compileOk("[\\q{abc|d}]", "v"), "xabcy") == "abc");
+    CHECK(firstMatch(*compileOk("[\\q{abc|d}]", "v"), "zdz") == "d");
+    CHECK(firstMatch(*compileOk("[\\q{abc|d}]", "v"), "ab") == "<none>");
 
-    // The other half, and the reason it can be named exactly where an unknown
-    // binary property cannot: 22.2.1's Table 67 is a closed list of seven, so a
-    // reader who spelled `RGI_Emoji` correctly is told the feature is missing
-    // rather than told to check their spelling.
-    const std::string strings = compileError("\\p{RGI_Emoji}", "v");
-    CHECK(strings.find("property of STRINGS") != std::string::npos);
-    CHECK(strings.find("\\q{...}") != std::string::npos);
-    CHECK(compileError("[\\p{Basic_Emoji}]", "v").find("property of STRINGS") !=
-          std::string::npos);
-    // A binary property of CHARACTERS keeps the message it had, because bronze
-    // has no list of those and cannot tell a missing one from a typo.
-    CHECK(compileError("\\p{Emoji}", "v").find("misspelling") != std::string::npos);
+    // 22.2.2.9.6 tries the members longest first, whatever order they were
+    // written in.
+    CHECK(firstMatch(*compileOk("[\\q{a|abc}]", "v"), "abc") == "abc");
+    CHECK(firstMatch(*compileOk("[\\q{abc|a}]", "v"), "abc") == "abc");
+
+    // And GIVES a member BACK when the continuation fails, which is what makes
+    // it a disjunction rather than a longest-match-only test.
+    CHECK(matches(*compileOk("^[\\q{abc|a}]bc$", "v"), u("abc")));
+    CHECK(matches(*compileOk("^[\\q{ab|abc}]c$", "v"), u("abc")));
+
+    // An alternative of exactly one character is an ordinary member of the
+    // class, so `[\q{a|b}]` and `[ab]` are the same set.
+    CHECK(accepted(*compileOk("^[\\q{a|b}]$", "v"), "abc") == "ab");
+    CHECK(accepted(*compileOk("^[\\q{a}c-e]$", "v"), "abcde") == "acde");
+
+    // The EMPTY string is a legal member. It matches at any position and
+    // consumes nothing, and it is tried after every longer member.
+    CHECK(extent(*compileOk("[\\q{|x}]", "v"), u("ab")) == "0..0");
+    CHECK(extent(*compileOk("[\\q{|x}]", "v"), u("x")) == "0..1");
+    CHECK(matches(*compileOk("^[\\q{|x}]$", "v"), u("")));
+    CHECK(matches(*compileOk("^[\\q{}]$", "v"), u("")));
+
+    // Quantified, which is the case a matcher that assumed one character per
+    // step gets wrong: `[\q{ab}]+` must take two at a time and be able to stop.
+    CHECK(firstMatch(*compileOk("[\\q{ab}]+", "v"), "ababx") == "abab");
+    CHECK(matches(*compileOk("^[\\q{ab|a}]*$", "v"), u("aab")));
+    CHECK(matches(*compileOk("^[\\q{ab|cd}]{2}$", "v"), u("abcd")));
+    CHECK_FALSE(matches(*compileOk("^[\\q{ab|cd}]{2}$", "v"), u("abc")));
+
+    // Backward, inside a lookbehind, the member is consumed from its END.
+    CHECK(firstMatch(*compileOk("(?<=[\\q{ab}])c", "v"), "abc") == "c");
+    CHECK(firstMatch(*compileOk("(?<=[\\q{ab}])c", "v"), "xbc") == "<none>");
+    CHECK(firstMatch(*compileOk("(?<=[\\q{abc|bc}])d", "v"), "abcd") == "d");
+
+    // A member spelled with astral characters is one element per CHARACTER, in a
+    // string that holds two units for each.
+    CHECK(matches(*compileOk("^[\\q{\\u{1F600}\\u{1F601}}]$", "v"),
+                  textOf({0x1F600, 0x1F601})));
+    CHECK(extent(*compileOk("[\\q{\\u{1F600}\\u{1F601}}]", "v"),
+                 textOf({0x78, 0x1F600, 0x1F601, 0x79})) == "1..5");
+}
+
+TEST_CASE("the set operators run over the string members too") {
+    // Difference drops a member the right side holds and leaves the rest, which
+    // is the operation the whole feature exists for.
+    CHECK(extent(*compileOk("[\\q{ab|a|b}--\\q{ab}]", "v"), u("ab")) == "0..1");
+    CHECK(matches(*compileOk("^[\\q{ab|a|b}--\\q{ab}]$", "v"), u("a")));
+    CHECK_FALSE(matches(*compileOk("^[\\q{ab|a|b}--\\q{ab}]$", "v"), u("ab")));
+
+    // It asks nothing of what the right side holds and the left does not.
+    CHECK(matches(*compileOk("^[\\q{a}--\\q{ab}]$", "v"), u("a")));
+
+    // Intersection keeps a member only if BOTH sides hold it.
+    CHECK(matches(*compileOk("^[\\q{ab|a}&&\\q{ab|b}]$", "v"), u("ab")));
+    CHECK_FALSE(matches(*compileOk("^[\\q{ab|a}&&\\q{ab|b}]$", "v"), u("a")));
+
+    // Union takes both, and mixes freely with the one-character members.
+    CHECK(matches(*compileOk("^[\\q{ab}[c-e]]+$", "v"), u("abcde")));
+    CHECK(matches(*compileOk("^[\\q{ab}\\q{cd}]+$", "v"), u("abcd")));
+
+    // The zero-length member follows the same three rules and is not special.
+    CHECK_FALSE(matches(*compileOk("^[\\q{|a}--\\q{}]$", "v"), u("")));
+    CHECK(matches(*compileOk("^[\\q{|a}--\\q{}]$", "v"), u("a")));
+    CHECK(matches(*compileOk("^[\\q{|a}&&\\q{|b}]$", "v"), u("")));
+    CHECK_FALSE(matches(*compileOk("^[\\q{|a}&&\\q{b}]$", "v"), u("")));
+
+    // A difference that removes every string is legal and simply matches
+    // nothing — the pattern whose SYNTACTIC answer outruns its contents.
+    CHECK(firstMatch(*compileOk("[\\q{ab}--\\q{ab}]", "v"), "ab") == "<none>");
+}
+
+TEST_CASE("22.2.1's early errors about a `v` class that MayContainStrings") {
+    // A complement is taken over an alphabet of characters, so a negated class
+    // holding a string has no answer rather than an unimplemented one.
+    CHECK(compileError("[^\\q{ab}]", "v").find("negated") != std::string::npos);
+    CHECK(compileError("[^[\\q{ab}]]", "v").find("negated") != std::string::npos);
+
+    // And MayContainStrings is decided from the SYNTAX: this difference holds no
+    // string, and negating it is still an early error. Computing the answer from
+    // the contents instead would quietly admit the pattern, which is the one
+    // observable difference between the two readings.
+    CHECK(compileError("[^[\\q{ab}--\\q{ab}]]", "v").find("negated") != std::string::npos);
+
+    // The complement of a set of CHARACTERS is untouched, nested or not — and a
+    // negated nested class contributes no strings, so it may sit inside one.
+    CHECK(accepted(*compileOk("^[^[a-c]]$", "v"), "abcd") == "d");
+    CHECK(accepted(*compileOk("^[^[^a-c]]$", "v"), "abcd") == "abc");
+}
+
+TEST_CASE("`\\q{...}` stands only where a whole operand does") {
+    // ClassSubtraction and ClassIntersection take ClassSetOperands, and a range
+    // takes ClassSetCharacters — so a set of strings cannot be one end of a
+    // range, nor a member of another disjunction.
+    CHECK(compileError("[a-\\q{b}]", "v").find("whole operand") != std::string::npos);
+    CHECK(compileError("[\\q{a\\q{b}}]", "v").find("whole operand") != std::string::npos);
+
+    // Its own punctuation, named separately, because each is a different mistake.
+    CHECK(compileError("[\\qab]", "v").find("`{` was expected after `\\q`") != std::string::npos);
+    CHECK(compileError("[\\q{a", "v").find("`}` was expected") != std::string::npos);
+    CHECK(compileError("[\\q{\\d}]", "v").find("cannot appear inside") != std::string::npos);
+
+    // Inside `\q{...}` the class's own reservations still hold: it is a run of
+    // ClassSetCharacters, so a bare `-` is a syntax error and `\-` is the
+    // character.
+    CHECK(compileError("[\\q{a-b}]", "v").find("must be escaped") != std::string::npos);
+    CHECK(matches(*compileOk("^[\\q{a\\-b}]$", "v"), u("a-b")));
 
     // Outside a `v` class the same two characters are the old refusal about an
     // identity escape, unchanged: `/\q/` has never been legal, for its own
@@ -138,6 +231,43 @@ TEST_CASE("`\\q{...}` and the properties of strings are refused together, by nam
     CHECK(compileError("\\q").find("is not an escape sequence") != std::string::npos);
     CHECK(compileError("[\\q]").find("is not an escape sequence") != std::string::npos);
     CHECK(compileError("\\q{ab}", "v").find("is not an escape sequence") != std::string::npos);
+}
+
+TEST_CASE("a string member under `i` is refused by name; a one-character one is not") {
+    // 22.2.2.9 folds each ELEMENT of each member, and bronze canonicalizes
+    // characters only. Refused rather than left to fold the class's characters
+    // and not its strings, which would match "ABC" against `[\q{abc}]` only
+    // sometimes.
+    const std::string folded = compileError("[\\q{ab}]", "vi");
+    CHECK(folded.find("under the `i` flag") != std::string::npos);
+    CHECK(folded.find("22.2.2.9") != std::string::npos);
+
+    // A one-character alternative is an ordinary member and folds like one.
+    CHECK(matches(*compileOk("[\\q{a}]", "vi"), u("A")));
+    CHECK_FALSE(matches(*compileOk("[\\q{a}]", "v"), u("A")));
+
+    // The empty member has no element to fold, so it is not refused.
+    CHECK(matches(*compileOk("^[\\q{|a}]$", "vi"), u("")));
+    CHECK(matches(*compileOk("^[\\q{|a}]$", "vi"), u("A")));
+}
+
+TEST_CASE("the properties of STRINGS are still refused, and by name") {
+    // The other half of 22.2.1's string-capable sets, and the reason it can be
+    // named exactly where an unknown binary property cannot: Table 67 is a
+    // closed list of seven, so a reader who spelled `RGI_Emoji` correctly is
+    // told the feature is missing rather than told to check their spelling.
+    //
+    // What is missing is now the DATA and not the representation — `\q{...}`
+    // above puts strings in a class — so the message points at UTS #51's
+    // sequence files rather than at the class machinery.
+    const std::string strings = compileError("\\p{RGI_Emoji}", "v");
+    CHECK(strings.find("property of STRINGS") != std::string::npos);
+    CHECK(strings.find("UTS #51") != std::string::npos);
+    CHECK(compileError("[\\p{Basic_Emoji}]", "v").find("property of STRINGS") !=
+          std::string::npos);
+    // A binary property of CHARACTERS keeps the message it had, because bronze
+    // has no list of those and cannot tell a missing one from a typo.
+    CHECK(compileError("\\p{Emoji}", "v").find("misspelling") != std::string::npos);
 }
 
 TEST_CASE("`v` implies the code point alphabet, and excludes `u`") {

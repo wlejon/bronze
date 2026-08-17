@@ -775,6 +775,49 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     return out.get().rawBits();
 }
 
+// ECMA-262 20.1.1.1 Object([value]) — the body behind both [[Call]] and
+// [[Construct]], which is what makes `Object` a function object rather than the
+// plain namespace it used to be.
+//
+// Two operations under one name. Given nothing, `undefined` or `null` it builds
+// a fresh ordinary object (step 2); given anything else it is ToObject (step 3),
+// which returns an OBJECT argument unchanged and wraps a primitive one. That
+// identity rule is why the form is used at all: `Object(x) === x` is the
+// cheapest "is this already an object?" in the language.
+//
+// The `new` case needs no branch here. `bronze_construct` allocates the
+// ordinary instance from this function's `prototype` and then prefers any
+// OBJECT this body returns, so `new Object()` gets step 2's fresh object and
+// `new Object(5)` gets step 3's wrapper — the same two answers, reached the same
+// way. What it does NOT reproduce is step 1's NewTarget branch: `class D extends
+// Object {}` would have its instance replaced by a plain object, and bronze
+// threads NewTarget through a scope rather than a parameter, so this body cannot
+// see the difference. `super()` into `Object` was an outright TypeError before
+// this existed, so nothing regressed; it is named here as the one step missing.
+uint64_t objectConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return bronze_create_object();
+    Rooted<Value> value{Value(argv[0])};
+    if (value.get().isUndefined() || value.get().isNull()) return bronze_create_object();
+    // 7.1.18 ToObject, over the value model. An object is returned UNCHANGED —
+    // the identity rule the whole form exists for — and each primitive reaches
+    // the wrapper 20.3, 21.1 and 22.1 give it.
+    if (value.get().isObject()) return value.get().rawBits();
+    if (value.get().isString()) return rtMakeStringWrapper(value).rawBits();
+    if (value.get().isBool()) return rtMakeBooleanWrapper(value.get().asBool()).rawBits();
+    if (value.get().isNumber()) return rtMakeNumberWrapper(value.get().asNumber()).rawBits();
+    // A Symbol and a BigInt are the two rows of 7.1.18's table bronze has no
+    // wrapper object for: 20.4.3 and 21.2.3 make each an ordinary object with
+    // one internal slot, and bronze answers a symbol's and a bigint's members
+    // beside the value instead. Named rather than approximated, because the one
+    // thing a wrapper is FOR is being an object, and handing back the primitive
+    // would make `typeof Object(sym)` read "symbol".
+    fatal(value.get().isSymbol()
+              ? "unsupported: Object(symbol) (20.4.3 wraps it in an object with a "
+                "[[SymbolData]] slot, and bronze builds no Symbol wrapper object)"
+              : "unsupported: Object(bigint) (21.2.3 wraps it in an object with a "
+                "[[BigIntData]] slot, and bronze builds no BigInt wrapper object)");
+}
+
 struct NamespaceFn {
     const char* name;
     bronze_fn_code code;
@@ -822,12 +865,20 @@ Value g_objectPrototype = Value::fromUndefined();
 
 // Both intrinsics, built together.
 //
-// They reference each other — `Object.prototype` is a property of the namespace
-// and `Object.prototype.constructor` is the namespace — so neither can be built
-// by an accessor that lazily builds the other: whichever ran first would
-// re-enter the second, which would re-enter the first, and the recursion guard
-// would hand out a half-built object. Building both here and publishing them at
-// the end makes the cycle a pair of ordinary assignments.
+// They reference each other — `Object.prototype` is a property of the
+// constructor and `Object.prototype.constructor` is the constructor — so neither
+// can be built by an accessor that lazily builds the other: whichever ran first
+// would re-enter the second, which would re-enter the first. So the two globals
+// are PUBLISHED AS SOON AS EACH OBJECT EXISTS and the decoration follows, which
+// makes the cycle a pair of ordinary assignments.
+//
+// Publishing early is not tidiness. `Object` is a function object now, and a
+// function's statics live in a side object built from `rtPlainObjectShape()` —
+// which names %Object.prototype% and so calls back into here. With the
+// assignment at the END of this function that call re-entered, found the guard
+// clear, and recursed until the stack ran out: every program that so much as
+// mentioned `Object` died at startup. The guard reads `g_objectPrototype`, so
+// that one is set the moment its object exists.
 //
 // `constructor` matters more than it looks. Without it `({}).constructor` is
 // `undefined`, which is a silent wrong answer, and one that would appear or
@@ -843,17 +894,48 @@ void ensureObjectIntrinsics() {
     Rooted<Value> proto{Value::fromObject(
         ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromNull())))};
     proto.get().asObject<ObjectHeader>()->header.flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    g_objectPrototype = proto.get();
+    rtHeap().add_permanent_root(&g_objectPrototype);
 
-    // Its own root shape, for the reason `Math` has one: a site reading
-    // `Object.keys` must not share a transition tree with `{}` literals.
-    Rooted<Value> ns{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
-    ns.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
+    // 20.1.1 makes `Object` a CONSTRUCTOR, not a namespace: it is callable, it
+    // is `new`able, and its statics are the own properties of a function object.
+    // So it is a function singleton interned on the body's code pointer — the
+    // same mechanism every other global constructor uses (builtin_constructors.cpp
+    // says why one distinct C function per constructor is load-bearing) — and
+    // its statics go in the side object every function keeps them in.
+    //
+    // The name and length are recorded because they must be: a function whose
+    // `name` was never recorded makes `Object.name` a named hard error
+    // (rt_prop.cpp), and 20.1.1 gives this one "Object" and 1.
+    StringHeader* objectName =
+        StringHeader::internToArena(rtArena(), StringHeader::createFromUTF8(rtHeap(), "Object"));
+    Rooted<Value> ns{rtNativeFunction(objectConstructorBody, 0)};
+    {
+        FunctionHeader* live = ns.get().asObject<FunctionHeader>();
+        live->name = objectName;
+        live->length = 1;
+        // 20.1.2.1: `Object.prototype` is this function's `prototype` slot, and
+        // filling it here is what stops the first `new Object()` from minting a
+        // fresh empty object through `rtEnsureFunctionPrototype` — the same trap
+        // `Array` names in builtin_constructors.cpp. The instance shape is left
+        // to that function, which builds one from a prototype already present.
+        live->prototype = proto.get();
+        // 20.1.2.1: `{ [[Writable]]: false, [[Enumerable]]: false,
+        // [[Configurable]]: false }`. Set on `Object` alone in this chunk and
+        // not on the rest of `kCtors`, whose clauses say the same thing —
+        // `Array.prototype = x` still lands, and that is a known gap rather
+        // than a decision this line makes.
+        live->prototype_readonly = true;
+    }
+    g_objectNamespace = ns.get();
+    rtHeap().add_permanent_root(&g_objectNamespace);
+    rtEnsureFunctionProperties(ns);
 
     for (const NamespaceFn& fn : kObjectFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
-        ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        Rooted<Value> holder{ns.get().asObject<FunctionHeader>()->properties};
+        holder.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     // The prototype's own members come from builtin_object_proto.cpp, which owns
     // every function whose subject is `this` rather than an argument. They are
@@ -861,26 +943,15 @@ void ensureObjectIntrinsics() {
     // each other's property, so one initializer has to hold both.
     rtInstallObjectProtoMethods(proto);
 
-    // The two cross-references, on the same non-enumerable terms (20.1.2.1
-    // makes `Object.prototype` non-writable and non-enumerable; 20.1.3.1 makes
-    // `constructor` non-enumerable).
-    {
-        Rooted<Value> key{rtMakeString("prototype")};
-        ns.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, proto, nullptr,
-                                                  /*enumerable=*/false, /*defineOwn=*/true,
-                                                  /*receiver=*/nullptr, /*refused=*/nullptr,
-                                                  /*writable=*/false, /*configurable=*/false);
-    }
+    // One cross-reference to write: `Object.prototype` is the function's own
+    // slot, filled above, and 20.1.3.1's `constructor` is the other direction.
     {
         Rooted<Value> key{rtMakeString("constructor")};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ns, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
 
-    g_objectNamespace = ns.get();
-    g_objectPrototype = proto.get();
-    rtHeap().add_permanent_root(&g_objectNamespace);
-    rtHeap().add_permanent_root(&g_objectPrototype);
+    // Both globals were published above, each as soon as its object existed.
 }
 
 }  // namespace

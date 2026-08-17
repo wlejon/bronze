@@ -88,20 +88,22 @@ console.log(names(function () { return new RegExp("a", "uv"); },
             names(function () { return new RegExp("a", "vu"); },
                   "`u` and `v` cannot both be set"));
 
-// The one half of the `v` grammar bronze does not implement, refused by name
-// together with the properties of strings it shares a representation with. A
-// set whose members are STRINGS is what both need, and half of it would be a
-// class that sometimes matches two characters.
-console.log(names(function () { return new RegExp("[\\q{ab}]", "v"); },
+// `\q{...}` itself is implemented and `regexp_v_strings.js` pins what it
+// matches; what this file keeps pinned is the two ways it is REFUSED. Its
+// braces are not optional, and a class that may contain strings cannot be
+// negated — 22.2.1's one early error about the feature, since the complement of
+// a set of sequences is not a set of characters.
+console.log(names(function () { return new RegExp("[\\qab]", "v"); },
                   "ClassStringDisjunction"),
-            names(function () { return new RegExp("[\\q{}]", "v"); },
-                  "properties of strings"));
+            names(function () { return new RegExp("[^\\q{ab}]", "v"); },
+                  "negated"));
 
-// The other half of that one feature, refused in the same breath and named as
-// what it is. 22.2.1's Table 67 is a closed list of seven, so this refusal can
-// say "property of strings" where an unknown binary property can only be told
-// it might be a misspelling — and it points at the `\q{...}` it shares a
-// representation with, since implementing either means implementing both.
+// The other half of 22.2.1's string-capable sets, still refused and named as
+// what it is. Table 67 is a closed list of seven, so this refusal can say
+// "property of strings" where an unknown binary property can only be told it
+// might be a misspelling — and it names `\q{...}` as the thing that DOES work,
+// because what these seven lack is Unicode's sequence data and not a class that
+// can hold a member longer than one character.
 console.log(names(function () { return new RegExp("\\p{RGI_Emoji}", "v"); },
                   "property of STRINGS"),
             names(function () { return new RegExp("[\\p{Basic_Emoji}]", "v"); },

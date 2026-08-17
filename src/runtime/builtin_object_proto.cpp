@@ -38,6 +38,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
 #include "runtime/proxy.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
@@ -95,8 +96,26 @@ static_assert(HeapKind::Count == 18,
               "receiver now that the chain runs past the member tables, so a kind with no arm "
               "is a receiver those two cannot answer about.");
 
-bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
-    enumerable = false;
+// What a shape slot holds, as a descriptor. Two arms below read the same
+// storage -- a plain object's own shape and a function's statics object -- so
+// the translation lives once, and reads the slots WITHOUT allocating: the
+// caller roots them before it allocates anything.
+void fillFromShape(ObjectHeader* obj, const PropertyInfo& info, OwnPropertyDetail& out) {
+    out.accessor = info.accessor;
+    out.writable = info.writable;
+    out.enumerable = info.enumerable;
+    out.configurable = info.configurable;
+    if (info.accessor) {
+        out.getter = obj->getSlot(info.slot);
+        out.setter = obj->getSlot(info.slot + 1);
+    } else {
+        out.value = obj->getSlot(info.slot);
+        out.valueKnown = true;
+    }
+}
+
+bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
+    out = OwnPropertyDetail{};
     // ToPropertyKey (7.1.19) FIRST: it runs ToString, which allocates, so no
     // header below may be read across it. What it hands back is arena-interned
     // and immortal, which is what lets the string be read again after the
@@ -112,10 +131,18 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
         // A STRING is the one primitive whose box has own properties, and
         // 10.4.3.4 and 10.4.3.5 make them exactly its `length` and its indices.
         if (!self.get().isString() || !name.isString()) return false;
-        if (key == "length") return true;  // 10.4.3.4: non-enumerable
+        // 10.4.3.4 and 10.4.3.5 fix both: `length` and every index are
+        // non-writable and non-configurable, and only an index is enumerable.
+        out.writable = false;
+        out.configurable = false;
+        if (key == "length") {
+            out.value = Value::fromDouble(self.get().asString<StringHeader>()->getLength());
+            out.valueKnown = true;
+            return true;
+        }
         if (!rtIsIntegerLikeKey(key, index)) return false;
         if (index >= self.get().asString<StringHeader>()->getLength()) return false;
-        enumerable = true;  // 10.4.3.5 gives each index [[Enumerable]]: true
+        out.enumerable = true;
         return true;
     }
 
@@ -124,12 +151,17 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             if (Value data; rtStringWrapperData(self.get(), data)) {
                 if (name.isString()) {
                     if (key == "length") {
-                        enumerable = false;
+                        out.writable = false;
+                        out.configurable = false;
+                        out.value = Value::fromDouble(data.asString<StringHeader>()->getLength());
+                        out.valueKnown = true;
                         return true;
                     }
                     if (rtIsIntegerLikeKey(key, index) &&
                         index < data.asString<StringHeader>()->getLength()) {
-                        enumerable = true;
+                        out.writable = false;
+                        out.configurable = false;
+                        out.enumerable = true;
                         return true;
                     }
                 }
@@ -137,7 +169,7 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             auto* obj = self.get().asObject<ObjectHeader>();
             PropertyInfo info;
             if (!obj->shape || !obj->shape->lookupProperty(name, info)) return false;
-            enumerable = info.enumerable;
+            fillFromShape(obj, info, out);
             return true;
         }
         case HeapKind::Function: {
@@ -152,9 +184,27 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // any function, so an arrow — which 10.2.11 gives no `prototype`
             // at all — is over-reported by both spellings together rather than
             // by one of them.
-            if (key == "prototype") return true;
+            if (key == "prototype") {
+                // 10.2.4: non-enumerable and non-configurable, and writable
+                // until `Object.freeze` takes that away. The VALUE is not
+                // reported: bronze materialises the slot on demand, and doing
+                // so allocates.
+                out.configurable = false;
+                out.writable = rtFunctionPrototypeWritable(self.get());
+                return true;
+            }
             if ((key == "length" || key == "name") &&
                 self.get().asObject<FunctionHeader>()->name != nullptr) {
+                // 10.2.9 and 10.2.10: { writable: false, enumerable: false,
+                // configurable: true }. `length` is a number already in the
+                // header; `name` would have to be copied out of the arena into
+                // a heap string, which allocates.
+                out.writable = false;
+                if (key == "length") {
+                    out.value =
+                        Value::fromDouble(self.get().asObject<FunctionHeader>()->length);
+                    out.valueKnown = true;
+                }
                 return true;
             }
             Value props = self.get().asObject<FunctionHeader>()->properties;
@@ -165,7 +215,7 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             PropertyInfo info;
             auto* holder = props.asObject<ObjectHeader>();
             if (!holder->shape || !holder->shape->lookupProperty(name, info)) return false;
-            enumerable = info.enumerable;
+            fillFromShape(holder, info, out);
             return true;
         }
         case HeapKind::Array: {
@@ -173,10 +223,26 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // non-enumerable; an element is own and enumerable, because
             // CreateDataProperty defines it so. A HOLE is a key that is not
             // there at all, which is the whole difference `delete a[1]` makes.
-            if (key == "length") return true;
+            if (key == "length") {
+                out.configurable = false;
+                out.writable = rtIntegrityLevel(self.get()) != IntegrityLevel::Frozen;
+                out.value = Value::fromDouble(self.get().asObject<ArrayHeader>()->length);
+                out.valueKnown = true;
+                return true;
+            }
             if (name.isString() && rtIsIntegerLikeKey(key, index)) {
                 if (!self.get().asObject<ArrayHeader>()->hasElem(index)) return false;
-                enumerable = true;
+                out.enumerable = true;
+                // `Object.freeze` and `Object.seal` are the only things that
+                // take either attribute away, and integrity.h answers both --
+                // the same two questions an element write and an element delete
+                // already ask, so a frozen array cannot report one answer here
+                // and another there.
+                out.writable =
+                    rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::None;
+                out.configurable = rtArrayElementsConfigurable(self.get());
+                out.value = self.get().asObject<ArrayHeader>()->getElem(index);
+                out.valueKnown = true;
                 return true;
             }
             // A NAMED property: one a program assigned, a match array's
@@ -185,7 +251,10 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // that has an opinion about an array's own properties asks.
             PropertyInfo info;
             if (!rtArrayOwnNamed(self.get(), name, info)) return false;
-            enumerable = info.enumerable;
+            out.accessor = info.accessor;
+            out.writable = info.writable;
+            out.enumerable = info.enumerable;
+            out.configurable = info.configurable;
             return true;
         }
         case HeapKind::TypedArray: {
@@ -197,10 +266,16 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // `BYTES_PER_ELEMENT` on the constructor's prototype.
             if (!name.isString() || !rtIsIntegerLikeKey(key, index)) return false;
             if (index >= self.get().asObject<TypedArrayHeader>()->length) return false;
-            enumerable = true;
+            // 10.4.5.3 gives an integer-indexed property all three attributes,
+            // which is the struct's default; the value is not reported because
+            // a BigInt element's would allocate.
+            out.enumerable = true;
             return true;
         }
         case HeapKind::RegExp:
+            // 22.2.3.1's one own property is { writable: true, enumerable:
+            // false, configurable: false }.
+            out.configurable = false;
             // 22.2.3.1 RegExpAlloc defines exactly one own property, and
             // non-enumerably. Everything else 22.2.6 gives a RegExp — `source`,
             // `flags`, `global` and the rest — is an accessor on the prototype,
@@ -216,7 +291,10 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // to it is own like any other.
             PropertyInfo info;
             if (!rtMapOwnNamed(self.get(), PropertyKey::fromValue(keyVal), info)) return false;
-            enumerable = info.enumerable;
+            out.accessor = info.accessor;
+            out.writable = info.writable;
+            out.enumerable = info.enumerable;
+            out.configurable = info.configurable;
             return true;
         }
         case HeapKind::ArrayBuffer:
@@ -236,10 +314,21 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // `@@toStringTag` is the one own key that is not an export.
             if (name.isSymbol()) {
                 Value tag;
-                return rtModuleNamespaceOwnSymbol(self.get(), name.toValue(), tag);
+                if (!rtModuleNamespaceOwnSymbol(self.get(), name.toValue(), tag)) return false;
+                // All three false, per the clause; the tag is a static string,
+                // so reporting it costs nothing.
+                out.writable = false;
+                out.configurable = false;
+                out.value = tag;
+                out.valueKnown = true;
+                return true;
             }
             if (!rtModuleNamespaceHasExport(self.get(), name.string())) return false;
-            enumerable = true;
+            out.enumerable = true;
+            // 10.4.6.5: writable (the EXPORTING module may still assign) and
+            // NON-configurable, which is the half a proxy over a namespace can
+            // see -- builtin_object_descriptor.cpp carries the reasoning.
+            out.configurable = false;
             return true;
         }
         case HeapKind::Proxy:
@@ -247,7 +336,7 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, bool& enumerable) {
             // or the target's answer. The forward path re-enters this switch
             // through `rtOwnPropertyOf`, because a target can be any kind it
             // already has an arm for.
-            return rtProxyGetOwnProperty(self.get(), keyVal, enumerable);
+            return rtProxyGetOwnProperty(self.get(), keyVal, out);
         case HeapKind::Iterator:
         case HeapKind::Env:
         case HeapKind::PrivateTable:
@@ -269,8 +358,8 @@ uint64_t objectProtoHasOwnProperty(uint64_t, uint64_t thisBits, uint32_t argc,
     if (!requireNonNullish(self.get(), "hasOwnProperty")) {
         return Value::fromUndefined().rawBits();
     }
-    bool enumerable = false;
-    return Value::fromBool(ownProperty(self, args[0], enumerable)).rawBits();
+    OwnPropertyDetail found;
+    return Value::fromBool(ownProperty(self, args[0], found)).rawBits();
 }
 
 // 20.1.3.4. Own AND enumerable — a name that is only inherited answers false
@@ -283,9 +372,9 @@ uint64_t objectProtoPropertyIsEnumerable(uint64_t, uint64_t thisBits, uint32_t a
     if (!requireNonNullish(self.get(), "propertyIsEnumerable")) {
         return Value::fromUndefined().rawBits();
     }
-    bool enumerable = false;
-    const bool own = ownProperty(self, args[0], enumerable);
-    return Value::fromBool(own && enumerable).rawBits();
+    OwnPropertyDetail found;
+    const bool own = ownProperty(self, args[0], found);
+    return Value::fromBool(own && found.enumerable).rawBits();
 }
 
 // 20.1.3.3. Walks the ARGUMENT's chain looking for the receiver, so it answers
@@ -414,8 +503,15 @@ const char* builtinTag(Value self) {
 // it exactly as `hasOwnProperty` does — a proxy's forwarded [[GetOwnProperty]]
 // is the one, and two copies of "does this receiver have an own `k`" is
 // precisely what the switch above exists to prevent.
+bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
+    return ownProperty(self, keyVal, out);
+}
+
 bool rtOwnPropertyOf(Rooted<Value>& self, Value keyVal, bool& enumerable) {
-    return ownProperty(self, keyVal, enumerable);
+    OwnPropertyDetail found;
+    const bool own = ownProperty(self, keyVal, found);
+    enumerable = found.enumerable;
+    return own;
 }
 
 // 20.1.3.6 Object.prototype.toString.

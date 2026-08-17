@@ -87,6 +87,19 @@ struct FunctionHeader {
     // allocates a PLAIN object and can express nothing else — from ever firing
     // for one of these.
     uint8_t native_base{0};
+    // Whether this function's `prototype` is NON-WRITABLE and
+    // NON-CONFIGURABLE, which is what every built-in constructor's is: 20.1.2.1
+    // says so for `Object`, and the sibling clauses say it for the rest.
+    // 10.2.4's `prototype` — the one an ordinary `function f() {}` gets — is
+    // non-configurable but WRITABLE, and `f.prototype = X` in pre-class code is
+    // exactly that writability being used, so the two cannot share an answer.
+    //
+    // A byte carved out of the padding below rather than a new field: every
+    // offset in the static_asserts under this struct is an ABI fact read by
+    // generated code, and growing the header would move `native_base`'s
+    // neighbours. The word is still scanned as a Value, which is why the
+    // padding that remains is still written (create() zeroes all of it).
+    bool prototype_readonly{false};
     // The rest of this word, spelled out because the GC payload scan reads
     // the whole payload as Values and this word — two bools, one code byte
     // and padding — is one of them. A heap block is recycled semispace memory, so padding
@@ -97,7 +110,7 @@ struct FunctionHeader {
     // a green pixi GC-stress run into an environment-chain corruption).
     // create() zeroes these, so the word is a small integer, never a
     // plausible pointer.
-    uint8_t padding_to_value_scan[5]{};
+    uint8_t padding_to_value_scan[4]{};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0);

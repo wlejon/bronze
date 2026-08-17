@@ -503,6 +503,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // function singleton too.
         if (Value stat; rtRegExpStatic(recv.get(), keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(recv.get(), keyStr);
+        // `Object` is a function object too (20.1.1), so its unimplemented-member
+        // table is consulted on THIS miss path and not on the plain object one
+        // below. Without this line a name 20.1.2 defines and bronze has not
+        // built read `undefined` from the moment `Object` stopped being a
+        // namespace.
+        rtObjectCheckMissingMember(recv.get(), keyStr);
         // The same step for `Promise`, whose statics live in the properties
         // object read above — so a name 27.2.4 defines and bronze has not
         // built (`try`) reaches here having missed, and is

@@ -75,11 +75,13 @@ Value trapOf(Rooted<Value>& handlerRoot, const char* name) {
     return found;
 }
 
+}  // namespace
+
 // A proxy's own keys, as the target answers them. `bronze_object_keys` reports
 // own ENUMERABLE string keys and 10.5.11 wants every own key, so this asks the
 // broader question the own-key walk already knows how to answer for the kinds
 // a target can be.
-Value targetOwnKeys(Rooted<Value>& targetRoot) {
+Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot) {
     Value t = targetRoot.get();
     if (t.isObject() && t.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         // The vector of PropertyKeys is safe where a vector of VALUES would not
@@ -102,8 +104,6 @@ Value targetOwnKeys(Rooted<Value>& targetRoot) {
     // in bronze — spread, `Object.keys`, `for-in` — asked for anyway.
     return Value(bronze_object_keys(targetRoot.get().rawBits()));
 }
-
-}  // namespace
 
 bool rtIsCallableValue(Value v) {
     if (!v.isObject()) return false;
@@ -197,9 +197,10 @@ uint64_t rtProxyRevocable(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
     return out.get().rawBits();
 }
 
-Value rtProxyGet(Value proxyVal, Value keyVal) {
+Value rtProxyGet(Value proxyVal, Value keyVal, Value receiver) {
     Rooted<Value> proxyRoot{proxyVal};
     Rooted<Value> keyRoot{keyVal};
+    Rooted<Value> receiverRoot{receiver};
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
     if (!openProxy(proxyVal, "get", targetRoot, handlerRoot)) return Value::fromUndefined();
@@ -217,15 +218,20 @@ Value rtProxyGet(Value proxyVal, Value keyVal) {
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[3] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
-                              proxyRoot.get().rawBits()};
-    return Value(bronze_dynamic_call(trapRoot.get().rawBits(), handlerRoot.get().rawBits(), 3,
-                                     args));
+                              receiverRoot.get().rawBits()};
+    Rooted<Value> result{Value(bronze_dynamic_call(trapRoot.get().rawBits(),
+                                                  handlerRoot.get().rawBits(), 3, args))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    rtProxyCheckGet(targetRoot, keyRoot, result);
+    if (rtExceptionPending()) return Value::fromUndefined();
+    return result.get();
 }
 
-void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict) {
+void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver) {
     Rooted<Value> proxyRoot{proxyVal};
     Rooted<Value> keyRoot{keyVal};
     Rooted<Value> valRoot{val};
+    Rooted<Value> receiverRoot{receiver};
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
     if (!openProxy(proxyVal, "set", targetRoot, handlerRoot)) return;
@@ -239,15 +245,19 @@ void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict) {
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[4] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
-                              valRoot.get().rawBits(), proxyRoot.get().rawBits()};
+                              valRoot.get().rawBits(), receiverRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),
                                                 handlerRoot.get().rawBits(), 4, args);
     if (rtExceptionPending()) return;
     // 13.15.2 via 10.5.9 step 6: a trap that answers false refused the write,
     // and strict code turns that refusal into a TypeError.
-    if (strict && !bronze_truthy(result)) {
-        rtThrowTypeError("'set' on proxy: trap returned falsish");
+    if (!bronze_truthy(result)) {
+        if (strict) rtThrowTypeError("'set' on proxy: trap returned falsish");
+        // Step 9 runs only after a SUCCESSFUL write: a refusal changed nothing
+        // and so can contradict nothing.
+        return;
     }
+    rtProxyCheckSet(targetRoot, keyRoot, valRoot);
 }
 
 bool rtProxyHas(Value proxyVal, Value keyVal) {
@@ -263,8 +273,11 @@ bool rtProxyHas(Value proxyVal, Value keyVal) {
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
-    return bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
-                                             handlerRoot.get().rawBits(), 2, args));
+    const bool answer = bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
+                                                          handlerRoot.get().rawBits(), 2, args));
+    if (rtExceptionPending()) return false;
+    rtProxyCheckHas(targetRoot, keyRoot, answer);
+    return answer;
 }
 
 bool rtProxyDelete(Value proxyVal, Value keyVal, bool strict) {
@@ -289,6 +302,7 @@ bool rtProxyDelete(Value proxyVal, Value keyVal, bool strict) {
     if (!ok && strict) {
         rtThrowTypeError("'deleteProperty' on proxy: trap returned falsish");
     }
+    if (ok) rtProxyCheckDelete(targetRoot, keyRoot, ok);
     return ok;
 }
 
@@ -304,7 +318,7 @@ Value rtProxyOwnKeys(Value proxyVal) {
 
     Value trap = trapOf(handlerRoot, "ownKeys");
     if (rtExceptionPending()) return out.get();
-    if (trap.isUndefined()) return targetOwnKeys(targetRoot);
+    if (trap.isUndefined()) return rtProxyTargetOwnKeys(targetRoot);
 
     Rooted<Value> trapRoot{trap};
     const uint64_t args[1] = {targetRoot.get().rawBits()};
@@ -335,11 +349,13 @@ Value rtProxyOwnKeys(Value proxyVal) {
         }
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, elem);
     }
+    rtProxyCheckOwnKeys(targetRoot, out);
+    if (rtExceptionPending()) return Value(bronze_create_array(0));
     return out.get();
 }
 
-bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, bool& enumerable) {
-    enumerable = false;
+bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, OwnPropertyDetail& out) {
+    out = OwnPropertyDetail{};
     Rooted<Value> keyRoot{keyVal};
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
@@ -351,23 +367,32 @@ bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, bool& enumerable) {
         // Forwarded: the target's own-property question, asked the way
         // `hasOwnProperty` asks it so the two cannot disagree.
         Rooted<Value> t{targetRoot.get()};
-        return rtOwnPropertyOf(t, keyRoot.get(), enumerable);
+        return rtOwnPropertyOf(t, keyRoot.get(), out);
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
     Rooted<Value> desc{Value(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                  handlerRoot.get().rawBits(), 2, args))};
     if (rtExceptionPending()) return false;
-    // 10.5.5 step 7: undefined means absent. Anything that is neither an
-    // object nor undefined is step 6's TypeError.
-    if (desc.get().isUndefined()) return false;
-    if (!desc.get().isObject()) {
+    // 10.5.5 step 6: anything that is neither an object nor undefined is a
+    // TypeError. Step 7's `undefined` still goes through the invariant check,
+    // which is what makes "the target has a non-configurable `k`" impossible to
+    // hide behind an absent descriptor.
+    if (!desc.get().isObject() && !desc.get().isUndefined()) {
         rtThrowTypeError("'getOwnPropertyDescriptor' on proxy: trap returned neither an object "
                          "nor undefined");
         return false;
     }
+    rtProxyCheckGetOwnProperty(targetRoot, keyRoot, desc);
+    if (rtExceptionPending()) return false;
+    if (desc.get().isUndefined()) return false;
+    // What every caller in bronze reads back off the descriptor. The
+    // attributes are the trap's own, completed the way 6.2.6.6 completes them:
+    // a field the trap left off is false, which is what makes
+    // `propertyIsEnumerable` on a proxy answer about the descriptor rather than
+    // about the target.
     Rooted<Value> enumKey{rtMakeString("enumerable")};
-    enumerable =
+    out.enumerable =
         bronze_truthy(bronze_elem_get(desc.get().rawBits(), enumKey.get().rawBits()));
     return !rtExceptionPending();
 }
@@ -394,7 +419,10 @@ Value rtProxyGetPrototypeOf(Value proxyVal) {
         rtThrowTypeError("'getPrototypeOf' on proxy: trap returned neither an object nor null");
         return Value::fromUndefined();
     }
-    return result;
+    Rooted<Value> resultRoot{result};
+    rtProxyCheckPrototype(targetRoot, resultRoot);
+    if (rtExceptionPending()) return Value::fromUndefined();
+    return resultRoot.get();
 }
 
 namespace {

@@ -1,5 +1,3 @@
-// BLOCKED: `Uncaught TypeError: an object is not a function`.
-//
 // `Object` called WITHOUT `new` (20.1.1.1). Steps 2 and 3 make it two different
 // operations under one name: given null or undefined — or nothing at all — it
 // builds a new ordinary object, and given anything else it is ToObject, which
@@ -9,11 +7,12 @@
 // cheapest "is this already an object?" in the language, and `Object(x)` is how
 // pre-class code normalised an argument before reading properties off it.
 //
-// bronze builds the `Object` constructor object and answers its statics, but
-// the value itself is not callable — the refusal above comes from the call
-// path, which finds an object where it needs a function. Unblocking this means
-// giving that object a [[Call]] whose body is 20.1.1.1, distinct from the
-// [[Construct]] `new Object` already has.
+// `Object` is a function object here, which is what 20.1.1 says it is: it has a
+// [[Call]] whose body is 20.1.1.1, a [[Construct]] that reaches the same body
+// through `bronze_construct`, and its statics are the own properties of a
+// function rather than of a namespace object. So `typeof Object` is "function",
+// `Object.name` is "Object" and `Object.length` is 1 — and the wrapper cases
+// below are what tell the two halves of step 3 apart.
 
 console.log(Object(5).valueOf(), typeof Object(5), Object(5) instanceof Number);
 console.log(Object("s").length, typeof Object("s"));

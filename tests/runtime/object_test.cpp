@@ -208,8 +208,12 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     Rooted<Value> ns{runtime::rtObjectNamespace()};
     Rooted<Value> arr{Value(bronze_create_array(2))};
     // A real function object: every member of the `Object` namespace is one.
+    // Read through the ordinary computed-key funnel and not off an ObjectHeader:
+    // `Object` is itself a function object (20.1.1.1 makes it callable), so its
+    // statics live in the side property table every function object carries, and
+    // the only reader that knows where that is is the funnel a program uses.
     Rooted<Value> keysKey{runtime::rtMakeString("keys")};
-    Rooted<Value> fn{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), keysKey)};
+    Rooted<Value> fn{Value(bronze_elem_get(ns.get().rawBits(), keysKey.get().rawBits()))};
     REQUIRE(fn.get().isObject());
     REQUIRE(fn.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
     Rooted<Value> view{
@@ -223,7 +227,7 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     // calls gets far enough to look at one.
     auto call = [&](const char* member, Rooted<Value>& recv, uint32_t extraArgs) {
         Rooted<Value> key{runtime::rtMakeString(member)};
-        Rooted<Value> target{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), key)};
+        Rooted<Value> target{Value(bronze_elem_get(ns.get().rawBits(), key.get().rawBits()))};
         REQUIRE(target.get().isObject());
         Value args[3] = {recv.get(), Value::fromDouble(0), Value::fromDouble(0)};
         return Value(target.get().asObject<FunctionHeader>()->call(Value::fromUndefined(),
@@ -299,7 +303,7 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     // that needs somewhere to put them.
     auto hasOwn = [&](Rooted<Value>& recv, Rooted<Value>& key) {
         Rooted<Value> name{runtime::rtMakeString("hasOwn")};
-        Rooted<Value> target{ns.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), name)};
+        Rooted<Value> target{Value(bronze_elem_get(ns.get().rawBits(), name.get().rawBits()))};
         REQUIRE(target.get().isObject());
         // A plain block, and safe for the reason `FunctionHeader::call`'s
         // arity vector is: nothing between here and the callee allocates, and

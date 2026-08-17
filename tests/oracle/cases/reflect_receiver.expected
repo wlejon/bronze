@@ -1,0 +1,16 @@
+R T
+10 10
+1
+X own
+true 42 false
+true 9 1
+true 7 false
+true 2
+false
+false
+false 0
+false
+false false
+tag:true tag:false
+true k=7
+TypeError TypeError

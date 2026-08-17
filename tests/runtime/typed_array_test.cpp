@@ -293,3 +293,75 @@ TEST_CASE("binary16 rounds to nearest even and is computed from the double") {
     CHECK(v->get(2) == 0.0);
     CHECK(std::signbit(v->get(2)));
 }
+
+// DOCUMENTED, NOT ENDORSED. 10.4.5's length-TRACKING views are unimplemented,
+// and what follows pins the answers bronze gives instead — so the gap is a fact
+// recorded in the suite rather than a surprise in someone's program.
+//
+// It is deliberately NOT an oracle case. An oracle case pins what a conforming
+// engine prints, and every number below is the wrong one; promoting it would
+// make a ratchet out of a bug.
+//
+// 23.2.5.1 step 6 makes `new Uint8Array(resizableBuffer)` — no length argument —
+// a view whose [[ArrayLength]] is AUTO, and 10.4.5.11 TypedArrayLength then
+// recomputes it from the buffer's current byteLength on every access. bronze
+// stores an element count in the view header once, at construction, and every
+// reader trusts it: the runtime helpers, and the inlined
+// `BRONZE_ABI_TA_LENGTH_OFFSET` load that llvm_elem.cpp emits and marks
+// invariant. So after a `resize` the view is stale in both directions — blind to
+// bytes that appeared, and still claiming bytes that went away.
+//
+// At the JS level today, with `rab = new ArrayBuffer(4, {maxByteLength: 16})`:
+//
+//     const track = new Uint8Array(rab);   // 10.4.5: length-tracking
+//     rab.resize(8);
+//     track.length     // 4, should be 8
+//     track[7] = 99;   // dropped; `track[7]` reads back undefined
+//     rab.resize(2);
+//     track.length     // 4, should be 2
+//
+// and a FIXED-length view over the same buffer is wrong the other way: 10.4.5.10
+// IsTypedArrayOutOfBounds makes `new Uint8Array(rab, 0, 2)` out-of-bounds once
+// the buffer shrinks below it, so `length` becomes 0 and every element is
+// undefined, where bronze keeps answering 2 and reading the bytes.
+//
+// The cost of fixing it is structural rather than a matter of a bit: the header
+// has a spare `reserved` word to carry the tracking flag with no ABI offset
+// moving, but `length` stops being the answer, so every read of it becomes a
+// branch — including the inlined invariant load, which is the one place bronze's
+// typed-array element access is as fast as it is.
+TEST_CASE("a view over a resizable buffer does NOT track it (10.4.5, unimplemented)") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::createResizable(heap, 4, 16)));
+    CHECK(buffer.get().asObject<ArrayBufferHeader>()->isResizable());
+
+    // The view a length-tracking one would be: constructed over the whole
+    // buffer, as 23.2.5.1 does when no length is given.
+    Rooted<Value> view(Value::fromObject(
+        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint8, buffer, 0, 4)));
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);
+
+    // Growing the buffer is exactly this assignment in 25.1.5.5 — the bytes
+    // above the old length are already zeroed, since a resizable buffer reserves
+    // its maximum up front.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 8;
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);  // 10.4.5: should be 8
+    CHECK(view.get().asObject<TypedArrayHeader>()->byteLength() == 4);
+
+    // And shrinking leaves the view addressing bytes the buffer no longer has.
+    // Nothing here is unsafe — a resizable buffer keeps its maximum allocated,
+    // so the read is in bounds of the ALLOCATION — but the answer is not the
+    // spec's, which is `length` 0 for a view whose window no longer fits.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 2;
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);  // 10.4.5: should be 2
+    CHECK(view.get().asObject<TypedArrayHeader>()->get(3) == 0.0);
+
+    // The stale length survives a collection, which is the part that makes this a
+    // stored fact and not a cached one: the copy phase moves the word along with
+    // the header, and there is no place a recomputation could happen.
+    heap.collect();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);
+    CHECK(buffer.get().asObject<ArrayBufferHeader>()->byteLength == 2);
+}

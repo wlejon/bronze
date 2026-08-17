@@ -34,6 +34,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -312,6 +313,48 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             return out.get().rawBits();
         }
         case ObjectOwnKeys::Function: {
+            // The three own properties that live in the HEADER rather than in
+            // the statics object, and so are invisible to the forward below:
+            // `prototype` (10.2.4) and the `length`/`name` pair (10.2.10,
+            // 10.2.9). Answered first, because the statics object is where a
+            // `static` of the same name would be and there can be none — the
+            // write path refuses all three.
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                const bool isProto = key == "prototype";
+                const bool isPair = (key == "length" || key == "name") &&
+                                    args[0].asObject<FunctionHeader>()->name != nullptr;
+                if (isProto || isPair) {
+                    Rooted<Value> self{args[0]};
+                    Rooted<Value> value{Value::fromUndefined()};
+                    if (isProto) {
+                        rtEnsureFunctionPrototype(self);
+                        value.set(self.get().asObject<FunctionHeader>()->prototype);
+                    } else if (key == "length") {
+                        value.set(
+                            Value::fromDouble(self.get().asObject<FunctionHeader>()->length));
+                    } else {
+                        value.set(rtCopyKeyToHeap(self.get().asObject<FunctionHeader>()->name));
+                    }
+                    // 10.2.4 makes `prototype` non-enumerable and
+                    // non-configurable, writable unless the function is one
+                    // whose prototype never was; 10.2.9 and 10.2.10 make the
+                    // pair non-writable, non-enumerable and CONFIGURABLE.
+                    const bool writable =
+                        isProto && rtFunctionPrototypeWritable(self.get());
+                    const bool configurable = !isProto;
+                    Rooted<Value> out{Value(bronze_create_object())};
+                    putField(out, "value", value);
+                    Rooted<Value> w{Value::fromBool(writable)};
+                    putField(out, "writable", w);
+                    Rooted<Value> e{Value::fromBool(false)};
+                    putField(out, "enumerable", e);
+                    Rooted<Value> c{Value::fromBool(configurable)};
+                    putField(out, "configurable", c);
+                    return out.get().rawBits();
+                }
+            }
             Value props = args[0].asObject<FunctionHeader>()->properties;
             if (props.isUndefined() || !props.isObject()) {
                 return Value::fromUndefined().rawBits();

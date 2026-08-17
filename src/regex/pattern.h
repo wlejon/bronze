@@ -27,6 +27,13 @@ enum class NodeKind : uint8_t {
     // normalized; `negated` is `[^...]`, which is NOT the same as complementing
     // the ranges once `i` is in play (22.2.2.7.1 inverts the ANSWER, after the
     // canonicalizing membership test).
+    //
+    // Under `v` a class is a set of STRINGS rather than of characters, most of
+    // which happen to be one character long. `strings` and `matchesEmpty` hold
+    // the members that are not — so a Class can consume more than one character,
+    // or none — and `ranges` still holds every one-character member, because a
+    // one-element sequence IS a character and set algebra over the two would
+    // otherwise have to agree in two places.
     Class,
     // `.` — every character but the four line terminators, unless `s` is set.
     // Under `u` that is one code point, so `/^.$/u` matches an astral one.
@@ -64,6 +71,16 @@ struct Node {
     uint32_t ch = 0;                  // Char
     RangeList ranges;                 // Class
     bool negated = false;             // Class
+    // `\q{abc|d}`'s members of length two or more, as CODE POINTS, sorted
+    // LONGEST FIRST — which is the order 22.2.2.9.6 ClassSetMatcher tries them
+    // in, and the reason `[\q{abc|a}]` on "abc" consumes three characters
+    // rather than one. Code points and not units, so a member spelled with an
+    // astral character is one element per character in both modes.
+    std::vector<std::vector<uint32_t>> strings;  // Class, `v` mode only
+    // Whether the EMPTY string is a member, which matches at any position and
+    // consumes nothing. Tried after every other member, since it is the
+    // shortest.
+    bool matchesEmpty = false;        // Class, `v` mode only
     AssertionKind assertion = AssertionKind::Start;
     bool lookaroundNegative = false;  // Lookahead, Lookbehind
     uint32_t captureIndex = 0;        // Group

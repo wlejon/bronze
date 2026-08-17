@@ -16,6 +16,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -480,13 +481,13 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                                     rtUtf8Chars(key.get().asString<StringHeader>()))) {
                 return;
             }
-            bool enumerable = false;
-            const bool present = rtProxyGetOwnProperty(src.get(), key.get(), enumerable);
+            OwnPropertyDetail found;
+            const bool present = rtProxyGetOwnProperty(src.get(), key.get(), found);
             if (rtExceptionPending()) return;
             // 7.3.25 step 5.b.ii: absent, or present and non-enumerable, and
             // the key contributes nothing — the trap's own answer, which is
             // the only reason a handler can hide a key from a spread.
-            if (!present || !enumerable) continue;
+            if (!present || !found.enumerable) continue;
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;

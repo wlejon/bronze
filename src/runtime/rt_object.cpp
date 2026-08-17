@@ -690,10 +690,10 @@ uint64_t bronze_object_keys(uint64_t objBits) {
             // 7.3.23 takes the STRING half only; a symbol is never one of the
             // names `Object.keys` reports.
             if (!key.get().isString()) continue;
-            bool enumerable = false;
-            const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), enumerable);
+            OwnPropertyDetail found;
+            const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), found);
             if (rtExceptionPending()) return out.get().rawBits();
-            if (!present || !enumerable) continue;
+            if (!present || !found.enumerable) continue;
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();

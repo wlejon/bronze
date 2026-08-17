@@ -146,8 +146,15 @@ NodePtr PatternParser::parseTerm() {
     node->greedy = greedy;
     node->firstCapture = capturesBefore + 1;
     node->captureCount = captureCounter_ - capturesBefore;
+    // "Simple" means the atom consumes exactly one character whenever it
+    // matches, which is what lets `matchSimpleRepeat` count matches in a loop
+    // instead of recursing. A `v`-mode class with a member that is not one
+    // character is precisely the Class that breaks that: `/[\q{ab|a}]*/v` has to
+    // be able to take two characters at one step and to give them back.
+    const bool classOfCharacters = atom->kind == NodeKind::Class && atom->strings.empty() &&
+                                   !atom->matchesEmpty;
     node->simpleAtom = node->captureCount == 0 &&
-                       (atom->kind == NodeKind::Char || atom->kind == NodeKind::Class ||
+                       (atom->kind == NodeKind::Char || classOfCharacters ||
                         atom->kind == NodeKind::Dot);
     node->children.push_back(std::move(atom));
     return node;
@@ -434,17 +441,15 @@ bool PatternParser::readEscapeValue(EscapeValue& out, bool inClass) {
             // and refusing it here would answer the wrong question about
             // `/\q/`, which has never been legal for its own reason.
             if (!flags_.unicodeSets || !inClass) break;
-            // The `v`-mode production for a set whose
-            // members are STRINGS. It is refused together with the properties
-            // of strings (`\p{RGI_Emoji}` and the rest) because they are one
-            // feature: a CharSet holding multi-character elements, which every
-            // matcher decision in `src/regex` is written against not having.
-            // Half of it would be a set that sometimes matches two characters
-            // and a `--` that sometimes cannot say what it removed.
-            return refuse("unsupported: `\\q{...}` is a set of STRINGS (22.2.1's "
-                          "ClassStringDisjunction), and bronze implements neither it nor the "
-                          "properties of strings it shares a representation with — a CharSet "
-                          "whose members are not single characters");
+            // `readClassSetOperand` takes `\q` before ever calling this, so
+            // reaching here means a ClassStringDisjunction was written somewhere
+            // an OPERAND is not — as the far end of a range (`[a-\q{b}]`), or
+            // inside another `\q{...}`. 22.2.1 has no production for either, so
+            // this is a syntax error about position and not a refusal of the
+            // feature.
+            return refuse("`\\q{...}` can only stand where a `v`-mode class expects a whole "
+                          "operand (22.2.1's ClassSetOperand) — it is a set of strings, so it "
+                          "cannot be one end of a range or a member of another `\\q{...}`");
         case 'f': ++pos_; out.code = 0x000C; return true;
         case 'n': ++pos_; out.code = 0x000A; return true;
         case 'r': ++pos_; out.code = 0x000D; return true;

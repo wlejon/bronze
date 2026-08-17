@@ -28,6 +28,7 @@
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/namespace.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
@@ -58,6 +59,15 @@ enum class Target {
     // integrity state is a fact about the KIND and there is nothing a
     // dictionary would have to record.
     ModuleNamespace,
+    // A Proxy, which is refused for a REASON OF ITS OWN and so is not folded
+    // into `Refused` below. Every one of the six members here is defined over
+    // 10.5's `preventExtensions`, `isExtensible`, `defineProperty` and
+    // `getOwnPropertyDescriptor` traps, and bronze has built only the last;
+    // answering from the target instead would be a proxy silently bypassed,
+    // which is the one thing a proxy must never be. `Refused`'s sentence —
+    // "there is nowhere to record [[Extensible]]" — is not even true here: the
+    // TARGET has somewhere, and going there is precisely the mistake.
+    Proxy,
     Refused,
 };
 
@@ -68,6 +78,7 @@ Target targetOf(Value v) {
         case HeapKind::Array: return Target::Array;
         case HeapKind::Function: return Target::Function;
         case ModuleNamespaceHeader::kFlags: return Target::ModuleNamespace;
+        case ProxyHeader::kFlags: return Target::Proxy;
         default: return Target::Refused;
     }
 }
@@ -91,6 +102,17 @@ const char* refusedKindName(Value v) {
 // What every refused kind has in common, said once: it has no side object, so
 // there is nowhere for [[Extensible]] to go, and a bit invented for it would
 // have to be read back by every write path that kind has.
+// The refusal for a proxy, naming the traps the operation is defined over.
+// Separate from `refuseKind` because the sentence is different: nothing is
+// missing about the STORAGE, the missing thing is the trap.
+[[noreturn]] void refuseProxy(const char* operation, const char* traps) {
+    fatal((std::string("unsupported: Object.") + operation +
+           " on a Proxy (10.5 routes it through the " + traps +
+           ", which bronze has not built; answering from the target behind the handler's back "
+           "would be the one thing a proxy must never do, so this refuses instead)")
+              .c_str());
+}
+
 [[noreturn]] void refuseKind(Value v, const char* operation) {
     fatal((std::string("unsupported: Object.") + operation + " on " + refusedKindName(v) +
            " (it keeps no property table, so bronze has nowhere to record "
@@ -177,6 +199,11 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
         }
         return receiver.rawBits();
     }
+    if (target == Target::Proxy) {
+        // 7.3.14 steps 2 and 5: [[PreventExtensions]] and, for every own key, a
+        // [[DefineOwnProperty]]. Both are traps bronze has not built.
+        refuseProxy(operation, "`preventExtensions`, `ownKeys` and `defineProperty` traps");
+    }
     if (target == Target::Refused) {
         // A typed array is the one refused kind with a SPECIFIED answer rather
         // than a bronze gap: 10.4.5.3 [[DefineOwnProperty]] refuses any
@@ -217,6 +244,12 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
 bool testIntegrity(Value receiver, bool frozen) {
     const Target target = targetOf(receiver);
     if (target == Target::NotAnObject) return true;  // 7.3.15 step 1: vacuously
+    if (target == Target::Proxy) {
+        // 7.3.15 steps 2 and 3 are [[IsExtensible]] and [[OwnPropertyKeys]],
+        // and the first of the two is a trap bronze has not built.
+        refuseProxy(frozen ? "isFrozen" : "isSealed",
+                    "`isExtensible`, `ownKeys` and `getOwnPropertyDescriptor` traps");
+    }
     if (target == Target::ModuleNamespace) {
         // 7.3.15 over 10.4.6, and nothing here is read off the object. Step 3's
         // [[IsExtensible]] is the constant false (10.4.6.3) and every own
@@ -325,6 +358,10 @@ bool rtArrayElementsConfigurable(Value arrVal) {
 }
 
 bool rtFunctionPrototypeWritable(Value fnVal) {
+    // A built-in constructor's `prototype` was never writable to begin with
+    // (fn.h says which clause), so it is asked before the level: nothing has to
+    // have frozen `Object` for `Object.prototype = 5` to be refused.
+    if (fnVal.asObject<FunctionHeader>()->prototype_readonly) return false;
     return rtIntegrityLevel(fnVal) != IntegrityLevel::Frozen;
 }
 
@@ -371,6 +408,7 @@ uint64_t rtObjectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     // condition. A namespace is the one object whose answer is fixed by its
     // kind, which is exactly why it needs no place to record one.
     if (target == Target::ModuleNamespace) return Value::fromBool(false).rawBits();
+    if (target == Target::Proxy) refuseProxy("isExtensible", "`isExtensible` trap");
     if (target == Target::Refused) return Value::fromBool(true).rawBits();
     return Value::fromBool(rtIsExtensible(args[0])).rawBits();
 }
