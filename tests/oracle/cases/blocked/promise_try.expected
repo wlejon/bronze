@@ -1,0 +1,8 @@
+sync phase sync,after
+escaped none
+thenable function
+resolved 1
+rejected RangeError boom
+args 5
+non-callable TypeError
+adopt adopted

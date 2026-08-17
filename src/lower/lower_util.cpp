@@ -72,7 +72,16 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            name == "Float64Array" || name == "DataView" || name == "Function" ||
            name == "globalThis" || name == "Proxy" || name == "URIError" ||
            name == "Reflect" || name == "Date" || name == "encodeURI" ||
-           name == "encodeURIComponent" || name == "decodeURI" || name == "decodeURIComponent";
+           name == "encodeURIComponent" || name == "decodeURI" ||
+           name == "decodeURIComponent" ||
+           // Annex B B.2.1. Normative for a web browser, and bronze's target is
+           // browser code, so a program that escapes a string the old way
+           // compiles rather than warning about a missing global.
+           name == "escape" || name == "unescape" ||
+           // %Iterator% (27.1.3). A program reaches the helper methods through
+           // any iterator it holds, but the CONSTRUCTOR is what
+           // `Iterator.from(x)` and `x instanceof Iterator` need to name.
+           name == "Iterator";
 }
 
 // The `file:` URL of one module of the graph, for `import.meta.url`

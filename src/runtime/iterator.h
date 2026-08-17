@@ -98,7 +98,15 @@ Value rtAsyncIteratorKey();
 // The kinds are kept apart even though bronze puts no member on most of them,
 // because the prototype is what an iterator's `next` recognises its own
 // receiver by. A brand check needs the five to be five objects.
-enum class IteratorProto : uint32_t { Map, Set, Array, RegExpString, Generator, String, AsyncGenerator };
+// `Helper` and `Wrap` joined for ES2025's iterator helpers: %IteratorHelperPrototype%
+// (27.1.4.2) is the prototype of the object `it.map(f)` returns, and
+// %WrapForValidIteratorPrototype% (27.1.3.2.1) is the one `Iterator.from` wraps a
+// foreign iterator in. Both carry a `next` and a `return` of their own, which is
+// why they are kinds here rather than plain objects built somewhere: the brand
+// check is what makes those two methods safe to call on a receiver.
+enum class IteratorProto : uint32_t {
+    Map, Set, Array, RegExpString, Generator, String, AsyncGenerator, Helper, Wrap
+};
 
 // The INTERNAL SLOTS each kind carries, named after ECMA-262's. They are real
 // fields on the object (`ObjectHeader::internalSlot`) and not properties under
@@ -130,6 +138,24 @@ enum : uint32_t { IteratedString, NextIndex, kCount };
 // A generator object's are GeneratorSlot, in runtime/generator.h — beside the
 // state machine that is the only thing that reads them.
 
+// An Iterator Helper object's (27.1.4.2, plus what a lazy helper needs to
+// resume): the underlying iterator and its `next`, the closure or the count the
+// helper was created with, the index the callbacks are passed, and — for
+// `flatMap` alone — the INNER iterator currently being drained.
+//
+// `Kind` is which helper this is, and it is a slot rather than five prototypes
+// because 27.1.4.2 gives all five ONE prototype: `Object.getPrototypeOf([].values().map(f))
+// === Object.getPrototypeOf([].values().filter(f))` is true in the language, and
+// five kinds here would make it false.
+//
+// %WrapForValidIteratorPrototype%'s objects are allocated with the same layout
+// and use only the first three, so the two kinds are told apart by their
+// PROTOTYPE — which is the half of `rtIsIteratorObject`'s brand that
+// distinguishes objects with equal slot counts.
+namespace IteratorHelperSlot {
+enum : uint32_t { Kind, Iterated, NextMethod, Fn, Counter, Inner, InnerNext, State, kCount };
+}
+
 // A fresh iterator object of that kind: the kind's prototype, and the internal
 // slots above, all `undefined`. The caller fills the slots in and adds `next`.
 //
@@ -149,5 +175,34 @@ bool rtIsIteratorObject(Value v, IteratorProto kind);
 // That kind's prototype object. `rtNewIteratorObject` builds one on first use;
 // this only reads it back.
 Value rtIteratorPrototype(IteratorProto kind);
+
+// %IteratorPrototype% (27.1.2) itself — the ONE object every kind above
+// inherits, and the object `Iterator.prototype` denotes. Named separately from
+// the per-kind prototypes because it is not one of them: it is their common
+// parent, and the helpers of 27.1.4.1 are installed on it.
+Value rtIteratorSharedPrototype();
+
+// ---- the iterator helpers (iterator_helpers.cpp) ----------------------------
+
+// ECMA-262 27.1.4.1's members, installed onto %IteratorPrototype% by the
+// initializer that builds it. Installing them THERE rather than on each
+// iterator kind is what makes every iterator in the program inherit them —
+// a generator, an array's iterator, a Map's, a string's and a matchAll's all
+// have %IteratorPrototype% on their chain already, so this is the one edit that
+// gives all five the eleven methods.
+void rtInstallIteratorHelpers(Rooted<Value>& proto);
+
+// %IteratorHelperPrototype% (27.1.4.2) and %WrapForValidIteratorPrototype%
+// (27.1.3.2.1): a `next` and a `return` each, installed onto the prototype
+// object `iteratorObjectShape` allocates for their kinds — the arrangement
+// %GeneratorPrototype%'s three methods already use.
+void rtInstallIteratorHelperPrototype(Rooted<Value>& proto);
+void rtInstallIteratorWrapPrototype(Rooted<Value>& proto);
+
+// `Iterator` (27.1.3), by the name lowering resolved; `undefined` for anything
+// else. The object carries `Iterator.from` as an own property and
+// %IteratorPrototype% in its `prototype` slot, so `x instanceof Iterator` is the
+// ordinary chain walk and needs nothing of its own.
+Value rtIteratorConstructor(const std::string& name);
 
 }  // namespace bronze::runtime

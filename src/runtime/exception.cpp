@@ -107,6 +107,33 @@ void setMessage(Rooted<Value>& self, Rooted<Value>& message) {
                                                  /*ic=*/nullptr, /*enumerable=*/false);
 }
 
+// 20.5.8.1 InstallErrorCause(O, options). The property is installed ONLY when
+// `options` is an object that HAS a `cause` — an options object without one, or
+// a non-object second argument, leaves the instance without the property at
+// all, so `'cause' in new Error("m", {})` is false while
+// `'cause' in new Error("m", {cause: undefined})` is true. That distinction is
+// the whole reason this is HasProperty and not "is the read undefined".
+//
+// The presence test walks the prototype chain (step 1.a is HasProperty, not
+// HasOwnProperty), so an options object inheriting `cause` installs it.
+//
+// Non-enumerable, like `message`: step 1.b is
+// CreateNonEnumerableDataPropertyOrThrow, so `Object.keys(err)` stays empty.
+void installErrorCause(Rooted<Value>& self, Rooted<Value>& options) {
+    if (!options.get().isObject()) return;
+    Rooted<Value> key{rtMakeString("cause")};
+    // `in`'s operand order: the KEY first, the object second.
+    if (!bronze_has_property(key.get().rawBits(), options.get().rawBits())) return;
+    if (rtExceptionPending()) return;
+    // The read can run a getter, so the result is rooted before `setProp`
+    // allocates a slot for it — and the key is re-derived from its own root
+    // rather than held as raw bits across that call.
+    Rooted<Value> cause{Value(bronze_elem_get(options.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return;
+    self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, cause,
+                                                 /*ic=*/nullptr, /*enumerable=*/false);
+}
+
 // Registered on first use, NOT at static initialization: `rtHeap()` returns a
 // namespace-scope object in another translation unit, and registering into it
 // from this one's static initializer is the initialization-order fiasco —
@@ -146,10 +173,17 @@ uint64_t errorCtorImpl(ErrorKind kind, uint64_t thisBits, uint32_t argc, const u
         self.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
         self.set(newErrorInstance(classFor(kind)));
     }
-    if (argc == 0 || Value(argv[0]).isUndefined()) return self.get().rawBits();
     RootedArgs args{argc, argv};
-    Rooted<Value> message{rtValueToString(args[0])};
-    setMessage(self, message);
+    // Step 3: an absent or `undefined` message leaves `message` off the
+    // instance — but step 4's options are read either way, so
+    // `new Error(undefined, {cause: x})` still carries the cause.
+    if (!args[0].isUndefined()) {
+        Rooted<Value> message{rtValueToString(args[0])};
+        if (rtExceptionPending()) return self.get().rawBits();
+        setMessage(self, message);
+    }
+    Rooted<Value> options{args[1]};
+    installErrorCause(self, options);
     return self.get().rawBits();
 }
 
@@ -188,8 +222,13 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
     RootedArgs args{argc, argv};
     if (!args[1].isUndefined()) {
         Rooted<Value> message{rtValueToString(args[1])};
+        if (rtExceptionPending()) return self.get().rawBits();
         setMessage(self, message);
     }
+    // 20.5.7.1.1 step 4: the options are the THIRD argument here, one along
+    // from every other error class, because `errors` comes first.
+    Rooted<Value> options{args[2]};
+    installErrorCause(self, options);
     // Step 4: CreateListFromIterable over `errors`. A non-iterable argument
     // is the TypeError rtOpenIterator raises, left pending for the caller.
     Rooted<Value> source{args[0]};

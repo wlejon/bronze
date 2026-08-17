@@ -315,6 +315,13 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key);
 // fact, so that the intrinsic bronze has not built can be refused by it.
 const char* rtMapConstructorName(Value fn);
 
+// ECMA-262 24.2.4's set operations (builtin_set_ops.cpp), as the table beside
+// their bodies. `rtMapMethod` and `rtMapHasMember` both read it, so a Set's
+// members are one list however they are asked for — and the seven live in their
+// own file because they are the only members of a Set that read a SECOND
+// collection, through the set-like protocol rather than another Set's table.
+const NativeMethod* rtSetOperationMethods(size_t& count);
+
 // The intrinsic constructors bronze builds no prototype OBJECT for — the Map
 // family, the nine views, DataView — by name, else nullptr. One list, because
 // two facts depend on it: the property path answers `X.prototype` with a named

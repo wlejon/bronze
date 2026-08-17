@@ -171,10 +171,11 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         // `Promise` and every class reaching one of them through `extends` are
         // one line rather than five predicates and a chain walk.
         //
-        // Two of these probes BUILD an intrinsic on first use —
-        // `rtIsRegExpConstructor` materializes `RegExp` — and the receiver is
-        // read again afterwards, both by the chain walk and by the answer
-        // itself; `obj` being a root is what keeps every read current.
+        // `rtNativeBaseOf` BUILDS an intrinsic on first use to compare against,
+        // and the receiver is read again afterwards — both by the chain walk and
+        // by the answer itself — so `obj` being a root is what keeps every read
+        // current. The other three probes identify their constructor by code
+        // pointer and allocate nothing.
         const bool inheritsSpecies = rtNativeBaseOf(obj.get()) != NativeBase::None ||
                                      rtIsArrayBufferConstructor(obj.get()) ||
                                      rtIsTypedArrayConstructor(obj.get()) ||

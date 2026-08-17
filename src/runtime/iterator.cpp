@@ -203,7 +203,7 @@ struct ProtoEntry {
 };
 
 ProtoEntry& protoEntry(IteratorProto kind) {
-    static ProtoEntry table[7];
+    static ProtoEntry table[9];
     return table[static_cast<uint32_t>(kind)];
 }
 
@@ -218,6 +218,11 @@ Value iteratorPrototypeRoot() {
     Rooted<Value> key{rtIteratorKey()};
     Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
+    // 27.1.4.1's eleven helpers. Rooted and installed BEFORE the static is
+    // published, so nothing can observe a half-built %IteratorPrototype% — and
+    // published from `obj` afterwards, because every `setProp` inside can move
+    // it.
+    rtInstallIteratorHelpers(obj);
     root = obj.get();
     rtHeap().add_permanent_root(&root);
     return root;
@@ -249,6 +254,11 @@ constexpr uint32_t kInternalSlots[] = {
     GeneratorSlot::kCount,
     StringIteratorSlot::kCount,
     AsyncGeneratorSlot::kCount,
+    // A helper and a `from` wrapper are allocated with the SAME count, and are
+    // therefore distinguished by the other half of the brand — their prototype.
+    // iterator.h's IteratorHelperSlot comment says why one layout serves both.
+    IteratorHelperSlot::kCount,
+    IteratorHelperSlot::kCount,
 };
 
 Shape* iteratorObjectShape(IteratorProto kind) {
@@ -270,6 +280,12 @@ Shape* iteratorObjectShape(IteratorProto kind) {
         entry.proto = proto.get();
     } else if (kind == IteratorProto::AsyncGenerator) {
         rtInstallAsyncGeneratorPrototype(proto);
+        entry.proto = proto.get();
+    } else if (kind == IteratorProto::Helper) {
+        rtInstallIteratorHelperPrototype(proto);
+        entry.proto = proto.get();
+    } else if (kind == IteratorProto::Wrap) {
+        rtInstallIteratorWrapPrototype(proto);
         entry.proto = proto.get();
     }
     // `@@toStringTag`
@@ -296,6 +312,15 @@ Shape* iteratorObjectShape(IteratorProto kind) {
             break;
         case IteratorProto::AsyncGenerator:
             rtDefineToStringTag(proto, "AsyncGenerator");  // 27.6.1.5
+            break;
+        case IteratorProto::Helper:
+            rtDefineToStringTag(proto, "Iterator Helper");  // 27.1.4.2.3
+            break;
+        case IteratorProto::Wrap:
+            // 27.1.3.2.1 gives %WrapForValidIteratorPrototype% no @@toStringTag
+            // at all: the wrapper is meant to be invisible, and a tag would make
+            // `Object.prototype.toString.call(Iterator.from(x))` announce a
+            // wrapper the program never asked for.
             break;
     }
     entry.proto = proto.get();
@@ -331,6 +356,8 @@ Value rtIteratorPrototype(IteratorProto kind) {
     iteratorObjectShape(kind);
     return protoEntry(kind).proto;
 }
+
+Value rtIteratorSharedPrototype() { return iteratorPrototypeRoot(); }
 
 // The kind of a value, for the "is not iterable" TypeError. Its own function
 // because `rt_object.cpp`'s copy answers the same question for "is not a

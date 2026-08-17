@@ -182,6 +182,60 @@ TEST_CASE("a provided global resolves to global.get; an unknown free name does n
     CHECK(unknownIl.find("global.get \"Maths\"") == std::string::npos);
 }
 
+TEST_CASE("`eval` is refused by name, in both the direct and the indirect spelling") {
+    // The one name at the bottom of the ladder that is an ERROR rather than a
+    // warning. 19.2.1 makes `eval`'s argument SOURCE TEXT compiled at run time,
+    // and bronze links no compiler into the program, so there is nothing it
+    // could resolve to and nothing a host could register that would be it —
+    // `unresolved name 'eval': a ReferenceError if it is evaluated` would be
+    // both true and useless, because it sends the reader looking for a binding.
+    DiagnosticSink direct;
+    SourceBuffer directBuf("direct.ts", "");
+    parseAndLower("const v = eval(\"1 + 1\");\n", direct, directBuf);
+    CHECK(direct.hasErrors());
+    CHECK(direct.render(directBuf).find("`eval` is not implemented") != std::string::npos);
+
+    // The diagnostic hangs off the READ of the name, not off a call shape, so
+    // the indirect form — the one that runs in global scope in real engines —
+    // is the same error. It is also what a bundler emits.
+    DiagnosticSink indirect;
+    SourceBuffer indirectBuf("indirect.ts", "");
+    parseAndLower("const e = eval;\ne(\"1 + 1\");\n", indirect, indirectBuf);
+    CHECK(indirect.hasErrors());
+    CHECK(indirect.render(indirectBuf).find("`eval` is not implemented") != std::string::npos);
+
+    DiagnosticSink aliased;
+    SourceBuffer aliasedBuf("aliased.ts", "");
+    parseAndLower("const o = { run: eval };\n", aliased, aliasedBuf);
+    CHECK(aliased.hasErrors());
+
+    // Not a ReferenceError at run time, either: the program does not build, so
+    // no `ref.error \"eval\"` is reachable to be caught by a `try`.
+    DiagnosticSink guarded;
+    SourceBuffer guardedBuf("guarded.ts", "");
+    parseAndLower("try { eval(\"x\"); } catch (e) { }\n", guarded, guardedBuf);
+    CHECK(guarded.hasErrors());
+}
+
+TEST_CASE("bare `typeof eval` stays the quiet feature-detection answer") {
+    // The refusal must not eat the idiom that asks whether eval EXISTS.
+    // `typeof eval === 'function'` is how code guards a dynamic-code path, and
+    // a program that guards it correctly is a program bronze should compile —
+    // taking the other branch is the whole point. 13.5.3 step 1 gives that
+    // branch the right value without evaluating the reference, so the eval
+    // error never fires: it lives past the `typeof` path, at the read.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "if (typeof eval === 'function') { console.log('dynamic'); }\n"
+        "console.log('static');\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    CHECK(diags.all().empty());
+    CHECK(il::print(*optMod).find("ref.error") == std::string::npos);
+}
+
 TEST_CASE("a local binding shadows a provided global") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");

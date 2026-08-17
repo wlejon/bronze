@@ -187,7 +187,14 @@ uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         // Step 3 creates a RegExp from the argument, so a string argument is
         // PATTERN TEXT here — unlike `replace` and `split`, where a string is
         // matched literally. `"a.c".search(".")` is 0.
-        Rooted<Value> source{rtValueToString(args[0])};
+        //
+        // An ABSENT argument is the empty pattern, not the text "undefined":
+        // 22.2.3.1 RegExpInitialize step 1 makes P the empty String when
+        // `pattern` is undefined, and the empty pattern matches at 0 — so
+        // `"x".search()` is 0 where ToString(undefined) would compile
+        // /undefined/ and answer -1.
+        Rooted<Value> source{args[0].isUndefined() ? rtMakeString("")
+                                                   : rtValueToString(args[0])};
         Rooted<Value> made{rtRegExpFromParts(source, "")};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return rtRegExpSearch(made, self).rawBits();

@@ -1,0 +1,43 @@
+function function
+abcXYZ019
+@*_+-./
+%7E
+a%20b
+a%7Eb
+%21%22%23%24%25%26%27%28%29
+%3A%3B%3C%3D%3E%3F
+%5B%5C%5D%5E%60%7B%7C%7D
+
+0
+%00
+%0A
+%FF
+%u0100
+%u1234
+%uABCD
+%uD83D%uDE00
+%uD800
+a b~c
+true
+1
+~ ~
+true
+%
+%z
+%zz
+%2
+%u12
+%u123z
+100%
+plain
+0
+%U0041
+A
+123
+undefined
+null
+true
+4.5
+true
+0,5,9,8,12,82,21
+true true

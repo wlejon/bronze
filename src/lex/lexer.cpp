@@ -522,6 +522,17 @@ Token Lexer::lexRegExp() {
 std::vector<Token> Lexer::lex() {
     std::vector<Token> tokens;
     bool newlineBefore = false;
+    // 12.5 HashbangComment. It is a grammar production of Script and Module
+    // rather than a comment the trivia scanner recognises, and the difference is
+    // exactly this: it is legal at offset ZERO and nowhere else, so a `#!` after
+    // even one space or one blank line is still the stray-character error below.
+    // Checked before the first `skipTrivia` for that reason.
+    if (pos_ == 0 && peek() == '#' && peek(1) == '!') {
+        // To the end of the line, not past it: the line terminator is trivia
+        // the loop's own skip consumes, and consuming it here would lose the
+        // `newlineBefore` the first real token needs.
+        while (!atEnd() && peek() != '\n' && peek() != '\r') ++pos_;
+    }
     for (;;) {
         newlineBefore = skipTrivia();
         if (atEnd() || diags_.hasErrors()) break;

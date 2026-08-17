@@ -889,7 +889,7 @@ static const char* const kGlobalObjectNames[] = {
     "parseFloat", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
     "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "DataView",
     "Function", "Proxy", "Reflect", "Date", "encodeURI", "encodeURIComponent", "decodeURI",
-    "decodeURIComponent",
+    "decodeURIComponent", "escape", "unescape", "Iterator",
 };
 
 Value rtGlobalThisObject() {

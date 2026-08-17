@@ -352,6 +352,43 @@ TEST_CASE("logical assignment operators") {
     CHECK(tokens[5].text == "??=");
 }
 
+TEST_CASE("hashbang is only a comment at the very start of the source") {
+    // 12.5 HashbangComment is a production of Script and Module, not of
+    // trivia, and the whole content of that distinction is POSITION: offset
+    // zero and nowhere else. The positive half is pinned end-to-end by the
+    // oracle case `hashbang`; the negative half lives here, because a stray
+    // `#` is a lexer error and a case whose program cannot compile has no
+    // stdout to pin.
+    auto shebang = lexAll("#!/usr/bin/env bronze\nconst x = 1;\n");
+    auto& tokens = shebang.tokens;
+    REQUIRE(tokens.size() == 6);  // const, x, =, 1, ;, eof
+    CHECK(tokens[0].kind == TokenKind::KwConst);
+    // The line TERMINATOR is not part of the comment: it stays trivia, so the
+    // first real token still knows a newline preceded it. ASI depends on that.
+    CHECK(tokens[0].newlineBefore);
+
+    // Anything at all may follow `#!` — it is not tokenized, so quotes and
+    // operators inside it are text.
+    auto messy = lexAll("#!/usr/bin/env -S bronze --flag \"a'b /* c\nlet y;\n");
+    REQUIRE(messy.tokens.size() == 4);  // let, y, ;, eof
+    CHECK(messy.tokens[0].kind == TokenKind::KwLet);
+
+    // A hashbang with no line terminator at all is the entire source.
+    auto only = lexAll("#!/bin/sh");
+    REQUIRE(only.tokens.size() == 1);
+    CHECK(only.tokens[0].kind == TokenKind::EndOfFile);
+
+    // One blank line before it is enough to make it the stray-character error,
+    // and so is one space. Neither is a comment, and neither is silently
+    // skipped.
+    lexAll("\n#!/bin/sh\n", /*expectErrors=*/true);
+    lexAll(" #!/bin/sh\n", /*expectErrors=*/true);
+    // Not repeatable either: only the first line can be one.
+    lexAll("#!/bin/sh\n#!/bin/sh\n", /*expectErrors=*/true);
+    // And it is `#!` specifically — a lone `#` at offset zero is not it.
+    lexAll("# comment\n", /*expectErrors=*/true);
+}
+
 TEST_CASE("numbers with BigInt suffix n") {
     auto lexed = lexAll("0n 123n 0xE7C0DEn 0b101n 0o77n");
     auto& tokens = lexed.tokens;

@@ -71,8 +71,11 @@ bronze_add_module(runtime
         rt_private.cpp
         iterator.cpp
         iterator_delegate.cpp
+        iterator_helpers.cpp
+        iterator_terminal.cpp
         map.cpp
         builtin_map.cpp
+        builtin_set_ops.cpp
         builtin_group_by.cpp
         builtin_date.cpp
         builtin_date_accessors.cpp

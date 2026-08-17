@@ -1,0 +1,27 @@
+10
+110
+1|2@1|3@2
+z|1@0|2@1|3@2
+NaN
+true TypeError
+init
+true 3 1,2,3
+0
+undefined
+0=1 1=2 2=3
+true false
+true false
+2 undefined
+false true undefined
+closed some
+true
+closed every
+false
+closed find
+1
+true
+0
+0,1,2
+12
+closed throwing
+RangeError stop

@@ -1,0 +1,32 @@
+true 42
+0
+cause,message
+m Error
+false
+false
+true
+undefined
+true null
+0 false
+0
+false
+false
+false
+T
+R
+S
+F
+U
+A a 1,2
+false
+false
+plain
+plainT
+only true true
+cause
+inherited
+read1 1
+undefined false
+replaced
+true RangeError inner
+Error: outer

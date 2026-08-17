@@ -497,6 +497,58 @@ uint64_t staticRace(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     return rtCapabilityPromise(cap.get()).rawBits();
 }
 
+// 27.2.4.8 Promise.withResolvers(). One capability, handed out as an object
+// instead of being hidden inside an executor — which is the whole point of the
+// member: `const {promise, resolve} = Promise.withResolvers()` settles a
+// promise from OUTSIDE the closure the constructor form forces you to write in.
+//
+// The two functions are built here rather than read off the capability record
+// because for %Promise% the record's function slots are deliberately EMPTY
+// (promise.h says why: `rtSettleCapability` goes through the promise's own
+// latch, and per-`then` resolving functions would buy nothing observable).
+// Nothing observed them before this member; `withResolvers` hands them to the
+// program, so on the intrinsic path they have to exist as real function
+// objects, and they are exactly the pair the executor form is given.
+//
+// The three properties are ORDINARY data properties — enumerable, writable,
+// configurable — because 27.2.4.8 steps 4-6 are CreateDataPropertyOrThrow and
+// not the non-enumerable definition every intrinsic's own members get. So
+// `Object.keys(Promise.withResolvers())` really is ["promise","resolve","reject"].
+uint64_t staticWithResolvers(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Rooted<Value> ctor{Value(thisBits)};
+    // Step 2's NewPromiseCapability(C) requires IsConstructor(C). A detached
+    // `const f = Promise.withResolvers; f()` arrives with no receiver at all,
+    // and `rtNewPromiseCapability` reads `undefined` as "the intrinsic" — which
+    // would answer a promise for a call the language refuses.
+    if (!ctor.get().isObject()) {
+        return rtThrowTypeError("Promise.withResolvers called on a value that is not a "
+                                "constructor")
+            .rawBits();
+    }
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> promise{rtCapabilityPromise(cap.get())};
+    Rooted<Value> resolveFn{
+        cap.get().asObject<ObjectHeader>()->internalSlot(CapabilitySlot::Resolve)};
+    Rooted<Value> rejectFn{
+        cap.get().asObject<ObjectHeader>()->internalSlot(CapabilitySlot::Reject)};
+    if (!isCallable(resolveFn.get())) resolveFn.set(rtMakeResolvingFunction(promise, false));
+    if (!isCallable(rejectFn.get())) rejectFn.set(rtMakeResolvingFunction(promise, true));
+
+    Rooted<Value> out{Value(bronze_create_object())};
+    struct Entry {
+        const char* key;
+        Rooted<Value>* value;
+    };
+    const Entry entries[] = {
+        {"promise", &promise}, {"resolve", &resolveFn}, {"reject", &rejectFn}};
+    for (const Entry& e : entries) {
+        Rooted<Value> key{rtMakeString(e.key)};
+        out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, *e.value);
+    }
+    return out.get().rawBits();
+}
+
 // ---- building the intrinsics ------------------------------------------------
 
 void ensurePromiseIntrinsics() {
@@ -534,6 +586,7 @@ void ensurePromiseIntrinsics() {
         {"resolve", staticResolve, 1}, {"reject", staticReject, 1},
         {"all", staticAll, 1},         {"allSettled", staticAllSettled, 1},
         {"race", staticRace, 1},       {"any", staticAny, 1},
+        {"withResolvers", staticWithResolvers, 0},
     };
     for (const NativeMethod& s : statics) {
         Rooted<Value> key{rtMakeString(s.name)};
@@ -584,10 +637,10 @@ bool rtIsPromiseConstructor(Value fn) {
 }
 
 void rtCheckPromiseStaticMember(const std::string& key) {
-    // The 27.2.4 members bronze has not built. `withResolvers` is ES2024 and
-    // `try` is ES2025; both are real, so both are refused by name rather than
-    // read as `undefined`.
-    static const char* const kMissing[] = {"withResolvers", "try"};
+    // The 27.2.4 members bronze has not built. `withResolvers` left this list
+    // when it landed above; `try` is ES2025 and is real, so it is refused by
+    // name rather than read as `undefined`.
+    static const char* const kMissing[] = {"try"};
     rtCheckUnimplementedMember("Promise", kMissing, sizeof(kMissing) / sizeof(kMissing[0]),
                                key);
 }

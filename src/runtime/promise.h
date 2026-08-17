@@ -63,8 +63,8 @@ Value rtPromiseConstructor(const std::string& name);
 // Is this function object THE Promise constructor — for the property path's
 // static-member hooks and for `extends`' refusal.
 bool rtIsPromiseConstructor(Value fn);
-// A static 27.2.4 defines and bronze has not built (`withResolvers`, `try`),
-// diagnosed by name rather than read as `undefined`.
+// A static 27.2.4 defines and bronze has not built (`try`), diagnosed by name
+// rather than read as `undefined`.
 void rtCheckPromiseStaticMember(const std::string& key);
 
 // ---- promise.cpp: the core machinery ----------------------------------------

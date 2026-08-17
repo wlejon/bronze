@@ -1,0 +1,48 @@
+TypeError
+TypeError
+TypeError
+closed map-arg
+TypeError
+closed filter-arg
+TypeError
+closed reduce-arg
+TypeError
+closed some-arg
+TypeError
+closed take-nan
+RangeError
+closed take-neg
+RangeError
+closed drop-nan
+RangeError
+closed take-valueof
+SyntaxError
+1,2
+1,2,3
+closed take-close
+1,2
+closed map-throw
+RangeError
+closed filter-throw
+RangeError
+1
+closed return
+undefined true
+true undefined
+true
+closed break
+2,4
+RangeError
+true
+closed flat-string
+TypeError
+TypeError
+TypeError
+TypeError
+TypeError
+TypeError
+x,y
+TypeError
+TypeError
+true true
+6,4,2

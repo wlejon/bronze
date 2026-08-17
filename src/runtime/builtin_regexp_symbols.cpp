@@ -24,6 +24,7 @@
 // be honoured, and `rtCheckNativeBaseExtends` refuses `extends RegExp` by name
 // (native_base.cpp), which is what keeps that from being reachable at all.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
@@ -103,6 +104,16 @@ regex::Units toRegexUnits(const Units& units) { return regex::Units(units.begin(
 // the halves of a surrogate pair.
 size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
     return regex::advanceStringIndex(haystack, index, unicode);
+}
+
+// 7.1.20 ToLength over a value that is ALREADY a Number — which is what a
+// RegExp's `lastIndex` is, since rtRegExpSetMember runs ToNumber on every write
+// to it. So this is only the clamp: NaN and anything negative are 0, a
+// fraction truncates toward zero, and 2^53-1 is the ceiling.
+double toLength(double n) {
+    if (!(n >= 1.0)) return 0.0;  // false for NaN too, which is step 2's answer
+    constexpr double kMaxSafeInteger = 9007199254740991.0;
+    return std::min(std::trunc(n), kMaxSafeInteger);
 }
 
 // The same step applied to a RegExp's own `lastIndex`.
@@ -244,6 +255,13 @@ Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str) {
         rtUtf8Chars(rtRegExpMember(re.get(), "flags").asString<StringHeader>());
     Rooted<Value> matcher{rtRegExpFromParts(source, flagsText)};
     if (rtExceptionPending()) return Value::fromUndefined();
+    // Step 6: the clone STARTS WHERE THE ORIGINAL STOOD. `rtRegExpFromParts`
+    // builds a fresh pattern with `lastIndex` at zero, which is a wrong answer
+    // rather than a missing one — `re.lastIndex = 2; [..."aaaa".matchAll(re)]`
+    // has two matches, not four. Copied through ToLength (7.1.20), so a
+    // negative cursor is 0 and a fractional one truncates, exactly as a
+    // subsequent `exec` on the original would have read it.
+    rtRegExpSetLastIndex(matcher.get(), toLength(rtRegExpLastIndex(re.get())));
 
     // %RegExpStringIteratorPrototype% (22.2.9.1), which is where the
     // `[Symbol.iterator]` self-hook lives — inherited from %IteratorPrototype%,

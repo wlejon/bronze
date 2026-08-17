@@ -425,13 +425,23 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             rtEnsureFunctionPrototype(recv);
             return recv.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
-        Value props = recv.get().asObject<FunctionHeader>()->properties;
-        if (props.isObject()) {
+        // ROOTED for the whole branch, not just for the own-property block: the
+        // box is read TWICE, once for the function's own statics here and again
+        // for the ones `extends` linked in, with the entire miss ladder in
+        // between. Every probe in that ladder is meant to be allocation-free
+        // for a receiver that is not its own, but "meant to" is not a
+        // guarantee a compiler checks, and one probe that builds an intrinsic
+        // on first use is enough to relocate this box — after which the second
+        // read walks a retired header and either misses a static that is there
+        // or dereferences a garbage shape. Rooting it costs one shadow-stack
+        // slot and makes the ladder's discipline unnecessary rather than
+        // load-bearing.
+        Rooted<Value> props{recv.get().asObject<FunctionHeader>()->properties};
+        if (props.get().isObject()) {
             // The receiver a `static get` sees is the CLASS, not the side
             // object its statics are kept in — which is the whole reason
             // getProp takes a receiver at all.
-            Rooted<Value> propsRoot{props};
-            ObjectHeader* propsObj = propsRoot.get().asObject<ObjectHeader>();
+            ObjectHeader* propsObj = props.get().asObject<ObjectHeader>();
             PropertyInfo own;
             if (propsObj->shape &&
                 propsObj->shape->lookupProperty(
@@ -479,10 +489,13 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // the `Map` constructor is an interned function singleton with no
         // property object, so its one own member is answered from a table.
         if (Value stat; rtMapStatic(recv.get(), keyStr, stat)) return stat.rawBits();
+        // `RegExp.escape` (22.2.5.2), on the same terms: `RegExp` is an interned
+        // function singleton too.
+        if (Value stat; rtRegExpStatic(recv.get(), keyStr, stat)) return stat.rawBits();
         rtSymbolCheckMissingMember(recv.get(), keyStr);
         // The same step for `Promise`, whose statics live in the properties
         // object read above — so a name 27.2.4 defines and bronze has not
-        // built (`withResolvers`, `try`) reaches here having missed, and is
+        // built (`try`) reaches here having missed, and is
         // refused BY NAME rather than falling through to `undefined` the way
         // every other unknown member of a function object does.
         if (rtIsPromiseConstructor(recv.get())) rtCheckPromiseStaticMember(keyStr);
@@ -492,10 +505,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         if (Value method = rtFunctionMethod(keyStr); !method.isUndefined()) {
             return method.rawBits();
         }
-        if (props.isObject()) {
-            Rooted<Value> propsRoot{props};
-            ObjectHeader* propsObj = propsRoot.get().asObject<ObjectHeader>();
+        if (props.get().isObject()) {
+            // The chain's end BEFORE the pointer that walks toward it:
+            // `rtObjectPrototype` builds %Object.prototype% on first use, so a
+            // `propsObj` read out first would be the address the box had before
+            // that allocation. Same statement, opposite order, and only one of
+            // the two orders survives a collection here.
             const uint64_t objProtoBits = rtObjectPrototype().rawBits();
+            ObjectHeader* propsObj = props.get().asObject<ObjectHeader>();
             for (uint32_t depth = 1; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
                 ObjectHeader* ancestor = propsObj->protoAncestor(depth);
                 if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;

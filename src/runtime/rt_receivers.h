@@ -145,6 +145,11 @@ bool rtDataViewHasMember(const std::string& key);
 bool rtIsRegExp(Value v);
 // `RegExp`, for the provided-global path; `undefined` for any other name.
 Value rtRegExpConstructor(const std::string& name);
+// A static of the `RegExp` constructor object — `RegExp.escape` (22.2.5.2).
+// True with `out` filled when this function IS `RegExp` and the key names one;
+// the property path asks it beside `rtMapStatic`, because the constructor is an
+// interned singleton with no property object to install statics into.
+bool rtRegExpStatic(Value fn, const std::string& key, Value& out);
 // A member of a RegExp instance by name: the flag accessors, `source`,
 // `flags`, `lastIndex`, and the three methods. A name ECMA-262 defines and
 // bronze has not built is a named error here rather than `undefined`.

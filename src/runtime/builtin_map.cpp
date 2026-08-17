@@ -340,9 +340,10 @@ const Method kSetMethods[] = {
 const char* const kMapUnimplemented[] = {
     "constructor", "prototype",
 };
+// 24.2.4's seven set operations left this list when builtin_set_ops.cpp landed;
+// what remains is what a Set has and bronze has not built.
 const char* const kSetUnimplemented[] = {
-    "constructor",   "difference", "intersection", "isDisjointFrom", "isSubsetOf",
-    "isSupersetOf",  "prototype",  "symmetricDifference", "union",
+    "constructor", "prototype",
 };
 
 }  // namespace
@@ -418,6 +419,14 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key) {
         for (const Method& m : kSetMethods) {
             if (key == m.name) return rtNativeFunction(m.code, m.arity);
         }
+        // 24.2.4's set operations, from the table beside their bodies — the
+        // only members of a Set that read a second collection, and the reason
+        // they are a translation unit of their own (builtin_set_ops.cpp).
+        size_t opCount = 0;
+        const NativeMethod* ops = rtSetOperationMethods(opCount);
+        for (size_t i = 0; i < opCount; ++i) {
+            if (key == ops[i].name) return rtNativeFunction(ops[i].code, ops[i].arity);
+        }
         return Value::fromUndefined();
     }
     for (const Method& m : kMapMethods) {
@@ -445,6 +454,13 @@ bool rtMapHasMember(bool isSetReceiver, const std::string& key) {
     if (isSetReceiver) {
         for (const Method& m : kSetMethods) {
             if (key == m.name) return true;
+        }
+        // Off the same table `rtMapMethod` answers the set operations from, so
+        // `'union' in s` and `s.union` cannot come to disagree.
+        size_t opCount = 0;
+        const NativeMethod* ops = rtSetOperationMethods(opCount);
+        for (size_t i = 0; i < opCount; ++i) {
+            if (key == ops[i].name) return true;
         }
     } else {
         for (const Method& m : kMapMethods) {

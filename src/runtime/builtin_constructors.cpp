@@ -371,6 +371,68 @@ uint64_t stringFromCodePoint(uint64_t, uint64_t, uint32_t argc, const uint64_t* 
     return rtStringFromUnits(units).rawBits();
 }
 
+// 22.1.2.4 String.raw(template, ...substitutions). The one member of `String`
+// that is not about characters at all: it reads the `raw` array a TAGGED
+// TEMPLATE hands its tag and joins it with the substitutions, so
+// `String.raw`\n`` is a two-character string rather than a newline.
+//
+// The template is an ORDINARY argument here, not a syntactic form: step 2 is
+// ToObject and step 3 is Get(cooked, "raw"), so `String.raw({raw: ['a','b']},
+// 1)` is "a1b" and is pinned as such. Both reads go through the general
+// array-like protocol (7.3.18 LengthOfArrayLike, then Get per index), which is
+// why a plain object with a `length` works exactly as an array does.
+uint64_t stringRaw(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    (void)thisBits;
+    RootedArgs args(argc, argv);
+    Rooted<Value> cooked{args[0]};
+    if (cooked.get().isUndefined() || cooked.get().isNull()) {
+        return rtThrowTypeError("String.raw called on " + rtIterableKindName(cooked.get()))
+            .rawBits();
+    }
+    // `raw` is read with the generic element path rather than an interned key,
+    // because the receiver can be any object a program built — including one
+    // whose `raw` is an accessor. The key is hoisted into its own statement:
+    // making it a sibling argument of the receiver read would leave the
+    // evaluation order to the compiler, and one of the two allocates.
+    Rooted<Value> rawKey{rtMakeString("raw")};
+    Rooted<Value> literals{
+        Value(bronze_elem_get(cooked.get().rawBits(), rawKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    // Step 3 is ToObject(raw): only undefined/null throw. A primitive string
+    // wraps to a String object whose `length` is its code-unit count and whose
+    // indices are its characters — both of which the generic element path
+    // already answers for a bare string, so no wrapper is materialized. Every
+    // other primitive wraps to an object with no `length`, and
+    // ToLength(undefined) is 0: the empty string, not an error.
+    if (literals.get().isUndefined() || literals.get().isNull()) {
+        return rtThrowTypeError("String.raw: the template's `raw` is " +
+                                rtIterableKindName(literals.get()))
+            .rawBits();
+    }
+    const uint32_t literalCount = literals.get().isString()
+                                      ? literals.get().asString<StringHeader>()->length
+                                      : rtArrayLikeLength(literals);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    // Step 5: an empty `raw` is the empty string, before any substitution is
+    // even converted.
+    Rooted<Value> out{rtMakeString("")};
+    for (uint32_t i = 0; i < literalCount; ++i) {
+        Rooted<Value> segment{rtArrayLikeElement(literals, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        segment.set(rtValueToString(segment.get()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        out.set(Value(bronze_string_concat(out.get().rawBits(), segment.get().rawBits())));
+        // Step 8.d: the LAST literal ends the string — a substitution after it
+        // is never read, and `String.raw({raw:['a']}, 1)` is "a".
+        if (i + 1 == literalCount) break;
+        if (i + 1 >= args.count()) continue;
+        Rooted<Value> sub{rtValueToString(args[i + 1])};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        out.set(Value(bronze_string_concat(out.get().rawBits(), sub.get().rawBits())));
+    }
+    return out.get().rawBits();
+}
+
 // ---- Boolean (20.3) ---------------------------------------------------------
 
 // 20.3.1.1 as a conversion, for the same reason `String` is one: the `new` form
@@ -403,6 +465,10 @@ const StaticFn kArrayStatics[] = {
 const StaticFn kStringStatics[] = {
     {"fromCharCode", stringFromCharCode, 0},
     {"fromCodePoint", stringFromCodePoint, 1},
+    // Arity 0, not 1: `raw` is variadic and a short call padded to one argument
+    // would hand it an `undefined` substitution that step 8.e would then
+    // stringify into the result.
+    {"raw", stringRaw, 0},
 };
 
 // Real static members of each constructor that bronze has not built.
@@ -414,7 +480,13 @@ const StaticFn kStringStatics[] = {
 // `Boolean.prototype` and `Number.prototype` are answered from the
 // constructor's own prototype slot.
 const char* const kArrayCtorUnimplemented[] = {"fromAsync"};
-const char* const kStringCtorUnimplemented[] = {"raw"};
+// `String` has no unimplemented static left: 22.1.2 names three members and
+// bronze answers all three. Spelled as an empty list rather than deleted from
+// the table below, because the NEXT member ECMA-262 adds to `String` has to
+// land here, and a null pointer that has to be re-derived is how it lands
+// as `undefined` instead.
+const char* const* const kStringCtorUnimplemented = nullptr;
+constexpr size_t kStringCtorUnimplementedCount = 0;
 
 struct CtorEntry {
     const char* name;
@@ -456,7 +528,7 @@ const CtorEntry kCtors[] = {
     {"Array", arrayConstructor, kArrayStatics, std::size(kArrayStatics),
      kArrayCtorUnimplemented, std::size(kArrayCtorUnimplemented), nullptr, nullptr},
     {"String", stringConstructor, kStringStatics, std::size(kStringStatics),
-     kStringCtorUnimplemented, std::size(kStringCtorUnimplemented), rtStringPrototype, nullptr},
+     kStringCtorUnimplemented, kStringCtorUnimplementedCount, rtStringPrototype, nullptr},
     {"Boolean", booleanConstructor, nullptr, 0, nullptr, 0, rtBooleanPrototype, nullptr},
     // No unimplemented list: 21.1.2 names fifteen own properties and bronze
     // answers all fifteen (builtin_number.cpp says so at the table).
@@ -651,10 +723,13 @@ bool rtIsTypedArrayConstructor(Value fn) {
     return false;
 }
 
-bool rtIsRegExpConstructor(Value fn) {
-    Value regCtor = rtRegExpConstructor("RegExp");
-    return regCtor.isObject() && fn.isObject() && regCtor.rawBits() == fn.rawBits();
-}
+// `rtIsRegExpConstructor` lives in builtin_regexp.cpp beside the body it
+// compares against, for the reason `rtIsArrayConstructor` above compares a code
+// pointer and not an object: identifying an intrinsic must not BUILD it. The
+// version that lived here answered by materialising %RegExp% and comparing
+// addresses, which made every caller an allocation site — and one of those
+// callers is the function-object miss ladder in rt_prop.cpp, where an
+// unexpected collection retires the property box mid-lookup.
 
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {

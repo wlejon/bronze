@@ -312,6 +312,114 @@ uint64_t globalDecodeURIComponent(uint64_t, uint64_t, uint32_t argc, const uint6
     return rtMakeString(decoded).rawBits();
 }
 
+// ---- Annex B B.2.1: escape / unescape ---------------------------------------
+//
+// They live beside the URI pair above because they answer the same question one
+// generation earlier — "how do I put arbitrary text where only a restricted
+// alphabet is allowed" — and because the table below is the one list of what
+// the GLOBAL OBJECT carries as a function. Annex B is normative for a web
+// browser, and bronze's target is browser code (three.js and pixi.js are the
+// pinned milestones), so these are not optional there.
+//
+// Both work in CODE UNITS, not UTF-8 bytes: `escape` of a character above 0xFF
+// is one `%uXXXX` per unit — so an astral character becomes TWO of them, its
+// surrogates escaped separately — and `unescape` reverses exactly that. A
+// byte-wise implementation would round-trip ASCII and silently mangle the rest.
+
+// The 69 characters B.2.1.1 step 4 keeps as themselves. Everything else is
+// escaped, which is why the set is written out rather than derived: `+` is here
+// and `~` is not, and no rule of thumb gets that right.
+bool isEscapeUnescaped(uint16_t unit) {
+    if (unit >= 0x80) return false;
+    const char c = static_cast<char>(unit);
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) return true;
+    return c == '@' || c == '*' || c == '_' || c == '+' || c == '-' || c == '.' || c == '/';
+}
+
+void appendUpperHex(std::string& out, uint32_t value, size_t width) {
+    static const char kDigits[] = "0123456789ABCDEF";
+    for (size_t shift = width * 4; shift > 0; shift -= 4) {
+        out.push_back(kDigits[(value >> (shift - 4)) & 0xF]);
+    }
+}
+
+// B.2.1.1 escape(string).
+uint64_t globalEscape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    // Step 1 is ToString, and an absent argument is `undefined` — so
+    // `escape()` is "undefined", the same answer the URI functions above give.
+    Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
+    // The result is ASCII by construction, so a UTF-8 std::string carries it
+    // exactly and `rtMakeString` needs no unit array.
+    std::string out;
+    for (const uint16_t unit : units) {
+        if (isEscapeUnescaped(unit)) {
+            out.push_back(static_cast<char>(unit));
+        } else if (unit < 0x100) {
+            out.push_back('%');
+            appendUpperHex(out, unit, 2);
+        } else {
+            out += "%u";
+            appendUpperHex(out, unit, 4);
+        }
+    }
+    return rtMakeString(out).rawBits();
+}
+
+// B.2.1.2 unescape(string). A `%` that does not begin a well-formed escape is
+// KEPT as a `%` (steps 5.b and 5.c fall through), which is what makes
+// `unescape("%")` and `unescape("%zz")` answer themselves rather than throw —
+// the one place this pair differs in spirit from `decodeURI`, whose malformed
+// input is a URIError.
+uint64_t globalUnescape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
+    std::vector<uint16_t> out;
+    out.reserve(units.size());
+    const size_t len = units.size();
+    for (size_t i = 0; i < len; ++i) {
+        if (units[i] != '%') {
+            out.push_back(units[i]);
+            continue;
+        }
+        // `%uXXXX` first: it is the longer form, and `%u0041` must not be read
+        // as `%u0` followed by "041".
+        //
+        // The `u` is lowercase only — step 5.b spells the code unit 0x0075 —
+        // so `%U0041` is not an escape and stays six characters.
+        if (i + 5 < len && units[i + 1] == 'u') {
+            int value = 0;
+            bool ok = true;
+            for (size_t k = 0; k < 4 && ok; ++k) {
+                const uint16_t unit = units[i + 2 + k];
+                const int digit = unit < 0x80 ? hexVal(static_cast<char>(unit)) : -1;
+                if (digit < 0) ok = false;
+                else value = value * 16 + digit;
+            }
+            if (ok) {
+                out.push_back(static_cast<uint16_t>(value));
+                i += 5;
+                continue;
+            }
+        }
+        if (i + 2 < len) {
+            const int h1 = units[i + 1] < 0x80 ? hexVal(static_cast<char>(units[i + 1])) : -1;
+            const int h2 = units[i + 2] < 0x80 ? hexVal(static_cast<char>(units[i + 2])) : -1;
+            if (h1 >= 0 && h2 >= 0) {
+                out.push_back(static_cast<uint16_t>((h1 << 4) | h2));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back('%');
+    }
+    return rtStringFromUnits(out).rawBits();
+}
+
 // 19.2's function properties of the global object, by the name a free
 // identifier spells. `parseInt` and `parseFloat` share their code pointers with
 // the `Number` statics, and `bronze_function_singleton` interns by code
@@ -326,6 +434,8 @@ const NamespaceFn kGlobalFunctions[] = {
     {"encodeURIComponent", globalEncodeURIComponent, 1},
     {"decodeURI", globalDecodeURI, 1},
     {"decodeURIComponent", globalDecodeURIComponent, 1},
+    {"escape", globalEscape, 1},
+    {"unescape", globalUnescape, 1},
 };
 
 // Whether this function's statics have been installed. A plain bool and not a

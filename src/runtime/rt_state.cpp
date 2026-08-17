@@ -356,6 +356,8 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = bigint;
     } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
         out = regexp;
+    } else if (Value iterator = rtIteratorConstructor(keyStr); iterator.isObject()) {
+        out = iterator;
     } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
         out = collection;
     } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {

@@ -8,6 +8,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 
@@ -35,6 +37,55 @@ uint32_t linearFind(MapHeader* map, Value key) {
 }
 
 }  // namespace
+
+TEST_CASE("the Set operation table is one list, with seven distinct bodies") {
+    // 24.2.4's seven set operations live in their own translation unit and are
+    // reached through a table, so the two ways a Set member can be asked for —
+    // `s.union` (rtMapMethod) and `'union' in s` (rtMapHasMember) — read that
+    // one table rather than each carrying a list. What an oracle case cannot
+    // see is the failure this table invites: seven near-identical rows, where a
+    // copy-paste gives two names ONE body and every call still returns a Set,
+    // just the wrong one. `rtNativeFunction` interns by code pointer, so
+    // distinct bodies mean distinct function objects and a duplicated row is
+    // visible as an identity collision here.
+    ShadowStackFrame frame;
+    size_t count = 0;
+    const runtime::NativeMethod* ops = runtime::rtSetOperationMethods(count);
+    REQUIRE(count == 7);
+
+    for (size_t i = 0; i < count; ++i) {
+        REQUIRE(ops[i].name != nullptr);
+        const std::string name = ops[i].name;
+        // Both lookups answer for it, and the read yields a callable.
+        CHECK(runtime::rtMapMethod(/*isSetReceiver=*/true, name).isObject());
+        CHECK(runtime::rtMapHasMember(/*isSetReceiver=*/true, name));
+        // Every one takes exactly one argument, and `length` is what a caller
+        // reflects on.
+        CHECK(ops[i].arity == 1);
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = i + 1; j < count; ++j) {
+            CHECK(std::string(ops[i].name) != std::string(ops[j].name));
+            // The first is ROOTED before the second lookup runs: interning
+            // allocates, and under GC stress that collection moves the object
+            // the first call returned. Comparing a stale address against a
+            // fresh one is the bug this file is otherwise about.
+            Rooted<Value> first{runtime::rtMapMethod(/*isSetReceiver=*/true, ops[i].name)};
+            const Value second = runtime::rtMapMethod(/*isSetReceiver=*/true, ops[j].name);
+            CHECK(first.get().rawBits() != second.rawBits());
+        }
+    }
+
+    // The seven the standard names, and no eighth.
+    std::vector<std::string> names;
+    for (size_t i = 0; i < count; ++i) names.push_back(ops[i].name);
+    std::sort(names.begin(), names.end());
+    const std::vector<std::string> expected = {"difference",   "intersection", "isDisjointFrom",
+                                               "isSubsetOf",   "isSupersetOf", "symmetricDifference",
+                                               "union"};
+    CHECK(names == expected);
+}
 
 TEST_CASE("SameValueZero is === with NaN matching itself") {
     const Value nan = Value::fromDouble(std::nan(""));
