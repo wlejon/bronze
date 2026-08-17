@@ -283,6 +283,15 @@ private:
     // hops to the same place.
     std::vector<std::string> moduleEnvSlots_;
     size_t moduleEnvScope_ = SIZE_MAX;
+    // Whether the module top level lowers as SEGMENTS — a chain of
+    // `main.seg<K>` functions `main` calls in order — instead of one body.
+    // Decided from the top level's source size before planModuleEnv runs,
+    // because the plan is what makes segmentation sound: with every top-level
+    // binding in the module record, no SSA value crosses a statement
+    // boundary, so any boundary is a safe cut. The point is parallel object
+    // emission (llvm_backend.cpp): a function cannot be partitioned, and a
+    // bundle's top level was 6–10% of the whole module in ONE function.
+    bool segmentTopLevel_ = false;
 
     // --- Conditional-expression joins -----------------------------------
     // &&, ||, ?? and ternary evaluate an operand on only some paths, so a
@@ -455,6 +464,8 @@ private:
     void planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts);
     void openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
                        il::Function& mainFn);
+    bool lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLevelStmts,
+                               il::Function& mainFn);
     bool referencesModuleEnv(const std::vector<ast::Param>& params,
                              const std::vector<ast::StmtPtr>& body) const;
     bool lowerFunctionBody(const std::vector<ast::Param>& params,

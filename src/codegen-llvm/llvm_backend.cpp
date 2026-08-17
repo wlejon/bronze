@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <unordered_map>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -60,7 +61,6 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/Support/MemoryBufferRef.h>
-#include <llvm/Transforms/Utils/Cloning.h>
 
 static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
 
@@ -604,46 +604,72 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
         }
     }
 
-    // Clone, serialize and DISPATCH one partition at a time, so the first
-    // worker is optimizing while later partitions are still being cloned.
-    // Bitcode is the handoff because a worker may not touch the shared
-    // LLVMContext; the buffers are pre-sized so a worker's read never races a
-    // later push_back.
-    std::vector<std::string> bitcodes(parts);
+    // The assignment travels by NAME: promotion just gave every definition a
+    // unique external name, and each worker re-finds its bin in a parsed copy
+    // of the module rather than in this one — a worker may not touch the
+    // shared LLVMContext, so bitcode is the handoff.
+    std::unordered_map<std::string, unsigned> binOfName;
+    binOfName.reserve(binOf.size());
+    for (const auto& [gv, bin] : binOf) binOfName.emplace(gv->getName().str(), bin);
+
+    // ONE serialization of the whole module is the only serial work between
+    // the plan and the workers. (Its predecessor cloned and serialized a
+    // partition per worker on this thread — 16 walks of the module — and that
+    // serial ramp was longer than half a worker's whole job, so the last
+    // worker started near the halfway point of the first one's run.)
+    llvm::SmallString<0> bitcode;
+    {
+        llvm::raw_svector_ostream os(bitcode);
+        llvm::WriteBitcodeToFile(llvmModule, os);
+    }
+
     std::vector<std::string> errors(parts);
     std::vector<size_t> partInsts(parts, 0);
     std::vector<double> partMillis(parts, 0.0);
     std::vector<std::thread> workers;
     workers.reserve(parts);
     for (unsigned i = 0; i < parts; ++i) {
-        {
-            llvm::ValueToValueMapTy vmap;
-            std::unique_ptr<llvm::Module> part =
-                llvm::CloneModule(llvmModule, vmap, [&](const llvm::GlobalValue* gv) {
-                    if (const auto* f = llvm::dyn_cast<llvm::Function>(gv)) {
-                        auto it = binOf.find(f);
-                        return it != binOf.end() && it->second == i;
-                    }
-                    return i == 0;
-                });
-            llvm::SmallString<0> buf;
-            llvm::raw_svector_ostream os(buf);
-            llvm::WriteBitcodeToFile(*part, os);
-            bitcodes[i] = std::string(buf.str());
-        }
         workers.emplace_back([&, i] {
             const auto begin = std::chrono::steady_clock::now();
             llvm::LLVMContext ctx;
-            llvm::MemoryBufferRef buf(bitcodes[i], "partition");
-            llvm::Expected<std::unique_ptr<llvm::Module>> part =
-                llvm::parseBitcodeFile(buf, ctx);
-            if (!part) {
+            llvm::MemoryBufferRef buf(llvm::StringRef(bitcode.data(), bitcode.size()),
+                                      "module");
+            // Lazy: function bodies stay in the buffer until materialized, so
+            // a worker only ever holds its own bin's bodies — the difference
+            // between N× the module in memory and ~1× shared across workers.
+            llvm::Expected<std::unique_ptr<llvm::Module>> partOr =
+                llvm::getLazyBitcodeModule(buf, ctx);
+            if (!partOr) {
                 errors[i] = "partition " + std::to_string(i) +
-                            ": bitcode parse failed: " + llvm::toString(part.takeError());
+                            ": bitcode parse failed: " + llvm::toString(partOr.takeError());
                 return;
             }
-            for (const llvm::Function& f : **part) {
-                for (const llvm::BasicBlock& bb : f) partInsts[i] += bb.size();
+            llvm::Module& part = **partOr;
+            for (llvm::Function& f : part) {
+                if (f.isDeclaration()) continue;
+                auto it = binOfName.find(std::string(f.getName()));
+                if (it != binOfName.end() && it->second == i) {
+                    if (llvm::Error e = f.materialize()) {
+                        errors[i] = "partition " + std::to_string(i) +
+                                    ": materialize failed: " + llvm::toString(std::move(e));
+                        return;
+                    }
+                    for (const llvm::BasicBlock& bb : f) partInsts[i] += bb.size();
+                } else {
+                    // Another bin's function: a declaration here. The export
+                    // marking goes with the body — a declaration must not
+                    // carry it.
+                    f.deleteBody();
+                    f.setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+                }
+            }
+            if (i != 0) {
+                // Partition 0 owns every non-function definition.
+                for (llvm::GlobalVariable& g : part.globals()) {
+                    if (!g.hasInitializer()) continue;
+                    g.setInitializer(nullptr);
+                    g.setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+                }
             }
             std::string err;
             std::unique_ptr<llvm::TargetMachine> tm = makeTargetMachine(desc, err);
@@ -651,7 +677,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
                 errors[i] = "partition " + std::to_string(i) + ": " + err;
                 return;
             }
-            if (!optimizeAndEmitOne(**part, *tm, paths[i], /*timing=*/false, err)) {
+            if (!optimizeAndEmitOne(part, *tm, paths[i], /*timing=*/false, err)) {
                 errors[i] = "partition " + std::to_string(i) + ": " + err;
             }
             partMillis[i] = std::chrono::duration<double, std::milli>(

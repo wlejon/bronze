@@ -1,12 +1,14 @@
 #include "lower/lower.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lower/lowerer.h"
+#include "support/timings.h"
 
 namespace bronze::lower {
 
@@ -135,6 +137,21 @@ std::optional<il::Module> Lowerer::lower() {
         }
     }
 
+    // Whether the top level lowers as one body or as segments, decided from
+    // its SOURCE size — the only measure available before anything lowers.
+    // The threshold is far above any handwritten program: it exists for
+    // bundles, where one `main` was the floor under parallel object emission.
+    {
+        size_t topLevelBytes = 0;
+        for (const ast::Stmt* s : topLevelStmts) topLevelBytes += s->span.end - s->span.begin;
+        constexpr size_t kSegmentSourceBytes = 128 * 1024;
+        segmentTopLevel_ = topLevelBytes >= kSegmentSourceBytes;
+        if (support::timingsEnabled()) {
+            std::fprintf(stderr, "  segment? stmts=%zu bytes=%zu -> %d\n", topLevelStmts.size(),
+                         topLevelBytes, static_cast<int>(segmentTopLevel_));
+        }
+    }
+
     // The module scope's environment layout, before any body is lowered: a
     // top-level function declaration resolves module-level names against it.
     planModuleEnv(topLevelStmts);
@@ -216,7 +233,9 @@ std::optional<il::Module> Lowerer::lower() {
             }
         }
 
-        if (!lowerStmtList(topLevelStmts, mainFn)) {
+        if (segmentTopLevel_) {
+            if (!lowerTopLevelSegments(topLevelStmts, mainFn)) return std::nullopt;
+        } else if (!lowerStmtList(topLevelStmts, mainFn)) {
             return std::nullopt;
         }
         auto& insts = mainFn.blocks[currentBlockIdx_].instructions;
@@ -419,7 +438,14 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     }
 
     auto addSlot = [&](const std::string& name) {
-        if (!moduleCaptures.contains(name)) return;
+        // A segmented top level gives EVERY declaration a slot, captured or
+        // not: a binding declared in one segment and read in another crosses
+        // a function boundary exactly as a captured one crosses a closure's,
+        // and the slot is what carries it. This is the one cost of
+        // segmentation — top-level code reads its own bindings through the
+        // record instead of SSA — paid by modules big enough that compile
+        // time, not top-level throughput, is the binding constraint.
+        if (!segmentTopLevel_ && !moduleCaptures.contains(name)) return;
         if (std::find(moduleEnvSlots_.begin(), moduleEnvSlots_.end(), name) !=
             moduleEnvSlots_.end()) {
             return;
@@ -449,12 +475,124 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
         auto slot = info.slotOf.find(name);
         if (slot != info.slotOf.end()) info.slotIsLexical[slot->second] = true;
     }
+    if (segmentTopLevel_) {
+        // One body refuses a write to a top-level `const` at COMPILE time,
+        // because the binding is in scope at the write. A later segment
+        // resolves the name through the record like a module function does,
+        // where no compile-time check exists — so the slot is marked
+        // immutable and the write takes 9.1.1.1.5's runtime arm instead,
+        // which in strict code (every module) is the TypeError the spec
+        // gives an assignment to `const`. Only simple-name declarations are
+        // marked: a pattern-bound const keeps the module-function semantics
+        // writes to it always had.
+        for (const ast::Stmt* s : topLevelStmts) {
+            const auto* vd = dynamic_cast<const ast::VarDecl*>(s);
+            if (!vd || !vd->isConst || vd->name.empty()) continue;
+            auto slot = info.slotOf.find(vd->name);
+            if (slot != info.slotOf.end()) info.slotIsImmutable[slot->second] = true;
+        }
+    }
     // No value yet, and that is the point: the record is created by `main`,
     // which does not exist until every module function has been lowered.
     // Readers in those functions load it from the runtime instead.
     info.envValue = il::kNoValue;
     envScopes_.push_back(std::move(info));
     moduleEnvScope_ = envScopes_.size() - 1;
+}
+
+// The top level of a LARGE module, lowered as segments: `main` still creates
+// and publishes the module record, initializes the hoisted vars and opens the
+// lexical dead zones, but the statements themselves lower into a chain of
+// `main.seg<K>` functions that `main` calls in order. The name carries a dot
+// so no JS identifier can collide with it.
+//
+// Why: object emission runs partitions of a large module in parallel
+// (llvm_backend.cpp), and a function cannot be partitioned — a bundle's top
+// level was 6–10% of the whole module in ONE function, optimizing ~2x slower
+// per instruction than the same volume as small functions, so that one
+// function was the wall-clock floor of the whole compile.
+//
+// A segment lowers exactly as a MODULE FUNCTION does: fresh per-function
+// state, the module record loaded from the runtime, every module-level name
+// reached through its slot — planModuleEnv gave every top-level declaration a
+// slot when it decided to segment, which is what makes any statement boundary
+// a safe cut: no SSA value crosses segments. Cuts are taken only between
+// top-level statements, where no block scope is open.
+//
+// A top-level `throw` makes the current block terminated; one body DROPS the
+// statements after it (lowerStmtList says why that is the language's answer),
+// so the segmented form drops them too rather than lowering segments no call
+// would ever reach — `main`'s pending-exception check after each call is what
+// makes the calls after a throwing segment unreachable at run time.
+bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLevelStmts,
+                                    il::Function& mainFn) {
+    // Sized in IL instructions — the only size lowering can see. One IL
+    // instruction expands to ~50 LLVM instructions (measured on the three.js
+    // bundle: the inline IC fast paths are most of it), so 800 IL is roughly
+    // a 40k-instruction function: big enough that per-function pass overhead
+    // stays noise, small enough that emission partitions balance dozens of
+    // them evenly.
+    constexpr size_t kSegmentIlInsts = 800;
+    const size_t mainBlockIdx = currentBlockIdx_;
+    size_t stmtIdx = 0;
+    unsigned segNo = 0;
+    while (stmtIdx < topLevelStmts.size()) {
+        il::Function segFn;
+        segFn.name = "main.seg" + std::to_string(segNo++);
+        segFn.returnType = il::Type::Void;
+        segFn.isStrict = strictCode_;
+        segFn.blocks.push_back(il::Block{.id = 0});
+
+        // The reset `main` itself got above, less what stays module-wide:
+        // functionVarNames_ (a `var` nested in any top-level statement is
+        // module-scoped wherever it is written), the env layout, strict mode.
+        varBindings_.clear();
+        activeVarMap_.clear();
+        currentScopeDepth_ = 0;
+        varDeclCounter_ = 0;
+        jumpStack_.clear();
+        scopeHasEnv_.clear();
+        currentBlockIdx_ = 0;
+        currentThisValue_ = il::kNoValue;
+        functionEnvBase_ = 0;
+        functionEnvScope_ = moduleEnvScope_;
+        // The module record, loaded the way every module function loads it.
+        currentEnvValue_ =
+            moduleEnvScope_ != SIZE_MAX ? emitModuleEnvGet(segFn) : il::kNoValue;
+
+        while (stmtIdx < topLevelStmts.size()) {
+            if (!lowerStmt(*topLevelStmts[stmtIdx], segFn)) return false;
+            ++stmtIdx;
+            if (currentBlockIsTerminated(segFn)) {
+                stmtIdx = topLevelStmts.size();
+                break;
+            }
+            size_t segInsts = 0;
+            for (const auto& b : segFn.blocks) segInsts += b.instructions.size();
+            if (segInsts >= kSegmentIlInsts) break;
+        }
+
+        if (!currentBlockIsTerminated(segFn)) {
+            il::Instruction retInst;
+            retInst.op = il::Op::Ret;
+            retInst.type = il::Type::Void;
+            emitInst(segFn, retInst);
+        }
+
+        // Appended AFTER the closures the segment's own statements appended,
+        // so the index is taken here, not before the statements lowered.
+        const uint32_t segIndex = static_cast<uint32_t>(ilModule_.functions.size());
+        ilModule_.functions.push_back(std::move(segFn));
+
+        currentBlockIdx_ = mainBlockIdx;
+        il::Instruction call;
+        call.op = il::Op::Call;
+        call.type = il::Type::Void;
+        call.result = il::kNoValue;
+        call.calleeIndex = segIndex;
+        emitInst(mainFn, call);
+    }
+    return true;
 }
 
 // `main` creates the module scope's record and publishes it, ahead of every
