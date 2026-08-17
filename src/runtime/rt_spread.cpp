@@ -100,7 +100,7 @@ uint64_t argumentsCalleeCapturedPill(uint64_t, uint64_t, uint32_t, const uint64_
 // an `arguments` object defines this property, and a heap string per call would
 // be an allocation the property never keeps.
 StringHeader* calleeKey() {
-    static StringHeader* key = nullptr;
+    static thread_local StringHeader* key = nullptr;
     if (!key) {
         Rooted<Value> name{rtMakeString("callee")};
         key = StringHeader::internToArena(rtArena(), name.get().asString<StringHeader>());

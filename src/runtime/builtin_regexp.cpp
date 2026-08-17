@@ -53,7 +53,7 @@ namespace {
 // has finitely many distinct patterns, and freeing one would need a reference
 // count on a table the collector cannot see into.
 std::vector<regex::PatternPtr>& programs() {
-    static std::vector<regex::PatternPtr> table;
+    static thread_local std::vector<regex::PatternPtr> table;
     return table;
 }
 
@@ -62,7 +62,7 @@ std::vector<regex::PatternPtr>& programs() {
 // project forbids hash-map iteration order in output paths and one table that
 // is never iterated is not worth a second rule to remember.
 std::map<std::string, uint32_t>& programIndex() {
-    static std::map<std::string, uint32_t> table;
+    static thread_local std::map<std::string, uint32_t> table;
     return table;
 }
 

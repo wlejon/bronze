@@ -554,7 +554,7 @@ uint64_t iteratorDrop(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 // ---- `Iterator` and `Iterator.from` (27.1.3) --------------------------------
 
-Value g_iteratorCtor = Value::fromUndefined();
+thread_local Value g_iteratorCtor = Value::fromUndefined();
 
 // 27.1.3.1.1 Iterator.from(O).
 uint64_t iteratorFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

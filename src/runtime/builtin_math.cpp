@@ -240,7 +240,7 @@ struct Xoshiro256pp {
 // Constructed on first use, so a program that never calls `Math.random` never
 // touches the OS entropy source.
 Xoshiro256pp& prng() {
-    static Xoshiro256pp g;
+    static thread_local Xoshiro256pp g;
     return g;
 }
 
@@ -317,7 +317,7 @@ const char* const kMathUnimplemented[] = {
     "sumPrecise",
 };
 
-Value g_mathObject = Value::fromUndefined();
+thread_local Value g_mathObject = Value::fromUndefined();
 
 }  // namespace
 

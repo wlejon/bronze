@@ -46,19 +46,19 @@ struct PendingCleanup {
 // Every live WeakRef cell, by its CURRENT header address. Raw headers rather
 // than Values, because the collector must not forward these: whether the
 // WeakRef object itself survived is precisely what the sweep asks.
-std::vector<HeapObjectHeader*> g_weakRefs;
+thread_local std::vector<HeapObjectHeader*> g_weakRefs;
 
 // The registries, held STRONGLY (weak_ref.h says why), and their cells. Two
 // parallel vectors indexed by the block id stored in the registry header: a
 // registry is never removed, so the index is stable for the run.
-std::vector<Value> g_registries;
-std::vector<std::vector<Cell>> g_cells;
+thread_local std::vector<Value> g_registries;
+thread_local std::vector<std::vector<Cell>> g_cells;
 
 // A deque, because the two operations are push-back (from the sweep) and
 // pop-front (from the job), and an entry must stay IN it until its callback has
 // been called: the root source below is the only thing keeping a parked held
 // value alive, and a callback allocates.
-std::deque<PendingCleanup> g_pending;
+thread_local std::deque<PendingCleanup> g_pending;
 
 // 9.13's [[KeptAlive]] list. A vector for the order (the root source walks it,
 // and nothing about output may depend on a hash table's), plus a membership set
@@ -66,8 +66,8 @@ std::deque<PendingCleanup> g_pending;
 // the job has touched. The set holds RAW BITS, which a collection invalidates —
 // so the sweep rebuilds it, and a stale miss would only ever append a duplicate
 // (more retention, never less).
-std::vector<Value> g_kept;
-std::unordered_set<uint64_t> g_keptSeen;
+thread_local std::vector<Value> g_kept;
+thread_local std::unordered_set<uint64_t> g_keptSeen;
 
 // Forward one weak slot, or clear it. False when the target died, which is the
 // answer both callers branch on.
@@ -136,7 +136,7 @@ void sweepWeakReferences() {
 // translation unit, and reaching it from this one's initializers is the
 // cross-TU order fiasco.
 void ensureWeakRegistries() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& registry : g_registries) visit(registry);
             for (std::vector<Cell>& cells : g_cells) {

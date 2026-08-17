@@ -443,7 +443,7 @@ const NamespaceFn kGlobalFunctions[] = {
 // every route to `Number` reaches the SAME function object, so installing twice
 // would be redefining the same fourteen properties rather than decorating two
 // objects.
-bool g_numberStaticsInstalled = false;
+thread_local bool g_numberStaticsInstalled = false;
 
 }  // namespace
 

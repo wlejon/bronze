@@ -301,7 +301,7 @@ static uint64_t reflectDefineProperty(uint64_t, uint64_t, uint32_t argc, const u
     return rtObjectDefineProperty(0, 0, argc, argv);
 }
 
-static Value g_reflectNamespace = Value::fromUndefined();
+static thread_local Value g_reflectNamespace = Value::fromUndefined();
 
 Value rtReflectNamespace() {
     if (g_reflectNamespace.isUndefined()) {

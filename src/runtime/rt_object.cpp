@@ -880,7 +880,7 @@ uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits) {
 
 }  // extern "C"
 
-static Value g_globalThisObject = Value::fromUndefined();
+static thread_local Value g_globalThisObject = Value::fromUndefined();
 
 // The names 19.1–19.4 put on the global object that bronze provides. The
 // SAME set lowering admits as provided globals (lower_util.cpp), minus

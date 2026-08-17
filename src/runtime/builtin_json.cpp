@@ -184,7 +184,7 @@ const char* const kJsonUnimplemented[] = {
     "isRawJSON",
 };
 
-Value g_jsonNamespace = Value::fromUndefined();
+thread_local Value g_jsonNamespace = Value::fromUndefined();
 
 }  // namespace
 

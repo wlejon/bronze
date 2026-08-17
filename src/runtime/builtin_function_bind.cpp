@@ -93,7 +93,7 @@ uint64_t boundCallTrampoline(uint64_t envBits, uint64_t thisBits, uint32_t argc,
 // A bind chain still pays one per level ("bound f", "bound bound f", ...),
 // which is as many distinct names as the program can observe.
 StringHeader* boundName(const StringHeader* targetName) {
-    static std::vector<std::pair<const StringHeader*, StringHeader*>> memo;
+    static thread_local std::vector<std::pair<const StringHeader*, StringHeader*>> memo;
     for (const auto& entry : memo) {
         if (entry.first == targetName) return entry.second;
     }

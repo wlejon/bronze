@@ -36,6 +36,12 @@ namespace bronze {
 // unsigned headroom subtraction is then 0 and every construct site falls
 // back to bronze_construct.
 extern "C" {
+// PROCESS-global while the runtime's own state is per-thread: generated code
+// reaches these as plain symbols, so they can only serve ONE thread's heap —
+// the one running compiled code. The window-zeroing below already bounds-checks
+// against its own reservation, so another thread's heap collecting cannot
+// disturb a window it does not own. Per-thread access for generated code is
+// the per-thread ABI block's job (with bronze_gc_frame_top and the rest).
 uint64_t bronze_alloc_cursor = 0;
 uint64_t bronze_alloc_limit = 0;
 uint64_t bronze_inline_call_enabled = 1;

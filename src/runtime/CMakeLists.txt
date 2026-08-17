@@ -145,6 +145,7 @@ bronze_add_module(runtime
         ../../tests/runtime/math_random_test.cpp
         ../../tests/runtime/namespace_test.cpp
         ../../tests/runtime/native_base_test.cpp
+        ../../tests/runtime/thread_isolation_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

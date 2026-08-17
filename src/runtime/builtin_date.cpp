@@ -43,13 +43,13 @@ namespace {
 
 namespace dt = datetime;
 
-Value g_dateCtor = Value::fromUndefined();
-Value g_dateProto = Value::fromUndefined();
-Shape* g_dateInstanceShape = nullptr;
+thread_local Value g_dateCtor = Value::fromUndefined();
+thread_local Value g_dateProto = Value::fromUndefined();
+thread_local Shape* g_dateInstanceShape = nullptr;
 // The brand. A symbol lives in the non-moving arena and is never collected
 // (symbol.h), so this is an ordinary static rather than a GC root — and a
 // program has no way to name it, which is what makes it unforgeable.
-SymbolHeader* g_dateBrand = nullptr;
+thread_local SymbolHeader* g_dateBrand = nullptr;
 
 void ensureDateIntrinsics();
 

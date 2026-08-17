@@ -860,8 +860,8 @@ const NamespaceFn kObjectFunctions[] = {
 const char* const* const kObjectUnimplemented = nullptr;
 constexpr size_t kObjectUnimplementedCount = 0;
 
-Value g_objectNamespace = Value::fromUndefined();
-Value g_objectPrototype = Value::fromUndefined();
+thread_local Value g_objectNamespace = Value::fromUndefined();
+thread_local Value g_objectPrototype = Value::fromUndefined();
 
 // Both intrinsics, built together.
 //

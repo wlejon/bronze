@@ -48,8 +48,8 @@ uint64_t functionPrototypeBody(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromUndefined().rawBits();
 }
 
-static Value g_functionPrototype = Value::fromUndefined();
-static Value g_functionConstructor = Value::fromUndefined();
+static thread_local Value g_functionPrototype = Value::fromUndefined();
+static thread_local Value g_functionConstructor = Value::fromUndefined();
 
 void ensureFunctionIntrinsics() {
     if (g_functionPrototype.isObject()) return;

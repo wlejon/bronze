@@ -33,8 +33,8 @@ namespace bronze::runtime {
 
 namespace {
 
-Value g_bigIntPrototype = Value::fromUndefined();
-Value g_bigIntFunction = Value::fromUndefined();
+thread_local Value g_bigIntPrototype = Value::fromUndefined();
+thread_local Value g_bigIntFunction = Value::fromUndefined();
 
 // 7.1.13 ToBigInt, for a value that is ALREADY primitive. The Number case is
 // its caller's: 21.2.1.1 routes a Number through NumberToBigInt (which accepts

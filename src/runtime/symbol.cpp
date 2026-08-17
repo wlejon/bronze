@@ -69,7 +69,7 @@ struct RegistryEntry {
 };
 
 std::vector<RegistryEntry>& registry() {
-    static std::vector<RegistryEntry> entries;
+    static thread_local std::vector<RegistryEntry> entries;
     return entries;
 }
 
@@ -94,37 +94,37 @@ SymbolHeader* wellKnownSymbol(std::string_view description) {
 }  // namespace
 
 SymbolHeader* rtSymbolIterator() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.iterator");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.iterator");
     return sym;
 }
 
 SymbolHeader* rtSymbolAsyncIterator() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.asyncIterator");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.asyncIterator");
     return sym;
 }
 
 SymbolHeader* rtSymbolToStringTag() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.toStringTag");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.toStringTag");
     return sym;
 }
 
 SymbolHeader* rtSymbolToPrimitive() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.toPrimitive");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.toPrimitive");
     return sym;
 }
 
 SymbolHeader* rtSymbolHasInstance() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.hasInstance");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.hasInstance");
     return sym;
 }
 
 SymbolHeader* rtSymbolSpecies() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.species");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.species");
     return sym;
 }
 
 SymbolHeader* rtSymbolIsConcatSpreadable() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.isConcatSpreadable");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.isConcatSpreadable");
     return sym;
 }
 
@@ -134,27 +134,27 @@ SymbolHeader* rtSymbolIsConcatSpreadable() {
 // exactly this identity — a second interning of "Symbol.replace" would be a
 // different symbol and would silently never be found.
 SymbolHeader* rtSymbolMatch() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.match");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.match");
     return sym;
 }
 
 SymbolHeader* rtSymbolMatchAll() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.matchAll");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.matchAll");
     return sym;
 }
 
 SymbolHeader* rtSymbolReplace() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.replace");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.replace");
     return sym;
 }
 
 SymbolHeader* rtSymbolSearch() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.search");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.search");
     return sym;
 }
 
 SymbolHeader* rtSymbolSplit() {
-    static SymbolHeader* sym = wellKnownSymbol("Symbol.split");
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.split");
     return sym;
 }
 

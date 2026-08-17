@@ -26,8 +26,8 @@ namespace {
 // Persistent slots. Free slots hold undefined and are recycled through the
 // free list; the root source visits every slot, which costs one no-op visit
 // per free slot and keeps the source a plain loop.
-std::vector<Value> g_persistentSlots;
-std::vector<uint32_t> g_persistentFreeSlots;
+thread_local std::vector<Value> g_persistentSlots;
+thread_local std::vector<uint32_t> g_persistentFreeSlots;
 
 // The native-handle finalizer registry: one entry per live handle cell. The
 // collector never visits a dead object — it copies the live ones and abandons
@@ -39,13 +39,13 @@ struct FinalizerEntry {
     void* data;
     HandleDestructor dtor;
 };
-std::vector<FinalizerEntry> g_finalizers;
+thread_local std::vector<FinalizerEntry> g_finalizers;
 
 // The handle cells' own root shape, and the brand handleData checks. Null
 // prototype on purpose, like the namespace objects' root shapes: a handle
 // shares no transition tree with `{}` literals, and a chain walk over one
 // ends immediately.
-Shape* g_handleShape = nullptr;
+thread_local Shape* g_handleShape = nullptr;
 
 void sweepFinalizers() {
     // Runs mid-collection: every from-space header is Tag::Forwarded (live,
@@ -78,7 +78,7 @@ void sweepFinalizers() {
 // exists to close. By the time a host calls anything here, main() has begun
 // and the runtime's statics are long constructed.
 void ensureRegistries() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         runtime::rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& slot : g_persistentSlots) visit(slot);
         });

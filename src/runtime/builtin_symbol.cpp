@@ -93,8 +93,8 @@ const char* const kSymbolUnimplemented[] = {
     "unscopables",
 };
 
-Value g_symbolFunction = Value::fromUndefined();
-Value g_symbolPrototype = Value::fromUndefined();
+thread_local Value g_symbolFunction = Value::fromUndefined();
+thread_local Value g_symbolPrototype = Value::fromUndefined();
 
 struct SymbolStatic {
     const char* name;

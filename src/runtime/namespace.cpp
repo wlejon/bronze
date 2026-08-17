@@ -89,10 +89,10 @@ ModuleNamespaceHeader* asNamespace(Value v) {
 // reason `ensureExceptionRoots` uses one: the visitor the collector calls reads
 // this table, so a table whose first read is also its own initialization would
 // be re-entered by a collection that happened inside that initialization.
-std::vector<Value> g_importMetaObjects;
+thread_local std::vector<Value> g_importMetaObjects;
 
 void ensureImportMetaRoots() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& v : g_importMetaObjects) visit(v);
         });

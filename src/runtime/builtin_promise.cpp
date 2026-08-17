@@ -39,9 +39,9 @@ namespace bronze::runtime {
 
 namespace {
 
-Value g_promiseCtor = Value::fromUndefined();
-Value g_promiseProto = Value::fromUndefined();
-Shape* g_instanceShape = nullptr;
+thread_local Value g_promiseCtor = Value::fromUndefined();
+thread_local Value g_promiseProto = Value::fromUndefined();
+thread_local Shape* g_instanceShape = nullptr;
 
 bool isCallable(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
@@ -50,7 +50,7 @@ bool isCallable(Value v) {
 // First-use registration, for the initialization-order reason
 // ensureExceptionRoots records.
 void ensurePromiseRoots() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             visit(g_promiseCtor);
             visit(g_promiseProto);

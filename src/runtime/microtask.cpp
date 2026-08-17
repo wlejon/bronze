@@ -35,13 +35,13 @@ struct Job {
 // A deque, because the two operations are push-back and pop-front and both
 // pointers and iterators into it are never held across a mutation — the drain
 // copies a job out before popping it.
-std::deque<Job> g_queue;
+thread_local std::deque<Job> g_queue;
 
 // Rejected promises with no handler yet, in rejection order — which is the
 // order they are reported in, so the report is deterministic. A vector and a
 // linear scan: parking is rare (it is the error path) and the registry is
 // almost always empty or one deep.
-std::vector<Value> g_parked;
+thread_local std::vector<Value> g_parked;
 
 // Registered on FIRST USE, not at static initialization, for the reason
 // exception.cpp's ensureExceptionRoots records: rtHeap() lives in another
@@ -52,7 +52,7 @@ std::vector<Value> g_parked;
 // job's captures: a reaction enqueued by an already-settled promise has left
 // the promise's own reaction lists, and nothing on any frame holds it.
 void ensureQueueRoots() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Job& job : g_queue) {
                 visit(job.v0);

@@ -1,8 +1,18 @@
-// The runtime's process-wide state: the heap, the non-moving arena, the root
+// The runtime's PER-THREAD state: the heap, the non-moving arena, the root
 // shapes, the property-key INTERN table, and the caches and module spans whose
 // entries are heap Values and therefore need root sources. All of it lives in
 // this one translation unit so the collector's roots never depend on cross-TU
 // static initialization order (rt_state.h).
+//
+// Per-thread, not per-process: every mutable table here is thread_local, so
+// each OS thread that touches the runtime gets a whole runtime of its own —
+// its own heap, its own shapes, its own interning. Threads share NOTHING
+// mutable; a Value is meaningful only on the thread whose heap it points
+// into. The one deliberate exception is the ABI data globals generated code
+// links against (bronze_plain_shape and friends): those stay process-global
+// until codegen reaches them through a per-thread block, so generated code
+// runs on ONE thread for now and the other threads' runtimes are reached
+// through the C++ API only.
 
 #include <string>
 #include <unordered_map>
@@ -33,32 +43,50 @@
 
 namespace bronze::runtime {
 
+// Root shapes the runtime has created. Shapes are immortal but the prototype
+// objects they name are not, so the collector has to forward them; this table
+// is what the heap's first root source walks. It lives beside the heap and
+// arena because that is where the three lifetimes match — a global registry
+// would outlive the per-test arenas unit tests create and hand the collector
+// dangling shapes.
+static thread_local std::vector<Shape*> g_rootShapes;
+
+// The heap and arena are LEAKED POINTERS behind lazy accessors, not
+// thread_local objects, for two reasons. Lazy: a thread that never touches
+// the runtime must not pay a 64MB reservation at thread start. Leaked: the
+// per-thread tables above and below (weak-ref lists, root shapes, key
+// headers) are destroyed at thread exit in an order nothing controls, and a
+// heap destructor running among them would be teardown-order roulette — the
+// process (or the thread, holding nothing) exits instead, exactly as the
+// process-global heap always did.
+//
+// The registrations that used to ride static initializers (the shape-root
+// walk and the value-cache walk below) happen HERE, per thread, because a
+// fresh heap needs its root sources before its first collection — and the
+// lambdas read the calling thread's thread_local tables, which is the right
+// table because a heap only ever collects on its own thread.
+static void registerThreadRootSources(Heap& heap);
+
 // Generated code roots its Dynamic values, so a collection is survivable and
 // the reservation does not have to postpone one. Sized so ordinary programs DO
 // collect rather than run to exit inside one semispace.
-static Heap g_heap(64 * 1024 * 1024);
-static NonMovingArena g_arena;
+Heap& rtHeap() {
+    static thread_local Heap* heap = nullptr;
+    if (!heap) {
+        heap = new Heap(64 * 1024 * 1024);
+        registerThreadRootSources(*heap);
+    }
+    return *heap;
+}
 
-// Root shapes the runtime has created. Shapes are immortal but the prototype
-// objects they name are not, so the collector has to forward them; this table
-// is what the root source below walks. It lives beside g_arena and g_heap
-// because that is where the three lifetimes match — a global registry would
-// outlive the per-test arenas unit tests create and hand the collector dangling
-// shapes.
-static std::vector<Shape*> g_rootShapes;
-
-static const bool g_shapeRootsRegistered = [] {
-    g_heap.add_root_source([](const Heap::RootVisitor& visit) {
-        for (Shape* root : g_rootShapes) visit(root->prototype);
-    });
-    return true;
-}();
-
-Heap& rtHeap() { return g_heap; }
-NonMovingArena& rtArena() { return g_arena; }
+NonMovingArena& rtArena() {
+    static thread_local NonMovingArena* arena = nullptr;
+    if (!arena) arena = new NonMovingArena();
+    return *arena;
+}
 
 Shape* rtNewRootShape(Value proto) {
-    Shape* root = Shape::createRoot(g_arena, proto);
+    Shape* root = Shape::createRoot(rtArena(), proto);
     g_rootShapes.push_back(root);
     return root;
 }
@@ -79,7 +107,7 @@ Shape* rtRootShapeForPrototype(Value proto) {
     // namespace objects hold root shapes with no prototype ON PURPOSE — so
     // that a site reading `Math.sqrt` does not share a transition tree with
     // `{}` literals — and a scan would hand one of those out.
-    static std::vector<Shape*> prototypeShapes;
+    static thread_local std::vector<Shape*> prototypeShapes;
     for (Shape* root : prototypeShapes) {
         if (root->prototype.rawBits() == proto.rawBits()) return root;
     }
@@ -88,14 +116,14 @@ Shape* rtRootShapeForPrototype(Value proto) {
     return root;
 }
 
-static Shape* g_plainObjectShape = nullptr;
+static thread_local Shape* g_plainObjectShape = nullptr;
 extern "C" {
 uint64_t bronze_plain_shape = 0;
 }
 
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
-        Shape* shape = Shape::createRoot(g_arena, rtObjectPrototype());
+        Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype());
         g_rootShapes.push_back(shape);
         g_plainObjectShape = shape;
         bronze_plain_shape = reinterpret_cast<uint64_t>(shape);
@@ -143,18 +171,18 @@ static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI
 
 // ---- Property keys ----------------------------------------------------------
 
-static std::vector<std::string> g_keyStrings;
+static thread_local std::vector<std::string> g_keyStrings;
 // The same keys as immortal arena strings, so a property access allocates
 // nothing on the path that reaches one.
-static std::vector<StringHeader*> g_keyHeaders;
-static std::vector<KeyInfo> g_keyInfos;
+static thread_local std::vector<StringHeader*> g_keyHeaders;
+static thread_local std::vector<KeyInfo> g_keyInfos;
 // Text -> id, which is what makes the registry an INTERN table rather than an
 // array a module fills by index. Two modules that both mention "position" must
 // come out holding one id: shapes, inline caches and `Object.keys` all identify
 // a property by its key id, so the same string arriving as two ids would give
 // one object two indistinguishable properties. Nothing iterates this map, so
 // its ordering never reaches output.
-static std::unordered_map<std::string, uint32_t> g_keyIndex;
+static thread_local std::unordered_map<std::string, uint32_t> g_keyIndex;
 static const std::string g_emptyKey;
 static const KeyInfo g_emptyKeyInfo{};
 
@@ -180,8 +208,8 @@ const KeyInfo& rtKeyInfo(uint32_t index) {
 // and they carry an environment. The map is an index into the vector rather
 // than holding Values itself so the ROOT SOURCE below stays one flat walk;
 // nothing iterates the map, so its ordering never reaches output.
-static std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
-static std::unordered_map<void*, size_t> g_functionSingletonIndex;
+static thread_local std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
+static thread_local std::unordered_map<void*, size_t> g_functionSingletonIndex;
 
 // One {code, value} entry of a module's fn-singleton table. The layout is the
 // ABI's, because generated code reads the two words inline; this declaration
@@ -217,11 +245,11 @@ struct ModuleSpan {
     uint64_t count;
     uint64_t epoch;
 };
-static std::vector<ModuleSpan<Value>> g_moduleValueCells;
-static std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
+static thread_local std::vector<ModuleSpan<Value>> g_moduleValueCells;
+static thread_local std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
 
-static uint64_t g_moduleEpochCounter = 0;
-static uint64_t g_currentModuleEpoch = 0;
+static thread_local uint64_t g_moduleEpochCounter = 0;
+static thread_local uint64_t g_currentModuleEpoch = 0;
 
 uint64_t rtBeginModuleEpoch() {
     g_currentModuleEpoch = ++g_moduleEpochCounter;
@@ -262,7 +290,7 @@ void rtDropModuleEpoch(uint64_t epoch) {
 // rather than a map: registration happens a handful of times at host startup,
 // and a lookup is a read `bronze_global_get` reaches only for a name the
 // builtin ladder did not answer.
-static std::vector<std::pair<std::string, Value>> g_hostGlobals;
+static thread_local std::vector<std::pair<std::string, Value>> g_hostGlobals;
 
 // All of these hold heap Values, so all of them are root SOURCES rather than
 // fixed slots: the objects live in the moving heap and cached raw bits would go
@@ -276,8 +304,14 @@ static std::vector<std::pair<std::string, Value>> g_hostGlobals;
 // filled, and its value word is whatever the module's .bss started as rather
 // than a Value — so the code word, not the value, is what says an entry is
 // worth tracing.
-static const bool g_valueCachesRegistered = [] {
-    g_heap.add_root_source([](const Heap::RootVisitor& visit) {
+// Both root sources for a fresh thread's heap, registered from rtHeap()'s
+// first-use path. Each lambda reads thread_local tables, and reads the RIGHT
+// thread's: a heap only ever collects on the thread that owns it.
+static void registerThreadRootSources(Heap& heap) {
+    heap.add_root_source([](const Heap::RootVisitor& visit) {
+        for (Shape* root : g_rootShapes) visit(root->prototype);
+    });
+    heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
         for (const auto& span : g_moduleFnSlots) {
             for (uint64_t i = 0; i < span.count; ++i) {
@@ -290,8 +324,7 @@ static const bool g_valueCachesRegistered = [] {
         for (auto& entry : g_hostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
     });
-    return true;
-}();
+}
 
 void rtRegisterHostGlobal(const std::string& name, Value value) {
     for (auto& entry : g_hostGlobals) {
@@ -350,7 +383,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         it != g_functionSingletonIndex.end()) {
         result = g_functionSingletons[it->second].second;
     } else {
-        FunctionHeader* fn = FunctionHeader::create(g_heap, code, Value::fromUndefined(), arity);
+        FunctionHeader* fn = FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity);
         fn->env_record = Value::fromObject(fn);
         fn->header.flags = HeapKind::Function;
         rtSetFunctionNameAndLength(fn, nameKey, length);
@@ -481,8 +514,8 @@ uint32_t bronze_register_key_string(const char* str) {
     g_keyInfos.emplace_back();
     g_keyIndex.emplace(text, index);
 
-    StringHeader* tmp = StringHeader::createFromUTF8(g_heap, std::string_view(g_keyStrings[index]));
-    g_keyHeaders[index] = StringHeader::internToArena(g_arena, tmp);
+    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(g_keyStrings[index]));
+    g_keyHeaders[index] = StringHeader::internToArena(rtArena(), tmp);
 
     KeyInfo info;
     uint32_t elemIdx = 0;

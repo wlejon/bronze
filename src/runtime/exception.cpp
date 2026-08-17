@@ -59,8 +59,8 @@ struct ErrorClass {
 // element it formats, so one allocation inside it moves the container out
 // from under the loop (it crashed under BRONZE_GC_STRESS=1 printing an array
 // of two errors).
-StringHeader* g_nameKey = nullptr;
-StringHeader* g_messageKey = nullptr;
+thread_local StringHeader* g_nameKey = nullptr;
+thread_local StringHeader* g_messageKey = nullptr;
 
 uint64_t errorCtorError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 uint64_t errorCtorTypeError(uint64_t, uint64_t, uint32_t, const uint64_t*);
@@ -72,7 +72,7 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t, uint32_t, const uint64_t*);
 
 // Order matters only in that `Error` is first: the other two chain their
 // prototypes to its, so it has to exist before they are built.
-ErrorClass g_errorClasses[] = {
+thread_local ErrorClass g_errorClasses[] = {
     {"Error", ErrorKind::Error, errorCtorError},
     {"TypeError", ErrorKind::TypeError, errorCtorTypeError},
     {"RangeError", ErrorKind::RangeError, errorCtorRangeError},
@@ -141,7 +141,7 @@ void installErrorCause(Rooted<Value>& self, Rooted<Value>& options) {
 // constructor ran afterwards, and then as a crash under BRONZE_GC_STRESS=1
 // with the error prototypes collected out from under the classes.
 void ensureExceptionRoots() {
-    static const bool registered = [] {
+    static thread_local const bool registered = [] {
         // A thrown object is live for exactly as long as it is pending, which
         // spans an arbitrary number of frames and every collection inside
         // them. Nothing else roots it — the value has left the throwing

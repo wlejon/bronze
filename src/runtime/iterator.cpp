@@ -90,19 +90,19 @@ StringHeader* internKey(const char* text) {
 }
 
 StringHeader* keyNext() {
-    static StringHeader* k = internKey("next");
+    static thread_local StringHeader* k = internKey("next");
     return k;
 }
 StringHeader* keyDone() {
-    static StringHeader* k = internKey("done");
+    static thread_local StringHeader* k = internKey("done");
     return k;
 }
 StringHeader* keyValue() {
-    static StringHeader* k = internKey("value");
+    static thread_local StringHeader* k = internKey("value");
     return k;
 }
 StringHeader* keyReturn() {
-    static StringHeader* k = internKey("return");
+    static thread_local StringHeader* k = internKey("return");
     return k;
 }
 
@@ -218,7 +218,7 @@ struct ProtoEntry {
 };
 
 ProtoEntry& protoEntry(IteratorProto kind) {
-    static ProtoEntry table[9];
+    static thread_local ProtoEntry table[9];
     return table[static_cast<uint32_t>(kind)];
 }
 

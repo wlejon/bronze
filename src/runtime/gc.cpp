@@ -4,6 +4,11 @@
 #include "runtime/fatal.h"
 
 extern "C" {
+// PROCESS-global while the C++ shadow stack below is per-thread: generated
+// code links its frames here with raw symbol stores, so this chain can only
+// carry ONE thread's compiled frames — the thread running generated code.
+// Every collector walks it (heap.cpp), which is sound while that is one
+// thread and becomes the per-thread ABI block's job when it is not.
 bronze_gc_frame* bronze_gc_frame_top = nullptr;
 }
 

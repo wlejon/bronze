@@ -70,8 +70,8 @@ int32_t toInt32(double d) {
 // program. A fresh heap string per evaluation would put an allocation — and so
 // a possible collection — inside an operator that cannot fail.
 constexpr int kTypeOfCount = 8;
-Value g_typeofStrings[kTypeOfCount] = {};
-bool g_typeofReady = false;
+thread_local Value g_typeofStrings[kTypeOfCount] = {};
+thread_local bool g_typeofReady = false;
 
 enum TypeOfKind { kUndefined, kObject, kBoolean, kNumber, kString, kFunction, kSymbol, kBigInt };
 

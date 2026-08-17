@@ -42,7 +42,7 @@ namespace bronze::runtime {
 
 namespace {
 
-Value g_atomicsObject = Value::fromUndefined();
+thread_local Value g_atomicsObject = Value::fromUndefined();
 
 bool isSharedBuffer(Value v) {
     return isBuffer(v) && v.asObject<ArrayBufferHeader>()->isShared();

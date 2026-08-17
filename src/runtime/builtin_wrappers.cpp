@@ -111,25 +111,25 @@ const NativeMethod kBooleanProtoMethods[] = {
 
 // ---- the intrinsics --------------------------------------------------------
 
-Value g_stringPrototype = Value::fromUndefined();
-Value g_booleanPrototype = Value::fromUndefined();
-Value g_numberPrototype = Value::fromUndefined();
-Shape* g_stringWrapperShape = nullptr;
-Shape* g_booleanWrapperShape = nullptr;
-Shape* g_numberWrapperShape = nullptr;
+thread_local Value g_stringPrototype = Value::fromUndefined();
+thread_local Value g_booleanPrototype = Value::fromUndefined();
+thread_local Value g_numberPrototype = Value::fromUndefined();
+thread_local Shape* g_stringWrapperShape = nullptr;
+thread_local Shape* g_booleanWrapperShape = nullptr;
+thread_local Shape* g_numberWrapperShape = nullptr;
 // `valueOf`, arena-interned once, so the ToPrimitive guard below can walk a
 // chain without allocating — which is what lets the shortcut be usable from
 // `console.log`'s inspect walk, whose whole contract is that it cannot move
 // the heap.
-StringHeader* g_valueOfKey = nullptr;
+thread_local StringHeader* g_valueOfKey = nullptr;
 // The two `valueOf` function objects as they were installed, so the guard can
 // ask whether the one a lookup finds today is still the builtin. Read back off
 // the finished prototypes rather than named here, because the string half is
 // installed by builtin_string.cpp and this file must not hold a second opinion
 // about which function that is.
-Value g_pristineStringValueOf = Value::fromUndefined();
-Value g_pristineBooleanValueOf = Value::fromUndefined();
-Value g_pristineNumberValueOf = Value::fromUndefined();
+thread_local Value g_pristineStringValueOf = Value::fromUndefined();
+thread_local Value g_pristineBooleanValueOf = Value::fromUndefined();
+thread_local Value g_pristineNumberValueOf = Value::fromUndefined();
 
 // An OWN data property by arena key, with no allocation and no accessor call.
 // `undefined` for a name the object does not carry.
