@@ -29,12 +29,12 @@ namespace {
 // a test that raised without clearing would make the next one's rtThrow trip
 // the "second exception while one is pending" tripwire.
 struct ClearCell {
-    ~ClearCell() { bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
 };
 
 Value takePending() {
-    const Value v(bronze_exception_cell);
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    const Value v(bronze_tls_block_addr()->exception_cell);
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
     return v;
 }
 
@@ -52,7 +52,7 @@ TEST_CASE("the empty cell is the Hole singleton, and generated code agrees") {
     // user-visible, which is what makes it usable as the sentinel: no program
     // can throw one.
     CHECK(Value::fromHole().rawBits() == BRONZE_ABI_NO_EXCEPTION_BITS);
-    CHECK(bronze_exception_cell == BRONZE_ABI_NO_EXCEPTION_BITS);
+    CHECK(bronze_tls_block_addr()->exception_cell == BRONZE_ABI_NO_EXCEPTION_BITS);
     CHECK_FALSE(rtExceptionPending());
 }
 

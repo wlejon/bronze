@@ -85,7 +85,7 @@ void processResumeResult(Rooted<Value>& gen, Rooted<Value>& result) {
     Rooted<Value> promise{req.get().asObject<ArrayHeader>()->getElem(2)};
 
     if (rtExceptionPending()) {
-        Rooted<Value> thrown{Value(bronze_exception_cell)};
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
         rtClearException();
         queuePopFront(queue);
         setState(gen, static_cast<uint32_t>(AsyncGeneratorState::Completed));

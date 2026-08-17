@@ -190,10 +190,10 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                 }
             }
         } else if (fastHdr->flags == HeapKind::Array) {
-            if (ic && ic->isArrayMethod() && bronze_array_method_ic_enabled != 0) {
+            if (ic && ic->isArrayMethod() && bronze_tls_block_addr()->array_method_ic_enabled != 0) {
                 const auto* arr = reinterpret_cast<const ArrayHeader*>(fastHdr);
                 if (!arr->properties.isObject()) {
-                    return bronze_array_method_tbl[ic->cached_slot];
+                    return bronze_tls_block_addr()->array_method_tbl[ic->cached_slot];
                 }
             }
             const KeyInfo& ki = rtKeyInfo(keyIndex);
@@ -298,7 +298,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         if (uint32_t methodId = rtArrayMethodId(keyStr); methodId != UINT32_MAX) {
             Value method = rtArrayMethodById(methodId);
             if (!method.isUndefined()) {
-                if (ic && bronze_array_method_ic_enabled != 0 &&
+                if (ic && bronze_tls_block_addr()->array_method_ic_enabled != 0 &&
                     !recv.get().asObject<ArrayHeader>()->properties.isObject()) {
                     ic->fillArrayMethod(methodId);
                 }

@@ -3,14 +3,10 @@
 #include "abi/bronze_abi.h"
 #include "runtime/fatal.h"
 
-extern "C" {
-// PROCESS-global while the C++ shadow stack below is per-thread: generated
-// code links its frames here with raw symbol stores, so this chain can only
-// carry ONE thread's compiled frames — the thread running generated code.
-// Every collector walks it (heap.cpp), which is sound while that is one
-// thread and becomes the per-thread ABI block's job when it is not.
-bronze_gc_frame* bronze_gc_frame_top = nullptr;
-}
+// Generated code's own frame chain lives in the per-thread bronze_tls_block
+// (tls_block.cpp, `frame_top`): compiled code links and unlinks against the
+// block its prologue fetched, and the collector walks the calling thread's
+// chain (heap.cpp). What remains here is the C++ side's shadow stack.
 
 namespace bronze {
 

@@ -90,7 +90,7 @@ struct FatalGuard {
 };
 
 struct ClearCell {
-    ~ClearCell() { bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
 };
 
 }  // namespace
@@ -256,11 +256,11 @@ TEST_CASE("freezing a typed array with elements is the TypeError 10.4.5.3 gives"
 
     freeze(view.get());
     CHECK(rtExceptionPending());
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     seal(view.get());
     CHECK(rtExceptionPending());
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // The view is untouched, and still says so.
     CHECK(isExtensible(view.get()));
@@ -303,9 +303,9 @@ TEST_CASE("reading arguments.callee in strict mode throws TypeError") {
     Rooted<Value> key{rtMakeString("callee")};
     ObjectHeader* props = args.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
 
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
     Value res = props->getProp(rtHeap(), key, nullptr, args.slot_ptr());
     (void)res;
     CHECK(rtExceptionPending());
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

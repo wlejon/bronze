@@ -136,7 +136,7 @@ TEST_CASE("a namespace refuses every write, exported name or not") {
     // property path and store something.
     CHECK(rtModuleNamespaceWriteRefused(ns.get(), "a", /*strict=*/false));
     CHECK(rtModuleNamespaceWriteRefused(ns.get(), "neverExported", /*strict=*/false));
-    CHECK_FALSE(bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
+    CHECK_FALSE(bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
 
     // An ordinary object is not this receiver kind, which is what keeps the
     // refusal from leaking onto every write in the program.

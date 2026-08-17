@@ -13,7 +13,7 @@ namespace bronze::codegen_llvm {
 //   - Callee is an Object-tagged value (`(callee >> 48) == TAG_OBJECT`)
 //   - Callee carries HeapKind::Function flags (`BRONZE_ABI_OBJ_FLAGS_FUNCTION`)
 //   - Function arity is <= call site argc (`fn->arity <= argc`)
-//   - Feature is enabled (`bronze_inline_call_enabled != 0`)
+//   - Feature is enabled (the TLS block's `inline_call_enabled != 0`)
 // Fast path:
 //   Loads `fn->env_record` and `fn->code`, and invokes `code(env, thisVal, argc, argv)`
 //   directly in generated LLVM IR via indirect function pointer call.

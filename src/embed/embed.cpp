@@ -57,9 +57,9 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     // propagation ends: there is no enclosing JS frame left to unwind to, and
     // a pending cell left set would make the NEXT call into compiled code
     // appear to throw its predecessor's exception.
-    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(bronze_exception_cell), /*thrown=*/true};
-        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return out;
     }
     return CallResult{result.get(), /*thrown=*/false};
@@ -76,8 +76,8 @@ namespace {
 // entry into compiled code.
 Value elemGetAtHostBoundary(uint64_t objBits, uint64_t keyBits) {
     Rooted<Value> result{Value(bronze_elem_get(objBits, keyBits))};
-    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return Value::fromUndefined();
     }
     return result.get();
@@ -171,9 +171,9 @@ bool isObject(Value v) { return v.isObject(); }
 CallResult parseJson(std::string_view jsonUtf8) {
     ShadowStackFrame frame;
     Rooted<Value> result{runtime::rtJsonParse(jsonUtf8)};
-    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(bronze_exception_cell), /*thrown=*/true};
-        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return out;
     }
     return CallResult{result.get(), /*thrown=*/false};

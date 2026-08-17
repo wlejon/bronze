@@ -202,8 +202,8 @@ public:
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
-    // Re-arm the inline-allocation window (the bronze_alloc_cursor/limit ABI
-    // globals): carve a fresh run of from-space for generated code's `new`
+    // Re-arm the inline-allocation window (the ABI block's alloc_cursor/
+    // alloc_limit): carve a fresh run of from-space for generated code's `new`
     // fast path to bump-allocate plain instances from. Called by
     // bronze_construct's ordinary path when the window has less than one
     // object of headroom; every collection zeroes the window, because it

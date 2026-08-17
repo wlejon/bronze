@@ -78,9 +78,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // ordinary global on both sides.
             if (inst.result == il::kNoValue) return true;
             values_[inst.result] =
-                builder_.CreateLoad(i64Ty_, shared_.globals.bronze_exception_cell);
+                builder_.CreateLoad(i64Ty_, globals_.bronze_exception_cell);
             builder_.CreateStore(builder_.getInt64(BRONZE_ABI_NO_EXCEPTION_BITS),
-                                 shared_.globals.bronze_exception_cell);
+                                 globals_.bronze_exception_cell);
             return true;
         }
 
@@ -232,7 +232,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
 
         case il::Op::CreateObject:
             if (inst.result != il::kNoValue) {
-                values_[inst.result] = emitCreateObjectInline(builder_, abi, shared_.globals);
+                values_[inst.result] = emitCreateObjectInline(builder_, abi, globals_);
             }
             return true;
         case il::Op::CreateGeneratorObject: {
@@ -745,7 +745,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
             values_[inst.result] =
-                emitPropGet(builder_, abi, shared_.globals, shared_.tables, obj, inst.keyIndex,
+                emitPropGet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex,
                             inst.icIndex, inst.icMonomorphic, keyStr);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
@@ -758,7 +758,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
-            emitPropSet(builder_, abi, shared_.globals, shared_.tables, obj, inst.keyIndex, val,
+            emitPropSet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex, val,
                         inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, keyStr);
             return true;
         }
@@ -832,7 +832,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 return true;
             }
             llvm::Value* res = emitDynamicCallInline(
-                builder_, abi, shared_.globals, callee, thisVal, argc, argv);
+                builder_, abi, globals_, callee, thisVal, argc, argv);
             if (inst.result != il::kNoValue) {
                 values_[inst.result] = res;
             }
@@ -854,7 +854,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // This may SPLIT the current block.
             if (constructSelfSlot_ != kNoSlot) {
                 llvm::Value* res =
-                    emitConstructInline(builder_, abi, shared_.globals, ctor, argc, argv,
+                    emitConstructInline(builder_, abi, globals_, ctor, argc, argv,
                                         slotAddr(constructSelfSlot_));
                 if (inst.result != il::kNoValue) values_[inst.result] = res;
                 return true;

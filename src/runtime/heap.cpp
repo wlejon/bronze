@@ -28,27 +28,16 @@
 
 namespace bronze {
 
-// The inline-allocation window (see the registry comment in bronze_abi.h):
-// generated code's `new` fast path bump-allocates plain instances from
-// [cursor, limit) and never collects — refill_inline_lab below is the only
-// producer, and Heap::collect zeroes both words because the window points
-// into the semispace a collection abandons. 0/0 is the dormant state: the
-// unsigned headroom subtraction is then 0 and every construct site falls
-// back to bronze_construct.
-extern "C" {
-// PROCESS-global while the runtime's own state is per-thread: generated code
-// reaches these as plain symbols, so they can only serve ONE thread's heap —
-// the one running compiled code. The window-zeroing below already bounds-checks
-// against its own reservation, so another thread's heap collecting cannot
-// disturb a window it does not own. Per-thread access for generated code is
-// the per-thread ABI block's job (with bronze_gc_frame_top and the rest).
-uint64_t bronze_alloc_cursor = 0;
-uint64_t bronze_alloc_limit = 0;
-uint64_t bronze_inline_call_enabled = 1;
-uint64_t bronze_array_method_ic_enabled = 1;
-uint64_t bronze_inline_overflow_set_enabled = 1;
-uint64_t bronze_inline_accessor_enabled = 1;
-}
+// The inline-allocation window (see the bronze_tls_block comment in
+// bronze_abi.h): generated code's `new` fast path bump-allocates plain
+// instances from [cursor, limit) and never collects — refill_inline_lab below
+// is the only producer, and Heap::collect zeroes both words because the
+// window points into the semispace a collection abandons. 0/0 is the dormant
+// state: the unsigned headroom subtraction is then 0 and every construct site
+// falls back to bronze_construct. The words themselves live in the calling
+// thread's bronze_tls_block (tls_block.cpp), which is what keeps this heap's
+// window — and every other word generated code shares with the runtime — the
+// property of the thread that owns this heap.
 
 // Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
 // the collector actually was — collections, bytes copied vs bytes allocated,
@@ -175,24 +164,29 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         inline_lab_enabled_ = false;
     }
 
+    // The inline fast-path enable flags default to 1 in the TLS block; the
+    // env overrides land here because this constructor runs exactly once per
+    // thread that touches the runtime (rtHeap's first touch), before any
+    // generated code on that thread can read a flag through a helper.
+    bronze_tls_block* tls = bronze_tls_block_addr();
     const char* env_no_call = std::getenv("BRONZE_NO_INLINE_CALL");
     if (env_no_call && std::strcmp(env_no_call, "1") == 0) {
-        bronze_inline_call_enabled = 0;
+        tls->inline_call_enabled = 0;
     }
 
     const char* env_no_array_ic = std::getenv("BRONZE_NO_ARRAY_METHOD_IC");
     if (env_no_array_ic && std::strcmp(env_no_array_ic, "1") == 0) {
-        bronze_array_method_ic_enabled = 0;
+        tls->array_method_ic_enabled = 0;
     }
 
     const char* env_no_overflow_set = std::getenv("BRONZE_NO_INLINE_OVERFLOW_SET");
     if (env_no_overflow_set && std::strcmp(env_no_overflow_set, "1") == 0) {
-        bronze_inline_overflow_set_enabled = 0;
+        tls->inline_overflow_set_enabled = 0;
     }
 
     const char* env_no_accessor = std::getenv("BRONZE_NO_INLINE_ACCESSOR");
     if (env_no_accessor && std::strcmp(env_no_accessor, "1") == 0) {
-        bronze_inline_accessor_enabled = 0;
+        tls->inline_accessor_enabled = 0;
     }
 
     const char* env_log = std::getenv("BRONZE_GC_LOG");
@@ -205,12 +199,13 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
 
 Heap::~Heap() {
     // Retract the inline-allocation window if this heap published it: the
-    // memory under it is released on the next line, and the globals are
-    // process-wide while a Heap (in tests) need not be.
-    if (bronze_alloc_cursor >= reinterpret_cast<uint64_t>(reserved_base_) &&
-        bronze_alloc_cursor < reinterpret_cast<uint64_t>(reserved_base_) + reserved_bytes_) {
-        bronze_alloc_cursor = 0;
-        bronze_alloc_limit = 0;
+    // memory under it is released on the next line, and this thread's TLS
+    // block outlives a Heap (in tests) that need not be the thread's last.
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    if (tls->alloc_cursor >= reinterpret_cast<uint64_t>(reserved_base_) &&
+        tls->alloc_cursor < reinterpret_cast<uint64_t>(reserved_base_) + reserved_bytes_) {
+        tls->alloc_cursor = 0;
+        tls->alloc_limit = 0;
     }
     if (reserved_base_) {
         VirtualMemory::release(reserved_base_, reserved_bytes_);
@@ -324,8 +319,9 @@ void Heap::refill_inline_lab() {
     // allocate_raw may collect (stress does so every time), which zeroes the
     // window — publishing AFTER it returns is what keeps the two ordered.
     void* run = allocate_raw(bytes);
-    bronze_alloc_cursor = reinterpret_cast<uint64_t>(run);
-    bronze_alloc_limit = bronze_alloc_cursor + bytes;
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    tls->alloc_cursor = reinterpret_cast<uint64_t>(run);
+    tls->alloc_limit = tls->alloc_cursor + bytes;
 }
 
 static bool is_valid_object_tag(uint16_t tag) noexcept {
@@ -425,8 +421,8 @@ void Heap::collect() {
     // collection is about to abandon — invalidate it FIRST, so nothing
     // (hooks included) can see a window over memory whose objects are being
     // forwarded out from under it. bronze_construct refills it later.
-    bronze_alloc_cursor = 0;
-    bronze_alloc_limit = 0;
+    bronze_tls_block_addr()->alloc_cursor = 0;
+    bronze_tls_block_addr()->alloc_limit = 0;
 
     std::chrono::steady_clock::time_point gc_t0;
     if (g_gcLog.enabled) gc_t0 = std::chrono::steady_clock::now();
@@ -458,7 +454,8 @@ void Heap::collect() {
 
     // Generated code's root frames: contiguous slot arrays in compiled
     // functions' own stack frames, linked inline by compiled code.
-    for (bronze_gc_frame* frame = bronze_gc_frame_top; frame != nullptr; frame = frame->prev) {
+    for (bronze_gc_frame* frame = bronze_tls_block_addr()->frame_top; frame != nullptr;
+         frame = frame->prev) {
         Value* slots = reinterpret_cast<Value*>(frame->slots);
         for (uint64_t i = 0; i < frame->count; ++i) {
             forward_value(slots[i]);

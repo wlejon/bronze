@@ -23,12 +23,12 @@ public:
     // `entrySymbol` in llvm_backend.cpp.
     void setEntrySymbol(std::string symbol) { entrySymbol_ = std::move(symbol); }
 
-    // Compile for a runtime that will be a SHARED library. Two effects, both
-    // Windows-only and both off by default (llvm_abi.h's RuntimeLinkage says
-    // why the import half must be a mode rather than the default): the
-    // registry's data symbols are reached through import slots, and the
-    // module's three exported names are marked for export so a `/DLL` link
-    // publishes exactly them.
+    // Compile for a runtime that will be a SHARED library. Two effects:
+    // the module's three exported names are marked for export (Windows-only)
+    // so a `/DLL` link publishes exactly them, and the object is emitted
+    // position-independent so it can go into a loadable module on ELF. The
+    // ABI needs no import marking of its own — its one shared surface is
+    // functions, and an imported call is just a thunk.
     void setSharedRuntime(bool on) { sharedRuntime_ = on; }
 
     // The `--host-globals` manifest this module was compiled against, in the

@@ -97,7 +97,7 @@ uint64_t promiseConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc,
         // Step 10: the executor's throw is the promise's rejection — through
         // the reject function's latch, so an executor that resolved and THEN
         // threw keeps its first answer.
-        Rooted<Value> thrown{Value(bronze_exception_cell)};
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
         rtClearException();
         rtRejectPromise(promise, thrown);
     }
@@ -353,7 +353,7 @@ uint64_t capReject(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) 
 // Take the pending exception and reject the capability with it — the
 // IfAbruptRejectPromise every combinator wraps its iteration in.
 void rejectWithPending(Rooted<Value>& cap) {
-    Rooted<Value> thrown{Value(bronze_exception_cell)};
+    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
     rtClearException();
     rtSettleCapability(cap, thrown, /*reject=*/true);
 }

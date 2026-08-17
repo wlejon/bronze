@@ -142,22 +142,12 @@ const ArrayMethod kArrayMethods[] = {
 
 thread_local Value g_arrayPrototype = Value::fromUndefined();
 
-// Sized once and never resized, so the backing store never moves and
-// `bronze_array_method_tbl` below stays valid once published — generated code
-// reads it through the global on every sentinel IC hit.
+// Sized once and never resized, so the backing store never moves and the
+// pointer published into the TLS block's `array_method_tbl` stays valid —
+// generated code reads it through the block on every sentinel IC hit.
 static thread_local std::vector<Value> g_arrayMethodValues(1 + std::size(kArrayMethods), Value::fromUndefined());
 
 }  // namespace
-
-extern "C" {
-// Published LAZILY from rtArrayMethodById, never at static init: the vector
-// is thread_local, so a static initializer would capture whatever storage the
-// TLS machinery had at CRT-init time rather than the running thread's table.
-// The sentinel IC only arms after a helper call resolved the method — which
-// goes through rtArrayMethodById — so by the time generated code reads this
-// global, the thread running compiled code has published its own table.
-uint64_t* bronze_array_method_tbl = nullptr;
-}
 
 void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit) {
     for (Value& v : g_arrayMethodValues) visit(v);
@@ -172,7 +162,11 @@ uint32_t rtArrayMethodId(const std::string& key) {
 }
 
 Value rtArrayMethodById(uint32_t id) {
-    bronze_array_method_tbl = reinterpret_cast<uint64_t*>(g_arrayMethodValues.data());
+    // Published lazily rather than at static init: the sentinel IC only arms
+    // after a helper call resolved the method — which goes through here — so
+    // by the time generated code reads the block field, the thread running
+    // that code has published its own table.
+    bronze_tls_block_addr()->array_method_tbl = reinterpret_cast<uint64_t*>(g_arrayMethodValues.data());
     if (id >= g_arrayMethodValues.size()) return Value::fromUndefined();
     if (g_arrayMethodValues[id].isUndefined()) {
         if (id == 0) {

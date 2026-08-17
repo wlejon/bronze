@@ -6,8 +6,8 @@
 
 // The pending-exception cell and the `Error` family.
 //
-// The cell itself is an ABI global (`bronze_exception_cell` in
-// bronze_abi.h) because generated code loads and compares it inline. What is
+// The cell itself is the `exception_cell` field of the per-thread ABI block
+// (bronze_abi.h) because generated code loads and compares it inline. What is
 // here is everything ABOVE that word: how a runtime helper raises a spec'd
 // error, how a helper that calls back into JS notices one, and the three
 // constructors a program can reach by name.

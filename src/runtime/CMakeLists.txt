@@ -8,6 +8,7 @@ bronze_add_module(runtime
         bignum.cpp
         bigint.cpp
         value.cpp
+        tls_block.cpp
         heap.cpp
         gc.cpp
         env.cpp

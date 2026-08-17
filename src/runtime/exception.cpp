@@ -21,15 +21,6 @@
 #include "runtime/string.h"
 #include "runtime/value.h"
 
-extern "C" {
-
-// Defined here rather than in rt_state.cpp because everything that reads or
-// writes it is in this file; its ROOT registration is below, and the
-// registration is what the collector needs, not the storage.
-uint64_t bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-
-}  // extern "C"
-
 namespace bronze::runtime {
 
 namespace {
@@ -146,7 +137,10 @@ void ensureExceptionRoots() {
         // spans an arbitrary number of frames and every collection inside
         // them. Nothing else roots it — the value has left the throwing
         // frame's root slots by the time any handler sees it.
-        rtHeap().add_permanent_root(reinterpret_cast<Value*>(&bronze_exception_cell));
+        // The cell lives in this thread's bronze_tls_block, so the root goes
+        // to this thread's heap and covers exactly this thread's pending
+        // exception — another thread's cell is another block on another heap.
+        rtHeap().add_permanent_root(reinterpret_cast<Value*>(&bronze_tls_block_addr()->exception_cell));
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (ErrorClass& c : g_errorClasses) {
                 visit(c.constructor);
@@ -391,10 +385,12 @@ bool lookupDataProperty(ObjectHeader* obj, StringHeader* key, Value& out) {
 }  // namespace
 
 bool rtExceptionPending() noexcept {
-    return bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
+    return bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
-void rtClearException() noexcept { bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+void rtClearException() noexcept {
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
 
 Value rtThrow(Value thrown) noexcept {
     // `throw "x"` never touches the Error classes, so this is the one place
@@ -408,7 +404,7 @@ Value rtThrow(Value thrown) noexcept {
     if (rtExceptionPending()) {
         fatal("internal: a second exception raised while one is already pending");
     }
-    bronze_exception_cell = thrown.rawBits();
+    bronze_tls_block_addr()->exception_cell = thrown.rawBits();
     return Value::fromUndefined();
 }
 
@@ -529,7 +525,7 @@ uint64_t bronze_immutable_assign(void) {
 // which is what node does and what keeps an uncaught-throw oracle case
 // pinnable: stdout holds exactly what the program printed before it died.
 void bronze_uncaught_exception() {
-    const std::string text = rtUncaughtText(Value(bronze_exception_cell));
+    const std::string text = rtUncaughtText(Value(bronze_tls_block_addr()->exception_cell));
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);

@@ -12,15 +12,12 @@ namespace bronze {
 // shape compare anyway; this makes it miss twice over rather than rely on
 // that one guard staying first.
 //
-// An ABI data symbol rather than a static, because generated code now reads
-// it: the inline proto-hit and shape-transition fast paths compare an entry's
-// fill epoch against it, which is the same question `describes` asks here.
-extern "C" {
-uint64_t bronze_proto_epoch = 1;
-}
-
-uint64_t protoMutationEpoch() noexcept { return bronze_proto_epoch; }
-void bumpProtoMutationEpoch() noexcept { ++bronze_proto_epoch; }
+// A field of the per-thread ABI block rather than a static, because
+// generated code reads it: the inline proto-hit and shape-transition fast
+// paths compare an entry's fill epoch against it, which is the same question
+// `describes` asks here. Per-thread because the shapes and ICs it guards are.
+uint64_t protoMutationEpoch() noexcept { return bronze_tls_block_addr()->proto_epoch; }
+void bumpProtoMutationEpoch() noexcept { ++bronze_tls_block_addr()->proto_epoch; }
 
 namespace {
 

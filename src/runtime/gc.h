@@ -36,7 +36,8 @@ private:
 
 // The generated-code half of the shadow stack is the bronze_gc_frame linked
 // list declared in the ABI registry: compiled functions allocate a frame in
-// their own stack frame and link it onto bronze_gc_frame_top inline, with no
+// their own stack frame and link it onto their thread's `frame_top` (the
+// per-thread ABI block, bronze_abi.h) inline, with no
 // helper call. The collector walks that list alongside the ShadowStackFrame
 // chain above. Contiguous slots rather than a vector of slot pointers because
 // generated code cannot build a vector — and does not need to: its slot count

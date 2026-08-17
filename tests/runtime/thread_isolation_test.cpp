@@ -3,12 +3,11 @@
 // does — allocation, intrinsic construction, collection — may disturb the
 // first thread's runtime.
 //
-// A doctest and not an oracle case, deliberately: compiled code still reaches
-// its runtime through process-global ABI symbols (bronze_gc_frame_top, the
-// alloc window), so GENERATED code runs on one thread until the per-thread
-// ABI block lands. What is per-thread today is the C++ runtime, and only C++
-// can exercise a second thread's copy of it — which is exactly what this file
-// does.
+// A doctest deliberately driving the runtime from C++: it proves the C++
+// half of per-thread isolation on its own, with no compiled module in the
+// loop. Generated code reaches the same per-thread state through the
+// bronze_tls_block its prologue fetches; tests/threaded_modules covers that
+// half with two compiled modules on two threads.
 //
 // The worker records plain facts and the ASSERTIONS all run on the main
 // thread after join: doctest's assertion machinery is not something two

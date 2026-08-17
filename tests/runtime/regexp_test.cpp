@@ -182,7 +182,7 @@ TEST_CASE("a pattern that does not compile is a catchable SyntaxError") {
     CHECK(bad.get().isUndefined());
     REQUIRE(rtExceptionPending());
     std::string text;
-    CHECK(rtErrorText(Value(bronze_exception_cell), text));
+    CHECK(rtErrorText(Value(bronze_tls_block_addr()->exception_cell), text));
     CHECK(text.find("SyntaxError") == 0);
     CHECK(text.find("Invalid regular expression") != std::string::npos);
     rtClearException();

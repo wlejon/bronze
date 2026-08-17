@@ -44,7 +44,7 @@ namespace {
 // Leaves the pending-exception cell clean whatever a CHECK did, so one failing
 // expectation cannot make every later test in the binary look like it threw.
 struct ClearCell {
-    ~ClearCell() { bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
 };
 
 Value newBuffer(uint32_t byteLength) {
@@ -103,9 +103,9 @@ Value num(double d) { return Value::fromDouble(d); }
 std::string pendingText() {
     if (!rtExceptionPending()) return "";
     std::string out;
-    Value thrown(bronze_exception_cell);
+    Value thrown(bronze_tls_block_addr()->exception_cell);
     rtErrorText(thrown, out);
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
     return out;
 }
 

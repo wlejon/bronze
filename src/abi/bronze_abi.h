@@ -89,7 +89,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_UNDEFINED_BITS 0xFFF6000000000000ull
 #define BRONZE_ABI_NULL_BITS      0xFFF5000000000000ull
 
-/* The Hole singleton, which is what `bronze_exception_cell` holds when no
+/* The Hole singleton, which is what the TLS block's `exception_cell` holds when no
  * exception is pending. The Hole is internal by construction — the value model
  * forbids it from ever being a user-visible value — so it can mean "empty"
  * without colliding with anything throwable, and its payload is 0, so "is
@@ -127,6 +127,14 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  *            (BRONZE_ABI_NOARGS) for an empty parameter list
  */
 #define BRONZE_ABI_FUNCTIONS(X) \
+    /* The calling thread's ABI data block (bronze_tls_block below): the ONE\
+     * data surface generated code shares with the runtime. A function call\
+     * rather than data symbols because Windows cannot import a thread_local\
+     * across a DLL boundary — cross-image TLS is reachable only through a\
+     * call — and per-thread is the point: each compiled function fetches its\
+     * thread's block once in its prologue and reaches every field by fixed\
+     * offset from that base. */ \
+    X(bronze_tls_block_addr,      BRONZE_ABI_TLSPTR, (BRONZE_ABI_NOARGS)) \
     X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_is_nullish,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_strict_eq,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
@@ -333,61 +341,21 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_math_max2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64))
 
 /*
- * Data symbols generated code links against. Same single-source-of-truth
- * rule as the function registry: never hand-declare one in the backend.
+ * There are no data symbols in this ABI. Every mutable word generated code
+ * shares with the runtime lives in the per-thread `bronze_tls_block` defined
+ * after the GC-frame layout below, reached through bronze_tls_block_addr()
+ * (first entry in the registry above).
  *
- * X(name, TYPE)
+ * The provided-globals cache and the function-singleton slot cache are not
+ * in the block either: they are arrays in the MODULE's own data, sized at
+ * compile time and registered with the runtime at module init
+ * (bronze_register_value_cells / bronze_register_fn_slots above). Two
+ * compiled modules in one process is why — a runtime-owned table indexed by
+ * module-assigned numbers has exactly one owner, and a second module's
+ * index 7 is not the first's. Module-owned is also the cheaper shape: the
+ * length is a compile-time fact, so the bounds check and the table-pointer
+ * load both disappear and the cell is a constant address.
  */
-#define BRONZE_ABI_GLOBALS(X) \
-    X(bronze_gc_frame_top,   BRONZE_ABI_FRAMEPTR) \
-    X(bronze_exception_cell, BRONZE_ABI_U64) \
-    /* The prototype-mutation epoch (runtime/object.h): what makes a cached
-     * depth > 0 property hit sound, read inline by the proto-hit fast path. */ \
-    X(bronze_proto_epoch,    BRONZE_ABI_U64) \
-    /* The provided-globals cache and the function-singleton slot cache used to
-     * live here, as runtime-owned vectors republished as raw pointers. They are
-     * now arrays in the MODULE's own data, sized at compile time and registered
-     * with the runtime at module init (bronze_register_value_cells /
-     * bronze_register_fn_slots above). Two compiled modules in one process is
-     * why: a runtime-owned table indexed by module-assigned numbers has exactly
-     * one owner, and a second module's index 7 is not the first's. Module-owned
-     * also makes the fast path cheaper rather than dearer — the length is a
-     * compile-time fact, so the bounds check and the table-pointer load both
-     * disappear and the cell is a constant address. */ \
-    /* The inline-allocation window: [cursor, limit) is heap memory the
-     * runtime has carved out of from-space for generated code to bump-
-     * allocate plain `new` instances from (heap.cpp owns both). The inline
-     * path only ever ADVANCES cursor when the object fits — it can never
-     * collect — and every miss (window empty, invalidated, or disabled)
-     * falls back to bronze_construct, which refills it. Both words are
-     * zeroed by every collection, because the window points into the
-     * semispace the collector is abandoning. Zero/zero is also the initial
-     * and the BRONZE_NO_INLINE_ALLOC=1 state: the subtraction limit-cursor
-     * is then 0, no size fits, and the fast path is dormant. */ \
-    X(bronze_alloc_cursor, BRONZE_ABI_U64) \
-    X(bronze_alloc_limit,  BRONZE_ABI_U64) \
-    /* The inline dynamic call enable flag: 1 by default, set to 0 under
-     * BRONZE_NO_INLINE_CALL=1 so one binary can A/B test dynamic-call
-     * inlining against the helper trampoline. */ \
-    X(bronze_inline_call_enabled, BRONZE_ABI_U64) \
-    /* The plain object root shape pointer for inline object creation. */ \
-    X(bronze_plain_shape, BRONZE_ABI_U64) \
-    /* The inline array method IC enable flag: 1 by default, set to 0 under
-     * BRONZE_NO_ARRAY_METHOD_IC=1 so one binary can A/B test array method
-     * IC inlining against the helper. */ \
-    X(bronze_array_method_ic_enabled, BRONZE_ABI_U64) \
-    /* The inline overflow slot set enable flag: 1 by default, set to 0 under
-     * BRONZE_NO_INLINE_OVERFLOW_SET=1 so one binary can A/B test inline
-     * overflow property stores against the helper. */ \
-    X(bronze_inline_overflow_set_enabled, BRONZE_ABI_U64) \
-    /* The inline accessor enable flag: 1 by default, set to 0 under
-     * BRONZE_NO_INLINE_ACCESSOR=1 so one binary can A/B test inline
-     * accessor getter/setter calls against the helper. */ \
-    X(bronze_inline_accessor_enabled, BRONZE_ABI_U64) \
-    /* The array method singleton table: published by the runtime and rooted
-     * across GC collections. Indexed by array method ID (0 for constructor,
-     * 1..N for Array.prototype methods). */ \
-    X(bronze_array_method_tbl, BRONZE_ABI_MU64)
 
 /*
  * ---- the inline property cache contract ---------------------------------
@@ -419,7 +387,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * `cached_shape` holds BRONZE_ABI_IC_SHAPE_ARRAY_METHOD ((uintptr_t)1).
  * Real Shape pointers are 8-byte aligned arena allocations and can never be 1.
  * The slot word then holds the method ID — an index into
- * `bronze_array_method_tbl`, NOT a Value: the collector moves function
+ * the TLS block's `array_method_tbl`, NOT a Value: the collector moves function
  * objects, so the Value lives in that rooted table and the entry stores
  * only the immortal index. The epoch word is 0 and unread for these
  * entries. Only GET sites ever hold the sentinel (lowering never shares
@@ -586,13 +554,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 
 /*
  * A generated function's GC root frame: allocated in the
- * function's own stack frame, linked onto bronze_gc_frame_top on entry and
- * unlinked before every return, so the collector can find every Dynamic
- * value compiled code is holding. Generated code links and unlinks inline
- * — no helper call — because the call-heavy path pays this per invocation.
+ * function's own stack frame, linked onto its thread's `frame_top` (in the
+ * bronze_tls_block below) on entry and unlinked before every return, so the
+ * collector can find every Dynamic value compiled code is holding. Generated
+ * code links and unlinks inline — no helper call — because the call-heavy
+ * path pays this per invocation.
  *
- * `slots` is `count` entries long, inline after the header. Deliberately
- * NOT thread-local: bronze has no threads and no design for them (0006).
+ * `slots` is `count` entries long, inline after the header.
  */
 typedef struct bronze_gc_frame {
     struct bronze_gc_frame* prev;
@@ -601,24 +569,93 @@ typedef struct bronze_gc_frame {
 } bronze_gc_frame;
 
 /*
- * The pending exception. `bronze_exception_cell` holds
- * the thrown value, or BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending.
- * Generated code, after every instruction that can throw, loads it, compares
- * it against that constant and branches — no helper call, for the same reason
- * the GC frame is linked inline: this is on the call-heavy path.
+ * The per-thread ABI data block: every mutable word generated code shares
+ * with the runtime, one instance per OS thread, fetched once per compiled
+ * function through bronze_tls_block_addr() and read or written at fixed byte
+ * offsets from that base. One block rather than one thread_local per word
+ * because Windows cannot import a thread_local across a DLL boundary, so
+ * per-thread data costs a call — and one call covering all eleven words is
+ * the cheapest that call gets.
  *
- * Two rules the runtime side must keep, because nothing enforces them:
+ * The layout is ABI: the BRONZE_TLS_*_OFF constants below are what codegen
+ * emits, the runtime static_asserts them against this struct (tls_block.cpp),
+ * and any change here moves the fingerprint. Field order is by heat — the
+ * frame link and the exception cell are touched per call.
  *
- *  - a helper that sets the cell RETURNS BRONZE_ABI_UNDEFINED_BITS. Its
- *    caller stores the result into a GC root slot before it tests the cell,
- *    and the collector reads every slot of a linked frame.
- *  - the cell is a permanent GC root. A thrown object is live for exactly as
- *    long as it is pending, across an arbitrary number of frames, and nothing
- *    else roots it.
+ * The fields:
  *
- * There is no unwind ABI beyond this: propagation is an ordinary `ret`, so
- * the frame pop before it is the one the non-throwing path already emits.
+ *  - frame_top: head of this thread's chain of bronze_gc_frame records.
+ *
+ *  - exception_cell: the pending exception — the thrown value, or
+ *    BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending. Generated code,
+ *    after every instruction that can throw, loads it, compares it against
+ *    that constant and branches — no helper call, for the same reason the GC
+ *    frame is linked inline: this is on the call-heavy path. Two rules the
+ *    runtime side must keep, because nothing enforces them: a helper that
+ *    sets the cell RETURNS BRONZE_ABI_UNDEFINED_BITS (its caller stores the
+ *    result into a GC root slot before it tests the cell, and the collector
+ *    reads every slot of a linked frame); and the cell is a permanent GC
+ *    root — a thrown object is live for exactly as long as it is pending,
+ *    across an arbitrary number of frames, and nothing else roots it. There
+ *    is no unwind ABI beyond this: propagation is an ordinary `ret`, so the
+ *    frame pop before it is the one the non-throwing path already emits.
+ *
+ *  - proto_epoch: the prototype-mutation epoch (runtime/object.h): what
+ *    makes a cached depth > 0 property hit sound, read inline by the
+ *    proto-hit fast path.
+ *
+ *  - alloc_cursor / alloc_limit: the inline-allocation window.
+ *    [cursor, limit) is heap memory the runtime has carved out of from-space
+ *    for generated code to bump-allocate plain `new` instances from
+ *    (heap.cpp owns both). The inline path only ever ADVANCES cursor when
+ *    the object fits — it can never collect — and every miss (window empty,
+ *    invalidated, or disabled) falls back to bronze_construct, which refills
+ *    it. Both words are zeroed by every collection, because the window
+ *    points into the semispace the collector is abandoning. Zero/zero is
+ *    also the initial and the BRONZE_NO_INLINE_ALLOC=1 state: the unsigned
+ *    subtraction limit-cursor is then 0, no size fits, and the fast path is
+ *    dormant.
+ *
+ *  - plain_shape: the plain object root shape pointer for inline object
+ *    creation.
+ *
+ *  - inline_call_enabled / array_method_ic_enabled /
+ *    inline_overflow_set_enabled / inline_accessor_enabled: the inline
+ *    fast-path enable flags, 1 by default, each set to 0 per thread under
+ *    its BRONZE_NO_* environment variable (BRONZE_NO_INLINE_CALL,
+ *    BRONZE_NO_ARRAY_METHOD_IC, BRONZE_NO_INLINE_OVERFLOW_SET,
+ *    BRONZE_NO_INLINE_ACCESSOR) so one binary can A/B test each inline path
+ *    against its helper.
+ *
+ *  - array_method_tbl: the array method singleton table, published by the
+ *    runtime and rooted across GC collections. Indexed by array method ID
+ *    (0 for constructor, 1..N for Array.prototype methods).
  */
+typedef struct bronze_tls_block {
+    bronze_gc_frame* frame_top;
+    uint64_t exception_cell;
+    uint64_t proto_epoch;
+    uint64_t alloc_cursor;
+    uint64_t alloc_limit;
+    uint64_t plain_shape;
+    uint64_t inline_call_enabled;
+    uint64_t array_method_ic_enabled;
+    uint64_t inline_overflow_set_enabled;
+    uint64_t inline_accessor_enabled;
+    uint64_t* array_method_tbl;
+} bronze_tls_block;
+
+#define BRONZE_TLS_FRAME_TOP_OFF                   0
+#define BRONZE_TLS_EXCEPTION_CELL_OFF              8
+#define BRONZE_TLS_PROTO_EPOCH_OFF                16
+#define BRONZE_TLS_ALLOC_CURSOR_OFF               24
+#define BRONZE_TLS_ALLOC_LIMIT_OFF                32
+#define BRONZE_TLS_PLAIN_SHAPE_OFF                40
+#define BRONZE_TLS_INLINE_CALL_ENABLED_OFF        48
+#define BRONZE_TLS_ARRAY_METHOD_IC_ENABLED_OFF    56
+#define BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF 64
+#define BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF    72
+#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF           80
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds
@@ -631,7 +668,7 @@ typedef struct bronze_gc_frame {
 #define BRONZE_ABI_CSTR   const char*
 #define BRONZE_ABI_PU64   const uint64_t*
 #define BRONZE_ABI_MU64   uint64_t*
-#define BRONZE_ABI_FRAMEPTR bronze_gc_frame*
+#define BRONZE_ABI_TLSPTR bronze_tls_block*
 #define BRONZE_ABI_FNPTR  bronze_fn_code
 #define BRONZE_ABI_VOID   void
 #define BRONZE_ABI_NOARGS void
@@ -639,10 +676,6 @@ typedef struct bronze_gc_frame {
 #define BRONZE_ABI_DECLARE(name, RET, PARAMS) RET name PARAMS;
 BRONZE_ABI_FUNCTIONS(BRONZE_ABI_DECLARE)
 #undef BRONZE_ABI_DECLARE
-
-#define BRONZE_ABI_DECLARE_GLOBAL(name, TYPE) extern TYPE name;
-BRONZE_ABI_GLOBALS(BRONZE_ABI_DECLARE_GLOBAL)
-#undef BRONZE_ABI_DECLARE_GLOBAL
 
 #undef BRONZE_ABI_U64
 #undef BRONZE_ABI_U32
@@ -652,7 +685,7 @@ BRONZE_ABI_GLOBALS(BRONZE_ABI_DECLARE_GLOBAL)
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
 #undef BRONZE_ABI_MU64
-#undef BRONZE_ABI_FRAMEPTR
+#undef BRONZE_ABI_TLSPTR
 #undef BRONZE_ABI_FNPTR
 #undef BRONZE_ABI_VOID
 #undef BRONZE_ABI_NOARGS

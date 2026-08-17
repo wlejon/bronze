@@ -32,37 +32,42 @@ struct AbiFns {
 #undef BRONZE_ABI_FIELD
 };
 
-// Likewise for the registry's data symbols.
+// The addresses of the per-thread ABI block's fields (bronze_abi.h,
+// `bronze_tls_block`), bound PER FUNCTION by bindTlsBlock below: each member
+// is a pointer into the calling thread's block, computed as a fixed-offset
+// GEP off the base one bronze_tls_block_addr() call fetched in the prologue.
+// Members keep the names of the data symbols these words used to be, because
+// every use site reads exactly as it did when they were symbols — a load or
+// store through a pointer.
+//
+// This is also why a shared runtime needs no data-import marking on any
+// platform: the one symbol involved is a FUNCTION, and the linker synthesizes
+// a thunk for an imported call. (Windows cannot dllimport a thread_local at
+// all, which is why the block sits behind a call in the first place.)
 struct AbiGlobals {
-#define BRONZE_ABI_GLOBAL_FIELD(name, TYPE) llvm::GlobalVariable* name;
-    BRONZE_ABI_GLOBALS(BRONZE_ABI_GLOBAL_FIELD)
-#undef BRONZE_ABI_GLOBAL_FIELD
-};
-
-// Where the runtime this object will run against lives.
-//
-// It changes exactly one thing, and only on Windows: how the registry's DATA
-// symbols are reached. A DLL's exported data is not at a link-time address —
-// the loader writes the real address into an import slot, and a reference
-// compiled as if the symbol were in this image reads the slot itself instead
-// of what it points at. `dllimport` is what makes the reference an indirect
-// load through that slot. FUNCTIONS need nothing: the linker synthesizes a
-// thunk for an imported call, which is why only the globals are marked.
-//
-// A MODE and not a default, because the marking is not free — every inline
-// fast path that reads bronze_alloc_cursor or bronze_proto_epoch pays an extra
-// load — and because the static output has to stay exactly what it was. With
-// `Static` this function emits what it has always emitted, byte for byte.
-enum class RuntimeLinkage {
-    Static,
-    Shared,
+    llvm::Value* bronze_gc_frame_top = nullptr;
+    llvm::Value* bronze_exception_cell = nullptr;
+    llvm::Value* bronze_proto_epoch = nullptr;
+    llvm::Value* bronze_alloc_cursor = nullptr;
+    llvm::Value* bronze_alloc_limit = nullptr;
+    llvm::Value* bronze_plain_shape = nullptr;
+    llvm::Value* bronze_inline_call_enabled = nullptr;
+    llvm::Value* bronze_array_method_ic_enabled = nullptr;
+    llvm::Value* bronze_inline_overflow_set_enabled = nullptr;
+    llvm::Value* bronze_inline_accessor_enabled = nullptr;
+    llvm::Value* bronze_array_method_tbl = nullptr;
 };
 
 // Declares every registry symbol into `llvmModule`. Declarations only: the
 // runtime owns every definition.
-void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
-                       AbiGlobals& globals,
-                       RuntimeLinkage linkage = RuntimeLinkage::Static);
+void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns);
+
+// One call to bronze_tls_block_addr at the current insert point — which must
+// be a function's entry block, so the base dominates every later use — and a
+// GEP per field. The accessor is declared readnone/nounwind/willreturn, so a
+// function that ends up touching no field sees the call and its GEPs folded
+// away entirely rather than paying for the fetch.
+AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns);
 
 // The four tables a compiled module owns, all internal to its object file.
 //

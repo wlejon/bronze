@@ -26,7 +26,8 @@ void runEntry(ModuleEntry entry) {
     // The root frame runMain opens, for the same reason: Rooted<> handles
     // inside runtime helpers register here, and a host calling in from its own
     // frame loop has no bronze frame on the stack. Generated code links its
-    // own contiguous slot frames onto bronze_gc_frame_top separately.
+    // own contiguous slot frames onto its thread's ABI-block frame_top
+    // separately.
     //
     // NOT the ABI check: the fingerprint the loader must compare is the
     // MODULE's stamp, and a module that arrived through dlopen carries it as a

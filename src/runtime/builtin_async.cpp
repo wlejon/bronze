@@ -190,7 +190,7 @@ void resumeMachine(Rooted<Value>& machine, uint32_t mode, Rooted<Value>& sent) {
         // body's resumption to propagate into. (At `start` that frame exists,
         // and the answer is the same: `async function f() { throw x }` returns
         // a rejected promise rather than throwing at the call site.)
-        Rooted<Value> thrown{Value(bronze_exception_cell)};
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
         rtClearException();
         setState(machine, MachineState::Completed);
         settleFromCompletion(machine, thrown, /*rejected=*/true);

@@ -99,7 +99,7 @@ void runResolutionSteps(Rooted<Value>& promise, Rooted<Value>& value) {
     Rooted<Value> thenKey{rtMakeString("then")};
     Rooted<Value> thenFn{Value(bronze_elem_get(value.get().rawBits(), thenKey.get().rawBits()))};
     if (rtExceptionPending()) {
-        Rooted<Value> thrown{Value(bronze_exception_cell)};
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
         rtClearException();
         settleInternal(promise, thrown, /*reject=*/true);
         return;
@@ -325,7 +325,7 @@ void rtRunReactionJob(Rooted<Value>& handler, Rooted<Value>& capability,
         if (rtExceptionPending()) {
             // The handler's throw is the capability's rejection (step 1.e-g),
             // never an escape from the drain.
-            result.set(Value(bronze_exception_cell));
+            result.set(Value(bronze_tls_block_addr()->exception_cell));
             rtClearException();
             resultRejected = true;
         } else {
@@ -526,7 +526,7 @@ void rtRunThenableJob(Rooted<Value>& promise, Rooted<Value>& thenable, Rooted<Va
     uint64_t argBits[2] = {resolveFn.get().rawBits(), rejectFn.get().rawBits()};
     bronze_dynamic_call(thenFn.get().rawBits(), thenable.get().rawBits(), 2, argBits);
     if (rtExceptionPending()) {
-        Rooted<Value> thrown{Value(bronze_exception_cell)};
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
         rtClearException();
         if (takePairLatch(pair.get())) {
             settleInternal(promise, thrown, /*reject=*/true);

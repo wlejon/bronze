@@ -6,18 +6,21 @@
 # it: a hand-maintained .def is a second copy of the ABI that drifts the first
 # time a chunk adds a helper — the exact failure the registry exists to make
 # impossible — and a dllexport macro spread across the 95 runtime sources puts
-# a build concern in every file that happens to define a helper, and still
-# cannot express the `DATA` tag a data symbol needs.
+# a build concern in every file that happens to define a helper.
 #
-# So the list is SCANNED out of the registry macros at configure time. Adding
-# an `X(...)` line to BRONZE_ABI_FUNCTIONS or BRONZE_ABI_GLOBALS remains the
+# The surface is functions only: the ABI has no data symbols (every mutable
+# word generated code shares with the runtime is a field of the per-thread
+# bronze_tls_block, reached through the exported bronze_tls_block_addr).
+#
+# So the list is SCANNED out of the registry macro at configure time. Adding
+# an `X(...)` line to BRONZE_ABI_FUNCTIONS remains the
 # only edit a new ABI symbol needs: the header is on CMAKE_CONFIGURE_DEPENDS
 # (src/abi puts it there for the fingerprint; this file repeats it so the
 # property does not depend on that directory being configured first), so the
 # edit re-runs configure and every export file is rewritten from the new text.
 #
 # The scan is CHECKED rather than trusted. Every line in the header that opens
-# with `X(` must have been claimed by one of the two blocks; a third registry
+# with `X(` must have been claimed by the registry block; a second registry
 # macro, or a reformatting that breaks the block detection, is a configure-time
 # error naming the count instead of a symbol that silently stops being
 # exported and surfaces as an unresolved import in someone else's build.
@@ -86,16 +89,14 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     # which is CMake's escape for that separator, so the whole registry
     # collapses into one element and nothing inside it is ever seen.
     #
-    # So each block is cut out by position instead — from its `#define` to the
+    # So the block is cut out by position instead — from its `#define` to the
     # blank line that ends it — and the entries are matched out of the cut with
-    # one regex. Both blocks are contiguous by construction: a registry entry
+    # one regex. The block is contiguous by construction: a registry entry
     # and the prose explaining it are one macro, and a blank line inside a
     # macro would end the macro.
     bronze_abi_cut_block("${_text}" "#define BRONZE_ABI_FUNCTIONS(X)" _fns_text _after_fns)
-    bronze_abi_cut_block("${_text}" "#define BRONZE_ABI_GLOBALS(X)" _globals_text _after_globals)
 
     bronze_abi_entry_names("${_fns_text}" _fns)
-    bronze_abi_entry_names("${_globals_text}" _globals)
 
     if(_fns STREQUAL "")
         message(FATAL_ERROR
@@ -104,25 +105,19 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
             "a DLL built from an empty list exports nothing and every compiled module "
             "fails to link against it.")
     endif()
-    if(_globals STREQUAL "")
-        message(FATAL_ERROR
-            "bronze_abi_export_files: found no X(...) lines in BRONZE_ABI_GLOBALS in "
-            "${header}. See above - the data symbols are the half a module cannot reach "
-            "through an import thunk, so a missing one is a wrong address, not a link error.")
-    endif()
 
-    # Nothing that LOOKS like a registry entry may sit outside the two blocks.
+    # Nothing that LOOKS like a registry entry may sit outside the block.
     # That is the check that keeps this scan honest as the header grows: a
-    # third registry macro, or an entry accidentally left after a block's
+    # second registry macro, or an entry accidentally left after the block's
     # blank line, is a configure-time error here instead of a symbol that
     # quietly stops being exported and surfaces as an unresolved import in
     # someone else's build.
-    bronze_abi_entry_names("${_after_globals}" _stray)
+    bronze_abi_entry_names("${_after_fns}" _stray)
     if(NOT _stray STREQUAL "")
         message(FATAL_ERROR
             "bronze_abi_export_files: ${_stray} in ${header} look like registry entries but "
-            "fall outside BRONZE_ABI_FUNCTIONS and BRONZE_ABI_GLOBALS. Either a third "
-            "registry macro was added - teach this scan about it - or a block grew a blank "
+            "fall outside BRONZE_ABI_FUNCTIONS. Either a second "
+            "registry macro was added - teach this scan about it - or the block grew a blank "
             "line and now ends early.")
     endif()
 
@@ -132,12 +127,6 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     string(APPEND _def_text "EXPORTS\n")
     foreach(_name IN LISTS _fns)
         string(APPEND _def_text "    ${_name}\n")
-    endforeach()
-    # DATA is not decoration: without it the linker exports the address of a
-    # thunk, and a module that took the import through one would read its
-    # exception cell out of code bytes.
-    foreach(_name IN LISTS _globals)
-        string(APPEND _def_text "    ${_name} DATA\n")
     endforeach()
 
     # ---- ELF: the version script -------------------------------------------
@@ -152,7 +141,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_ver_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _ver_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _ver_text "{\n  global:\n")
-    foreach(_name IN LISTS _fns _globals)
+    foreach(_name IN LISTS _fns)
         string(APPEND _ver_text "    ${_name};\n")
     endforeach()
     string(APPEND _ver_text "    _ZN6bronze5embed*;\n")
@@ -166,7 +155,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     # mangled name picks up on top of it).
     set(_exp_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _exp_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
-    foreach(_name IN LISTS _fns _globals)
+    foreach(_name IN LISTS _fns)
         string(APPEND _exp_text "_${_name}\n")
     endforeach()
     string(APPEND _exp_text "__ZN6bronze5embed*\n")

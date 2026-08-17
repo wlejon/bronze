@@ -316,7 +316,7 @@ void rtRunFinalizationCleanupJob() {
             // has no caller to propagate to. Reported on stderr — so an oracle
             // case's stdout stays byte-pinned around it — and cleared, because
             // the remaining callbacks are not this one's business.
-            const std::string text = rtUncaughtText(Value(bronze_exception_cell));
+            const std::string text = rtUncaughtText(Value(bronze_tls_block_addr()->exception_cell));
             rtClearException();
             std::fflush(stdout);
             std::fprintf(stderr, "%s in a FinalizationRegistry cleanup callback\n", text.c_str());

@@ -34,20 +34,7 @@ static_assert(BRONZE_ABI_FNSLOT_SIZE % sizeof(uint64_t) == 0,
 static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0, "word 0 of a slot is the code pointer");
 static_assert(BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8, "word 1 of a slot is the Value");
 
-void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
-                       AbiGlobals& globals, RuntimeLinkage linkage) {
-    // Import storage is a COFF concept, and bronze emits for the host triple
-    // and only the host triple (writeObjectFile takes getDefaultTargetTriple),
-    // so the host's own platform is the answer to "is this object COFF". On
-    // ELF and Mach-O a shared runtime needs no marking at all: a data
-    // reference goes through the GOT whether the definition turns out to be in
-    // this image or another one, which is why only this branch exists.
-#ifdef _WIN32
-    const bool importData = (linkage == RuntimeLinkage::Shared);
-#else
-    const bool importData = false;
-    (void)linkage;
-#endif
+void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns) {
     auto getOrDeclareFunc = [&](const char* name, llvm::FunctionType* fty) -> llvm::Function* {
         llvm::Function* fn = llvmModule.getFunction(name);
         if (!fn) {
@@ -64,7 +51,7 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_MU64   llvm::PointerType::getUnqual(ctx)
-#define BRONZE_ABI_FRAMEPTR llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_TLSPTR llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_VOID   llvm::Type::getVoidTy(ctx)
 #define BRONZE_ABI_NOARGS
@@ -77,15 +64,11 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
 #undef BRONZE_ABI_LLVM_DECLARE
 
-#define BRONZE_ABI_LLVM_DECLARE_GLOBAL(name, TYPE)                                     \
-    globals.name = new llvm::GlobalVariable(llvmModule, TYPE, /*isConstant=*/false,    \
-                                            llvm::GlobalValue::ExternalLinkage,        \
-                                            /*Initializer=*/nullptr, #name);           \
-    if (importData) {                                                                  \
-        globals.name->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);     \
-    }
-    BRONZE_ABI_GLOBALS(BRONZE_ABI_LLVM_DECLARE_GLOBAL)
-#undef BRONZE_ABI_LLVM_DECLARE_GLOBAL
+    // The TLS-block accessor returns an address that is a per-thread
+    // constant: readnone + willreturn is what lets LLVM fold a function's
+    // fetch away when nothing uses it and CSE it when something does.
+    fns.bronze_tls_block_addr->setDoesNotAccessMemory();
+    fns.bronze_tls_block_addr->addFnAttr(llvm::Attribute::WillReturn);
 
 #undef BRONZE_ABI_UNPAREN
 #undef BRONZE_ABI_U64
@@ -96,10 +79,35 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
 #undef BRONZE_ABI_MU64
-#undef BRONZE_ABI_FRAMEPTR
+#undef BRONZE_ABI_TLSPTR
 #undef BRONZE_ABI_FNPTR
 #undef BRONZE_ABI_VOID
 #undef BRONZE_ABI_NOARGS
+}
+
+AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns) {
+    llvm::Value* base = builder.CreateCall(fns.bronze_tls_block_addr, {}, "tls");
+    llvm::Type* i8Ty = builder.getInt8Ty();
+    auto field = [&](uint64_t off, const char* name) -> llvm::Value* {
+        if (off == 0) return base;
+        return builder.CreateConstInBoundsGEP1_64(i8Ty, base, off, name);
+    };
+    AbiGlobals g;
+    g.bronze_gc_frame_top = field(BRONZE_TLS_FRAME_TOP_OFF, "tls.frame_top");
+    g.bronze_exception_cell = field(BRONZE_TLS_EXCEPTION_CELL_OFF, "tls.exc");
+    g.bronze_proto_epoch = field(BRONZE_TLS_PROTO_EPOCH_OFF, "tls.epoch");
+    g.bronze_alloc_cursor = field(BRONZE_TLS_ALLOC_CURSOR_OFF, "tls.cursor");
+    g.bronze_alloc_limit = field(BRONZE_TLS_ALLOC_LIMIT_OFF, "tls.limit");
+    g.bronze_plain_shape = field(BRONZE_TLS_PLAIN_SHAPE_OFF, "tls.shape");
+    g.bronze_inline_call_enabled = field(BRONZE_TLS_INLINE_CALL_ENABLED_OFF, "tls.call_on");
+    g.bronze_array_method_ic_enabled =
+        field(BRONZE_TLS_ARRAY_METHOD_IC_ENABLED_OFF, "tls.arric_on");
+    g.bronze_inline_overflow_set_enabled =
+        field(BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF, "tls.ovset_on");
+    g.bronze_inline_accessor_enabled =
+        field(BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF, "tls.acc_on");
+    g.bronze_array_method_tbl = field(BRONZE_TLS_ARRAY_METHOD_TBL_OFF, "tls.arrtbl");
+    return g;
 }
 
 namespace {

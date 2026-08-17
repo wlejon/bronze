@@ -168,8 +168,7 @@ llvm::Value* emitWrapperArrayCall(llvm::IRBuilder<>& builder, llvm::LLVMContext&
 }
 
 void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
-                      const AbiFns& abi, const AbiGlobals& globals,
-                      const std::string& entrySymbol,
+                      const AbiFns& abi, const std::string& entrySymbol,
                       const std::vector<llvm::Function*>& entries,
                       std::vector<llvm::Function*>& out) {
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -186,6 +185,12 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
         out[i] = wrapper;
 
         llvm::IRBuilder<> builder(llvm::BasicBlock::Create(ctx, "entry", wrapper));
+        // Only the two array builds below root anything, so only a wrapper
+        // that makes one fetches its thread's ABI block.
+        AbiGlobals globals;
+        if (func.needsArguments || func.hasRestParam) {
+            globals = bindTlsBlock(builder, abi);
+        }
         auto argsIt = wrapper->arg_begin();
         llvm::Value* env = argsIt++;
         llvm::Value* thisArg = argsIt++;
@@ -424,11 +429,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
     AbiFns abi;
-    AbiGlobals abiGlobals;
-    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, abiGlobals,
-                                    sharedRuntime_
-                                        ? codegen_llvm::RuntimeLinkage::Shared
-                                        : codegen_llvm::RuntimeLinkage::Static);
+    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi);
 
     // The three names a loadable module publishes and the marking that
     // publishes them. On COFF nothing leaves a DLL unnamed, so the export
@@ -515,7 +516,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     if (llvm::Function* entryFn = llvmModule->getFunction(entrySymbol_)) publish(entryFn);
 
     std::vector<llvm::Function*> wrappers;
-    emitCallWrappers(module, *llvmModule, ctx, abi, abiGlobals, entrySymbol_, entries, wrappers);
+    emitCallWrappers(module, *llvmModule, ctx, abi, entrySymbol_, entries, wrappers);
 
     // One `new.target` anywhere disables the inline `new` fast path for the
     // whole module: the fast path skips the NewTargetScope push, and
@@ -531,9 +532,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         }
     }
 
-    const FunctionEmitter::Context shared{ctx,      module,   abi,      abiGlobals,
-                                          tables,   entries,  wrappers, diags,
-                                          moduleHasNewTarget};
+    const FunctionEmitter::Context shared{ctx,     module,   abi,   tables,
+                                          entries, wrappers, diags, moduleHasNewTarget};
     for (size_t i = 0; i < module.functions.size(); ++i) {
         FunctionEmitter emitter(shared, module.functions[i], entries[i]);
         if (!emitter.emit()) return false;

@@ -447,8 +447,8 @@ TEST_CASE("createTypedArray refuses a length the heap cannot hold") {
     // what must happen; a heap that dies mid-copy is what must not.
     embed::Value refused = embed::createTypedArray(embed::elements::Float64, 0xFFFFFFFFu);
     CHECK(embed::isUndefined(refused));
-    CHECK(bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    CHECK(bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 TEST_CASE("fillTypedArray copies host bytes in and refuses what does not fit") {

@@ -250,9 +250,9 @@ void FunctionEmitter::emitPrologue() {
     }
     builder_.CreateStore(builder_.getInt64(frameSlots_),
                          builder_.CreateStructGEP(frameTy_, framePtr_, 1));
-    builder_.CreateStore(builder_.CreateLoad(ptrTy_, shared_.globals.bronze_gc_frame_top),
+    builder_.CreateStore(builder_.CreateLoad(ptrTy_, globals_.bronze_gc_frame_top),
                          builder_.CreateStructGEP(frameTy_, framePtr_, 0));
-    builder_.CreateStore(framePtr_, shared_.globals.bronze_gc_frame_top);
+    builder_.CreateStore(framePtr_, globals_.bronze_gc_frame_top);
 }
 
 void FunctionEmitter::createBlockPhis() {
@@ -332,6 +332,10 @@ bool FunctionEmitter::emit() {
     }
 
     planRootFrame();
+    if (!blocks_.empty()) {
+        builder_.SetInsertPoint(blocks_[0]);
+        globals_ = bindTlsBlock(builder_, shared_.abi);
+    }
     emitPrologue();
     createBlockPhis();
     emitModuleInit();
@@ -353,7 +357,7 @@ void FunctionEmitter::popRootFrame() {
     if (!framePtr_) return;
     builder_.CreateStore(
         builder_.CreateLoad(ptrTy_, builder_.CreateStructGEP(frameTy_, framePtr_, 0)),
-        shared_.globals.bronze_gc_frame_top);
+        globals_.bronze_gc_frame_top);
 }
 
 llvm::BasicBlock* FunctionEmitter::functionUnwindBlock() {
@@ -395,7 +399,7 @@ llvm::BasicBlock* FunctionEmitter::unwindTargetFor(size_t blockIndex) {
 }
 
 void FunctionEmitter::emitExceptionCheck(size_t blockIndex) {
-    llvm::Value* cell = builder_.CreateLoad(i64Ty_, shared_.globals.bronze_exception_cell);
+    llvm::Value* cell = builder_.CreateLoad(i64Ty_, globals_.bronze_exception_cell);
     llvm::Value* pending = builder_.CreateICmpNE(
         cell, builder_.getInt64(BRONZE_ABI_NO_EXCEPTION_BITS), "pending");
     llvm::BasicBlock* cont = llvm::BasicBlock::Create(shared_.ctx, "cont", llvmFunc_);
@@ -516,7 +520,7 @@ bool FunctionEmitter::emitTerminator(const il::Instruction& inst) {
         // passes through.
         llvm::Value* thrown = operand(inst, 0, "Undefined value in Throw instruction");
         if (!thrown) return false;
-        builder_.CreateStore(thrown, shared_.globals.bronze_exception_cell);
+        builder_.CreateStore(thrown, globals_.bronze_exception_cell);
         builder_.CreateBr(unwindTargetFor(currentILBlock_));
         return true;
     }

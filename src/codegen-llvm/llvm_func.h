@@ -31,7 +31,6 @@ public:
         llvm::LLVMContext& ctx;
         const il::Module& module;
         const AbiFns& abi;
-        const AbiGlobals& globals;
         // The tables this object file owns (llvm_abi.h): the IC sites, the key
         // remap, and the two module-local caches.
         const ModuleTables& tables;
@@ -124,6 +123,10 @@ private:
     // exactly as the argv region is shared. kNoSlot when the function has no
     // Construct or the module's `new.target` use keeps the path off.
     uint32_t constructSelfSlot_ = kNoSlot;
+    // This function's view of the per-thread ABI block: field addresses off
+    // the one bronze_tls_block_addr() call bound at the top of the entry
+    // block (llvm_abi.h, bindTlsBlock).
+    AbiGlobals globals_;
     llvm::StructType* frameTy_ = nullptr;
     llvm::Value* framePtr_ = nullptr;
     llvm::Value* slotsBase_ = nullptr;

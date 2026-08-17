@@ -8,11 +8,9 @@
 // each OS thread that touches the runtime gets a whole runtime of its own —
 // its own heap, its own shapes, its own interning. Threads share NOTHING
 // mutable; a Value is meaningful only on the thread whose heap it points
-// into. The one deliberate exception is the ABI data globals generated code
-// links against (bronze_plain_shape and friends): those stay process-global
-// until codegen reaches them through a per-thread block, so generated code
-// runs on ONE thread for now and the other threads' runtimes are reached
-// through the C++ API only.
+// into. Generated code reaches the same per-thread state through its own
+// seam, the bronze_tls_block its prologue fetches (bronze_abi.h), so a
+// compiled module runs against whichever thread's runtime ran its entry.
 
 #include <string>
 #include <unordered_map>
@@ -117,16 +115,16 @@ Shape* rtRootShapeForPrototype(Value proto) {
 }
 
 static thread_local Shape* g_plainObjectShape = nullptr;
-extern "C" {
-uint64_t bronze_plain_shape = 0;
-}
 
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
         Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype());
         g_rootShapes.push_back(shape);
         g_plainObjectShape = shape;
-        bronze_plain_shape = reinterpret_cast<uint64_t>(shape);
+        // Published into this thread's ABI block for the inline object
+        // creation fast path; shapes are arena storage, immortal and
+        // non-moving, so the raw pointer never goes stale.
+        bronze_tls_block_addr()->plain_shape = reinterpret_cast<uint64_t>(shape);
     }
     return g_plainObjectShape;
 }

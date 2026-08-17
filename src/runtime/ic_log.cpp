@@ -59,7 +59,7 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     if (hdr->flags == HeapKind::Array) {
         auto* arr = reinterpret_cast<const ArrayHeader*>(hdr);
         if (arr->properties.isObject()) return "array_shadowed_by_side_object";
-        if (bronze_array_method_ic_enabled == 0) return "seam_disabled";
+        if (bronze_tls_block_addr()->array_method_ic_enabled == 0) return "seam_disabled";
         if (!ic->cached_shape) return "ic_uninitialized";
         if (ic->isArrayMethod()) return "array_method_ic_hit_or_other";
         return "shape_mismatch_polymorphic";
@@ -179,7 +179,7 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
         uint32_t depth = static_cast<uint32_t>(slotWord >> 32);
         if (depth != 0) return "transition_inherited_slot";
         if (slot >= BRONZE_ABI_OBJ_INLINE_SLOTS) {
-            if (bronze_inline_overflow_set_enabled == 0) return "seam_disabled";
+            if (bronze_tls_block_addr()->inline_overflow_set_enabled == 0) return "seam_disabled";
             if (!obj->overflow.isObject()) return "transition_overflow_alloc_needed";
             uint32_t cap = obj->overflowCapacity();
             if (slot - BRONZE_ABI_OBJ_INLINE_SLOTS >= cap) return "transition_overflow_growth_needed";
@@ -236,7 +236,7 @@ const char* classifyDynamicCall(uint64_t calleeBits, uint32_t argc, std::string&
     if (fn->arity > argc) {
         return "under_arity_padding";
     }
-    if (bronze_inline_call_enabled == 0) {
+    if (bronze_tls_block_addr()->inline_call_enabled == 0) {
         return "seam_disabled";
     }
     return "module_has_new_target_or_direct";

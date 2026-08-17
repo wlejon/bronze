@@ -287,7 +287,8 @@ uint64_t bronze_create_object() {
     recordHelperCall("bronze_create_object");
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
     obj->header.flags = HeapKind::Plain;
-    if (bronze_alloc_limit - bronze_alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
+    const bronze_tls_block* tls = bronze_tls_block_addr();
+    if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
         Rooted<Value> objRoot{Value::fromObject(obj)};
         rtHeap().refill_inline_lab();
         return objRoot.get().rawBits();
@@ -518,7 +519,8 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     // instance — this helper is the fast path's designated miss, so this is
     // where the next run of hits is paid for. Behind a root for `result`,
     // because the refill's carve may collect (under stress it always does).
-    if (bronze_alloc_limit - bronze_alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
+    const bronze_tls_block* tls = bronze_tls_block_addr();
+    if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
         Rooted<Value> resultRoot{result};
         rtHeap().refill_inline_lab();
         result = resultRoot.get();

@@ -353,5 +353,5 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     CHECK_FALSE(hasOwn(fn, keyLength).asBool());
 
     setFatalHandler(nullptr);
-    bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

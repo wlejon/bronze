@@ -86,8 +86,8 @@ Value setElement(Value obj, uint32_t index, Value v) {
     // for the same reason: there is no enclosing JS frame to unwind into, and
     // a cell left set would make the next entry into compiled code appear to
     // throw this write's exception.
-    if (bronze_exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        bronze_exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
     }
     return self.get();
 }

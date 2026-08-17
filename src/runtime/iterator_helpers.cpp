@@ -124,7 +124,7 @@ void closeIterator(Rooted<Value>& iter, bool suppress) {
 }
 
 void closeAfterThrow(Rooted<Value>& iter) {
-    Rooted<Value> pending{Value(bronze_exception_cell)};
+    Rooted<Value> pending{Value(bronze_tls_block_addr()->exception_cell)};
     rtClearException();
     closeIterator(iter, /*suppress=*/true);
     rtThrow(pending.get());
