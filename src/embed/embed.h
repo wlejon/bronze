@@ -30,6 +30,27 @@
 // frames — lives in a `Persistent`. Functions here that allocate say so, and
 // the ones that take a receiver and allocate return its post-call address.
 //
+// THE TRAP IN THAT RULE, because "the next allocating call" is easy to read as
+// "the next statement": ARGUMENTS TO ONE CALL ARE EVALUATED IN UNSPECIFIED
+// ORDER. So
+//
+//     setElement(obj.get(), 3, fromUtf8("x"));   // WRONG
+//
+// is already broken, in one statement: a compiler is free to read `obj.get()`
+// first and then run the allocation that moves `obj`, and the receiver the
+// call gets is a pre-collection address. MSVC happens to evaluate right to
+// left and clang left to right, so this is a bug that passes every test on one
+// platform and faults on another — and only once the heap is full enough that
+// the dead address stops landing in mapped memory. Build the allocating
+// argument in its OWN statement, into a Persistent, and pass slot reads only:
+//
+//     Persistent v{fromUtf8("x")};
+//     setElement(obj.get(), 3, v.get());        // right
+//
+// Nothing on this side of the boundary can rescue a caller who gets this
+// wrong: by the time a function here roots its receiver, it is rooting bits
+// that already name freed memory.
+//
 // ---- THE TWO BOUNDARIES ----------------------------------------------------
 //
 // A host and a bronze runtime meet along two seams with very different rules,

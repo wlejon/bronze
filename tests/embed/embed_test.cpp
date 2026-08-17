@@ -183,7 +183,13 @@ TEST_CASE("handleData refuses values that are not handles") {
 TEST_CASE("host-built objects take properties, elements and accessors") {
     embed::Persistent obj{embed::createObject()};
     obj.set(embed::setProperty(obj.get(), "answer", embed::fromDouble(42.0)));
-    obj.set(embed::setElement(obj.get(), 3, embed::fromUtf8("third")));
+    // The string is built in its own statement, not inline as a sibling
+    // argument: argument evaluation order is unspecified, `fromUtf8` allocates,
+    // and a compiler that reads `obj.get()` first hands `setElement` the
+    // address `obj` had BEFORE the collection that moved it. embed.h's GC
+    // contract spells this out; every allocating argument below follows it.
+    embed::Persistent third{embed::fromUtf8("third")};
+    obj.set(embed::setElement(obj.get(), 3, third.get()));
 
     // Read back through the runtime's own property path.
     {
@@ -237,17 +243,21 @@ TEST_CASE("promise create -> resolve -> then-callback-order") {
         },
         1)};
 
-    Value thenMethod = embed::getProperty(p.get(), "then");
-    CHECK(embed::isFunction(thenMethod));
+    // Persistent, not a plain Value: this method is used again after calls
+    // that allocate, and a raw copy would name the address it had before the
+    // first one collected.
+    embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
+    CHECK(embed::isFunction(thenMethod.get()));
 
-    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn1.get()});
-    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn2.get()});
+    embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn1.get()});
+    embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn2.get()});
 
     // Before resolving: no callbacks run.
     CHECK(order.empty());
 
     // Resolve the promise.
-    embed::resolvePromise(p.get(), embed::fromUtf8("hello"));
+    embed::Persistent hello{embed::fromUtf8("hello")};
+    embed::resolvePromise(p.get(), hello.get());
 
     // Before draining microtasks: no callbacks run yet.
     CHECK(order.empty());
@@ -269,7 +279,7 @@ TEST_CASE("promise create -> resolve -> then-callback-order") {
             return embed::undefined();
         },
         1)};
-    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn3.get()});
+    embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn3.get()});
     CHECK(order.size() == 2);
     CHECK(embed::microtasksPending());
 
@@ -290,13 +300,14 @@ TEST_CASE("promise reject -> catch") {
         },
         1)};
 
-    Value catchMethod = embed::getProperty(p.get(), "catch");
-    CHECK(embed::isFunction(catchMethod));
-    embed::call(catchMethod, p.get(), std::vector<embed::Value>{catchHandler.get()});
+    embed::Persistent catchMethod{embed::getProperty(p.get(), "catch")};
+    CHECK(embed::isFunction(catchMethod.get()));
+    embed::call(catchMethod.get(), p.get(), std::vector<embed::Value>{catchHandler.get()});
 
     CHECK(caught.empty());
 
-    embed::rejectPromise(p.get(), embed::fromUtf8("bad error"));
+    embed::Persistent reason{embed::fromUtf8("bad error")};
+    embed::rejectPromise(p.get(), reason.get());
 
     CHECK(caught.empty());
     CHECK(embed::microtasksPending());
@@ -306,8 +317,10 @@ TEST_CASE("promise reject -> catch") {
     CHECK(caught == "bad error");
 
     // First settle wins: a subsequent resolve or reject on already settled promise is ignored.
-    embed::resolvePromise(p.get(), embed::fromUtf8("ignored"));
-    embed::rejectPromise(p.get(), embed::fromUtf8("also ignored"));
+    embed::Persistent ignored{embed::fromUtf8("ignored")};
+    embed::resolvePromise(p.get(), ignored.get());
+    embed::Persistent alsoIgnored{embed::fromUtf8("also ignored")};
+    embed::rejectPromise(p.get(), alsoIgnored.get());
     embed::drainMicrotasks();
     CHECK(caught == "bad error");
 }
@@ -324,8 +337,8 @@ TEST_CASE("promise settlement after GC pressure") {
         },
         1)};
 
-    Value thenMethod = embed::getProperty(p.get(), "then");
-    embed::call(thenMethod, p.get(), std::vector<embed::Value>{fn.get()});
+    embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
+    embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn.get()});
 
     const uint64_t promiseBitsBefore = p.get().rawBits();
     const uint64_t payloadBitsBefore = payload.get().rawBits();
@@ -492,7 +505,8 @@ TEST_CASE("setElement fills an Array, length and all") {
     embed::Persistent arr{parsed.value};
 
     // Overwrite in range...
-    arr.set(embed::setElement(arr.get(), 1, embed::fromUtf8("two")));
+    embed::Persistent two{embed::fromUtf8("two")};
+    arr.set(embed::setElement(arr.get(), 1, two.get()));
     CHECK(embed::toUtf8(embed::getElement(arr.get(), 1)) == "two");
     CHECK(embed::toDouble(embed::getProperty(arr.get(), "length")) == 3.0);
 
@@ -506,7 +520,8 @@ TEST_CASE("setElement fills an Array, length and all") {
     // The plain-object half is unchanged: an integer key is the canonical
     // numeric string, and the write is a definition rather than an assignment.
     embed::Persistent obj{embed::createObject()};
-    obj.set(embed::setElement(obj.get(), 3, embed::fromUtf8("third")));
+    embed::Persistent third{embed::fromUtf8("third")};
+    obj.set(embed::setElement(obj.get(), 3, third.get()));
     CHECK(embed::toUtf8(embed::getElement(obj.get(), 3)) == "third");
 }
 
