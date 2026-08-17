@@ -123,6 +123,9 @@ if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
     # Compiles JS to objects and links two of them into one host, so it needs
     # both the backend and the test registration — the same pair as the oracle.
     add_subdirectory(tests/two_module)
+    # The same two-object build, entered from two THREADS at once: the
+    # generated-code half of per-thread runtime isolation.
+    add_subdirectory(tests/threaded_modules)
     # The same pair plus the shared runtime itself, which is what the module is
     # linked against and what the harness loads it into.
     if(BRONZE_BUILD_SHARED_RUNTIME)

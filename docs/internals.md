@@ -155,6 +155,29 @@ host whose runtime speaks a different ABI dies at startup with both values
 named — or at link, for an object predating the stamp — instead of reading
 garbage through a drifted helper signature.
 
+### Threads
+
+The runtime is per-thread: every mutable table is `thread_local`, built
+lazily on first touch, so a worker thread that simply calls in owns a fresh,
+fully independent runtime — no attach step, no locking, and no teardown (a
+thread's runtime is deliberately leaked; pool workers rather than churning
+them). Values, Persistents and everything reachable from them are bound to
+the thread that made them; cross-thread data travel is the host's job, by
+serializing on one side and re-creating on the other.
+
+A module image is thread-bound too, and this is a RULE, not a suggestion:
+the private tables listed above — IC table, key remap, global cache,
+fn-singleton slots, environment cell — are arrays in the module's own
+`.data`, per-image rather than per-thread, and the entry registers them with
+the CALLING thread's runtime. So the thread that ran a module's entry (its
+home thread) is the only thread that may ever enter it. A host that wants
+the same script on N workers loads N copies of the image from N distinct
+paths — the loader refcounts images by path and would otherwise hand every
+worker one shared `.data`; the distinct-path copy is the same fresh-image
+rule hot swap already imposes. `src/embed/embed.h` states the full contract;
+`tests/threaded_modules` is the worked example — two compiled modules on two
+threads concurrently, each hammered under per-allocation collection.
+
 ## Build modes
 
 ```

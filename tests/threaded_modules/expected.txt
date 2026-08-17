@@ -1,0 +1,4 @@
+A summary=parts=200 last=a199 count=5050
+A hammer iters=64 failures=0 isolated=1
+B summary=parts=120 last=b119 count=1830 secret=B-42
+B hammer iters=64 failures=0 isolated=1
