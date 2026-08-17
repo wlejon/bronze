@@ -137,6 +137,11 @@ double rawBitsToNumeric(ElementKind kind, uint64_t bits) noexcept {
             return static_cast<double>(std::bit_cast<float>(static_cast<uint32_t>(bits)));
         case ElementKind::Float64: return std::bit_cast<double>(bits);
         case ElementKind::Uint8Clamped:
+        // The two BigInt kinds carry their value as a BigInt, not a double —
+        // they have their own accessor bodies (dvGetBig/dvSetBig) and must
+        // never reach this codec.
+        case ElementKind::BigInt64:
+        case ElementKind::BigUint64:
         case ElementKind::Count: break;
     }
     // Table 70 has no clamped entry: clamping is a rule about STORING to a
@@ -445,6 +450,9 @@ const char* accessorName(ElementKind kind, bool isGet) noexcept {
         case ElementKind::Float32: return isGet ? "getFloat32" : "setFloat32";
         case ElementKind::Float64: return isGet ? "getFloat64" : "setFloat64";
         case ElementKind::Uint8Clamped:
+        // Named by their own bodies (dvGetBig/dvSetBig), not this table.
+        case ElementKind::BigInt64:
+        case ElementKind::BigUint64:
         case ElementKind::Count: break;
     }
     fatal("internal: a DataView accessor named for an element type outside table 70");
