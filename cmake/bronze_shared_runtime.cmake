@@ -64,14 +64,14 @@ endforeach()
 set(BRONZE_SHARED_RUNTIME_DIR "${CMAKE_BINARY_DIR}/shared" CACHE INTERNAL
     "Where the shared runtime, its import library and anything that loads it live")
 
-bronze_abi_export_files("${CMAKE_SOURCE_DIR}/src/abi/bronze_abi.h"
+bronze_abi_export_files("${CMAKE_CURRENT_SOURCE_DIR}/src/abi/bronze_abi.h"
                         "${CMAKE_CURRENT_BINARY_DIR}"
                         _bronze_abi_def _bronze_abi_ver _bronze_abi_exp)
 
 add_library(bronze_runtime_shared SHARED ${_bronze_shared_sources})
 add_library(bronze::runtime_shared ALIAS bronze_runtime_shared)
 
-target_include_directories(bronze_runtime_shared PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(bronze_runtime_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # BRONZE_ABI_FINGERPRINT, copied off the target that computes it rather than
 # recomputed: two hashes of one header are two chances to disagree.
