@@ -183,6 +183,22 @@ std::optional<std::filesystem::path> findSharedRuntime() {
         candidates.push_back(cwd / "build/dev/shared" / name);
         candidates.push_back(cwd / "build/shared" / name);
 
+        // Multi-config generators (Visual Studio, Xcode) append a per-config
+        // directory under the output dir CMake was given, so the library sits
+        // one level deeper than every path above. The same directories again
+        // with the four standard config names — after the flat ones, so a
+        // single-config layout never changes its answer, and Release first
+        // because a Debug runtime under a Release host is the CRT mismatch
+        // embed.h forbids anyway.
+        const size_t flatCount = candidates.size();
+        static const char* const kConfigs[] = {"Release", "RelWithDebInfo", "MinSizeRel",
+                                               "Debug"};
+        for (size_t i = 0; i < flatCount; ++i) {
+            for (const char* config : kConfigs) {
+                candidates.push_back(candidates[i].parent_path() / config / name);
+            }
+        }
+
         for (const auto& cand : candidates) {
             std::error_code ec;
             if (std::filesystem::exists(cand, ec)) {

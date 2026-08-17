@@ -10,6 +10,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ast/dump.h"
@@ -480,6 +481,22 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 int runDriver(int argc, char** argv) {
     if (argc < 2) return fail(kUsage);
     const std::string command = argv[1];
+
+    // `bronze --help` and `bronze <command> --help` both answer with the usage
+    // text, on stdout, exit 0. Every command takes a file path in the position
+    // --help lands in, so without this the first thing a new user saw was
+    // "error: cannot read --help".
+    if (command == "--help" || command == "-h" || command == "help") {
+        std::fputs(kUsage, stdout);
+        return 0;
+    }
+    if (argc >= 3) {
+        const std::string_view second = argv[2];
+        if (second == "--help" || second == "-h") {
+            std::fputs(kUsage, stdout);
+            return 0;
+        }
+    }
 
     if (command == "version") {
 #if defined(NDEBUG)
