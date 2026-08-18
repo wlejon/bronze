@@ -445,7 +445,11 @@ BRONZE_EMBED_API Value getElement(Value obj, uint32_t index);
 // The cell is a real plain object as far as the program is concerned: opaque
 // by convention, not enforcement. A program that writes properties on one
 // gets an ordinary object with properties; the payload stays invisible either
-// way (internal slots have no property names).
+// way (internal slots have no property names). `Object.setPrototypeOf` on a
+// handle is IN-CONTRACT: the payload and the brand live in internal slots the
+// swap cannot reach, so handleData still answers afterwards — which is how a
+// wrapper layer puts its methods on one shared prototype per class instead of
+// closing over the handle per instance.
 using HandleDestructor = void (*)(void* data);
 
 // WHEN the destructor runs, which decides what it may do:
@@ -661,6 +665,10 @@ BRONZE_EMBED_API bool isFunction(Value v);
 // `typeof v === "object" || typeof v === "function"` envelope a host binding
 // usually wants before reading properties.
 BRONZE_EMBED_API bool isObject(Value v);
+// A symbol primitive — the value a host must NOT hand to toUtf8/toDouble
+// (7.1.17 makes that a TypeError in JS; here it is the same hard error other
+// objects get), and must pass through call/getProperty untouched instead.
+BRONZE_EMBED_API bool isSymbol(Value v);
 BRONZE_EMBED_API bool isPromise(Value v);
 BRONZE_EMBED_API bool isArrayBuffer(Value v);
 BRONZE_EMBED_API bool isTypedArray(Value v);

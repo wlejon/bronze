@@ -53,11 +53,22 @@ struct PendingFinalizer {
 thread_local std::vector<PendingFinalizer> g_pendingFinalizers;
 thread_local bool g_drainingFinalizers = false;
 
-// The handle cells' own root shape, and the brand handleData checks. Null
-// prototype on purpose, like the namespace objects' root shapes: a handle
-// shares no transition tree with `{}` literals, and a chain walk over one
-// ends immediately.
+// The handle cells' own root shape. Null prototype on purpose, like the
+// namespace objects' root shapes: a handle shares no transition tree with
+// `{}` literals, and a chain walk over one ends immediately — until a host
+// gives it a prototype, which is in-contract (see handleData). Creation-time
+// only: the brand does NOT live here, precisely because a prototype swap
+// re-roots the shape.
 thread_local Shape* g_handleShape = nullptr;
+
+// The brand handleData checks, stored in the cell itself (internal slot 2) so
+// no shape operation can detach it: `Object.setPrototypeOf` converts the cell
+// to dictionary mode and repoints its shape root, which is exactly what a
+// shape-root brand would not survive. Top 16 bits zero, so the collector's
+// payload scan reads it as a non-pointer, like the two pointers beside it.
+// Unforgeable in practice: internal slots are unreachable from JS, and no
+// other internal-slot creator in the runtime writes this word.
+constexpr uint64_t kHandleBrandBits = 0x0000'B805'EAD1'C377ULL;
 
 void sweepFinalizers() {
     // Runs mid-collection: every from-space header is Tag::Forwarded (live,
@@ -205,14 +216,17 @@ Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
     // Internal slots, not properties: invisible to Object.keys, for-in and the
     // symbol walk, which is the whole meaning of "opaque". Slot 0 is the data
     // pointer, slot 1 the destructor — duplicated into the registry entry so
-    // the sweep never reads a payload (see sweepFinalizers).
+    // the sweep never reads a payload (see sweepFinalizers) — and slot 2 the
+    // brand, in the cell rather than on the shape so it survives everything a
+    // shape does not.
     ObjectHeader* cell = ObjectHeader::createWithInternalSlots(runtime::rtHeap(),
                                                               runtime::rtArena(),
-                                                              g_handleShape, 2);
+                                                              g_handleShape, 3);
     cell->setInternalSlot(0, Value::fromRawBits(pointerBits(data, "handle data")));
     cell->setInternalSlot(1,
                           Value::fromRawBits(pointerBits(reinterpret_cast<void*>(dtor),
                                                          "handle destructor")));
+    cell->setInternalSlot(2, Value::fromRawBits(kHandleBrandBits));
     // No allocation between the create above and this push, so `cell` cannot
     // have moved: the entry records the address the collector will next see.
     g_finalizers.push_back({&cell->header, data, dtor, when});
@@ -243,9 +257,17 @@ void* handleData(Value handle) {
     auto* hdr = handle.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain) return nullptr;
     auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
-    // The brand is the private root shape plus the slot count — the iterator
-    // objects' pattern.
-    if (!obj->shape || obj->shape->root != g_handleShape || obj->internalSlotCount() != 2) return nullptr;
+    // The brand is the slot count plus the brand word — deliberately NOT the
+    // shape root (the iterator objects' pattern), because a handle's shape is
+    // mutable in-contract: `Object.setPrototypeOf(handle, proto)` is how a
+    // wrapper layer gives every instance a shared method prototype instead of
+    // per-instance closures, and that swap re-roots the shape. The internal
+    // slots it cannot touch: they live past the inline property slots, and
+    // property storage grows into the overflow block, never over them.
+    if (obj->internalSlotCount() != 3 ||
+        obj->internalSlot(2).rawBits() != kHandleBrandBits) {
+        return nullptr;
+    }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(0).rawBits()));
 }
 

@@ -777,3 +777,64 @@ TEST_CASE("setProperty defines named properties on an Array") {
     CHECK(embed::toDouble(embed::getProperty(arr.get(), "length")) == 3.0);
     CHECK(embed::toDouble(embed::getElement(arr.get(), 2)) == 3.0);
 }
+
+TEST_CASE("Object.setPrototypeOf on a handle keeps handleData and the finalizer") {
+    int destroyed = 0;
+    {
+        embed::Persistent handle{embed::makeHandle(
+            &destroyed, [](void* p) { ++*static_cast<int*>(p); })};
+
+        // The per-class prototype a wrapper layer wants: one object carrying
+        // what every instance shares, instead of a closure per instance.
+        embed::Persistent proto{embed::createObject()};
+        embed::Persistent kind{embed::fromUtf8("wrapped")};
+        proto.set(embed::setProperty(proto.get(), "kind", kind.get()));
+
+        embed::GlobalValue objectNs = embed::globalValue("Object");
+        REQUIRE(objectNs.found);
+        embed::Persistent objectCtor{objectNs.value};
+        embed::Persistent setProto{embed::getProperty(objectCtor.get(), "setPrototypeOf")};
+        REQUIRE(embed::isFunction(setProto.get()));
+        embed::CallResult swapped =
+            embed::call(setProto.get(), embed::undefined(),
+                        std::vector<embed::Value>{handle.get(), proto.get()});
+        REQUIRE(!swapped.thrown);
+
+        // The swap moved the shape, not the payload: brand and data pointer
+        // are internal slots it cannot reach.
+        CHECK(embed::handleData(handle.get()) == &destroyed);
+        // And it did what it is for: the handle now inherits.
+        CHECK(embed::toUtf8(embed::getProperty(handle.get(), "kind")) == "wrapped");
+
+        runtime::rtHeap().collect();
+        CHECK(embed::handleData(handle.get()) == &destroyed);
+        CHECK(embed::toUtf8(embed::getProperty(handle.get(), "kind")) == "wrapped");
+        CHECK(destroyed == 0);
+    }
+    // Dictionary mode changed nothing about liveness: the destructor fires
+    // when the cell dies, exactly once.
+    runtime::rtHeap().collect();
+    CHECK(destroyed == 1);
+    runtime::rtHeap().collect();
+    CHECK(destroyed == 1);
+}
+
+TEST_CASE("isSymbol answers for symbol primitives and nothing else") {
+    embed::GlobalValue symbolGlobal = embed::globalValue("Symbol");
+    REQUIRE(symbolGlobal.found);
+    embed::Persistent symbolFn{symbolGlobal.value};
+    embed::Persistent desc{embed::fromUtf8("host-probe")};
+    embed::CallResult made = embed::call(symbolFn.get(), embed::undefined(),
+                                         std::vector<embed::Value>{desc.get()});
+    REQUIRE(!made.thrown);
+    embed::Persistent sym{made.value};
+
+    CHECK(embed::isSymbol(sym.get()));
+    CHECK(!embed::isSymbol(embed::undefined()));
+    CHECK(!embed::isSymbol(embed::null()));
+    CHECK(!embed::isSymbol(embed::fromDouble(3.0)));
+    embed::Persistent str{embed::fromUtf8("Symbol(host-probe)")};
+    CHECK(!embed::isSymbol(str.get()));
+    embed::Persistent obj{embed::createObject()};
+    CHECK(!embed::isSymbol(obj.get()));
+}

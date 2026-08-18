@@ -205,6 +205,8 @@ bool isFunction(Value v) {
 
 bool isObject(Value v) { return v.isObject(); }
 
+bool isSymbol(Value v) { return v.isSymbol(); }
+
 // ---- json parsing ----------------------------------------------------------
 
 CallResult parseJson(std::string_view jsonUtf8) {
