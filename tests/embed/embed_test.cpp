@@ -754,3 +754,26 @@ TEST_CASE("drainMicrotasks runs deferred finalizers, and InSweep still runs in t
     embed::drainMicrotasks();
     CHECK(deferred.freed == 1);
 }
+
+TEST_CASE("setProperty defines named properties on an Array") {
+    embed::CallResult parsed = embed::parseJson("[1,2,3]");
+    REQUIRE(!parsed.thrown);
+    embed::Persistent arr{parsed.value};
+
+    // A named property beside the elements — the write requirePlainObject
+    // used to refuse — read back through the same generic path a program's
+    // `arr.dirty` read takes.
+    arr.set(embed::setProperty(arr.get(), "dirty", embed::fromBool(true)));
+    embed::Persistent tag{embed::fromUtf8("host-tagged")};
+    arr.set(embed::setProperty(arr.get(), "tag", tag.get()));
+
+    runtime::rtHeap().collect();
+
+    CHECK(embed::toBool(embed::getProperty(arr.get(), "dirty")));
+    CHECK(embed::toUtf8(embed::getProperty(arr.get(), "tag")) == "host-tagged");
+
+    // The elements and length are untouched: named properties live beside the
+    // element store, not in it.
+    CHECK(embed::toDouble(embed::getProperty(arr.get(), "length")) == 3.0);
+    CHECK(embed::toDouble(embed::getElement(arr.get(), 2)) == 3.0);
+}

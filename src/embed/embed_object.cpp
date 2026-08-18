@@ -76,6 +76,19 @@ Value setProperty(Value obj, std::string_view key, Value v) {
         return self.get();
     }
 
+    if (self.get().isObject() &&
+        self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        if (key == "length") {
+            fatal("embed: setProperty cannot define `length` on an array");
+        }
+        ArrayHeader::ensureProperties(runtime::rtHeap(), runtime::rtArena(), self);
+        Rooted<Value> propsRoot{self.get().asObject<ArrayHeader>()->properties};
+        propsRoot.get().asObject<ObjectHeader>()->setProp(
+            runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr,
+            /*enumerable=*/true, /*defineOwn=*/true);
+        return self.get();
+    }
+
     requirePlainObject(self.get(), "setProperty");
     // defineOwn: a definition, not an assignment — a host building an object
     // must never run an inherited setter, exactly as rtDefineMethods must not.
