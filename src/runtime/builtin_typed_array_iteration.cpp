@@ -101,7 +101,7 @@ uint64_t taIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 
     if (isBigIntView(self.get())) {
         const uint32_t len = lengthOf(self.get());
-        // 23.2.3.16 never converts the needle: IsStrictlyEqual across types is
+        // 23.2.3.17 never converts the needle: IsStrictlyEqual across types is
         // simply false, so a non-BigInt needle finds nothing and throws
         // nothing. Each element materialises as a BigInt for the compare —
         // strict equality is mathematical, so a needle no 64-bit element could
@@ -117,12 +117,15 @@ uint64_t taIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         return Value::fromDouble(-1.0).rawBits();
     }
 
-    const double needle = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-
+    // The same rule for a Number view: no ToNumber on the needle, so a
+    // string, BigInt or undefined needle answers -1 rather than matching or
+    // throwing — after the fromIndex conversion has run its side effects
+    // (step 4 precedes the loop).
     const uint32_t len = lengthOf(self.get());
     uint32_t from = 0;
     relativeArg(args[1], len, from, 0);
+    if (!args[0].isNumber()) return Value::fromDouble(-1.0).rawBits();
+    const double needle = args[0].asNumber();
 
     for (uint32_t i = from; i < len; ++i) {
         if (elemOf(self.get(), i) == needle) return Value::fromDouble(i).rawBits();
@@ -136,11 +139,6 @@ uint64_t taLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     if (!requireTypedArray(self.get(), "lastIndexOf")) return Value::fromUndefined().rawBits();
 
     const bool big = isBigIntView(self.get());
-    double needle = 0;
-    if (!big) {
-        needle = rtToNumber(args[0]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    }
 
     const uint32_t len = lengthOf(self.get());
     if (len == 0) return Value::fromDouble(-1.0).rawBits();
@@ -151,6 +149,11 @@ uint64_t taLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     double k = fromNum >= 0 ? std::min(fromNum, static_cast<double>(len - 1))
                             : static_cast<double>(len) + fromNum;
     if (k < 0) return Value::fromDouble(-1.0).rawBits();
+
+    // 23.2.3.20 never converts the needle either — a needle of the wrong type
+    // answers -1 after the fromIndex conversion above has run.
+    if (!big && !args[0].isNumber()) return Value::fromDouble(-1.0).rawBits();
+    const double needle = big ? 0.0 : args[0].asNumber();
 
     for (int64_t i = static_cast<int64_t>(k); i >= 0; --i) {
         if (big) {
@@ -187,12 +190,14 @@ uint64_t taIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
         return Value::fromBool(false).rawBits();
     }
 
-    const double needle = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-
+    // SameValueZero across types is false, so 23.2.3.16's needle is never
+    // converted either — `includes(null)` on a zero-filled view is false, not
+    // the true a ToNumber(null) == 0 shortcut would answer.
     const uint32_t len = lengthOf(self.get());
     uint32_t from = 0;
     relativeArg(args[1], len, from, 0);
+    if (!args[0].isNumber()) return Value::fromBool(false).rawBits();
+    const double needle = args[0].asNumber();
 
     for (uint32_t i = from; i < len; ++i) {
         const double v = elemOf(self.get(), i);

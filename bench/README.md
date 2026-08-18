@@ -137,7 +137,15 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   >
   > **Perf** (idle machine, median of 5): `typed_array_crunch` 51.27 ms **WIN 1.10x** checksum unchanged; `typed_array_loop` 24.88 ms **WIN 1.64x** output unchanged — noise-level deltas from 13d's 50.76/23.92, as a cold-helper-only chunk must show.
   >
-  > **Still open, named**: iterator resumption fidelity (deliberate, pinned — see 13d); `indexOf`/`includes` on NUMBER views still convert the needle through ToNumber where the spec compares unconverted (a `"2"` needle finds 2; a BigInt needle throws instead of answering -1) — pre-existing, now the search family's one remaining divergence.
+  > **Still open, named**: iterator resumption fidelity (deliberate, pinned — see 13d); ~~`indexOf`/`includes` on NUMBER views still convert the needle through ToNumber where the spec compares unconverted~~ — closed by the follow-up below.
+
+- **Chunk 13e follow-up: Number-view search needles stop converting**:
+  > [!NOTE]
+  > 23.2.3.16/.17/.20 never convert the search needle — IsStrictlyEqual/SameValueZero across types is simply false — but bronze's Number-view `indexOf`/`lastIndexOf`/`includes` ran the needle through ToNumber, so a `"2"` needle found 2, `includes(null)` on a zero-filled view answered true, and a BigInt needle threw. Now the needle is compared unconverted on all twelve kinds: a wrong-type needle answers -1/false after the fromIndex conversion has run its side effects (step 4 precedes the loop, and the pin watches the `valueOf` fire). The BigInt arms already did this; the Number arms now match.
+  >
+  > **Pins**: four new rows in `typed_array_methods` (string/BigInt/undefined needles, the `includes(null)`-on-zero trap, the fromIndex side-effect ordering), all seams byte-identical, first run. Full suite + both milestones green.
+  >
+  > **Perf**: three cold helper bodies only — `typed_array_crunch` calls none of them and its checksum is unchanged. A same-day re-measure read 54.9–58.6 ms, but with ~20% measured background CPU load (the perf log's loaded-machine rule applies); the standing idle-machine numbers remain 13e's 51.27/24.88. Re-measure when idle before reading anything into a crunch row.
 
 - **Chunk 13d: length-tracking views — the walk already knew how**:
   > [!NOTE]

@@ -54,6 +54,18 @@ const nums = new Float64Array([1, 0 / 0, 3]);
 console.log(nums.indexOf(3), nums.indexOf(77), nums.indexOf(0 / 0));
 console.log(nums.includes(3), nums.includes(77), nums.includes(0 / 0));
 
+// Neither converts the NEEDLE: a needle of the wrong type answers by
+// comparison — -1/false — never by conversion or a throw (a BigInt needle
+// would be ToNumber's TypeError if one ran), and `includes(null)` on a
+// zero-filled view is false, not the true a ToNumber(null) == 0 shortcut
+// would answer. The fromIndex conversion still runs its side effects first:
+// step 4 precedes the loop.
+console.log(nums.indexOf("3"), nums.includes("3"), nums.lastIndexOf("3"));
+console.log(nums.indexOf(3n), nums.includes(3n));
+console.log(new Float64Array(1).includes(null), new Float64Array(1).includes(0));
+let sawFromIndex = false;
+console.log(nums.indexOf("3", { valueOf() { sawFromIndex = true; return 0; } }), sawFromIndex);
+
 // 23.2.3.18 join. Every element is a number, so its text is ToString(Number) —
 // which prints a stored -0 as "0", unlike console.log.
 console.log(new Int8Array([1, -2, 3]).join("-"));

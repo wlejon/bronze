@@ -13,6 +13,10 @@ Int16Array(6) [ 7, 8, 10, 20, 30, 0 ]
 RangeError
 2 -1 -1
 true false true
+-1 false -1
+-1 false
+false true
+-1 true
 1--2-3
 1,-2,3
 0
