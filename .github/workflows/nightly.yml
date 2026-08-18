@@ -8,8 +8,10 @@ name: Nightly
 #
 # A package is the compiler plus the static runtime libraries `bronze build`
 # links into compiled programs, laid out flat next to the exe — exactly where
-# the driver's findRuntimeLib searches first. Users still need a system
-# linker (link.exe / clang++ / g++) on their machine; bronze does not ship one.
+# the driver's findRuntimeLib searches first — plus the shared runtime that
+# `--emit-shared` modules link against and a loadable-module host ships, with
+# the embed API headers under include/. Users still need a system linker
+# (link.exe / clang++ / g++) on their machine; bronze does not ship one.
 
 on:
   schedule:
@@ -162,6 +164,24 @@ jobs:
             cp build/dev/src/$mod/libbronze_$mod.a "dist/$PKG/" 2>/dev/null || \
             cp build/dev/src/$mod/bronze_$mod.lib "dist/$PKG/"
           done
+          # The shared runtime, flat beside the exe where the driver's
+          # findSharedRuntime looks first: what `--emit-shared` modules link
+          # against and what a loadable-module host ships beside its own
+          # binary. Windows needs the import .lib next to the .dll; ELF and
+          # Mach-O link against the library itself. The embed API rides along
+          # under include/ (embed.h pulls exactly one header, runtime/value.h,
+          # so the pair is the whole surface).
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp build/dev/shared/bronze_runtime_shared.dll \
+               build/dev/shared/bronze_runtime_shared.lib "dist/$PKG/"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            cp build/dev/shared/libbronze_runtime_shared.dylib "dist/$PKG/"
+          else
+            cp build/dev/shared/libbronze_runtime_shared.so "dist/$PKG/"
+          fi
+          mkdir -p "dist/$PKG/include/embed" "dist/$PKG/include/runtime"
+          cp src/embed/embed.h "dist/$PKG/include/embed/"
+          cp src/runtime/value.h "dist/$PKG/include/runtime/"
           cp LICENSE README.md "dist/$PKG/"
 
       # Prove the packaged directory works from a neutral cwd: compile and run
@@ -179,6 +199,15 @@ jobs:
           OUT="$("./smoke$EXE")"
           echo "$OUT"
           [ "$OUT" = "bronze 1+4+9" ]
+          # The shared half of the layout: linking an --emit-shared module
+          # resolves bronze_runtime_shared exe-relative from the package, the
+          # same search a loadable-module host's toolchain relies on. Running
+          # the module needs a host, so the link succeeding IS the check.
+          if [ "$RUNNER_OS" = "Windows" ]; then MOD="smokemod.dll";
+          elif [ "$RUNNER_OS" = "macOS" ]; then MOD="smokemod.dylib";
+          else MOD="smokemod.so"; fi
+          "$PKGDIR/bronze$EXE" build --emit-shared smoke.js -o "$MOD"
+          [ -f "$MOD" ]
 
       # --- Windows code signing ---------------------------------------------
       # Signs bronze.exe in the packaged tree before it is zipped, so what
@@ -192,8 +221,9 @@ jobs:
       # Timestamping is load-bearing: Artifact Signing issues ~3-day
       # certificates, so an untimestamped signature stops validating almost
       # immediately; the RFC3161 countersignature pins validity to signing
-      # time. Only the exe is signed — the static .lib files in the package
-      # are not PE images and Authenticode does not apply to them.
+      # time. The exe and the shared-runtime dll are signed — both are PE
+      # images a user's machine loads; the static .lib files are not PE
+      # images and Authenticode does not apply to them.
       - name: Resolve package directory (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -218,7 +248,7 @@ jobs:
           signing-account-name: brosigning
           certificate-profile-name: broPublicTrust
           files-folder: ${{ env.PKG_DIR }}
-          files-folder-filter: exe
+          files-folder-filter: exe,dll
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -229,9 +259,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature (Join-Path $env:PKG_DIR 'bronze.exe')
-          Write-Host "bronze.exe -> $($sig.Status) | $($sig.SignerCertificate.Subject)"
-          if ($sig.Status -ne 'Valid') { throw "bronze.exe unsigned or invalid: $($sig.Status)" }
+          foreach ($bin in 'bronze.exe', 'bronze_runtime_shared.dll') {
+            $sig = Get-AuthenticodeSignature (Join-Path $env:PKG_DIR $bin)
+            Write-Host "$bin -> $($sig.Status) | $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "$bin unsigned or invalid: $($sig.Status)" }
+          }
 
       - name: Zip
         shell: bash
@@ -275,7 +307,7 @@ jobs:
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           NOTES="Automated nightly build from \`${GITHUB_SHA::7}\` on $(date -u +%Y-%m-%d), tested against the full oracle suite (three.js and pixi.js milestones included).
 
-          Each zip is the \`bronze\` compiler plus the runtime libraries it links into compiled programs — unzip anywhere and run \`bronze build app.js -o app\`. A system linker is required (Windows: MSVC's \`link.exe\`; Linux/macOS: \`clang++\` or \`g++\`)."
+          Each zip is the \`bronze\` compiler plus the runtime libraries it links into compiled programs — unzip anywhere and run \`bronze build app.js -o app\`. It also carries the shared runtime (\`bronze_runtime_shared\`) that \`--emit-shared\` loadable modules link against, with the embed API headers under \`include/\`, for hosts that load compiled modules. A system linker is required (Windows: MSVC's \`link.exe\`; Linux/macOS: \`clang++\` or \`g++\`)."
           gh release create nightly \
             --target "$GITHUB_SHA" \
             --title "Nightly ($(date -u +%Y-%m-%d))" \
