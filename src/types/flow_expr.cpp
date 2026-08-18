@@ -102,6 +102,17 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
         expr(*m->object);
+        // The Math VALUE properties are numbers on the pristine builtin —
+        // 21.3.1 lists exactly these eight, all non-writable and
+        // non-configurable, though what carries the proof here is the
+        // program-wide pristine bit, not the attributes.
+        if (!m->optional && isPristineMathBase(*m->object)) {
+            if (m->property == "PI" || m->property == "E" || m->property == "LN2" ||
+                m->property == "LN10" || m->property == "LOG2E" || m->property == "LOG10E" ||
+                m->property == "SQRT1_2" || m->property == "SQRT2") {
+                return Type::number();
+            }
+        }
         // v1 proves the receiver's shape class, never the property's type; that
         // is what the inline-cache check consumes and all it needs.
         return Type::dynamic();
@@ -189,12 +200,16 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
 Type FlowAnalyzer::unary(const ast::Unary& u) {
     const Type operand = expr(*u.operand);
     const Type result = unaryResult(u.op, operand);
-    // The update forms are the one place a USE site sharpens a name: the
-    // binding holds a number afterwards whatever it held before.
+    // The update forms are the one place a USE site sharpens a name — but
+    // only to what 13.4.4 actually stores: ToNumeric of the old value, which
+    // `unaryResult` already computed, and which is a Number only when the
+    // operand can never be a BigInt. Writing `number` unconditionally here
+    // was the unsound claim that let `let c = 1n; c++` unbox a BigInt as an
+    // f64 wherever a later read consumed the proof.
     if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PreDec ||
         u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
         if (const auto* id = dynamic_cast<const ast::Ident*>(u.operand.get())) {
-            assign(id->name, Type::number());
+            assign(id->name, result);
         }
     }
     return result;
@@ -243,6 +258,16 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     args.reserve(c.args.size());
     for (const auto& a : c.args) args.push_back(expr(*a));
 
+    // `Math.<fn>(...)` on the pristine builtin: every OWN function property
+    // of 21.3 returns a Number for ANY arguments (a BigInt argument throws
+    // before a value exists, which claims nothing). The list is the own
+    // methods only — an INHERITED call like `Math.toString()` reaches
+    // Object.prototype and is deliberately absent.
+    if (!c.optional && mathCallReturnsNumber(c)) {
+        if (record_) mod_.result->pristineMathCalls.insert(&c);
+        return Type::number();
+    }
+
     const uint32_t index = calleeType.functionIndex();
     if (index == kNoFunctionIndex) return Type::dynamic();
 
@@ -273,6 +298,15 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
     // is the fact this site contributes about that name.
     if (ident == nullptr) expr(*n.callee);
     for (const auto& a : n.args) expr(*a);
+    // `new Float64Array(...)` on the UNSHADOWED name is the builtin: assigning
+    // to a builtin global is a compile error, so the only way the name can
+    // mean anything else is a program binding — which `resolvesToUserBinding`
+    // sees, module scope and imports included. The argument forms all produce
+    // a view with this element kind, so the arguments do not matter here.
+    if (ident != nullptr && !resolvesToUserBinding(ident->name)) {
+        if (ident->name == "Float64Array") return Type::typedArray(TypedArrayElem::Float64);
+        if (ident->name == "Float32Array") return Type::typedArray(TypedArrayElem::Float32);
+    }
     const ShapeClassId cls = ident != nullptr ? constructorShape(ident->name) : kNoShapeClass;
     if (record_ && cls != kNoShapeClass) mod_.result->siteShapes[&n] = cls;
     return Type::object(cls);

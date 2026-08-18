@@ -57,6 +57,21 @@ struct ModuleContext {
     // Shape class per constructor, computed once from its `this.x = ...`
     // assignments. Keyed by module function index.
     std::map<uint32_t, ShapeClassId> ctorShapes;
+    // Every name the MODULE SCOPE binds: lexical and hoisted declarations plus
+    // import locals. A function body's scope chain here stops at the function
+    // (its parent is null), so this is the only way `resolvesToUserBinding`
+    // can tell a read of a module-level `const Float64Array` from a read of
+    // the global builtin — and the builtin-identity proofs need exactly that
+    // distinction.
+    std::set<std::string> moduleScopeNames;
+    // No statement in the whole (merged) program can change what `Math`
+    // means: the global is unassignable by compile error, no bare `Math`
+    // escapes member-read position, no member write/update/delete goes
+    // through it, `globalThis` is never mentioned, and no host manifest
+    // overrides either name. Under this bit `Math.sqrt(x)` IS the builtin,
+    // and the builtin returns a Number for any arguments — which is the
+    // whole licence for typing those calls (flow_expr.cpp).
+    bool mathPristine = false;
     bool failed = false;
 };
 

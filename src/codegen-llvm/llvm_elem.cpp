@@ -435,4 +435,124 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(doneBb);
 }
 
+namespace {
+
+// The shared front half of the two PROVEN forms: validate the index the way
+// 23.2 does — an integral, in-range value inside the view — and hand back the
+// header pointer and the i32 index. The receiver needs NO guard at all: the
+// op only exists where inference proved the view, which is the contract that
+// separates these from emitElemGet above. The select-before-fptoui is the
+// same poison discipline emitElemGuards documents: the conversion must be fed
+// a value the range check has already accepted on EVERY path.
+//
+// The bounds check is against the view's length, exactly the bound
+// bronze_elem_get / _set use, so the two modes answer identically byte for
+// byte — including over a detached buffer, where both read the old bytes
+// today (the helper does not consult the detach flag either; changing that is
+// one change, in the helper, mirrored here).
+struct TypedElemGuards {
+    llvm::Value* hdr;
+    llvm::Value* idx32;
+    llvm::Value* ok;
+};
+
+TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                                    llvm::Value* idxDbl) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::Value* ge0 = builder.CreateFCmpOGE(idxDbl, llvm::ConstantFP::get(dblTy, 0.0));
+    llvm::Value* ltMax =
+        builder.CreateFCmpOLT(idxDbl, llvm::ConstantFP::get(dblTy, 4294967296.0));
+    llvm::Value* inRange = builder.CreateAnd(ge0, ltMax);
+    llvm::Value* safe = builder.CreateSelect(inRange, idxDbl, llvm::ConstantFP::get(dblTy, 0.0));
+    llvm::Value* idx32 = builder.CreateFPToUI(safe, i32Ty, "tel.idx");
+    llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
+    llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
+
+    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "tel.hdr");
+    llvm::Value* lenPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
+    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "tel.len");
+    markInvariant(len, ctx);
+    llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
+
+    llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(inRange, isIntegral), inLen);
+    return {hdr, idx32, ok};
+}
+
+}  // namespace
+
+llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                              llvm::Value* idxDbl, bool isF64) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+    llvm::Type* f32Ty = llvm::Type::getFloatTy(ctx);
+
+    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
+    llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "tel.load", fn);
+    llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, "tel.miss", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tel.done", fn);
+    builder.CreateCondBr(g.ok, loadBb, missBb);
+
+    builder.SetInsertPoint(loadBb);
+    llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, isF64 ? 8 : 4);
+    llvm::Value* loaded;
+    if (isF64) {
+        auto* ld = builder.CreateAlignedLoad(dblTy, elemPtr, llvm::Align(8), "tel.d64");
+        tagTypedArrayAccess(ld, ctx);
+        loaded = ld;
+    } else {
+        auto* ld = builder.CreateAlignedLoad(f32Ty, elemPtr, llvm::Align(4), "tel.d32");
+        tagTypedArrayAccess(ld, ctx);
+        loaded = builder.CreateFPExt(ld, dblTy);
+    }
+    llvm::BasicBlock* loadEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(missBb);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(dblTy, 2, "tel.result");
+    result->addIncoming(loaded, loadEndBb);
+    // ToNumber(undefined): the invalid-index answer in a coercing position.
+    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), missBb);
+    return result;
+}
+
+void emitTypedElemSet(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm::Value* idxDbl,
+                      llvm::Value* valDbl, bool isF64) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
+    llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "tes.store", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tes.done", fn);
+    builder.CreateCondBr(g.ok, storeBb, doneBb);
+
+    builder.SetInsertPoint(storeBb);
+    llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, isF64 ? 8 : 4);
+    if (isF64) {
+        auto* st = builder.CreateAlignedStore(valDbl, elemPtr, llvm::Align(8));
+        tagTypedArrayAccess(st, ctx);
+    } else {
+        // 23.2.5's narrowing for a Float32 element is IEEE round-to-nearest,
+        // which is exactly fptrunc — and exactly the static_cast<float> the
+        // helper's TypedArrayHeader::set performs.
+        llvm::Value* narrowed =
+            builder.CreateFPTrunc(valDbl, llvm::Type::getFloatTy(ctx), "tes.f32");
+        auto* st = builder.CreateAlignedStore(narrowed, elemPtr, llvm::Align(4));
+        tagTypedArrayAccess(st, ctx);
+    }
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+}
+
 }  // namespace bronze::codegen_llvm

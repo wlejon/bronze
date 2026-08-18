@@ -73,6 +73,9 @@ const char* opName(Op op) {
         case Op::PropSet: return "prop.set";
         case Op::ElemGet: return "elem.get";
         case Op::ElemSet: return "elem.set";
+        case Op::ElemGetTyped: return "elem.get.typed";
+        case Op::ElemSetTyped: return "elem.set.typed";
+        case Op::MathUnary: return "math.unary";
         case Op::DynamicCall: return "call.dynamic";
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";
@@ -211,6 +214,13 @@ bool canThrow(const Instruction& inst) {
         case Op::PrintSpread:
         case Op::PrintSpreadErr:
         case Op::ExcTake:
+        // Raw bounds-checked loads and stores on a proven view: an invalid
+        // index is NaN or a skipped store, never a throw, and neither op
+        // allocates or reaches user code.
+        case Op::ElemGetTyped:
+        case Op::ElemSetTyped:
+        // A machine-number math kernel: no coercion ladder, no user code.
+        case Op::MathUnary:
             return false;
         case Op::Add:
         // The rest of the arithmetic and bitwise family, for the same reason
@@ -530,6 +540,22 @@ std::string print(const Module& module) {
                         out += "elem.set %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::ElemGetTyped:
+                        out += "elem.get.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::ElemSetTyped:
+                        out += "elem.set.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", " + std::to_string(inst.immI32);
+                        break;
+                    case Op::MathUnary:
+                        out += "math.unary %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.immI32);
                         break;
                     case Op::CreateObject:

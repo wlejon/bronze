@@ -182,6 +182,35 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
 // lowering the index twice would make `a[i++]++` increment `i` twice.
 std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& idxAccess,
                                                         ast::UnaryOp op, il::Function& ilFn) {
+    // A proven typed-array element: the whole update stays in f64s. The
+    // ToNumeric of the old value (13.4.2.1 step 2) is exactly what
+    // elem.get.typed already computes — its element is always a Number and
+    // its `undefined` is answered as NaN — and the postfix yield is that
+    // numeric, so no observable difference survives even out of bounds.
+    if (const auto elemKind = typedElemAccessKind(idxAccess)) {
+        auto objVal = lowerExpr(*idxAccess.object, ilFn);
+        if (!objVal) return std::nullopt;
+        Value objBoxed = boxValueIfNeeded(*objVal, ilFn);
+        auto indexVal = lowerExpr(*idxAccess.index, ilFn);
+        if (!indexVal) return std::nullopt;
+        Value idxF64 = unboxValueIfNeeded(*indexVal, il::Type::F64, ilFn);
+
+        recordElementOp(idxAccess.span.file, true, "");
+        il::ValueId cur = ilFn.valueCount++;
+        il::Instruction getInst;
+        getInst.op = il::Op::ElemGetTyped;
+        getInst.type = il::Type::F64;
+        getInst.result = cur;
+        getInst.operands = {objBoxed.id, idxF64.id};
+        getInst.immI32 = static_cast<int32_t>(*elemKind);
+        emitInst(ilFn, getInst);
+
+        Value numOld{cur, il::Type::F64};
+        Value newVal = emitUpdateStep(numOld, op, ilFn);
+        recordElementOp(idxAccess.span.file, true, "");
+        emitTypedElemSet(objBoxed, idxF64, newVal, *elemKind, ilFn);
+        return isPrefix(op) ? newVal : numOld;
+    }
     auto objVal = lowerExpr(*idxAccess.object, ilFn);
     if (!objVal) return std::nullopt;
     Value objBoxed = boxValueIfNeeded(*objVal, ilFn);

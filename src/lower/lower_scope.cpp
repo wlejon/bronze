@@ -565,6 +565,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // it: leaving the callee's behind would make an enclosing free name look
     // like a `var` the callee declared.
     auto outerVarNames = functionVarNames_;
+    // The typed-element binding scan asks about the body being lowered NOW;
+    // lowerFunctionBody points it at the nested body, so the outer pointer
+    // comes back with everything else here.
+    const auto* outerBodyStmts = currentBodyStmts_;
     size_t outerEnvDepth = envScopes_.size();
 
     // 15.2.5 InstantiateOrdinaryFunctionExpression, the named branch: a
@@ -642,6 +646,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
     functionVarNames_ = outerVarNames;
+    currentBodyStmts_ = outerBodyStmts;
     if (!bodyOk) {
         if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);
         return std::nullopt;

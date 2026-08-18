@@ -763,6 +763,13 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         return;
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
+        // A NUMBER key that reaches here failed the exact-uint32 fast path
+        // above, so it is NaN, negative, fractional or >= 2^32-1. On an
+        // integer-indexed exotic object every number is a NUMERIC index
+        // (10.4.5.5 through CanonicalNumericIndexString), and an invalid one
+        // is the spec's silently-discarded store — never a named property.
+        // Only an actual string key can name one.
+        if (Value(idxBits).isNumber()) return;
         if (!rtValueToElementIndex(Value(idxBits), idx)) {
             fatal(("named property writes on a typed array (" +
                    std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +

@@ -76,6 +76,11 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
     return inferredType(expr).is(types::TypeKind::Number);
 }
 
+bool Lowerer::pristineMathCall(const ast::Expr& call) const {
+    if (inference_ == nullptr) return false;
+    return inference_->pristineMathCalls.count(&call) != 0;
+}
+
 // Whether a property site's receiver is proven to have ONE compile-time object
 // identity, which is what licenses the inlined inline-cache check in the
 // backend.
@@ -305,6 +310,7 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
         case types::TypeKind::String:
         case types::TypeKind::Object:
         case types::TypeKind::Function:
+        case types::TypeKind::TypedArray:
         case types::TypeKind::Dynamic: fn.returnType = il::Type::Dynamic; break;
         // `Undefined` (every path returns nothing) keeps the Void return
         // the declaration already has, and `Never` is the dead-function

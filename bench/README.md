@@ -100,6 +100,26 @@ node bench/typed_array_loop.js
 
 Measurements recorded on this machine (median of 5 runs, warmup discarded):
 
+- **Chunk 13: typed_array_crunch ahead of node — proven typed-array element ops and pristine-Math kernels**:
+  > [!NOTE]
+  > **The bill, named first**: profiling showed helper time ≈ 0; the 2.2x gap was generated-code quality — `--infer-stats` reported 0/90 element operations native and the IL showed the N-body pair loop boxing every `pos[j3]` read, every `acc[i] +=` store, and the `Math.sqrt` call.
+  >
+  > **Mechanism 1 — proven typed-array element access**: a new lattice element `typedarray:f64|f32` proven at unshadowed `new Float64Array/Float32Array(...)` sites, flowing through the existing join/cell machinery. Lowering emits `elem.get.typed` / `elem.set.typed` (bounds = view length, exactly the helper's rule) only where the consumer coerces — arithmetic sinks, typed-store values, updates, compounds — because the get's out-of-bounds answer is NaN, which is ToNumber(undefined) and nothing else. Codegen inlines the access with the select-before-fptoui poison discipline, invariant view-header loads and typed-array alias scopes. Seam: `BRONZE_NO_TYPED_ELEM=1`.
+  > - `definitelyNumericOperand` resolves one-step const chains (`const dx = pos[j] - xi`), always-coercing binaries, and — for `+` alone — both-sides-numeric adds.
+  > **Mechanism 2 — proven-number captured cells unbox at read** (`env.get` + `unbox.f64` when inference proved the cell Number).
+  > **Mechanism 3 — pristine-Math**: a module-wide taint scan (any bare `Math`, member write/update/delete through it, any `globalThis`, a host manifest naming either) plus per-site shadow checks prove `Math.<own fn>(...)` calls return Number, and license `math.unary` — a bare-instruction lowering for the five bit-exact functions (`sqrt`, `abs`, `floor`, `ceil`, `trunc`; IEEE 754 pins their results, so intrinsic and libm cannot differ in any bit). The N-body `Math.sqrt` drops its global read, property IC, argv spill, guard chain, box and unbox. `sin`/`cos`/`pow`/`min`/`max`/`round` deliberately keep the runtime kernel.
+  >
+  > **Two bugs the dual-mode ratchet caught while gating**:
+  > - The flow rule for `++`/`--` sharpened the binding to `number` unconditionally; 13.4.4 stores ToNumeric, so `let c = 1n; c++` left a BigInt behind a Number proof, and the cell-unbox weaponized it (`bigint_arithmetic` / `bigint_compound_assign` caught it). Fixed: the sharpening now uses `unaryResult`, Number only when the operand can never be a BigInt.
+  > - The runtime elem-set helper routed an invalid NUMBER index (NaN, negative, fractional, ≥2^32-1) on a typed array to the named-property hard error, where 10.4.5.5 says silently-discarded store — so a proven-NaN index diverged between modes. Fixed in `rt_prop_write.cpp`; pinned in `typed_elem_semantics`.
+  >
+  > **Pins**: oracle cases `typed_elem_semantics` (OOB/NaN/-0/fractional/huge indices, silent invalid stores, compounds, updates, f32 narrowing, non-sink `undefined` identity, shadowed constructor), `math_pristine_calls` (IEEE edges incl. `sqrt(-0)`, `ceil(-0.5)` = `-0`; refused shapes: no args, extra args, string arg, optional links), `math_tainted` (write-through taint, replaced method, shadowing) — each byte-equal across infer / no-infer / GC-stress; 8 new types doctests (TypedArray lattice, recognition, shadowing, pristine recording, taint, the BigInt update rule).
+  >
+  > **Results** (idle machine, median of 5, node v24.2.0 baseline 56.27 ms):
+  > - `typed_array_crunch.js`: 145.42 ms → 93 ms (element ops) → 58.74 ms (+cell unbox) → **52.38 ms** (+`math.unary`) — **1.07x, ahead of node**; no-infer 190.93 ms (3.65x inference speedup); `--infer-stats`: 78/90 element ops native (the 12 dynamic are cold init-loop stores of `rng()` chains).
+  > - Cross-suite: no regressions — `numeric_loop` 35.63 ms (1.84x WIN), `object_graph` 51.57 ms (1.35x WIN), `three_math` 47.25 ms (1.02x parity), `mesh_churn_2k` 95.35 ms (0.97x parity); `instanced_mesh_churn` (0.67x) and `proto_dispatch_churn` (0.62x) remain the standing losses, identical in both inference modes.
+  > - Known pre-existing gap, deliberately NOT pinned: detached-buffer reads through element paths return stale bytes and `length` survives a `transfer()` (helper and inline agree with each other; both diverge from spec — one fix, made in the helper and mirrored inline).
+
 - **Chunk 12: object_graph's bill — Array-Method Loads and Overflow-Slot Transitions**:
   > [!NOTE]
   > **Phase 1 — Sizing the Three Buckets Before Implementation**:

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "ast/queries.h"
+#include "ast/query_walk.h"
 #include "types/escape.h"
 #include "types/flow.h"
 
@@ -102,11 +104,98 @@ void resetObservations(ModuleContext& mod) {
     }
 }
 
+// Can any statement in the program change what `Math` means? The scan runs
+// over the MERGED module — the whole program — so one pass answers for every
+// call site. `Math.<name>` and `Math[expr]` READS are the one harmless
+// mention; everything else taints: a bare `Math` (it aliases the object,
+// and a later write through the alias is invisible here), a member write,
+// update or delete through it, a destructuring that could target it, any
+// mention of `globalThis` (the other road to the same object). A program
+// binding NAMED Math needs no care here: writes through it touch the
+// program's own object, and each claim site separately refuses shadowed
+// names (`resolvesToUserBinding`) — this bit is about mutation of the
+// builtin, which requires the builtin as a value, which requires a mention
+// this scan sees.
+//
+// Sloppy-mode `this` is not a vector: bronze binds it undefined, never the
+// global object (lowerThisValue), so `this.Math` reaches nothing.
+class MathTaintScan final : public ast::detail::IdentVisitor {
+public:
+    bool tainted = false;
+
+    void visit(const ast::Ident& i) override {
+        if (i.name == "Math" || i.name == "globalThis") tainted = true;
+    }
+    void visit(const ast::MemberAccess& m) override {
+        if (isMath(m.object.get())) return;
+        ast::detail::IdentVisitor::visit(m);
+    }
+    void visit(const ast::IndexAccess& ix) override {
+        if (isMath(ix.object.get())) {
+            ix.index->accept(*this);
+            return;
+        }
+        ast::detail::IdentVisitor::visit(ix);
+    }
+    void visit(const ast::Binary& b) override {
+        if (ast::isAssignOp(b.op) && memberBaseIsMath(b.lhs.get())) tainted = true;
+        ast::detail::IdentVisitor::visit(b);
+    }
+    void visit(const ast::Unary& u) override {
+        const bool mutating = u.op == ast::UnaryOp::Delete || u.op == ast::UnaryOp::PreInc ||
+                              u.op == ast::UnaryOp::PreDec || u.op == ast::UnaryOp::PostInc ||
+                              u.op == ast::UnaryOp::PostDec;
+        if (mutating && memberBaseIsMath(u.operand.get())) tainted = true;
+        ast::detail::IdentVisitor::visit(u);
+    }
+    // A destructuring pattern's targets can be member expressions, and the
+    // walk below cannot tell a target from a read — so any Math anywhere in
+    // the pattern taints, via a plain mention scan over its expressions.
+    void visit(const ast::DestructuringAssign& d) override {
+        ast::detail::IdentVisitor mentions;
+        ast::detail::visitPatternExprs(d.pattern.get(), mentions);
+        if (mentions.names.count("Math") != 0 || mentions.names.count("globalThis") != 0) {
+            tainted = true;
+        }
+        d.value->accept(*this);
+    }
+
+private:
+    static bool isMath(const ast::Expr* e) {
+        const auto* id = dynamic_cast<const ast::Ident*>(e);
+        return id != nullptr && (id->name == "Math");
+    }
+    static bool memberBaseIsMath(const ast::Expr* e) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
+            return isMath(m->object.get());
+        }
+        if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(e)) {
+            return isMath(ix->object.get());
+        }
+        return false;
+    }
+};
+
 }  // namespace
 
-std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags) {
+std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
+                                           const std::vector<std::string>* hostGlobals) {
     InferenceResult result;
     result.moduleName = module.name;
+
+    bool hostOverridesMath = false;
+    std::vector<std::string> hostClaimNames;
+    if (hostGlobals != nullptr) {
+        for (const auto& g : *hostGlobals) {
+            if (g == "Math" || g == "globalThis") hostOverridesMath = true;
+            // A host-provided constructor is not the builtin the typed-array
+            // proof names; feeding it to the module-scope set makes every
+            // claim site see a user binding and stand down.
+            if (g == "Math" || g == "Float64Array" || g == "Float32Array") {
+                hostClaimNames.push_back(g);
+            }
+        }
+    }
 
     const ModuleSplit split = splitModule(module);
     const std::set<std::string> escaping = escapingNames(module);
@@ -114,6 +203,25 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     ModuleContext mod;
     mod.result = &result;
     mod.diags = &diags;
+    for (const auto& name : ast::getScopeDeclarations(module.body)) {
+        mod.moduleScopeNames.insert(name);
+    }
+    for (const auto& name : ast::getHoistedVarDeclarations(module.body)) {
+        mod.moduleScopeNames.insert(name);
+    }
+    for (const auto& stmt : module.body) {
+        if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {
+            for (const auto& spec : imp->specifiers) mod.moduleScopeNames.insert(spec.local);
+        }
+    }
+    for (const auto& name : hostClaimNames) mod.moduleScopeNames.insert(name);
+    if (!hostOverridesMath) {
+        MathTaintScan taint;
+        for (const auto& stmt : module.body) {
+            if (stmt) stmt->accept(taint);
+        }
+        mod.mathPristine = !taint.tainted;
+    }
     for (uint32_t i = 0; i < split.decls.size(); ++i) {
         const ast::FunctionDecl* decl = split.decls[i];
         FunctionInfo fn;

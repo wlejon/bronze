@@ -24,10 +24,22 @@ enum class TypeKind : uint8_t {
     Null,
     Object,     // optional shape class
     Function,   // optional module function index
+    TypedArray, // optional element kind (Float64Array / Float32Array views)
     Dynamic,    // top: anything, the designed fallback
 };
 
 const char* typeKindName(TypeKind kind);
+
+// The element kind a `TypeKind::TypedArray` proof carries. Only the two float
+// views are named here because they are the two whose native element path
+// exists; a typed array of any other element kind stays `object`/`dynamic`
+// and keeps today's inline-cached dynamic path. Widening this enum is how the
+// integer views join the native path later.
+enum class TypedArrayElem : uint32_t {
+    Float64 = 0,
+    Float32 = 1,
+};
+inline constexpr uint32_t kNoTypedArrayElem = 0xFFFFFFFFu;
 
 // The inference lattice. Deliberately flat between Never and Dynamic: there are
 // no union types, so `number | undefined` is `Dynamic`. Modelling unions would
@@ -51,6 +63,13 @@ public:
     static constexpr Type function(uint32_t index = kNoFunctionIndex) {
         return Type(TypeKind::Function, index);
     }
+    static constexpr Type typedArray(TypedArrayElem elem) {
+        return Type(TypeKind::TypedArray, static_cast<uint32_t>(elem));
+    }
+    // A typed array whose element kind is not proven — the rung the join drops
+    // to when two element kinds meet. Truthiness and `typeof` still know it is
+    // an object; the native element path needs the kind and stays dynamic.
+    static constexpr Type typedArray() { return Type(TypeKind::TypedArray); }
 
     constexpr TypeKind kind() const { return kind_; }
     constexpr bool is(TypeKind k) const { return kind_ == k; }
@@ -63,6 +82,12 @@ public:
     }
     constexpr uint32_t functionIndex() const {
         return kind_ == TypeKind::Function ? payload_ : kNoFunctionIndex;
+    }
+    // The raw payload, `kNoTypedArrayElem` unless this is a TypedArray whose
+    // element kind is proven. Raw rather than the enum so a caller that
+    // forgets the sentinel check cannot conjure an enum value from it.
+    constexpr uint32_t typedArrayElemRaw() const {
+        return kind_ == TypeKind::TypedArray ? payload_ : kNoTypedArrayElem;
     }
 
     friend constexpr bool operator==(Type a, Type b) {

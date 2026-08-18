@@ -164,12 +164,29 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
     }
 
     if (varDecl->init) {
-        // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a binding
-        // takes the binding's name, which is what makes `const f = () => {}`
-        // report `f.name === "f"`.
-        auto initVal = lowerNamedEvaluation(*varDecl->init, varDecl->name, ilFn);
-        if (!initVal) return false;
-        declType = initVal->type;
+        std::optional<Value> initVal;
+
+        // A binding initialised from a proven typed-array element, EVERY use
+        // of which the scan proves coercing, holds the read as an unboxed
+        // f64 — NaN standing for the out-of-bounds `undefined`, which those
+        // uses cannot tell apart. Uncaptured `const`/`let` only: an env cell
+        // or a try-crossing slot is read by code the scan's argument does
+        // not cover.
+        if (const auto elemKind = typedElemAccessKind(*varDecl->init);
+            elemKind && !varDecl->isVar && memoryNames_.count(varDecl->name) == 0 &&
+            typedElemBindingUsesCoerce(varDecl->name, varDecl)) {
+            initVal = lowerTypedElemRead(
+                static_cast<const ast::IndexAccess&>(*varDecl->init), *elemKind, ilFn);
+            if (!initVal) return false;
+            declType = il::Type::F64;
+        } else {
+            // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a
+            // binding takes the binding's name, which is what makes
+            // `const f = () => {}` report `f.name === "f"`.
+            initVal = lowerNamedEvaluation(*varDecl->init, varDecl->name, ilFn);
+            if (!initVal) return false;
+            declType = initVal->type;
+        }
 
         // A binding inference proved numeric holds an unboxed f64, so the
         // arithmetic over it needs no unbox per use, the SSA joins it takes

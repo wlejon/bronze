@@ -257,9 +257,15 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
         }
     }
 
-    auto lhsOpt = lowerExpr(*bin->lhs, ilFn);
+    // An operand this operator coerces on every branch may be a proven
+    // typed-array element read, in which case it lowers straight to an
+    // unboxed f64 (lower_typed_elem.cpp has the argument). Same evaluation,
+    // same order — only the instruction differs.
+    const bool lhsCoerces = binaryCoercesOperand(bin->op, *bin->rhs);
+    const bool rhsCoerces = binaryCoercesOperand(bin->op, *bin->lhs);
+    auto lhsOpt = lhsCoerces ? lowerCoercingOperand(*bin->lhs, ilFn) : lowerExpr(*bin->lhs, ilFn);
     if (!lhsOpt) return std::nullopt;
-    auto rhsOpt = lowerExpr(*bin->rhs, ilFn);
+    auto rhsOpt = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn) : lowerExpr(*bin->rhs, ilFn);
     if (!rhsOpt) return std::nullopt;
 
     Value lhs = *lhsOpt;

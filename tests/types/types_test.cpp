@@ -703,3 +703,97 @@ TEST_CASE("a generator function expression reports the object as its closure ret
     CHECK(inferred.result->closureReturnAt(genExpr) == types::Type::dynamic());
     CHECK(inferred.result->closureReturnAt(plainExpr) == types::Type::number());
 }
+
+// ---- the builtin-identity proofs --------------------------------------------
+
+TEST_CASE("the TypedArray lattice element carries its element kind through join") {
+    using types::Type;
+    using types::TypedArrayElem;
+    const Type f64 = Type::typedArray(TypedArrayElem::Float64);
+    const Type f32 = Type::typedArray(TypedArrayElem::Float32);
+    CHECK(join(f64, f64) == f64);
+    CHECK(join(f64, f64).typedArrayElemRaw() ==
+          static_cast<uint32_t>(TypedArrayElem::Float64));
+    // Different element kinds keep the kind and lose the element — the same
+    // rule Object identities follow — because a consumer that knows only
+    // "some typed array" still cannot pick an access width.
+    CHECK(join(f64, f32) == Type::typedArray());
+    CHECK(join(f64, f32).typedArrayElemRaw() == types::kNoTypedArrayElem);
+    CHECK(join(f64, Type::object()) == Type::dynamic());
+    CHECK(f64.str() == "typedarray:f64");
+    CHECK(f32.str() == "typedarray:f32");
+}
+
+TEST_CASE("new Float64Array on the unshadowed builtin is a proven view") {
+    const auto inferred = infer("const a = new Float64Array(4);\n");
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[0].get());
+    REQUIRE(decl != nullptr);
+    CHECK(inferred.result->typeAt(decl->init.get()) ==
+          types::Type::typedArray(types::TypedArrayElem::Float64));
+}
+
+TEST_CASE("a shadowed Float64Array is not the builtin and proves nothing") {
+    const auto inferred = infer(
+        "const Float64Array = function (n) { this.len = n; };\n"
+        "const a = new Float64Array(4);\n");
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
+    REQUIRE(decl != nullptr);
+    CHECK_FALSE(inferred.result->typeAt(decl->init.get())
+                    .is(types::TypeKind::TypedArray));
+}
+
+TEST_CASE("a pristine Math call is typed Number and its site is recorded") {
+    const auto inferred = infer(
+        "const x = 2.0;\n"
+        "const y = Math.sqrt(x);\n");
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
+    REQUIRE(decl != nullptr);
+    CHECK(inferred.result->typeAt(decl->init.get()) == types::Type::number());
+    CHECK(inferred.result->pristineMathCalls.count(decl->init.get()) == 1);
+}
+
+TEST_CASE("one write through Math taints the whole module's pristine proof") {
+    const auto inferred = infer(
+        "Math.extra = 1;\n"
+        "const y = Math.sqrt(4.0);\n");
+    CHECK(inferred.result->pristineMathCalls.empty());
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
+    REQUIRE(decl != nullptr);
+    CHECK(inferred.result->typeAt(decl->init.get()) == types::Type::dynamic());
+}
+
+TEST_CASE("a bare mention of Math aliases it and forfeits the proof") {
+    const auto inferred = infer(
+        "const m = Math;\n"
+        "const y = Math.sqrt(4.0);\n");
+    CHECK(inferred.result->pristineMathCalls.empty());
+}
+
+TEST_CASE("a binding named Math shadows the builtin at its site only") {
+    const auto inferred = infer(
+        "function shadowed() {\n"
+        "  const Math = { sqrt: function (n) { return n; } };\n"
+        "  return Math.sqrt(9);\n"
+        "}\n"
+        "const y = Math.sqrt(4.0);\n");
+    // The module-level call keeps the proof; the shadowed one is not recorded.
+    CHECK(inferred.result->pristineMathCalls.size() == 1);
+    const auto* decl = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
+    REQUIRE(decl != nullptr);
+    CHECK(inferred.result->pristineMathCalls.count(decl->init.get()) == 1);
+}
+
+TEST_CASE("an update on a possibly-BigInt binding does not sharpen it to number") {
+    // 13.4.4 stores ToNumeric of the old value, and a BigInt survives that —
+    // `let c = 1n; c++` leaves a BigInt. Claiming `number` here once licensed
+    // an f64 unbox of a BigInt box at every later read of `c`.
+    const auto inferred = infer(
+        "function big() { let c = 9007199254740993n; c++; return c; }\n"
+        "function small() { let c = 5; c++; return c; }\n"
+        "console.log(big(), small());\n");
+    const auto& r = *inferred.result;
+    REQUIRE(r.isDirectCallable("big"));
+    REQUIRE(r.isDirectCallable("small"));
+    CHECK(r.signatureOf(*r.functionIndexOf("big")).returnType == types::Type::dynamic());
+    CHECK(r.signatureOf(*r.functionIndexOf("small")).returnType == types::Type::number());
+}

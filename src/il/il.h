@@ -165,6 +165,41 @@ enum class Op : uint8_t {
     PropSet,    // prop.set b, <key_const_index>, c, <ic_site_index>, <strict>
     ElemGet,    // a = elem.get obj, idx        (both dynamic; computed index)
     ElemSet,    // elem.set obj, idx, val, <strict>   (all dynamic)
+    // Element access on a receiver INFERENCE PROVED is a Float64Array or
+    // Float32Array view (`immI32` is the types::TypedArrayElem number). The
+    // proof is what licenses generated code to skip the tag/kind guard ladder
+    // and touch the bytes directly; the index and bounds checks stay, because
+    // they are the language's own rule, not a guess about the receiver.
+    //
+    // The get computes ToNumber of the language's read: a valid in-bounds
+    // index yields the element, and every other number index — negative,
+    // fractional, NaN, past the view — yields NaN, which IS
+    // ToNumber(undefined). An f64 cannot carry `undefined` itself, so
+    // lowering only places this op where the consumer coerces (arithmetic, a
+    // typed store's value, an update); anywhere the raw value could be
+    // observed keeps `elem.get`. The bound is the view's length, the same
+    // bound bronze_elem_get uses, so the two modes agree byte for byte —
+    // detach included, where both currently read through (the helper does
+    // not consult the detach flag; fixing that is one change, made there and
+    // mirrored here).
+    //
+    // The set is the full 23.2.5 store: ToNumber already done (the value
+    // operand is f64), a valid index stores with the element kind's
+    // narrowing, an invalid one is a silent no-op. Neither op can throw and
+    // neither can allocate, which is what keeps a loop of them free of
+    // safepoints.
+    ElemGetTyped, // a: f64 = elem.get.typed obj, idx(f64), <immI32: elem kind>
+    ElemSetTyped, // elem.set.typed obj, idx(f64), val(f64), <immI32: elem kind>
+    // A call INFERENCE PROVED reaches a pristine builtin `Math` method
+    // (`immI32` is the MathUnaryFn number), with its one argument already a
+    // machine number. Only the BIT-EXACT functions are admitted — the ones
+    // IEEE 754 pins to a single result, so the intrinsic the backend emits
+    // and the libm call the runtime helper makes cannot disagree in any bit,
+    // which is what keeps the two inference modes byte-identical. `sin`,
+    // `pow` and friends stay dynamic calls: their results are
+    // implementation-defined and MUST keep coming from the one runtime
+    // kernel. Cannot throw, cannot allocate, runs no user code.
+    MathUnary,  // a: f64 = math.unary x(f64), <immI32: MathUnaryFn>
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
@@ -382,6 +417,17 @@ enum class Op : uint8_t {
 };
 const char* opName(Op op);
 bool isTerminator(Op op);
+
+// The function selector `math.unary` carries in `immI32`. Membership is the
+// soundness line: a function goes on this list only if IEEE 754 defines its
+// result exactly, so backend intrinsic and runtime libm agree bit for bit.
+enum class MathUnaryFn : uint32_t {
+    Sqrt = 0,   // correctly rounded by IEEE 754 squareRoot
+    Abs = 1,    // a sign-bit clear
+    Floor = 2,  // roundToIntegralTowardNegative
+    Ceil = 3,   // roundToIntegralTowardPositive
+    Trunc = 4,  // roundToIntegralTowardZero
+};
 
 using ValueId = uint32_t;
 inline constexpr ValueId kNoValue = UINT32_MAX;

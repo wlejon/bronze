@@ -12,6 +12,7 @@ const char* typeKindName(TypeKind kind) {
         case TypeKind::Null: return "null";
         case TypeKind::Object: return "object";
         case TypeKind::Function: return "function";
+        case TypeKind::TypedArray: return "typedarray";
         case TypeKind::Dynamic: return "dynamic";
     }
     return "?";
@@ -23,6 +24,8 @@ std::string Type::str() const {
         out += '#' + std::to_string(payload_);
     } else if (kind_ == TypeKind::Function && payload_ != kNoPayload) {
         out += '#' + std::to_string(payload_);
+    } else if (kind_ == TypeKind::TypedArray && payload_ != kNoPayload) {
+        out += payload_ == static_cast<uint32_t>(TypedArrayElem::Float64) ? ":f64" : ":f32";
     }
     return out;
 }
@@ -39,6 +42,7 @@ Type join(Type a, Type b) {
     switch (a.kind()) {
         case TypeKind::Object: return Type::object();
         case TypeKind::Function: return Type::function();
+        case TypeKind::TypedArray: return Type::typedArray();
         default: break;
     }
     // Unreachable: every identity-free kind compares equal above.

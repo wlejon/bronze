@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ast/ast.h"
@@ -77,6 +78,14 @@ struct InferenceResult {
     // covers. The inner map is ordered only so the analysis can compare
     // whole environments cheaply; nothing here reaches an output path.
     std::unordered_map<const ast::Stmt*, std::map<std::string, Type>> mergeBindings;
+
+    // Call sites proven to reach a pristine builtin `Math` method: the
+    // module-wide taint scan says nothing can have changed `Math`, and no
+    // binding in scope shadows the name at this site. What the proof licenses
+    // is skipping the EVALUATION of `Math.<fn>` — the global read, the
+    // property load and the call-shaped guards — not just typing the result;
+    // that is why the site itself is recorded and not only its type.
+    std::unordered_set<const ast::Expr*> pristineMathCalls;
 
     // Per closure: the type its `return` statements were observed to produce,
     // keyed by the AST node that IS the closure — a `FunctionExpr`, or a nested

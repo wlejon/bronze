@@ -35,6 +35,9 @@ public:
           sources_(sources), stats_(stats) {
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
         if (stats_ && sources_) stats_->setSourceSet(sources_);
+        typedElemDisabled_ = typedElemSeamDisabled() ||
+                             hostGlobals_.count("Float64Array") != 0 ||
+                             hostGlobals_.count("Float32Array") != 0;
     }
 
     std::optional<il::Module> lower();
@@ -318,6 +321,42 @@ private:
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
     bool monomorphicPropSite(const ast::Expr& receiver) const;
+    // Did inference prove this call reaches a pristine builtin Math method?
+    // (module-wide taint scan clean, name unshadowed at the site)
+    bool pristineMathCall(const ast::Expr& call) const;
+
+    // --- lower_typed_elem.cpp: proven typed-array element access ---------
+    // `v[i]` where inference proved `v` a Float64Array/Float32Array view and
+    // `i` a number lowers to elem.get.typed / elem.set.typed — an unboxed f64
+    // read or write with the index and bounds checks inline and no receiver
+    // guards. The get yields NaN where the language yields `undefined`
+    // (invalid or out-of-bounds index), which is exact under ToNumber and
+    // nothing else, so every consumer below either proves a coercion or keeps
+    // the dynamic path.
+    //
+    // The element kind travels as the raw types::TypedArrayElem number.
+    static bool typedElemSeamDisabled();  // BRONZE_NO_TYPED_ELEM, read once
+    std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e) const;
+    bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
+    bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
+    std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn);
+    std::optional<Value> lowerTypedElemRead(const ast::IndexAccess& idx, uint32_t elemKind,
+                                            il::Function& ilFn);
+    std::optional<Value> lowerTypedElemAssign(const ast::Binary* bin,
+                                              const ast::IndexAccess& idxAccess,
+                                              uint32_t elemKind, il::Function& ilFn);
+    bool definitelyNumericOperand(const ast::Expr& e, int depth) const;
+    bool typedElemBindingUsesCoerce(const std::string& name, const ast::VarDecl* self) const;
+    void emitTypedElemSet(Value objBoxed, Value idxF64, Value valF64, uint32_t elemKind,
+                          il::Function& ilFn);
+    // The statement list of the function whose body is being lowered, for the
+    // binding-use scan; null outside a body (params, module segments).
+    const std::vector<ast::StmtPtr>* currentBodyStmts_ = nullptr;
+    // BRONZE_NO_TYPED_ELEM=1 or a --host-globals manifest naming either
+    // constructor (the host's Float64Array is not the builtin the proof
+    // named). A compile-time seam like --no-infer, and like it, an A/B
+    // bisection tool, not a runtime toggle.
+    bool typedElemDisabled_ = false;
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
     types::Type provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const;

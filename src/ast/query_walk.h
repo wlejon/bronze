@@ -44,8 +44,10 @@ inline void visitParamExprs(const std::vector<Param>& params, Visitor& v) {
 
 // Every identifier mentioned anywhere below a node, descending into nested
 // functions. Used to decide what an enclosing scope must put in an
-// environment record.
-class IdentVisitor final : public Visitor {
+// environment record. Not final: lowering's typed-element binding scan
+// derives from it to reuse exactly this traversal — a walk that misses a
+// mention there is an unsound proof, so it must be THIS walk.
+class IdentVisitor : public Visitor {
 public:
     std::unordered_set<std::string> names;
 

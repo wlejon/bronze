@@ -570,6 +570,46 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         }
     }
 
+    // `Math.sqrt(x)` and its bit-exact siblings on the PROVEN pristine
+    // builtin, with one machine-number argument: one f64 instruction — no
+    // global read, no property load, no callee guards, no boxing. The proof
+    // (`pristineMathCalls`) is what licenses skipping the evaluation of
+    // `Math.<fn>` itself; the function list is `il::MathUnaryFn`'s, so the
+    // dynamic path the other mode takes cannot differ in any output bit.
+    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
+        mathMem != nullptr && !mathMem->optional && !call->optional &&
+        pristineMathCall(*call) && call->args.size() == 1 &&
+        !dynamic_cast<const ast::SpreadElement*>(call->args[0].get())) {
+        std::optional<il::MathUnaryFn> mathFn;
+        if (mathMem->property == "sqrt") mathFn = il::MathUnaryFn::Sqrt;
+        else if (mathMem->property == "abs") mathFn = il::MathUnaryFn::Abs;
+        else if (mathMem->property == "floor") mathFn = il::MathUnaryFn::Floor;
+        else if (mathMem->property == "ceil") mathFn = il::MathUnaryFn::Ceil;
+        else if (mathMem->property == "trunc") mathFn = il::MathUnaryFn::Trunc;
+        // `definitelyNumericOperand`, not just `provenNumber`: the argument
+        // this exists for is the FFT/N-body shape — a const chain built from
+        // typed-element reads, which inference types dynamic but whose value,
+        // when one exists, can only be a number (a mixed BigInt pair throws
+        // before the call). That is exactly the licence the method's own
+        // ToNumber needs: a number in, unchanged, out.
+        if (mathFn.has_value() && definitelyNumericOperand(*call->args[0], 8)) {
+            auto argVal = lowerCoercingOperand(*call->args[0], ilFn);
+            if (!argVal) return std::nullopt;
+            // Definitely numeric, so this unbox is exact.
+            Value argF64 = unboxValueIfNeeded(*argVal, il::Type::F64, ilFn);
+            recordCall(call->span.file, true, "");
+            il::ValueId res = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::MathUnary;
+            inst.type = il::Type::F64;
+            inst.result = res;
+            inst.operands = {argF64.id};
+            inst.immI32 = static_cast<int32_t>(*mathFn);
+            emitInst(ilFn, inst);
+            return Value{res, il::Type::F64};
+        }
+    }
+
     // A spread argument means the argument count is not known here, and a
     // direct call's operand list is exactly its parameter list. So a spread
     // call always takes the uniform path, where the argument vector is a real

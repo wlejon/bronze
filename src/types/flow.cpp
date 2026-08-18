@@ -80,6 +80,33 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
     return Type::dynamic();
 }
 
+bool FlowAnalyzer::resolvesToUserBinding(const std::string& name) const {
+    if (scope_.env.count(name) != 0 || scope_.cells.count(name) != 0) return true;
+    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
+        if (p->cells.count(name) != 0) return true;
+    }
+    return mod_.indexByName.count(name) != 0 || mod_.moduleScopeNames.count(name) != 0;
+}
+
+bool FlowAnalyzer::isPristineMathBase(const ast::Expr& e) const {
+    if (!mod_.mathPristine) return false;
+    const auto* id = dynamic_cast<const ast::Ident*>(&e);
+    return id != nullptr && id->name == "Math" && !resolvesToUserBinding("Math");
+}
+
+bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
+    const auto* ma = dynamic_cast<const ast::MemberAccess*>(c.callee.get());
+    if (ma == nullptr || ma->optional || !isPristineMathBase(*ma->object)) return false;
+    // 21.3.2's own function properties, every one of which returns a Number.
+    static const std::set<std::string> kMathFns = {
+        "abs",   "acos",  "acosh", "asin",  "asinh",   "atan",  "atan2", "atanh",
+        "cbrt",  "ceil",  "clz32", "cos",   "cosh",    "exp",   "expm1", "floor",
+        "fround", "f16round", "hypot", "imul", "log",  "log1p", "log10", "log2",
+        "max",   "min",   "pow",   "random", "round",  "sign",  "sin",   "sinh",
+        "sqrt",  "tan",   "tanh",  "trunc"};
+    return kMathFns.count(ma->property) != 0;
+}
+
 void FlowAnalyzer::declare(const std::string& name, Type t) {
     if (scope_.captured.count(name) != 0) {
         scope_.cells[name] = join(scope_.cells[name], t);

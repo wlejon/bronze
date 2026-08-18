@@ -6,6 +6,7 @@
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/Intrinsics.h>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_cache.h"
@@ -777,6 +778,47 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSet instruction");
             if (!obj || !idx || !val) return false;
             emitElemSet(builder_, abi, obj, idx, val, inst.immI32 != 0);
+            return true;
+        }
+        // The proven forms: `immI32` is the types::TypedArrayElem number, 0
+        // for Float64Array and 1 for Float32Array — the only two lowering
+        // emits (lower_typed_elem.cpp). The index and value are f64 SSA.
+        case il::Op::ElemGetTyped: {
+            if (!needs(2, true, "Invalid operands for ElemGetTyped")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGetTyped instruction");
+            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGetTyped instruction");
+            if (!obj || !idx) return false;
+            values_[inst.result] = emitTypedElemGet(builder_, obj, idx, inst.immI32 == 0);
+            return true;
+        }
+        case il::Op::ElemSetTyped: {
+            if (!needs(3, false, "Invalid operands for ElemSetTyped")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemSetTyped instruction");
+            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSetTyped instruction");
+            llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSetTyped instruction");
+            if (!obj || !idx || !val) return false;
+            emitTypedElemSet(builder_, obj, idx, val, inst.immI32 == 0);
+            return true;
+        }
+
+        // A proven pristine-Math call on a machine number: the intrinsic
+        // lowers to a bare instruction (sqrtsd / andpd / roundsd), and every
+        // admitted function is IEEE-exact, so this and the helper the
+        // dynamic path calls produce identical bits (il::MathUnaryFn).
+        case il::Op::MathUnary: {
+            if (!needs(1, true, "Invalid operands for MathUnary")) return false;
+            llvm::Value* x = operand(inst, 0, "Undefined operand in MathUnary instruction");
+            if (!x) return false;
+            llvm::Intrinsic::ID id;
+            switch (static_cast<il::MathUnaryFn>(inst.immI32)) {
+                case il::MathUnaryFn::Sqrt: id = llvm::Intrinsic::sqrt; break;
+                case il::MathUnaryFn::Abs: id = llvm::Intrinsic::fabs; break;
+                case il::MathUnaryFn::Floor: id = llvm::Intrinsic::floor; break;
+                case il::MathUnaryFn::Ceil: id = llvm::Intrinsic::ceil; break;
+                case il::MathUnaryFn::Trunc: id = llvm::Intrinsic::trunc; break;
+                default: return require(false, "Unknown MathUnary function selector");
+            }
+            values_[inst.result] = builder_.CreateUnaryIntrinsic(id, x);
             return true;
         }
 

@@ -170,6 +170,17 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* idxAccess = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get())) {
+        // A proven typed-array element store, when the operator's read half
+        // (if it has one) is coerced by its own combine: plain `=`, the
+        // always-numeric compounds, and `+=` against a definitely numeric
+        // RHS. The logical assigns are excluded — they may RETURN the read
+        // raw — and take the ordinary path below.
+        if (const auto elemKind = typedElemAccessKind(*bin->lhs)) {
+            const bool admissible =
+                bin->op == ast::BinaryOp::Assign ||
+                typedElemCompoundAdmissible(bin->op, *bin->rhs);
+            if (admissible) return lowerTypedElemAssign(bin, *idxAccess, *elemKind, ilFn);
+        }
         auto objVal = lowerExpr(*idxAccess->object, ilFn);
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);

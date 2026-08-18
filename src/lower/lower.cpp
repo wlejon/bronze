@@ -646,6 +646,10 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator, bool isAsync) {
+    // Bodies lower one at a time (the state resets below assume it), so a
+    // plain pointer is the whole bookkeeping the typed-element binding scan
+    // needs.
+    currentBodyStmts_ = &body;
     ilFn.blocks.push_back(il::Block{.id = 0});
     ilFn.isStrict = strictCode_;
     ilFn.isGenerator = isGenerator;

@@ -269,7 +269,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // fatal.
     std::optional<types::InferenceResult> inferred;
     if (infer) {
-        inferred = types::inferModule(*astModule, diags);
+        inferred = types::inferModule(*astModule, diags,
+                                      hostGlobals.empty() ? nullptr : &hostGlobals);
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);
             if (outString) *outString = msg;
@@ -368,7 +369,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     std::optional<types::InferenceResult> inferred;
     if (infer) {
-        inferred = types::inferModule(*astModule, diags);
+        inferred = types::inferModule(*astModule, diags,
+                                      hostGlobals.empty() ? nullptr : &hostGlobals);
         timer.mark("infer");
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);

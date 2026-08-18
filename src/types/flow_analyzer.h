@@ -69,6 +69,22 @@ private:
     void declare(const std::string& name, Type t);
     void assign(const std::string& name, Type t);
 
+    // Does `name` resolve to anything the PROGRAM declared — a flow binding, a
+    // captured cell, a module-level function? `false` means a read of it is a
+    // global read. The builtin-identity proofs (`new Float64Array(...)` below)
+    // hang off this rather than off `lookup`, because lookup answers with a
+    // TYPE and `dynamic` cannot distinguish "user binding of unknown type"
+    // from "not bound at all".
+    bool resolvesToUserBinding(const std::string& name) const;
+
+    // Is `e` the identifier `Math`, meaning the pristine builtin — the
+    // program-wide bit says nothing can have changed it, and no binding in
+    // scope shadows the name here?
+    bool isPristineMathBase(const ast::Expr& e) const;
+    // `Math.<own fn>(...)` with a pristine base — the calls whose value is a
+    // Number by 21.3 whatever the arguments are.
+    bool mathCallReturnsNumber(const ast::Call& c) const;
+
     // Every expression a pattern contains: the defaults, and the computed
     // keys. Both can call, so both are call sites this pass has to see.
     void patternDefaults(const ast::BindingPattern& pattern);
