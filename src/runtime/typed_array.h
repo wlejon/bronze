@@ -139,19 +139,35 @@ struct TypedArrayHeader {
     uint32_t byteOffset;
     uint32_t length;    // in ELEMENTS, not bytes — the CURRENT window, see below
     uint32_t kind;      // ElementKind
-    // The length the view was CONSTRUCTED with. `length` above is the live
-    // window and is maintained, not fixed: `transfer` and a shrinking
-    // `resize` close a stranded view by setting it to 0, and a growing
-    // `resize` reopens it to this value (refreshLength below, driven by the
-    // post-mutation walk in typed_array.cpp). Keeping the truth IN the
-    // length field is what lets every bounds check — helper and inline — stay
-    // a single `index < length` compare instead of consulting the buffer on
-    // each access. Capped at kMaxByteLength, so the scanned {kind, this}
-    // word's top 16 bits stay far below a pointer tag — the same arithmetic
-    // that makes the {byteOffset, length} word safe.
+    // The length the view was CONSTRUCTED with, or kAutoLength for a
+    // length-TRACKING view (23.2.5.1 step 6: no length argument over a
+    // resizable buffer). `length` above is the live window and is maintained,
+    // not fixed: `transfer` and a shrinking `resize` close a stranded view by
+    // setting it to 0, and a growing `resize` reopens it — to this value for
+    // a fixed view, to 10.4.5.12's recomputation for a tracking one
+    // (refreshLength below, driven by the post-mutation walk in
+    // typed_array.cpp). Keeping the truth IN the length field is what lets
+    // every bounds check — helper and inline — stay a single `index < length`
+    // compare instead of consulting the buffer on each access, and it is why
+    // tracking views cost codegen NOTHING: the walk is the only place that
+    // knows they differ. Real values are capped at kMaxByteLength, so the
+    // scanned {kind, this} word's top 16 bits stay far below a pointer tag —
+    // the same arithmetic that makes the {byteOffset, length} word safe.
     uint32_t constructedLength;
 
     static constexpr uint16_t kFlags = HeapKind::TypedArray;
+
+    // The `constructedLength` a tracking view carries instead of a count.
+    // NOT ~0u: this field is the top half of a word the collector's payload
+    // scan reads as a Value, and 0xFFFFFFFF's top 16 bits are a valid pointer
+    // tag — the scan would "relocate" the sentinel into an address. 0x7FFF
+    // is far below the tag range, and no real length can collide because
+    // kMaxByteLength caps them three orders of magnitude lower.
+    static constexpr uint32_t kAutoLength = 0x7FFFFFFFu;
+
+    // 10.4.5: does this view's [[ArrayLength]] say AUTO — recomputed from the
+    // buffer's current byteLength by every resize — rather than a count?
+    bool isTracking() const noexcept { return constructedLength == kAutoLength; }
 
     ElementKind elementKind() const noexcept { return static_cast<ElementKind>(kind); }
     uint32_t bytesPerElement() const noexcept {
@@ -168,30 +184,44 @@ struct TypedArrayHeader {
         return buffer.asObject<const ArrayBufferHeader>()->data() + byteOffset;
     }
 
-    // 10.4.5.9 IsTypedArrayOutOfBounds for the fixed-length views bronze
-    // builds: does the CONSTRUCTED window no longer lie within its buffer?
-    // `transfer` zeroes the buffer's byteLength (so every non-empty view
-    // fails this forever) and `resize` can shrink it out from under a view —
-    // and grow it back, which restores validity, exactly as the
-    // specification's witness records do. Asked from `constructedLength`
-    // and not `length`, because a closed view's `length` is already 0 and
-    // would answer "in bounds". The element paths never call this — their
-    // `index < length` compare is kept true by refreshLength — but the
-    // `byteOffset` getter (23.2.4.4 answers +0 out of bounds) still needs
-    // the question. The u64 sum is not decorative: both factors can
-    // individually reach kMaxByteLength.
+    // 10.4.5.9 IsTypedArrayOutOfBounds: does the view's window no longer lie
+    // within its buffer? For a fixed view that asks whether the CONSTRUCTED
+    // window fits — from `constructedLength` and not `length`, because a
+    // closed view's `length` is already 0 and would answer "in bounds". For a
+    // tracking view there is no constructed window: only an offset the buffer
+    // no longer reaches puts it out of bounds (10.4.5.9 step 6). `transfer`
+    // zeroes the buffer's byteLength (so every non-empty view fails this
+    // forever) and `resize` can shrink it out from under a view — and grow it
+    // back, which restores validity, exactly as the specification's witness
+    // records do. The element paths never call this — their `index < length`
+    // compare is kept true by refreshLength — but the `byteOffset` getter
+    // (23.2.4.4 answers +0 out of bounds) still needs the question. The u64
+    // sum is not decorative: both factors can individually reach
+    // kMaxByteLength.
     bool isOutOfBounds() const noexcept {
         const auto* buf = buffer.asObject<const ArrayBufferHeader>();
+        if (isTracking()) return byteOffset > buf->byteLength;
         return static_cast<uint64_t>(byteOffset) +
                    static_cast<uint64_t>(constructedLength) * bytesPerElement() >
                buf->byteLength;
     }
 
-    // Re-derive the live window after the buffer's byteLength changed: the
-    // constructed length while the view fits, 0 while it does not. Only
-    // closeOrReopenViews (typed_array.cpp) calls this, for every view over a
-    // buffer `transfer` or `resize` just mutated.
-    void refreshLength() noexcept { length = isOutOfBounds() ? 0 : constructedLength; }
+    // Re-derive the live window after the buffer's byteLength changed: 0
+    // while the view does not fit; otherwise the constructed length for a
+    // fixed view and 10.4.5.12's floor((byteLength - byteOffset) / size) for
+    // a tracking one. Only closeOrReopenViews (typed_array.cpp) calls this,
+    // for every view over a buffer `transfer`, `resize` or `grow` just
+    // mutated.
+    void refreshLength() noexcept {
+        if (isOutOfBounds()) {
+            length = 0;
+        } else if (isTracking()) {
+            length = (buffer.asObject<ArrayBufferHeader>()->byteLength - byteOffset) /
+                     bytesPerElement();
+        } else {
+            length = constructedLength;
+        }
+    }
 
     // Element access with the element kind's conversions. `set` performs the
     // narrowing 23.2.5.2 SetTypedArrayFromNumber requires; the caller has
@@ -215,10 +245,13 @@ struct TypedArrayHeader {
     static TypedArrayHeader* create(Heap& heap, ElementKind kind, uint32_t length);
     // A view over an EXISTING buffer. The buffer arrives through a root
     // because allocating the view can move it; the offset and length are the
-    // caller's to validate (23.2.5.1 has the whole ladder).
+    // caller's to validate (23.2.5.1 has the whole ladder). `tracking` makes
+    // a length-TRACKING view: `length` is still the live window as of now —
+    // the caller computes 10.4.5.12's answer — but `constructedLength`
+    // becomes kAutoLength, so every later resize recomputes it.
     static TypedArrayHeader* createOverBuffer(Heap& heap, ElementKind kind,
                                               Rooted<Value>& buffer_val, uint32_t byteOffset,
-                                              uint32_t length);
+                                              uint32_t length, bool tracking = false);
 };
 
 // Generated code inlines dynamic-index element access on float views
@@ -283,6 +316,27 @@ struct DataViewHeader {
 
     static constexpr uint16_t kFlags = HeapKind::DataView;
 
+    // The `byteLength` an auto-length view carries instead of a count
+    // (25.3.2.1: no length argument over a resizable buffer). The value is
+    // TypedArrayHeader::kAutoLength's, for the same reason: this field is the
+    // top half of a scanned word, so the sentinel's top 16 bits must stay
+    // below the pointer-tag range, and kMaxByteLength keeps real lengths from
+    // ever colliding with it. Unlike a typed array's, nothing maintains this
+    // view's window — every access is already a helper call, so
+    // trackedByteLength() below just asks the buffer.
+    static constexpr uint32_t kAutoByteLength = 0x7FFFFFFFu;
+
+    bool isAutoLength() const noexcept { return byteLength == kAutoByteLength; }
+
+    // 25.3.1's GetViewByteLength: the stored count for a fixed window, the
+    // rest of the buffer as it is NOW for an auto-length one. Only meaningful
+    // when !isOutOfBounds() — callers ask that first, as the accessors must
+    // anyway (25.3.1.1 step 6).
+    uint32_t trackedByteLength() const noexcept {
+        if (!isAutoLength()) return byteLength;
+        return buffer.asObject<const ArrayBufferHeader>()->byteLength - byteOffset;
+    }
+
     // The first byte of this view. Valid only until the next allocation.
     uint8_t* bytes() noexcept {
         return buffer.asObject<ArrayBufferHeader>()->data() + byteOffset;
@@ -302,8 +356,9 @@ struct DataViewHeader {
     // 25.1.3.4 says detached means out of bounds regardless.
     bool isOutOfBounds() const noexcept {
         const auto* buf = buffer.asObject<const ArrayBufferHeader>();
-        return buf->isDetached() ||
-               static_cast<uint64_t>(byteOffset) + byteLength > buf->byteLength;
+        if (buf->isDetached()) return true;
+        if (isAutoLength()) return byteOffset > buf->byteLength;
+        return static_cast<uint64_t>(byteOffset) + byteLength > buf->byteLength;
     }
 
     // The buffer arrives through a root because allocating the view can move

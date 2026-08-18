@@ -294,74 +294,95 @@ TEST_CASE("binary16 rounds to nearest even and is computed from the double") {
     CHECK(std::signbit(v->get(2)));
 }
 
-// DOCUMENTED, NOT ENDORSED. 10.4.5's length-TRACKING views are unimplemented,
-// and what follows pins the answers bronze gives instead — so the gap is a fact
-// recorded in the suite rather than a surprise in someone's program.
-//
-// It is deliberately NOT an oracle case. An oracle case pins what a conforming
-// engine prints, and every number below is the wrong one; promoting it would
-// make a ratchet out of a bug.
-//
-// 23.2.5.1 step 6 makes `new Uint8Array(resizableBuffer)` — no length argument —
-// a view whose [[ArrayLength]] is AUTO, and 10.4.5.11 TypedArrayLength then
-// recomputes it from the buffer's current byteLength on every access. bronze
-// stores an element count in the view header once, at construction, and every
-// reader trusts it: the runtime helpers, and the inlined
-// `BRONZE_ABI_TA_LENGTH_OFFSET` load that llvm_elem.cpp emits and marks
-// invariant. So after a `resize` the view is stale in both directions — blind to
-// bytes that appeared, and still claiming bytes that went away.
-//
-// At the JS level today, with `rab = new ArrayBuffer(4, {maxByteLength: 16})`:
-//
-//     const track = new Uint8Array(rab);   // 10.4.5: length-tracking
-//     rab.resize(8);
-//     track.length     // 4, should be 8
-//     track[7] = 99;   // dropped; `track[7]` reads back undefined
-//     rab.resize(2);
-//     track.length     // 4, should be 2
-//
-// and a FIXED-length view over the same buffer is wrong the other way: 10.4.5.10
-// IsTypedArrayOutOfBounds makes `new Uint8Array(rab, 0, 2)` out-of-bounds once
-// the buffer shrinks below it, so `length` becomes 0 and every element is
-// undefined, where bronze keeps answering 2 and reading the bytes.
-//
-// The cost of fixing it is structural rather than a matter of a bit: the header
-// has a spare `reserved` word to carry the tracking flag with no ABI offset
-// moving, but `length` stops being the answer, so every read of it becomes a
-// branch — including the inlined invariant load, which is the one place bronze's
-// typed-array element access is as fast as it is.
-TEST_CASE("a view over a resizable buffer does NOT track it (10.4.5, unimplemented)") {
+// 10.4.5's length-TRACKING views: `new Uint8Array(resizableBuffer)` with no
+// length argument has [[ArrayLength]] auto, and 10.4.5.12 TypedArrayLength
+// recomputes it — floor((byteLength - byteOffset) / elementSize) — from the
+// buffer's CURRENT byteLength. bronze keeps the maintained-length design: the
+// header stores kAutoLength where a fixed view stores its constructed count,
+// and refreshLength (driven by the post-mutation walk every resize/grow/
+// transfer runs) writes 10.4.5.12's answer into the same `length` field every
+// bounds check already reads. The JS surface is pinned by the oracle case
+// typed_array_length_tracking; this pins the header mechanics, including the
+// two edges worth naming: an offset the buffer exactly reaches is an EMPTY
+// window, not an out-of-bounds one, and the sentinel must survive a collection
+// unmangled (it lives in the top half of a scanned word — typed_array.h says
+// why its value keeps it out of the pointer-tag range).
+TEST_CASE("a tracking view recomputes its window at every refresh (10.4.5)") {
     Heap heap;
     ShadowStackFrame frame;
 
     Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::createResizable(heap, 4, 16)));
     CHECK(buffer.get().asObject<ArrayBufferHeader>()->isResizable());
 
-    // The view a length-tracking one would be: constructed over the whole
-    // buffer, as 23.2.5.1 does when no length is given.
-    Rooted<Value> view(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint8, buffer, 0, 4)));
-    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);
+    // Offset 2 into a 4-byte buffer, 2-byte elements: one element now.
+    Rooted<Value> view(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, ElementKind::Uint16, buffer, 2, 1, /*tracking=*/true)));
+    CHECK(view.get().asObject<TypedArrayHeader>()->isTracking());
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 1);
 
-    // Growing the buffer is exactly this assignment in 25.1.5.5 — the bytes
-    // above the old length are already zeroed, since a resizable buffer reserves
-    // its maximum up front.
-    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 8;
-    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);  // 10.4.5: should be 8
-    CHECK(view.get().asObject<TypedArrayHeader>()->byteLength() == 4);
+    // Growing the buffer is exactly this assignment in 25.1.5.5, followed by
+    // the walk; refreshLength is the walk's whole visit. floor((16-2)/2) = 7.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 16;
+    view.get().asObject<TypedArrayHeader>()->refreshLength();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 7);
 
-    // And shrinking leaves the view addressing bytes the buffer no longer has.
-    // Nothing here is unsafe — a resizable buffer keeps its maximum allocated,
-    // so the read is in bounds of the ALLOCATION — but the answer is not the
-    // spec's, which is `length` 0 for a view whose window no longer fits.
+    // An ODD byteLength exercises the floor: (5-2)/2 = 1, one whole element.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 5;
+    view.get().asObject<TypedArrayHeader>()->refreshLength();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 1);
+
+    // Shrunk to the offset EXACTLY: an empty window, still in bounds
+    // (10.4.5.9 step 6 asks byteOffset > byteLength, strictly) — so methods
+    // answer emptily rather than throwing.
     buffer.get().asObject<ArrayBufferHeader>()->byteLength = 2;
-    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);  // 10.4.5: should be 2
-    CHECK(view.get().asObject<TypedArrayHeader>()->get(3) == 0.0);
+    view.get().asObject<TypedArrayHeader>()->refreshLength();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 0);
+    CHECK(!view.get().asObject<TypedArrayHeader>()->isOutOfBounds());
 
-    // The stale length survives a collection, which is the part that makes this a
-    // stored fact and not a cached one: the copy phase moves the word along with
-    // the header, and there is no place a recomputation could happen.
+    // Shrunk BELOW the offset: out of bounds, and the length still reads 0.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 1;
+    view.get().asObject<TypedArrayHeader>()->refreshLength();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 0);
+    CHECK(view.get().asObject<TypedArrayHeader>()->isOutOfBounds());
+
+    // Regrown: the window reopens to the recomputation, not to a remembered
+    // count — that is the difference from a fixed view in one line.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 4;
+    view.get().asObject<TypedArrayHeader>()->refreshLength();
+    CHECK(view.get().asObject<TypedArrayHeader>()->length == 1);
+
+    // The sentinel survives the copy phase: if the payload scan ever mistook
+    // kAutoLength's word for a pointer, this read-back would be an address.
     heap.collect();
-    CHECK(view.get().asObject<TypedArrayHeader>()->length == 4);
-    CHECK(buffer.get().asObject<ArrayBufferHeader>()->byteLength == 2);
+    CHECK(view.get().asObject<TypedArrayHeader>()->isTracking());
+    CHECK(view.get().asObject<TypedArrayHeader>()->constructedLength ==
+          TypedArrayHeader::kAutoLength);
+}
+
+// The DataView half of auto-length, which has no walk at all: every access is
+// a helper call, so trackedByteLength just measures the buffer when asked.
+// The sentinel shares TypedArrayHeader::kAutoLength's value and its scanned
+// -word constraint, so the collection check repeats here on purpose.
+TEST_CASE("an auto-length DataView measures its buffer when asked (25.3.1)") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::createResizable(heap, 8, 32)));
+    Rooted<Value> view(Value::fromObject(
+        DataViewHeader::create(heap, buffer, 2, DataViewHeader::kAutoByteLength)));
+    CHECK(view.get().asObject<DataViewHeader>()->isAutoLength());
+    CHECK(view.get().asObject<DataViewHeader>()->trackedByteLength() == 6);
+
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 32;
+    CHECK(view.get().asObject<DataViewHeader>()->trackedByteLength() == 30);
+
+    // At the offset exactly: empty, in bounds. Below it: out of bounds.
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 2;
+    CHECK(view.get().asObject<DataViewHeader>()->trackedByteLength() == 0);
+    CHECK(!view.get().asObject<DataViewHeader>()->isOutOfBounds());
+    buffer.get().asObject<ArrayBufferHeader>()->byteLength = 1;
+    CHECK(view.get().asObject<DataViewHeader>()->isOutOfBounds());
+
+    heap.collect();
+    CHECK(view.get().asObject<DataViewHeader>()->isAutoLength());
 }

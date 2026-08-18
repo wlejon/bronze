@@ -113,6 +113,10 @@ uint64_t sharedArrayBufferGrow(uint64_t, uint64_t thisBits, uint32_t argc, const
     }
     std::memset(buf->data() + buf->byteLength, 0, newLen - buf->byteLength);
     buf->byteLength = newLen;
+    // A grow can never strand a fixed view, but a length-TRACKING one
+    // (`new Uint8Array(sab)` over a growable buffer) recomputes its window
+    // from exactly this mutation — same walk, same reason as `resize`.
+    closeOrReopenViews(rtHeap(), selfRoot);
     return Value::fromUndefined().rawBits();
 }
 

@@ -392,7 +392,11 @@ private:
         // same terms as an object's property value — so a buffer nested past
         // the cut prints as `[ArrayBuffer]` while the view around it still
         // shows its slots.
-        return "DataView { byteLength: " + std::to_string(view->byteLength) +
+        // The live window, not the stored field: an auto-length view stores a
+        // sentinel, and a window its buffer left behind has no bytes — the
+        // getter throws there, and a diagnostic that cannot throw prints 0.
+        const uint32_t byteLength = view->isOutOfBounds() ? 0 : view->trackedByteLength();
+        return "DataView { byteLength: " + std::to_string(byteLength) +
                ", byteOffset: " + std::to_string(view->byteOffset) + ", buffer: " +
                arrayBuffer(view->buffer.asObject<ArrayBufferHeader>(), depth + 1) + " }";
     }

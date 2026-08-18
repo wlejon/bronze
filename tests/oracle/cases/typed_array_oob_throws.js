@@ -53,9 +53,13 @@ console.log(kind(() => { for (const x of a) {} }));
 
 // The explicit iterator agrees — and a closed window REOPENS for it too: the
 // failed next() does not advance, and after the regrow the same iterator
-// resumes exactly where it stood.
+// resumes exactly where it stood. The length is EXPLICIT on purpose: this row
+// pins the stranding of a FIXED window, and a lengthless view over a
+// resizable buffer is length-TRACKING (10.4.5) — resize(0) would leave it in
+// bounds and empty, and the iterator would finish quietly instead
+// (typed_array_length_tracking pins that side).
 const rbuf2 = new ArrayBuffer(16, { maxByteLength: 16 });
-const v2 = new Float64Array(rbuf2);
+const v2 = new Float64Array(rbuf2, 0, 2);
 v2[0] = 5;
 const it = v2.values();
 console.log(it.next().value);

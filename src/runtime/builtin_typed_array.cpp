@@ -52,6 +52,18 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
                           " should be a multiple of " + std::to_string(bpe));
         return Value::fromUndefined();
     }
+
+    // 23.2.5.1 -> InitializeTypedArrayFromArrayBuffer runs ToIndex(length)
+    // BEFORE it tests the buffer (its steps 4..6), so both conversions'
+    // `valueOf`s have run by the time the buffer is measured — a length whose
+    // conversion detaches or resizes it is judged against the buffer as it is
+    // NOW, not as it was. That is why the detach test and the byteLength read
+    // sit below the conversion and re-derive through the root.
+    const bool hasLength = !lengthRoot.get().isUndefined();
+    uint32_t length = 0;
+    if (hasLength && !toIndex(lengthRoot.get(), "typed array", bpe, length)) {
+        return Value::fromUndefined();
+    }
     auto* buf = buffer.get().asObject<ArrayBufferHeader>();
     if (buf->isDetached()) {
         rtThrowTypeError("ArrayBuffer is detached");
@@ -64,20 +76,28 @@ Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value
         return Value::fromUndefined();
     }
 
-    uint32_t length = 0;
-    if (lengthRoot.get().isUndefined()) {
+    if (!hasLength) {
+        // No length argument: over a resizable buffer (a growable
+        // SharedArrayBuffer included) that is 10.4.5's length-TRACKING view —
+        // [[ArrayLength]] is auto, recomputed by every resize, and there is
+        // no divisibility condition on the tail (the length floors instead).
+        // Over a fixed buffer the rest of the bytes must divide evenly and
+        // the count is fixed here, once.
+        if (buf->isResizable()) {
+            return Value::fromObject(TypedArrayHeader::createOverBuffer(
+                rtHeap(), kind, buffer, offset, (bufferLength - offset) / bpe,
+                /*tracking=*/true));
+        }
         if ((bufferLength - offset) % bpe != 0) {
             rtThrowRangeError("byte length of " + std::string(elementKindInfo(kind).name) +
                               " should be a multiple of " + std::to_string(bpe));
             return Value::fromUndefined();
         }
         length = (bufferLength - offset) / bpe;
-    } else {
-        if (!toIndex(lengthRoot.get(), "typed array", bpe, length)) return Value::fromUndefined();
-        if (static_cast<uint64_t>(offset) + static_cast<uint64_t>(length) * bpe > bufferLength) {
-            rtThrowRangeError("Invalid typed array length: " + std::to_string(length));
-            return Value::fromUndefined();
-        }
+    } else if (static_cast<uint64_t>(offset) + static_cast<uint64_t>(length) * bpe >
+               bufferLength) {
+        rtThrowRangeError("Invalid typed array length: " + std::to_string(length));
+        return Value::fromUndefined();
     }
     return Value::fromObject(
         TypedArrayHeader::createOverBuffer(rtHeap(), kind, buffer, offset, length));

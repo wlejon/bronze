@@ -362,7 +362,7 @@ TypedArrayHeader* TypedArrayHeader::create(Heap& heap, ElementKind kind, uint32_
 
 TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, ElementKind kind,
                                                      Rooted<Value>& buffer_val, uint32_t byteOffset,
-                                                     uint32_t length) {
+                                                     uint32_t length, bool tracking) {
     size_t payload_bytes = sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* view = reinterpret_cast<TypedArrayHeader*>(raw_hdr);
@@ -374,7 +374,7 @@ TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, ElementKind kin
     view->byteOffset = byteOffset;
     view->length = length;
     view->kind = static_cast<uint32_t>(kind);
-    view->constructedLength = length;
+    view->constructedLength = tracking ? kAutoLength : length;
     return view;
 }
 

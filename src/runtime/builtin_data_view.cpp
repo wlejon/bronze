@@ -226,7 +226,7 @@ Value getViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     if (view->isOutOfBounds()) {
         return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
     }
-    if (static_cast<uint64_t>(getIndex) + elementSize > view->byteLength) {
+    if (static_cast<uint64_t>(getIndex) + elementSize > view->trackedByteLength()) {
         return rtThrowRangeError(kOutOfBounds);
     }
     const uint64_t bits = readRawBytes(view->bytes() + getIndex, elementSize, littleEndian);
@@ -258,7 +258,7 @@ Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     if (view->isOutOfBounds()) {
         return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
     }
-    if (static_cast<uint64_t>(getIndex) + elementSize > view->byteLength) {
+    if (static_cast<uint64_t>(getIndex) + elementSize > view->trackedByteLength()) {
         return rtThrowRangeError(kOutOfBounds);
     }
     writeRawBytes(view->bytes() + getIndex, elementSize, littleEndian,
@@ -285,7 +285,7 @@ Value getBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
     if (view->isOutOfBounds()) {
         return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
     }
-    if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
+    if (static_cast<uint64_t>(getIndex) + 8 > view->trackedByteLength()) {
         return rtThrowRangeError(kOutOfBounds);
     }
     const uint64_t bits = readRawBytes(view->bytes() + getIndex, 8, littleEndian);
@@ -317,7 +317,7 @@ Value setBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
     if (view->isOutOfBounds()) {
         return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
     }
-    if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
+    if (static_cast<uint64_t>(getIndex) + 8 > view->trackedByteLength()) {
         return rtThrowRangeError(kOutOfBounds);
     }
     writeRawBytes(view->bytes() + getIndex, 8, littleEndian, bits);
@@ -420,8 +420,15 @@ uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         // Step 8: an omitted length spans the rest of the buffer. There is no
         // divisibility condition to fail here, which is the plainest sign that
         // this object has no element width — a Float32Array over the same six
-        // remaining bytes is a RangeError.
-        byteLength = bufferLength - offset;
+        // remaining bytes is a RangeError. Over a RESIZABLE buffer "the rest"
+        // is a moving target, so the view is auto-length (25.3.2.1 step 10):
+        // the header stores the sentinel and every access measures the buffer
+        // as it is then.
+        if (buffer.get().asObject<ArrayBufferHeader>()->isResizable()) {
+            byteLength = DataViewHeader::kAutoByteLength;
+        } else {
+            byteLength = bufferLength - offset;
+        }
     } else {
         // Step 9: ToIndex again, then the window must fit. The detach test
         // repeats after it for the reason it ran after the first ToIndex —
@@ -529,7 +536,7 @@ Value rtDataViewMember(Value viewVal, const std::string& key) {
         if (view->isOutOfBounds()) {
             return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
         }
-        return Value::fromDouble(view->byteLength);
+        return Value::fromDouble(view->trackedByteLength());
     }
     if (key == "byteOffset") {
         if (view->isOutOfBounds()) {

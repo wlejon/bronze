@@ -61,19 +61,60 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
 uint64_t taSubarray(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
-    if (!requireTypedArray(self.get(), "subarray")) return Value::fromUndefined().rawBits();
+    // 23.2.3.30 is the one prototype method with NO ValidateTypedArray: a
+    // detached or stranded source still answers — its length clamps to 0 (the
+    // maintained field is already there) and the CONSTRUCTION at the end is
+    // the validator, exactly as the specification's species-create is. So
+    // only the brand is required here, and requireTypedArray's throws are
+    // deliberately not.
+    if (!isTypedArray(self.get())) {
+        return rtThrowTypeError(
+                   "%TypedArray%.prototype.subarray called on a value that is not a typed array")
+            .rawBits();
+    }
 
     const uint32_t len = lengthOf(self.get());
+    // The result of `subarray(begin)` on a tracking source is itself
+    // tracking (23.2.3.30 step 13: [[ArrayLength]] auto and end undefined
+    // construct without a length). Decided before the conversions below,
+    // which can run user code.
+    const bool trackingResult =
+        self.get().asObject<TypedArrayHeader>()->isTracking() && args[1].isUndefined();
     uint32_t begin = 0;
     uint32_t end = len;
     relativeArg(args[0], len, begin, 0);
     relativeArg(args[1], len, end, len);
     const uint32_t count = end > begin ? end - begin : 0;
 
+    // Re-derived after relativeArg's ToNumber, whose `valueOf` can allocate —
+    // and can also detach or resize the buffer, which is why the window is
+    // validated below against the buffer as it is NOW, with the constructor's
+    // errors: the specification reaches them through TypedArraySpeciesCreate.
     auto* view = self.get().asObject<TypedArrayHeader>();
     const ElementKind kind = view->elementKind();
-    const uint32_t byteOffset = view->byteOffset + begin * view->bytesPerElement();
+    const uint32_t bpe = view->bytesPerElement();
+    const uint32_t byteOffset = view->byteOffset + begin * bpe;
     Rooted<Value> buffer{view->buffer};
+    auto* buf = buffer.get().asObject<ArrayBufferHeader>();
+    if (buf->isDetached()) {
+        return rtThrowTypeError("ArrayBuffer is detached").rawBits();
+    }
+    if (byteOffset > buf->byteLength) {
+        return rtThrowRangeError("Start offset " + std::to_string(byteOffset) +
+                                 " is outside the bounds of the buffer")
+            .rawBits();
+    }
+    if (trackingResult) {
+        return Value::fromObject(TypedArrayHeader::createOverBuffer(
+                                     rtHeap(), kind, buffer, byteOffset,
+                                     (buf->byteLength - byteOffset) / bpe, /*tracking=*/true))
+            .rawBits();
+    }
+    if (static_cast<uint64_t>(byteOffset) + static_cast<uint64_t>(count) * bpe >
+        buf->byteLength) {
+        return rtThrowRangeError("Invalid typed array length: " + std::to_string(count))
+            .rawBits();
+    }
     return Value::fromObject(
                TypedArrayHeader::createOverBuffer(rtHeap(), kind, buffer, byteOffset, count))
         .rawBits();

@@ -120,6 +120,24 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   > - Cross-suite: no regressions — `numeric_loop` 35.63 ms (1.84x WIN), `object_graph` 51.57 ms (1.35x WIN), `three_math` 47.25 ms (1.02x parity), `mesh_churn_2k` 95.35 ms (0.97x parity); `instanced_mesh_churn` (0.67x) and `proto_dispatch_churn` (0.62x) remain the standing losses, identical in both inference modes.
   > - Known pre-existing gap at the time, since CLOSED (chunk 13b below): detached-buffer reads through element paths returned stale bytes and `length` survived a `transfer()`.
 
+- **Chunk 13d: length-tracking views — the walk already knew how**:
+  > [!NOTE]
+  > 10.4.5's auto-length views (`new Uint8Array(resizableBuffer)`, no length argument) now TRACK their buffer: length recomputes as `floor((byteLength - byteOffset) / elementSize)` on every resize/grow/transfer, strands only when the buffer drops below the OFFSET (an offset the buffer exactly reaches is an EMPTY window, not an out-of-bounds one), and reopens by recomputation rather than to a remembered count. Cost to codegen: **zero lines**. Chunk 13b's maintained-length design already put the truth in the view's `length` field and re-derived it in `closeOrReopenViews` at every mutation — tracking is one more arm in `refreshLength`, and the inline `index < length` compare, the scoped (never-invariant) length loads, and the iteration fast path are all unchanged and all correct for free.
+  >
+  > **The sentinel**: a tracking view stores `kAutoLength = 0x7FFFFFFF` in `constructedLength`. NOT `~0u` — the field is the top half of a word the collector's payload scan reads as a Value, and 0xFFFFFFFF's top 16 bits are a valid pointer tag (the scan would "relocate" the sentinel into an address); 0x7FFF stays far below the tag range and `kMaxByteLength` keeps real lengths from colliding. The doctest reads the sentinel back through a collection on purpose.
+  >
+  > **`subarray` to spec** (23.2.3.30, closing 13c's named divergence): the one prototype method with NO ValidateTypedArray. A detached or stranded source answers — its length clamps to 0 (the maintained field is already there) — and the CONSTRUCTION at the end is the validator (TypeError for a detached buffer, RangeError for an offset the buffer doesn't reach), against the buffer as it is after the begin/end conversions ran. `subarray(begin)` of a tracking source is itself tracking (step 13).
+  >
+  > **The constructor to spec order** (23.2.5.1): ToIndex(length) runs BEFORE the buffer is measured, so a length `valueOf` that resizes or detaches is judged against the buffer as it is NOW — the same conversion-order fix 13c made for the DataView ctor. Divisibility of the tail binds only a FIXED buffer; a resizable one floors. `SharedArrayBuffer.grow` now runs the view walk (a grow can't strand a fixed view, but a tracking one recomputes from exactly that mutation).
+  >
+  > **DataView auto-length** (25.3.2.1 step 10): no walk at all — every access is already a helper call, so `trackedByteLength()` measures the buffer when asked. The sentinel is the same value under the same scanned-word constraint.
+  >
+  > **Pins**: `typed_array_length_tracking` oracle case — grow/shrink/regrow tracking, the boundary empty-vs-OOB distinction, tracking propagation through `subarray`, no-ValidateTypedArray subarray semantics, inline stores and for-of over a mid-loop-grown window, growable-SAB tracking, ctor floor-vs-RangeError and conversion order, auto DataView strand/reopen. Both modes ± GC stress ± `BRONZE_NO_TYPED_ELEM` ± `BRONZE_HEAP_VERIFY`+`BRONZE_GC_POISON`, all byte-identical, first run. `typed_array_oob_throws`'s iterator-strand row now constructs its view with an EXPLICIT length (a lengthless view over that buffer would track and never strand) — intent preserved, not one expected byte changed. The header mechanics doctest replaced the old DOCUMENTED-NOT-ENDORSED one that pinned the fixed-at-construction bug.
+  >
+  > **Perf** (idle machine, median of 5): `typed_array_crunch` 50.76 ms **WIN 1.11x** checksum unchanged; `typed_array_loop` 23.92 ms **WIN 1.70x** output unchanged. Zero hot-path cost, measured.
+  >
+  > **Still open, named**: %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember); iterator resumption fidelity — bronze's typed-array iterator resumes if its view's window reopens, where the spec's generator, once done or thrown, is done forever (pinned as bronze's behavior in `typed_array_oob_throws`, deliberate).
+
 - **Chunk 13c: the throwing half of out-of-bounds — methods, iteration, DataView, and the BigInt debt**:
   > [!NOTE]
   > Chunk 13b closed the SOFT surface (element access answers undefined/discard through the maintained length). This chunk closes the three named remainders — everything that per spec THROWS over a closed window — at zero cost to the hot paths, because every new check sits on a path that is already a helper call or a cold branch.
@@ -136,7 +154,7 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   >
   > **Perf**: typed_array_crunch re-measured after the codegen change — unchanged (the only emitted-code delta is a cold-edge retarget plus one cold block).
   >
-  > **Still open, named**: `subarray` validates where spec doesn't (throws on a detached source; spec builds the view regardless) — conservative, pre-existing, and harmless for real code; %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember); length-tracking views (auto-length over resizable buffers) are still fixed-at-construction.
+  > **Still open, named**: ~~`subarray` validates where spec doesn't; length-tracking views are still fixed-at-construction~~ — both closed by Chunk 13d; %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember).
 
 - **Chunk 13b: the detach gap closed — the length field IS the witness**:
   > [!NOTE]
