@@ -889,6 +889,7 @@ static thread_local Value g_globalThisObject = Value::fromUndefined();
 // `globalThis` itself — which is written as a self-reference below — because
 // `Math` and `globalThis.Math` are one binding and must not drift.
 static const char* const kGlobalObjectNames[] = {
+    // TEMP BISECT
     "Math", "Object", "Number", "JSON", "Array", "String", "Boolean", "Symbol", "BigInt", "RegExp",
     "Promise", "Map", "Set", "WeakMap", "WeakSet", "Error", "TypeError", "AggregateError",
     "RangeError", "SyntaxError", "ReferenceError", "URIError", "isNaN", "isFinite", "parseInt",
@@ -914,8 +915,17 @@ Value rtGlobalThisObject() {
                        "', a name the builtin ladder cannot resolve")
                           .c_str());
             }
-            Rooted<Value> key{rtMakeString(name)};
+            // Rooted BEFORE the key string's allocation can collect. A
+            // resolution that ends in a bare intern (RegExp, Promise, the
+            // error family) returns an object created by its own last
+            // allocation, and a raw copy of it dies at the very next one —
+            // it usually survives anyway because a SETTLED object comes back
+            // to the same address after every even number of collections
+            // (deterministic copy order over a stable live set), which is
+            // exactly why this line being below `rtMakeString` passed every
+            // suite until the heap-verify walk existed.
             Rooted<Value> val{resolved};
+            Rooted<Value> key{rtMakeString(name)};
             glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                          /*enumerable=*/false,
                                                          /*defineOwn=*/true);
