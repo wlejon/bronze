@@ -435,6 +435,18 @@ static const char* heap_kind_name(uint16_t kind) noexcept {
     return kind < HeapKind::Count ? names[kind] : "?";
 }
 
+void Heap::walk_objects(const std::function<void(HeapObjectHeader*)>& fn) {
+    // The same header-run stepping verify_space's pass 1 validates — and the
+    // same precondition: the space is a gapless run of live, fully-built
+    // objects only immediately after collect() (heap.h has the contract).
+    uint8_t* end = from_space_.bump_ptr;
+    for (uint8_t* p = from_space_.base; p < end; ) {
+        auto* hdr = reinterpret_cast<HeapObjectHeader*>(p);
+        fn(hdr);
+        p += hdr->size;
+    }
+}
+
 void Heap::verify_space(const Semispace& space) const {
     const uint8_t* end = space.bump_ptr;
     const uint64_t reservation_lo = reinterpret_cast<uint64_t>(reserved_base_);

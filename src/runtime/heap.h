@@ -248,6 +248,18 @@ public:
     // happen before the window is published, never after.
     void refill_inline_lab();
 
+    // Visit every object in the live space, in allocation order. Meaningful
+    // ONLY immediately after collect(): between collections the space
+    // interleaves dead allocations and the inline-allocation window's
+    // uninitialized bytes, and neither parses as a header run. Right after a
+    // collection the space is exactly the live set, gapless and fully built,
+    // and the window is zeroed — the same precondition verify_space leans on.
+    // The callback must not allocate on this heap: an allocation would move
+    // the very objects being walked. The one caller today is
+    // closeOrReopenViews (typed_array.cpp), which re-derives typed-array
+    // windows after `transfer` or `resize` changes a buffer's byteLength.
+    void walk_objects(const std::function<void(HeapObjectHeader*)>& fn);
+
     // How many objects this collector has RELOCATED. A hash table keyed on
     // VALUES rather than on property names (a Map)
     // hashes an object key by its address, so every such table records this

@@ -130,7 +130,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* taLenPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
         auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ic.set.ta.len");
-        markInvariant(taLen, ctx);
+        tagViewLengthAccess(taLen, ctx);
         llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.kind", fn);
         builder.CreateCondBr(builder.CreateICmpULT(builder.getInt32(idx), taLen), taKindBb, doneBb);
 

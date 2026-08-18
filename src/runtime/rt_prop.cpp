@@ -224,7 +224,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
                     return Value::fromDouble(view->byteLength()).rawBits();
                 }
                 if (kLen == 10 && std::memcmp(kData, "byteOffset", 10) == 0) {
-                    return Value::fromDouble(view->byteOffset).rawBits();
+                    // 23.2.4.4: +0 for a view its buffer left behind — the
+                    // one length-family answer the maintained window cannot
+                    // carry, because the stored offset survives the closing.
+                    return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset)
+                        .rawBits();
                 }
                 if (kLen == 6 && std::memcmp(kData, "buffer", 6) == 0) {
                     return view->buffer.rawBits();

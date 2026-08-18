@@ -374,8 +374,28 @@ TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, ElementKind kin
     view->byteOffset = byteOffset;
     view->length = length;
     view->kind = static_cast<uint32_t>(kind);
-    view->reserved = 0;
+    view->constructedLength = length;
     return view;
+}
+
+void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
+    // Collect FIRST: between collections the live space interleaves dead
+    // allocations and the inline-allocation window's uninitialized bytes,
+    // and a walk that misparsed one header would stomp an arbitrary object.
+    // Right after a collection the space is exactly the live set, gapless
+    // and fully built. Dead views over this buffer need no visit — nothing
+    // can read their length again — and the collection just discarded them.
+    heap.collect();
+    auto* buf = buffer_val.get().asObject<ArrayBufferHeader>();
+    heap.walk_objects([buf](HeapObjectHeader* hdr) {
+        if (hdr->tag != static_cast<uint16_t>(Tag::Object) ||
+            hdr->flags != HeapKind::TypedArray) {
+            return;
+        }
+        auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        if (view->buffer.asObject<ArrayBufferHeader>() != buf) return;
+        view->refreshLength();
+    });
 }
 
 DataViewHeader* DataViewHeader::create(Heap& heap, Rooted<Value>& buffer_val, uint32_t byteOffset,

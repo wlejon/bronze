@@ -197,8 +197,12 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     builder.SetInsertPoint(taBb);
     llvm::Value* taLenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
+    // The length word is MAINTAINED, not fixed: `transfer` and `resize` close
+    // and reopen views by rewriting it (closeOrReopenViews). So it is scoped,
+    // never invariant — hoistable past element and env stores, reloaded past
+    // any call, which is the only place a window can move.
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "eg.talen");
-    markInvariant(taLen, ctx);
+    tagViewLengthAccess(taLen, ctx);
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "eg.ta.kind", fn);
     llvm::BasicBlock* taUndefBb = llvm::BasicBlock::Create(ctx, "eg.ta.undef", fn);
     builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, taUndefBb);
@@ -397,7 +401,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* taLenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "es.talen");
-    markInvariant(taLen, ctx);
+    tagViewLengthAccess(taLen, ctx);
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "es.ta.kind", fn);
     builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, doneBb);
 
@@ -447,9 +451,10 @@ namespace {
 //
 // The bounds check is against the view's length, exactly the bound
 // bronze_elem_get / _set use, so the two modes answer identically byte for
-// byte — including over a detached buffer, where both read the old bytes
-// today (the helper does not consult the detach flag either; changing that is
-// one change, in the helper, mirrored here).
+// byte — including over a detached or shrunk-away buffer, whose views the
+// runtime CLOSES by zeroing this very length word (closeOrReopenViews), so
+// the one compare below is also the 10.4.5.9 out-of-bounds check. That is
+// why the length load is scoped rather than invariant (llvm_alias.h).
 struct TypedElemGuards {
     llvm::Value* hdr;
     llvm::Value* idx32;
@@ -478,7 +483,7 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "tel.len");
-    markInvariant(len, ctx);
+    tagViewLengthAccess(len, ctx);
     llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
 
     llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(inRange, isIntegral), inLen);

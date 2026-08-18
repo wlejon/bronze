@@ -137,9 +137,19 @@ struct TypedArrayHeader {
     HeapObjectHeader header;
     Value buffer;
     uint32_t byteOffset;
-    uint32_t length;    // in ELEMENTS, not bytes
+    uint32_t length;    // in ELEMENTS, not bytes — the CURRENT window, see below
     uint32_t kind;      // ElementKind
-    uint32_t reserved;  // zero; keeps the scanned word above `kind` a non-pointer
+    // The length the view was CONSTRUCTED with. `length` above is the live
+    // window and is maintained, not fixed: `transfer` and a shrinking
+    // `resize` close a stranded view by setting it to 0, and a growing
+    // `resize` reopens it to this value (refreshLength below, driven by the
+    // post-mutation walk in typed_array.cpp). Keeping the truth IN the
+    // length field is what lets every bounds check — helper and inline — stay
+    // a single `index < length` compare instead of consulting the buffer on
+    // each access. Capped at kMaxByteLength, so the scanned {kind, this}
+    // word's top 16 bits stay far below a pointer tag — the same arithmetic
+    // that makes the {byteOffset, length} word safe.
+    uint32_t constructedLength;
 
     static constexpr uint16_t kFlags = HeapKind::TypedArray;
 
@@ -157,6 +167,31 @@ struct TypedArrayHeader {
     const uint8_t* bytes() const noexcept {
         return buffer.asObject<const ArrayBufferHeader>()->data() + byteOffset;
     }
+
+    // 10.4.5.9 IsTypedArrayOutOfBounds for the fixed-length views bronze
+    // builds: does the CONSTRUCTED window no longer lie within its buffer?
+    // `transfer` zeroes the buffer's byteLength (so every non-empty view
+    // fails this forever) and `resize` can shrink it out from under a view —
+    // and grow it back, which restores validity, exactly as the
+    // specification's witness records do. Asked from `constructedLength`
+    // and not `length`, because a closed view's `length` is already 0 and
+    // would answer "in bounds". The element paths never call this — their
+    // `index < length` compare is kept true by refreshLength — but the
+    // `byteOffset` getter (23.2.4.4 answers +0 out of bounds) still needs
+    // the question. The u64 sum is not decorative: both factors can
+    // individually reach kMaxByteLength.
+    bool isOutOfBounds() const noexcept {
+        const auto* buf = buffer.asObject<const ArrayBufferHeader>();
+        return static_cast<uint64_t>(byteOffset) +
+                   static_cast<uint64_t>(constructedLength) * bytesPerElement() >
+               buf->byteLength;
+    }
+
+    // Re-derive the live window after the buffer's byteLength changed: the
+    // constructed length while the view fits, 0 while it does not. Only
+    // closeOrReopenViews (typed_array.cpp) calls this, for every view over a
+    // buffer `transfer` or `resize` just mutated.
+    void refreshLength() noexcept { length = isOutOfBounds() ? 0 : constructedLength; }
 
     // Element access with the element kind's conversions. `set` performs the
     // narrowing 23.2.5.2 SetTypedArrayFromNumber requires; the caller has
@@ -203,6 +238,15 @@ static_assert(static_cast<uint32_t>(ElementKind::Float32) == BRONZE_ABI_TA_KIND_
 static_assert(static_cast<uint32_t>(ElementKind::Float64) == BRONZE_ABI_TA_KIND_FLOAT64);
 static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,
               "data() is `this + 1`, so a buffer's bytes begin at sizeof(ArrayBufferHeader)");
+
+// Close every view a buffer mutation stranded and reopen every view it
+// re-admitted: refreshLength on each live TypedArrayHeader over `buffer_val`.
+// Called by `transfer`, `transferToFixedLength` and `resize` AFTER the
+// buffer's byteLength changed — the cold end of the bargain that keeps every
+// element bounds check a single compare. Collects first (the only state in
+// which the heap walks as a gapless run of fully-built objects), so the
+// buffer arrives through a root.
+void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val);
 
 // ECMA-262 25.3's DataView. A second view over the same `ArrayBufferHeader`,
 // and deliberately not a tenth ElementKind: an element kind fixes a width and a

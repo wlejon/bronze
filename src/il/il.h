@@ -179,9 +179,9 @@ enum class Op : uint8_t {
     // typed store's value, an update); anywhere the raw value could be
     // observed keeps `elem.get`. The bound is the view's length, the same
     // bound bronze_elem_get uses, so the two modes agree byte for byte —
-    // detach included, where both currently read through (the helper does
-    // not consult the detach flag; fixing that is one change, made there and
-    // mirrored here).
+    // detach included: the runtime zeroes a stranded view's length at the
+    // `transfer`/`resize` that strands it (closeOrReopenViews), so the one
+    // bounds compare is also 10.4.5.9's out-of-bounds check.
     //
     // The set is the full 23.2.5 store: ToNumber already done (the value
     // operand is f64), a valid index stores with the element kind's

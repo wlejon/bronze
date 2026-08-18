@@ -118,7 +118,21 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   > **Results** (idle machine, median of 5, node v24.2.0 baseline 56.27 ms):
   > - `typed_array_crunch.js`: 145.42 ms → 93 ms (element ops) → 58.74 ms (+cell unbox) → **52.38 ms** (+`math.unary`) — **1.07x, ahead of node**; no-infer 190.93 ms (3.65x inference speedup); `--infer-stats`: 78/90 element ops native (the 12 dynamic are cold init-loop stores of `rng()` chains).
   > - Cross-suite: no regressions — `numeric_loop` 35.63 ms (1.84x WIN), `object_graph` 51.57 ms (1.35x WIN), `three_math` 47.25 ms (1.02x parity), `mesh_churn_2k` 95.35 ms (0.97x parity); `instanced_mesh_churn` (0.67x) and `proto_dispatch_churn` (0.62x) remain the standing losses, identical in both inference modes.
-  > - Known pre-existing gap, deliberately NOT pinned: detached-buffer reads through element paths return stale bytes and `length` survives a `transfer()` (helper and inline agree with each other; both diverge from spec — one fix, made in the helper and mirrored inline).
+  > - Known pre-existing gap at the time, since CLOSED (chunk 13b below): detached-buffer reads through element paths returned stale bytes and `length` survived a `transfer()`.
+
+- **Chunk 13b: the detach gap closed — the length field IS the witness**:
+  > [!NOTE]
+  > **The rule**: 10.4.5.9's out-of-bounds witness — a view whose constructed window no longer fits `buffer.byteLength` reads as empty (element reads `undefined`, NaN through the proven coercing ops; writes discarded; `length`/`byteLength` 0; `byteOffset` 0). `transfer` closes every view over the old buffer forever; a shrinking `resize` closes the views it strands; a growing one reopens them — exactly the spec's witness-record behavior.
+  >
+  > **The design (second attempt — the first cost 8%)**: checking the buffer's current byteLength ON every element access — even folded into an effective length — regressed typed_array_crunch 52→55 ms, because the hot pair loop carries cold guarded IC calls, so a non-invariant buffer load reloads per iteration (disassembly-confirmed). Landed design inverts it: **the view's `length` field itself is maintained**. `transfer`/`resize` call `closeOrReopenViews` (runtime/typed_array.cpp), which collects — the one state in which the heap walks as a gapless run of live, fully-built objects, with the inline-alloc window zeroed — then walks the live space (`Heap::walk_objects`) and sets each affected view's `length` to 0 or back to `constructedLength` (the header word that used to be `reserved`; its ≤2^28 cap keeps the scanned {kind, constructedLength} word non-pointer, same arithmetic as the length word). Every existing `index < length` compare — helper and inline — is thereby also the detach check, at zero per-access cost; the cold mutation pays the walk.
+  >
+  > **The one codegen change**: view length loads must stop being `!invariant.load` (the walk rewrites them — an invariant CSE across `transfer()` would resurrect the stale-read bug through metadata). They carry a third scoped-alias family instead (`TypedArrayViewLength`, llvm_alias.h): element-data and env stores are declared noalias against it, so the load still hoists out of call-free loops and reloads past any call — the only place a window can move. Cost measured: 51.5–51.9 ms vs 50.6–50.9 same-day pre-fix baseline (~1.5%), still a WIN at 1.08x vs node's 56.27.
+  >
+  > **Kept in the runtime**: read/write funnels stay plain `index < length`; `rtTypedArraySetElement` re-reads the length AFTER the value conversion (10.4.5.16's order — a `valueOf` that transfers the buffer turns the store into a discard); `byteOffset` getters ask `isOutOfBounds()` (constructed-window form), the one length-family answer the maintained field can't carry.
+  >
+  > **Pins**: `typed_array_detach` oracle case — transfer/detach across every path shape, the valueOf-mid-store discard, shrink/regrow with byte-survival and zero-fill, offset views; both modes ± GC stress ± `BRONZE_HEAP_VERIFY`+`BRONZE_GC_POISON` ± `BRONZE_NO_TYPED_ELEM` seam, all byte-identical.
+  >
+  > **Still open, named**: DataView accessors don't consult detach (stale reads through a detached DataView; no spare header word to maintain); %TypedArray% prototype methods and iteration see length 0 instead of throwing TypeError on detached buffers; inline number-stores into BigInt views discard on a closed window where spec throws via ToBigInt (mode-consistent).
 
 - **Chunk 12: object_graph's bill — Array-Method Loads and Overflow-Slot Transitions**:
   > [!NOTE]

@@ -283,6 +283,11 @@ uint64_t arrayBufferResize(uint64_t, uint64_t thisBits, uint32_t argc, const uin
         std::memset(buf->data() + buf->byteLength, 0, newLen - buf->byteLength);
     }
     buf->byteLength = newLen;
+    // A shrink strands the views that no longer fit; a grow can re-admit
+    // them. Their length fields carry the truth, so they are re-derived here,
+    // at the mutation, rather than checked on every element access.
+    Rooted<Value> selfRoot{self};
+    closeOrReopenViews(rtHeap(), selfRoot);
     return Value::fromUndefined().rawBits();
 }
 
@@ -323,6 +328,11 @@ uint64_t arrayBufferTransfer(uint64_t, uint64_t thisBits, uint32_t argc, const u
     const uint32_t copyLen = std::min(oldLen, newLen);
     std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
     oldBuf->setDetached();
+    // The detach closes every view over the old buffer FOREVER (its
+    // byteLength is 0 from here on); their length fields carry the truth,
+    // so they are zeroed here, at the mutation, rather than checked on every
+    // element access.
+    closeOrReopenViews(rtHeap(), self);
     return newBufVal.get().rawBits();
 }
 
@@ -351,6 +361,7 @@ uint64_t arrayBufferTransferToFixedLength(uint64_t, uint64_t thisBits, uint32_t 
     const uint32_t copyLen = std::min(oldLen, newLen);
     std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
     oldBuf->setDetached();
+    closeOrReopenViews(rtHeap(), self);
     return newBufVal.get().rawBits();
 }
 
@@ -560,8 +571,10 @@ Value rtTypedArrayElement(Value viewVal, uint32_t index) {
 // (7.1.13 has no Number row) instead of truncating.
 //
 // Either conversion can run user code, so the view is re-derived through the
-// root afterwards and its length re-read; an index that is out of range by then
-// is a discarded write, not an error.
+// root afterwards and its length re-read — the conversion itself may have
+// transferred the buffer away, which zeroes the window. An index that is out
+// of range by then is a discarded write, not an error; the
+// conversion-before-validity order is 10.4.5.16's own.
 void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
     const ElementKind kind = view.get().asObject<TypedArrayHeader>()->elementKind();
     Rooted<Value> val{value};
@@ -580,9 +593,16 @@ void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
 
 Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     auto* view = viewVal.asObject<TypedArrayHeader>();
+    // `length` and `byteLength` answer 0 for a view its buffer left behind
+    // (23.2.4.2–.3) through the maintained window alone; `byteOffset` still
+    // has to ask (23.2.4.4 answers +0 out of bounds, and a closed view's
+    // stored offset survives the closing). `buffer` below always answers —
+    // the identity outlives the window.
     if (key == "length") return Value::fromDouble(view->length);
     if (key == "byteLength") return Value::fromDouble(view->byteLength());
-    if (key == "byteOffset") return Value::fromDouble(view->byteOffset);
+    if (key == "byteOffset") {
+        return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset);
+    }
     if (key == "buffer") return view->buffer;
     if (key == "BYTES_PER_ELEMENT") return Value::fromDouble(view->bytesPerElement());
     if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());

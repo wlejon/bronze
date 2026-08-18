@@ -612,7 +612,9 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                 if (idx < view->length) {
                     view->set(idx, num);
                 }
-                return;  // out-of-bounds typed-array writes are discarded, per spec
+                return;  // out-of-bounds typed-array writes are discarded, per spec —
+                         // including a view whose buffer was transferred or shrunk
+                         // away, whose window closeOrReopenViews zeroed
             }
         }
     }

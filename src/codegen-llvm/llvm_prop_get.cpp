@@ -125,7 +125,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.SetInsertPoint(taLenBb);
         llvm::Value* taLenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                   BRONZE_ABI_TA_LENGTH_OFFSET);
-        llvm::Value* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ta.len");
+        // Answers 0 for a view whose buffer was transferred or shrunk away —
+        // the runtime keeps the length word itself current
+        // (closeOrReopenViews), which is also why the load is scoped rather
+        // than invariant.
+        auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ta.len");
+        tagViewLengthAccess(taLen, ctx);
         llvm::Value* taLenDbl = builder.CreateUIToFP(taLen, llvm::Type::getDoubleTy(ctx), "ta.len.dbl");
         taLenVal = builder.CreateBitCast(taLenDbl, i64Ty, "ta.len.bits");
         builder.CreateBr(doneBb);
@@ -201,7 +206,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         llvm::Value* taLenPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
         auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ic.ta.len");
-        markInvariant(taLen, ctx);
+        tagViewLengthAccess(taLen, ctx);
         llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "ic.ta.kind", fn);
         taElemUndefBb = llvm::BasicBlock::Create(ctx, "ic.ta.undef", fn);
         builder.CreateCondBr(builder.CreateICmpULT(builder.getInt32(idx), taLen), taKindBb, taElemUndefBb);
