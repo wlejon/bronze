@@ -1,0 +1,42 @@
+3,-1,2
+2 undefined
+true false false
+2 -1 1
+2,-1,3
+-1,2,3
+3,2,-1
+3,5,5
+TypeError
+3,5 2
+7,5,5 3,5,5
+TypeError
+5,5,3
+3,5,5
+1,2,3,0
+-1
+TypeError
+TypeError
+2,4
+2,4,6,8
+TypeError
+10
+110
+true true
+3 2
+2 1
+20
+bigint
+1 true
+0 1
+0
+3
+4
+3,4,3,4
+1,2,3,4
+1,2,3,4
+-9223372036854775808,-2,0,1
+0,5,18446744073709551615
+-1
+false
+TypeError
+4 9 9,0,0,0

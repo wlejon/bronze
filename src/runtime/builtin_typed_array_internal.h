@@ -97,6 +97,13 @@ inline bool requireTypedArray(Value v, const char* method) {
 inline uint32_t lengthOf(Value v) { return v.asObject<TypedArrayHeader>()->length; }
 inline double elemOf(Value v, uint32_t i) { return v.asObject<TypedArrayHeader>()->get(i); }
 inline ElementKind kindOf(Value v) { return v.asObject<TypedArrayHeader>()->elementKind(); }
+inline bool isBigIntView(Value v) { return isBigIntElementKind(kindOf(v)); }
+// The stored eight bytes of a BigInt view's element — the raw form the methods
+// stage, sort and copy, because a BigInt VALUE allocates and their loops hold
+// staged buffers the collector cannot see.
+inline uint64_t bitsOf(Value v, uint32_t i) {
+    return v.asObject<TypedArrayHeader>()->rawBits64(i);
+}
 
 inline double toInteger(double d) {
     if (std::isnan(d)) return 0.0;

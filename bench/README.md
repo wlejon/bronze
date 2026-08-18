@@ -120,6 +120,25 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   > - Cross-suite: no regressions — `numeric_loop` 35.63 ms (1.84x WIN), `object_graph` 51.57 ms (1.35x WIN), `three_math` 47.25 ms (1.02x parity), `mesh_churn_2k` 95.35 ms (0.97x parity); `instanced_mesh_churn` (0.67x) and `proto_dispatch_churn` (0.62x) remain the standing losses, identical in both inference modes.
   > - Known pre-existing gap at the time, since CLOSED (chunk 13b below): detached-buffer reads through element paths returned stale bytes and `length` survived a `transfer()`.
 
+- **Chunk 13e: BigInt views get the whole method surface — raw payloads in the loops, values at the boundary**:
+  > [!NOTE]
+  > 23.2.3's prototype methods over `BigInt64Array`/`BigUint64Array` were the last named refusal on the typed-array surface ("the method bodies convert every element through a double"). Closed without a double ever carrying an element: the method loops move the stored eight bytes (`rawBits64`/`setRawBits64`), and a BigInt VALUE is built only where an element crosses into JS — a callback argument, `at`, an iterator result — through the existing `rtTypedArrayElement` funnel, which already made the ten-Number/two-BigInt split for every other read path in the runtime. Codegen untouched; every changed line is a cold helper body.
+  >
+  > **The method families**:
+  > - *Copying* (`slice`/`toSorted`/`toReversed`/`with`/`copyWithin`): same kind on both sides, so elements move as BYTES — kind-agnostic `memcpy`/`memmove`, which is also the only road a BigInt element has.
+  > - *Sort*: elements stage as raw bits (plain C++ memory the comparator's allocations cannot move); 23.2.4.7's default order is the SIGNED reading for BigInt64 and the unsigned for BigUint64 — the same eight bytes sort differently under the two — and a custom comparator receives freshly materialised, rooted BigInts.
+  > - *Search* (`indexOf`/`lastIndexOf`/`includes`): the needle is NEVER converted (IsStrictlyEqual/SameValueZero across types is simply false), and each element materialises for a mathematical strict-equality compare — so a needle above 2^64 answers -1 by comparison, not by a wrapping shortcut (2^64 + 2 is congruent to 2 modulo 2^64 but is not 2n; a bits-compare would have "found" it).
+  > - *Writes* (`fill`/`with`/`map`'s result/`set` from an array): each converts through 7.1.13 ToBigInt, whose table has no Number row — a Number is a TypeError, never a truncation. `set` from a typed array enforces 23.2.5.1.17's content-type split: mixed types throw; both-BigInt moves as bytes even across the two kinds (the store wraps modulo 2^64 and the bytes already are that answer).
+  > - *Callbacks and iterators*: `find*`/`forEach`/`every`/`some`/`reduce*`/`filter`/`map`/`values`/`entries` and `at` swap `fromDouble(elemOf(...))` for the `rtTypedArrayElement` funnel — one line each, generic over both content types. `filter` stages kept elements as raw payloads (a staged vector of BigInt VALUES would be invisible to the collector across the callback).
+  >
+  > **Adjacent hardening the rewrite forced**: `fill`/`sort` write-backs and the copying family's source reads now clamp to the window as it is AFTER the argument conversions ran (a `valueOf` can shrink it; 23.2.3.8 step 9's re-read is the maintained length field) — previously stale-window writes into dead-but-allocated bytes. `with` converts the value BEFORE judging the index (23.2.3.36 steps 6-7), so a throwing conversion wins over the RangeError.
+  >
+  > **Pins**: `typed_array_bigint_methods` oracle case — every family above plus `typeof` inside a callback saying `bigint`, INT64_MIN sorting first, the unsigned maximum reading back as -1n through the signed view, the wrapping-trap needle, iterator/for-of over `subarray`, `toString`-is-`join`, and the 13b/13d machinery holding for BigInt views (stranded methods throw; a tracking view recomputes). Both modes ± GC stress ± `BRONZE_NO_TYPED_ELEM` ± `BRONZE_HEAP_VERIFY`+`BRONZE_GC_POISON`, all byte-identical, first run. `bigint64_array`'s refusal note updated; not one expected byte changed anywhere.
+  >
+  > **Perf** (idle machine, median of 5): `typed_array_crunch` 51.27 ms **WIN 1.10x** checksum unchanged; `typed_array_loop` 24.88 ms **WIN 1.64x** output unchanged — noise-level deltas from 13d's 50.76/23.92, as a cold-helper-only chunk must show.
+  >
+  > **Still open, named**: iterator resumption fidelity (deliberate, pinned — see 13d); `indexOf`/`includes` on NUMBER views still convert the needle through ToNumber where the spec compares unconverted (a `"2"` needle finds 2; a BigInt needle throws instead of answering -1) — pre-existing, now the search family's one remaining divergence.
+
 - **Chunk 13d: length-tracking views — the walk already knew how**:
   > [!NOTE]
   > 10.4.5's auto-length views (`new Uint8Array(resizableBuffer)`, no length argument) now TRACK their buffer: length recomputes as `floor((byteLength - byteOffset) / elementSize)` on every resize/grow/transfer, strands only when the buffer drops below the OFFSET (an offset the buffer exactly reaches is an EMPTY window, not an out-of-bounds one), and reopens by recomputation rather than to a remembered count. Cost to codegen: **zero lines**. Chunk 13b's maintained-length design already put the truth in the view's `length` field and re-derived it in `closeOrReopenViews` at every mutation — tracking is one more arm in `refreshLength`, and the inline `index < length` compare, the scoped (never-invariant) length loads, and the iteration fast path are all unchanged and all correct for free.
@@ -136,7 +155,7 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   >
   > **Perf** (idle machine, median of 5): `typed_array_crunch` 50.76 ms **WIN 1.11x** checksum unchanged; `typed_array_loop` 23.92 ms **WIN 1.70x** output unchanged. Zero hot-path cost, measured.
   >
-  > **Still open, named**: %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember); iterator resumption fidelity — bronze's typed-array iterator resumes if its view's window reopens, where the spec's generator, once done or thrown, is done forever (pinned as bronze's behavior in `typed_array_oob_throws`, deliberate).
+  > **Still open, named**: ~~%TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember)~~ — closed by Chunk 13e; iterator resumption fidelity — bronze's typed-array iterator resumes if its view's window reopens, where the spec's generator, once done or thrown, is done forever (pinned as bronze's behavior in `typed_array_oob_throws`, deliberate).
 
 - **Chunk 13c: the throwing half of out-of-bounds — methods, iteration, DataView, and the BigInt debt**:
   > [!NOTE]
@@ -154,7 +173,7 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   >
   > **Perf**: typed_array_crunch re-measured after the codegen change — unchanged (the only emitted-code delta is a cold-edge retarget plus one cold block).
   >
-  > **Still open, named**: ~~`subarray` validates where spec doesn't; length-tracking views are still fixed-at-construction~~ — both closed by Chunk 13d; %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember).
+  > **Still open, named**: ~~`subarray` validates where spec doesn't; length-tracking views are still fixed-at-construction~~ — both closed by Chunk 13d; ~~%TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember)~~ — closed by Chunk 13e.
 
 - **Chunk 13b: the detach gap closed — the length field IS the witness**:
   > [!NOTE]

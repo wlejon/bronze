@@ -24,10 +24,9 @@
 // 5. `BigInt64Array.from` builds one from an array of BigInts, so the static
 //    reaches the same ToBigInt store the element path does.
 //
-// Not pinned here because bronze refuses them by name: 23.2.3's PROTOTYPE
-// methods over a BigInt view. Every one of them in this runtime converts an
-// element through a `double`, which cannot carry a 64-bit integer, so
-// `a.fill(1n)` is a named diagnostic rather than a wrong answer.
+// Not pinned here: 23.2.3's PROTOTYPE methods over a BigInt view, whose loops
+// move raw 64-bit payloads rather than doubles — typed_array_bigint_methods
+// pins that whole surface.
 const a = new BigInt64Array(2);
 console.log(a.length, a.BYTES_PER_ELEMENT, String(a[0]));
 

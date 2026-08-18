@@ -1,3 +1,6 @@
+#include <bit>
+
+#include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -65,10 +68,10 @@ uint64_t taIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (kind == Keys) {
         produced.set(Value::fromDouble(static_cast<double>(at)));
     } else if (kind == Values) {
-        produced.set(Value::fromDouble(elemOf(target.get(), at)));
+        produced.set(rtTypedArrayElement(target.get(), at));
     } else {
         Rooted<Value> index{Value::fromDouble(static_cast<double>(at))};
-        Rooted<Value> val{Value::fromDouble(elemOf(target.get(), at))};
+        Rooted<Value> val{rtTypedArrayElement(target.get(), at)};
         produced.set(makePair(index, val));
     }
     return iterResult(produced, false).rawBits();
@@ -96,6 +99,24 @@ uint64_t taIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "indexOf")) return Value::fromUndefined().rawBits();
 
+    if (isBigIntView(self.get())) {
+        const uint32_t len = lengthOf(self.get());
+        // 23.2.3.16 never converts the needle: IsStrictlyEqual across types is
+        // simply false, so a non-BigInt needle finds nothing and throws
+        // nothing. Each element materialises as a BigInt for the compare —
+        // strict equality is mathematical, so a needle no 64-bit element could
+        // ever equal answers -1 by comparison, not by a wrapping shortcut.
+        uint32_t from = 0;
+        relativeArg(args[1], len, from, 0);
+        for (uint32_t i = from; i < len; ++i) {
+            Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
+            if (bronze_strict_eq(elem.get().rawBits(), args[0].rawBits())) {
+                return Value::fromDouble(i).rawBits();
+            }
+        }
+        return Value::fromDouble(-1.0).rawBits();
+    }
+
     const double needle = rtToNumber(args[0]);
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
@@ -114,8 +135,12 @@ uint64_t taLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "lastIndexOf")) return Value::fromUndefined().rawBits();
 
-    const double needle = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const bool big = isBigIntView(self.get());
+    double needle = 0;
+    if (!big) {
+        needle = rtToNumber(args[0]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
 
     const uint32_t len = lengthOf(self.get());
     if (len == 0) return Value::fromDouble(-1.0).rawBits();
@@ -128,7 +153,14 @@ uint64_t taLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     if (k < 0) return Value::fromDouble(-1.0).rawBits();
 
     for (int64_t i = static_cast<int64_t>(k); i >= 0; --i) {
-        if (elemOf(self.get(), static_cast<uint32_t>(i)) == needle) {
+        if (big) {
+            // The un-converted needle and the strict compare, exactly as
+            // indexOf above says.
+            Rooted<Value> elem{rtTypedArrayElement(self.get(), static_cast<uint32_t>(i))};
+            if (bronze_strict_eq(elem.get().rawBits(), args[0].rawBits())) {
+                return Value::fromDouble(static_cast<double>(i)).rawBits();
+            }
+        } else if (elemOf(self.get(), static_cast<uint32_t>(i)) == needle) {
             return Value::fromDouble(static_cast<double>(i)).rawBits();
         }
     }
@@ -139,6 +171,21 @@ uint64_t taIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "includes")) return Value::fromUndefined().rawBits();
+
+    if (isBigIntView(self.get())) {
+        // SameValueZero on BigInts IS strict equality — no NaN and one zero —
+        // and the needle is never converted, as in indexOf above.
+        const uint32_t len = lengthOf(self.get());
+        uint32_t from = 0;
+        relativeArg(args[1], len, from, 0);
+        for (uint32_t i = from; i < len; ++i) {
+            Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
+            if (bronze_strict_eq(elem.get().rawBits(), args[0].rawBits())) {
+                return Value::fromBool(true).rawBits();
+            }
+        }
+        return Value::fromBool(false).rawBits();
+    }
 
     const double needle = rtToNumber(args[0]);
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
@@ -167,7 +214,7 @@ static uint64_t taFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     const uint32_t len = lengthOf(self.get());
     for (uint32_t n = 0; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(found.get().rawBits())) {
@@ -203,7 +250,7 @@ uint64_t taForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
 
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         callBack(fn, thisArg, elem, i, self);
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
@@ -219,14 +266,26 @@ uint64_t taMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     Rooted<Value> thisArg{args[1]};
 
     const uint32_t len = lengthOf(self.get());
+    const bool big = isBigIntView(self.get());
     Rooted<Value> out{newViewLike(self.get(), len)};
     for (uint32_t i = 0; i < len; ++i) {
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        const double v = rtToNumber(mapped.get());
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        out.get().asObject<TypedArrayHeader>()->set(i, v);
+        // The result converts with the RESULT view's content type — ToBigInt
+        // here (a Number mapped into a BigInt view is 7.1.13's TypeError),
+        // ToNumber for the other ten kinds.
+        if (big) {
+            uint64_t bits = 0;
+            if (!rtBigIntToRawBits64(mapped.get(), bits)) {
+                return Value::fromUndefined().rawBits();
+            }
+            out.get().asObject<TypedArrayHeader>()->setRawBits64(i, bits);
+        } else {
+            const double v = rtToNumber(mapped.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            out.get().asObject<TypedArrayHeader>()->set(i, v);
+        }
     }
     return out.get().rawBits();
 }
@@ -240,19 +299,30 @@ uint64_t taFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     Rooted<Value> thisArg{args[1]};
 
     const uint32_t len = lengthOf(self.get());
-    std::vector<double> kept;
+    const bool big = isBigIntView(self.get());
+    // Kept elements stage as raw payloads — the stored eight bytes for a
+    // BigInt kind, a double's bits otherwise — because the callback can
+    // collect, and a staged vector of BigInt VALUES would be invisible to the
+    // collector.
+    std::vector<uint64_t> kept;
     for (uint32_t i = 0; i < len; ++i) {
-        const double v = elemOf(self.get(), i);
-        Rooted<Value> elem{Value::fromDouble(v)};
+        const uint64_t raw =
+            big ? bitsOf(self.get(), i) : std::bit_cast<uint64_t>(elemOf(self.get(), i));
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(res.get().rawBits())) {
-            kept.push_back(v);
+            kept.push_back(raw);
         }
     }
     Rooted<Value> out{newViewLike(self.get(), static_cast<uint32_t>(kept.size()))};
+    auto* dst = out.get().asObject<TypedArrayHeader>();
     for (uint32_t i = 0; i < kept.size(); ++i) {
-        out.get().asObject<TypedArrayHeader>()->set(i, kept[i]);
+        if (big) {
+            dst->setRawBits64(i, kept[i]);
+        } else {
+            dst->set(i, std::bit_cast<double>(kept[i]));
+        }
     }
     return out.get().rawBits();
 }
@@ -267,7 +337,7 @@ uint64_t taEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
 
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!bronze_truthy(res.get().rawBits())) {
@@ -287,7 +357,7 @@ uint64_t taSome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
 
     const uint32_t len = lengthOf(self.get());
     for (uint32_t i = 0; i < len; ++i) {
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(res.get().rawBits())) {
@@ -314,13 +384,13 @@ static uint64_t taReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const u
         if (len == 0) {
             return rtThrowTypeError("Reduce of empty array with no initial value").rawBits();
         }
-        acc.set(Value::fromDouble(elemOf(self.get(), Reverse ? len - 1 : 0)));
+        acc.set(rtTypedArrayElement(self.get(), Reverse ? len - 1 : 0));
         next = 1;
     }
 
     for (uint32_t n = next; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
-        Rooted<Value> elem{Value::fromDouble(elemOf(self.get(), i))};
+        Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Value block[4] = {acc.get(), elem.get(), Value::fromDouble(static_cast<double>(i)),
                           self.get()};
         acc.set(Value(bronze_dynamic_call(fn.get().rawBits(), BRONZE_ABI_UNDEFINED_BITS, 4,

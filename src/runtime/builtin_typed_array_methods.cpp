@@ -1,3 +1,4 @@
+#include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -27,7 +28,18 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
         }
         auto* srcView = source.get().asObject<TypedArrayHeader>();
         auto* targetView = self.get().asObject<TypedArrayHeader>();
-        if (srcView->elementKind() == targetView->elementKind()) {
+        // 23.2.5.1.17 step 5: a BigInt side and a Number side never mix — a
+        // TypeError, not a conversion. BOTH-BigInt is the memmove below even
+        // across the two kinds: a store wraps modulo 2^64 and a signed and an
+        // unsigned element with the same mathematical residue hold the same
+        // eight bytes, so the bytes already are the converted answer.
+        const bool srcBig = isBigIntElementKind(srcView->elementKind());
+        const bool dstBig = isBigIntElementKind(targetView->elementKind());
+        if (srcBig != dstBig) {
+            return rtThrowTypeError("Cannot mix BigInt and other types, use explicit conversions")
+                .rawBits();
+        }
+        if (srcView->elementKind() == targetView->elementKind() || srcBig) {
             const uint32_t bpe = targetView->bytesPerElement();
             std::memmove(targetView->bytes() + static_cast<uint32_t>(offset) * bpe,
                          srcView->bytes(), static_cast<size_t>(srcLength) * bpe);
@@ -48,6 +60,20 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     const uint32_t srcLength = source.get().asObject<ArrayHeader>()->length;
     if (offset + srcLength > targetLength) {
         return rtThrowRangeError("offset is out of bounds").rawBits();
+    }
+    if (isBigIntView(self.get())) {
+        // 23.2.5.1.18 over a BigInt target: each element through ToBigInt —
+        // which can run user code, so the view is re-derived per store and the
+        // maintained length guards a window that shrank mid-loop.
+        for (uint32_t i = 0; i < srcLength; ++i) {
+            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
+            uint64_t bits = 0;
+            if (!rtBigIntToRawBits64(elem.get(), bits)) break;
+            auto* live = self.get().asObject<TypedArrayHeader>();
+            const uint32_t at = static_cast<uint32_t>(offset) + i;
+            if (at < live->length) live->setRawBits64(at, bits);
+        }
+        return Value::fromUndefined().rawBits();
     }
     for (uint32_t i = 0; i < srcLength; ++i) {
         Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
@@ -133,8 +159,20 @@ uint64_t taSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     const uint32_t count = end > begin ? end - begin : 0;
 
     Rooted<Value> out{newViewLike(self.get(), count)};
-    for (uint32_t i = 0; i < count; ++i) {
-        out.get().asObject<TypedArrayHeader>()->set(i, elemOf(self.get(), begin + i));
+    // Same kind on both sides, so the elements move as BYTES — which is also
+    // the only road a BigInt element has: a double cannot carry it. The copy
+    // is clamped to the source's window as it is NOW, because relativeArg's
+    // ToNumber can run user code that shrank it; the tail of a clamped copy
+    // stays the zero-fill the allocation gave it, as 23.2.3.27's re-validation
+    // leaves it.
+    auto* src = self.get().asObject<TypedArrayHeader>();
+    auto* dst = out.get().asObject<TypedArrayHeader>();
+    const uint32_t copyable =
+        src->length > begin ? std::min(count, src->length - begin) : 0;
+    if (copyable > 0) {
+        const uint32_t bpe = src->bytesPerElement();
+        std::memcpy(dst->bytes(), src->bytes() + static_cast<size_t>(begin) * bpe,
+                    static_cast<size_t>(copyable) * bpe);
     }
     return out.get().rawBits();
 }
@@ -144,8 +182,18 @@ uint64_t taFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "fill")) return Value::fromUndefined().rawBits();
 
-    const double value = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    // 23.2.3.8 step 2: the VALUE converts first — ToBigInt for a BigInt view
+    // (a Number is the TypeError 7.1.13 names), ToNumber for the rest — and
+    // start/end after it.
+    const bool big = isBigIntView(self.get());
+    uint64_t bits = 0;
+    double value = 0;
+    if (big) {
+        if (!rtBigIntToRawBits64(args[0], bits)) return Value::fromUndefined().rawBits();
+    } else {
+        value = rtToNumber(args[0]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
 
     const uint32_t len = lengthOf(self.get());
     uint32_t start = 0;
@@ -153,8 +201,16 @@ uint64_t taFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     relativeArg(args[1], len, start, 0);
     relativeArg(args[2], len, end, len);
 
+    // Every conversion above can run user code that shrank the window;
+    // 23.2.3.8 step 9 re-reads the length, and the maintained field IS that
+    // re-read.
     auto* view = self.get().asObject<TypedArrayHeader>();
-    for (uint32_t i = start; i < end; ++i) view->set(i, value);
+    end = std::min(end, view->length);
+    if (big) {
+        for (uint32_t i = start; i < end; ++i) view->setRawBits64(i, bits);
+    } else {
+        for (uint32_t i = start; i < end; ++i) view->set(i, value);
+    }
     return self.get().rawBits();
 }
 
@@ -188,6 +244,14 @@ uint64_t taReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 
     const uint32_t len = lengthOf(self.get());
     auto* view = self.get().asObject<TypedArrayHeader>();
+    if (isBigIntElementKind(view->elementKind())) {
+        for (uint32_t i = 0, j = len; i + 1 < j; ++i, --j) {
+            const uint64_t vi = view->rawBits64(i);
+            view->setRawBits64(i, view->rawBits64(j - 1));
+            view->setRawBits64(j - 1, vi);
+        }
+        return self.get().rawBits();
+    }
     for (uint32_t i = 0, j = len; i + 1 < j; ++i, --j) {
         double vi = view->get(i);
         double vj = view->get(j - 1);
@@ -208,6 +272,47 @@ uint64_t taSort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     }
 
     const uint32_t len = lengthOf(self.get());
+    if (isBigIntView(self.get())) {
+        // Staged as the stored eight bytes — plain C++ memory the comparator's
+        // allocations cannot move — and materialised as BigInt VALUES only for
+        // the comparator's arguments. 23.2.4.7 orders BigInt elements by
+        // mathematical value: the signed reading for BigInt64, the unsigned
+        // for BigUint64, and the same eight bytes sort differently under the
+        // two, which is why the kind is consulted and not just the width.
+        const bool isSigned = kindOf(self.get()) == ElementKind::BigInt64;
+        std::vector<uint64_t> elements(len);
+        for (uint32_t i = 0; i < len; ++i) elements[i] = bitsOf(self.get(), i);
+
+        if (compareFn.get().isUndefined()) {
+            if (isSigned) {
+                std::sort(elements.begin(), elements.end(), [](uint64_t a, uint64_t b) {
+                    return static_cast<int64_t>(a) < static_cast<int64_t>(b);
+                });
+            } else {
+                std::sort(elements.begin(), elements.end());
+            }
+        } else {
+            std::stable_sort(elements.begin(), elements.end(), [&](uint64_t a, uint64_t b) {
+                Rooted<Value> av{rtBigIntFromRawBits64(a, isSigned)};
+                Rooted<Value> bv{rtBigIntFromRawBits64(b, isSigned)};
+                Value block[2] = {av.get(), bv.get()};
+                Value res(bronze_dynamic_call(compareFn.get().rawBits(),
+                                              BRONZE_ABI_UNDEFINED_BITS, 2,
+                                              reinterpret_cast<const uint64_t*>(block)));
+                if (rtExceptionPending()) return false;
+                const double v = rtToNumber(res);
+                return !std::isnan(v) && v < 0;
+            });
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        }
+
+        auto* view = self.get().asObject<TypedArrayHeader>();
+        // The comparator can shrink the window; writes past the live length
+        // are the discards 10.4.5.16 makes them.
+        const uint32_t writable = std::min(len, view->length);
+        for (uint32_t i = 0; i < writable; ++i) view->setRawBits64(i, elements[i]);
+        return self.get().rawBits();
+    }
     std::vector<double> elements(len);
     for (uint32_t i = 0; i < len; ++i) elements[i] = elemOf(self.get(), i);
 
@@ -237,7 +342,8 @@ uint64_t taSort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     }
 
     auto* view = self.get().asObject<TypedArrayHeader>();
-    for (uint32_t i = 0; i < len; ++i) view->set(i, elements[i]);
+    const uint32_t writable = std::min(len, view->length);
+    for (uint32_t i = 0; i < writable; ++i) view->set(i, elements[i]);
     return self.get().rawBits();
 }
 
@@ -258,10 +364,19 @@ uint64_t taJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
 
     std::string out;
     char buf[64];
+    // ToString of a BigInt element is its decimal digits with no `n` — and the
+    // eight stored bytes fit a machine integer, so the digits come straight
+    // from them with no BigInt value ever built.
+    const bool big = isBigIntView(self.get());
+    const bool isSigned = big && kindOf(self.get()) == ElementKind::BigInt64;
     for (uint32_t i = 0; i < len; ++i) {
         if (i > 0) out += sep;
-        size_t n = formatJsNumber(elemOf(self.get(), i), buf);
-        out.append(buf, n);
+        if (big) {
+            out += rtBigIntDecimalOfRawBits64(bitsOf(self.get(), i), isSigned);
+        } else {
+            size_t n = formatJsNumber(elemOf(self.get(), i), buf);
+            out.append(buf, n);
+        }
     }
     return rtMakeString(out).rawBits();
 }
@@ -272,8 +387,15 @@ uint64_t taToReversed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 
     const uint32_t len = lengthOf(self.get());
     Rooted<Value> out{newViewLike(self.get(), len)};
+    // Element bytes move as bytes, kind-agnostic — the only road a BigInt
+    // element has. Nothing between the allocation and the loop runs user code
+    // or allocates, so the two raw pointers stay true.
+    auto* src = self.get().asObject<TypedArrayHeader>();
+    auto* dst = out.get().asObject<TypedArrayHeader>();
+    const uint32_t bpe = src->bytesPerElement();
     for (uint32_t i = 0; i < len; ++i) {
-        out.get().asObject<TypedArrayHeader>()->set(i, elemOf(self.get(), len - 1 - i));
+        std::memcpy(dst->bytes() + static_cast<size_t>(i) * bpe,
+                    src->bytes() + static_cast<size_t>(len - 1 - i) * bpe, bpe);
     }
     return out.get().rawBits();
 }
@@ -285,8 +407,11 @@ uint64_t taToSorted(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64
 
     const uint32_t len = lengthOf(self.get());
     Rooted<Value> out{newViewLike(self.get(), len)};
-    for (uint32_t i = 0; i < len; ++i) {
-        out.get().asObject<TypedArrayHeader>()->set(i, elemOf(self.get(), i));
+    {
+        auto* src = self.get().asObject<TypedArrayHeader>();
+        auto* dst = out.get().asObject<TypedArrayHeader>();
+        std::memcpy(dst->bytes(), src->bytes(),
+                    static_cast<size_t>(len) * src->bytesPerElement());
     }
     uint64_t cmp = args[0].rawBits();
     taSort(env, out.get().rawBits(), 1, &cmp);
@@ -302,17 +427,34 @@ uint64_t taWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     const uint32_t len = lengthOf(self.get());
     double rel = toInteger(rtToNumber(args[0]));
     double k = rel >= 0 ? rel : static_cast<double>(len) + rel;
+    // 23.2.3.36 converts the VALUE (step 6) before it judges the index (step
+    // 7), so a throwing conversion wins over the RangeError — ToBigInt for a
+    // BigInt view, ToNumber for the rest.
+    const bool big = isBigIntView(self.get());
+    uint64_t bits = 0;
+    double val = 0;
+    if (big) {
+        if (!rtBigIntToRawBits64(args[1], bits)) return Value::fromUndefined().rawBits();
+    } else {
+        val = rtToNumber(args[1]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
     if (k < 0 || k >= static_cast<double>(len)) {
         return rtThrowRangeError("Invalid index").rawBits();
     }
-    const double val = rtToNumber(args[1]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     Rooted<Value> out{newViewLike(self.get(), len)};
-    for (uint32_t i = 0; i < len; ++i) {
-        out.get().asObject<TypedArrayHeader>()->set(i, i == static_cast<uint32_t>(k)
-                                                           ? val
-                                                           : elemOf(self.get(), i));
+    auto* src = self.get().asObject<TypedArrayHeader>();
+    auto* dst = out.get().asObject<TypedArrayHeader>();
+    // The conversions can shrink the source's window; the clamped tail stays
+    // the allocation's zero-fill.
+    const uint32_t copyable = std::min(len, src->length);
+    std::memcpy(dst->bytes(), src->bytes(),
+                static_cast<size_t>(copyable) * src->bytesPerElement());
+    if (big) {
+        dst->setRawBits64(static_cast<uint32_t>(k), bits);
+    } else {
+        dst->set(static_cast<uint32_t>(k), val);
     }
     return out.get().rawBits();
 }
@@ -328,7 +470,7 @@ uint64_t taAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) 
     if (k < 0 || k >= static_cast<double>(len)) {
         return Value::fromUndefined().rawBits();
     }
-    return Value::fromDouble(elemOf(self.get(), static_cast<uint32_t>(k))).rawBits();
+    return rtTypedArrayElement(self.get(), static_cast<uint32_t>(k)).rawBits();
 }
 
 namespace {

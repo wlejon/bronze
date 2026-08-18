@@ -628,23 +628,11 @@ Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());
 
     const char* kindName = view->kindName();
-    // 23.2.3's methods over a BIGINT view are not built. Every one of them in
-    // this runtime speaks `double` — the loops hold a raw view pointer and a
-    // numeric element — and a 64-bit integer element is neither representable
-    // as one nor convertible to one without losing the low bits. So they are
-    // refused BY NAME here rather than answered with an approximation, which is
-    // the silent wrong answer the project's rules exist to prevent.
-    //
-    // What IS built for these two views is the whole of what makes them
-    // different: construction from every source 23.2.5.1 lists, `from` and
-    // `of`, element reads and writes with ToBigInt, iteration, and printing.
-    if (isBigIntElementKind(view->elementKind()) && rtTypedArrayHasMethod(key)) {
-        fatal((std::string("unsupported: ") + kindName + ".prototype." + key +
-               " is not implemented (bronze's %TypedArray% methods convert every element "
-               "through a double, which cannot carry a 64-bit integer; the two BigInt views "
-               "support construction, element access, iteration and `from`/`of`)")
-                  .c_str());
-    }
+    // 23.2.3's methods answer BOTH element content types: their loops move raw
+    // 64-bit payloads for the two BigInt kinds and doubles for the other ten,
+    // and a BigInt VALUE is built only where one crosses into JS — a callback
+    // argument, `at`, an iterator result (builtin_typed_array_methods.cpp and
+    // builtin_typed_array_iteration.cpp carry the per-method stories).
     Value method = rtTypedArrayMethod(key);
     if (!method.isUndefined()) return method;
     rtCheckTypedArrayMember(kindName, key);
