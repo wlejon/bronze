@@ -472,6 +472,24 @@ enum class Finalize : uint8_t {
 BRONZE_EMBED_API Value makeHandle(void* data, HandleDestructor dtor,
                                   Finalize when = Finalize::InSweep);
 
+// A handle BORN on `prototype` — an instance of a host class rather than a
+// bare cell. This is the class story in three calls, all of them existing:
+// read `prototype` off a makeFunction constructor with getProperty (the read
+// mints the slot-backed object 10.2.4 describes; it is a plain object), put
+// the shared methods on it with setProperty, and create each instance here.
+// Instances inherit the methods (one copy per class, not a closure per
+// instance), `x instanceof Ctor` answers true, and a method body unwraps its
+// receiver with handleData(thisValue). Born-on, not swapped-on: instances
+// share the memoized per-prototype root shape — the same one Object.create
+// hands out — so property reads keep their inline caches, where a
+// setPrototypeOf'd cell is in dictionary mode for the rest of its life.
+// A constructor body may also return one of these to hand `new Ctor(...)`
+// from COMPILED CODE a handle instance: bronze_construct's object-return rule
+// delivers it in place of the ordinary instance. `prototype` must be a plain
+// object; anything else is a named fatal. ALLOCATES.
+BRONZE_EMBED_API Value makeHandle(void* data, HandleDestructor dtor,
+                                  Finalize when, Value prototype);
+
 // Run the destructors of Deferred handles whose cells a collection has since
 // proved dead. RUNS HOST CODE that may allocate, collect, and thereby queue
 // more — the drain keeps going until the queue is empty. A drain begun while

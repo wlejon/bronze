@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -837,4 +838,116 @@ TEST_CASE("isSymbol answers for symbol primitives and nothing else") {
     CHECK(!embed::isSymbol(str.get()));
     embed::Persistent obj{embed::createObject()};
     CHECK(!embed::isSymbol(obj.get()));
+}
+
+TEST_CASE("a handle born on a prototype is a class instance") {
+    int freed = 0;
+    {
+        // The class: a host constructor, its shared methods on the prototype
+        // the READ mints (setProperty refuses `prototype` by name; getProperty
+        // answers the real slot-backed object, and it is plain).
+        embed::Persistent ctor{embed::makeFunction(
+            [](embed::Value, std::span<const embed::Value>) -> embed::Value {
+                return embed::undefined();
+            })};
+        embed::Persistent proto{embed::getProperty(ctor.get(), "prototype")};
+        REQUIRE(embed::isObject(proto.get()));
+        embed::Persistent method{embed::makeFunction(
+            [](embed::Value self, std::span<const embed::Value>) -> embed::Value {
+                // The per-class method's whole job: unwrap the receiver.
+                int* p = static_cast<int*>(embed::handleData(self));
+                return embed::fromDouble(p ? 42.0 : -1.0);
+            })};
+        proto.set(embed::setProperty(proto.get(), "probe", method.get()));
+
+        // The instance: born on the prototype, not swapped onto it.
+        embed::Persistent inst{embed::makeHandle(
+            &freed, [](void* p) { ++*static_cast<int*>(p); },
+            embed::Finalize::InSweep, proto.get())};
+
+        CHECK(embed::handleData(inst.get()) == &freed);
+        embed::Persistent probeFn{embed::getProperty(inst.get(), "probe")};
+        REQUIRE(embed::isFunction(probeFn.get()));
+        embed::CallResult answered = embed::call(probeFn.get(), inst.get(), {});
+        REQUIRE(!answered.thrown);
+        CHECK(answered.value.asNumber() == 42.0);
+
+        // Through the same helper a compiled `x instanceof Ctor` calls — a raw
+        // bronze_* helper, so the test opens the frame embed:: calls open for
+        // themselves.
+        embed::Persistent stranger{embed::createObject()};
+        {
+            ShadowStackFrame frame;
+            CHECK(bronze_instanceof(inst.get().rawBits(), ctor.get().rawBits()));
+            CHECK(!bronze_instanceof(stranger.get().rawBits(), ctor.get().rawBits()));
+        }
+
+        runtime::rtHeap().collect();
+        CHECK(embed::handleData(inst.get()) == &freed);
+        {
+            ShadowStackFrame frame;
+            CHECK(bronze_instanceof(inst.get().rawBits(), ctor.get().rawBits()));
+        }
+        CHECK(freed == 0);
+    }
+    // Being a class instance changed nothing about the handle's death.
+    runtime::rtHeap().collect();
+    CHECK(freed == 1);
+}
+
+TEST_CASE("construct on a host constructor births instances on its prototype") {
+    int freed = 0;
+    {
+        // Filled after the prototype is read; the ctor body reads it through
+        // the shared_ptr so the capture and the decoration can happen in
+        // either order.
+        auto protoSlot = std::make_shared<embed::Persistent>();
+        int* freedPtr = &freed;
+        embed::Persistent ctor{embed::makeFunction(
+            [protoSlot, freedPtr](embed::Value self,
+                                  std::span<const embed::Value> args) -> embed::Value {
+                if (!args.empty() && embed::toBool(args[0])) {
+                    // A class whose instances ARE handles: return the cell and
+                    // bronze_construct's object-return rule delivers it in
+                    // place of the ordinary instance.
+                    return embed::makeHandle(
+                        freedPtr, [](void* p) { ++*static_cast<int*>(p); },
+                        embed::Finalize::InSweep, protoSlot->get());
+                }
+                // Ordinary path: `this` arrived already born on the prototype;
+                // the body only decorates it.
+                embed::setProperty(self, "decorated", embed::fromBool(true));
+                return embed::undefined();
+            })};
+        embed::Persistent proto{embed::getProperty(ctor.get(), "prototype")};
+        embed::Persistent kind{embed::fromUtf8("engine")};
+        proto.set(embed::setProperty(proto.get(), "kind", kind.get()));
+        protoSlot->set(proto.get());
+
+        // (a) the ordinary instance bronze_construct allocates itself.
+        embed::CallResult plain = embed::construct(ctor.get(), {});
+        REQUIRE(!plain.thrown);
+        embed::Persistent inst{plain.value};
+        CHECK(embed::toBool(embed::getProperty(inst.get(), "decorated")));
+        CHECK(embed::toUtf8(embed::getProperty(inst.get(), "kind")) == "engine");
+        {
+            ShadowStackFrame frame;
+            CHECK(bronze_instanceof(inst.get().rawBits(), ctor.get().rawBits()));
+        }
+
+        // (b) the handle the body substitutes.
+        embed::CallResult made =
+            embed::construct(ctor.get(), std::vector<embed::Value>{embed::fromBool(true)});
+        REQUIRE(!made.thrown);
+        embed::Persistent handle{made.value};
+        CHECK(embed::handleData(handle.get()) == freedPtr);
+        CHECK(embed::toUtf8(embed::getProperty(handle.get(), "kind")) == "engine");
+        {
+            ShadowStackFrame frame;
+            CHECK(bronze_instanceof(handle.get().rawBits(), ctor.get().rawBits()));
+        }
+        CHECK(freed == 0);
+    }
+    runtime::rtHeap().collect();
+    CHECK(freed == 1);
 }

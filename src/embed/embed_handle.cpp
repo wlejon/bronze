@@ -206,13 +206,13 @@ void Persistent::set(Value v) {
 
 // ---- opaque native handles -------------------------------------------------
 
-Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
-    if (!dtor) fatal("embed: a native handle needs a destructor (pass a no-op explicitly)");
-    ShadowStackFrame frame;
-    ensureRegistries();
-    if (!g_handleShape) {
-        g_handleShape = runtime::rtNewRootShape(Value::fromNull());
-    }
+namespace {
+
+// The shared tail of both makeHandle forms, from the shape on: the caller has
+// already opened a frame and picked the root shape, and NOTHING between the
+// shape choice and here allocates — the shape's prototype slot is forwarded by
+// the root-shape registry, so it alone survives whatever the create below does.
+Value makeHandleOnShape(void* data, HandleDestructor dtor, Finalize when, Shape* shape) {
     // Internal slots, not properties: invisible to Object.keys, for-in and the
     // symbol walk, which is the whole meaning of "opaque". Slot 0 is the data
     // pointer, slot 1 the destructor — duplicated into the registry entry so
@@ -221,7 +221,7 @@ Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
     // shape does not.
     ObjectHeader* cell = ObjectHeader::createWithInternalSlots(runtime::rtHeap(),
                                                               runtime::rtArena(),
-                                                              g_handleShape, 3);
+                                                              shape, 3);
     cell->setInternalSlot(0, Value::fromRawBits(pointerBits(data, "handle data")));
     cell->setInternalSlot(1,
                           Value::fromRawBits(pointerBits(reinterpret_cast<void*>(dtor),
@@ -231,6 +231,39 @@ Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
     // have moved: the entry records the address the collector will next see.
     g_finalizers.push_back({&cell->header, data, dtor, when});
     return Value::fromObject(cell);
+}
+
+}  // namespace
+
+Value makeHandle(void* data, HandleDestructor dtor, Finalize when) {
+    if (!dtor) fatal("embed: a native handle needs a destructor (pass a no-op explicitly)");
+    ShadowStackFrame frame;
+    ensureRegistries();
+    if (!g_handleShape) {
+        g_handleShape = runtime::rtNewRootShape(Value::fromNull());
+    }
+    return makeHandleOnShape(data, dtor, when, g_handleShape);
+}
+
+Value makeHandle(void* data, HandleDestructor dtor, Finalize when, Value prototype) {
+    if (!dtor) fatal("embed: a native handle needs a destructor (pass a no-op explicitly)");
+    // The prototype must be a plain object, for Object.create's reason: a walk
+    // that misses on the instance steps INTO this value expecting a shape to
+    // look through, and only a plain object carries one. Not silently the
+    // 3-argument form — a host that names a prototype means it.
+    if (!prototype.isObject() ||
+        prototype.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+        fatal("embed: a handle's prototype must be a plain object "
+              "(use the 3-argument makeHandle for a bare cell)");
+    }
+    ShadowStackFrame frame;
+    ensureRegistries();
+    // The memoized per-prototype root shape Object.create hands out — so every
+    // handle of one class shares a transition tree and the inline caches that
+    // come with it, which is the point of being born on the prototype instead
+    // of setPrototypeOf'd onto it (that route is dictionary mode forever).
+    return makeHandleOnShape(data, dtor, when,
+                             runtime::rtRootShapeForPrototype(prototype));
 }
 
 void drainFinalizers() {
