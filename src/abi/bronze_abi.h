@@ -474,6 +474,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_TA_KIND_UINT32        6
 #define BRONZE_ABI_TA_KIND_FLOAT32       7
 #define BRONZE_ABI_TA_KIND_FLOAT64       8
+/* The first kind whose elements are BIGINTS rather than Numbers. Generated
+ * code never stores to these inline, but the dynamic-store fast path must
+ * KNOW where they start: an out-of-bounds store on a Number kind is a
+ * discard (10.4.5.16 — ToNumber of a number is the number), while on a
+ * BigInt kind the same store still owes the ToBigInt that throws for a
+ * Number value, so it must reach the helper. kind < BIGINT64 is that test. */
+#define BRONZE_ABI_TA_KIND_BIGINT64     10
 #define BRONZE_ABI_BUF_DATA_OFFSET      24
 
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then

@@ -49,6 +49,11 @@ uint64_t taIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         view->buffer.asObject<ArrayBufferHeader>()->isDetached()) {
         return rtThrowTypeError("ArrayBuffer is detached").rawBits();
     }
+    // 23.1.5.1 asks IsTypedArrayOutOfBounds before the length: iterating a
+    // view a shrinking `resize` stranded is a TypeError, not an early `done`.
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("TypedArray is out of bounds of its ArrayBuffer").rawBits();
+    }
 
     const auto at = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::NextIndex).asNumber());
     if (at >= lengthOf(target.get())) return iterResult(none, true).rawBits();

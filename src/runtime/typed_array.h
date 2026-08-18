@@ -236,6 +236,11 @@ static_assert(static_cast<uint32_t>(ElementKind::Int32) == BRONZE_ABI_TA_KIND_IN
 static_assert(static_cast<uint32_t>(ElementKind::Uint32) == BRONZE_ABI_TA_KIND_UINT32);
 static_assert(static_cast<uint32_t>(ElementKind::Float32) == BRONZE_ABI_TA_KIND_FLOAT32);
 static_assert(static_cast<uint32_t>(ElementKind::Float64) == BRONZE_ABI_TA_KIND_FLOAT64);
+static_assert(static_cast<uint32_t>(ElementKind::BigInt64) == BRONZE_ABI_TA_KIND_BIGINT64);
+static_assert(static_cast<uint32_t>(ElementKind::BigUint64) == BRONZE_ABI_TA_KIND_BIGINT64 + 1,
+              "the dynamic-store fast path discards out-of-bounds Number stores for every kind "
+              "below BIGINT64 and takes the helper at or above it (the ToBigInt throw), so the "
+              "two BigInt kinds must be the enum's LAST rows");
 static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,
               "data() is `this + 1`, so a buffer's bytes begin at sizeof(ArrayBufferHeader)");
 
@@ -284,6 +289,21 @@ struct DataViewHeader {
     }
     const uint8_t* bytes() const noexcept {
         return buffer.asObject<const ArrayBufferHeader>()->data() + byteOffset;
+    }
+
+    // 25.3.1's IsViewOutOfBounds: the window no longer lies within its buffer.
+    // Unlike a typed array's — whose maintained `length` answers most of the
+    // questions — this is asked on EVERY DataView access, because every access
+    // is already a helper call and a detached or shrunk-away window is a
+    // TypeError here (25.3.1.1 step 6), not a discarded read of stale bytes.
+    // The detached test is not redundant with the arithmetic: `setDetached`
+    // zeroes the buffer's byteLength, which the sum catches for every
+    // non-empty window, but a zero-length view at offset 0 still passes it and
+    // 25.1.3.4 says detached means out of bounds regardless.
+    bool isOutOfBounds() const noexcept {
+        const auto* buf = buffer.asObject<const ArrayBufferHeader>();
+        return buf->isDetached() ||
+               static_cast<uint64_t>(byteOffset) + byteLength > buf->byteLength;
     }
 
     // The buffer arrives through a root because allocating the view can move

@@ -120,6 +120,24 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   > - Cross-suite: no regressions — `numeric_loop` 35.63 ms (1.84x WIN), `object_graph` 51.57 ms (1.35x WIN), `three_math` 47.25 ms (1.02x parity), `mesh_churn_2k` 95.35 ms (0.97x parity); `instanced_mesh_churn` (0.67x) and `proto_dispatch_churn` (0.62x) remain the standing losses, identical in both inference modes.
   > - Known pre-existing gap at the time, since CLOSED (chunk 13b below): detached-buffer reads through element paths returned stale bytes and `length` survived a `transfer()`.
 
+- **Chunk 13c: the throwing half of out-of-bounds — methods, iteration, DataView, and the BigInt debt**:
+  > [!NOTE]
+  > Chunk 13b closed the SOFT surface (element access answers undefined/discard through the maintained length). This chunk closes the three named remainders — everything that per spec THROWS over a closed window — at zero cost to the hot paths, because every new check sits on a path that is already a helper call or a cold branch.
+  >
+  > **%TypedArray% methods** (23.2.3 ValidateTypedArray): `requireTypedArray` gains the `isOutOfBounds()` arm, so a view a shrinking `resize` stranded — closed but not detached — is a TypeError from every prototype method, not an empty array. Detached was already caught.
+  >
+  > **Iteration** (23.1.5.1's next asks out-of-bounds BEFORE the length): the for-of fast path (`stepFast`) and the explicit iterator (`taIterNext`) throw for a detached or stranded view — including a transfer MID-LOOP, which now surfaces at the next step instead of ending the loop quietly. The check lives on the `i >= length` branch only (a closed view's length is 0, so every index lands there); the live loop's per-element cost stays the one compare.
+  >
+  > **DataView** (25.3.1.1-.2 step 6, 25.3.4.2-.3, 25.3.2.1): every accessor asks the new `DataViewHeader::isOutOfBounds()` — detached OR window-overhangs — and throws TypeError, closing a genuine stale-read bug (a detached DataView read the old buffer's bytes). The `byteLength`/`byteOffset` getters throw too (deliberately unlike a typed array's, which answer 0), the constructor refuses a detached buffer at each rung user code could detach on, and the length re-check after a `valueOf` measures the buffer as it is NOW. All helper calls already; no inline path touched.
+  >
+  > **The BigInt store's debt** (10.4.5.16 converts before it re-checks the index; 7.1.13 has no Number row): the dynamic-store fast paths in `emitElemSet` and the keyed IC arm discarded ANY out-of-bounds store inline — including on BigInt views, where a Number value still owes the ToBigInt that throws. The out-of-bounds edge now lands on a cold kind test (`kind < BRONZE_ABI_TA_KIND_BIGINT64` discards, at/above takes the helper, which converts and throws). Hot in-bounds path byte-identical; this also removed the one behavior that DISAGREED across the `BRONZE_NO_TYPED_ELEM` seam, which is what made the corner unpinnable before.
+  >
+  > **Pins**: `typed_array_oob_throws` oracle case — stranded-method TypeErrors with regrow recovery, mid-loop transfer, iterator strand/reopen resumption, the full DataView TypeError surface (plus RangeError staying RangeError on a healthy buffer), conversion-before-validity with an observable `valueOf`, the closed-window BigInt Number-store throw, and detached-is-out-of-bounds for zero-length windows. Both modes ± GC stress ± `BRONZE_NO_TYPED_ELEM` ± `BRONZE_HEAP_VERIFY`+`BRONZE_GC_POISON`, all byte-identical.
+  >
+  > **Perf**: typed_array_crunch re-measured after the codegen change — unchanged (the only emitted-code delta is a cold-edge retarget plus one cold block).
+  >
+  > **Still open, named**: `subarray` validates where spec doesn't (throws on a detached source; spec builds the view regardless) — conservative, pre-existing, and harmless for real code; %TypedArray% methods on BigInt views remain named refusals (the double-based method bodies, see rtTypedArrayMember); length-tracking views (auto-length over resizable buffers) are still fixed-at-construction.
+
 - **Chunk 13b: the detach gap closed — the length field IS the witness**:
   > [!NOTE]
   > **The rule**: 10.4.5.9's out-of-bounds witness — a view whose constructed window no longer fits `buffer.byteLength` reads as empty (element reads `undefined`, NaN through the proven coercing ops; writes discarded; `length`/`byteLength` 0; `byteOffset` 0). `transfer` closes every view over the old buffer forever; a shrinking `resize` closes the views it strands; a growing one reopens them — exactly the spec's witness-record behavior.
@@ -132,7 +150,7 @@ Measurements recorded on this machine (median of 5 runs, warmup discarded):
   >
   > **Pins**: `typed_array_detach` oracle case — transfer/detach across every path shape, the valueOf-mid-store discard, shrink/regrow with byte-survival and zero-fill, offset views; both modes ± GC stress ± `BRONZE_HEAP_VERIFY`+`BRONZE_GC_POISON` ± `BRONZE_NO_TYPED_ELEM` seam, all byte-identical.
   >
-  > **Still open, named**: DataView accessors don't consult detach (stale reads through a detached DataView; no spare header word to maintain); %TypedArray% prototype methods and iteration see length 0 instead of throwing TypeError on detached buffers; inline number-stores into BigInt views discard on a closed window where spec throws via ToBigInt (mode-consistent).
+  > **Still open, named**: ~~DataView accessors don't consult detach; %TypedArray% prototype methods and iteration see length 0 instead of throwing; inline number-stores into BigInt views discard on a closed window~~ — all three closed by Chunk 13c.
 
 - **Chunk 12: object_graph's bill — Array-Method Loads and Overflow-Slot Transitions**:
   > [!NOTE]

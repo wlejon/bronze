@@ -161,7 +161,23 @@ bool stepFast(IterRecordHeader* rec) {
         }
         case IterRecordHeader::TypedArray: {
             auto* view = rec->target.asObject<TypedArrayHeader>();
-            if (i >= view->length) return false;
+            if (i >= view->length) {
+                // 23.1.5.1's next() asks IsTypedArrayOutOfBounds BEFORE the
+                // length, so a loop whose buffer was transferred or shrunk
+                // away mid-iteration ends in a TypeError, not a quiet `done`.
+                // Asked only on this branch because a closed view's length is
+                // 0 — every index lands here — which keeps the live loop's
+                // per-element cost at the one compare above. The throw's
+                // false is the Protocol path's own convention: the caller
+                // marks the record done and the pending exception carries.
+                auto* buf = view->buffer.asObject<ArrayBufferHeader>();
+                if (buf->isDetached()) {
+                    rtThrowTypeError("ArrayBuffer is detached");
+                } else if (view->isOutOfBounds()) {
+                    rtThrowTypeError("TypedArray is out of bounds of its ArrayBuffer");
+                }
+                return false;
+            }
             if (isBigIntElementKind(view->elementKind())) {
                 // The one fast kind whose element ALLOCATES: a BigInt is a heap
                 // value. So the bytes are read first, the record is held

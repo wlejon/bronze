@@ -82,6 +82,15 @@ inline bool requireTypedArray(Value v, const char* method) {
         rtThrowTypeError("ArrayBuffer is detached");
         return false;
     }
+    // 23.2.3's ValidateTypedArray ends in IsTypedArrayOutOfBounds, so a view a
+    // shrinking `resize` stranded — closed but not detached — is a TypeError
+    // from every prototype method, not an empty array. Element access is the
+    // one surface that answers such a view softly (undefined reads, discarded
+    // writes); the methods all throw.
+    if (view->isOutOfBounds()) {
+        rtThrowTypeError("TypedArray is out of bounds of its ArrayBuffer");
+        return false;
+    }
     return true;
 }
 

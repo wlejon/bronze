@@ -389,8 +389,13 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.CreateBr(doneBb);
 
     // Typed array: a numeric value into a typed array view. An in-range index
-    // stores; an out-of-range one DISCARDS the write, exactly as the helper
-    // and 10.4.5.16 do — so that edge completes inline rather than calling.
+    // stores; an out-of-range one DISCARDS the write for the Number kinds,
+    // exactly as the helper and 10.4.5.16 do (ToNumber of a number is the
+    // number, so nothing observable is skipped) — but a BIGINT kind still
+    // owes the ToBigInt that THROWS for a Number value even when the index is
+    // invalid, conversion-before-validity being 10.4.5.16's own order. So the
+    // out-of-bounds edge lands on a cold kind test rather than on `done`: at
+    // or above BIGINT64 it takes the helper, which converts and throws.
     builder.SetInsertPoint(taBb);
     llvm::Value* valIsNum =
         builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
@@ -403,7 +408,17 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "es.talen");
     tagViewLengthAccess(taLen, ctx);
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "es.ta.kind", fn);
-    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, doneBb);
+    llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "es.ta.oob", fn);
+    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, taOobBb);
+
+    builder.SetInsertPoint(taOobBb);
+    llvm::Value* oobKindPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_KIND_OFFSET);
+    auto* oobKind = builder.CreateAlignedLoad(i32Ty, oobKindPtr, llvm::Align(4), "es.oob.kind");
+    markInvariant(oobKind, ctx);
+    llvm::Value* oobIsNumberKind =
+        builder.CreateICmpULT(oobKind, builder.getInt32(BRONZE_ABI_TA_KIND_BIGINT64));
+    builder.CreateCondBr(oobIsNumberKind, doneBb, slowBb);
 
     builder.SetInsertPoint(taKindBb);
     llvm::Value* kindPtr =

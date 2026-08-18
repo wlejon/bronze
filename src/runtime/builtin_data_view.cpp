@@ -219,6 +219,13 @@ Value getViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     // Derived after the last thing that could allocate, and used before the
     // next: `bytes()` names memory the collector moves.
     auto* view = self.get().asObject<DataViewHeader>();
+    // 25.3.1.1 step 6, and it is a TypeError where the test below is a
+    // RangeError: a window whose buffer was transferred or shrunk away has no
+    // bytes AT ANY index, and reading its old ones would be the stale-read
+    // bug. Asked after ToIndex, whose `valueOf` is exactly what can detach.
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+    }
     if (static_cast<uint64_t>(getIndex) + elementSize > view->byteLength) {
         return rtThrowRangeError(kOutOfBounds);
     }
@@ -245,6 +252,12 @@ Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     const uint32_t elementSize = elementKindInfo(kind).bytesPerElement;
 
     auto* view = self.get().asObject<DataViewHeader>();
+    // 25.3.1.2 step 6: after BOTH conversions — so a `valueOf` that transfers
+    // the buffer turns this store into the TypeError, never a write into the
+    // detached buffer's old bytes.
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+    }
     if (static_cast<uint64_t>(getIndex) + elementSize > view->byteLength) {
         return rtThrowRangeError(kOutOfBounds);
     }
@@ -268,6 +281,10 @@ Value getBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
     if (!toIndex(requestIndex, kOutOfBounds, getIndex)) return Value::fromUndefined();
     const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
     auto* view = self.get().asObject<DataViewHeader>();
+    // getViewValue's TypeError, on the same terms (25.3.1.1 step 6).
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+    }
     if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
         return rtThrowRangeError(kOutOfBounds);
     }
@@ -295,6 +312,11 @@ Value setBigViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndia
 
     const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
     auto* view = self.get().asObject<DataViewHeader>();
+    // setViewValue's TypeError, on the same terms: the ToBigInt above may
+    // itself have transferred the buffer (25.3.1.2 step 6 runs after it).
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+    }
     if (static_cast<uint64_t>(getIndex) + 8 > view->byteLength) {
         return rtThrowRangeError(kOutOfBounds);
     }
@@ -376,6 +398,14 @@ uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (!toIndex(args[1], "Invalid DataView byte offset", offset)) {
         return Value::fromUndefined().rawBits();
     }
+    // Step 4: a detached buffer is a TypeError, not a zero-length window that
+    // every accessor would then refuse one call later. Asked AFTER ToIndex,
+    // whose `valueOf` is exactly what can detach — and re-derived through the
+    // root, because that same `valueOf` can allocate.
+    if (buffer.get().asObject<ArrayBufferHeader>()->isDetached()) {
+        return rtThrowTypeError("Cannot construct a DataView over a detached ArrayBuffer")
+            .rawBits();
+    }
     const uint32_t bufferLength = buffer.get().asObject<ArrayBufferHeader>()->byteLength;
     // Step 6: an offset the buffer does not reach. RangeError, and separate
     // from the step above because `-1` and `9` fail for different reasons.
@@ -393,11 +423,23 @@ uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         // remaining bytes is a RangeError.
         byteLength = bufferLength - offset;
     } else {
-        // Step 9: ToIndex again, then the window must fit.
+        // Step 9: ToIndex again, then the window must fit. The detach test
+        // repeats after it for the reason it ran after the first ToIndex —
+        // 25.3.2.1 re-checks (its step 12) because this conversion too can
+        // run user code.
         if (!toIndex(args[2], "Invalid DataView length", byteLength)) {
             return Value::fromUndefined().rawBits();
         }
-        if (static_cast<uint64_t>(offset) + byteLength > bufferLength) {
+        if (buffer.get().asObject<ArrayBufferHeader>()->isDetached()) {
+            return rtThrowTypeError("Cannot construct a DataView over a detached ArrayBuffer")
+                .rawBits();
+        }
+        // Re-read, not `bufferLength`: the same user code that could detach
+        // can `resize` instead, and 25.3.2.1 step 13 measures the buffer as
+        // it is NOW — a window the shrink no longer admits is a RangeError
+        // here, not a view born out of bounds.
+        if (static_cast<uint64_t>(offset) + byteLength >
+            buffer.get().asObject<ArrayBufferHeader>()->byteLength) {
             return rtThrowRangeError("Invalid DataView length").rawBits();
         }
     }
@@ -479,9 +521,22 @@ const char* rtDataViewConstructorName(Value fn) {
 Value rtDataViewMember(Value viewVal, const std::string& key) {
     auto* view = viewVal.asObject<DataViewHeader>();
     // 25.3.4.1..25.3.4.3, which are the view's own slots and not the buffer's:
-    // a windowed view reports the window.
-    if (key == "byteLength") return Value::fromDouble(view->byteLength);
-    if (key == "byteOffset") return Value::fromDouble(view->byteOffset);
+    // a windowed view reports the window. The two size getters THROW for a
+    // window its buffer left behind (25.3.4.2 step 5, 25.3.4.3 step 5) —
+    // deliberately unlike a typed array's, which answer 0 (23.2.4.2–.4) —
+    // while `buffer` always answers: the identity outlives the window.
+    if (key == "byteLength") {
+        if (view->isOutOfBounds()) {
+            return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+        }
+        return Value::fromDouble(view->byteLength);
+    }
+    if (key == "byteOffset") {
+        if (view->isOutOfBounds()) {
+            return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
+        }
+        return Value::fromDouble(view->byteOffset);
+    }
     if (key == "buffer") return view->buffer;
     // Everything below can allocate a function object, so `view` must not be
     // read again.

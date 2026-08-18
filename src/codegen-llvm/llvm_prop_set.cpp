@@ -132,7 +132,22 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ic.set.ta.len");
         tagViewLengthAccess(taLen, ctx);
         llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.kind", fn);
-        builder.CreateCondBr(builder.CreateICmpULT(builder.getInt32(idx), taLen), taKindBb, doneBb);
+        // Out of bounds discards inline for the Number kinds only; a BigInt
+        // kind still owes ToBigInt's throw for a Number value, so it takes
+        // the helper (llvm_elem.cpp's es.ta.oob says why in full).
+        llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.oob", fn);
+        builder.CreateCondBr(builder.CreateICmpULT(builder.getInt32(idx), taLen), taKindBb,
+                             taOobBb);
+
+        builder.SetInsertPoint(taOobBb);
+        llvm::Value* oobKindPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_KIND_OFFSET);
+        auto* oobKind =
+            builder.CreateAlignedLoad(i32Ty, oobKindPtr, llvm::Align(4), "ic.set.ta.oob.kind");
+        markInvariant(oobKind, ctx);
+        llvm::Value* oobIsNumberKind =
+            builder.CreateICmpULT(oobKind, builder.getInt32(BRONZE_ABI_TA_KIND_BIGINT64));
+        builder.CreateCondBr(oobIsNumberKind, doneBb, slowBb);
 
         builder.SetInsertPoint(taKindBb);
         llvm::Value* kindPtr =

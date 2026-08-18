@@ -344,6 +344,10 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // property name that DataView does not define and the chain answers.
         Rooted<Value> recv{objVal};
         const Value found = rtDataViewMember(recv.get(), keyStr);
+        // The size getters THROW for an out-of-bounds window (25.3.4.2–.3),
+        // and a throw answers as undefined — which must not fall through into
+        // the prototype chain as if the view simply lacked the property.
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!found.isUndefined()) return found.rawBits();
         return rtObjectProtoMember(recv, keyStr).rawBits();
     }
