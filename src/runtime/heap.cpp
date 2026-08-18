@@ -3,6 +3,7 @@
 #include "runtime/heap.h"
 
 #include "abi/bronze_abi.h"
+#include "runtime/fatal.h"
 #include "runtime/gc.h"
 
 #ifdef _WIN32
@@ -162,6 +163,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     const char* env_poison = std::getenv("BRONZE_GC_POISON");
     if (env_poison && std::strcmp(env_poison, "1") == 0) {
         gc_poison_mode_ = true;
+    }
+
+    const char* env_verify = std::getenv("BRONZE_HEAP_VERIFY");
+    if (env_verify && std::strcmp(env_verify, "1") == 0) {
+        gc_verify_mode_ = true;
     }
 
     const char* env_no_inline = std::getenv("BRONZE_NO_INLINE_ALLOC");
@@ -415,6 +421,136 @@ HeapObjectHeader* Heap::survivor_of(HeapObjectHeader* header) const noexcept {
     return nullptr;
 }
 
+// Diagnostic name for a Tag::Object header's HeapKind word. Pinned to Count
+// so adding a kind extends this table instead of printing an index.
+static const char* heap_kind_name(uint16_t kind) noexcept {
+    static const char* const names[] = {
+        "Plain", "Array", "Function", "TypedArray", "ArrayBuffer", "DataView",
+        "Map", "Set", "WeakMap", "WeakSet", "Iterator", "RegExp", "Env",
+        "ModuleNamespace", "Proxy", "PrivateTable", "WeakRef",
+        "FinalizationRegistry",
+    };
+    static_assert(sizeof(names) / sizeof(names[0]) == HeapKind::Count,
+                  "a new HeapKind needs a name here");
+    return kind < HeapKind::Count ? names[kind] : "?";
+}
+
+void Heap::verify_space(const Semispace& space) const {
+    const uint8_t* end = space.bump_ptr;
+    const uint64_t reservation_lo = reinterpret_cast<uint64_t>(reserved_base_);
+    const uint64_t reservation_hi = reservation_lo + reserved_bytes_;
+
+    // Pass 1: the space must parse as a gapless run of headers, because pass 2
+    // answers "is this pointer a live object?" by exact membership in this
+    // list — a corrupt size here would silently shift every boundary after it.
+    std::vector<uint64_t> headers;
+    for (const uint8_t* p = space.base; p < end;) {
+        auto* hdr = reinterpret_cast<const HeapObjectHeader*>(p);
+        const uint16_t t = hdr->tag;
+        const bool heap_tag = t == static_cast<uint16_t>(Tag::Object) ||
+                              t == static_cast<uint16_t>(Tag::String) ||
+                              t == static_cast<uint16_t>(Tag::RawBytes) ||
+                              t == static_cast<uint16_t>(Tag::BigInt);
+        if (!heap_tag || hdr->size < sizeof(HeapObjectHeader) || (hdr->size & 7) != 0 ||
+            p + hdr->size > end) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          "heap verify: unwalkable header at +0x%zX: tag=0x%04X flags=%u "
+                          "size=%u (live space holds %zu bytes)",
+                          static_cast<size_t>(p - space.base), t, hdr->flags, hdr->size,
+                          static_cast<size_t>(end - space.base));
+            fatal(buf);
+        }
+        headers.push_back(reinterpret_cast<uint64_t>(p));
+        p += hdr->size;
+    }
+
+    // Pass 2: every word the collector scans must parse cleanly as a Value.
+    // Of the four heap header tags only Tag::Object payloads hold Values
+    // (payload_holds_values), so every owner below is an object and its
+    // flags word names a HeapKind — which is exactly the name the padding
+    // bug class needs reported: the struct type whose scanned word is dirty.
+    for (uint64_t addr : headers) {
+        auto* hdr = reinterpret_cast<const HeapObjectHeader*>(addr);
+        if (!payload_holds_values(hdr->tag)) {
+            continue;
+        }
+        const Value* slots = hdr->payload<const Value>();
+        const size_t num_slots = (hdr->size - sizeof(HeapObjectHeader)) / sizeof(Value);
+        for (size_t i = 0; i < num_slots; ++i) {
+            const Value v = slots[i];
+            if (v.isNumber()) {
+                continue;
+            }
+            const char* why = nullptr;
+            switch (v.tag()) {
+                case static_cast<uint16_t>(Tag::Int32):
+                    break;
+                case static_cast<uint16_t>(Tag::Bool):
+                    if (v.payload() > 1) why = "Bool word whose payload is not 0 or 1";
+                    break;
+                case static_cast<uint16_t>(Tag::Null):
+                case static_cast<uint16_t>(Tag::Undefined):
+                case static_cast<uint16_t>(Tag::Hole):
+                case static_cast<uint16_t>(Tag::Uninitialized):
+                    if (v.payload() != 0) why = "singleton tag carrying a payload";
+                    break;
+                case static_cast<uint16_t>(Tag::Object):
+                case static_cast<uint16_t>(Tag::String):
+                case static_cast<uint16_t>(Tag::Symbol):
+                case static_cast<uint16_t>(Tag::BigInt): {
+                    const uint64_t target = v.payload();
+                    // Null is legal (a hardware NaN is 0xFFF8'0000'0000'0000,
+                    // which parses as Symbol with payload 0 — forward_value
+                    // tolerates it for the same reason). So is anything
+                    // outside the reservation: arena-interned symbols,
+                    // strings and every C++-owned structure live there.
+                    if (target == 0 || target < reservation_lo || target >= reservation_hi) {
+                        break;
+                    }
+                    if (target < reinterpret_cast<uint64_t>(space.base) ||
+                        target >= reinterpret_cast<uint64_t>(end)) {
+                        why = "pointer into the heap but outside the live space "
+                              "(stale semispace reference)";
+                    } else if (!std::binary_search(headers.begin(), headers.end(), target)) {
+                        why = "pointer into the live space that is not an object header";
+                    } else {
+                        // A reference's Value tag and its target's header tag
+                        // agree, with one designed exception: Tag::Object may
+                        // name a RawBytes header (ArrayBuffer stores, WeakRef —
+                        // the payloads the scan must skip).
+                        const uint16_t vt = v.tag();
+                        const uint16_t tt = reinterpret_cast<const HeapObjectHeader*>(target)->tag;
+                        const bool ok = vt == static_cast<uint16_t>(Tag::Object)
+                                            ? (tt == static_cast<uint16_t>(Tag::Object) ||
+                                               tt == static_cast<uint16_t>(Tag::RawBytes))
+                                            : tt == vt;
+                        if (!ok) why = "pointer whose target header carries a different tag";
+                    }
+                    break;
+                }
+                case static_cast<uint16_t>(Tag::Forwarded):
+                    why = "Forwarded tag in a scanned word after the copy phase";
+                    break;
+                default:
+                    why = "tag the value model does not define";
+                    break;
+            }
+            if (why) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "heap verify: %s: object at +0x%zX kind=%s size=%u, "
+                              "slot %zu = 0x%016llX — a heap struct must zero every "
+                              "byte of every word the collector scans",
+                              why, static_cast<size_t>(addr - reinterpret_cast<uint64_t>(space.base)),
+                              heap_kind_name(hdr->flags), hdr->size, i,
+                              static_cast<unsigned long long>(v.rawBits()));
+                fatal(buf);
+            }
+        }
+    }
+}
+
 void Heap::collect() {
     if (in_gc_) {
         return;
@@ -492,6 +628,13 @@ void Heap::collect() {
     // the registered pointers point into.
     for (const PostCollectionHook& hook : post_collection_hooks_) {
         hook();
+    }
+
+    // After the hooks: they are part of the collection (weak sweeps re-point
+    // and clear cells), and the state being certified is the one the mutator
+    // resumes on.
+    if (gc_verify_mode_) {
+        verify_space(to_space_);
     }
 
     if (g_gcLog.enabled) {

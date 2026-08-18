@@ -214,6 +214,27 @@ public:
     void set_gc_poison(bool enable) noexcept { gc_poison_mode_ = enable; }
     bool gc_poison() const noexcept { return gc_poison_mode_; }
 
+    // BRONZE_HEAP_VERIFY=1: after every collection's copy phase, re-walk the
+    // copied space and check that every word the collector just scanned
+    // parses cleanly as a Value — pointer-tagged words must name the header
+    // of a live object (or memory outside the heap entirely: arena-interned
+    // symbols, strings, shapes), singleton tags must carry their singleton
+    // payloads, and no word may carry a tag the value model does not define.
+    // It exists for the padding bug class: a heap struct that leaves one
+    // scanned byte unwritten inherits recycled-semispace residue, which
+    // passes every test until the residue happens to look like a pointer.
+    // Poison makes such a read blow up when it is USED; this walk names the
+    // object and slot while the residue still reads as residue — the next
+    // collection after the allocation, not a crash later. It runs on the
+    // copied space because that is the one heap region that provably holds
+    // only live, fully-initialized objects (from-space interleaves dead —
+    // possibly half-built — allocations no scan may read). Pair with
+    // BRONZE_GC_STRESS=1 to run it after effectively every allocation. Costs
+    // two passes over the live set per collection, which is why it is opt-in
+    // like the stress and poison modes it composes with.
+    void set_gc_verify(bool enable) noexcept { gc_verify_mode_ = enable; }
+    bool gc_verify() const noexcept { return gc_verify_mode_; }
+
     // Re-arm the inline-allocation window (the ABI block's alloc_cursor/
     // alloc_limit): carve a fresh run of from-space for generated code's `new`
     // fast path to bump-allocate plain instances from. Called by
@@ -262,6 +283,7 @@ private:
     bool ensure_commit(Semispace& space, size_t required_bytes);
     void* allocate_in_space(Semispace& space, size_t bytes);
     void forward_value(Value& val);
+    void verify_space(const Semispace& space) const;
 
     void* reserved_base_{nullptr};
     size_t reserved_bytes_{0};
@@ -274,6 +296,7 @@ private:
     std::vector<RootSource> root_sources_;
     bool gc_stress_mode_{false};
     bool gc_poison_mode_{false};
+    bool gc_verify_mode_{false};
     // BRONZE_NO_INLINE_ALLOC=1: refill_inline_lab becomes a no-op, the window
     // stays 0/0, and every construction takes the helper — the A/B seam for
     // measuring the inline path in one binary.

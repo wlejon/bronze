@@ -2,15 +2,28 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <stdexcept>
+
+#include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/string.h"
 
 using namespace bronze;
+
+namespace {
+struct FatalGuard {
+    FatalGuard() {
+        setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
+    }
+    ~FatalGuard() { setFatalHandler(nullptr); }
+};
+}  // namespace
 
 TEST_CASE("heap virtual allocation and low memory address reservation") {
     Heap heap(1024 * 1024 * 1024, 64 * 1024);
@@ -229,6 +242,81 @@ TEST_CASE("semispace copying collection reclaims unrooted memory and relocates r
     CHECK(relocated_slots[0] == rootS2.get());
     CHECK(relocated_slots[1].isNumber());
     CHECK(relocated_slots[1].asNumber() == 999.888);
+}
+
+TEST_CASE("heap verify passes a clean heap and keeps it live across collections") {
+    Heap heap(1024 * 1024, 64 * 1024);
+    heap.set_gc_stress(false);
+    heap.set_gc_verify(true);
+    CHECK(heap.gc_verify());
+    ShadowStackFrame frame;
+    FatalGuard guard;
+
+    Rooted<Value> str(heap, Value::fromString(StringHeader::createFromUTF8(heap, "verify_me")));
+
+    auto* raw_obj = heap.allocate(sizeof(Value) * 4, Tag::Object);
+    Value* slots = raw_obj->payload<Value>();
+    slots[0] = str.get();
+    slots[1] = Value::fromDouble(2.5);
+    slots[2] = Value::fromUndefined();
+    slots[3] = Value::fromBool(true);
+    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
+
+    // Raw-bytes payloads are exempt from the word check even when their bytes
+    // happen to look like Values — the scan never reads them either.
+    auto* raw_bytes = heap.allocate(32, Tag::RawBytes);
+    std::memset(raw_bytes->payload(), 0xDB, 32);
+    slots = obj.get().asObject<HeapObjectHeader>()->payload<Value>();
+    slots[2] = Value::fromObject(raw_bytes);
+
+    CHECK_NOTHROW(heap.collect());
+    CHECK_NOTHROW(heap.collect());
+
+    Value* relocated = obj.get().asObject<HeapObjectHeader>()->payload<Value>();
+    CHECK(relocated[0] == str.get());
+    CHECK(relocated[1].asNumber() == 2.5);
+    CHECK(relocated[3].asBool() == true);
+}
+
+TEST_CASE("heap verify names a scanned word holding a stale semispace pointer") {
+    Heap heap(1024 * 1024, 64 * 1024);
+    heap.set_gc_stress(false);
+    heap.set_gc_verify(true);
+    ShadowStackFrame frame;
+    FatalGuard guard;
+
+    // A zeroed raw-bytes block: an address inside it is inside the heap but
+    // can never be a live object header, which is exactly what recycled
+    // residue in an unzeroed scanned word looks like.
+    auto* decoy = heap.allocate(64, Tag::RawBytes);
+    std::memset(decoy->payload(), 0, 64);
+
+    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    Value* slots = raw_obj->payload<Value>();
+    slots[0] = Value::fromTagAndPayload(static_cast<uint16_t>(Tag::Object),
+                                        reinterpret_cast<uint64_t>(decoy->payload()) + 8);
+    slots[1] = Value::fromDouble(1.0);
+    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
+
+    CHECK_THROWS_WITH_AS(heap.collect(), doctest::Contains("heap verify"), std::runtime_error);
+}
+
+TEST_CASE("heap verify rejects a word carrying an undefined tag") {
+    Heap heap(1024 * 1024, 64 * 1024);
+    heap.set_gc_stress(false);
+    heap.set_gc_verify(true);
+    ShadowStackFrame frame;
+    FatalGuard guard;
+
+    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    Value* slots = raw_obj->payload<Value>();
+    slots[0] = Value::fromRawBits((0xFFFCULL << 48) | 0x1234);
+    slots[1] = Value::fromDouble(1.0);
+    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
+
+    CHECK_THROWS_WITH_AS(heap.collect(),
+                         doctest::Contains("tag the value model does not define"),
+                         std::runtime_error);
 }
 
 TEST_CASE("gc stress mode triggers collection on every allocation") {
