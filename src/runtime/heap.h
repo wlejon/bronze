@@ -202,6 +202,18 @@ public:
     void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
     bool gc_stress() const noexcept { return gc_stress_mode_; }
 
+    // BRONZE_GC_POISON=1: after every collection, overwrite the abandoned
+    // semispace with a poison byte before the swap. A stale reference read
+    // after its object moved usually returns the OLD bytes — from-space stays
+    // mapped, so the read looks right until the space is reused a collection
+    // later, which is why a missed root can pass on two platforms and die on a
+    // third. Poisoned, the very first stale read yields 0xDBDB... — a length
+    // that cannot allocate, a pointer that cannot dereference — on every
+    // platform, every run. Costs a live-set-sized memset per collection, which
+    // is why it is opt-in like the stress mode it is meant to sharpen.
+    void set_gc_poison(bool enable) noexcept { gc_poison_mode_ = enable; }
+    bool gc_poison() const noexcept { return gc_poison_mode_; }
+
     // Re-arm the inline-allocation window (the ABI block's alloc_cursor/
     // alloc_limit): carve a fresh run of from-space for generated code's `new`
     // fast path to bump-allocate plain instances from. Called by
@@ -261,6 +273,7 @@ private:
     std::vector<Value*> permanent_roots_;
     std::vector<RootSource> root_sources_;
     bool gc_stress_mode_{false};
+    bool gc_poison_mode_{false};
     // BRONZE_NO_INLINE_ALLOC=1: refill_inline_lab becomes a no-op, the window
     // stays 0/0, and every construction takes the helper — the A/B seam for
     // measuring the inline path in one binary.

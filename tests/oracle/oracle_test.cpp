@@ -36,6 +36,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <sys/wait.h>
 #endif
 
 
@@ -58,6 +60,7 @@ constexpr uint32_t kRunTimeoutMs = 15000;
 struct RunResult {
     bool ran = false;       // process started and exited on its own
     bool timedOut = false;  // killed after kRunTimeoutMs
+    int exitCode = -1;      // 0 on clean exit; 128+signal where the OS says so
     std::string output;
 };
 
@@ -121,6 +124,10 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
     }
     reader.join();
     CloseHandle(readPipe);
+    DWORD code = 0;
+    if (GetExitCodeProcess(pi.hProcess, &code)) {
+        result.exitCode = static_cast<int>(code);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
@@ -139,7 +146,12 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
     while (std::size_t n = std::fread(buf, 1, sizeof(buf), pipe)) {
         result.output.append(buf, n);
     }
-    pclose(pipe);
+    int status = pclose(pipe);
+    if (WIFEXITED(status)) {
+        result.exitCode = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result.exitCode = 128 + WTERMSIG(status);
+    }
     result.ran = true;
     return result;
 }
@@ -521,6 +533,8 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
         CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode).c_str());
         if (run.ran) {
+            CHECK_MESSAGE(run.exitCode == 0,
+                          ("three.js exited with code " + std::to_string(run.exitCode) + mode).c_str());
             CHECK_MESSAGE(expected == run.output,
                           ("three.js output differs from the pinned expectation" + mode).c_str());
         }
@@ -530,6 +544,9 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         CHECK_MESSAGE(!stressed.timedOut,
                       ("three.js case did not finish within the timeout (gc-stress" + mode + ")").c_str());
         if (stressed.ran) {
+            CHECK_MESSAGE(stressed.exitCode == 0,
+                          ("three.js exited with code " + std::to_string(stressed.exitCode) +
+                           " (gc-stress" + mode + ")").c_str());
             CHECK_MESSAGE(expected == stressed.output,
                           ("three.js output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }
@@ -576,6 +593,8 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
         CHECK_MESSAGE(!run.timedOut, ("pixi case did not finish within the timeout" + mode).c_str());
         if (run.ran) {
+            CHECK_MESSAGE(run.exitCode == 0,
+                          ("pixi exited with code " + std::to_string(run.exitCode) + mode).c_str());
             CHECK_MESSAGE(expected == run.output,
                           ("pixi output differs from the pinned expectation" + mode).c_str());
         }
@@ -589,6 +608,9 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         CHECK_MESSAGE(!stressed.timedOut,
                       ("pixi case did not finish within the timeout (gc-stress" + mode + ")").c_str());
         if (stressed.ran) {
+            CHECK_MESSAGE(stressed.exitCode == 0,
+                          ("pixi exited with code " + std::to_string(stressed.exitCode) +
+                           " (gc-stress" + mode + ")").c_str());
             CHECK_MESSAGE(expected == stressed.output,
                           ("pixi output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }

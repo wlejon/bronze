@@ -159,6 +159,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         gc_stress_mode_ = true;
     }
 
+    const char* env_poison = std::getenv("BRONZE_GC_POISON");
+    if (env_poison && std::strcmp(env_poison, "1") == 0) {
+        gc_poison_mode_ = true;
+    }
+
     const char* env_no_inline = std::getenv("BRONZE_NO_INLINE_ALLOC");
     if (env_no_inline && std::strcmp(env_no_inline, "1") == 0) {
         inline_lab_enabled_ = false;
@@ -495,6 +500,14 @@ void Heap::collect() {
         g_gcLog.gc_nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 std::chrono::steady_clock::now() - gc_t0)
                                 .count();
+    }
+
+    // Poison AFTER the hooks: they are the last legitimate reader of the
+    // abandoned space (survivor_of decodes its forwarding marks). Anything
+    // that reads it after this line was holding a reference across a move.
+    if (gc_poison_mode_) {
+        std::memset(from_space_.base, 0xDB,
+                    static_cast<size_t>(from_space_.bump_ptr - from_space_.base));
     }
 
     from_space_.bump_ptr = from_space_.base;
