@@ -344,6 +344,18 @@ bool rtHostGlobalLookup(const std::string& name, Value& out) {
     return false;
 }
 
+// The host's CreateDynamicFunction, if it has one (host_globals.h says why the
+// runtime offers the seam at all). Not a root source: whatever the host closed
+// over is the host's to keep alive, and the Values it hands back per call are
+// rooted by the caller like any other builtin result.
+static thread_local DynamicFunctionHost g_dynamicFunctionHost;
+
+void rtSetDynamicFunctionHost(DynamicFunctionHost host) {
+    g_dynamicFunctionHost = std::move(host);
+}
+
+const DynamicFunctionHost& rtDynamicFunctionHost() { return g_dynamicFunctionHost; }
+
 // 10.2.9 and 10.2.10, as the one place a function object's two own data
 // properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
 // is what a native builtin gets — the header's comment says why that is not the

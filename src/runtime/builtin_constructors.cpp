@@ -616,15 +616,26 @@ bool rtHasIteratorMethod(Rooted<Value>& src) {
 // view, because an object with a `valueOf` and no `length` is an array-like of
 // no elements and not a number in disguise.
 //
+// Array and typed array read their own header because the answer is right
+// there. EVERY OTHER object goes through the generic Get, which is what the
+// step says and, unlike a direct `getProp`, is what reaches a `length` that
+// lives behind a getter, up a prototype chain, or on a PROXY. The last of
+// those is not hypothetical: a host object — an embedder's array-like, an
+// interpreted array crossing a bridge — is not flagged plain, and the shape
+// this replaces answered 0 for it silently. `f.apply(null, list)` then called
+// with no arguments at all: not an error anywhere, just every parameter
+// undefined, several frames from the `apply`.
+//
 // The read can run a getter, so the object arrives through a root.
 uint32_t rtArrayLikeLength(Rooted<Value>& src) {
     if (!src.get().isObject()) return 0;
     const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
     if (flags == HeapKind::Array) return src.get().asObject<ArrayHeader>()->length;
     if (flags == TypedArrayHeader::kFlags) return src.get().asObject<TypedArrayHeader>()->length;
-    if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return 0;
     Rooted<Value> key{rtMakeString("length")};
-    const double len = rtToNumber(src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key));
+    const double len =
+        rtToNumber(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
+    if (rtExceptionPending()) return 0;
     if (!(len >= 1.0)) return 0;
     return len > 4294967295.0 ? 4294967295u : static_cast<uint32_t>(len);
 }

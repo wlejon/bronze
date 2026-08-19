@@ -52,6 +52,10 @@ GlobalValue globalValue(std::string_view name) {
     return {Value::fromUndefined(), false};
 }
 
+void setDynamicFunctionHook(DynamicFunctionHook hook) {
+    runtime::rtSetDynamicFunctionHost(std::move(hook));
+}
+
 // ---- calling into compiled code --------------------------------------------
 
 CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
@@ -206,6 +210,9 @@ bool isFunction(Value v) {
 bool isObject(Value v) { return v.isObject(); }
 
 bool isSymbol(Value v) { return v.isSymbol(); }
+bool isNumber(Value v) { return v.isNumber(); }
+bool isString(Value v) { return v.isString(); }
+bool isBool(Value v) { return v.isBool(); }
 
 // ---- json parsing ----------------------------------------------------------
 

@@ -27,6 +27,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/host_globals.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
@@ -73,8 +74,21 @@ constexpr const char* kindName(uint32_t slot) {
 // genuinely distinct: identical bodies are folded back into one by the
 // linker's identical-code elimination, which put the three back at one address
 // after the template alone had separated them.
+//
+// A host that installed an answer (host_globals.h, rtSetDynamicFunctionHost)
+// gets asked here too, and gets told WHICH of the four it is: %AsyncFunction%
+// and %GeneratorFunction% build genuinely different callables, and a host that
+// answered all four the same way would be handing back a plain function where
+// the program is about to `await` or `next()` it. `Slot` is the same index the
+// enum uses, which is why the enum was given those values.
 template <uint32_t Slot>
-uint64_t dynamicFunctionRefusal(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+uint64_t dynamicFunctionRefusal(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (const DynamicFunctionHost& host = rtDynamicFunctionHost()) {
+        RootedArgs args(argc, argv);
+        return host(static_cast<DynamicFunctionKind>(Slot),
+                    std::span<const Value>(args.data(), args.count()))
+            .rawBits();
+    }
     return rtThrowTypeError(
                std::string(kindName(Slot)) +
                ": dynamic code compilation from strings is out of scope for an AOT compiler")

@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "runtime/host_globals.h"
 #include "runtime/value.h"
 
 // The host-facing embedding API: what a C++ application links to run a
@@ -305,6 +306,30 @@ struct GlobalValue {
 };
 BRONZE_EMBED_API GlobalValue globalValue(std::string_view name);
 
+// ---- CreateDynamicFunction, answered by the host ---------------------------
+//
+// `new Function(src)`, and the generator/async/async-generator forms, refuse by
+// name in a standalone bronze program: compiling a string at run time is the
+// one thing an ahead-of-time compiler cannot do. A host that ALREADY runs an
+// interpreter is a different situation — bro embeds QuickJS beside the compiled
+// code — and this is how it says so. Install a hook and the four constructors
+// ask it; install nothing and the refusal is unchanged, which is the default
+// and the right answer for every host that has no interpreter to offer.
+//
+// What bronze does with the result: nothing but return it. The hook is handed
+// 27.3.1.1's raw arguments (parameter lists then body, unconverted — ToString
+// is the host's, so it can refuse a bad argument in its own words) and gives
+// back a callable. bronze never parses the source and never inspects what came
+// back, so the function may be a bronze function object the host built, or a
+// wrapper around something living entirely in the host's own engine.
+//
+// `args` points at ROOTED slots the collector updates in place, so the span
+// stays current across anything the hook allocates. Throwing works the way it
+// does from a NativeFn: call a throw helper and return its result.
+using DynamicFunctionKind = runtime::DynamicFunctionKind;
+using DynamicFunctionHook = runtime::DynamicFunctionHost;
+BRONZE_EMBED_API void setDynamicFunctionHook(DynamicFunctionHook hook);
+
 // ---- persistent handles (embed_handle.cpp) ---------------------------------
 
 // A heap-safe root the host may hold across frames and collections: the
@@ -360,6 +385,15 @@ using NativeFn = std::function<Value(Value thisValue, std::span<const Value> arg
 // object dies. `arity` is the count short calls are padded to (undefined
 // fill), not the JS `length`. ALLOCATES.
 BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity = 0);
+
+// The same, NAMED. `f.name` on an unnamed host function is a hard refusal
+// (rt_state.cpp says why an absent name is not an empty one) and `setProperty`
+// refuses the key outright, so this is the only way in — and it is needed by a
+// host that stands in for a language feature which names what it builds:
+// CreateDynamicFunction calls every function it makes `anonymous`, and library
+// code reads that. `arity` becomes `length` too, since 10.2.9 and 10.2.10 fill
+// the pair together. ALLOCATES.
+BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name);
 
 // Raise into the compiled program through the runtime's pending-exception
 // cell, exactly as the builtins in src/runtime/builtin_*.cpp do. Each returns
@@ -687,6 +721,15 @@ BRONZE_EMBED_API bool isObject(Value v);
 // (7.1.17 makes that a TypeError in JS; here it is the same hard error other
 // objects get), and must pass through call/getProperty untouched instead.
 BRONZE_EMBED_API bool isSymbol(Value v);
+// The three remaining primitive tags, by name. A host that CONVERTS values —
+// one bridging them into another engine, rather than reading a property it
+// already knows the type of — has to ask which primitive it is holding, and
+// the coercions above cannot answer: toDouble of "5" and of 5 agree, and
+// toUtf8 of 5 and of "5" agree, so a bridge built on them turns one into the
+// other silently. These are the tag itself, not a coercion.
+BRONZE_EMBED_API bool isNumber(Value v);
+BRONZE_EMBED_API bool isString(Value v);
+BRONZE_EMBED_API bool isBool(Value v);
 BRONZE_EMBED_API bool isPromise(Value v);
 BRONZE_EMBED_API bool isArrayBuffer(Value v);
 BRONZE_EMBED_API bool isTypedArray(Value v);

@@ -21,6 +21,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/host_globals.h"
 #include "runtime/fn_source.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -36,9 +37,23 @@ namespace bronze::runtime {
 namespace {
 
 // 20.2.1 The Function Constructor.
-// Constructor-from-string (`new Function(...)` or `Function(...)`) is out of scope
-// for an AOT compiler — refused by name.
-uint64_t functionConstructorBody(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+// Constructor-from-string (`new Function(...)` or `Function(...)`) is out of
+// scope for an AOT compiler — refused by name, UNLESS the embedding host
+// installed an answer of its own (host_globals.h, rtSetDynamicFunctionHost).
+// The refusal is the default and stays the whole story for a standalone
+// program; a host that runs an interpreter beside the compiled code can
+// legitimately do what bronze cannot.
+uint64_t functionConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (const DynamicFunctionHost& host = rtDynamicFunctionHost()) {
+        // Rooted before the call and read through the block, not copied out of
+        // it: the host allocates (it is building a function object), and a copy
+        // taken here would name a pre-collection address by the time the host
+        // read it.
+        RootedArgs args(argc, argv);
+        return host(DynamicFunctionKind::Ordinary,
+                    std::span<const Value>(args.data(), args.count()))
+            .rawBits();
+    }
     return rtThrowTypeError(
                "Function: dynamic code compilation from strings is out of scope for an AOT compiler")
         .rawBits();

@@ -20,6 +20,7 @@
 #include "runtime/heap.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/string.h"
 #include "runtime/value.h"
 
 namespace bronze::embed {
@@ -62,6 +63,10 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
 }  // namespace
 
 Value makeFunction(NativeFn fn, uint32_t arity) {
+    return makeFunction(std::move(fn), arity, std::string_view());
+}
+
+Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
     ShadowStackFrame frame;
     // The handle owns the callable; its finalizer is the destructor of a host
     // function that has become garbage. A stateless lambda, so it converts to
@@ -77,9 +82,23 @@ Value makeFunction(NativeFn fn, uint32_t arity) {
                                BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE);
     fnObj->env_record = env.get();
     fnObj->header.flags = HeapKind::Function;
-    // No name key and no length, like every native builtin: `f.name` on a
-    // host function stays the named refusal rt_state.cpp's
-    // rtSetFunctionNameAndLength documents, rather than two wrong facts.
+    // Unnamed by default, like every native builtin: `f.name` then stays the
+    // named refusal rt_state.cpp's rtSetFunctionNameAndLength documents,
+    // rather than two wrong facts.
+    //
+    // A host that HAS a name says so, and it is a real fact rather than a
+    // courtesy: a host standing in for a language feature answers for that
+    // feature's naming too. 27.3.1.1 names every function it builds
+    // `anonymous`, and library code reads `.name` — so a host answering
+    // CreateDynamicFunction must be able to spell it, and before this it could
+    // not: setProperty refuses `name` by name (10.2.9 makes it slot-backed),
+    // which is correct and left no way in at all.
+    if (!name.empty()) {
+        StringHeader* interned = StringHeader::internToArena(
+            runtime::rtArena(), StringHeader::createFromUTF8(runtime::rtHeap(), name));
+        fnObj->name = interned;
+        fnObj->length = arity;
+    }
     return Value::fromObject(fnObj);
 }
 
