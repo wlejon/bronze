@@ -25,7 +25,7 @@ bool Parser::match(TokenKind kind) {
 }
 
 const Token* Parser::expect(TokenKind kind, const char* what) {
-    if (check(kind)) return &advance();
+    if (check(kind) || (kind == TokenKind::Identifier && check(TokenKind::KwOf))) return &advance();
     std::string msg = std::string("expected ") + what + ", got '" +
                       std::string(peek().text.empty() ? tokenKindName(peek().kind) : peek().text) + "'";
     diags_.error(peek().span, msg);
@@ -203,7 +203,7 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     // `name:` at the head of a statement is a label and can be nothing else —
     // no expression statement begins with an identifier followed by a colon,
     // which is why one token of lookahead settles it (ECMA-262 14.13).
-    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+    if ((check(TokenKind::Identifier) || check(TokenKind::KwOf)) && peek(1).kind == TokenKind::Colon) {
         return one(out, parseLabeled());
     }
 
@@ -394,7 +394,7 @@ StmtPtr Parser::parseFor() {
     const bool hasDecl =
         check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar);
     const bool hasTarget =
-        hasDecl || check(TokenKind::Identifier) || check(TokenKind::LBracket) || check(TokenKind::LBrace);
+        hasDecl || check(TokenKind::Identifier) || check(TokenKind::KwOf) || check(TokenKind::LBracket) || check(TokenKind::LBrace);
     if (hasTarget) {
         // What comes after the binding TARGET decides which of the three
         // `for` statements this is, and a target can be a pattern of
@@ -488,7 +488,7 @@ StmtPtr Parser::parseBreak() {
     stmt->span = kw.span;
     // Restricted, like `return`: the identifier on the next line is the next
     // statement, not this one's label.
-    if (check(TokenKind::Identifier) && !atLineBreak()) {
+    if ((check(TokenKind::Identifier) || check(TokenKind::KwOf)) && !atLineBreak()) {
         stmt->label = std::string(advance().text);
     }
     consumeSemicolon("break");
@@ -499,7 +499,7 @@ StmtPtr Parser::parseContinue() {
     const Token& kw = advance();
     auto stmt = std::make_unique<ContinueStmt>();
     stmt->span = kw.span;
-    if (check(TokenKind::Identifier) && !atLineBreak()) {
+    if ((check(TokenKind::Identifier) || check(TokenKind::KwOf)) && !atLineBreak()) {
         stmt->label = std::string(advance().text);
     }
     consumeSemicolon("continue");

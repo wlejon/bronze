@@ -251,10 +251,18 @@ Token Lexer::lexNumber() {
     }
 
     takeDigits(isDigit);
+
+    const auto startsExponent = [&](char c) { return isDigit(c) || c == '_'; };
+    const bool isExponentAhead =
+        (peek(1) == 'e' || peek(1) == 'E') &&
+        (startsExponent(peek(2)) ||
+         ((peek(2) == '+' || peek(2) == '-') && startsExponent(peek(3))));
     // `1.foo` is a property access on a number, not a literal ending in a
-    // dot, so the dot is only part of the literal when a digit (or a
-    // separator, which is an error the parser names) follows it.
-    if (peek() == '.' && (isDigit(peek(1)) || peek(1) == '_')) {
+    // dot, so the dot is only part of the literal when it is not a property
+    // access (or when a separator `_` follows, so the parser names the error).
+    const bool isPropertyAccess =
+        (isIdentStart(peek(1)) && peek(1) != '_') && !isExponentAhead;
+    if (peek() == '.' && !isPropertyAccess) {
         ++pos_;
         takeDigits(isDigit);
     }
@@ -263,7 +271,6 @@ Token Lexer::lexNumber() {
     // tokens, as it always was. A separator counts as the start of one so
     // that `1e_5` is a single literal the parser can name the real fault in,
     // rather than a number followed by an identifier `_5`.
-    const auto startsExponent = [&](char c) { return isDigit(c) || c == '_'; };
     if ((peek() == 'e' || peek() == 'E') &&
         (startsExponent(peek(1)) ||
          ((peek(1) == '+' || peek(1) == '-') && startsExponent(peek(2))))) {

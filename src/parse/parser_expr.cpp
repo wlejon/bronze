@@ -757,7 +757,8 @@ ExprPtr Parser::parsePrimary() {
             self->span = t.span;
             return self;
         }
-        case TokenKind::Identifier: {
+        case TokenKind::Identifier:
+        case TokenKind::KwOf: {
             // `async function () {}` in expression position. Ahead of the
             // generic identifier so `async` stays one everywhere else — the
             // newline rule inside the test is what keeps `async\nfunction`

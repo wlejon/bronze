@@ -85,9 +85,12 @@ public:
     void visit(const ast::NewTargetExpr&) override {}
     void visit(const ast::ImportMetaExpr&) override {}
     void visit(const ast::SuperCall& s) override {
+        if (s.baseExpr) scan(s.baseExpr.get());
         for (const auto& a : s.args) scan(a.get());
     }
-    void visit(const ast::SuperMember&) override {}
+    void visit(const ast::SuperMember& s) override {
+        if (s.baseExpr) scan(s.baseExpr.get());
+    }
     void visit(const ast::YieldExpr& y) override { scan(y.argument.get()); }
     void visit(const ast::DynamicImportExpr& di) override {
         if (const auto* s = dynamic_cast<const ast::StringLit*>(di.specifier.get())) {
@@ -109,6 +112,7 @@ public:
         for (const auto& s : f.body) scan(s.get());
     }
     void visit(const ast::ClassExpr& c) override {
+        if (c.superClass) scan(c.superClass.get());
         for (const auto& m : c.methods) {
             scan(m.keyExpr.get());
             if (m.fn) scan(m.fn.get());
@@ -164,6 +168,7 @@ public:
     }
     void visit(const ast::ThrowStmt& t) override { scan(t.value.get()); }
     void visit(const ast::ClassDecl& c) override {
+        if (c.superClass) scan(c.superClass.get());
         for (const auto& m : c.methods) {
             scan(m.keyExpr.get());
             if (m.fn) scan(m.fn.get());

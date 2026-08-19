@@ -98,10 +98,14 @@ public:
         for (const auto& e : t.templateLit->exprs) e->accept(*this);
     }
     void visit(const SuperCall& c) override {
-        names.insert(c.baseName);
+        if (c.baseExpr) c.baseExpr->accept(*this);
+        else if (!c.baseName.empty()) names.insert(c.baseName);
         for (const auto& arg : c.args) arg->accept(*this);
     }
-    void visit(const SuperMember& m) override { names.insert(m.baseName); }
+    void visit(const SuperMember& m) override {
+        if (m.baseExpr) m.baseExpr->accept(*this);
+        else if (!m.baseName.empty()) names.insert(m.baseName);
+    }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
     void visit(const DynamicImportExpr& d) override { if (d.specifier) d.specifier->accept(*this); }
@@ -112,7 +116,8 @@ public:
     }
     void visit(const ClassDecl& c) override {
         names.insert(c.name);
-        if (!c.superName.empty()) names.insert(c.superName);
+        if (c.superClass) c.superClass->accept(*this);
+        else if (!c.superName.empty()) names.insert(c.superName);
         for (const auto& m : c.methods) {
             // A computed member name is an expression of the ENCLOSING scope,
             // evaluated where the class is defined rather than where the method
@@ -123,7 +128,8 @@ public:
         }
     }
     void visit(const ClassExpr& c) override {
-        if (!c.superName.empty()) names.insert(c.superName);
+        if (c.superClass) c.superClass->accept(*this);
+        else if (!c.superName.empty()) names.insert(c.superName);
         for (const auto& m : c.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
             if (m.fn) m.fn->accept(*this);
@@ -306,9 +312,12 @@ public:
         for (const auto& e : t.templateLit->exprs) e->accept(*this);
     }
     void visit(const SuperCall& c) override {
+        if (c.baseExpr) c.baseExpr->accept(*this);
         for (const auto& arg : c.args) arg->accept(*this);
     }
-    void visit(const SuperMember&) override {}
+    void visit(const SuperMember& m) override {
+        if (m.baseExpr) m.baseExpr->accept(*this);
+    }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const DestructuringAssign& d) override {
         visitPatternExprs(d.pattern.get(), *this);
@@ -318,6 +327,7 @@ public:
     // mentions is a candidate capture - including the parent class name that a
     // `super` inside it resolves against.
     void visit(const ClassDecl& c) override {
+        if (c.superClass) c.superClass->accept(*this);
         for (const auto& m : c.methods) {
             if (m.keyExpr) {
                 m.keyExpr->accept(*this);
@@ -339,6 +349,7 @@ public:
         }
     }
     void visit(const ClassExpr& c) override {
+        if (c.superClass) c.superClass->accept(*this);
         for (const auto& m : c.methods) {
             if (m.keyExpr) {
                 m.keyExpr->accept(*this);

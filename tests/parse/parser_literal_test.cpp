@@ -208,3 +208,25 @@ TEST_CASE("a method shorthand is flagged as one, and a function-valued property 
         CHECK(dynamic_cast<const ast::FunctionExpr*>(prop.value.get()) != nullptr);
     }
 }
+
+TEST_CASE("trailing-dot float literals parse and evaluate to correct numeric values") {
+    const auto out = parseAndDump("const a = 0., b = 1., c = 1.e5, d = 1. + 2.; let t; t = 0.;");
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(number 0)") != std::string::npos);
+    CHECK(out.find("(number 1)") != std::string::npos);
+    CHECK(out.find("(number 1e+05)") != std::string::npos);
+    CHECK(out.find("(binary +\n      (number 1)\n      (number 2)") != std::string::npos);
+    CHECK(out.find("(binary =\n      (ident t)\n      (number 0)") != std::string::npos);
+
+    const auto toStr = parseAndDump("0..toString();");
+    CHECK(toStr.substr(0, 7) != "ERRORS:");
+    CHECK(toStr.find("(call\n"
+                     "      (member .toString\n"
+                     "        (number 0)\n"
+                     "      )") != std::string::npos);
+
+    // 1._5 is diagnosed as an error in separator placement
+    const auto err = parseAndDump("const x = 1._5;");
+    CHECK(err.substr(0, 7) == "ERRORS:");
+    CHECK(err.find("numeric separator '_' must appear between two digits") != std::string::npos);
+}

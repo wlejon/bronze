@@ -405,3 +405,50 @@ TEST_CASE("numbers with BigInt suffix n") {
     CHECK(tokens[4].text == "0o77n");
 }
 
+TEST_CASE("trailing-dot float literals and property access") {
+    auto l1 = lexAll("0. 1. 1.e5");
+    auto& t1 = l1.tokens;
+    REQUIRE(t1.size() == 4);  // 0., 1., 1.e5, EOF
+    CHECK(t1[0].kind == TokenKind::NumberLiteral);
+    CHECK(t1[0].text == "0.");
+    CHECK(t1[1].kind == TokenKind::NumberLiteral);
+    CHECK(t1[1].text == "1.");
+    CHECK(t1[2].kind == TokenKind::NumberLiteral);
+    CHECK(t1[2].text == "1.e5");
+
+    auto l2 = lexAll("0..toString()");
+    auto& t2 = l2.tokens;
+    REQUIRE(t2.size() == 6);  // 0., ., toString, (, ), EOF
+    CHECK(t2[0].kind == TokenKind::NumberLiteral);
+    CHECK(t2[0].text == "0.");
+    CHECK(t2[1].kind == TokenKind::Dot);
+    CHECK(t2[2].kind == TokenKind::Identifier);
+    CHECK(t2[2].text == "toString");
+
+    auto l3 = lexAll("t = 0.;");
+    auto& t3 = l3.tokens;
+    REQUIRE(t3.size() == 5);  // t, =, 0., ;, EOF
+    CHECK(t3[0].kind == TokenKind::Identifier);
+    CHECK(t3[0].text == "t");
+    CHECK(t3[1].kind == TokenKind::Assign);
+    CHECK(t3[2].kind == TokenKind::NumberLiteral);
+    CHECK(t3[2].text == "0.");
+    CHECK(t3[3].kind == TokenKind::Semicolon);
+
+    auto l4 = lexAll("1. + 2.");
+    auto& t4 = l4.tokens;
+    REQUIRE(t4.size() == 4);  // 1., +, 2., EOF
+    CHECK(t4[0].kind == TokenKind::NumberLiteral);
+    CHECK(t4[0].text == "1.");
+    CHECK(t4[1].kind == TokenKind::Plus);
+    CHECK(t4[2].kind == TokenKind::NumberLiteral);
+    CHECK(t4[2].text == "2.");
+
+    // 1._5 is lexed as a single literal (so the parser can diagnose separator placement error)
+    auto l5 = lexAll("1._5");
+    auto& t5 = l5.tokens;
+    REQUIRE(t5.size() == 2);  // 1._5, EOF
+    CHECK(t5[0].kind == TokenKind::NumberLiteral);
+    CHECK(t5[0].text == "1._5");
+}
+

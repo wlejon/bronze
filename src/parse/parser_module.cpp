@@ -99,7 +99,7 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
 
     // ImportedDefaultBinding, which may be followed by `, { ... }` or
     // `, * as ns`.
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         const Token& nameTok = advance();
         if (check(TokenKind::Assign)) {
             error("unsupported construct: 'import x = require(...)' (TypeScript import "
@@ -147,7 +147,7 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
                 const Token* localTok = expect(TokenKind::Identifier, "a binding name after 'as'");
                 if (!localTok) return false;
                 spec.local = std::string(localTok->text);
-            } else if (importedTok->kind != TokenKind::Identifier) {
+            } else if (importedTok->kind != TokenKind::Identifier && importedTok->kind != TokenKind::KwOf) {
                 // `import { default }` binds a name that cannot be written.
                 error("a reserved word imported by name needs 'as': write "
                       "'import { default as d }'");

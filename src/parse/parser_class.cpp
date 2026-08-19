@@ -169,6 +169,16 @@ ExprPtr Parser::parsePrivateNameOperand() {
     return ident;
 }
 
+static std::string superExpressionName(const Expr* expr) {
+    if (!expr) return "";
+    if (const auto* id = dynamic_cast<const Ident*>(expr)) return id->name;
+    if (const auto* mem = dynamic_cast<const MemberAccess*>(expr)) {
+        std::string prefix = superExpressionName(mem->object.get());
+        return prefix.empty() ? mem->property : prefix + "." + mem->property;
+    }
+    return "";
+}
+
 // `class Name [extends Base] { members }`. A class introduces no runtime
 // concept - it is the constructor function plus its prototype, and lowering
 // desugars it into exactly that. What the parser owes is the shape: which
@@ -177,7 +187,8 @@ ExprPtr Parser::parsePrivateNameOperand() {
 //
 // Everything ES2015+ puts in a class body that bronze has not built is
 // diagnosed by name here rather than mis-parsed as a method.
-bool Parser::parseClassBodyCommon(const std::string& name, const std::string& superName,
+bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* superClass,
+                                  const std::string& superName,
                                   std::vector<ast::ClassMethod>& methods, Span span) {
     // Before the brace is consumed: the scan indexes tokens, and the body's
     // own `{` is where it starts.
@@ -197,8 +208,10 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
     // Every `super` inside a method belongs to THIS class, and the parser is
     // the only place that knows which class that is.
     const std::string savedSuper = currentClassSuper_;
+    const ast::Expr* savedSuperExpr = currentClassSuperExpr_;
     const bool savedInMethod = inClassMethod_;
     currentClassSuper_ = superName;
+    currentClassSuperExpr_ = superClass;
     inClassMethod_ = true;
 
     // A ClassElementName is a PropertyName OR a PrivateIdentifier (15.7), and
@@ -510,6 +523,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
     }
 
     currentClassSuper_ = savedSuper;
+    currentClassSuperExpr_ = savedSuperExpr;
     inClassMethod_ = savedInMethod;
     if (!ok) return false;
     if (!expect(TokenKind::RBrace, "'}' to close a class body")) return false;
@@ -534,7 +548,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
         ctor.fn->name = name.empty() ? "constructor" : (name + ".constructor");
         ctor.fn->span = span;
         ctor.fn->strict = true;  // synthesized class code, which 15.7 makes strict
-        if (!superName.empty()) {
+        if (superClass || !superName.empty()) {
             Param rest;
             rest.name = "args";
             rest.isRest = true;
@@ -551,6 +565,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             auto call = std::make_unique<SuperCall>();
             call->span = span;
             call->baseName = superName;
+            if (superClass) call->baseExpr = ast::cloneExpr(*superClass);
             call->args.push_back(std::move(spread));
 
             auto stmt = std::make_unique<ExprStmt>();
@@ -574,7 +589,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     strict_ = true;
     auto cls = std::make_unique<ClassDecl>();
     cls->span.begin = kw.span.begin;
-    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+    if (!defaultName.empty() && !(check(TokenKind::Identifier) || check(TokenKind::KwOf))) {
         cls->name = defaultName;  // `export default class {}`, as above
     } else {
         const Token* nameTok = expect(TokenKind::Identifier, "class name");
@@ -584,12 +599,12 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     }
 
     if (match(TokenKind::KwExtends)) {
-        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
-        if (!base) return nullptr;
-        cls->superName = std::string(base->text);
+        cls->superClass = parseUnaryPostfix();
+        if (!cls->superClass) return nullptr;
+        cls->superName = superExpressionName(cls->superClass.get());
     }
 
-    if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
+    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;
     cls->span.end = previous().span.end;
     return cls;
 }
@@ -600,19 +615,19 @@ ast::ExprPtr Parser::parseClassExpr() {
     strict_ = true;
     auto cls = std::make_unique<ClassExpr>();
     cls->span.begin = kw.span.begin;
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         const Token& nameTok = advance();
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "class name")) return nullptr;
         cls->name = std::string(nameTok.text);
     }
 
     if (match(TokenKind::KwExtends)) {
-        const Token* base = expect(TokenKind::Identifier, "base class name after 'extends'");
-        if (!base) return nullptr;
-        cls->superName = std::string(base->text);
+        cls->superClass = parseUnaryPostfix();
+        if (!cls->superClass) return nullptr;
+        cls->superName = superExpressionName(cls->superClass.get());
     }
 
-    if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
+    if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;
     cls->span.end = previous().span.end;
     return cls;
 }

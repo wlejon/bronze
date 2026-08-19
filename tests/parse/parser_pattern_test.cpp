@@ -181,3 +181,32 @@ TEST_CASE("a cover-initialized name parses, and dumps as the pattern-only form i
     CHECK(refined.find("(destructuring-assign") != std::string::npos);
     CHECK(refined.find("(default") != std::string::npos);
 }
+
+TEST_CASE("object pattern destructuring with reserved keywords") {
+    const auto decl = parseAndDump("const { default: JOLT, class: C, function: F } = obj;");
+    CHECK(decl.substr(0, 7) != "ERRORS:");
+    CHECK(decl.find("(elem default: JOLT\n") != std::string::npos);
+    CHECK(decl.find("(elem class: C\n") != std::string::npos);
+    CHECK(decl.find("(elem function: F\n") != std::string::npos);
+
+    const auto nested = parseAndDump("const { default: { import: I, export: E } } = obj;");
+    CHECK(nested.substr(0, 7) != "ERRORS:");
+    CHECK(nested.find("(elem default: <pattern>") != std::string::npos);
+    CHECK(nested.find("(elem import: I\n") != std::string::npos);
+    CHECK(nested.find("(elem export: E\n") != std::string::npos);
+
+    const auto assign = parseAndDump("({ default: JOLT, class: C } = obj);");
+    CHECK(assign.substr(0, 7) != "ERRORS:");
+    CHECK(assign.find("(destructuring-assign\n") != std::string::npos);
+    CHECK(assign.find("(elem default: JOLT\n") != std::string::npos);
+    CHECK(assign.find("(elem class: C\n") != std::string::npos);
+
+    // Reserved word used as shorthand property in pattern is rejected
+    const auto errDecl = parseAndDump("const { default } = obj;");
+    CHECK(errDecl.substr(0, 7) == "ERRORS:");
+    CHECK(errDecl.find("a reserved word may not be used as a shorthand property in a pattern") != std::string::npos);
+
+    const auto errClass = parseAndDump("const { class } = obj;");
+    CHECK(errClass.substr(0, 7) == "ERRORS:");
+    CHECK(errClass.find("a reserved word may not be used as a shorthand property in a pattern") != std::string::npos);
+}

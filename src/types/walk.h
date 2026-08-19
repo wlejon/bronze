@@ -103,9 +103,12 @@ public:
         }
     }
     void visit(const ast::SuperCall& n) override {
+        if (n.baseExpr) n.baseExpr->accept(*this);
         for (const auto& a : n.args) a->accept(*this);
     }
-    void visit(const ast::SuperMember&) override {}
+    void visit(const ast::SuperMember& n) override {
+        if (n.baseExpr) n.baseExpr->accept(*this);
+    }
     void visit(const ast::SpreadElement& n) override { n.argument->accept(*this); }
     void visit(const ast::YieldExpr& n) override { n.argument->accept(*this); }
     void visit(const ast::DynamicImportExpr& n) override { if (n.specifier) n.specifier->accept(*this); }
@@ -114,6 +117,7 @@ public:
         n.value->accept(*this);
     }
     void visit(const ast::ClassDecl& n) override {
+        if (n.superClass) n.superClass->accept(*this);
         for (const auto& m : n.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
             if (m.fn) m.fn->accept(*this);
@@ -121,6 +125,7 @@ public:
         }
     }
     void visit(const ast::ClassExpr& n) override {
+        if (n.superClass) n.superClass->accept(*this);
         for (const auto& m : n.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
             if (m.fn) m.fn->accept(*this);

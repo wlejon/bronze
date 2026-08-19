@@ -208,7 +208,8 @@ private:
         } else if (auto* cd = dynamic_cast<ast::ClassDecl*>(&s)) {
             const std::string oldName = cd->name;
             rewrite(cd->name);
-            rewrite(cd->superName);
+            if (cd->superClass) expr(*cd->superClass);
+            else rewrite(cd->superName);
             // The IL symbol of every method was built by the parser as
             // `<class>.<member>`, so it has to move with the class name or two
             // files' `Point.dot` would be one symbol. Rewriting the prefix
@@ -329,10 +330,12 @@ private:
             expr(*nw->callee);
             for (auto& arg : nw->args) expr(*arg);
         } else if (auto* sc = dynamic_cast<ast::SuperCall*>(&e)) {
-            rewrite(sc->baseName);
+            if (sc->baseExpr) expr(*sc->baseExpr);
+            else rewrite(sc->baseName);
             for (auto& arg : sc->args) expr(*arg);
         } else if (auto* sm = dynamic_cast<ast::SuperMember*>(&e)) {
-            rewrite(sm->baseName);
+            if (sm->baseExpr) expr(*sm->baseExpr);
+            else rewrite(sm->baseName);
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
             expr(*spr->argument);
         } else if (auto* y = dynamic_cast<ast::YieldExpr*>(&e)) {
@@ -364,7 +367,8 @@ private:
             // a `.` or a space, so no reference can ever spell one.
             functionBody(fe->params, fe->body, fe->isArrow ? std::string() : fe->name);
         } else if (auto* ce = dynamic_cast<ast::ClassExpr*>(&e)) {
-            rewrite(ce->superName);
+            if (ce->superClass) expr(*ce->superClass);
+            else rewrite(ce->superName);
             for (auto& m : ce->methods) {
                 if (m.keyExpr) expr(*m.keyExpr);
                 if (m.init) expr(*m.init);

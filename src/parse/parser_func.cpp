@@ -15,7 +15,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     fn->isExported = isExported;
     const bool isGenerator = match(TokenKind::Star);
 
-    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+    if (!defaultName.empty() && !(check(TokenKind::Identifier) || check(TokenKind::KwOf))) {
         // `export default function () {}` (ECMA-262 16.2.3.7): a hoisted
         // declaration with no name. It is still hoisted and still a
         // declaration, so it gets the reserved word `default` as its name —
@@ -67,7 +67,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
 // follows it. Cheaper than parse-and-backtrack, and it cannot half-consume
 // the input on a wrong guess.
 bool Parser::looksLikeArrow() const {
-    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Arrow) return true;
+    if ((check(TokenKind::Identifier) || check(TokenKind::KwOf)) && peek(1).kind == TokenKind::Arrow) return true;
     if (!check(TokenKind::LParen)) return false;
     size_t depth = 0;
     for (size_t i = 0;; ++i) {
@@ -92,7 +92,7 @@ ExprPtr Parser::parseArrowFunction() {
     fn->kind = ast::FunctionKind::Arrow;
     fn->span.begin = peek().span.begin;
 
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         Param p;
         p.name = std::string(advance().text);
         fn->params.push_back(std::move(p));
@@ -319,7 +319,7 @@ ExprPtr Parser::parseSuper() {
         error("unsupported construct: super outside a class method");
         return nullptr;
     }
-    if (currentClassSuper_.empty()) {
+    if (currentClassSuper_.empty() && !currentClassSuperExpr_) {
         error("super in a class with no 'extends'");
         return nullptr;
     }
@@ -328,6 +328,7 @@ ExprPtr Parser::parseSuper() {
         auto call = std::make_unique<SuperCall>();
         call->span.begin = kw.span.begin;
         call->baseName = currentClassSuper_;
+        if (currentClassSuperExpr_) call->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
         if (!parseArgumentList(call->args)) return nullptr;
         call->span.end = peek().span.begin;
         return call;
@@ -338,6 +339,7 @@ ExprPtr Parser::parseSuper() {
         auto mem = std::make_unique<SuperMember>();
         mem->span = {kw.span.begin, member->span.end};
         mem->baseName = currentClassSuper_;
+        if (currentClassSuperExpr_) mem->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
         mem->property = std::string(member->text);
         return mem;
     }
@@ -352,7 +354,7 @@ ExprPtr Parser::parseFunctionExpr() {
     fn->kind = ast::FunctionKind::Normal;
     const bool isGenerator = match(TokenKind::Star);
 
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         const Token& nameTok = advance();
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
         fn->name = std::string(nameTok.text);

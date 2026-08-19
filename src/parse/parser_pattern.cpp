@@ -135,12 +135,18 @@ PatternPtr Parser::parseObjectPattern() {
             }
             if (!parsePatternTarget(elem)) return nullptr;
         } else {
-            const Token* keyTok = expect(TokenKind::Identifier, "a property name in an object pattern");
+            const Token* keyTok = expectPropertyName("a property name in an object pattern");
             if (!keyTok) return nullptr;
             elem.key = std::string(keyTok->text);
             if (match(TokenKind::Colon)) {
                 if (!parsePatternTarget(elem)) return nullptr;
             } else {
+                if (keyTok->kind != TokenKind::Identifier && keyTok->kind != TokenKind::KwOf) {
+                    diags_.error(keyTok->span,
+                                 "a reserved word may not be used as a shorthand property in a pattern");
+                    return nullptr;
+                }
+                if (!checkStrictBindingName(keyTok->text, keyTok->span, "binding")) return nullptr;
                 elem.name = elem.key;  // shorthand: one token, one meaning
             }
         }

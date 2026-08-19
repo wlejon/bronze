@@ -617,3 +617,27 @@ TEST_CASE("for-in inside try-catch lowers cleanly") {
     REQUIRE(optMod.has_value());
 }
 
+TEST_CASE("class extends MemberExpression and dynamic superclass lower to class.extend") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.js", "");
+    const auto optMod = parseAndLower(
+        "const THREE = { EventDispatcher: function () {} };\n"
+        "class EditorControls extends THREE.EventDispatcher {}\n"
+        "const x = { y: { Z: function () {} } };\n"
+        "class A extends x.y.Z {}\n"
+        "function getBase() { return function () {}; }\n"
+        "class Dyn extends getBase() {}\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string printed = il::print(*optMod);
+    // Each extends emits class.extend with the constructor and base
+    size_t extendCount = 0;
+    for (size_t pos = printed.find("class.extend"); pos != std::string::npos;
+         pos = printed.find("class.extend", pos + 1)) {
+        ++extendCount;
+    }
+    CHECK(extendCount >= 3);
+}
+

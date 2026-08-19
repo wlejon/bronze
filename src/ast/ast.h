@@ -330,12 +330,14 @@ struct ImportMetaExpr final : Expr {
 // mentions no such variable.
 struct SuperCall final : Expr {
     std::string baseName;
+    ExprPtr baseExpr;
     std::vector<ExprPtr> args;
     void accept(Visitor& v) const override;
 };
 
 struct SuperMember final : Expr {
     std::string baseName;
+    ExprPtr baseExpr;
     std::string property;
     void accept(Visitor& v) const override;
 };
@@ -731,6 +733,7 @@ struct ClassMethod {
 struct ClassDecl final : Stmt {
     std::string name;
     std::string superName;  // empty when the class has no `extends`
+    ExprPtr superClass;
     std::vector<ClassMethod> methods;
     void accept(Visitor& v) const override;
 };
@@ -738,6 +741,7 @@ struct ClassDecl final : Stmt {
 struct ClassExpr final : Expr {
     std::string name;       // empty when anonymous
     std::string superName;  // empty when no extends
+    ExprPtr superClass;
     std::vector<ClassMethod> methods;
     void accept(Visitor& v) const override;
 };

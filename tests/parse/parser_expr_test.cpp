@@ -179,3 +179,27 @@ TEST_CASE("console members are folded by name, and an unbuilt one is loud") {
     CHECK(count.substr(0, 7) != "ERRORS:");
     CHECK(count.find("(ident console.count)") != std::string::npos);
 }
+
+TEST_CASE("contextual keyword 'of' in expressions") {
+    const auto member = parseAndDump("obj.of;");
+    CHECK(member.substr(0, 7) != "ERRORS:");
+    CHECK(member.find("(member .of\n") != std::string::npos);
+
+    const auto assign = parseAndDump("of = 2;");
+    CHECK(assign.substr(0, 7) != "ERRORS:");
+    CHECK(assign.find("(binary =\n      (ident of)\n") != std::string::npos);
+
+    const auto arrow = parseAndDump("const f = (of) => of;");
+    CHECK(arrow.substr(0, 7) != "ERRORS:");
+    CHECK(arrow.find("(arrow-expr <anon> (of)") != std::string::npos);
+    CHECK(arrow.find("(ident of)") != std::string::npos);
+
+    const auto fnExpr = parseAndDump("const g = function(of) { return of; };");
+    CHECK(fnExpr.substr(0, 7) != "ERRORS:");
+    CHECK(fnExpr.find("(function-expr <anon> (of)") != std::string::npos);
+    CHECK(fnExpr.find("(ident of)") != std::string::npos);
+
+    const auto objLit = parseAndDump("const h = { of: 1, of() { return 2; } };");
+    CHECK(objLit.substr(0, 7) != "ERRORS:");
+    CHECK(objLit.find("(prop of\n") != std::string::npos);
+}

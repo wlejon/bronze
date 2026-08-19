@@ -218,3 +218,33 @@ TEST_CASE("an undeclared private name is refused in a destructuring target too")
     const std::string errs = parseErrors("class C { #x; m(v) { [this.#nope] = v; } }");
     CHECK(contains(errs, "private name '#nope' is not declared by any enclosing class"));
 }
+
+TEST_CASE("class extends MemberExpression and dynamic superclass expressions") {
+    const std::string dump1 = parseAndDump("class EditorControls extends THREE.EventDispatcher {}");
+    CHECK(contains(dump1, "(class EditorControls extends THREE.EventDispatcher"));
+    CHECK(contains(dump1, "(super-call THREE.EventDispatcher"));
+
+    const std::string dump2 = parseAndDump("class A extends x.y.Z {}");
+    CHECK(contains(dump2, "(class A extends x.y.Z"));
+    CHECK(contains(dump2, "(super-call x.y.Z"));
+
+    const std::string dump3 = parseAndDump("class A extends (B) {}");
+    CHECK(contains(dump3, "(class A"));
+    CHECK(contains(dump3, "(super-call"));
+
+    const std::string dump4 = parseAndDump("class A extends getBase() {}");
+    CHECK(contains(dump4, "(class A"));
+    CHECK(contains(dump4, "(super-call"));
+
+    const std::string dump5 = parseAndDump(
+        "class Derived extends THREE.Base {\n"
+        "  constructor() { super(); }\n"
+        "  m() { return super.m(); }\n"
+        "}\n");
+    CHECK(contains(dump5, "(class Derived extends THREE.Base"));
+    CHECK(contains(dump5, "(super-call THREE.Base"));
+    CHECK(contains(dump5, "(super-member THREE.Base.m)"));
+
+    const std::string exprDump = parseAndDump("const C = class extends THREE.EventDispatcher {};");
+    CHECK(contains(exprDump, "(class-expr <anon> extends THREE.EventDispatcher"));
+}

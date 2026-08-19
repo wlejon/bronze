@@ -214,6 +214,7 @@ ExprPtr cloneExpr(const Expr& expr) {
         res->span = sc->span;
         res->parenthesized = sc->parenthesized;
         res->baseName = sc->baseName;
+        if (sc->baseExpr) res->baseExpr = cloneExpr(*sc->baseExpr);
         for (const auto& a : sc->args) res->args.push_back(cloneExpr(*a));
         return res;
     }
@@ -222,6 +223,7 @@ ExprPtr cloneExpr(const Expr& expr) {
         res->span = sm->span;
         res->parenthesized = sm->parenthesized;
         res->baseName = sm->baseName;
+        if (sm->baseExpr) res->baseExpr = cloneExpr(*sm->baseExpr);
         res->property = sm->property;
         return res;
     }
@@ -296,6 +298,7 @@ ExprPtr cloneExpr(const Expr& expr) {
         res->parenthesized = ce->parenthesized;
         res->name = ce->name;
         res->superName = ce->superName;
+        if (ce->superClass) res->superClass = cloneExpr(*ce->superClass);
         for (const auto& m : ce->methods) res->methods.push_back(cloneClassMethod(m));
         return res;
     }
@@ -444,6 +447,7 @@ StmtPtr cloneStmt(const Stmt& stmt) {
         res->span = cd->span;
         res->name = cd->name;
         res->superName = cd->superName;
+        if (cd->superClass) res->superClass = cloneExpr(*cd->superClass);
         for (const auto& m : cd->methods) res->methods.push_back(cloneClassMethod(m));
         return res;
     }

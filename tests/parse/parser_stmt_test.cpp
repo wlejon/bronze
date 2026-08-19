@@ -145,3 +145,38 @@ TEST_CASE("a label fronts exactly one statement, and not a declaration") {
     CHECK(decl.substr(0, 7) == "ERRORS:");
     CHECK(decl.find("a label may not front a declaration") != std::string::npos);
 }
+
+TEST_CASE("contextual keyword 'of' in statements and declarations") {
+    const auto letOf = parseAndDump("let of = 1; const of = 2; var of = 3;\n");
+    CHECK(letOf.substr(0, 7) != "ERRORS:");
+    CHECK(letOf.find("(let of\n") != std::string::npos);
+    CHECK(letOf.find("(const of\n") != std::string::npos);
+    CHECK(letOf.find("(var of\n") != std::string::npos);
+
+    const auto fnOf = parseAndDump("function of(of) { return of; }\n");
+    CHECK(fnOf.substr(0, 7) != "ERRORS:");
+    CHECK(fnOf.find("(function of (of)\n") != std::string::npos);
+
+    const auto classOf = parseAndDump("class of {}\n");
+    CHECK(classOf.substr(0, 7) != "ERRORS:");
+    CHECK(classOf.find("(class of") != std::string::npos);
+
+    const auto forOf = parseAndDump("for (const x of y) { f(x); }\n");
+    CHECK(forOf.substr(0, 7) != "ERRORS:");
+    CHECK(forOf.find("(for-of x\n") != std::string::npos);
+
+    const auto forOfOf = parseAndDump("for (const of of y) { f(of); }\n");
+    CHECK(forOfOf.substr(0, 7) != "ERRORS:");
+    CHECK(forOfOf.find("(for-of of\n") != std::string::npos);
+
+    const auto forClassic = parseAndDump("for (let of = 0; of < 10; of++) {}\n");
+    CHECK(forClassic.substr(0, 7) != "ERRORS:");
+    CHECK(forClassic.find("(for\n") != std::string::npos);
+    CHECK(forClassic.find("(let of\n") != std::string::npos);
+
+    const auto labeledOf = parseAndDump("of: while (true) { break of; continue of; }\n");
+    CHECK(labeledOf.substr(0, 7) != "ERRORS:");
+    CHECK(labeledOf.find("(label of\n") != std::string::npos);
+    CHECK(labeledOf.find("(break of)") != std::string::npos);
+    CHECK(labeledOf.find("(continue of)") != std::string::npos);
+}

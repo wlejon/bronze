@@ -53,7 +53,7 @@ bool Parser::asyncModifiesArrow() const {
     if (!check(TokenKind::Identifier) || peek().text != "async") return false;
     if (peek(1).newlineBefore) return false;
     // `async x => …`: one parameter, no parentheses.
-    if (peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Arrow &&
+    if ((peek(1).kind == TokenKind::Identifier || peek(1).kind == TokenKind::KwOf) && peek(2).kind == TokenKind::Arrow &&
         !peek(2).newlineBefore) {
         return true;
     }
@@ -134,7 +134,7 @@ StmtPtr Parser::parseAsyncFunctionDecl(bool isExported, const std::string& defau
     fn->isAsync = true;
     fn->isGenerator = isGenerator;
 
-    if (!defaultName.empty() && !check(TokenKind::Identifier)) {
+    if (!defaultName.empty() && !(check(TokenKind::Identifier) || check(TokenKind::KwOf))) {
         // `export default async function () {}` — the anonymous hoisted
         // declaration, named `default` for the reason parseFunctionDecl
         // names its twin that.
@@ -171,7 +171,7 @@ ExprPtr Parser::parseAsyncFunctionExpr() {
     fn->span.begin = asyncKw.span.begin;
     fn->isGenerator = isGenerator;
     fn->kind = ast::FunctionKind::Normal;
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         const Token& nameTok = advance();
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
         fn->name = std::string(nameTok.text);
@@ -194,7 +194,7 @@ ExprPtr Parser::parseAsyncArrow() {
     fn->isAsync = true;
     fn->span.begin = asyncKw.span.begin;
 
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         Param p;
         p.name = std::string(advance().text);
         fn->params.push_back(std::move(p));

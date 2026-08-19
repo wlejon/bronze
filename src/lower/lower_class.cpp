@@ -29,6 +29,7 @@ Lowerer::Value Lowerer::emitPrototypeOf(Value ctorVal, il::Function& ilFn) {
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
+                                                  const ast::Expr* superClass,
                                                   const std::string& superName,
                                                   const std::vector<ast::ClassMethod>& methods,
                                                   Span span, il::Function& ilFn) {
@@ -45,6 +46,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         diags_.error(span, "internal: class with no constructor method");
         return std::nullopt;
     }
+
+    const bool hasSuper = superClass != nullptr || !superName.empty();
 
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's
@@ -76,7 +79,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // rather than a class extending itself: inside its own definition the name
     // is still in its dead zone.
     std::optional<Value> baseBoxed;
-    if (!superName.empty()) {
+    if (superClass) {
+        auto baseVal = lowerExpr(*superClass, ilFn);
+        if (!baseVal) return std::nullopt;
+        baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
+    } else if (!superName.empty()) {
         ast::Ident baseIdent;
         baseIdent.name = superName;
         baseIdent.span = span;
@@ -94,7 +101,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     std::vector<ast::StmtPtr> ctorBody;
     if (fieldStmts.empty()) {
         for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
-    } else if (superName.empty()) {
+    } else if (!hasSuper) {
         // Base class: fields run at the start of constructor
         for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
         for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
@@ -327,7 +334,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
 }
 
 bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
-    auto ctorVal = lowerClass(cls->name, cls->superName, cls->methods, cls->span, ilFn);
+    auto ctorVal = lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span, ilFn);
     if (!ctorVal) return false;
     if (!declareVariable(cls->name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
                          /*isVar=*/false, /*isInitialized=*/true, ctorVal->id, cls->span)) {
@@ -341,7 +348,7 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn) {
-    return lowerClass(cls->name, cls->superName, cls->methods, cls->span, ilFn);
+    return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span, ilFn);
 }
 
 // `super.m` — the lookup starts at the PARENT prototype, which is why it cannot
@@ -350,10 +357,15 @@ std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls,
 // ordinary property reads.
 std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
                                                         il::Function& ilFn) {
-    ast::Ident baseIdent;
-    baseIdent.name = sm->baseName;
-    baseIdent.span = sm->span;
-    auto baseVal = lowerExpr(baseIdent, ilFn);
+    std::optional<Value> baseVal;
+    if (sm->baseExpr) {
+        baseVal = lowerExpr(*sm->baseExpr, ilFn);
+    } else {
+        ast::Ident baseIdent;
+        baseIdent.name = sm->baseName;
+        baseIdent.span = sm->span;
+        baseVal = lowerExpr(baseIdent, ilFn);
+    }
     if (!baseVal) return std::nullopt;
     auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
 
@@ -383,10 +395,15 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     auto thisVal = lowerThisValue(sc->span, ilFn);
     if (!thisVal) return std::nullopt;
 
-    ast::Ident baseIdent;
-    baseIdent.name = sc->baseName;
-    baseIdent.span = sc->span;
-    auto baseVal = lowerExpr(baseIdent, ilFn);
+    std::optional<Value> baseVal;
+    if (sc->baseExpr) {
+        baseVal = lowerExpr(*sc->baseExpr, ilFn);
+    } else {
+        ast::Ident baseIdent;
+        baseIdent.name = sc->baseName;
+        baseIdent.span = sc->span;
+        baseVal = lowerExpr(baseIdent, ilFn);
+    }
     if (!baseVal) return std::nullopt;
 
     // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards, so

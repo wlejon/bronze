@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "ast/clone.h"
 #include "lex/token.h"
 #include "support/diagnostics.h"
 
@@ -48,6 +49,7 @@ private:
     // there is one at all. A class body is the only place `super` is legal, and
     // the parent it names is known here and nowhere later.
     std::string currentClassSuper_;
+    const ast::Expr* currentClassSuperExpr_ = nullptr;
     bool inClassMethod_ = false;
     // Whether the operand `parseUnaryPrefix` just produced is an
     // unparenthesized unary expression, which is the one thing `**` may not
@@ -116,6 +118,9 @@ private:
     // is a name only after `.`, `?.` or in a property-key slot.
     const Token* expectPropertyName(const char* what);
     static bool isIdentifierName(TokenKind kind);
+    static bool isIdentifier(TokenKind kind) {
+        return kind == TokenKind::Identifier || kind == TokenKind::KwOf;
+    }
     void error(const char* message);
     // Consumes a statement's terminating semicolon, or inserts one where
     // ECMA-262 12.10 says the program means one. Every statement terminator
@@ -182,7 +187,8 @@ private:
     // `defaultName`, as for parseFunctionDecl: `export default class {}`.
     ast::StmtPtr parseClass(const std::string& defaultName = "");
     ast::ExprPtr parseClassExpr();
-    bool parseClassBodyCommon(const std::string& name, const std::string& superName,
+    bool parseClassBodyCommon(const std::string& name, const ast::Expr* superClass,
+                              const std::string& superName,
                               std::vector<ast::ClassMethod>& methods, Span span);
     // One class body's private names. ECMA-262 15.7.1 states BOTH private-name
     // early errors over the whole ClassBody rather than over one element: a
