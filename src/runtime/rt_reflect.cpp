@@ -33,6 +33,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/array.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
@@ -279,10 +280,52 @@ static uint64_t reflectHas(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     return Value::fromBool(bronze_has_property(argv[1], argv[0])).rawBits();
 }
 
+// 28.1.11 Reflect.ownKeys(target): [[OwnPropertyKeys]] itself, which is
+// 6.1.7.1's WHOLE list — integer-like keys, then the remaining strings, then
+// the SYMBOLS. It is the one member of the namespace that spans both halves of
+// the `Object` pair: `getOwnPropertyNames` is the string half and
+// `getOwnPropertySymbols` the symbol half, and reporting only the first made a
+// symbol-keyed property invisible to the very operation a Proxy `ownKeys` trap
+// is written against.
 static uint64_t reflectOwnKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (argc == 0) return rtThrowTypeError("Reflect.ownKeys called on non-object").rawBits();
+    if (!Value(argv[0]).isObject()) {
+        // 28.1.11 step 1 is "if target is not an Object, throw" and NOT
+        // ToObject, so a primitive is refused here where `getOwnPropertyNames`
+        // would have boxed it and answered.
+        return rtThrowTypeError("Reflect.ownKeys called on a value that is not an object")
+            .rawBits();
+    }
+    // A PROXY's [[OwnPropertyKeys]] is the `ownKeys` trap, whose list is
+    // already both halves in the order the trap chose — 10.5.11 applies no
+    // filter of its own. Splitting it into a names call and a symbols call
+    // would run the trap twice and reorder what it returned.
+    if (Value(argv[0]).asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        Rooted<Value> proxy{Value(argv[0])};
+        return rtProxyOwnKeys(proxy.get()).rawBits();
+    }
     const uint64_t call[1] = {argv[0]};
-    return rtObjectGetOwnPropertyNames(0, 0, 1, call);
+    Rooted<Value> names{Value(rtObjectGetOwnPropertyNames(0, 0, 1, call))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    // Re-read the target through a root: the names walk above allocates.
+    Rooted<Value> target{Value(argv[0])};
+    const uint64_t symCall[1] = {target.get().rawBits()};
+    Rooted<Value> symbols{Value(rtObjectGetOwnPropertySymbols(0, 0, 1, symCall))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    const uint32_t nameCount = names.get().asObject<ArrayHeader>()->length;
+    const uint32_t symCount = symbols.get().asObject<ArrayHeader>()->length;
+    Rooted<Value> out{Value(bronze_create_array(0))};
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < nameCount; ++i) {
+        Rooted<Value> key{names.get().asObject<ArrayHeader>()->getElem(i)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    for (uint32_t i = 0; i < symCount; ++i) {
+        Rooted<Value> key{symbols.get().asObject<ArrayHeader>()->getElem(i)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    return out.get().rawBits();
 }
 
 static uint64_t reflectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

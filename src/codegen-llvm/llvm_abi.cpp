@@ -160,6 +160,7 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
     ModuleTables tables;
     tables.keyCount = static_cast<uint32_t>(module.keyConstants.size());
     tables.fnSlotCount = static_cast<uint32_t>(module.functions.size());
+    tables.templateSlotCount = module.templateSiteCount;
     tables.globalCacheSlotOf = assignGlobalCacheSlots(module, tables.globalCacheCount);
 
     if (module.icSiteCount > 0) {
@@ -198,6 +199,16 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
         tables.fnSlots = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
                                      "__bronze_fn_slots", 8);
     }
+
+    if (tables.templateSlotCount > 0) {
+        // Undefined and not zero, for the global cache's reason: zero is the
+        // double 0.0, and `template.cached` reads the cell and branches on
+        // nullish. A zeroed table would report every site as already built.
+        llvm::ArrayType* ty = llvm::ArrayType::get(i64Ty, tables.templateSlotCount);
+        std::vector<uint64_t> undef(tables.templateSlotCount, BRONZE_ABI_UNDEFINED_BITS);
+        tables.templateSlots = createTable(llvmModule, ty, llvm::ConstantDataArray::get(ctx, undef),
+                                           "__bronze_template_slots", 8);
+    }
     return tables;
 }
 
@@ -227,6 +238,14 @@ llvm::Value* globalCacheCellPtr(llvm::IRBuilder<>& builder, const ModuleTables& 
     return builder.CreateConstInBoundsGEP2_32(tables.globalCache->getValueType(),
                                               tables.globalCache, 0, slot,
                                               "gbl" + std::to_string(slot));
+}
+
+llvm::Value* templateSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                             uint32_t site) {
+    if (!tables.templateSlots || site >= tables.templateSlotCount) return nullptr;
+    return builder.CreateConstInBoundsGEP2_32(tables.templateSlots->getValueType(),
+                                              tables.templateSlots, 0, site,
+                                              "tplslot" + std::to_string(site));
 }
 
 llvm::Value* fnSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables, uint32_t slot) {

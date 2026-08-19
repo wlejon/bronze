@@ -116,6 +116,18 @@ constexpr const char* kUsage =
     "                                      object exports, so distinct names here\n"
     "                                      are what let a host link more than one\n"
     "                                      compiled module into one image.\n"
+    "  --no-fn-source                      Leave the source text of each function out\n"
+    "                                      of the image. It is embedded by default,\n"
+    "                                      once per file, because that is what\n"
+    "                                      Function.prototype.toString returns and\n"
+    "                                      library code reads it: argument names,\n"
+    "                                      `class X` sniffing, hook-identity checks.\n"
+    "                                      A library-heavy program roughly doubles in\n"
+    "                                      size for it, which is what this buys back;\n"
+    "                                      a toString of a compiled function then\n"
+    "                                      throws a TypeError naming this flag rather\n"
+    "                                      than answering [native code], which no\n"
+    "                                      caller could tell from a real one.\n"
     "  --emit-obj                          Stop after object emission: -o names the\n"
     "                                      object file, written exactly where given,\n"
     "                                      and no linker runs. The embedding seam —\n"
@@ -308,7 +320,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
-             const std::string& entrySymbol, bool emitShared) {
+             const std::string& entrySymbol, bool emitShared, bool retainFnSource) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -393,6 +405,13 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
+
+    // Dropped AFTER lowering rather than never gathered, because the ranges on
+    // each function are what lowering produced and the texts are what they
+    // index: clearing one place is the whole of the flag, and nothing
+    // downstream has to be told about it. The backend emits a blob only for a
+    // file it still has.
+    if (!retainFnSource) ilModule->sourceTexts.clear();
 
     if (inferStats) {
         std::string statsStr = statsCollector.format();
@@ -614,11 +633,14 @@ int runDriver(int argc, char** argv) {
         bool emitObj = false;
         bool emitShared = false;
         bool inferStats = false;
+        bool retainFnSource = true;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--no-fn-source") {
+                retainFnSource = false;
             } else if (arg == "--timings") {
                 timings = true;
             } else if (arg == "--infer-stats") {
@@ -674,7 +696,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared);
+                        emitShared, retainFnSource);
     }
 
     return fail(kUsage);

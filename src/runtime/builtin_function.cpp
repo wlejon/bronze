@@ -14,12 +14,14 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/fn_source.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/proxy.h"
@@ -164,10 +166,37 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 }
 
 // 20.2.3.5 Function.prototype.toString().
+//
+// The spec's first branch is the one that matters: a function with source text
+// returns THAT TEXT, verbatim, and the string is expected to parse back into
+// an equivalent function. Every engine honours it, and library code leans on
+// it — argument-name extraction for dependency injection, `Function.toString`
+// checks that decide whether a hook is still the original, and the class-name
+// sniffing that reads `class X` off the front of a constructor. Answering
+// `[native code]` for every one of them was a wrong answer with no diagnostic:
+// the caller cannot tell a compiled function from a builtin, so it silently
+// took the builtin path.
+//
+// A NATIVE function — a builtin, a bound function, a host one — has no source
+// text and the NativeFunction string is the whole of the correct answer.
 uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireFunctionReceiver(self, "toString")) return Value::fromUndefined().rawBits();
     auto* fn = self.asObject<FunctionHeader>();
+    if (!fn->isNativeCode()) {
+        const std::string_view text = rtFunctionSourceText(reinterpret_cast<void*>(fn->code));
+        if (!text.empty()) return rtMakeString(text).rawBits();
+        // Compiled, and its text was left out of the image. That is what
+        // `--no-fn-source` does, and saying so by name is the point: the
+        // alternative is the `[native code]` answer this function exists to
+        // stop handing back, which no caller can tell from a real one.
+        std::string name = fn->name ? rtUtf8Chars(fn->name) : std::string();
+        return rtThrowTypeError("Function.prototype.toString: no source text for " +
+                                (name.empty() ? std::string("this function")
+                                              : "'" + name + "'") +
+                                " (the program was built with --no-fn-source)")
+            .rawBits();
+    }
     if (fn->name && fn->name->getLength() > 0) {
         std::string name = rtUtf8Chars(fn->name);
         return rtMakeString("function " + name + "() { [native code] }").rawBits();

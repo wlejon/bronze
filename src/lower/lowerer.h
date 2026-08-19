@@ -56,6 +56,10 @@ private:
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
     uint32_t icSiteCounter_ = 0;
+    // One per TAGGED TEMPLATE in the module: 13.2.8.4 keeps a template
+    // object per site, so each site owns a cache cell in the module's own
+    // table and this is what numbers them.
+    uint32_t templateSiteCounter_ = 0;
 
     struct Value {
         il::ValueId id;
@@ -1038,5 +1042,12 @@ private:
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,
                                    bool onSpine = false);
 };
+
+// The BRONZE_ABI_FN_FLAG_* byte for a function the source wrote, from the three
+// AST facts that decide it. One function because two lowering sites ask —
+// a top-level `function` declaration and every nested closure — and a second
+// copy of "a generator has a prototype and is not a constructor" is a second
+// chance to disagree with 10.2.
+uint32_t functionObjectFlags(ast::FunctionKind kind, bool isGenerator, bool isAsync);
 
 }  // namespace bronze::lower

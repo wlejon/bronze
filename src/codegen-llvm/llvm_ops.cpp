@@ -423,18 +423,18 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                     emitGlobalGetCached(builder_, abi, shared_.tables, inst.keyIndex);
             }
             return true;
-        // The result is `undefined` and nothing reads it: the exception check
-        // `il::canThrow` puts after this instruction always fires, so control
-        // never reaches a use. It is still materialized, because a value id
-        // with no definition is exactly what the verifier exists to catch.
-        case il::Op::RefError:
-            callWith(abi.bronze_reference_error,
-                     {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
+        // The result is READ: the helper answers with the global object's own
+        // property when the program made one, and only raises when it did not.
+        // `il::canThrow` therefore still guards it — the check may fire, where
+        // for `immutable.assign` below it always does.
+        case il::Op::ResolveName:
+            callWith(abi.bronze_resolve_name,
+                     {emitKeyId(builder_, shared_.tables, inst.keyIndex),
+                      builder_.getInt1(inst.immI32 != 0)});
             return true;
-        // Same shape as ref.error above and for the same reason: the helper
-        // always raises, the exception check after it always fires, and the
-        // `undefined` it returns is materialized only so the verifier sees a
-        // definition for the value id.
+        // The helper always raises, the exception check after it always fires,
+        // and the `undefined` it returns is materialized only so the verifier
+        // sees a definition for the value id.
         case il::Op::ImmutableAssign:
             callWith(abi.bronze_immutable_assign, {});
             return true;
@@ -527,13 +527,28 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             builder_.CreateCall(abi.bronze_array_append_hole, {container});
             return true;
         }
+        // One aligned load from the module's own table, at an address the
+        // compiler knows: the collector forwards the cell IN PLACE through the
+        // span registered at module init, so a load always sees current bits.
+        case il::Op::TemplateCached: {
+            if (inst.result == il::kNoValue) return true;
+            llvm::Value* cell =
+                templateSlotPtr(builder_, shared_.tables, static_cast<uint32_t>(inst.immI32));
+            if (!require(cell != nullptr, "template.cached names no template slot")) return false;
+            values_[inst.result] = builder_.CreateAlignedLoad(builder_.getInt64Ty(), cell,
+                                                              llvm::Align(8), "tpl.cached");
+            return true;
+        }
         case il::Op::TemplateObject: {
             if (!needs(2, true, "Invalid operands for TemplateObject")) return false;
             const char* what = "Undefined operand in TemplateObject instruction";
             llvm::Value* cooked = operand(inst, 0, what);
             llvm::Value* raw = operand(inst, 1, what);
             if (!cooked || !raw) return false;
-            callWith(abi.bronze_template_object, {cooked, raw});
+            llvm::Value* cell =
+                templateSlotPtr(builder_, shared_.tables, static_cast<uint32_t>(inst.immI32));
+            if (!require(cell != nullptr, "template.object names no template slot")) return false;
+            callWith(abi.bronze_template_object, {cooked, raw, cell});
             return true;
         }
         case il::Op::ObjectRest: {
@@ -610,10 +625,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             callWith(abi.bronze_create_function,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32),
                       builder_.getInt32(created.requiredArgs),
-                      emitKeyId(builder_, shared_.tables, created.nameKeyIndex), env});
-            if (created.isGenerator && inst.result != il::kNoValue) {
-                builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
-            }
+                      emitKeyId(builder_, shared_.tables, created.nameKeyIndex),
+                      builder_.getInt32(static_cast<int32_t>(created.fnFlags)), env});
             return true;
         }
         case il::Op::FunctionRef: {
@@ -632,10 +645,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // singleton's cache line wants to be keyed by.
             values_[inst.result] = emitFunctionSingletonCached(
                 builder_, abi, shared_.tables, shared_.wrappers[inst.calleeIndex], arity,
-                target.requiredArgs, target.nameKeyIndex, inst.calleeIndex);
-            if (target.isGenerator && inst.result != il::kNoValue) {
-                builder_.CreateCall(abi.bronze_set_function_generator, {values_[inst.result]});
-            }
+                target.requiredArgs, target.nameKeyIndex, target.fnFlags, inst.calleeIndex);
             return true;
         }
         case il::Op::EnvCreate: {

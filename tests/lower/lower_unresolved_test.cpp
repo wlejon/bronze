@@ -14,7 +14,7 @@ using namespace bronze;
 using bronze::lower_test::inferAndLower;
 using bronze::lower_test::parseAndLower;
 
-TEST_CASE("an unresolvable reference compiles to ref.error and one warning") {
+TEST_CASE("an unresolvable reference compiles to name.resolve and one warning") {
     // Supersedes "undefined variable reference generates diagnostic error".
     // What a free name denotes is a fact only the running environment holds, so
     // refusing the program was the wrong hard error: 6.2.5.5 puts the
@@ -31,7 +31,7 @@ TEST_CASE("an unresolvable reference compiles to ref.error and one warning") {
     CHECK_FALSE(diags.hasErrors());
     const std::string rendered = diags.render(buf);
     CHECK(rendered.find("warning: unresolved name 'x'") != std::string::npos);
-    CHECK(il::print(*optMod).find("ref.error \"x\"") != std::string::npos);
+    CHECK(il::print(*optMod).find("name.resolve \"x\"") != std::string::npos);
 }
 
 TEST_CASE("one warning per unresolved NAME, however many mentions") {
@@ -53,11 +53,16 @@ TEST_CASE("one warning per unresolved NAME, however many mentions") {
     CHECK(count == 1);
 }
 
-TEST_CASE("bare typeof of an unresolvable name is a string, with no diagnostic") {
+TEST_CASE("bare typeof of an unresolved name is quiet, and asks at run time") {
     // 13.5.3 step 1. Feature detection is the one position where a free name is
     // not a question about the environment — it is a question about whether
-    // there IS one — so it is neither an error nor a warning. Not even a
-    // `typeof` instruction: the answer is a constant.
+    // there IS one — so it is neither an error nor a warning.
+    //
+    // It is not a folded constant either, and that is the SOFT form's whole
+    // point: 9.1.1.4 makes a property of `globalThis` a global binding, so
+    // `globalThis.__DEVTOOLS__ = {}` makes this `"object"`, and only the
+    // run-time probe can know. The soft flag is what keeps the miss
+    // `"undefined"` instead of the ReferenceError every other position raises.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -67,8 +72,8 @@ TEST_CASE("bare typeof of an unresolvable name is a string, with no diagnostic")
     REQUIRE(optMod.has_value());
     CHECK(diags.all().empty());
     const std::string printed = il::print(*optMod);
-    CHECK(printed.find("ref.error") == std::string::npos);
-    CHECK(printed.find("typeof") == std::string::npos);
+    CHECK(printed.find("name.resolve \"__DEVTOOLS__\", soft") != std::string::npos);
+    CHECK(printed.find("typeof") != std::string::npos);
 }
 
 TEST_CASE("typeof of a MEMBER of an unresolvable name still throws") {
@@ -81,14 +86,14 @@ TEST_CASE("typeof of a MEMBER of an unresolvable name still throws") {
         diags, buf);
 
     REQUIRE(optMod.has_value());
-    CHECK(il::print(*optMod).find("ref.error \"__DEVTOOLS__\"") != std::string::npos);
+    CHECK(il::print(*optMod).find("name.resolve \"__DEVTOOLS__\"") != std::string::npos);
 }
 
 TEST_CASE("a named function expression names itself through an env binding") {
     // Supersedes "a named function expression cannot name itself, and says so",
     // which pinned the refusal this replaces. 15.2.5 binds the name in a
     // declarative environment created AROUND the function, so the self
-    // reference is an ordinary capture — an `env.get`, not the `ref.error` an
+    // reference is an ordinary capture — an `env.get`, not the `name.resolve` an
     // unresolvable name lowers to, and not a compile error either.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
@@ -100,7 +105,7 @@ TEST_CASE("a named function expression names itself through an env binding") {
     REQUIRE(optMod.has_value());
     CHECK_FALSE(diags.hasErrors());
     const std::string text = il::print(*optMod);
-    CHECK(text.find("ref.error \"rec\"") == std::string::npos);
+    CHECK(text.find("name.resolve \"rec\"") == std::string::npos);
     CHECK(text.find("env.get") != std::string::npos);
 }
 
@@ -178,7 +183,7 @@ TEST_CASE("a provided global resolves to global.get; an unknown free name does n
     CHECK_FALSE(diags2.hasErrors());
     REQUIRE(unknown.has_value());
     const std::string unknownIl = il::print(*unknown);
-    CHECK(unknownIl.find("ref.error \"Maths\"") != std::string::npos);
+    CHECK(unknownIl.find("name.resolve \"Maths\"") != std::string::npos);
     CHECK(unknownIl.find("global.get \"Maths\"") == std::string::npos);
 }
 
@@ -210,7 +215,7 @@ TEST_CASE("`eval` is refused by name, in both the direct and the indirect spelli
     CHECK(aliased.hasErrors());
 
     // Not a ReferenceError at run time, either: the program does not build, so
-    // no `ref.error \"eval\"` is reachable to be caught by a `try`.
+    // no `name.resolve \"eval\"` is reachable to be caught by a `try`.
     DiagnosticSink guarded;
     SourceBuffer guardedBuf("guarded.ts", "");
     parseAndLower("try { eval(\"x\"); } catch (e) { }\n", guarded, guardedBuf);
@@ -233,7 +238,9 @@ TEST_CASE("bare `typeof eval` stays the quiet feature-detection answer") {
 
     REQUIRE(optMod.has_value());
     CHECK(diags.all().empty());
-    CHECK(il::print(*optMod).find("ref.error") == std::string::npos);
+    // The SOFT probe and never the raising one: `typeof eval` must not become
+    // a read of `eval`, which is what the refusal above is attached to.
+    CHECK(il::print(*optMod).find("name.resolve \"eval\", soft") != std::string::npos);
 }
 
 TEST_CASE("a local binding shadows a provided global") {

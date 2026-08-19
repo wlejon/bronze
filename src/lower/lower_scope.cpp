@@ -519,6 +519,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
         return std::nullopt;
     }
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
+    // `span` is the SITE's, and for a class that is the whole `class C {...}`
+    // rather than the constructor's own text — which is exactly what
+    // `Class.toString()` has to return, so no caller special-cases it.
+    newFn.sourceFile = span.file;
+    newFn.sourceBegin = span.begin;
+    newFn.sourceEnd = span.end;
 
     size_t outerBlockIdx = currentBlockIdx_;
     auto outerVarBindings = varBindings_;
@@ -619,6 +625,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                              (siteFnDecl && siteFnDecl->isGenerator);
     const bool isAsync =
         (siteFnExpr && siteFnExpr->isAsync) || (siteFnDecl && siteFnDecl->isAsync);
+    // A `FunctionDecl` site is always the ordinary form — there is no syntax
+    // for a declaration that is a method or an arrow — so only the expression
+    // carries a kind worth reading.
+    newFn.fnFlags = functionObjectFlags(
+        siteFnExpr ? siteFnExpr->kind : ast::FunctionKind::Normal, isGenerator, isAsync);
     const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     // The name's record is visible to the BODY and to nothing else — 15.2.5
     // creates it around the closure, not in the scope that wrote the

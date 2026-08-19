@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -305,10 +306,11 @@ uint64_t bronze_create_array(uint32_t length) {
 }
 
 uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
-                                uint32_t nameKey, uint64_t envBits) {
+                                uint32_t nameKey, uint32_t fnFlags, uint64_t envBits) {
     recordHelperCall("bronze_create_function");
     Rooted<Value> env{Value(envBits)};
-    FunctionHeader* fn = FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity);
+    FunctionHeader* fn =
+        FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity, fnFlags);
     // Read the environment through the root only AFTER allocating: the
     // allocation above can collect, and a by-value copy taken before it would
     // point into dead from-space.
@@ -319,14 +321,6 @@ uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t le
     // created in a loop as cheap as it was before it carried a name.
     rtSetFunctionNameAndLength(fn, nameKey, length);
     return Value::fromObject(fn).rawBits();
-}
-
-void bronze_set_function_generator(uint64_t fnBits) {
-    recordHelperCall("bronze_set_function_generator");
-    Value fnVal(fnBits);
-    if (fnVal.isObject() && fnVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        fnVal.asObject<FunctionHeader>()->is_generator = true;
-    }
 }
 
 // `class D extends B` — the two prototype links a class sets up, and the only
@@ -397,6 +391,12 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     fn->prototype = protoRoot.get();
     fn->properties = Value::fromObject(props);
     fn->instance_shape = rtNewRootShape(protoRoot.get());
+    // 15.7.14 step 6: the derived constructor's own [[Prototype]] IS the base
+    // constructor. The statics chain above is what makes an inherited static
+    // RESOLVE; this is what makes `Object.getPrototypeOf(D)` say so, and the
+    // two are separate facts — a program can read the link without ever
+    // touching a static.
+    fn->parent = base.get();
     // The replacement prototype needs its own back-pointer, or `D.prototype`
     // would inherit the BASE's and `new this.constructor()` on a derived
     // instance would build a base instance.
@@ -460,6 +460,31 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     // instance — except that here the language's answer is the throw itself.
     if (rtIsBigIntConstructor(fnVal)) {
         return rtThrowTypeError("BigInt is not a constructor").rawBits();
+    }
+
+    // 10.2.2: an arrow, a method, an accessor, a generator and an async
+    // function have no [[Construct]] at all, so `new` on one is a TypeError
+    // rather than an instance. Asked HERE and not at the top of the function
+    // because the three interceptions above it — a bound function, a primitive
+    // wrapper, `BigInt` — each construct something this object's own flags
+    // could not describe, and a bound function's constructibility is its
+    // TARGET's (10.4.1.2), which the recursion has already reduced to.
+    if (const FunctionHeader* nonCtor = fnVal.asObject<FunctionHeader>();
+        !nonCtor->hasConstruct()) {
+        // The form, named, because "is not a constructor" about a thing the
+        // program plainly wrote as a function is the diagnostic that sends a
+        // reader looking for a typo. Which form it is comes off the same byte
+        // the refusal does.
+        const char* form = nonCtor->isGeneratorFunction() && nonCtor->isAsyncFunction()
+                               ? "an async generator function"
+                           : nonCtor->isGeneratorFunction() ? "a generator function"
+                           : nonCtor->isAsyncFunction()     ? "an async function"
+                                                            : "an arrow function or a method";
+        std::string named =
+            nonCtor->name ? ("`" + rtUtf8Chars(nonCtor->name) + "`") : std::string("this value");
+        return rtThrowTypeError(named + " is not a constructor (" + form +
+                                " has no [[Construct]] — ECMA-262 10.2.2)")
+            .rawBits();
     }
 
     Rooted<Value> fnRoot{fnVal};
@@ -863,7 +888,19 @@ uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t
     return fn->call(Value(thisBits), arr->length, arr->elementsData()).rawBits();
 }
 
-uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits) {
+// 13.2.8.4 GetTemplateObject, minus the lookup: the SITE's cache cell is
+// handed in, and generated code has already found it cold (llvm_ops.cpp's
+// `template.cached` and the branch over it). So this builds, freezes and
+// FILLS the cell, and every later call through that site reads it without
+// entering here at all — which is what makes `` t`x` `` hand its tag the same
+// frozen object every time, as the specification requires and a memoizing tag
+// depends on.
+//
+// The cell is one of the module's registered Value cells, so the collector
+// forwards it in place and the object it names stays alive for the program's
+// life. That is the specification's own lifetime — a template object is never
+// collected while its site can still be reached — rather than a leak.
+uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits, uint64_t* cell) {
     recordHelperCall("bronze_template_object");
     Rooted<Value> cooked{Value(cookedBits)};
     Rooted<Value> raw{Value(rawBits)};
@@ -877,6 +914,7 @@ uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits) {
                        /*defineOwn=*/true);
         rtFreezeObject(cooked.get());
     }
+    if (cell) *cell = cooked.get().rawBits();
     return cooked.get().rawBits();
 }
 
@@ -942,6 +980,30 @@ Value rtGlobalThisObject() {
             glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                          /*enumerable=*/false,
                                                          /*defineOwn=*/true);
+        }
+        // 19.1.1-19.1.3, the three VALUE properties of the global object. They
+        // are not on the list above because nothing resolves them through the
+        // builtin ladder: lowering folds `NaN`, `Infinity` and `undefined` to
+        // constants at their every mention (lower_unresolved.cpp), so they have
+        // no name to look up and reaching them through `rtResolveBuiltinGlobal`
+        // would be a second answer to a question already settled. They are
+        // still own properties of the object — `globalThis.NaN` read
+        // `undefined` without them — and all three are non-writable and
+        // non-configurable where every builtin above is both.
+        {
+            const std::pair<const char*, Value> values[] = {
+                {"Infinity", Value::fromDouble(std::numeric_limits<double>::infinity())},
+                {"NaN", Value::fromDouble(std::numeric_limits<double>::quiet_NaN())},
+                {"undefined", Value::fromUndefined()},
+            };
+            for (const auto& entry : values) {
+                Rooted<Value> val{entry.second};
+                Rooted<Value> key{rtMakeString(entry.first)};
+                glob.get().asObject<ObjectHeader>()->setProp(
+                    rtHeap(), rtArena(), key, val, nullptr, /*enumerable=*/false,
+                    /*defineOwn=*/true, /*receiver=*/nullptr, /*refused=*/nullptr,
+                    /*writable=*/false, /*configurable=*/false);
+            }
         }
         Rooted<Value> key{rtMakeString("globalThis")};
         glob.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, glob, nullptr,

@@ -13,6 +13,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
+#include "runtime/host_globals.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -496,17 +497,40 @@ std::string rtUncaughtText(Value thrown) {
 
 extern "C" {
 
-// An unresolvable reference, EVALUATED. ECMA-262 6.2.5.5 GetValue step 2: a
-// Reference Record whose base is unresolvable throws a ReferenceError — at the
-// moment of use, which is why lowering emits an instruction here instead of
-// refusing the program. The key index is the module's interned name, so the
-// message can name the identifier without the backend carrying a string.
+// A name lowering's closed ladder could not resolve, RESOLVED AT RUN TIME.
 //
-// Returns `undefined` for the reason every other raise helper does: the value
-// lands in a caller's GC root slot before the pending cell is tested, so
-// anything the collector cannot parse would put a bad word in a live root.
-uint64_t bronze_reference_error(uint32_t keyIndex) {
-    return rtThrowReferenceError(rtKeyString(keyIndex) + " is not defined").rawBits();
+// 9.1.1.4 makes the global environment's object record `globalThis`, so a
+// property of that object IS a global binding: `globalThis.navigator = {}`
+// creates the binding a later free `navigator` reads, and nothing at compile
+// time can know whether the program did it. Only when the object has no such
+// property is this 6.2.5.5 GetValue step 2's ReferenceError — at the moment of
+// use, which is why lowering emits an instruction rather than refusing the
+// program.
+//
+// `soft` is 13.5.3 step 1: bare `typeof x` on a name that resolves nowhere is
+// the string "undefined" and never a throw, and it still has to ASK, because
+// the answer is "number" once `globalThis.x = 1` has run.
+//
+// The lookup order is `bronze_global_get`'s tail, and deliberately the same
+// one: the host registry first — a host may register after the global object
+// was snapshotted — then the object's own properties. Neither is cached: both
+// can change under a running program, which is the whole reason the question
+// survives to run time.
+uint64_t bronze_resolve_name(uint32_t keyIndex, bool soft) {
+    const std::string& name = rtKeyString(keyIndex);
+    if (Value host = Value::fromUndefined(); rtHostGlobalLookup(name, host)) {
+        return host.rawBits();
+    }
+    if (Value fromGlobalObject = Value::fromUndefined();
+        rtGlobalThisOwnLookup(name, fromGlobalObject)) {
+        return fromGlobalObject.rawBits();
+    }
+    if (soft) return Value::fromUndefined().rawBits();
+    // Returns `undefined` on the raising path for the reason every other raise
+    // helper does: the value lands in a caller's GC root slot before the
+    // pending cell is tested, so anything the collector cannot parse would put
+    // a bad word in a live root.
+    return rtThrowReferenceError(name + " is not defined").rawBits();
 }
 
 // An assignment to an immutable binding from STRICT code. 9.1.1.1.5

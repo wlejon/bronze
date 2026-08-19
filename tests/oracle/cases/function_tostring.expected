@@ -1,6 +1,8 @@
-function foo() { [native code] }
-function bar() { [native code] }
-function () { [native code] }
+function foo(a, b) {
+  return a + b;
+}
+function () {}
+function () {}
 function () { [native code] }
 TypeError
 TypeError

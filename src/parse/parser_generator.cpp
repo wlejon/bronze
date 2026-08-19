@@ -132,7 +132,7 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
         ".";
     if (!liftYields(fn.body, prefix, diags_)) return false;
 
-    fn.span.end = peek().span.begin;
+    fn.span.end = previous().span.end;
     // After the body, because a generator's own `"use strict"` is what makes
     // its parameter list subject to the rule — the same ordering every other
     // function form takes.

@@ -1,18 +1,24 @@
-// Names that resolve to nothing.
+// Names COMPILE-TIME resolution cannot settle.
 //
-// bronze has no global object, so identifier resolution is a closed ladder:
-// this function's bindings, the enclosing environments, the module's function
-// declarations, the provided globals. A name that falls off the end of it used
-// to be `error: undefined variable: X`, which refuses correct programs — the
-// feature-detection idiom (`typeof __THREE_DEVTOOLS__ !== 'undefined'`) and
-// every browser-only function a headless run never calls.
+// Identifier resolution here is a closed ladder: this function's bindings, the
+// enclosing environments, the module's function declarations, the provided
+// globals. A name that falls off the end of it used to be `error: undefined
+// variable: X`, which refuses correct programs — the feature-detection idiom
+// (`typeof __THREE_DEVTOOLS__ !== 'undefined'`) and every browser-only
+// function a headless run never calls.
 //
-// The rule this file implements instead is the spec's own, and it is not
-// softer: bare `typeof` on an unresolvable name is `"undefined"` (13.5.3 step
-// 1), and every other evaluation of one throws `ReferenceError: X is not
-// defined` (6.2.5.5 GetValue step 2) at the moment of use. A compile-time
-// WARNING names each unresolved identifier once, so the build still tells you
-// about `document`; it just does not refuse the program over it.
+// What falls off the end is not unresolvable, only unresolved YET. 9.1.1.4
+// makes the global environment's object record `globalThis`, so a property of
+// that object is a global binding and `globalThis.navigator = {}` creates one
+// the next free `navigator` reads — which no pass here can see. So the name
+// travels to run time as `name.resolve`, where the object is asked and a miss
+// is 6.2.5.5 GetValue step 2's `ReferenceError: X is not defined` at the
+// moment of use. Bare `typeof` asks the same question and answers "undefined"
+// for a miss instead of throwing (13.5.3 step 1).
+//
+// A compile-time WARNING names each unresolved identifier once, so the build
+// still tells you about `document`; it just does not refuse the program over
+// it.
 //
 // The line this does NOT cross is a member of something bronze knows:
 // `console.table` stays a compile error by name, dead code and `typeof`
@@ -59,15 +65,15 @@ void Lowerer::warnUnresolved(const std::string& name, Span span) {
         return;
     }
     diags_.warning(span, "unresolved name '" + name +
-                             "': a ReferenceError if it is evaluated (bare `typeof " + name +
+                             "': resolved against the global object at run time, and a "
+                             "ReferenceError if it is not there either (bare `typeof " + name +
                              "` is safe)");
 }
 
-// The instruction an unresolvable name lowers to. Its RESULT is a real value
-// id — undefined, as `bronze_reference_error` returns — even though nothing
-// can read it: the backend's exception test fires immediately after, so
-// control never reaches a use, and a value id with no definition is what the
-// IL verifier exists to catch.
+// The instruction an unresolved name lowers to. Its result is READ: the helper
+// hands back the global object's own property when the program made one, and
+// only raises when it did not — so the backend's exception test after it may
+// or may not fire, where before it always did.
 Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
                                            il::Function& ilFn) {
     // A `var` written inside a block of this function. 8.6.2 hoists it to the
@@ -112,7 +118,7 @@ Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
     warnUnresolved(name, span);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::RefError;
+    inst.op = il::Op::ResolveName;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.keyIndex = getKeyConstantIndex(name);

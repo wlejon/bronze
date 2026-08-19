@@ -61,7 +61,7 @@ bool FunctionEmitter::emitPrivateOp(const il::Instruction& inst) {
             }
             return true;
         }
-        // Always raises, exactly as ref.error and immutable.assign do: the
+        // Always raises, exactly as immutable.assign does: the
         // exception check `il::canThrow` puts after it always fires, and the
         // `undefined` it returns exists only so the value id has a definition.
         case il::Op::PrivateMisuse: {

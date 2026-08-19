@@ -1,0 +1,14 @@
+normal object yes
+arrow undefined TypeError
+method undefined TypeError
+genMethod object TypeError
+asyncMethod undefined TypeError
+gen object TypeError
+asyncFn undefined TypeError
+asyncGen object TypeError
+class object yes
+length,name
+length,name,prototype
+length,name
+length,name,prototype
+TypeError undefined

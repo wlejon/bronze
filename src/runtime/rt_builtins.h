@@ -70,8 +70,15 @@ inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
     // No slot cell: a native builtin belongs to no compiled module, so there
     // is no module-local table to cache it in. The by-code-pointer map is the
     // authority regardless, and it is what answers here.
+    // BRONZE_ABI_FN_FLAGS_ORDINARY, because a native builtin has no syntax
+    // behind it to say otherwise: `Array` and `Map` really are constructors,
+    // and the tables these are built from do not record which of the rest are
+    // not. So the constructibility of a NATIVE stays what it has always been,
+    // and only functions bronze COMPILED carry the syntax's answer.
     return Value(bronze_function_singleton(code, arity, /*length=*/0,
                                            BRONZE_ABI_FN_NAME_NONE,
+                                           BRONZE_ABI_FN_FLAGS_ORDINARY |
+                                               BRONZE_ABI_FN_FLAG_NATIVE,
                                            /*slotCell=*/nullptr));
 }
 
@@ -150,6 +157,22 @@ bool rtObjectProtoHasMember(const std::string& key);
 // and `for-in` walks a chain — an enumerable tag on %IteratorPrototype% would
 // appear in every for-in over every iterator in the program.
 void rtDefineToStringTag(Rooted<Value>& obj, const char* tag);
+
+// The intrinsics a function of a NON-ORDINARY form reports (27.3, 27.4, 27.7):
+// its `constructor` — %GeneratorFunction%, %AsyncFunction% or
+// %AsyncGeneratorFunction% — and its [[Prototype]], which is that
+// constructor's `prototype` object. Both answer `undefined` for an ordinary
+// function, whose answers are `Function` and %Function.prototype% and are
+// given elsewhere.
+Value rtFunctionKindConstructor(Value fnVal);
+Value rtFunctionKindPrototype(Value fnVal);
+
+// A member of %Function.prototype% read off one of those three prototype
+// objects. Their chains end at a link the plain-object walk will not cross, so
+// an inherited `call` would read `undefined`; this makes it a diagnostic
+// instead. Fires only for those exact objects, and only once one has been
+// built.
+void rtFunctionKindCheckMissingMember(Value obj, const std::string& key);
 
 // ---- the primitive wrappers (builtin_wrappers.cpp) --------------------------
 

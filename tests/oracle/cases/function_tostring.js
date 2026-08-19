@@ -1,4 +1,6 @@
-// Function.prototype.toString (20.2.3.5)
+// Function.prototype.toString (20.2.3.5). A function with SOURCE TEXT returns
+// that text verbatim; only a function without any — a builtin, a bound
+// function — gets the NativeFunction string.
 function foo(a, b) {
   return a + b;
 }

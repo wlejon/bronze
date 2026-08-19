@@ -489,6 +489,7 @@ ExprPtr Parser::parseObjectLit() {
             }
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = star.span.begin;
+            fn->kind = ast::FunctionKind::Method;
             fn->name = methodName(prop.key.empty() ? "computed" : prop.key);
             if (!parseGeneratorTail(*fn)) return nullptr;
             prop.isMethod = true;
@@ -504,8 +505,9 @@ ExprPtr Parser::parseObjectLit() {
         // property called `async`.
         if (check(TokenKind::Identifier) && peek().text == "async" && !peek(1).newlineBefore) {
             if (peek(1).kind == TokenKind::Star) {
-                advance();  // `async`
-                const Token& star = advance();  // `*`
+                // The method's text begins at `async` (15.8), not at the `*`.
+                const Span asyncKwSpan = advance().span;  // `async`
+                advance();  // `*`
                 if (check(TokenKind::LBracket)) {
                     advance();  // `[`
                     prop.keyExpr = parseAssign();
@@ -520,7 +522,7 @@ ExprPtr Parser::parseObjectLit() {
                     prop.key = std::string(genName->text);
                 }
                 auto method = parseAsyncMethodTail(
-                    methodName(prop.key.empty() ? "computed" : prop.key), star.span,
+                    methodName(prop.key.empty() ? "computed" : prop.key), asyncKwSpan,
                     /*clearSuper=*/true, /*isGenerator=*/true);
                 if (!method) return nullptr;
                 prop.isMethod = true;
@@ -530,15 +532,14 @@ ExprPtr Parser::parseObjectLit() {
                 continue;
             }
             if (peek(1).kind == TokenKind::LBracket) {
-                advance();  // `async`
-                const Token& openBracket = peek();
+                const Span asyncKwSpan = advance().span;  // `async`
                 advance();  // `[`
                 prop.keyExpr = parseAssign();
                 if (!prop.keyExpr ||
                     !expect(TokenKind::RBracket, "']' after computed async method key")) {
                     return nullptr;
                 }
-                auto method = parseAsyncMethodTail(methodName("computed"), openBracket.span,
+                auto method = parseAsyncMethodTail(methodName("computed"), asyncKwSpan,
                                                    /*clearSuper=*/true);
                 if (!method) return nullptr;
                 prop.isMethod = true;
@@ -551,7 +552,7 @@ ExprPtr Parser::parseObjectLit() {
                                       peek(1).kind == TokenKind::StringLiteral) &&
                                      peek(2).kind == TokenKind::LParen;
             if (namedMethod) {
-                advance();  // `async`
+                const Span asyncKwSpan = advance().span;  // `async`
                 const Token& nameTok = advance();
                 prop.key = nameTok.kind == TokenKind::StringLiteral
                                ? decodeStringLiteral(
@@ -561,7 +562,7 @@ ExprPtr Parser::parseObjectLit() {
                 // clearSuper: an object literal's home object is the literal,
                 // so the enclosing class's `super` must not leak in — the
                 // same rule parseMethodTail applies to the plain shorthand.
-                auto method = parseAsyncMethodTail(methodName(prop.key), nameTok.span,
+                auto method = parseAsyncMethodTail(methodName(prop.key), asyncKwSpan,
                                                    /*clearSuper=*/true);
                 if (!method) return nullptr;
                 prop.isMethod = true;

@@ -1,8 +1,11 @@
 #pragma once
+
 #include <cstdint>
 #include <deque>
 #include <string>
 #include <vector>
+
+#include "abi/bronze_abi.h"
 
 namespace bronze::il {
 
@@ -269,13 +272,18 @@ enum class Op : uint8_t {
     // environment holds. Not a terminator: it is a helper call like any other,
     // and the block's handler is what the backend's exception test after it
     // branches to.
-    RefError,   // a: dynamic = ref.error <key_const_index>
+    // a: dynamic = name.resolve <key_const_index>. The name lowering's
+    // closed ladder could not resolve: a PROPERTY OF THE GLOBAL OBJECT if the
+    // program made one, and a ReferenceError otherwise (6.2.5.5 GetValue step
+    // 2). It cannot be settled at compile time, because `globalThis.x = 1`
+    // creates the binding a later free `x` reads.
+    ResolveName,
     // An assignment to an IMMUTABLE binding, in STRICT code. 9.1.1.1.5
     // SetMutableBinding step 4 throws a TypeError there and returns quietly
     // otherwise, so sloppy code emits nothing at all and this instruction is
     // the strict half alone. The one immutable binding bronze creates is a
     // named function expression's own name (15.2.5). Not a terminator, for
-    // the reason ref.error is not.
+    // the reason name.resolve is not.
     ImmutableAssign,  // a: dynamic = immutable.assign <key_const_index>
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
@@ -376,7 +384,15 @@ enum class Op : uint8_t {
     DynamicCallSpread,  // a = call.dynamic.spread callee, thisArg, args
     SuperCall,          // a = call.super base, thisArg, args...
     SuperCallSpread,    // a = call.super.spread base, thisArg, args
-    TemplateObject,     // a = template.object cookedArray, rawArray
+    // 13.2.8.4 GetTemplateObject. The pair is a CACHE, not one instruction
+    // split in two: the specification keeps a template object per SITE, so
+    // `f()===f()` holds for a tag called twice from one `` t`x` ``, and the
+    // arrays are built only on the call that misses.
+    //
+    //   a = template.cached <site>            ; the cell, undefined when cold
+    //   a = template.object cooked, raw, <site>  ; builds, freezes, fills the cell
+    TemplateCached,     // a = template.cached <site>
+    TemplateObject,     // a = template.object cookedArray, rawArray, <site>
     ConstructSpread,    // a = new.spread callee, args
     CreateArray,  // a = create.array <length>
     CreateFunction,// a = create.func <funcIndex>, env
@@ -530,6 +546,13 @@ struct Function {
     bool needsArguments = false;
     bool isStrict = false;
     bool isGenerator = false;
+    // The BRONZE_ABI_FN_FLAG_* byte the created function object carries: what
+    // its syntax decided about [[Construct]] and about the `prototype`
+    // property (src/abi/bronze_abi.h says why neither is derivable here).
+    // `isGenerator` above is a different question — it selects the frame plus
+    // resume machine this body is lowered INTO — and the two are set from the
+    // same AST node without either being read off the other.
+    uint32_t fnFlags = BRONZE_ABI_FN_FLAGS_ORDINARY;
     // `...rest`: the LAST source parameter, and the one no caller supplies a
     // value for. It arrives as an array built from whatever arguments were left
     // over — by the call wrapper on the uniform path, by the call site on a
@@ -559,6 +582,22 @@ struct Function {
     // (`class C { [k]() {} }`); reading `.name` off one is then a diagnosed
     // refusal rather than a wrong answer.
     uint32_t nameKeyIndex = 0xFFFFFFFFu;
+    // The bytes of source this function was written from, as a half-open range
+    // into `Module::sourceTexts[sourceFile]`. It is what 20.2.3.5
+    // Function.prototype.toString returns, which the spec makes the SOURCE
+    // TEXT verbatim and not a reconstruction — so nothing downstream may
+    // re-render it, and the range has to be exact: `sourceEnd` is the end of
+    // the function's last token, never the start of the next one.
+    //
+    // For a class it is the whole `class C { ... }`, because the constructor
+    // IS the class value and `C.toString()` is the class's text (15.7.14 makes
+    // the class's source text the constructor's [[SourceText]]).
+    //
+    // `sourceEnd == 0` means no text was recorded — a function bronze
+    // synthesized, or a build that passed `--no-fn-source`.
+    uint16_t sourceFile = 0;
+    uint32_t sourceBegin = 0;
+    uint32_t sourceEnd = 0;
 
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {
@@ -591,11 +630,26 @@ struct Module {
     // object file, so it is the size of a real allocation, not a hint: the
     // verifier checks every icIndex against it.
     uint32_t icSiteCount = 0;
+    // How many TAGGED TEMPLATE sites lowering handed out. Sized the same way
+    // `icSiteCount` is and for the same reason: the backend emits exactly this
+    // many Value cells as a global array, and each site's cell holds the one
+    // template object 13.2.8.4 GetTemplateObject requires that site to hand its
+    // tag function on every call.
+    uint32_t templateSiteCount = 0;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own
     // (still-being-inferred) signature without dangling on a reallocation.
     std::deque<Function> functions;
+    // Every source file of the program, indexed by `Function::sourceFile`, so
+    // that a function's `sourceBegin`/`sourceEnd` name real bytes. ONE COPY of
+    // each file rather than a string per function: three.js's 28 files are
+    // 1.6 MB together, and the ~3000 functions in them overlap almost
+    // completely, so per-function strings would be that figure many times over.
+    //
+    // Empty when the build asked for no function source, which is the whole of
+    // what `--no-fn-source` does — the ranges above stay, and address nothing.
+    std::vector<std::string> sourceTexts;
 };
 
 }  // namespace bronze::il

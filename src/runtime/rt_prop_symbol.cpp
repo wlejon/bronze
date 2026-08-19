@@ -126,12 +126,22 @@ static Value toStringTagOf(Value objVal, bool& handled) {
         case ModuleNamespaceHeader::kFlags:
             handled = true;
             return rtMakeString("Module");
-        case HeapKind::Function:
-            if (objVal.asObject<FunctionHeader>()->is_generator) {
-                handled = true;
-                return rtMakeString("GeneratorFunction");
-            }
-            return Value::fromUndefined();
+        case HeapKind::Function: {
+            // 27.3.3.2, 27.4.3.2 and 27.7.3.2 put an own `@@toStringTag` on
+            // %GeneratorFunction.prototype%, %AsyncGeneratorFunction.prototype%
+            // and %AsyncFunction.prototype%, and an ORDINARY function's
+            // prototype has none — so these three names and not a fourth. The
+            // pair of bits is read rather than one, because an async generator
+            // is both and answering "GeneratorFunction" for it was the visible
+            // half of storing only one.
+            const FunctionHeader* fn = objVal.asObject<FunctionHeader>();
+            const bool gen = fn->isGeneratorFunction();
+            const bool async = fn->isAsyncFunction();
+            if (!gen && !async) return Value::fromUndefined();
+            handled = true;
+            if (gen && async) return rtMakeString("AsyncGeneratorFunction");
+            return rtMakeString(gen ? "GeneratorFunction" : "AsyncFunction");
+        }
         default:
             // An array, a function, a RegExp and a plain object: 23.1.3, 20.2.3,
             // 22.2.6 and 20.1.3 define no `@@toStringTag` at all, which is

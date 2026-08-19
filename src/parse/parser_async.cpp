@@ -117,7 +117,7 @@ bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     if (diags_.hasErrors()) return false;
 
     if (!liftAsyncBody(fn.body)) return false;
-    fn.span.end = peek().span.begin;
+    fn.span.end = previous().span.end;
     // After the body, because a function's own `"use strict"` is what makes
     // its parameter list subject to the rule — the same ordering every other
     // function form takes.
@@ -159,7 +159,7 @@ StmtPtr Parser::parseAsyncFunctionDecl(bool isExported, const std::string& defau
     fn->returnType = std::move(shell.returnType);
     fn->body = std::move(shell.body);
     fn->strict = shell.strict;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 
@@ -170,6 +170,7 @@ ExprPtr Parser::parseAsyncFunctionExpr() {
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = asyncKw.span.begin;
     fn->isGenerator = isGenerator;
+    fn->kind = ast::FunctionKind::Normal;
     if (check(TokenKind::Identifier)) {
         const Token& nameTok = advance();
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
@@ -189,6 +190,7 @@ ExprPtr Parser::parseAsyncArrow() {
     const Token& asyncKw = advance();  // `async`
     auto fn = std::make_unique<FunctionExpr>();
     fn->isArrow = true;
+    fn->kind = ast::FunctionKind::Arrow;
     fn->isAsync = true;
     fn->span.begin = asyncKw.span.begin;
 
@@ -228,7 +230,7 @@ ExprPtr Parser::parseAsyncArrow() {
     if (diags_.hasErrors()) return nullptr;
     if (!liftAsyncBody(fn->body)) return nullptr;
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 
@@ -237,13 +239,16 @@ ExprPtr Parser::parseAsyncArrow() {
 // documents: an object literal's method must not inherit the enclosing
 // class's `super`, a class's own method must keep it.
 std::unique_ptr<ast::FunctionExpr> Parser::parseAsyncMethodTail(const std::string& name,
-                                                                Span nameSpan,
+                                                                Span defSpan,
                                                                 bool clearSuper,
                                                                 bool isGenerator) {
     auto fn = std::make_unique<FunctionExpr>();
-    fn->span.begin = nameSpan.begin;
+    // The `async` keyword's span, not the name's: 15.8's MethodDefinition
+    // starts there, and so does the text `toString` returns.
+    fn->span.begin = defSpan.begin;
     fn->name = name;
     fn->isGenerator = isGenerator;
+    fn->kind = ast::FunctionKind::Method;
 
     const bool savedInClassMethod = inClassMethod_;
     const std::string savedClassSuper = currentClassSuper_;

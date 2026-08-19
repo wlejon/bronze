@@ -100,7 +100,7 @@ TEST_CASE("a module function's locals do not leak into the module top level") {
     REQUIRE(optMod.has_value());
     CHECK_FALSE(diags.hasErrors());
     CHECK(diags.render(buf).find("unresolved name 'secret'") != std::string::npos);
-    CHECK(il::print(*optMod).find("ref.error \"secret\"") != std::string::npos);
+    CHECK(il::print(*optMod).find("name.resolve \"secret\"") != std::string::npos);
 }
 
 TEST_CASE("a top-level let may share a name with a module function's local") {

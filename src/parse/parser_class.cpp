@@ -234,6 +234,10 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
         if (member.isStatic && check(TokenKind::LBrace)) {
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = peek().span.begin;
+            // A static block is never handed to a program as a function
+            // object, but it is a MethodDefinition's body in every way that
+            // matters here: nothing may construct it and it has no prototype.
+            fn->kind = ast::FunctionKind::Method;
             fn->name = (name.empty() ? std::string("static") : name + ".static") + ".block" +
                        std::to_string(methods.size());
             fn->strict = true;  // class code, which 15.7 makes strict
@@ -245,7 +249,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                 ok = false;
                 break;
             }
-            fn->span.end = peek().span.begin;
+            fn->span.end = previous().span.end;
             member.isStaticBlock = true;
             member.fn = std::move(fn);
             methods.push_back(std::move(member));
@@ -279,6 +283,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             }
             auto fn = std::make_unique<FunctionExpr>();
             fn->span.begin = star.span.begin;
+            fn->kind = ast::FunctionKind::Method;
             const std::string sym = member.computed()
                                         ? (member.isStatic ? "static.computed" : "computed")
                                         : member.name;
@@ -304,6 +309,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
             if (check(TokenKind::LParen)) {
                 auto fn = std::make_unique<FunctionExpr>();
                 fn->span.begin = keySpan.begin;
+                fn->kind = ast::FunctionKind::Method;
                 const std::string sym = member.isStatic ? "static.computed" : "computed";
                 fn->name = name.empty() ? sym : (name + "." + sym);
                 advance();  // '('
@@ -316,7 +322,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                 }
                 if (!checkStrictParams(fn->params, fn->strict)) return false;
                 if (diags_.hasErrors()) return false;
-                fn->span.end = peek().span.begin;
+                fn->span.end = previous().span.end;
                 member.fn = std::move(fn);
                 methods.push_back(std::move(member));
                 continue;
@@ -345,9 +351,11 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
              peek(1).kind == TokenKind::LBracket || peek(1).kind == TokenKind::PrivateName ||
              peek(1).kind == TokenKind::StringLiteral ||
              peek(1).kind == TokenKind::NumberLiteral)) {
-            advance();  // `async`
+            // 15.8's MethodDefinition begins at `async`, so that is where the
+            // member's source text begins — not at the name or the `*`.
+            const Span asyncKwSpan = advance().span;  // `async`
             if (check(TokenKind::Star)) {
-                const Token& star = advance();
+                advance();  // `*`
                 if (check(TokenKind::LBracket)) {
                     advance();  // '['
                     member.keyExpr = parseAssign();
@@ -375,7 +383,8 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                                             ? (member.isStatic ? "static.computed" : "computed")
                                             : member.name;
                 const std::string fnName = name.empty() ? sym : (name + "." + sym);
-                auto fn = parseAsyncMethodTail(fnName, star.span, /*clearSuper=*/false, /*isGenerator=*/true);
+                auto fn = parseAsyncMethodTail(fnName, asyncKwSpan, /*clearSuper=*/false,
+                                               /*isGenerator=*/true);
                 if (!fn) {
                     ok = false;
                     break;
@@ -384,7 +393,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                 methods.push_back(std::move(member));
                 continue;
             }
-            Span asyncSpan = peek().span;
+            Span asyncSpan = asyncKwSpan;
             if (check(TokenKind::LBracket)) {
                 advance();  // '['
                 member.keyExpr = parseAssign();
@@ -401,7 +410,6 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
                     break;
                 }
                 member.name = std::string(asyncName->text);
-                asyncSpan = asyncName->span;
                 if (member.isPrivate() &&
                     !declarePrivateName(member.name, ast::AccessorKind::None, member.isStatic,
                                         asyncName->span)) {
@@ -480,6 +488,11 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
 
         auto fn = std::make_unique<FunctionExpr>();
         fn->span.begin = memberName->span.begin;
+        // 15.7.14 step 11: the `constructor` element becomes the class object
+        // itself, which IS a constructor and has a `prototype`; every other
+        // element is a MethodDefinition and has neither.
+        fn->kind = member.isConstructor ? ast::FunctionKind::ClassConstructor
+                                        : ast::FunctionKind::Method;
         fn->name = name.empty() ? member.name : (name + "." + member.name);
         advance();  // '('
         if (!parseParams(fn->params)) return false;
@@ -491,7 +504,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
         }
         if (!checkStrictParams(fn->params, fn->strict)) return false;
         if (diags_.hasErrors()) return false;
-        fn->span.end = peek().span.begin;
+        fn->span.end = previous().span.end;
         member.fn = std::move(fn);
         methods.push_back(std::move(member));
     }
@@ -517,6 +530,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const std::string& su
         ctor.name = "constructor";
         ctor.isConstructor = true;
         ctor.fn = std::make_unique<FunctionExpr>();
+        ctor.fn->kind = ast::FunctionKind::ClassConstructor;
         ctor.fn->name = name.empty() ? "constructor" : (name + ".constructor");
         ctor.fn->span = span;
         ctor.fn->strict = true;  // synthesized class code, which 15.7 makes strict
@@ -576,7 +590,7 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
     }
 
     if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
-    cls->span.end = peek().span.begin;
+    cls->span.end = previous().span.end;
     return cls;
 }
 
@@ -599,7 +613,7 @@ ast::ExprPtr Parser::parseClassExpr() {
     }
 
     if (!parseClassBodyCommon(cls->name, cls->superName, cls->methods, cls->span)) return nullptr;
-    cls->span.end = peek().span.begin;
+    cls->span.end = previous().span.end;
     return cls;
 }
 

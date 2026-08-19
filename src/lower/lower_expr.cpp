@@ -210,6 +210,54 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
 
     if (const auto* tagged = dynamic_cast<const ast::TaggedTemplate*>(&expr)) {
         const auto& tpl = *tagged->templateLit;
+        // 13.2.8.4 GetTemplateObject keeps ONE template object per site, for
+        // the life of the program: a tag called twice from the same `` t`x` ``
+        // is handed the same frozen object both times, which is what lets a tag
+        // memoize on it (the styled-components idiom, and the reason the
+        // specification bothers to say so). So the site owns a cache cell, and
+        // the arrays below are built only on the call that finds it cold —
+        // the branch is what keeps a tagged template in a loop from allocating
+        // four objects per iteration to throw three of them away.
+        const int32_t templateSite = static_cast<int32_t>(templateSiteCounter_++);
+        const size_t entryBlockIdx = currentBlockIdx_;
+        il::BlockId bBuild = createBlock(ilFn);
+        il::BlockId bJoin = createBlock(ilFn);
+
+        il::ValueId cachedId = ilFn.valueCount++;
+        il::Instruction cachedInst;
+        cachedInst.op = il::Op::TemplateCached;
+        cachedInst.type = il::Type::Dynamic;
+        cachedInst.result = cachedId;
+        cachedInst.immI32 = templateSite;
+        emitInst(ilFn, cachedInst);
+
+        il::ValueId coldId = ilFn.valueCount++;
+        il::Instruction coldInst;
+        coldInst.op = il::Op::IsNullish;
+        coldInst.type = il::Type::Bool;
+        coldInst.result = coldId;
+        coldInst.operands = {cachedId};
+        emitInst(ilFn, coldInst);
+
+        il::ValueId joinedId = ilFn.valueCount++;
+        ilFn.blocks[bJoin].params.push_back({joinedId, il::Type::Dynamic});
+
+        il::Instruction brInst;
+        brInst.op = il::Op::Branch;
+        brInst.type = il::Type::Void;
+        brInst.result = il::kNoValue;
+        brInst.operands = {coldId};
+        brInst.target = il::BlockTarget{.block = bBuild, .args = {}};
+        brInst.elseTarget = il::BlockTarget{.block = bJoin, .args = {cachedId}};
+        ilFn.blocks[entryBlockIdx].instructions.push_back(brInst);
+
+        // Nothing between here and the join reads or writes a binding — the
+        // arrays are built from compile-time string constants — so the two
+        // arms need no variable-state reconciliation, which is the whole
+        // reason this branch can be written without an `ExprJoin`. The tag and
+        // the substitutions are evaluated AFTER the join, where they run on
+        // every call as 13.2.8.6 requires.
+        setCurrentBlock(bBuild);
         il::ValueId cookedArr = ilFn.valueCount++;
         il::Instruction createCooked;
         createCooked.op = il::Op::CreateArray;
@@ -274,7 +322,17 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         tplInst.type = il::Type::Dynamic;
         tplInst.result = templateObj;
         tplInst.operands = {cookedArr, rawArr};
+        tplInst.immI32 = templateSite;
         emitInst(ilFn, tplInst);
+
+        il::Instruction jmpInst;
+        jmpInst.op = il::Op::Jump;
+        jmpInst.type = il::Type::Void;
+        jmpInst.result = il::kNoValue;
+        jmpInst.target = il::BlockTarget{.block = bJoin, .args = {templateObj}};
+        emitInst(ilFn, jmpInst);
+
+        setCurrentBlock(bJoin);
 
         auto tagVal = lowerExpr(*tagged->tag, ilFn);
         if (!tagVal) return std::nullopt;
@@ -283,7 +341,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         std::vector<il::ValueId> callOperands;
         callOperands.push_back(tagBoxed.id);
         callOperands.push_back(emitConstUndefined(ilFn));
-        callOperands.push_back(templateObj);
+        callOperands.push_back(joinedId);
 
         for (const auto& subExpr : tpl.exprs) {
             auto subVal = lowerExpr(*subExpr, ilFn);
@@ -588,16 +646,31 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             // the language where a free name is not a question about the
             // environment — so it gets no warning either. Bare form only:
             // `typeof x.y` still evaluates `x` and throws.
+            //
+            // Asked at RUN TIME rather than folded to "undefined" here, and
+            // the reason is the same one `name.resolve` exists for: a property
+            // of the global object is a global binding, so `globalThis.x = 1`
+            // makes `typeof x` "number", and a constant folded at compile time
+            // would be answering a question the program had not finished
+            // asking. The soft flag is what keeps it a read and not a throw.
             if (const auto* operandIdent = dynamic_cast<const ast::Ident*>(un->operand.get());
                 operandIdent && !resolvesName(operandIdent->name)) {
+                il::ValueId probe = ilFn.valueCount++;
+                il::Instruction probeInst;
+                probeInst.op = il::Op::ResolveName;
+                probeInst.type = il::Type::Dynamic;
+                probeInst.result = probe;
+                probeInst.keyIndex = getKeyConstantIndex(operandIdent->name);
+                probeInst.immI32 = 1;  // soft: answer undefined, never throw
+                emitInst(ilFn, probeInst);
+
                 il::ValueId res = ilFn.valueCount++;
-                il::Instruction strInst;
-                strInst.op = il::Op::Box;
-                strInst.type = il::Type::Dynamic;
-                strInst.boxType = il::Type::Str;
-                strInst.result = res;
-                strInst.keyIndex = getKeyConstantIndex("undefined");
-                emitInst(ilFn, strInst);
+                il::Instruction typeInst;
+                typeInst.op = il::Op::TypeOf;
+                typeInst.type = il::Type::Dynamic;
+                typeInst.result = res;
+                typeInst.operands = {probe};
+                emitInst(ilFn, typeInst);
                 return Value{res, il::Type::Dynamic};
             }
             auto valOpt = lowerExpr(*un->operand, ilFn);

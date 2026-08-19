@@ -371,7 +371,7 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
 }
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
-                                   uint32_t nameKey, uint64_t* slotCell) {
+                                   uint32_t nameKey, uint32_t fnFlags, uint64_t* slotCell) {
     recordHelperCall("bronze_function_singleton");
     // The by-code-pointer map is the authority; it replaced a linear scan
     // that every native builtin ever interned lengthened for every mention of
@@ -381,7 +381,8 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         it != g_functionSingletonIndex.end()) {
         result = g_functionSingletons[it->second].second;
     } else {
-        FunctionHeader* fn = FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity);
+        FunctionHeader* fn =
+            FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity, fnFlags);
         fn->env_record = Value::fromObject(fn);
         fn->header.flags = HeapKind::Function;
         rtSetFunctionNameAndLength(fn, nameKey, length);
@@ -401,11 +402,12 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 
 // An unknown name never reaches here. Lowering emits this instruction only for
 // a name on its provided-globals list — the closed builtin set, plus whatever a
-// `--host-globals` manifest admitted; anything else becomes `ref.error`, which
-// raises the JS ReferenceError. A name in NEITHER the builtin ladder nor the
-// host registry is therefore still a drift between lowering's list and this
-// one — an internal tripwire, not a program error — and a manifest name the
-// host never registered is the same drift with the host on one side of it.
+// `--host-globals` manifest admitted; anything else becomes `name.resolve`,
+// which asks the global object and raises the JS ReferenceError on a miss. A
+// name in NEITHER the builtin ladder nor the host registry is therefore still a
+// drift between lowering's list and this one — an internal tripwire, not a
+// program error — and a manifest name the host never registered is the same
+// drift with the host on one side of it.
 }  // extern "C"
 
 // The builtin half of global resolution, name in and value out, with no

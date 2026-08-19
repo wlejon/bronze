@@ -111,6 +111,38 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * `Object.keys`. */
 #define BRONZE_ABI_FN_NAME_NONE 0xFFFFFFFFu
 
+/* What the SYNTAX of a function decided about the object, as one byte the
+ * compiler hands `bronze_create_function` and `bronze_function_singleton`.
+ *
+ * Two of ECMA-262 10.2's answers cannot be recovered from anything the runtime
+ * can see — an arrow, a method and a plain function expression produce the same
+ * code pointer, the same parameters and the same body — and both are
+ * observable: `new (() => {})` is a TypeError (10.2.2 gives a non-constructor
+ * no [[Construct]]), and `({ m(){} }).m.prototype` is `undefined` (15.4.4
+ * defines a MethodDefinition without one). So they travel from the parser
+ * rather than being guessed at the allocation.
+ *
+ * GENERATOR and ASYNC ride in the same byte because they are the same kind of
+ * fact and are wanted in the same places: `Object.prototype.toString` needs
+ * them to answer "[object AsyncGeneratorFunction]", and a generator has a
+ * `prototype` while being no constructor at all, which no single bit could say.
+ *
+ * ORDINARY is the default a function object created with no flags gets — every
+ * native builtin, which is a C function pointer with no syntax behind it — and
+ * it is today's behaviour spelled out rather than a new one. */
+#define BRONZE_ABI_FN_FLAG_CONSTRUCT   0x01u
+#define BRONZE_ABI_FN_FLAG_PROTOTYPE   0x02u
+#define BRONZE_ABI_FN_FLAG_GENERATOR   0x04u
+#define BRONZE_ABI_FN_FLAG_ASYNC       0x08u
+#define BRONZE_ABI_FN_FLAG_CLASS_CTOR  0x10u
+/* Not compiled from source text: a runtime builtin, a bound function, or a
+ * function the host registered. It is the bit `Function.prototype.toString`
+ * asks — 20.2.3.5 gives exactly these the NativeFunction string, and every
+ * other function object its own source — and generated code never sets it,
+ * because a function bronze compiled is by construction not one of these. */
+#define BRONZE_ABI_FN_FLAG_NATIVE      0x20u
+#define BRONZE_ABI_FN_FLAGS_ORDINARY (BRONZE_ABI_FN_FLAG_CONSTRUCT | BRONZE_ABI_FN_FLAG_PROTOTYPE)
+
 /* The uninitialized-binding singleton (runtime/value.h Tag::Uninitialized):
  * what an environment slot holds for a `let`, `const` or `class` binding
  * between the moment its scope is entered and the moment its declaration is
@@ -179,7 +211,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_import_meta,         BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     X(bronze_super_call,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_super_call_spread,   BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
-    X(bronze_template_object,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_template_object,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_array_append_hole,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_prop_delete,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
     X(bronze_elem_delete,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
@@ -190,7 +222,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * program can reassign keep their scan-per-read semantics by never
      * reaching a cell. */ \
     X(bronze_global_get,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
-    X(bronze_reference_error,     BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
+    X(bronze_resolve_name,        BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_arguments_object,    BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_arg_at,              BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
@@ -211,7 +243,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_private_set,         BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_private_misuse,      BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_create_array,        BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
-    X(bronze_create_function,     BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    X(bronze_create_function,     BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_env_create,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
@@ -244,8 +276,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * null: the runtime's native-builtin interning has no module to hold a slot
      * in, and passing null keeps it on the by-code-pointer map, which is the
      * authority either way. */ \
-    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
-    X(bronze_set_function_generator,     BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
+    X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_string_concat,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* The rest of 13.15.3 ApplyStringOrNumericBinaryOperator over BOXED\
@@ -317,6 +348,21 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * touch, and a null one means the slot was never filled. */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    /* One source FILE and the functions written in it, handed over at module
+     * init so that 20.2.3.5 Function.prototype.toString can return the source
+     * text the spec says it returns rather than "[native code]".
+     *
+     * `text`/`textLen` are the file's bytes, in the object file's read-only
+     * data; `entries` is `count` PAIRS of u64 — a call-wrapper address, then
+     * the byte range packed as `(begin << 32) | (end - begin)`. Pairs rather
+     * than a struct because the registry carries primitives only, and the
+     * wrapper address rather than any per-function object because the address
+     * is the one identity every closure over that body shares: a thousand
+     * closures created in a loop register nothing and cost nothing, which is
+     * the whole reason the table is keyed this way.
+     *
+     * Registration-only for the same reason the two above are. */ \
+    X(bronze_register_fn_sources,  BRONZE_ABI_VOID, (BRONZE_ABI_CSTR, BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     /* The six Math members generated code can dispatch directly: exported so a
      * call site can compare a callee's FunctionHeader::code against the symbol

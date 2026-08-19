@@ -251,6 +251,23 @@ bool rtShapelessPrototypeOf(Value obj, Value& out) {
         return true;
     }
     if (kind != HeapKind::Function) return false;
+    // A DERIVED CLASS stores its own [[Prototype]] — the base constructor,
+    // 15.7.14 step 6 — so it is asked first, on the same terms as the exotic
+    // subclass above: a stored link is the one the program can see, and the
+    // fixed intrinsic below is only what a function that never got one has.
+    if (Value stored = obj.asObject<FunctionHeader>()->parent; !stored.isUndefined()) {
+        out = stored;
+        return true;
+    }
+    // A generator, an async function and an async generator do not inherit
+    // from %Function.prototype% at all: 27.3.4, 27.7.4 and 27.4.4 put each
+    // one's own kind prototype in between. Asked before the ordinary answer
+    // below, and never for an ordinary function, which answers `undefined`
+    // here and falls through.
+    if (Value kindProto = rtFunctionKindPrototype(obj); !kindProto.isUndefined()) {
+        out = kindProto;
+        return true;
+    }
     // %Function.prototype% is itself a function object (20.2.3), and its own
     // [[Prototype]] is Object.prototype. Without this line the general rule
     // below would answer with the object being asked about, and a chain walk
@@ -546,12 +563,42 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             // answered by the same function, so the two cannot drift.
             return bronze_object_keys(args[0].rawBits());
         case ObjectOwnKeys::Function: {
-            Value props = args[0].asObject<FunctionHeader>()->properties;
-            if (props.isUndefined() || !props.isObject()) {
-                return bronze_create_array(0);
+            // 10.2.4 and 10.2.9/10.2.10: an ordinary function's own properties
+            // are `length`, `name` and — where its syntax gave it one —
+            // `prototype`, none of them enumerable, and THEN whatever the
+            // program assigned as a static. All three come first because
+            // 6.1.7.1 orders string keys by creation and
+            // OrdinaryFunctionCreate makes them before any assignment can run.
+            //
+            // `length` and `name` are reported for a function bronze COMPILED
+            // and not for a native builtin, which is the same split
+            // rt_builtins.h draws for reading them: a native has no key index
+            // to name it with, so claiming the key exists and then refusing the
+            // read would be worse than the honest short list.
+            Rooted<Value> fn{args[0]};
+            Rooted<Value> out{Value(bronze_create_array(0))};
+            uint32_t at = 0;
+            const FunctionHeader* header = fn.get().asObject<FunctionHeader>();
+            const bool named = header->name != nullptr;
+            const bool hasPrototype = header->hasPrototypeProperty();
+            for (const char* builtinName : {"length", "name", "prototype"}) {
+                const bool present = builtinName[0] == 'p' ? hasPrototype : named;
+                if (!present) continue;
+                Rooted<Value> key{rtMakeString(builtinName)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
             }
-            const uint64_t call[1] = {props.rawBits()};
-            return rtObjectGetOwnPropertyNames(0, 0, 1, call);
+            Value props = fn.get().asObject<FunctionHeader>()->properties;
+            if (props.isObject()) {
+                Rooted<Value> propsRoot{props};
+                const uint64_t call[1] = {propsRoot.get().rawBits()};
+                Rooted<Value> statics{Value(rtObjectGetOwnPropertyNames(0, 0, 1, call))};
+                const uint32_t count = statics.get().asObject<ArrayHeader>()->length;
+                for (uint32_t i = 0; i < count; ++i) {
+                    Rooted<Value> key{statics.get().asObject<ArrayHeader>()->getElem(i)};
+                    out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+                }
+            }
+            return out.get().rawBits();
         }
         case ObjectOwnKeys::Shape:
             break;
@@ -955,6 +1002,14 @@ void ensureObjectIntrinsics() {
 }
 
 }  // namespace
+
+// The symbol half, across the seam. `Reflect.ownKeys` is defined over BOTH
+// halves of 6.1.7.1 and lives in rt_reflect.cpp, so the one function that
+// knows where a receiver keeps its symbol keys is reached rather than copied.
+uint64_t rtObjectGetOwnPropertySymbols(uint64_t a, uint64_t b, uint32_t argc,
+                                       const uint64_t* argv) {
+    return objectGetOwnPropertySymbols(a, b, argc, argv);
+}
 
 Value rtObjectNamespace() {
     ensureObjectIntrinsics();

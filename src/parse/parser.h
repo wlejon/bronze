@@ -98,6 +98,13 @@ private:
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
+    // The token the cursor just moved PAST. A node's `span.end` used to be
+    // `peek().span.begin` — the start of the next token — which swept the
+    // whitespace and any comment between the two into the node. That is
+    // invisible in a diagnostic, which only ever renders the start, but
+    // `Function.prototype.toString` returns the span's bytes verbatim, and
+    // the trailing `/* ... */` came back with them.
+    const Token& previous() const { return tokens_[pos_ > 0 ? pos_ - 1 : 0]; }
     bool check(TokenKind kind) const { return peek().kind == kind; }
     bool match(TokenKind kind);
     const Token* expect(TokenKind kind, const char* what);
@@ -312,8 +319,10 @@ private:
     // same seam parseMethodTail is one method for. `clearSuper` is the
     // object-literal half of that seam: a literal's method must not inherit
     // the enclosing class's `super`, a class's must keep it.
+    // `defSpan` is the `async` keyword's, which is where the method's SOURCE
+    // TEXT begins even though its name is already consumed.
     std::unique_ptr<ast::FunctionExpr> parseAsyncMethodTail(const std::string& name,
-                                                            Span nameSpan, bool clearSuper,
+                                                            Span defSpan, bool clearSuper,
                                                             bool isGenerator = false);
 
     // --- parser_strict.cpp: the Directive Prologue and the early errors -----

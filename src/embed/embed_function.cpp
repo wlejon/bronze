@@ -73,7 +73,8 @@ Value makeFunction(NativeFn fn, uint32_t arity) {
     // then read the environment through the root — the allocation can collect,
     // and a copy taken before it would point into dead from-space.
     FunctionHeader* fnObj =
-        FunctionHeader::create(runtime::rtHeap(), hostTrampoline, Value::fromUndefined(), arity);
+        FunctionHeader::create(runtime::rtHeap(), hostTrampoline, Value::fromUndefined(), arity,
+                               BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE);
     fnObj->env_record = env.get();
     fnObj->header.flags = HeapKind::Function;
     // No name key and no length, like every native builtin: `f.name` on a

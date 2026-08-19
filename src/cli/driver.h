@@ -42,6 +42,14 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // (The manifest below is the third; it is derived from the entry too, so the
 // property that matters — no two modules collide — is unchanged.)
 //
+// `retainFnSource` embeds each source file in the image so that
+// `Function.prototype.toString` returns the text the language says it returns.
+// On by default, because the alternative — `[native code]` for a function that
+// HAS source — is a wrong answer no caller can detect. `--no-fn-source` turns
+// it off for a build that would rather have the bytes back, and then a
+// `toString` of a compiled function is a TypeError naming the flag rather than
+// the same wrong answer arriving quietly.
+//
 // `emitShared` links a LOADABLE MODULE instead of an executable: the same
 // object, linked with /DLL or -shared against the SHARED bronze runtime, so a
 // host opens it at run time rather than at its own link step. bronze_abi.h's
@@ -52,7 +60,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
              bool inferStats = false, std::string* statsOut = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
-             const std::string& entrySymbol = {}, bool emitShared = false);
+             const std::string& entrySymbol = {}, bool emitShared = false,
+             bool retainFnSource = true);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

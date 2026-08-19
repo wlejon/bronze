@@ -1,0 +1,12 @@
+Infinity NaN undefined
+true true
+false false false
+number 42
+42
+undefined
+ReferenceError
+undefined
+ReferenceError
+guarded
+true
+true function

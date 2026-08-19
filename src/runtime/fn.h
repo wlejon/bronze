@@ -61,7 +61,19 @@ struct FunctionHeader {
     // count from `arity` above and is why it is a second field rather than a
     // reuse of it. `function f(a, b = 1, ...c)` pads to 2 and has length 1.
     uint32_t length{0};
-    bool is_generator{false};
+    // The BRONZE_ABI_FN_FLAG_* byte the compiler handed `create` — what the
+    // SOURCE FORM decided about this object, which the header could not
+    // otherwise know: an arrow, a method and a plain function expression are
+    // the same code pointer with the same parameters, and only one of the
+    // three is a constructor. The ABI header carries the bit meanings and why
+    // they are not derivable here.
+    //
+    // A byte where `is_generator` was a bool, at the same offset: the generator
+    // question was always one of these — `Object.prototype.toString` asks it —
+    // and the async and constructibility answers arrive from the same place at
+    // the same moment, so the three sharing a field is what stops one of them
+    // being set and another forgotten.
+    uint8_t function_flags{BRONZE_ABI_FN_FLAGS_ORDINARY};
     // Set by bronze_construct's ordinary path and nothing else: this function
     // object has been constructed once as a PLAIN constructor — not bound, not
     // a primitive-wrapper intrinsic — and its prototype/instance_shape pair
@@ -111,9 +123,53 @@ struct FunctionHeader {
     // create() zeroes these, so the word is a small integer, never a
     // plausible pointer.
     uint8_t padding_to_value_scan[4]{};
+    // This function object's own [[Prototype]], or UNDEFINED for "whatever the
+    // intrinsic default for its kind is" — %Function.prototype% for an
+    // ordinary function, %GeneratorFunction.prototype% for a generator, and so
+    // on (builtin_object.cpp's `rtShapelessPrototypeOf` picks between them).
+    //
+    // It is a stored field because exactly one thing writes it and nothing can
+    // derive it: 15.7.14 step 6 makes the BASE CONSTRUCTOR the derived class's
+    // [[Prototype]], and `class D extends A` is the only syntax that produces
+    // a function whose prototype is not its kind's default. Static inheritance
+    // itself does not need this — `bronze_class_extends` links the two
+    // statics OBJECTS, which is what makes `D.staticOfA()` resolve — so what
+    // was missing was only the answer to `Object.getPrototypeOf(D)`, which
+    // reported %Function.prototype% for every class in the program.
+    //
+    // Eight bytes on every function object, closures in loops included. The
+    // alternative was to recover the link by reading `D.prototype`'s own
+    // prototype's `constructor` back, and that is a different question: a
+    // program may reassign either, and 10.1.1's [[Prototype]] is fixed at
+    // class definition and answers whatever it was given.
+    Value parent{Value::fromUndefined()};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
-                                  Value env_record = Value::fromUndefined(), uint32_t arity = 0);
+                                  Value env_record = Value::fromUndefined(), uint32_t arity = 0,
+                                  uint32_t function_flags = BRONZE_ABI_FN_FLAGS_ORDINARY);
+
+    // 10.2.2's two answers, asked of the object. `hasConstruct` gates
+    // `bronze_construct`; `hasPrototypeProperty` gates whether one is ever
+    // materialised, and they are separate because a generator function answers
+    // false and true.
+    bool hasConstruct() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_CONSTRUCT) != 0;
+    }
+    bool hasPrototypeProperty() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_PROTOTYPE) != 0;
+    }
+    bool isGeneratorFunction() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_GENERATOR) != 0;
+    }
+    bool isAsyncFunction() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_ASYNC) != 0;
+    }
+    // Not compiled from source text, so 20.2.3.5's NativeFunction string is
+    // the whole of what `toString` can say about it — and the absence of
+    // source for one of these is not a gap to report.
+    bool isNativeCode() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0;
+    }
 
     Value call(Value thisArg, uint32_t argc, Value* argv) const;
 };

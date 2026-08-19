@@ -122,6 +122,11 @@ std::optional<il::Module> Lowerer::lower() {
             // `returnsAValue` is false for `async function f() { await g(); }`
             // and the factory still returns a value.
             if (fnDecl->isAsync) fn.returnType = il::Type::Dynamic;
+            fn.fnFlags = functionObjectFlags(ast::FunctionKind::Normal, fnDecl->isGenerator,
+                                             fnDecl->isAsync);
+            fn.sourceFile = fnDecl->span.file;
+            fn.sourceBegin = fnDecl->span.begin;
+            fn.sourceEnd = fnDecl->span.end;
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));
@@ -256,6 +261,18 @@ std::optional<il::Module> Lowerer::lower() {
     // The site counter is now the size of a real allocation: the backend emits
     // exactly this many IC entries as a global array in the object file.
     ilModule_.icSiteCount = icSiteCounter_;
+    ilModule_.templateSiteCount = templateSiteCounter_;
+    // Every file, whole, in SourceSet order — the order `Span::file` indexes.
+    // Files a function was never lowered from are carried too: the alternative
+    // is a remap, and the only file that can be present without a function in
+    // it is one that declared none, which costs nothing the backend does not
+    // then drop (it emits a blob only for a file some function names).
+    if (sources_) {
+        ilModule_.sourceTexts.reserve(sources_->size());
+        for (size_t i = 0; i < sources_->size(); ++i) {
+            ilModule_.sourceTexts.emplace_back(sources_->at(static_cast<uint16_t>(i)).text());
+        }
+    }
     return ilModule_;
 }
 

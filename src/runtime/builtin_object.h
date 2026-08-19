@@ -72,6 +72,14 @@ std::string rtObjectKeyTextOf(Value keyVal);
 uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descriptors);
 
+// 20.1.2.11 Object.getOwnPropertySymbols — the SYMBOL half of 6.1.7.1
+// OwnPropertyKeys, where `getOwnPropertyNames` above is the string half.
+// Exported for `Reflect.ownKeys` (28.1.11), which is the one member that wants
+// BOTH halves in 6.1.7.1's order; building its answer from the same two
+// functions the `Object` namespace exposes is what stops a symbol-keyed
+// property from being visible to one and not the other.
+uint64_t rtObjectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+
 // The four descriptor members themselves, in the shape the namespace table
 // installs them in.
 uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);

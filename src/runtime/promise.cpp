@@ -301,7 +301,8 @@ void rtPerformPromiseThen(Rooted<Value>& promise, Rooted<Value>& onFulfilled,
 
 Value rtMakeNativeClosure(NativeFunctionCode code, Rooted<Value>& env, uint32_t arity) {
     FunctionHeader* fn =
-        FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity);
+        FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity,
+                               BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE);
     fn->env_record = env.get();
     fn->header.flags = HeapKind::Function;
     return Value::fromObject(fn);

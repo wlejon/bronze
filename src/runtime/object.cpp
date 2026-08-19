@@ -403,7 +403,20 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (!holder) break;
             PropertyInfo info;
             if (!holder->shape || !holder->shape->lookupProperty(prop_name, info)) continue;
-            if (!info.accessor) break;  // shadowed by the own property created below
+            if (!info.accessor) {
+                // 10.1.9.2 step 2: an inherited NON-WRITABLE data property
+                // refuses the write outright. It does not merely fail to be
+                // shadowed — OrdinarySetWithOwnDescriptor reaches step 2.a with
+                // the PARENT's descriptor and returns false there, so no own
+                // property is created and a strict assignment throws. A
+                // WRITABLE one is shadowed by the own property created below,
+                // which is the case this loop used to be the whole of.
+                if (!info.writable) {
+                    if (refused) *refused = SetRefusal::NotWritable;
+                    return this;
+                }
+                break;
+            }
             bool crossedDictionary = false;
             if (ic && shape && !shape->isDictionary() &&
                 cachedProtoHolder(depth, crossedDictionary) == holder) {

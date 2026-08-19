@@ -97,12 +97,13 @@ const char* opName(Op op) {
         case Op::ImportMeta: return "import.meta";
         case Op::SuperCall: return "call.super";
         case Op::SuperCallSpread: return "call.super.spread";
+        case Op::TemplateCached: return "template.cached";
         case Op::TemplateObject: return "template.object";
         case Op::ArrayAppendHole: return "array.append.hole";
         case Op::PropDelete: return "prop.delete";
         case Op::ElemDelete: return "elem.delete";
         case Op::GlobalGet: return "global.get";
-        case Op::RefError: return "ref.error";
+        case Op::ResolveName: return "name.resolve";
         case Op::ImmutableAssign: return "immutable.assign";
         case Op::ClassExtend: return "class.extend";
         case Op::PrivateNew: return "private.new";
@@ -221,6 +222,9 @@ bool canThrow(const Instruction& inst) {
         case Op::ElemSetTyped:
         // A machine-number math kernel: no coercion ladder, no user code.
         case Op::MathUnary:
+        // One aligned load from the module's own template-slot table, at an
+        // address the compiler already proved in range.
+        case Op::TemplateCached:
             return false;
         case Op::Add:
         // The rest of the arithmetic and bitwise family, for the same reason
@@ -446,10 +450,14 @@ std::string print(const Module& module) {
                         out += "array.append.hole %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
+                    case Op::TemplateCached:
+                        out += "template.cached " + std::to_string(inst.immI32);
+                        break;
                     case Op::TemplateObject:
                         out += "template.object %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", %" +
-                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0);
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", " + std::to_string(inst.immI32);
                         break;
                     case Op::SuperCall: {
                         out += "call.super";
@@ -623,7 +631,7 @@ std::string print(const Module& module) {
                         break;
                     // The private-element family, which prints its operands
                     // and — for the two that can raise — the NAME the
-                    // TypeError would carry, for the reason ref.error prints
+                    // TypeError would carry, for the reason name.resolve prints
                     // one: which private name was reached IS the instruction.
                     case Op::PrivateNew:
                         out += "private.new";
@@ -652,21 +660,20 @@ std::string print(const Module& module) {
                                     : std::string("?")) +
                                "\", " + std::to_string(inst.immI32);
                         break;
-                    // The NAME, not the key index: which global is being
-                    // resolved is the whole content of the instruction, and
-                    // an index would make the dump move whenever an
-                    // unrelated property key was added ahead of it.
                     // The NAME for the same reason `global.get` prints one:
-                    // which name failed to resolve IS the instruction.
-                    case Op::RefError:
-                        out += "ref.error \"" +
+                    // which name the closed ladder could not settle IS the
+                    // instruction. The trailing flag is 13.5.3's soft form —
+                    // a bare `typeof`, which answers "undefined" for a miss
+                    // where every other position raises.
+                    case Op::ResolveName:
+                        out += "name.resolve \"" +
                                (inst.keyIndex < module.keyConstants.size()
                                     ? module.keyConstants[inst.keyIndex]
                                     : std::string("?")) +
-                               "\"";
+                               "\"" + (inst.immI32 != 0 ? ", soft" : "");
                         break;
-                    // The NAME for the same reason ref.error prints one: which
-                    // binding was written to IS the instruction.
+                    // The NAME for the same reason name.resolve prints one:
+                    // which binding was written to IS the instruction.
                     case Op::ImmutableAssign:
                         out += "immutable.assign \"" +
                                (inst.keyIndex < module.keyConstants.size()
@@ -708,7 +715,7 @@ std::string print(const Module& module) {
                                std::to_string(inst.envDepth) + ", " +
                                std::to_string(inst.envIndex);
                         break;
-                    // The NAME, for the reason `ref.error` prints one: which
+                    // The NAME, for the reason `name.resolve` prints one: which
                     // binding was read inside its dead zone IS the instruction.
                     case Op::EnvGetTdz:
                         out += "env.get.tdz %" +

@@ -1,0 +1,13 @@
+GeneratorFunction AsyncFunction AsyncGeneratorFunction
+false false false
+true true
+true
+true
+function function
+false
+false true
+true
+true
+object
+[object GeneratorFunction] [object AsyncFunction] [object AsyncGeneratorFunction] [object Function]
+TypeError

@@ -286,13 +286,29 @@ bool verify(const Module& module, DiagnosticSink& diags) {
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
-                if (inst.op != Op::PropGet && inst.op != Op::PropSet) continue;
-                if (inst.icIndex >= module.icSiteCount) {
+                if (inst.op == Op::PropGet || inst.op == Op::PropSet) {
+                    if (inst.icIndex >= module.icSiteCount) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " names inline-cache site " +
+                                                std::to_string(inst.icIndex) +
+                                                ", past the module's site count " +
+                                                std::to_string(module.icSiteCount));
+                        return false;
+                    }
+                    continue;
+                }
+                // The template-slot table is the same kind of fixed-size global
+                // array, so an index past the count is the same out-of-bounds
+                // store — checked here for the same reason and not in the
+                // backend.
+                if (inst.op != Op::TemplateCached && inst.op != Op::TemplateObject) continue;
+                if (inst.immI32 < 0 ||
+                    static_cast<uint32_t>(inst.immI32) >= module.templateSiteCount) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
-                                            " names inline-cache site " +
-                                            std::to_string(inst.icIndex) +
+                                            " names template site " +
+                                            std::to_string(inst.immI32) +
                                             ", past the module's site count " +
-                                            std::to_string(module.icSiteCount));
+                                            std::to_string(module.templateSiteCount));
                     return false;
                 }
             }

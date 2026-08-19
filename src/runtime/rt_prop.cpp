@@ -440,6 +440,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
                        "intrinsic; its methods are answered by the property path)")
                           .c_str());
             }
+            // An arrow, a method, an accessor and an async function have NO
+            // `prototype` property at all (15.3.4, 15.4.4, 15.8.4 build them
+            // with no CreateMethodProperty step for it), so the read is
+            // `undefined` and — because the slot stays empty — nothing later
+            // hands `new` an instance prototype either.
+            if (!recv.get().asObject<FunctionHeader>()->hasPrototypeProperty()) {
+                return Value::fromUndefined().rawBits();
+            }
             rtEnsureFunctionPrototype(recv);
             return recv.get().asObject<FunctionHeader>()->prototype.rawBits();
         }
@@ -523,6 +531,16 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // refused BY NAME rather than falling through to `undefined` the way
         // every other unknown member of a function object does.
         if (rtIsPromiseConstructor(recv.get())) rtCheckPromiseStaticMember(keyStr);
+        // `constructor` for the three forms that do not inherit it from
+        // %Function.prototype%: a generator function's is %GeneratorFunction%,
+        // not `Function`, and the table below cannot tell them apart because
+        // it is asked by KEY and never sees the receiver. Answered `undefined`
+        // for an ordinary function, which falls straight through to it.
+        if (keyStr == "constructor") {
+            if (Value ctor = rtFunctionKindConstructor(recv.get()); !ctor.isUndefined()) {
+                return ctor.rawBits();
+            }
+        }
         // After the own properties above, because a static named `call` shadows
         // the inherited one — which is the ordinary rule, and the reason this
         // is not read first even though it is the cheaper lookup.
@@ -589,6 +607,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
     if (result.isUndefined()) {
+        rtFunctionKindCheckMissingMember(objRoot.get(), keyStr);
         rtMathCheckMissingMember(objRoot.get(), keyStr);
         rtAtomicsCheckMissingMember(objRoot.get(), keyStr);
         rtObjectCheckMissingMember(objRoot.get(), keyStr);

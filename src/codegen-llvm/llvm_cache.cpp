@@ -52,7 +52,7 @@ llvm::Value* emitGlobalGetCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
 llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                          const ModuleTables& tables, llvm::Function* wrapper,
                                          uint32_t arity, uint32_t length, uint32_t nameKey,
-                                         uint32_t slot) {
+                                         uint32_t fnFlags, uint32_t slot) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -63,6 +63,7 @@ llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFn
         return builder.CreateCall(abi.bronze_function_singleton,
                                   {wrapper, builder.getInt32(arity), builder.getInt32(length),
                                    emitKeyId(builder, tables, nameKey),
+                                   builder.getInt32(static_cast<int32_t>(fnFlags)),
                                    llvm::ConstantPointerNull::get(ptrTy)});
     }
 
@@ -90,7 +91,8 @@ llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFn
     llvm::Value* slowVal = builder.CreateCall(
         abi.bronze_function_singleton,
         {wrapper, builder.getInt32(arity), builder.getInt32(length),
-         emitKeyId(builder, tables, nameKey), codePtr});
+         emitKeyId(builder, tables, nameKey), builder.getInt32(static_cast<int32_t>(fnFlags)),
+         codePtr});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);

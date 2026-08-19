@@ -9,6 +9,31 @@
 
 namespace bronze::lower {
 
+// 10.2.2 CreateDynamicFunction's table, read the other way round: which of the
+// forms gets [[Construct]], and which gets an own `prototype`.
+//
+// The two answers are NOT the same question, and the generator forms are why.
+// `function* g() {}` has a `prototype` — the object every generator it makes
+// inherits from (27.5.1) — and is not a constructor: `new g()` is a TypeError.
+// An ASYNC function has neither, and an async GENERATOR has the prototype
+// again. A method, an accessor and an arrow have neither whatever else is true
+// of them, because 15.4.4 and 15.3.4 build them with no `prototype` step at
+// all.
+uint32_t functionObjectFlags(ast::FunctionKind kind, bool isGenerator, bool isAsync) {
+    uint32_t flags = 0;
+    if (isGenerator) flags |= BRONZE_ABI_FN_FLAG_GENERATOR;
+    if (isAsync) flags |= BRONZE_ABI_FN_FLAG_ASYNC;
+    const bool ordinaryForm =
+        kind == ast::FunctionKind::Normal || kind == ast::FunctionKind::ClassConstructor;
+    if (kind == ast::FunctionKind::ClassConstructor) flags |= BRONZE_ABI_FN_FLAG_CLASS_CTOR;
+    // A generator's prototype is not the constructor's: it is the object its
+    // generator instances inherit from, which is why the two bits part company
+    // here and nowhere else.
+    if (isGenerator || (ordinaryForm && !isAsync)) flags |= BRONZE_ABI_FN_FLAG_PROTOTYPE;
+    if (ordinaryForm && !isGenerator && !isAsync) flags |= BRONZE_ABI_FN_FLAG_CONSTRUCT;
+    return flags;
+}
+
 // The globals bronze provides, resolved by name because there is no global
 // object to look them up in. The builtin list is closed: a free identifier
 // that is not on it stays a compile error, so adding a builtin is a

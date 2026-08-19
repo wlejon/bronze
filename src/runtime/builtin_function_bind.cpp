@@ -141,7 +141,14 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
     // The same shape as bronze_create_function: allocate first, then read the
     // environment through its root — the allocation can collect.
     FunctionHeader* fn =
-        FunctionHeader::create(rtHeap(), boundCallTrampoline, Value::fromUndefined(), 0);
+        // NATIVE alone: a bound function exotic object has no `prototype`
+        // property (10.4.1 lists only `length` and `name`), and its
+        // [[Construct]] is the TARGET's — `bronze_construct` reads it off the
+        // target a few lines into its bound-function branch, before it ever
+        // asks this header. So both of the ordinary bits would be answers
+        // about the wrong function.
+        FunctionHeader::create(rtHeap(), boundCallTrampoline, Value::fromUndefined(), 0,
+                               BRONZE_ABI_FN_FLAG_NATIVE);
     fn->env_record = env.get();
     fn->header.flags = HeapKind::Function;
     Rooted<Value> fnRoot{Value::fromObject(fn)};

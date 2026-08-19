@@ -34,6 +34,6 @@ llvm::Value* emitGlobalGetCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
 llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                          const ModuleTables& tables, llvm::Function* wrapper,
                                          uint32_t arity, uint32_t length, uint32_t nameKey,
-                                         uint32_t slot);
+                                         uint32_t fnFlags, uint32_t slot);
 
 }  // namespace bronze::codegen_llvm

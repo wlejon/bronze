@@ -469,6 +469,28 @@ struct Param {
     Span span;
 };
 
+// Which of ECMA-262 10.2's function forms the source wrote.
+//
+// It exists because two facts about a function object are decided by the
+// SYNTAX that produced it and by nothing else: whether the object has
+// [[Construct]], and whether it gets an own `prototype` property. `new
+// (() => {})` is a TypeError and `({ m(){} }).m.prototype` is `undefined`
+// (15.4.4 gives a MethodDefinition neither), while `function f(){}` has both —
+// and nothing downstream of the parser can tell those apart, because every one
+// of them is the same node with the same body.
+//
+// `isGenerator` and `isAsync` ride BESIDE this rather than in it: they are
+// orthogonal to the form (`{ *m(){} }` is a generator method, `async () => {}`
+// an async arrow), and they modify the two answers rather than replacing them
+// — a generator has a `prototype` and is still not a constructor.
+enum class FunctionKind : uint8_t {
+    Normal,            // `function f() {}`, `function () {}`
+    Arrow,             // `() => {}`
+    Method,            // `{ m() {} }`, `class { m() {} }`, a static block
+    Accessor,          // `get x() {}` / `set x(v) {}`
+    ClassConstructor,  // `class C { constructor() {} }`, and the synthesized one
+};
+
 struct FunctionExpr final : Expr {
     std::string name;
     std::vector<Param> params;
@@ -499,10 +521,14 @@ struct FunctionExpr final : Expr {
     // machine as a generator — an `await` suspends exactly as a `yield` does —
     // with a different driver: calling it builds the machine AND a promise,
     // runs the body to its first await synchronously, and settles the promise
-    // with however the walk ends (src/lower/lower_async.cpp). Never set
-    // together with `isGenerator`: async generators are refused by name in the
-    // parser.
+    // with however the walk ends (src/lower/lower_async.cpp). Set TOGETHER with
+    // `isGenerator` for an async generator, whose machine is both.
     bool isAsync = false;
+    // The syntactic form, and through it [[Construct]] and `prototype` — see
+    // FunctionKind above. `isArrow` is the one flag this duplicates, and it
+    // stays because half the compiler asks about `this` capture rather than
+    // about constructibility; the two are set together at every parser site.
+    FunctionKind kind = FunctionKind::Normal;
     void accept(Visitor& v) const override;
 };
 

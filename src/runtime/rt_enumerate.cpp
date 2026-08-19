@@ -23,8 +23,11 @@
 #include "runtime/gc.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/builtin_object.h"
+#include "runtime/exception.h"
 #include "runtime/profile.h"
 #include "runtime/namespace.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
@@ -100,6 +103,103 @@ ObjectHeader* namedPropertyHolder(Value v) {
     return nullptr;
 }
 
+// Is this key already in the first `count` elements of `list`? The string
+// comparison the arena-key walk below does with `alreadySeen`, over HEAP
+// strings instead — which is what a proxy level forces: a trap's key list is
+// whatever the handler built, so there is no interned form to compare
+// pointers with.
+bool listHasKey(Rooted<Value>& list, uint32_t count, Value key) {
+    StringHeader* wanted = key.asString<StringHeader>();
+    for (uint32_t i = 0; i < count; ++i) {
+        Value seen = list.get().asObject<ArrayHeader>()->getElem(i);
+        if (seen.isString() && seen.asString<StringHeader>()->equals(*wanted)) return true;
+    }
+    return false;
+}
+
+// 14.7.5.6 EnumerateObjectProperties spelled out over the INTERNAL METHODS,
+// for a chain that has a Proxy somewhere in it.
+//
+// The ordinary walk above reads shape keys directly, which is both faster and
+// impossible here: a proxy's own keys are the `ownKeys` trap's answer and its
+// enumerability is the `getOwnPropertyDescriptor` trap's, so each level is two
+// calls into user code that allocate and can throw. That is also why this walk
+// keeps TWO lists. The specification's `visited` set records every own string
+// key a level reports, enumerable or not, and only the enumerable ones are
+// yielded — so a non-enumerable own property SHADOWS an inherited enumerable
+// one of the same name rather than being skipped past. Collapsing the two into
+// one list would let the inherited one through.
+uint64_t proxyChainForInKeys(Value receiver) {
+    Rooted<Value> level{receiver};
+    Rooted<Value> visited{Value(bronze_create_array(0))};
+    Rooted<Value> out{Value(bronze_create_array(0))};
+    uint32_t seenCount = 0;
+    uint32_t at = 0;
+    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
+        if (!level.get().isObject()) break;
+        const bool isProxy =
+            level.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags;
+        if (!isProxy) {
+            // The rest of the chain is ordinary. Its own keys are read
+            // straight off the shapes, which is the walk `bronze_for_in_keys`
+            // takes for a receiver with no proxy in it — asked here for both
+            // enumerabilities so the shadowing rule above still holds across
+            // the boundary.
+            ObjectHeader* holder = namedPropertyHolder(level.get());
+            if (!holder) break;
+            // Both lists are built BEFORE a single allocation, which is what
+            // lets `holder` stay a raw pointer across the walk: the keys are
+            // arena-interned and immortal, and the flags are read off the same
+            // shape the keys came from. The copying loop below allocates on
+            // every key and touches neither.
+            const std::vector<StringHeader*> levelKeys =
+                rtOwnStringKeysOrdered(holder, /*enumerableOnly=*/false);
+            std::vector<bool> levelEnumerable;
+            levelEnumerable.reserve(levelKeys.size());
+            for (StringHeader* key : levelKeys) {
+                PropertyInfo info;
+                levelEnumerable.push_back(holder->shape != nullptr &&
+                                          holder->shape->lookupProperty(
+                                              PropertyKey::forString(key), info) &&
+                                          info.enumerable);
+            }
+            ObjectHeader* next = holder->protoAncestor(1);
+            Rooted<Value> nextLevel{next ? Value::fromObject(next) : Value::fromNull()};
+            for (size_t i = 0; i < levelKeys.size(); ++i) {
+                Rooted<Value> copy{rtCopyKeyToHeap(levelKeys[i])};
+                if (listHasKey(visited, seenCount, copy.get())) continue;
+                visited.get().asObject<ArrayHeader>()->setElem(rtHeap(), seenCount++, copy);
+                if (!levelEnumerable[i]) continue;
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, copy);
+            }
+            if (!nextLevel.get().isObject()) break;
+            level.set(nextLevel.get());
+            continue;
+        }
+
+        Rooted<Value> keys{rtProxyOwnKeys(level.get())};
+        if (rtExceptionPending()) return out.get().rawBits();
+        const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
+        for (uint32_t ki = 0; ki < keyCount; ++ki) {
+            Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(ki)};
+            // A symbol key is not a property NAME, and 14.7.5.6 yields names.
+            if (!key.get().isString()) continue;
+            if (listHasKey(visited, seenCount, key.get())) continue;
+            visited.get().asObject<ArrayHeader>()->setElem(rtHeap(), seenCount++, key);
+            OwnPropertyDetail found;
+            const bool present = rtProxyGetOwnProperty(level.get(), key.get(), found);
+            if (rtExceptionPending()) return out.get().rawBits();
+            if (!present || !found.enumerable) continue;
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        Value proto = rtProxyGetPrototypeOf(level.get());
+        if (rtExceptionPending()) return out.get().rawBits();
+        if (!proto.isObject()) break;
+        level.set(proto);
+    }
+    return out.get().rawBits();
+}
+
 // An empty array, which is what a nullish receiver enumerates: ECMA-262
 // 14.7.5.5 returns an empty completion for null and undefined rather than
 // throwing, and a program that writes `for (const k in maybe)` depends on it.
@@ -173,6 +273,15 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // same list and the same order `Object.keys` reports and is answered by the
     // same function so the two cannot drift.
     if (rtIsModuleNamespace(v)) return bronze_object_keys(objBits);
+
+    // A PROXY has no storage of its own to read: 10.5.11 makes its own keys the
+    // `ownKeys` trap's answer, so the shape walk below would find nothing and
+    // report a proxy over `{a: 1}` as having no properties at all. The
+    // trap-driven walk answers instead — and answers for the whole chain,
+    // because a proxy's [[GetPrototypeOf]] is a trap too.
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return proxyChainForInKeys(v);
+    }
 
     // A number, a boolean, an ArrayBuffer: no own enumerable properties, and
     // no prototype bronze models as an object, so nothing to visit.

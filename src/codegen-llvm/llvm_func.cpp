@@ -1,6 +1,7 @@
 #include "codegen-llvm/llvm_func.h"
 
 #include <string>
+#include <vector>
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Type.h>
@@ -286,6 +287,54 @@ void FunctionEmitter::createBlockPhis() {
 // immediate everywhere; only the value handed to a helper is the interned id.
 // Two modules that both mention "position" therefore agree on the property, and
 // two modules that number the same string differently no longer collide.
+// The source text of every function this module compiled, as one read-only
+// blob per FILE plus a table of (call wrapper, byte range) pairs into it.
+//
+// One blob per file rather than one string per function is the whole design:
+// the ~3000 functions of the three.js graph are written in 28 files that
+// overlap almost entirely — nested closures live inside the text of the
+// functions containing them — so per-function strings would emit those 1.6 MB
+// many times over, where this emits them once.
+//
+// The table is DATA, not a call per function: 3000 registration calls in the
+// module's entry block would be code the program pays for in size whether or
+// not anything ever asks a function for its text. One call per file hands the
+// whole array over at once.
+void FunctionEmitter::emitFunctionSourceTables() {
+    if (shared_.module.sourceTexts.empty()) return;
+    llvm::Module& llvmModule = *llvmFunc_->getParent();
+    for (uint16_t file = 0; file < shared_.module.sourceTexts.size(); ++file) {
+        std::vector<llvm::Constant*> entries;
+        for (size_t i = 0; i < shared_.module.functions.size(); ++i) {
+            const il::Function& fn = shared_.module.functions[i];
+            if (fn.sourceFile != file || fn.sourceEnd <= fn.sourceBegin) continue;
+            if (i >= shared_.wrappers.size() || !shared_.wrappers[i]) continue;
+            entries.push_back(llvm::ConstantExpr::getPtrToInt(shared_.wrappers[i], i64Ty_));
+            entries.push_back(llvm::ConstantInt::get(
+                i64Ty_, (static_cast<uint64_t>(fn.sourceBegin) << 32) |
+                            static_cast<uint64_t>(fn.sourceEnd - fn.sourceBegin)));
+        }
+        // A file every function of which was synthesized — or one that
+        // declared no function at all — emits neither blob nor table, which
+        // is what keeps a build's cost proportional to the source it kept.
+        if (entries.empty()) continue;
+
+        const std::string& text = shared_.module.sourceTexts[file];
+        llvm::Value* textPtr = builder_.CreateGlobalString(text);
+        auto* arrTy = llvm::ArrayType::get(i64Ty_, entries.size());
+        auto* table = new llvm::GlobalVariable(llvmModule, arrTy, /*isConstant=*/true,
+                                               llvm::GlobalValue::PrivateLinkage,
+                                               llvm::ConstantArray::get(arrTy, entries),
+                                               "bronze_fn_sources");
+        table->setAlignment(llvm::Align(8));
+        builder_.CreateCall(
+            shared_.abi.bronze_register_fn_sources,
+            {textPtr, builder_.getInt32(static_cast<uint32_t>(text.size())),
+             builder_.CreateConstInBoundsGEP2_32(arrTy, table, 0, 0),
+             builder_.getInt32(static_cast<uint32_t>(entries.size() / 2))});
+    }
+}
+
 void FunctionEmitter::emitModuleInit() {
     if (func_.name != "main" || blocks_.empty()) return;
     const ModuleTables& tables = shared_.tables;
@@ -299,12 +348,19 @@ void FunctionEmitter::emitModuleInit() {
     }
     builder_.CreateCall(shared_.abi.bronze_register_value_cells,
                         {tables.moduleEnv, builder_.getInt64(1)});
+    if (tables.templateSlots) {
+        builder_.CreateCall(shared_.abi.bronze_register_value_cells,
+                            {builder_.CreateConstInBoundsGEP2_32(
+                                 tables.templateSlots->getValueType(), tables.templateSlots, 0, 0),
+                             builder_.getInt64(tables.templateSlotCount)});
+    }
     if (tables.fnSlots) {
         builder_.CreateCall(shared_.abi.bronze_register_fn_slots,
                             {builder_.CreateConstInBoundsGEP2_32(
                                  tables.fnSlots->getValueType(), tables.fnSlots, 0, 0),
                              builder_.getInt64(tables.fnSlotCount)});
     }
+    emitFunctionSourceTables();
     for (size_t k = 0; k < shared_.module.keyConstants.size(); ++k) {
         llvm::Value* text = builder_.CreateGlobalString(shared_.module.keyConstants[k]);
         llvm::Value* id =

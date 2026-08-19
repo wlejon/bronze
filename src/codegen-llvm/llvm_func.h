@@ -56,6 +56,7 @@ private:
     void emitPrologue();
     void createBlockPhis();
     void emitModuleInit();
+    void emitFunctionSourceTables();
     bool emitBlock(size_t blockIndex);
     bool emitInstruction(const il::Instruction& inst);
 

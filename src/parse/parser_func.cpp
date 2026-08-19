@@ -43,7 +43,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->body = std::move(shell.body);
         fn->strict = shell.strict;
         fn->isGenerator = true;
-        fn->span.end = peek().span.begin;
+        fn->span.end = previous().span.end;
         return fn;
     }
 
@@ -58,7 +58,7 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     }
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 // `x => ...` and `(a, b) => ...`. Deciding between an arrow's parameter
@@ -89,6 +89,7 @@ bool Parser::looksLikeArrow() const {
 ExprPtr Parser::parseArrowFunction() {
     auto fn = std::make_unique<FunctionExpr>();
     fn->isArrow = true;
+    fn->kind = ast::FunctionKind::Arrow;
     fn->span.begin = peek().span.begin;
 
     if (check(TokenKind::Identifier)) {
@@ -125,7 +126,7 @@ ExprPtr Parser::parseArrowFunction() {
     }
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 // One parameter list, for every function form there is — declaration,
@@ -202,7 +203,12 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     const bool isGetter = kind == ast::AccessorKind::Getter;
     const char* word = isGetter ? "getter" : "setter";
 
-    Span nameSpan = peek().span;
+    // The `get` or `set` itself: both call sites consume it immediately before
+    // entering, so it is the token behind the cursor here. 15.4.1 makes the
+    // keyword part of the MethodDefinition, so it is part of the text
+    // `Function.prototype.toString` returns — and it has to be read NOW,
+    // before the name below moves the cursor past it.
+    const Span defSpan = previous().span;
     if (check(TokenKind::LBracket)) {
         if (!outKeyExpr) {
             error((std::string("unsupported construct: a computed ") + word +
@@ -235,7 +241,8 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     }
 
     auto fn = std::make_unique<FunctionExpr>();
-    fn->span.begin = nameSpan.begin;
+    fn->span.begin = defSpan.begin;
+    fn->kind = ast::FunctionKind::Accessor;
     fn->name = (outKeyExpr && *outKeyExpr)
                    ? outName
                    : (std::string(isGetter ? "get " : "set ") + outName);
@@ -262,7 +269,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     }
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 
@@ -282,6 +289,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = nameSpan.begin;
     fn->name = name;
+    fn->kind = ast::FunctionKind::Method;
     if (!expect(TokenKind::LParen, "'(' after a method name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after method parameters")) return nullptr;
@@ -298,7 +306,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
 
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 
@@ -341,6 +349,7 @@ ExprPtr Parser::parseFunctionExpr() {
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = kw.span.begin;
+    fn->kind = ast::FunctionKind::Normal;
     const bool isGenerator = match(TokenKind::Star);
 
     if (check(TokenKind::Identifier)) {
@@ -363,7 +372,7 @@ ExprPtr Parser::parseFunctionExpr() {
     fn->body = parseFunctionBody(fn->strict);
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
-    fn->span.end = peek().span.begin;
+    fn->span.end = previous().span.end;
     return fn;
 }
 

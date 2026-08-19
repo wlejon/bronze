@@ -287,6 +287,7 @@ ExprPtr cloneExpr(const Expr& expr) {
         res->strict = fn->strict;
         res->isGenerator = fn->isGenerator;
         res->isAsync = fn->isAsync;
+        res->kind = fn->kind;
         return res;
     }
     if (const auto* ce = dynamic_cast<const ClassExpr*>(&expr)) {

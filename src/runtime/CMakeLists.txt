@@ -29,6 +29,7 @@ bronze_add_module(runtime
         builtin_typed_array_iteration.cpp
         builtin_data_view.cpp
         fn.cpp
+        fn_source.cpp
         builtin_math.cpp
         builtin_generator.cpp
         builtin_async_generator.cpp
@@ -49,6 +50,7 @@ bronze_add_module(runtime
         unicode_case_data_full.cpp
         builtin_string_iterator.cpp
         builtin_function.cpp
+        builtin_function_kinds.cpp
         builtin_function_bind.cpp
         builtin_constructors.cpp
         builtin_wrappers.cpp

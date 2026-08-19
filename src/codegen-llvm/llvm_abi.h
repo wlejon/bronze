@@ -98,6 +98,12 @@ struct ModuleTables {
     // [fnSlotCount x {i64 code, i64 value}]: one cache entry per IL function,
     // so every mention of one declaration shares one line.
     llvm::GlobalVariable* fnSlots = nullptr;
+    // [templateSlotCount x i64]: one Value cell per TAGGED TEMPLATE site,
+    // undefined until the first call through that site builds its object.
+    // 13.2.8.4 makes the object per-site and immortal, so the cell is filled
+    // once and never invalidated — which is what separates it from the caches
+    // above, every one of which can go stale.
+    llvm::GlobalVariable* templateSlots = nullptr;
     // The module scope's environment record, as one Value cell. The top level
     // runs exactly once, so that scope has exactly one activation and its
     // record is a singleton — which is what lets a top-level function
@@ -115,6 +121,7 @@ struct ModuleTables {
     uint32_t keyCount = 0;
     uint32_t globalCacheCount = 0;
     uint32_t fnSlotCount = 0;
+    uint32_t templateSlotCount = 0;
 
     // Module key index -> index into `globalCache`, or kNoGlobalCacheSlot for a
     // key no `global.get` names. Dense over the key pool so the lookup is an
@@ -161,5 +168,10 @@ llvm::Value* globalCacheCellPtr(llvm::IRBuilder<>& builder, const ModuleTables& 
 // Address of the module's fn-singleton entry for `slot`, as the `uint64_t*`
 // `bronze_function_singleton` takes.
 llvm::Value* fnSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables, uint32_t slot);
+
+// The Value cell a tagged-template SITE caches its object in. Null when the
+// module has no tagged template, which is most of them.
+llvm::Value* templateSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                             uint32_t site);
 
 }  // namespace bronze::codegen_llvm

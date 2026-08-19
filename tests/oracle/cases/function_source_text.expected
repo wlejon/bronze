@@ -1,0 +1,22 @@
+function add(a, b) { return a + b; }
+(x) => x * 2
+x => x + 1
+function (q) { return q; }
+class Shape { constructor(n) { this.n = n; } area() { return 0; } }
+area() { return 0; }
+meth(z) { return z; }
+*gm() { yield 1; }
+async am() { return 1; }
+async *agm() { yield 1; }
+get gg() { return 1; }
+set ss(v) { }
+function* gen(i) { yield i; }
+async function aw(v) { return v; }
+function outer() { return function inner(y) { return y; }; }
+function inner(y) { return y; }
+() => i true
+true
+function bound add() { [native code] }
+TypeError
+TypeError
+true

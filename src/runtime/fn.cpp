@@ -6,7 +6,8 @@
 
 namespace bronze {
 
-FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Value env_record, uint32_t arity) {
+FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Value env_record,
+                                       uint32_t arity, uint32_t function_flags) {
     size_t payload_bytes = sizeof(FunctionHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* fn = reinterpret_cast<FunctionHeader*>(raw_hdr);
@@ -18,7 +19,7 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->name = nullptr;
     fn->arity = arity;
     fn->length = 0;
-    fn->is_generator = false;
+    fn->function_flags = static_cast<uint8_t>(function_flags);
     // Explicit, like every field here: the memory is a raw heap block, so a
     // field the constructor-syntax initializers name is still garbage until
     // this function writes it.
@@ -34,6 +35,9 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).
     for (uint8_t& b : fn->padding_to_value_scan) b = 0;
+    // Undefined, not null: null is a legal [[Prototype]] a program can set,
+    // so the "never written" state needs a value of its own.
+    fn->parent = Value::fromUndefined();
     return fn;
 }
 
