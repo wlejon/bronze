@@ -599,4 +599,158 @@ TEST_CASE("virtual module root mapping resolves prefix imports") {
     CHECK(contains(dump, "(function mod1.add"));
 }
 
+TEST_CASE("module root exact-prefix match against a single file target resolves without trailing slash") {
+    Sandbox box("exact_root");
+    std::string threeFile = box.write("vendor/build/three.module.js", "export const REVISION = '185';\n");
+    const std::string entry =
+        box.write("app/main.js", "import { REVISION } from 'three';\nconsole.log(REVISION);\n");
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    modules::ModuleOptions options;
+    options.moduleRoots.push_back({"three", threeFile});
+    auto mod = modules::loadProgram(entry, sources, diags, options);
+    REQUIRE_MESSAGE(mod != nullptr, diags.render(sources));
+    const std::string dump = ast::dump(*mod);
+    CHECK(contains(dump, "(const mod1.REVISION"));
+}
+
+TEST_CASE("module root matches longest prefix when file and directory roots co-exist") {
+    Sandbox box("multi_root");
+    std::string threeFile = box.write("three/build/three.module.js", "export const REVISION = '185';\n");
+    std::string controlsFile =
+        box.write("three/examples/jsm/controls/OrbitControls.js", "export class OrbitControls {}\n");
+    std::filesystem::path jsmDir = std::filesystem::path(controlsFile).parent_path().parent_path();
+
+    const std::string entry = box.write(
+        "app/main.js",
+        "import { REVISION } from 'three';\n"
+        "import { OrbitControls } from 'three/addons/controls/OrbitControls.js';\n"
+        "console.log(REVISION, OrbitControls);\n");
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    modules::ModuleOptions options;
+    // Order in options should not matter: longest prefix match takes precedence
+    options.moduleRoots.push_back({"three", threeFile});
+    options.moduleRoots.push_back({"three/addons/", jsmDir});
+
+    auto mod = modules::loadProgram(entry, sources, diags, options);
+    REQUIRE_MESSAGE(mod != nullptr, diags.render(sources));
+    const std::string dump = ast::dump(*mod);
+    CHECK(contains(dump, "(const mod1.REVISION"));
+    CHECK(contains(dump, "(class mod2.OrbitControls"));
+}
+
+TEST_CASE("module root prefix does not match unrelated package with shared prefix") {
+    Sandbox box("prefix_boundary");
+    std::string threeFile = box.write("three/build/three.module.js", "export const REVISION = '185';\n");
+    const std::string entry = box.write("app/main.js", "import { foo } from 'three-stdlib';\n");
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    modules::ModuleOptions options;
+    options.moduleRoots.push_back({"three", threeFile});
+
+    auto mod = modules::loadProgram(entry, sources, diags, options);
+    CHECK(mod == nullptr);
+    CHECK(diags.hasErrors());
+    std::string err = diags.render(sources);
+    // Should fall through to node_modules lookup rather than claiming three.module.js/-stdlib is no file
+    CHECK(contains(err, "no package named \"three-stdlib\""));
+}
+
+TEST_CASE("loadImportMap resolves relative targets against import map file directory") {
+    Sandbox box("import_map_unit");
+    std::string threeFile = box.write("vendor/build/three.module.js", "export const REVISION = '185';\n");
+    std::string controlsFile =
+        box.write("vendor/examples/jsm/controls/OrbitControls.js", "export class OrbitControls {}\n");
+    std::string mapFile = box.write(
+        "config/importmap.json",
+        "{\n"
+        "  \"imports\": {\n"
+        "    \"three\": \"../vendor/build/three.module.js\",\n"
+        "    \"three/addons/\": \"../vendor/examples/jsm/\"\n"
+        "  }\n"
+        "}\n");
+
+    std::vector<modules::ModuleRoot> roots;
+    std::string err;
+    bool ok = modules::loadImportMap(mapFile, roots, err);
+    REQUIRE_MESSAGE(ok, err);
+    REQUIRE(roots.size() == 2);
+
+    std::error_code ec;
+    std::filesystem::path expectedThree = std::filesystem::weakly_canonical(threeFile, ec);
+    std::filesystem::path expectedJsm =
+        std::filesystem::weakly_canonical(std::filesystem::path(controlsFile).parent_path().parent_path(), ec);
+
+    CHECK(roots[0].prefix == "three");
+    CHECK(roots[0].target == expectedThree);
+    CHECK(roots[1].prefix == "three/addons/");
+    CHECK(roots[1].target == expectedJsm);
+}
+
+TEST_CASE("loadImportMap handles error cases") {
+    Sandbox box("import_map_errors");
+
+    // Non-existent file
+    std::vector<modules::ModuleRoot> roots;
+    std::string err;
+    CHECK_FALSE(modules::loadImportMap(box.write("nonexistent.json", "").substr(0, 5) + "_nope.json", roots, err));
+    CHECK(contains(err, "cannot read import map"));
+
+    // Invalid JSON
+    std::string badJson = box.write("bad.json", "{ imports: invalid }");
+    CHECK_FALSE(modules::loadImportMap(badJson, roots, err));
+    CHECK(contains(err, "is not valid JSON"));
+
+    // Top-level not an object
+    std::string arrayJson = box.write("array.json", "[\"imports\"]");
+    CHECK_FALSE(modules::loadImportMap(arrayJson, roots, err));
+    CHECK(contains(err, "is not a JSON object"));
+
+    // imports not an object
+    std::string nonObjImports = box.write("non_obj_imports.json", "{\"imports\": \"string\"}");
+    CHECK_FALSE(modules::loadImportMap(nonObjImports, roots, err));
+    CHECK(contains(err, "\"imports\""));
+    CHECK(contains(err, "must be a JSON object"));
+
+    // mapping target not a string
+    std::string nonStrTarget = box.write("non_str_target.json", "{\"imports\": {\"three\": 123}}");
+    CHECK_FALSE(modules::loadImportMap(nonStrTarget, roots, err));
+    CHECK(contains(err, "must be a string"));
+}
+
+TEST_CASE("loadProgram with importMapPath integrates resolution end-to-end") {
+    Sandbox box("import_map_e2e");
+    box.write("libs/three.module.js", "export const V = 185;\n");
+    box.write("libs/addons/controls/OrbitControls.js", "export function orbit() { return 100; }\n");
+    std::string mapFile = box.write(
+        "importmap.json",
+        "{\n"
+        "  \"imports\": {\n"
+        "    \"three\": \"./libs/three.module.js\",\n"
+        "    \"three/addons/\": \"./libs/addons/\"\n"
+        "  }\n"
+        "}\n");
+
+    std::string entry = box.write(
+        "src/main.js",
+        "import { V } from 'three';\n"
+        "import { orbit } from 'three/addons/controls/OrbitControls.js';\n"
+        "console.log(V, orbit());\n");
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    modules::ModuleOptions options;
+    options.importMapPath = mapFile;
+
+    auto mod = modules::loadProgram(entry, sources, diags, options);
+    REQUIRE_MESSAGE(mod != nullptr, diags.render(sources));
+    const std::string dump = ast::dump(*mod);
+    CHECK(contains(dump, "(const mod1.V"));
+    CHECK(contains(dump, "(function mod2.orbit"));
+}
+
 

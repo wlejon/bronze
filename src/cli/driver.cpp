@@ -82,6 +82,10 @@ constexpr const char* kUsage =
     "  bronze build <file> -o <output>     Compile JS source to native executable\n"
     "  bronze version                      Print version\n"
     "\n"
+    "Options (types, il, build):\n"
+    "  --module-root <prefix>=<path>       Map module specifier prefix to a path\n"
+    "  --import-map <path>                 Load browser import map JSON file\n"
+    "\n"
     "Options (il, build):\n"
     "  --no-infer                          Skip inference: force every inferred type\n"
     "                                      to dynamic and lower on the uniform\n"
@@ -218,10 +222,11 @@ bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString,
-             const std::vector<modules::ModuleRoot>& moduleRoots) {
+             const std::vector<modules::ModuleRoot>& moduleRoots,
+             const std::string& importMapPath) {
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots, importMapPath});
     if (!astModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -248,7 +253,8 @@ int runTypes(const std::string& sourcePath, std::string* outString,
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
-          const std::vector<modules::ModuleRoot>& moduleRoots) {
+          const std::vector<modules::ModuleRoot>& moduleRoots,
+          const std::string& importMapPath) {
     // The manifest is read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -267,7 +273,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // merged AST module every later stage already understands.
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots, importMapPath});
     if (!astModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -320,7 +326,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool infer, bool timings, bool emitObj, const std::string& hostGlobalsPath,
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
-             const std::string& entrySymbol, bool emitShared, bool retainFnSource) {
+             const std::string& entrySymbol, bool emitShared, bool retainFnSource,
+             const std::string& importMapPath) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -334,6 +341,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)entrySymbol;
     (void)emitShared;
     (void)retainFnSource;
+    (void)importMapPath;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -371,7 +379,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots});
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots, importMapPath});
     timer.mark("load");
     if (!astModule) {
         std::string msg = diags.render(sources);
@@ -555,6 +563,7 @@ int runDriver(int argc, char** argv) {
     if (command == "types") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
+        std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -572,6 +581,15 @@ int runDriver(int argc, char** argv) {
                 size_t eq = val.find('=');
                 if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
                 moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else if (arg == "--import-map") {
+                if (i + 1 < argc) {
+                    importMapPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --import-map\n");
+                }
+            } else if (arg.rfind("--import-map=", 0) == 0) {
+                importMapPath = arg.substr(13);
+                if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
             } else if (sourcePath.empty()) {
                 sourcePath = arg;
             } else {
@@ -579,13 +597,14 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runTypes(sourcePath, nullptr, moduleRoots);
+        return runTypes(sourcePath, nullptr, moduleRoots, importMapPath);
     }
 
     if (command == "il") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string hostGlobalsPath;
+        std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         for (int i = 2; i < argc; ++i) {
@@ -612,6 +631,15 @@ int runDriver(int argc, char** argv) {
                 size_t eq = val.find('=');
                 if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
                 moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else if (arg == "--import-map") {
+                if (i + 1 < argc) {
+                    importMapPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --import-map\n");
+                }
+            } else if (arg.rfind("--import-map=", 0) == 0) {
+                importMapPath = arg.substr(13);
+                if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
             } else if (sourcePath.empty()) {
                 sourcePath = arg;
             } else {
@@ -619,7 +647,7 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots);
+        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath);
     }
 
     if (command == "build") {
@@ -628,6 +656,7 @@ int runDriver(int argc, char** argv) {
         std::string outputPath = "a.exe";
         std::string hostGlobalsPath;
         std::string entrySymbol;
+        std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         bool timings = false;
@@ -681,6 +710,15 @@ int runDriver(int argc, char** argv) {
                 size_t eq = val.find('=');
                 if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
                 moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else if (arg == "--import-map") {
+                if (i + 1 < argc) {
+                    importMapPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --import-map\n");
+                }
+            } else if (arg.rfind("--import-map=", 0) == 0) {
+                importMapPath = arg.substr(13);
+                if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -697,7 +735,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource);
+                        emitShared, retainFnSource, importMapPath);
     }
 
     return fail(kUsage);

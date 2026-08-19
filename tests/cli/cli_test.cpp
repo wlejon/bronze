@@ -256,6 +256,67 @@ TEST_CASE("CLI driver accepts --module-root parameter") {
 
     std::filesystem::remove_all(tempDir, ec);
 }
+
+TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") {
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "test_cli_importmap";
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir / "libs" / "addons" / "controls", ec);
+    std::filesystem::create_directories(tempDir / "app", ec);
+
+    std::filesystem::path threeFile = tempDir / "libs" / "three.module.js";
+    std::filesystem::path controlsFile = tempDir / "libs" / "addons" / "controls" / "OrbitControls.js";
+    std::filesystem::path mapFile = tempDir / "importmap.json";
+    std::filesystem::path appFile = tempDir / "app" / "main.js";
+    std::filesystem::path exePath = tempDir / "app" / "main.exe";
+
+    writeTestFile(threeFile, "export const REVISION = '185';\n");
+    writeTestFile(controlsFile, "export function getControlValue() { return 42; }\n");
+    writeTestFile(mapFile,
+        "{\n"
+        "  \"imports\": {\n"
+        "    \"three\": \"./libs/three.module.js\",\n"
+        "    \"three/addons/\": \"./libs/addons/\"\n"
+        "  }\n"
+        "}\n");
+    writeTestFile(appFile,
+        "import { REVISION } from 'three';\n"
+        "import { getControlValue } from 'three/addons/controls/OrbitControls.js';\n"
+        "console.log(getControlValue());\n");
+
+    std::string typesOutput;
+    int status = bronze::cli::runTypes(appFile.string(), &typesOutput, {}, mapFile.string());
+    CHECK(status == 0);
+    CHECK(typesOutput.find("func mod2.getControlValue()") != std::string::npos);
+    CHECK(typesOutput.find("func main()") != std::string::npos);
+
+    std::string err;
+    int buildStatus = bronze::cli::runBuild(
+        appFile.string(), exePath.string(), &err,
+        /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+        /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
+        /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
+        /*retainFnSource=*/true, mapFile.string());
+
+    REQUIRE_MESSAGE(buildStatus == 0, err);
+    REQUIRE(std::filesystem::exists(exePath));
+
+    std::string output = runAndCaptureOutput(exePath);
+    CHECK(output == "42\n");
+
+    // Test runDriver CLI invocations with --import-map
+    const char* argv1[] = {"bronze", "types", appFile.string().c_str(), "--import-map", mapFile.string().c_str()};
+    CHECK(bronze::cli::runDriver(5, const_cast<char**>(argv1)) == 0);
+
+    std::string eqFlag = "--import-map=" + mapFile.string();
+    const char* argv2[] = {"bronze", "types", appFile.string().c_str(), eqFlag.c_str()};
+    CHECK(bronze::cli::runDriver(4, const_cast<char**>(argv2)) == 0);
+
+    // Test error case with missing import map file
+    const char* argvBad[] = {"bronze", "types", appFile.string().c_str(), "--import-map", "nonexistent.json"};
+    CHECK(bronze::cli::runDriver(5, const_cast<char**>(argvBad)) != 0);
+
+    std::filesystem::remove_all(tempDir, ec);
+}
 #endif
 
 

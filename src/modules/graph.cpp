@@ -355,6 +355,15 @@ private:
 
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
                Graph& out, const ModuleOptions& options) {
+    ModuleOptions effectiveOptions = options;
+    if (!effectiveOptions.importMapPath.empty()) {
+        std::string err;
+        if (!loadImportMap(effectiveOptions.importMapPath, effectiveOptions.moduleRoots, err)) {
+            sources.add(effectiveOptions.importMapPath, "");
+            diags.error(Span{}, err);
+            return false;
+        }
+    }
     std::error_code ec;
     std::filesystem::path entry = std::filesystem::weakly_canonical(entryPath, ec);
     if (ec) entry = entryPath;
@@ -366,7 +375,7 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
         return false;
     }
     uint16_t entryId = 0;
-    if (!Loader(sources, diags, out, options).load(entry, Span{}, entryId)) return false;
+    if (!Loader(sources, diags, out, effectiveOptions).load(entry, Span{}, entryId)) return false;
     return entryId == 0;
 }
 

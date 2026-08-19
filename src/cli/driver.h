@@ -8,7 +8,8 @@
 namespace bronze::cli {
 
 int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
-             const std::vector<modules::ModuleRoot>& moduleRoots = {});
+             const std::vector<modules::ModuleRoot>& moduleRoots = {},
+             const std::string& importMapPath = {});
 
 // `infer == false` skips inference entirely and lowers with the uniform dynamic
 // convention everywhere, reproducing the pre-inference calling convention
@@ -24,7 +25,8 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 // everything else.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
-          const std::vector<modules::ModuleRoot>& moduleRoots = {});
+          const std::vector<modules::ModuleRoot>& moduleRoots = {},
+          const std::string& importMapPath = {});
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -61,7 +63,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              bool inferStats = false, std::string* statsOut = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
              const std::string& entrySymbol = {}, bool emitShared = false,
-             bool retainFnSource = true);
+             bool retainFnSource = true,
+             const std::string& importMapPath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

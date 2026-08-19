@@ -34,7 +34,16 @@ struct ModuleRoot {
 
 struct ModuleOptions {
     std::vector<ModuleRoot> moduleRoots;
+    std::string importMapPath;
 };
+
+// Loads an import map from a JSON file, resolving relative target paths relative
+// to the directory containing the import map JSON file, and appending the resulting
+// ModuleRoot entries to `outRoots`.
+//
+// Returns true on success; on error returns false and sets `err`.
+bool loadImportMap(const std::filesystem::path& path, std::vector<ModuleRoot>& outRoots,
+                   std::string& err);
 
 // Reads, parses and links the graph rooted at `entryPath`. Every file read is
 // appended to `sources` (the entry first, so it is file 0), which the caller

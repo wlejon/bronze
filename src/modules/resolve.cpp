@@ -101,24 +101,41 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
         return false;
     }
 
+    const ModuleRoot* bestRoot = nullptr;
     for (const auto& root : moduleRoots) {
-        if (!root.prefix.empty() && specifier.rfind(root.prefix, 0) == 0) {
-            std::string sub = specifier.substr(root.prefix.size());
-            while (!sub.empty() && (sub[0] == '/' || sub[0] == '\\')) {
-                sub.erase(0, 1);
+        if (root.prefix.empty()) continue;
+        bool matches = false;
+        if (specifier == root.prefix) {
+            matches = true;
+        } else if (specifier.rfind(root.prefix, 0) == 0) {
+            if (root.prefix.back() == '/' || root.prefix.back() == '\\' ||
+                specifier[root.prefix.size()] == '/' || specifier[root.prefix.size()] == '\\') {
+                matches = true;
             }
-            std::error_code ec;
-            std::filesystem::path candidate = root.target / sub;
-            std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
-            if (ec) resolved = candidate;
-            if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
-                                                   root.prefix + "\"",
-                                     span, diags)) {
-                return false;
-            }
-            out = std::move(resolved);
-            return true;
         }
+        if (matches) {
+            if (!bestRoot || root.prefix.size() > bestRoot->prefix.size()) {
+                bestRoot = &root;
+            }
+        }
+    }
+
+    if (bestRoot) {
+        std::string sub = specifier.substr(bestRoot->prefix.size());
+        while (!sub.empty() && (sub[0] == '/' || sub[0] == '\\')) {
+            sub.erase(0, 1);
+        }
+        std::error_code ec;
+        std::filesystem::path candidate = sub.empty() ? bestRoot->target : (bestRoot->target / sub);
+        std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
+        if (ec) resolved = candidate;
+        if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
+                                               bestRoot->prefix + "\"",
+                                 span, diags)) {
+            return false;
+        }
+        out = std::move(resolved);
+        return true;
     }
 
     if (!isRelative(specifier)) {
