@@ -333,6 +333,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)moduleRoots;
     (void)entrySymbol;
     (void)emitShared;
+    (void)retainFnSource;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
