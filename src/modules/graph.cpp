@@ -4,15 +4,40 @@
 // order, and which stays the answer inside a cycle: 16.2.1.5.3 evaluates each
 // member once, on the way out of the walk.
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
 #include "lex/lexer.h"
 #include "modules/graph.h"
 #include "modules/modules.h"
+#include "modules/resolve.h"
 #include "parse/parser.h"
 
 namespace bronze::modules {
+
+// What makes a template-literal specifier globbable. The head is everything
+// before the FIRST interpolation and the tail everything after it — later
+// quasis and later interpolations are folded into the tail's refusal below,
+// because a second `${}` is a second wildcard and one glob cannot say where the
+// first ends.
+//
+// Two rules, both about reach rather than taste: the head must contain a `/`,
+// so the pattern names a directory it can enumerate; and the tail may not,
+// which together with the head's last `/` pins the interpolation inside a
+// single FILENAME. `${x}` filling in `../../etc/passwd` therefore matches
+// nothing — it would have to be the name of a file in that one directory.
+// Backslashes are refused outright on both sides: a specifier is a URL path,
+// and the one place a `\` could appear is a Windows path that leaked in.
+bool dynamicImportPattern(const ast::TemplateLit& tpl, std::string& head, std::string& tail) {
+    if (tpl.exprs.size() != 1 || tpl.quasis.size() != 2) return false;
+    head = tpl.quasis[0];
+    tail = tpl.quasis[1];
+    if (head.find('/') == std::string::npos) return false;
+    if (head.find('\\') != std::string::npos) return false;
+    if (tail.find('/') != std::string::npos || tail.find('\\') != std::string::npos) return false;
+    return true;
+}
 
 namespace {
 
@@ -37,6 +62,8 @@ bool readFile(const std::filesystem::path& path, std::string& out) {
 class DynamicImportFinder : public ast::Visitor {
 public:
     std::vector<std::pair<std::string, Span>> list;
+    // Template-literal specifiers, head and tail, in source order.
+    std::vector<DynamicImportPattern> patterns;
 
     void scan(const ast::Node* n) {
         if (n) n->accept(*this);
@@ -95,6 +122,12 @@ public:
     void visit(const ast::DynamicImportExpr& di) override {
         if (const auto* s = dynamic_cast<const ast::StringLit*>(di.specifier.get())) {
             list.emplace_back(s->value, di.span);
+        } else if (const auto* t = dynamic_cast<const ast::TemplateLit*>(di.specifier.get())) {
+            DynamicImportPattern p;
+            if (dynamicImportPattern(*t, p.head, p.tail)) {
+                p.span = di.span;
+                patterns.push_back(std::move(p));
+            }
         }
         scan(di.specifier.get());
     }
@@ -193,7 +226,7 @@ bool hasModuleDeclaration(const ast::Module& mod) {
     for (const auto& stmt : mod.body) {
         finder.scan(stmt.get());
     }
-    return !finder.list.empty();
+    return !finder.list.empty() || !finder.patterns.empty();
 }
 
 class Loader {
@@ -331,6 +364,54 @@ private:
         for (const auto& item : finder.list) {
             if (!follow(file, item.first, item.second)) return false;
         }
+        for (auto& pattern : finder.patterns) {
+            if (!followPattern(file, pattern)) return false;
+        }
+        return true;
+    }
+
+    // Glob one template-literal specifier and follow every file it matches.
+    //
+    // The directory is the head's, resolved against the importer exactly as a
+    // written specifier would be — so an import map or a module root that
+    // redirects the head redirects the whole pattern. A pattern that matches
+    // nothing is not an error: the program may simply never take that path, and
+    // a compile-time failure would be a stricter rule than the web's, where the
+    // string is not even looked at until it is used.
+    bool followPattern(ModuleFile& file, DynamicImportPattern& pattern) {
+        const size_t slash = pattern.head.find_last_of('/');
+        if (slash == std::string::npos) return true;  // no directory to enumerate
+        const std::string dirSpec = pattern.head.substr(0, slash + 1);
+        const std::string namePrefix = pattern.head.substr(slash + 1);
+
+        std::filesystem::path dir;
+        if (!resolveSpecifierDirectory(dirSpec, file.path, options_.moduleRoots, dir)) return true;
+
+        std::error_code ec;
+        std::vector<std::string> names;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (ec) break;
+            std::error_code kindEc;
+            if (!entry.is_regular_file(kindEc) || kindEc) continue;
+            const std::string name = entry.path().filename().generic_string();
+            if (name.size() <= namePrefix.size() + pattern.tail.size()) continue;
+            if (name.compare(0, namePrefix.size(), namePrefix) != 0) continue;
+            if (name.compare(name.size() - pattern.tail.size(), pattern.tail.size(),
+                             pattern.tail) != 0) {
+                continue;
+            }
+            names.push_back(name);
+        }
+        // Directory order is not defined across filesystems, and the specifier
+        // list reaches the output (it is the load order of these modules), so
+        // it is sorted rather than taken as read.
+        std::sort(names.begin(), names.end());
+        for (const std::string& name : names) {
+            const std::string specifier = dirSpec + name;
+            if (!follow(file, specifier, pattern.span)) return false;
+            pattern.specifiers.push_back(specifier);
+        }
+        file.dynPatterns.push_back(std::move(pattern));
         return true;
     }
 

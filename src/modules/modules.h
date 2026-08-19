@@ -64,4 +64,15 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
                       Span span, DiagnosticSink& diags, std::filesystem::path& out,
                       const std::vector<ModuleRoot>& moduleRoots = {});
 
+// The DIRECTORY a specifier prefix names — `./panels/`, `three/addons/loaders/`
+// — honouring module roots and the import map exactly as a full specifier
+// would. False when the head names no directory, which is deliberately not a
+// diagnosed error: its only caller is the template-literal glob, where "no
+// such directory" and "the glob matched nothing" are the same answer and
+// neither is a reason to fail a build.
+bool resolveSpecifierDirectory(const std::string& dirSpecifier,
+                               const std::filesystem::path& importerPath,
+                               const std::vector<ModuleRoot>& moduleRoots,
+                               std::filesystem::path& out);
+
 }  // namespace bronze::modules

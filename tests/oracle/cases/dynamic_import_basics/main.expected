@@ -4,3 +4,6 @@ imported greet: Hello, Bronze!
 imported math: 30
 imported tag: [object Module]
 caught unresolvable import: TypeError: Cannot resolve module
+non-entry import: bronze reached the lazy module with 7
+non-entry import again: 14
+nested import: R:lazy reached the lazy module with 7

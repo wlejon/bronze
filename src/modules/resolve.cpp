@@ -93,6 +93,75 @@ bool requireExistingFile(const std::filesystem::path& path, const std::string& w
     return false;
 }
 
+namespace {
+
+// The longest module root whose prefix the specifier starts with, on a path
+// boundary — or null when none does. Longest wins so that `three/addons/` beats
+// `three` for a specifier both could claim.
+const ModuleRoot* longestMatchingRoot(const std::string& specifier,
+                                      const std::vector<ModuleRoot>& moduleRoots) {
+    const ModuleRoot* bestRoot = nullptr;
+    for (const auto& root : moduleRoots) {
+        if (root.prefix.empty()) continue;
+        bool matches = false;
+        if (specifier == root.prefix) {
+            matches = true;
+        } else if (specifier.rfind(root.prefix, 0) == 0) {
+            const char after = specifier[root.prefix.size()];
+            const char last = root.prefix.back();
+            if (last == '/' || last == '\\' || after == '/' || after == '\\') matches = true;
+        }
+        if (matches && (!bestRoot || root.prefix.size() > bestRoot->prefix.size())) {
+            bestRoot = &root;
+        }
+    }
+    return bestRoot;
+}
+
+// What a matched root contributes: the specifier's tail joined onto the root's
+// target, canonicalized where it can be.
+std::filesystem::path underRoot(const ModuleRoot& root, const std::string& specifier) {
+    std::string sub = specifier.substr(root.prefix.size());
+    while (!sub.empty() && (sub[0] == '/' || sub[0] == '\\')) sub.erase(0, 1);
+    std::error_code ec;
+    const std::filesystem::path candidate = sub.empty() ? root.target : (root.target / sub);
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
+    return ec ? candidate : resolved;
+}
+
+}  // namespace
+
+// The DIRECTORY a specifier prefix names. Used only by the template-literal
+// glob, which has a head like `./Sidebar.Geometry.` and needs the folder it
+// sits in before it can know what the interpolation could be.
+//
+// Quiet by design — no span, no sink. "That head names no directory" is the
+// same answer as "the glob matched nothing", and neither is a compile error:
+// the program may never take that path, and a browser would not look until it
+// did.
+bool resolveSpecifierDirectory(const std::string& dirSpecifier,
+                               const std::filesystem::path& importerPath,
+                               const std::vector<ModuleRoot>& moduleRoots,
+                               std::filesystem::path& out) {
+    if (dirSpecifier.empty()) return false;
+    if (const ModuleRoot* root = longestMatchingRoot(dirSpecifier, moduleRoots)) {
+        out = underRoot(*root, dirSpecifier);
+    } else if (isRelative(dirSpecifier)) {
+        std::error_code ec;
+        const std::filesystem::path candidate = importerPath.parent_path() / dirSpecifier;
+        const std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
+        out = ec ? candidate : resolved;
+    } else {
+        // A bare specifier names a PACKAGE, and walking node_modules for a
+        // directory is a different question from resolving one to a file —
+        // `exports` maps names, not folders. A glob over one is refused rather
+        // than guessed at.
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::is_directory(out, ec);
+}
+
 bool resolveSpecifier(const std::string& specifier, const std::filesystem::path& importerPath,
                       Span span, DiagnosticSink& diags, std::filesystem::path& out,
                       const std::vector<ModuleRoot>& moduleRoots) {
@@ -101,34 +170,9 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
         return false;
     }
 
-    const ModuleRoot* bestRoot = nullptr;
-    for (const auto& root : moduleRoots) {
-        if (root.prefix.empty()) continue;
-        bool matches = false;
-        if (specifier == root.prefix) {
-            matches = true;
-        } else if (specifier.rfind(root.prefix, 0) == 0) {
-            if (root.prefix.back() == '/' || root.prefix.back() == '\\' ||
-                specifier[root.prefix.size()] == '/' || specifier[root.prefix.size()] == '\\') {
-                matches = true;
-            }
-        }
-        if (matches) {
-            if (!bestRoot || root.prefix.size() > bestRoot->prefix.size()) {
-                bestRoot = &root;
-            }
-        }
-    }
-
+    const ModuleRoot* bestRoot = longestMatchingRoot(specifier, moduleRoots);
     if (bestRoot) {
-        std::string sub = specifier.substr(bestRoot->prefix.size());
-        while (!sub.empty() && (sub[0] == '/' || sub[0] == '\\')) {
-            sub.erase(0, 1);
-        }
-        std::error_code ec;
-        std::filesystem::path candidate = sub.empty() ? bestRoot->target : (bestRoot->target / sub);
-        std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
-        if (ec) resolved = candidate;
+        std::filesystem::path resolved = underRoot(*bestRoot, specifier);
         if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
                                                bestRoot->prefix + "\"",
                                  span, diags)) {

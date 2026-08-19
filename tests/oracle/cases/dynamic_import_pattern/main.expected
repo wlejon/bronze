@@ -1,0 +1,6 @@
+Box: box x2
+Sphere: sphere x2
+label only: Sphere
+escape refused: Cannot resolve module ./panels/Panel.../README.js
+miss rejects: Cannot resolve module ./panels/Panel.Missing.js
+coerced: Box: box x2

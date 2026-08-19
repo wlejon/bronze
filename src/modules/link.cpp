@@ -67,6 +67,19 @@ struct ModuleInfo {
     // local is written by the source; an `export * as ns from` local is not,
     // and gets a name no source can spell.
     std::vector<std::pair<std::string, uint16_t>> namespaceLocals;
+    // One entry per template-literal `import()` the file writes: the name of
+    // the function that turns the runtime string into a promise, and the
+    // (specifier, namespace local) pairs it can answer with. The specifiers are
+    // what the loader's glob found, so the table holds exactly the files that
+    // were on disk at compile time — and a string outside it rejects, which is
+    // what a browser does with a 404.
+    struct DynPicker {
+        std::string local;
+        std::string head;
+        std::string tail;
+        std::vector<std::pair<std::string, std::string>> entries;  // specifier -> ns local
+    };
+    std::vector<DynPicker> dynPickers;
     std::map<std::string, std::string> renames;
 };
 
@@ -92,6 +105,8 @@ private:
     // `const <ns> = { get "a"() { return <canonical a>; },... };` built by
     // generating source and parsing it.
     ast::StmtPtr synthesizeNamespace(uint16_t owner, const std::string& local, uint16_t target);
+    bool synthesizePicker(uint16_t owner, const ModuleInfo::DynPicker& picker,
+                          std::vector<ast::StmtPtr>& out);
 
     Graph& graph_;
     SourceSet& sources_;
@@ -320,6 +335,36 @@ bool Linker::collectImports(ModuleFile& file) {
     for (const auto& stmt : file.ast->body) {
         dynCollector.scan(stmt.get());
     }
+
+    // The template-literal imports the loader globbed. Each one needs a
+    // namespace local per file it matched — the same locals a written specifier
+    // would get, and shared with one where a file is reached both ways — plus a
+    // picker of its own, because two patterns in a file may glob different
+    // directories and must not answer each other's strings.
+    for (const auto& pattern : file.dynPatterns) {
+        ModuleInfo::DynPicker picker;
+        picker.local = "*dyn_pick_" + std::to_string(syntheticCounter_++) + "*";
+        picker.head = pattern.head;
+        picker.tail = pattern.tail;
+        for (const std::string& specifier : pattern.specifiers) {
+            auto dep = file.deps.find(specifier);
+            if (dep == file.deps.end()) continue;
+            const uint16_t target = dep->second;
+            std::string local;
+            for (const auto& ns : mi.namespaceLocals) {
+                if (ns.second == target) {
+                    local = ns.first;
+                    break;
+                }
+            }
+            if (local.empty()) {
+                local = "*dyn_ns_" + std::to_string(syntheticCounter_++) + "*";
+                mi.namespaceLocals.emplace_back(local, target);
+            }
+            picker.entries.emplace_back(specifier, local);
+        }
+        mi.dynPickers.push_back(std::move(picker));
+    }
     return true;
 }
 
@@ -476,6 +521,23 @@ bool Linker::buildRenames(ModuleFile& file) {
         }
         mi.renames[local] = canonicalName(defModule, defLocal);
     }
+    // The namespace locals a DYNAMIC import needs. `import * as ns from './x'`
+    // is an import binding and the loop above already renamed it; the local a
+    // bare `import('./x')` needs is invented by the linker (collectImports'
+    // DynImportCollector) and is in no other table, so without this it is the
+    // one name in the file that keeps its raw spelling. synthesizeNamespace
+    // declares the CANONICAL name, and the rewrite that replaces `import(...)`
+    // with `Promise.resolve(<local>)` writes the raw one — so the two only meet
+    // if the rename is here, and a mismatch is not a link error but a
+    // ReferenceError at the moment the program finally takes that path.
+    // Re-listing a static namespace local is harmless: it maps to the same
+    // canonical name the loop above gave it.
+    for (const auto& ns : mi.namespaceLocals) {
+        mi.renames[ns.first] = canonicalName(file.id, ns.first);
+    }
+    for (const auto& picker : mi.dynPickers) {
+        mi.renames[picker.local] = canonicalName(file.id, picker.local);
+    }
     return true;
 }
 
@@ -535,6 +597,63 @@ ast::StmtPtr Linker::synthesizeNamespace(uint16_t owner, const std::string& loca
     }
     literal->isModuleNamespace = true;
     return std::move(parsed->body[0]);
+}
+
+// The function a template-literal `import()` becomes: a Map from the specifiers
+// the glob found to the namespace objects behind them, and a lookup that
+// resolves a hit and REJECTS a miss.
+//
+// A Map and not an object literal, because the key is a string the program
+// computed and an object would answer `"constructor"` out of its prototype. It
+// rejects rather than throws because that is what `import()` does with a
+// specifier it cannot resolve — the caller is awaiting a promise, and a synchronous
+// throw from a callee it is not calling directly would land somewhere else.
+//
+// Generated as source and parsed, for the reason synthesizeNamespace gives:
+// hand-built AST is a second answer to "what does this shape look like", and
+// the two drift.
+bool Linker::synthesizePicker(uint16_t owner, const ModuleInfo::DynPicker& picker,
+                              std::vector<ast::StmtPtr>& out) {
+    std::map<std::string, std::string> renames;
+    const std::string fn = "bz_pick_" + std::to_string(syntheticCounter_++);
+    renames[fn] = canonicalName(owner, picker.local);
+
+    std::string src = "const " + fn + "_t = new Map([";
+    size_t slot = 0;
+    for (const auto& entry : picker.entries) {
+        const std::string placeholder = fn + "_v" + std::to_string(slot);
+        renames[placeholder] = canonicalName(owner, entry.second);
+        std::string quoted;
+        for (char c : entry.first) {
+            if (c == '\\' || c == '\"') quoted += '\\';
+            quoted += c;
+        }
+        if (slot++ > 0) src += ", ";
+        src += "[\"" + quoted + "\", " + placeholder + "]";
+    }
+    src += "]);\n";
+    // `String(s)` and not `s`: 16.2.1.8 ToString()s the specifier before it
+    // resolves anything, so `import({ toString() { return './a.js'; } })` finds
+    // the module a browser would.
+    src += "function " + fn + "(s) {\n";
+    src += "    const k = String(s);\n";
+    src += "    if (" + fn + "_t.has(k)) return Promise.resolve(" + fn + "_t.get(k));\n";
+    src += "    return Promise.reject(new TypeError(\"Cannot resolve module \" + k));\n";
+    src += "}\n";
+    renames[fn + "_t"] = canonicalName(owner, picker.local + "_t");
+
+    const SourceBuffer& buffer = sources_.add(
+        graph_.modules[owner]->displayName + " (dynamic import table)", src);
+    auto tokens = Lexer(buffer, diags_).lex();
+    if (diags_.hasErrors()) return false;
+    auto parsed = Parser(std::move(tokens), diags_, buffer.fileId()).parseModule("<dynimport>");
+    if (!parsed || parsed->body.size() != 2) {
+        diags_.error(Span{}, "internal error: synthesized dynamic-import table did not parse");
+        return false;
+    }
+    if (!renameModuleScope(parsed->body, renames, buffer.fileId(), {}, diags_)) return false;
+    for (auto& stmt : parsed->body) out.push_back(std::move(stmt));
+    return true;
 }
 
 bool Linker::run(ast::Module& out) {
@@ -671,6 +790,32 @@ bool Linker::run(ast::Module& out) {
                         }
                     }
                 }
+                // A TEMPLATE specifier the loader globbed: the call becomes a
+                // lookup in that pattern's own table. Matched by head and tail
+                // rather than by position, so that this walk and the loader's
+                // need not visit the file in the same order — and two spellings
+                // of the same pattern in one file share one table.
+                if (auto* tpl = dynamic_cast<ast::TemplateLit*>(di->specifier.get())) {
+                    std::string head, tail;
+                    if (dynamicImportPattern(*tpl, head, tail)) {
+                        for (const auto& picker : mi.dynPickers) {
+                            if (picker.head != head || picker.tail != tail) continue;
+                            auto call = std::make_unique<ast::Call>();
+                            call->span = di->span;
+                            auto callee = std::make_unique<ast::Ident>();
+                            callee->span = di->span;
+                            callee->name = picker.local;
+                            call->callee = std::move(callee);
+                            call->args.push_back(std::move(di->specifier));
+                            // The interpolation is ordinary code of this
+                            // module and still has to be walked — it is now an
+                            // argument, and may hold an `import()` of its own.
+                            visitExpr(call->args[0]);
+                            ep = std::move(call);
+                            return;
+                        }
+                    }
+                }
                 visitExpr(di->specifier);
             } else if (auto* u = dynamic_cast<ast::Unary*>(ep.get())) {
                 visitExpr(u->operand);
@@ -790,6 +935,10 @@ bool Linker::run(ast::Module& out) {
             auto decl = synthesizeNamespace(id, ns.first, ns.second);
             if (!decl) return false;
             out.body.push_back(std::move(decl));
+        }
+        // After the namespaces, because a picker's table holds them.
+        for (const auto& picker : info_[id].dynPickers) {
+            if (!synthesizePicker(id, picker, out.body)) return false;
         }
         for (auto& stmt : file.ast->body) {
             if (dynamic_cast<const ast::ImportDecl*>(stmt.get())) continue;

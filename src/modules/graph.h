@@ -16,6 +16,28 @@
 // business knowing that a build read more than one file.
 namespace bronze::modules {
 
+// A dynamic `import()` whose specifier is a TEMPLATE LITERAL with a static
+// head and tail — `import(`./Sidebar.Geometry.${type}.js`)`. A compiler that
+// waits for the runtime string has nothing to compile; what it CAN do is what
+// the directory says, which is the same thing a browser would find when the
+// string finally arrives. So the head and tail become a glob, every file in
+// that directory matching it joins the graph, and the call becomes a lookup in
+// a table of exactly those specifiers. A string the table does not hold
+// rejects, which is what a browser does with a 404.
+//
+// Only the FIRST interpolation is used as the wildcard and the tail must
+// contain no path separator, so the pattern can never reach outside the one
+// directory the head names.
+struct DynamicImportPattern {
+    std::string head;                   // specifier text before the first `${`
+    std::string tail;                   // specifier text after it
+    Span span;
+    // Every concrete specifier the glob found, in directory order. These are
+    // keys of `ModuleFile::deps`, so the linker reaches each target through
+    // the same table an ordinary specifier uses.
+    std::vector<std::string> specifiers;
+};
+
 struct ModuleFile {
     uint16_t id = 0;
     std::filesystem::path path;
@@ -31,6 +53,10 @@ struct ModuleFile {
     // it is only ever looked up, but a graph is exactly the kind of thing
     // that grows an iteration over it later.
     std::map<std::string, uint16_t> deps;
+    // The template-literal dynamic imports this file writes, in source order,
+    // and what each one's directory held at compile time. See
+    // `dynamicImportPattern` below for what makes a template one of these.
+    std::vector<DynamicImportPattern> dynPatterns;
 };
 
 struct Graph {
@@ -48,6 +74,13 @@ struct Graph {
 // diagnosed error, which includes an unresolvable specifier.
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
                Graph& out, const ModuleOptions& options = {});
+
+// The head/tail of a template-literal specifier, or false when the template is
+// not one this compiler can turn into a glob: no interpolation at all (then it
+// is just a string), a head that does not start a relative path, or a tail
+// carrying a path separator. Shared by the loader, which globs with it, and the
+// linker, which builds the lookup table from the same reading.
+bool dynamicImportPattern(const ast::TemplateLit& tpl, std::string& head, std::string& tail);
 
 // Links the loaded graph into `out`: export tables, import bindings, the
 // renaming, the namespace objects, and the concatenation in evaluation order.

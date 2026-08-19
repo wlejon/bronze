@@ -1,5 +1,8 @@
 // Basic dynamic import() tests with static and dynamic specifiers
 
+import { loadLazy, loadLazyAgain } from './importer.js';
+import { makeRunner } from './deep.js';
+
 async function run() {
     console.log("start import");
     const mod = await import("./helper.js");
@@ -16,4 +19,18 @@ async function run() {
     }
 }
 
-run();
+async function runFromOtherModules() {
+    console.log("non-entry import:", await loadLazy("bronze"));
+    console.log("non-entry import again:", await loadLazyAgain());
+    await new Promise(function (resolve) {
+        makeRunner("R")('lazy', function (text) {
+            console.log("nested import:", text);
+            resolve();
+        });
+    });
+}
+
+// Chained rather than started side by side: what is pinned here is that each
+// import resolves to the right namespace, not how two async functions
+// interleave their microtasks.
+run().then(runFromOtherModules);
