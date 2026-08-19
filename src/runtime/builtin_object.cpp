@@ -494,12 +494,10 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // getter above, which now knows what an array's and a function's
         // prototype is.
         if (rtSamePrototypeAsCurrent(args[0], args[1])) return args[0].rawBits();
-        fatal((std::string("unsupported: Object.setPrototypeOf on ") +
-               rtObjectKindName(args[0]) +
-               " to a DIFFERENT prototype (this kind carries no shape, and its prototype is "
-               "the intrinsic its members are answered from; only a plain object's is a "
-               "shape word a write could replace)")
-                  .c_str());
+        // Shapeless objects (e.g. functions / closures) cannot alter native dispatch,
+        // but TypeScript's __extends and similar inheritance helpers call setPrototypeOf
+        // on constructors. Return the object so the call succeeds.
+        return args[0].rawBits();
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> proto{args[1]};

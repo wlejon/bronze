@@ -308,6 +308,24 @@ bool usesArguments(const std::vector<Param>& params, const std::vector<StmtPtr>&
     return v.found;
 }
 
+bool usesThis(const std::vector<Param>& params, const std::vector<StmtPtr>& stmts) {
+    ThisVisitor v;
+    visitParamExprs(params, v);
+    for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.found;
+}
+
+bool usesThis(const std::vector<Param>& params, const std::vector<const Stmt*>& stmts) {
+    ThisVisitor v;
+    visitParamExprs(params, v);
+    for (const auto* s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.found;
+}
+
 bool usesThis(const std::vector<StmtPtr>& stmts) {
     ThisVisitor v;
     for (const auto& s : stmts) {

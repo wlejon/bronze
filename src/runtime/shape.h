@@ -164,7 +164,7 @@ public:
     // named hard error: dictionary mode as built here is a linear entry
     // vector, which is not an answer for an object with a thousand
     // properties either ("not here").
-    static constexpr uint32_t kDictionaryThreshold = 1024;
+    static constexpr uint32_t kDictionaryThreshold = 65536;
 
     Value prototypeValue() const noexcept { return root ? root->prototype : Value::fromUndefined(); }
 };

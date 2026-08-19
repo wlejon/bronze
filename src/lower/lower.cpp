@@ -29,7 +29,7 @@ std::optional<il::Module> Lowerer::lower() {
             // ahead of its source parameters; every call site supplies it,
             // direct ones included, so this costs nothing to functions that do
             // not use it.
-            if (ast::usesThis(fnDecl->body)) {
+            if (ast::usesThis(fnDecl->params, fnDecl->body)) {
                 fn.needsThis = true;
                 fn.params.push_back({"__this", il::Type::Dynamic});
             }
@@ -326,7 +326,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
                 memoryNames_.insert(p.name);
             }
         }
-        if (ast::usesThis(body)) memoryNames_.insert("this");
+        if (ast::usesThis(params, body)) memoryNames_.insert("this");
         if (ilFn.needsArguments) memoryNames_.insert("arguments");
     }
     functionEnvBase_ = envScopes_.size();

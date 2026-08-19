@@ -122,6 +122,8 @@ bool closureCapturesLoopBinding(const ForStmt& forStmt, const std::string& name)
 // nothing about the outer function. Decides whether the function gets the
 // synthetic `__this` parameter, which is why it is a body property rather than
 // a scope one.
+bool usesThis(const std::vector<Param>& params, const std::vector<StmtPtr>& stmts);
+bool usesThis(const std::vector<Param>& params, const std::vector<const Stmt*>& stmts);
 bool usesThis(const std::vector<StmtPtr>& stmts);
 bool usesThis(const std::vector<const Stmt*>& stmts);
 

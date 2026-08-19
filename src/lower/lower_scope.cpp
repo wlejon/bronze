@@ -476,7 +476,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // called: its `this` is the enclosing function's, read from the
     // environment. Giving it one would be a second, contradictory answer to the
     // same question.
-    if (!isArrow && ast::usesThis(body)) {
+    if (!isArrow && ast::usesThis(params, body)) {
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }
