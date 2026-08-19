@@ -303,16 +303,19 @@ TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") 
     std::string output = runAndCaptureOutput(exePath);
     CHECK(output == "42\n");
 
+    std::string appPathStr = appFile.string();
+    std::string mapPathStr = mapFile.string();
+    std::string eqFlag = "--import-map=" + mapPathStr;
+
     // Test runDriver CLI invocations with --import-map
-    const char* argv1[] = {"bronze", "types", appFile.string().c_str(), "--import-map", mapFile.string().c_str()};
+    const char* argv1[] = {"bronze", "types", appPathStr.c_str(), "--import-map", mapPathStr.c_str()};
     CHECK(bronze::cli::runDriver(5, const_cast<char**>(argv1)) == 0);
 
-    std::string eqFlag = "--import-map=" + mapFile.string();
-    const char* argv2[] = {"bronze", "types", appFile.string().c_str(), eqFlag.c_str()};
+    const char* argv2[] = {"bronze", "types", appPathStr.c_str(), eqFlag.c_str()};
     CHECK(bronze::cli::runDriver(4, const_cast<char**>(argv2)) == 0);
 
     // Test error case with missing import map file
-    const char* argvBad[] = {"bronze", "types", appFile.string().c_str(), "--import-map", "nonexistent.json"};
+    const char* argvBad[] = {"bronze", "types", appPathStr.c_str(), "--import-map", "nonexistent.json"};
     CHECK(bronze::cli::runDriver(5, const_cast<char**>(argvBad)) != 0);
 
     std::filesystem::remove_all(tempDir, ec);
