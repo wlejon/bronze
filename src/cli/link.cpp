@@ -100,8 +100,12 @@ std::optional<std::filesystem::path> findRuntimeLib() {
         for (const char* name : libNames) {
             candidates.push_back(exeDir / name);
             candidates.push_back(exeDir / "../rt" / name);
+            candidates.push_back(exeDir / "../../rt" / name);
+            candidates.push_back(exeDir / "../../../rt" / name);
             candidates.push_back(exeDir / "src/rt" / name);
+            candidates.push_back(exeDir / "../src/rt" / name);
             candidates.push_back(exeDir / "../../src/rt" / name);
+            candidates.push_back(exeDir / "../../../src/rt" / name);
 
             std::filesystem::path cwd = std::filesystem::current_path();
             candidates.push_back(cwd / name);
@@ -109,6 +113,15 @@ std::optional<std::filesystem::path> findRuntimeLib() {
             candidates.push_back(cwd / "build/dev/src/rt" / name);
             candidates.push_back(cwd / "build/src/rt" / name);
             candidates.push_back(cwd / "build/Release/src/rt" / name);
+        }
+
+        const size_t flatCount = candidates.size();
+        static const char* const kConfigs[] = {"Release", "RelWithDebInfo", "MinSizeRel",
+                                               "Debug"};
+        for (size_t i = 0; i < flatCount; ++i) {
+            for (const char* config : kConfigs) {
+                candidates.push_back(candidates[i].parent_path() / config / candidates[i].filename());
+            }
         }
 
         for (const auto& cand : candidates) {
@@ -129,12 +142,14 @@ std::optional<std::filesystem::path> findRuntimeCpp() {
         std::vector<std::filesystem::path> candidates;
         std::filesystem::path exeDir = getExecutableDir();
 
+        candidates.push_back(exeDir / "../../../src/rt/rt.cpp");
         candidates.push_back(exeDir / "../../src/rt/rt.cpp");
         candidates.push_back(exeDir / "../src/rt/rt.cpp");
         candidates.push_back(exeDir / "src/rt/rt.cpp");
 
         std::filesystem::path cwd = std::filesystem::current_path();
         candidates.push_back(cwd / "src/rt/rt.cpp");
+        candidates.push_back(cwd / "../src/rt/rt.cpp");
 
         for (const auto& cand : candidates) {
             std::error_code ec;
@@ -375,20 +390,27 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
                 {"runtime", "libbronze_runtime.a", "bronze_runtime.lib"},
                 {"json", "libbronze_json.a", "bronze_json.lib"},
                 {"regex", "libbronze_regex.a", "bronze_regex.lib"},
+                {"support", "libbronze_support.a", "bronze_support.lib"},
             };
             for (const auto& lib : kRuntimeLibs) {
                 std::filesystem::path path;
                 for (int nameIdx = 1; nameIdx <= 2; ++nameIdx) {
-                    std::filesystem::path p1 = rtLib->parent_path() / lib[nameIdx];
-                    if (std::filesystem::exists(p1)) {
-                        path = p1;
-                        break;
+                    std::vector<std::filesystem::path> libCandidates = {
+                        rtLib->parent_path() / lib[nameIdx],
+                        rtLib->parent_path() / ".." / lib[0] / lib[nameIdx],
+                        rtLib->parent_path() / ".." / ".." / lib[0] / rtLib->parent_path().filename() / lib[nameIdx],
+                        rtLib->parent_path() / ".." / ".." / lib[0] / lib[nameIdx],
+                        rtLib->parent_path() / ".." / ".." / "src" / lib[0] / rtLib->parent_path().filename() / lib[nameIdx],
+                        rtLib->parent_path() / ".." / ".." / "src" / lib[0] / lib[nameIdx],
+                    };
+                    for (const auto& cand : libCandidates) {
+                        std::error_code ec;
+                        if (std::filesystem::exists(cand, ec)) {
+                            path = std::filesystem::canonical(cand, ec);
+                            break;
+                        }
                     }
-                    std::filesystem::path p2 = rtLib->parent_path() / ".." / lib[0] / lib[nameIdx];
-                    if (std::filesystem::exists(p2)) {
-                        path = p2;
-                        break;
-                    }
+                    if (!path.empty()) break;
                 }
                 if (path.empty()) continue;
                 const std::string quoted = "\"" + path.string() + "\"";
