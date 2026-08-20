@@ -356,6 +356,13 @@ void rtSetDynamicFunctionHost(DynamicFunctionHost host) {
 
 const DynamicFunctionHost& rtDynamicFunctionHost() { return g_dynamicFunctionHost; }
 
+// The host's eval, if it has one — the same seam, for `Function`'s sibling.
+static thread_local DynamicEvalHost g_dynamicEvalHost;
+
+void rtSetDynamicEvalHost(DynamicEvalHost host) { g_dynamicEvalHost = std::move(host); }
+
+const DynamicEvalHost& rtDynamicEvalHost() { return g_dynamicEvalHost; }
+
 // 10.2.9 and 10.2.10, as the one place a function object's two own data
 // properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
 // is what a native builtin gets — the header's comment says why that is not the

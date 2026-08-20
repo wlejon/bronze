@@ -476,6 +476,12 @@ Value rtFunctionPrototypeObject();
 bool rtIsFunctionConstructor(Value fn);
 bool rtIsFunctionPrototype(Value fn);
 
+// 19.2.1 `eval` (builtin_function.cpp, beside the Function constructor whose
+// dynamic-code story it shares). A body rather than an accessor because
+// builtin_number.cpp's global-function table takes its address at static
+// initialization; the table row is what makes `eval` a provided global.
+uint64_t rtGlobalEvalBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+
 // ---- the global constructor objects -----------------------------
 
 // `Array`, `String` and `Boolean`, by the name lowering resolved; `undefined`

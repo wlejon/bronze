@@ -187,48 +187,55 @@ TEST_CASE("a provided global resolves to global.get; an unknown free name does n
     CHECK(unknownIl.find("global.get \"Maths\"") == std::string::npos);
 }
 
-TEST_CASE("`eval` is refused by name, in both the direct and the indirect spelling") {
-    // The one name at the bottom of the ladder that is an ERROR rather than a
-    // warning. 19.2.1 makes `eval`'s argument SOURCE TEXT compiled at run time,
-    // and bronze links no compiler into the program, so there is nothing it
-    // could resolve to and nothing a host could register that would be it —
-    // `unresolved name 'eval': a ReferenceError if it is evaluated` would be
-    // both true and useless, because it sends the reader looking for a binding.
+TEST_CASE("`eval` is a provided global, and the direct spelling carries a warning") {
+    // The name used to be the one ERROR at the bottom of the ladder; it is a
+    // provided global now, a real function object whose body defers to the
+    // host's eval hook at run time (builtin_function.cpp, rtGlobalEvalBody) —
+    // `Function`'s arrangement exactly. What the lowering still owns is the
+    // scope caveat: 19.2.1's DIRECT form evaluates in the caller's scope, an
+    // AOT frame has no environment record to hand over, so a syntactically
+    // direct call gets the indirect (global-environment) semantics and a
+    // warning that says so.
     DiagnosticSink direct;
     SourceBuffer directBuf("direct.ts", "");
-    parseAndLower("const v = eval(\"1 + 1\");\n", direct, directBuf);
-    CHECK(direct.hasErrors());
-    CHECK(direct.render(directBuf).find("`eval` is not implemented") != std::string::npos);
+    const auto directMod = parseAndLower("const v = eval(\"1 + 1\");\n", direct, directBuf);
+    CHECK_FALSE(direct.hasErrors());
+    REQUIRE(directMod.has_value());
+    CHECK(il::print(*directMod).find("global.get \"eval\"") != std::string::npos);
+    CHECK(direct.render(directBuf).find("indirect semantics") != std::string::npos);
 
-    // The diagnostic hangs off the READ of the name, not off a call shape, so
-    // the indirect form — the one that runs in global scope in real engines —
-    // is the same error. It is also what a bundler emits.
+    // The indirect form is exactly what the global-environment semantics DO
+    // honor, so it compiles without even the warning: reading the name is a
+    // value like reading `Function`, and calling that value later has no
+    // scope to lose.
     DiagnosticSink indirect;
     SourceBuffer indirectBuf("indirect.ts", "");
-    parseAndLower("const e = eval;\ne(\"1 + 1\");\n", indirect, indirectBuf);
-    CHECK(indirect.hasErrors());
-    CHECK(indirect.render(indirectBuf).find("`eval` is not implemented") != std::string::npos);
+    const auto indirectMod = parseAndLower("const e = eval;\ne(\"1 + 1\");\n", indirect, indirectBuf);
+    CHECK_FALSE(indirect.hasErrors());
+    REQUIRE(indirectMod.has_value());
+    CHECK(indirect.all().empty());
+    CHECK(il::print(*indirectMod).find("global.get \"eval\"") != std::string::npos);
 
     DiagnosticSink aliased;
     SourceBuffer aliasedBuf("aliased.ts", "");
     parseAndLower("const o = { run: eval };\n", aliased, aliasedBuf);
-    CHECK(aliased.hasErrors());
+    CHECK_FALSE(aliased.hasErrors());
+    CHECK(aliased.all().empty());
 
-    // Not a ReferenceError at run time, either: the program does not build, so
-    // no `name.resolve \"eval\"` is reachable to be caught by a `try`.
-    DiagnosticSink guarded;
-    SourceBuffer guardedBuf("guarded.ts", "");
-    parseAndLower("try { eval(\"x\"); } catch (e) { }\n", guarded, guardedBuf);
-    CHECK(guarded.hasErrors());
+    // A local binding named `eval` shadows the global; calling it is not the
+    // construct and must not draw the warning.
+    DiagnosticSink shadowed;
+    SourceBuffer shadowedBuf("shadowed.ts", "");
+    parseAndLower("const eval = (s) => s;\nconst v = eval(\"1 + 1\");\n", shadowed, shadowedBuf);
+    CHECK_FALSE(shadowed.hasErrors());
+    CHECK(shadowed.all().empty());
 }
 
 TEST_CASE("bare `typeof eval` stays the quiet feature-detection answer") {
-    // The refusal must not eat the idiom that asks whether eval EXISTS.
-    // `typeof eval === 'function'` is how code guards a dynamic-code path, and
-    // a program that guards it correctly is a program bronze should compile —
-    // taking the other branch is the whole point. 13.5.3 step 1 gives that
-    // branch the right value without evaluating the reference, so the eval
-    // error never fires: it lives past the `typeof` path, at the read.
+    // `typeof eval === 'function'` is how code guards a dynamic-code path.
+    // With `eval` a provided global the answer is now truthful — the guard
+    // takes the dynamic branch — and the probe is an ordinary provided-global
+    // read, not the soft `name.resolve` an unknown name gets.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
@@ -238,9 +245,9 @@ TEST_CASE("bare `typeof eval` stays the quiet feature-detection answer") {
 
     REQUIRE(optMod.has_value());
     CHECK(diags.all().empty());
-    // The SOFT probe and never the raising one: `typeof eval` must not become
-    // a read of `eval`, which is what the refusal above is attached to.
-    CHECK(il::print(*optMod).find("name.resolve \"eval\", soft") != std::string::npos);
+    const std::string printed = il::print(*optMod);
+    CHECK(printed.find("name.resolve \"eval\"") == std::string::npos);
+    CHECK(printed.find("global.get \"eval\"") != std::string::npos);
 }
 
 TEST_CASE("a local binding shadows a provided global") {

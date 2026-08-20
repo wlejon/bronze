@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "embed/embed.h"
+#include "embed/embed_internal.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -264,6 +265,16 @@ Value makeHandle(void* data, HandleDestructor dtor, Finalize when, Value prototy
     // of setPrototypeOf'd onto it (that route is dictionary mode forever).
     return makeHandleOnShape(data, dtor, when,
                              runtime::rtRootShapeForPrototype(prototype));
+}
+
+// embed_internal.h — the registry, opened to the module's other translation
+// units: an external buffer's release rides the same sweep a handle's
+// destructor does, and a second registry would be the drift heap.h's hook
+// LIST exists to prevent.
+void registerHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,
+                           Finalize when) {
+    ensureRegistries();
+    g_finalizers.push_back({cell, data, dtor, when});
 }
 
 void drainFinalizers() {

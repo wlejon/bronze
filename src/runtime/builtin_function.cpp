@@ -274,4 +274,27 @@ uint64_t rtFunctionHasInstanceBuiltin(uint64_t, uint64_t thisBits, uint32_t argc
     return Value::fromBool(rtOrdinaryHasInstance(self, v)).rawBits();
 }
 
+// 19.2.1 The eval Function — `Function`'s sibling, and it lives here beside
+// the constructor whose story it shares. The body performs step 2 itself (a
+// non-string argument comes straight back — `eval(5)` is 5 with or without a
+// host, because no compilation is involved), and delegates source text to the
+// host's answer exactly as functionConstructorBody above does. Both spellings
+// reach this one object: bronze lowers `eval` as a provided global, so the
+// direct call and `const e = eval; e(src)` call the same body, with the
+// indirect (global-environment) semantics — host_globals.h says why the
+// caller's scope cannot be offered. At namespace scope because
+// builtin_number.cpp's global-function table takes its address at static
+// initialization.
+uint64_t rtGlobalEvalBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (args.count() == 0) return Value::fromUndefined().rawBits();
+    if (!args[0].isString()) return args[0].rawBits();
+    if (const DynamicEvalHost& host = rtDynamicEvalHost()) {
+        return host(args[0]).rawBits();
+    }
+    return rtThrowTypeError(
+               "eval: dynamic code compilation from strings is out of scope for an AOT compiler")
+        .rawBits();
+}
+
 }  // namespace bronze::runtime

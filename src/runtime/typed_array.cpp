@@ -313,6 +313,7 @@ ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, uint32_t byte_length) {
     buf->maxByteLength = byte_length;
     buf->bufferFlags = 0;
     buf->reserved = 0;
+    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, byte_length);
     return buf;
 }
@@ -328,6 +329,7 @@ ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, uint32_t byte_
     buf->maxByteLength = max_byte_length;
     buf->bufferFlags = kFlagResizable;
     buf->reserved = 0;
+    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, max_byte_length);
     return buf;
 }
@@ -349,6 +351,7 @@ ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, uint32_t byte_len
     // current length" keeps the two from disagreeing about the reservation.
     buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
     buf->reserved = 0;
+    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, reserve);
     return buf;
 }

@@ -90,31 +90,14 @@ Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
                                "`var` only from a function's top level");
         return Value{il::kNoValue, il::Type::Dynamic};
     }
-    // `eval` is not a missing global — it is a global bronze will never have.
-    // 19.2.1 makes it a function of the global object whose argument is SOURCE
-    // TEXT compiled at run time, and bronze compiles ahead of time and links no
-    // compiler into the program; there is nothing for it to resolve to and
-    // nothing a host could register that would be it.
-    //
-    // Diagnosed here, at the READ, so both spellings land: `eval(src)` is a
-    // direct eval and `const e = eval; e(src)` is an indirect one, and both
-    // read the name. Bare `typeof eval` does not reach here at all — the
-    // `typeof` path in lowerExpr answers for any name `resolvesName` rejects —
-    // so the feature-detection idiom still compiles, and the diagnostic fires
-    // exactly when a program means to USE the thing.
-    //
-    // `Function` is the sibling case and is deliberately NOT here: it is a
-    // provided global with a real constructor object, so `Function.prototype`
-    // and `f.call` work and only CONSTRUCTING from source text fails — a
-    // catchable TypeError from `functionConstructorBody`, since `new Function`
-    // is a call bronze cannot see through the way it sees a spelled-out `eval`.
-    if (name == "eval") {
-        diags_.error(span,
-                     "unsupported construct: `eval` is not implemented (bronze compiles ahead "
-                     "of time and links no compiler into the program; this covers indirect eval "
-                     "too, and `new Function(src)` throws a TypeError for the same reason)");
-        return Value{il::kNoValue, il::Type::Dynamic};
-    }
+    // `eval` never reaches here any more: it is a provided global now
+    // (lower_util.cpp), a real function object whose body defers to the
+    // host's eval hook and refuses with a catchable TypeError without one —
+    // `Function`'s arrangement exactly (builtin_function.cpp,
+    // rtGlobalEvalBody). The compile-time refusal that used to sit here was
+    // right when bronze had no such global; a host WITH an interpreter can
+    // legitimately compile the string, so the refusal became the runtime's
+    // to make. The direct-call scope caveat is lowerCall's warning.
     warnUnresolved(name, span);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;

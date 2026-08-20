@@ -426,6 +426,11 @@ uint64_t globalUnescape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
 // pointer, so the two names denote ONE object — 21.1.2.12 and 21.1.2.13 say
 // exactly that ("the same function object").
 const NamespaceFn kGlobalFunctions[] = {
+    // 19.2.1 first: `eval`'s body lives in builtin_function.cpp beside the
+    // Function constructor (one dynamic-code story, two globals); its row is
+    // here because this table IS "19.2's function properties of the global
+    // object", and joining it is what makes the name a provided global.
+    {"eval", rtGlobalEvalBody, 1},
     {"isNaN", globalIsNaN, 1},
     {"isFinite", globalIsFinite, 1},
     {"parseInt", numberParseInt, 2},

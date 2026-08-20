@@ -109,15 +109,30 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
         builder.CreateAlignedLoad(i32Ty, byteOffPtr, llvm::Align(4), "ta.byteoff");
     markInvariant(byteOff, ctx);
 
+    // The buffer's external-storage word: zero for an ordinary buffer (bytes
+    // inline past the header), else the address of a non-moving host store.
+    // NOT an invariant load — externalizeArrayBuffer flips it once, inside a
+    // host call — but element stores can never change it, so it carries the
+    // view-length alias scope and hoists out of call-free element loops for
+    // the same reason `length` does.
+    llvm::Value* extPtrPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, bufHdr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
+    auto* extBits = builder.CreateAlignedLoad(i64Ty, extPtrPtr, llvm::Align(8), "ta.extbits");
+    tagViewLengthAccess(extBits, ctx);
+    llvm::Value* inlineBase = builder.CreateAdd(
+        bufAddr, builder.getInt64(BRONZE_ABI_BUF_DATA_OFFSET), "ta.inlinebase");
+    llvm::Value* isExt = builder.CreateICmpNE(extBits, builder.getInt64(0), "ta.isext");
+    llvm::Value* base = builder.CreateSelect(isExt, extBits, inlineBase, "ta.base");
+
     llvm::Value* byteIdx = (elemSize == 8)
                                ? builder.CreateShl(idx32, builder.getInt32(3), "ta.byteidx")
                                : ((elemSize == 4) ? builder.CreateShl(idx32, builder.getInt32(2), "ta.byteidx")
                                                   : ((elemSize == 2) ? builder.CreateShl(idx32, builder.getInt32(1), "ta.byteidx")
                                                                      : idx32));
-    llvm::Value* totalOffset = builder.CreateAdd(
-        builder.CreateZExt(builder.CreateAdd(byteOff, byteIdx), i64Ty),
-        builder.getInt64(BRONZE_ABI_BUF_DATA_OFFSET), "ta.totaloff");
-    return builder.CreateInBoundsGEP(i8Ty, bufHdr, totalOffset, "ta.elem.ptr");
+    llvm::Value* totalOffset =
+        builder.CreateZExt(builder.CreateAdd(byteOff, byteIdx), i64Ty, "ta.totaloff");
+    llvm::Value* basePtr = builder.CreateIntToPtr(base, ptrTy, "ta.base.ptr");
+    return builder.CreateInBoundsGEP(i8Ty, basePtr, totalOffset, "ta.elem.ptr");
 }
 
 // A double as a NaN-boxed Value: the same NaN-canonicalizing select the Box

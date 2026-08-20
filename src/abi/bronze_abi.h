@@ -503,10 +503,14 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_HDR_SIZE_OFFSET       4
 
 /* TypedArrayHeader (runtime/typed_array.h): the buffer Value, the window,
- * and the element kind. BUF_DATA_OFFSET is sizeof(ArrayBufferHeader) — the
- * first byte of a buffer's storage. The two float kinds are the ones the
- * dynamic-index element fast path inlines; every other kind keeps the
- * helper's conversion ladder. Pinned in runtime/typed_array.h. */
+ * and the element kind. BUF_EXTPTR_OFFSET is the buffer's external-storage
+ * word: zero for an ordinary buffer (bytes inline, starting at
+ * BUF_DATA_OFFSET == sizeof(ArrayBufferHeader)), or the address of a
+ * NON-MOVING host byte store (embed.h externalizeArrayBuffer) — the inline
+ * element paths select between the two, which is the whole cost of shareable
+ * buffers. The two float kinds are the ones the dynamic-index element fast
+ * path inlines; every other kind keeps the helper's conversion ladder.
+ * Pinned in runtime/typed_array.h. */
 #define BRONZE_ABI_TA_BUFFER_OFFSET      8
 #define BRONZE_ABI_TA_BYTEOFFSET_OFFSET 16
 #define BRONZE_ABI_TA_LENGTH_OFFSET     20
@@ -527,7 +531,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * BigInt kind the same store still owes the ToBigInt that throws for a
  * Number value, so it must reach the helper. kind < BIGINT64 is that test. */
 #define BRONZE_ABI_TA_KIND_BIGINT64     10
-#define BRONZE_ABI_BUF_DATA_OFFSET      24
+#define BRONZE_ABI_BUF_EXTPTR_OFFSET    24
+#define BRONZE_ABI_BUF_DATA_OFFSET      32
 
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then
  * kInlineSlots inline Values. */

@@ -256,6 +256,15 @@ BRONZE_EMBED_API void unloadModule(ModuleHandle module);
 // by the pointer contract those functions carry.
 BRONZE_EMBED_API void collectGarbage();
 
+// The collector's relocation counter: incremented by every object COPY, so it
+// moves exactly when addresses move and not merely when cycles complete. This
+// is the primitive an identity map is built on — a host table keyed on raw
+// value bits (toBits) records this number when it builds its index and
+// rebuilds when the number has moved on, and such a cache cannot go stale,
+// because bits only change when this does. The bronze Map keyed on objects
+// uses the same discipline internally (heap.h relocation_epoch).
+BRONZE_EMBED_API uint64_t relocationEpoch();
+
 // ---- the microtask checkpoint (embed_run.cpp) ------------------------------
 //
 // Promise reactions and async resumptions run as JOBS, and a job runs only
@@ -329,6 +338,23 @@ BRONZE_EMBED_API GlobalValue globalValue(std::string_view name);
 using DynamicFunctionKind = runtime::DynamicFunctionKind;
 using DynamicFunctionHook = runtime::DynamicFunctionHost;
 BRONZE_EMBED_API void setDynamicFunctionHook(DynamicFunctionHook hook);
+
+// ---- eval, answered by the host ---------------------------------------------
+//
+// `Function`'s sibling seam. `eval` is a real provided global — `typeof eval`
+// is "function", `const e = eval` is a value, and both the direct and the
+// indirect spelling call the same object — whose body hands SOURCE TEXT to
+// this hook, or throws a catchable TypeError when none is installed. The
+// runtime performs 19.2.1 step 2 itself, so the hook only ever sees a string
+// value; what comes back is returned to the program uninspected.
+//
+// The one thing the hook is NOT given is the caller's scope: an AOT frame has
+// no environment record to reify, so both spellings carry the indirect
+// (global-environment) semantics, and the lowering warns at syntactically
+// direct call sites. `source` is a ROOTED slot, current across anything the
+// hook allocates; throwing works the way it does from a NativeFn.
+using DynamicEvalHook = runtime::DynamicEvalHost;
+BRONZE_EMBED_API void setDynamicEvalHook(DynamicEvalHook hook);
 
 // ---- persistent handles (embed_handle.cpp) ---------------------------------
 
@@ -644,6 +670,78 @@ BRONZE_EMBED_API Value createTypedArray(ElementKind kind, uint32_t length);
 // nothing to distinguish it from a whole one. Does NOT allocate, and therefore
 // cannot move anything: the copy is the whole of it.
 BRONZE_EMBED_API bool fillTypedArray(Value view, std::span<const uint8_t> bytes);
+
+// ---- external buffer storage (embed_typed_array.cpp) ------------------------
+//
+// The exception to the pointer contract above, bought deliberately: a buffer
+// whose bytes live OUTSIDE the moving heap, in a refcounted host block that
+// never moves. This is what lets a second engine in the same process — bro's
+// QuickJS realm — hold a view over the SAME bytes a compiled program's
+// Float32Array reads, instead of a copy that diverges on the first write.
+// The runtime never creates one on its own; a buffer becomes external only
+// through the two calls below, and every element path (interpreted helper and
+// inline generated code alike) selects on the buffer's external word, which
+// is the entire runtime cost.
+//
+// LIFETIME. The store is refcounted, and the count is the only lifetime
+// authority — deliberately independent of BOTH collectors, which is what
+// makes it safe where a cross-heap reference cannot be. The bronze buffer
+// object holds one reference, dropped through a Deferred finalizer (so the
+// release runs on a plain host stack at the drainFinalizers checkpoint, where
+// a host deleter may do anything); every ExternalBytes handed out below is
+// one more, released by the host with releaseExternalStore. The bytes pointer
+// stays valid until the LAST reference drops, wherever that happens.
+
+struct ExternalBytes {
+    uint8_t* data{nullptr};   // nullptr: the value was not an externalizable buffer
+    uint32_t byteLength{0};
+    void* store{nullptr};     // opaque refcount handle; owed one releaseExternalStore
+    explicit operator bool() const { return data != nullptr; }
+};
+
+// Make `bufferOrView`'s storage external, migrating the bytes out of the
+// moving heap on the first call (a resizable buffer migrates its whole
+// reservation, so `resize` keeps working) — idempotent after that. Accepts an
+// ArrayBuffer or any typed-array view (the view's BUFFER is what
+// externalizes; the answered window is the view's own). Answers null-data for
+// a detached buffer or a non-buffer. The result carries a RETAINED store
+// reference the caller must eventually release. ALLOCATES nothing on the
+// bronze heap; the returned pointer is NOT subject to the moving-heap
+// contract and survives every collection.
+BRONZE_EMBED_API ExternalBytes externalizeArrayBuffer(Value bufferOrView);
+
+// A fresh ArrayBuffer whose storage IS `bytes` — host memory bronze never
+// copies, for the reverse crossing: an interpreter's buffer read in place by
+// compiled code. `deleter(user, bytes)` runs when the last reference drops,
+// possibly from the deferred-finalizer drain (a plain host stack; any call is
+// legal there, including into another engine). bronze holds the one initial
+// reference; the caller keeps none unless it retains. `bytes` must stay valid
+// and fixed until the deleter runs, and byteLength is capped like any
+// buffer's. If `bytes` already backs a live external store, the new buffer
+// SHARES that store and `deleter` runs immediately — the existing
+// registration governs the block's lifetime. ALLOCATES (the header cell).
+BRONZE_EMBED_API Value createExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
+                                                 void (*deleter)(void* user, uint8_t* bytes),
+                                                 void* user);
+
+// One more / one fewer reference on a store from the two calls above.
+BRONZE_EMBED_API void retainExternalStore(void* store);
+BRONZE_EMBED_API void releaseExternalStore(void* store);
+
+// A view over an EXISTING buffer — `new Float32Array(buffer, byteOffset, n)`
+// spelled from the host, and the way a host hands compiled code a window onto
+// an external buffer it just created. `byteOffset` and `length` are validated
+// against the buffer (the constructor's RangeError through the pending cell
+// on a miss); `buffer` must be an ArrayBuffer value. ALLOCATES.
+BRONZE_EMBED_API Value createTypedArrayView(ElementKind kind, Value buffer,
+                                            uint32_t byteOffset, uint32_t length);
+
+// The buffer behind a typed-array view (undefined for anything else), and the
+// view's byte offset into it. A bridge needs the buffer's IDENTITY — two
+// views over one buffer must cross as two windows on one store, not two
+// stores — and typedArrayInfo deliberately answers only the window's bytes.
+BRONZE_EMBED_API Value typedArrayBuffer(Value view);
+BRONZE_EMBED_API uint32_t typedArrayByteOffset(Value view);
 
 // ---- promises (embed_promise.cpp) ------------------------------------------
 

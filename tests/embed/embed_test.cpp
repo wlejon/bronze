@@ -951,3 +951,157 @@ TEST_CASE("construct on a host constructor births instances on its prototype") {
     runtime::rtHeap().collect();
     CHECK(freed == 1);
 }
+
+TEST_CASE("the eval global defers to the host's hook, and refuses without one") {
+    // `Function`'s sibling seam (embed.h setDynamicEvalHook): `eval` is a
+    // provided global whose body performs 19.2.1 step 2 itself and hands
+    // source text to the hook — or throws a catchable TypeError when no host
+    // installed one, which is the standalone story.
+    embed::GlobalValue evalGlobal = embed::globalValue("eval");
+    REQUIRE(evalGlobal.found);
+    embed::Persistent evalFn{evalGlobal.value};
+    CHECK(embed::isFunction(evalFn.get()));
+
+    // Step 2 without a hook: a non-string comes straight back, because no
+    // compilation is involved in the first place.
+    {
+        std::vector<embed::Value> args{embed::fromDouble(5.0)};
+        embed::CallResult r = embed::call(evalFn.get(), embed::undefined(), args);
+        CHECK(!r.thrown);
+        CHECK(r.value.asNumber() == 5.0);
+    }
+
+    // Source text without a hook: the refusal, catchable, as a real object.
+    {
+        std::vector<embed::Value> args{embed::fromUtf8("1 + 1")};
+        embed::CallResult r = embed::call(evalFn.get(), embed::undefined(), args);
+        CHECK(r.thrown);
+        CHECK(r.value.isObject());
+    }
+
+    // With a hook: the hook sees the source and its answer is the call's
+    // value, uninspected. The argument vector is rebuilt per call — a raw
+    // Value held across an allocating call would name a pre-collection
+    // address under the gc-stress rerun.
+    std::string seen;
+    embed::setDynamicEvalHook([&seen](embed::Value source) -> embed::Value {
+        seen = embed::toUtf8(source);
+        return embed::fromDouble(2.0);
+    });
+    {
+        std::vector<embed::Value> args{embed::fromUtf8("1 + 1")};
+        embed::CallResult r = embed::call(evalFn.get(), embed::undefined(), args);
+        CHECK(!r.thrown);
+        CHECK(r.value.asNumber() == 2.0);
+        CHECK(seen == "1 + 1");
+    }
+
+    // Cleared, the refusal is back — the hook is not a ratchet.
+    embed::setDynamicEvalHook({});
+    {
+        std::vector<embed::Value> args{embed::fromUtf8("2 + 2")};
+        embed::CallResult r = embed::call(evalFn.get(), embed::undefined(), args);
+        CHECK(r.thrown);
+    }
+}
+
+TEST_CASE("externalizeArrayBuffer pins a buffer's bytes and both sides see one store") {
+    // A program's Float32Array, then the host's window onto the SAME bytes:
+    // the shared-typed-array seam a bridge is built on. The pointer must
+    // survive collections — that is the contract's whole point.
+    embed::Persistent view{embed::createTypedArray(embed::elements::Float32, 4)};
+    embed::setElement(view.get(), 0, embed::fromDouble(1.5));
+
+    embed::ExternalBytes ext = embed::externalizeArrayBuffer(view.get());
+    REQUIRE(static_cast<bool>(ext));
+    CHECK(ext.byteLength == 16);
+    float host0 = 0.0f;
+    std::memcpy(&host0, ext.data, sizeof host0);
+    CHECK(host0 == 1.5f);
+
+    // The host's write IS the program's read, across a collection.
+    const float written = 42.0f;
+    std::memcpy(ext.data + sizeof(float), &written, sizeof written);
+    embed::collectGarbage();
+    CHECK(embed::toDouble(embed::getElement(view.get(), 1)) == 42.0);
+    // And the program's write lands in the same block the host still holds.
+    embed::setElement(view.get(), 2, embed::fromDouble(7.0));
+    float host2 = 0.0f;
+    std::memcpy(&host2, ext.data + 2 * sizeof(float), sizeof host2);
+    CHECK(host2 == 7.0f);
+
+    // Idempotent: a second call is one more reference on the SAME block.
+    embed::ExternalBytes again = embed::externalizeArrayBuffer(view.get());
+    REQUIRE(static_cast<bool>(again));
+    CHECK(again.data == ext.data);
+    CHECK(again.store == ext.store);
+    embed::releaseExternalStore(again.store);
+
+    // A view window: externalizing a subrange view answers offset bytes.
+    embed::Persistent buffer{embed::typedArrayBuffer(view.get())};
+    embed::Persistent sub{
+        embed::createTypedArrayView(embed::elements::Float32, buffer.get(), 8, 2)};
+    embed::ExternalBytes win = embed::externalizeArrayBuffer(sub.get());
+    REQUIRE(static_cast<bool>(win));
+    CHECK(win.data == ext.data + 8);
+    CHECK(win.byteLength == 8);
+    embed::releaseExternalStore(win.store);
+    embed::releaseExternalStore(ext.store);
+}
+
+namespace {
+struct StoreProbe {
+    int freed = 0;
+    uint8_t* bytes = nullptr;
+};
+}  // namespace
+
+TEST_CASE("createExternalArrayBuffer reads host bytes in place and shares a live store") {
+    static StoreProbe probe;  // static: the deleter runs from the drain, after locals
+    probe = StoreProbe{};
+    probe.bytes = static_cast<uint8_t*>(std::malloc(16));
+    REQUIRE(probe.bytes != nullptr);
+    const float seed = 3.5f;
+    std::memcpy(probe.bytes, &seed, sizeof seed);
+
+    {
+        embed::Persistent buffer{embed::createExternalArrayBuffer(
+            probe.bytes, 16,
+            [](void*, uint8_t* bytes) {
+                probe.freed++;
+                std::free(bytes);
+            },
+            nullptr)};
+        REQUIRE(embed::isArrayBuffer(buffer.get()));
+        embed::Persistent view{
+            embed::createTypedArrayView(embed::elements::Float32, buffer.get(), 0, 4)};
+        // The program reads the host's bytes, uncopied...
+        CHECK(embed::toDouble(embed::getElement(view.get(), 0)) == 3.5);
+        // ...and its write lands in them.
+        embed::setElement(view.get(), 1, embed::fromDouble(9.0));
+        float host1 = 0.0f;
+        std::memcpy(&host1, probe.bytes + sizeof(float), sizeof host1);
+        CHECK(host1 == 9.0f);
+
+        // A SECOND buffer over the same bytes shares the live store rather
+        // than refusing: its own deleter is redundant and runs immediately.
+        static int duplicateDeleterRan = 0;
+        duplicateDeleterRan = 0;
+        embed::Persistent second{embed::createExternalArrayBuffer(
+            probe.bytes, 16, [](void*, uint8_t*) { duplicateDeleterRan++; }, nullptr)};
+        REQUIRE(embed::isArrayBuffer(second.get()));
+        CHECK(duplicateDeleterRan == 1);
+        CHECK(probe.freed == 0);
+        embed::Persistent secondView{
+            embed::createTypedArrayView(embed::elements::Float32, second.get(), 0, 4)};
+        CHECK(embed::toDouble(embed::getElement(secondView.get(), 1)) == 9.0);
+    }
+
+    // Both buffers dropped: the store's LAST reference goes at the deferred
+    // drain — never mid-collection — and the governing deleter runs once.
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    CHECK(probe.freed == 1);
+}

@@ -84,6 +84,15 @@ struct ArrayBufferHeader {
     uint32_t maxByteLength;
     uint32_t bufferFlags;
     uint32_t reserved;
+    // Zero for an ordinary buffer (bytes inline at `this + 1`), or the address
+    // of a NON-MOVING host byte store (embed_typed_array.cpp's external
+    // stores). The collector's memcpy carries either verbatim and both stay
+    // right — an inline buffer's bytes move WITH the header and are still
+    // found through `this + 1`, an external store never moves at all — which
+    // is what makes this a field instead of a flag plus a fixup. Raw bits
+    // rather than a pointer so the RawBytes payload scan story is unchanged:
+    // the collector never reads this word as a Value.
+    uint64_t externalPtrBits;
 
     static constexpr uint16_t kFlags = HeapKind::ArrayBuffer;
 
@@ -124,8 +133,16 @@ struct ArrayBufferHeader {
         byteLength = 0;
     }
 
-    uint8_t* data() noexcept { return reinterpret_cast<uint8_t*>(this + 1); }
-    const uint8_t* data() const noexcept { return reinterpret_cast<const uint8_t*>(this + 1); }
+    bool isExternal() const noexcept { return externalPtrBits != 0; }
+
+    uint8_t* data() noexcept {
+        return externalPtrBits ? reinterpret_cast<uint8_t*>(externalPtrBits)
+                               : reinterpret_cast<uint8_t*>(this + 1);
+    }
+    const uint8_t* data() const noexcept {
+        return externalPtrBits ? reinterpret_cast<const uint8_t*>(externalPtrBits)
+                               : reinterpret_cast<const uint8_t*>(this + 1);
+    }
 };
 
 // A view over an ArrayBufferHeader (flags == kFlags). The buffer is held as a
@@ -274,8 +291,11 @@ static_assert(static_cast<uint32_t>(ElementKind::BigUint64) == BRONZE_ABI_TA_KIN
               "the dynamic-store fast path discards out-of-bounds Number stores for every kind "
               "below BIGINT64 and takes the helper at or above it (the ToBigInt throw), so the "
               "two BigInt kinds must be the enum's LAST rows");
+static_assert(offsetof(ArrayBufferHeader, externalPtrBits) == BRONZE_ABI_BUF_EXTPTR_OFFSET,
+              "the inline element paths load the external-storage word from this offset");
 static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,
-              "data() is `this + 1`, so a buffer's bytes begin at sizeof(ArrayBufferHeader)");
+              "data() is `this + 1` when externalPtrBits is zero, so an ordinary buffer's "
+              "bytes begin at sizeof(ArrayBufferHeader)");
 
 // Close every view a buffer mutation stranded and reopen every view it
 // re-admitted: refreshLength on each live TypedArrayHeader over `buffer_val`.

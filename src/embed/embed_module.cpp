@@ -50,4 +50,6 @@ void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
 
 void collectGarbage() { runtime::rtHeap().collect(); }
 
+uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
+
 }  // namespace bronze::embed

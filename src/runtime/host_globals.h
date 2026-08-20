@@ -75,4 +75,35 @@ void rtSetDynamicFunctionHost(DynamicFunctionHost host);
 // is the signal to refuse.
 const DynamicFunctionHost& rtDynamicFunctionHost();
 
+// ---- eval, delegated --------------------------------------------------------
+//
+// `eval` is `Function`'s sibling (19.2.1): a global function whose argument is
+// SOURCE TEXT compiled at run time. bronze provides it as a real global — so
+// `typeof eval` answers, `const e = eval` is a value, and the indirect
+// spelling calls the same object — whose body delegates to this hook exactly
+// as the four dynamic-function constructors delegate to theirs, and refuses
+// with a catchable TypeError when no host installed one.
+//
+// What a host CANNOT be handed is the caller's scope: an AOT-compiled frame
+// has no environment record to reify. Both spellings therefore get the
+// INDIRECT semantics — the source evaluates against the global environment —
+// which is 19.2.1's own behavior for every call that is not syntactically
+// direct, and the only honest contract a compiled program can offer. The
+// lowering warns at a syntactically direct call site, since source that reads
+// the caller's locals would diverge silently.
+//
+// The runtime performs 19.2.1 step 2 itself (a non-string argument comes
+// straight back, never reaching the hook), so the hook only ever sees source
+// text. The argument is a ROOTED slot, current across anything the hook
+// allocates.
+using DynamicEvalHost = std::function<Value(Value source)>;
+
+// Install (or clear, with an empty function) the host's answer. Process-wide
+// and set once at startup, like the host globals beside it.
+void rtSetDynamicEvalHost(DynamicEvalHost host);
+
+// The installed answer, or an empty std::function when there is none — which
+// is the signal to refuse.
+const DynamicEvalHost& rtDynamicEvalHost();
+
 }  // namespace bronze::runtime

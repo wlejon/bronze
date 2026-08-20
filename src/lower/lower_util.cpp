@@ -121,7 +121,16 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            // %Iterator% (27.1.3). A program reaches the helper methods through
            // any iterator it holds, but the CONSTRUCTOR is what
            // `Iterator.from(x)` and `x instanceof Iterator` need to name.
-           name == "Iterator";
+           name == "Iterator" ||
+           // 19.2.1. A real global function object whose body delegates to the
+           // host's DynamicEvalHost, or refuses with a catchable TypeError
+           // without one — `Function`'s arrangement exactly
+           // (builtin_function.cpp). Providing the NAME is what makes
+           // `typeof eval` truthful and the indirect spelling
+           // (`const e = eval; e(src)`) a call on the same object; both
+           // spellings get the indirect (global-environment) semantics, which
+           // is why lowerCall warns on a syntactically direct use.
+           name == "eval";
 }
 
 // The `file:` URL of one module of the graph, for `import.meta.url`

@@ -496,6 +496,30 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
         consoleStream = ast::consoleStreamOf(calleeIdent->name);
         consoleName = calleeIdent->name;
+        // A syntactically direct `eval(...)` of the GLOBAL eval. The call
+        // compiles — `eval` is a provided global whose body defers to the
+        // host (builtin_function.cpp) — but 19.2.1's direct form evaluates in
+        // the caller's scope, and an AOT frame has no environment record to
+        // hand over, so what runs has the indirect (global-environment)
+        // semantics. Source that reads the caller's locals diverges silently;
+        // that is exactly the class of thing bronze warns about rather than
+        // hides. Once per module, like warnUnresolved — the set is shared
+        // because a resolved `eval` can never reach warnUnresolved. A local
+        // binding named `eval` shadows the global and is not the construct.
+        if (calleeIdent->name == "eval") {
+            uint32_t depth = 0;
+            uint32_t index = 0;
+            const bool shadowed =
+                activeVarMap_.contains("eval") || functionIndices_.contains("eval") ||
+                (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("eval", depth, index));
+            if (!shadowed && warnedUnresolved_.insert("eval").second) {
+                diags_.warning(calleeIdent->span,
+                               "direct `eval` runs with indirect semantics: the source "
+                               "evaluates in the global environment, not the caller's scope "
+                               "(an AOT frame has no environment to reify; the call itself is "
+                               "answered by the host's eval hook, or a TypeError without one)");
+            }
+        }
     }
 
     if (consoleStream != ast::ConsoleStream::None) {
