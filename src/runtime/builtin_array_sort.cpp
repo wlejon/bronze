@@ -24,6 +24,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/call_out.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -63,7 +64,8 @@ void setAt(Rooted<Value>& arr, uint32_t i, Value v) {
 
 // 23.1.3.30.2 CompareArrayElements. -1 / 0 / +1; a pending exception is the
 // fourth answer, and every caller tests the cell before using the number.
-int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn) {
+int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn,
+                    const DirectCallee& direct) {
     const bool xu = x.get().isUndefined();
     const bool yu = y.get().isUndefined();
     // Steps 1-3: undefined sorts to the END, and two undefineds do not move
@@ -73,9 +75,19 @@ int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn
     if (yu) return -1;
     if (!comparefn.get().isUndefined()) {
         Value block[2] = {x.get(), y.get()};
-        Rooted<Value> answer{Value(bronze_dynamic_call(comparefn.get().rawBits(),
-                                                       BRONZE_ABI_UNDEFINED_BITS, 2,
-                                                       reinterpret_cast<const uint64_t*>(block)))};
+        // The comparator was bound ONCE, before the first merge: what
+        // `bronze_dynamic_call` would re-derive per comparison — object,
+        // function rather than proxy, arity reached — is a fact about a value
+        // the sort holds and nothing can change under it. On three.js's render
+        // list that ladder ran 54,000 times a frame for one answer.
+        // `call_out.h` says what the binding may and may not cache.
+        Rooted<Value> answer{
+            direct.bound()
+                ? Value(direct.call(comparefn, BRONZE_ABI_UNDEFINED_BITS, 2,
+                                    reinterpret_cast<const uint64_t*>(block)))
+                : Value(bronze_dynamic_call(comparefn.get().rawBits(),
+                                            BRONZE_ABI_UNDEFINED_BITS, 2,
+                                            reinterpret_cast<const uint64_t*>(block)))};
         if (rtExceptionPending()) return 0;
         // Step 4.b-4.d: ToNumber, with NaN read as "equal" rather than as an
         // ordering — which is what keeps a garbage comparator from making the
@@ -102,6 +114,7 @@ int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn
 // the `<= 0` below: on a tie the LEFT run's element goes first, and the left
 // run is the one that came first in the input.
 void mergeRuns(Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo, uint32_t mid, uint32_t hi,
+               const DirectCallee& direct,
                Rooted<Value>& comparefn) {
     uint32_t i = lo;
     uint32_t j = mid;
@@ -114,7 +127,7 @@ void mergeRuns(Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo, uint32_t mid
         } else {
             Rooted<Value> a{getAt(src, i)};
             Rooted<Value> b{getAt(src, j)};
-            takeLeft = compareElements(a, b, comparefn) <= 0;
+            takeLeft = compareElements(a, b, comparefn, direct) <= 0;
             if (rtExceptionPending()) return;
         }
         setAt(dst, k, getAt(src, takeLeft ? i++ : j++));
@@ -159,13 +172,32 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     Rooted<Value> scratch{Value(bronze_create_array(0))};
     for (uint32_t i = 0; i < itemCount; ++i) setAt(scratch, i, Value::fromUndefined());
 
+    // Bound once for the whole sort, and only once: a comparator cannot turn
+    // into something else between two comparisons, so the guard ladder
+    // bronze_dynamic_call runs per call has one answer here.
+    DirectCallee direct;
+    direct.bind(comparefn.get(), 2);
+    // One scope for the whole sort, where the generic call path pushed and
+    // popped one per comparison. Every user-code call this sort makes — the
+    // comparator, and any `valueOf`/`toString` that ToNumber of its answer
+    // reaches — is a PLAIN call, and 13.3.12 makes new.target `undefined` in
+    // all of them, so one scope covering all of them says what the language
+    // says. Before this, the window BETWEEN two comparator calls reported the
+    // enclosing constructor's new.target to a `valueOf` the constructor never
+    // constructed.
+    //
+    // Deliberately OUTSIDE the seam: it is a correctness fix that stands on
+    // its own, and BRONZE_NO_DIRECT_CALLOUT=1 has to be a pure performance A/B
+    // — a seam that also moved an answer could not be used to measure one.
+    NewTargetScope sortTargetScope(Value::fromUndefined());
+
     Rooted<Value>* src = &list;
     Rooted<Value>* dst = &scratch;
     for (uint32_t width = 1; width < itemCount; width *= 2) {
         for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
             const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
             const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
-            mergeRuns(*src, *dst, lo, mid, hi, comparefn);
+            mergeRuns(*src, *dst, lo, mid, hi, direct, comparefn);
             // A comparator that threw ends the SORT, not just the merge — and
             // the receiver has not been written, so the array the catch sees
             // is the array the program had.

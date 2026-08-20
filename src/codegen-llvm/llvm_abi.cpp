@@ -42,7 +42,8 @@ static_assert(BRONZE_ABI_FNSLOT_SIZE % sizeof(uint64_t) == 0,
 static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0, "word 0 of a slot is the code pointer");
 static_assert(BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8, "word 1 of a slot is the Value");
 
-void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns) {
+void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
+                       bool sharedRuntime) {
     auto getOrDeclareFunc = [&](const char* name, llvm::FunctionType* fty) -> llvm::Function* {
         llvm::Function* fn = llvmModule.getFunction(name);
         if (!fn) {
@@ -71,6 +72,27 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     fns.name->addFnAttr(llvm::Attribute::NoUnwind);
     BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_DECLARE)
 #undef BRONZE_ABI_LLVM_DECLARE
+
+    // The import marking the header explains: without it, `&bronze_math_cos`
+    // inside a loadable module is the address of that module's jump thunk, and
+    // every code-pointer identity guard in generated code compares it against
+    // the runtime's real address and loses. Applied to the whole registry
+    // rather than to the handful of symbols a guard names today, because which
+    // ones those are is a property of the fast paths and changes with them —
+    // and because an indirect call through the IAT is what an imported call
+    // costs anyway, thunk or no thunk.
+#ifdef _WIN32
+    if (sharedRuntime) {
+#define BRONZE_ABI_LLVM_IMPORT(name, RET, PARAMS)         fns.name->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+        BRONZE_ABI_FUNCTIONS(BRONZE_ABI_LLVM_IMPORT)
+#undef BRONZE_ABI_LLVM_IMPORT
+    }
+#else
+    // ELF resolves an address-of through the GOT and Mach-O through its
+    // equivalent, both to the ONE definition the dynamic linker chose, so the
+    // guard already compares the right pointer there. Nothing to mark.
+    (void)sharedRuntime;
+#endif
 
     // The TLS-block accessor returns an address that is a per-thread
     // constant: readnone + willreturn is what lets LLVM fold a function's

@@ -1,0 +1,35 @@
+src-alpha
+dst-alpha stencil
+true
+one
+4500
+900
+P
+P
+N
+1
+1 2
+99
+own
+true
+again
+proto
+changed
+own
+changed
+A
+B
+a
+b
+300 300
+1200
+40
+50 H
+F
+T T
+zero
+zero frac nan huge
+0,1.5,NaN,1e+21
+a b 2 true
+1
+18

@@ -64,7 +64,22 @@ struct AbiGlobals {
 
 // Declares every registry symbol into `llvmModule`. Declarations only: the
 // runtime owns every definition.
-void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns);
+//
+// `sharedRuntime` says the runtime arrives as a DLL/.so rather than linked into
+// the same image, and on Windows it is the difference between a guard that
+// works and one that is DEAD. A COFF import library resolves a plain reference
+// to an imported function through a linker-synthesized JUMP THUNK in the
+// IMPORTING image: calling through it is correct, but its ADDRESS is the
+// thunk's, not the function's. Every fast path that guards on
+// `fn->code == <the intrinsic>` — Math's direct dispatch (llvm_math.cpp),
+// `Array.prototype.push`'s (llvm_call.cpp) — compares the pointer the RUNTIME
+// stored, which is the real one, against that thunk, and so takes the helper
+// every single time. `dllimport` is what makes the reference go through the
+// IAT, where the address is the definition's. ELF and Mach-O already resolve
+// an address-of through the GOT to the one canonical definition, so this is
+// Windows-only and the flag is ignored elsewhere.
+void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
+                       bool sharedRuntime);
 
 // One call to bronze_tls_block_addr at the current insert point — which must
 // be a function's entry block, so the base dominates every later use — and a

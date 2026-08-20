@@ -54,6 +54,7 @@
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/elem_ic.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -708,7 +709,7 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
 }
 
 uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
-    recordElemCall("bronze_elem_get");
+    recordElemCall("bronze_elem_get", objBits, idxBits);
     Value objVal(objBits);
 
     // 7.1.19 ToPropertyKey, for the one key kind that has to run before
@@ -877,10 +878,48 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
     // died here as "computed index access on a non-object value" while
     // `"abc"[0]` took the name path — one operation with two answers, and the
     // reason `cases/string_index` pins both spellings.
-    Rooted<Value> objRoot{objVal};
-    Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-    StringHeader* keyHeader = key.get().asString<StringHeader>();
-    return propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, /*ic=*/nullptr);
+    //
+    // The computed-read cache (runtime/elem_ic.h) is consulted HERE, one line
+    // above the key's conversion, and that position is the mechanism rather
+    // than an ordering detail: the largest bucket in the three.js bill is a
+    // NUMBER key naming a string property, and on a hit it never becomes a
+    // string at all. Nothing above this point is skipped — the object-key
+    // conversion, the symbol dispatch and both element paths have all had
+    // their say, so what reaches here is a name, asked of a receiver whose
+    // kind the probe checks for itself.
+    const ElemProbe probe = elemCacheProbe(objVal, Value(idxBits));
+    if (probe.hit) return probe.value.rawBits();
+    {
+        Rooted<Value> objRoot{objVal};
+        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+        if (!probe.entry) {
+            StringHeader* plainKey = key.get().asString<StringHeader>();
+            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr);
+        }
+        // A single-entry site on the STACK. The walk fills it by its own rules
+        // — the dictionary refusal, `chainIsCacheable`, the diagnostic claims —
+        // so nothing here decides what may be cached; it copies across what the
+        // walk already decided. A stack site also means a read that ends in a
+        // getter, a refusal or a throw simply leaves the table alone.
+        InlineCacheSite site{};
+        StringHeader* keyHeader = key.get().asString<StringHeader>();
+        const uint64_t result =
+            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site);
+        if (site.ways[0].isRealShape() && !site.ways[0].isAbsent()) {
+            // Interned only once the walk has proven the answer cacheable, and
+            // only for a PRESENT property — whose key is already an arena shape
+            // key, so this is a lookup that finds it rather than an allocation
+            // that grows the arena. Absence is deliberately not cached here:
+            // its key need exist nowhere, and a loop over fresh missing names
+            // would intern an immortal string per iteration.
+            //
+            // Re-read through the root: propGetByName above can allocate, and
+            // the header this had before it is a pre-collection address.
+            StringHeader* live = key.get().asString<StringHeader>();
+            elemCacheFill(probe, StringHeader::internToArena(rtArena(), live), site);
+        }
+        return result;
+    }
 }
 
 }  // extern "C"

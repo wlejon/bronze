@@ -759,6 +759,15 @@ typedef struct bronze_tls_block {
     uint64_t inline_accessor_enabled;
     uint64_t poly_ic_enabled;
     uint64_t negative_ic_enabled;
+    /* BRONZE_NO_ELEM_IC=1. The computed-read cache (runtime/elem_ic.h), which
+     * no generated code reads — it lives here, beside the seams that ARE read
+     * from generated code, because one place for every A/B switch is what
+     * makes a seam findable. `negative_ic_enabled` above is the same kind. */
+    uint64_t elem_ic_enabled;
+    /* BRONZE_NO_DIRECT_CALLOUT=1. The runtime's own repeated call-outs
+     * (runtime/call_out.h) — a sort comparator and its kin. Runtime-only like
+     * the two above it. */
+    uint64_t direct_callout_enabled;
     uint64_t* array_method_tbl;
 } bronze_tls_block;
 
@@ -774,7 +783,9 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF    72
 #define BRONZE_TLS_POLY_IC_ENABLED_OFF            80
 #define BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF        88
-#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF           96
+#define BRONZE_TLS_ELEM_IC_ENABLED_OFF            96
+#define BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF    104
+#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          112
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds

@@ -727,7 +727,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     auto llvmModule = std::make_unique<llvm::Module>(module.name, ctx);
 
     AbiFns abi;
-    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi);
+    codegen_llvm::declareAbiSymbols(*llvmModule, ctx, abi, sharedRuntime_);
 
     // The three names a loadable module publishes and the marking that
     // publishes them. On COFF nothing leaves a DLL unnamed, so the export

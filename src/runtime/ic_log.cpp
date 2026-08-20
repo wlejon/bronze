@@ -47,6 +47,11 @@ struct SectionStats {
 static SectionStats g_propGetStats;
 static SectionStats g_propSetStats;
 static SectionStats g_dynamicCallStats;
+// The computed-read cache's refusals and stale entries, by reason. A section
+// with no key column: a miss here is attributed to the CACHE's state and to
+// the receiver's kind, never to a key the site names — a computed site names
+// no key, which is the whole reason the cache exists.
+static SectionStats g_elemIcStats;
 static bool s_initialized = false;
 
 // A read that found NOTHING — the case that used to be one bucket called
@@ -339,6 +344,44 @@ void icLogRecordPropSet(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, u
     ks.reasonCounts[reason]++;
 }
 
+void icLogRecordElemIcMiss(const char* reason, uint64_t objBits, uint64_t keyBits) {
+    g_elemIcStats.totalCount++;
+    const char* r = reason ? reason : "(none)";
+    g_elemIcStats.reasonCounts[r]++;
+    // The receiver's nearest shape keys and the key asked for: a computed site
+    // names no key of its own, so the only way to say WHICH read refused is to
+    // spell the pair the read was about.
+    std::string desc;
+    const Value obj(objBits);
+    const Value key(keyBits);
+    if (obj.isObject() && obj.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        int shown = 0;
+        for (const Shape* n = obj.asObject<ObjectHeader>()->shape; n && n->parent && shown < 3;
+             n = n->parent) {
+            if (StringHeader* ks = n->key.string()) {
+                if (!desc.empty()) desc += ",";
+                desc += rtUtf8Chars(ks);
+                ++shown;
+            }
+        }
+    }
+    desc = "{" + desc + "}";
+    if (key.isString()) {
+        desc += "." + rtUtf8Chars(key.asString<StringHeader>());
+    } else if (key.isNumber()) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "[%g]", key.asNumber());
+        desc += buf;
+    } else if (key.isBool()) {
+        desc += key.asBool() ? "[true]" : "[false]";
+    } else {
+        desc += "[other]";
+    }
+    auto& ks = g_elemIcStats.keyStats[desc];
+    ks.totalCount++;
+    ks.reasonCounts[r]++;
+}
+
 void icLogRecordDynamicCall(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
     (void)thisBits;
     (void)argvBits;
@@ -429,6 +472,7 @@ void dumpIcLogReport() {
     printSectionReport("bronze_prop_get Misses", "Key", g_propGetStats);
     printSectionReport("bronze_prop_set Misses", "Key", g_propSetStats);
     printSectionReport("bronze_dynamic_call Misses", "Callee", g_dynamicCallStats);
+    printSectionReport("bronze_elem_get Cache Misses", "Key", g_elemIcStats);
 
     std::fprintf(stderr, "\n");
     std::fflush(stderr);

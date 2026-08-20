@@ -19,6 +19,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -36,6 +37,17 @@ struct HelperProfile {
 
 static std::unordered_map<std::string, HelperProfile> g_helpers;
 static bool s_initialized = false;
+
+// Installed by a layer above the runtime (embed) so it can tell ITS unnamed
+// callees apart; null until one is.
+static ProfileCalleeNamer s_calleeNamer = nullptr;
+
+// code pointer -> "Owner.member", filled at installation by the native
+// factory. Never read on a hot path — only when a callee turns up nameless.
+static std::unordered_map<const void*, std::string>& nativeNames() {
+    static std::unordered_map<const void*, std::string> m;
+    return m;
+}
 
 struct AutoProfileInit {
     AutoProfileInit() {
@@ -77,11 +89,107 @@ void profileRecordProp(const char* helperName, uint32_t keyIndex, const void* ic
     h.subSites[key]++;
 }
 
-void profileRecordElem(const char* helperName) {
+namespace {
+
+// What a receiver IS, for the element report. The helper's own dispatch reads
+// exactly this word, so the bucket names name the arms the helper takes.
+const char* receiverKindName(Value v) {
+    if (!v.isObject()) {
+        if (v.isString()) return "string";
+        if (v.isNumber()) return "number";
+        if (v.isNull()) return "null";
+        if (v.isUndefined()) return "undefined";
+        return "primitive";
+    }
+    switch (v.asObject<HeapObjectHeader>()->flags) {
+        case HeapKind::Plain: return "plain";
+        case HeapKind::Array: return "array";
+        case HeapKind::Function: return "function";
+        case HeapKind::TypedArray: return "typedarray";
+        case HeapKind::ArrayBuffer: return "arraybuffer";
+        case HeapKind::DataView: return "dataview";
+        case HeapKind::Map: return "map";
+        case HeapKind::Set: return "set";
+        case HeapKind::Iterator: return "iterator";
+        case HeapKind::RegExp: return "regexp";
+        case HeapKind::ModuleNamespace: return "namespace";
+        case HeapKind::Proxy: return "proxy";
+        default: return "other-object";
+    }
+}
+
+// What the KEY is, split the way the helper's ladder splits it: a number that
+// is a clean element index is a different question from one that is not, and a
+// string key is the case that funnels all the way to propGetByName.
+const char* keyKindName(Value k) {
+    if (k.isNumber()) {
+        const double d = k.asNumber();
+        const uint32_t u = static_cast<uint32_t>(d);
+        const bool index = d >= 0.0 && d <= 4294967294.0 && static_cast<double>(u) == d;
+        return index ? "num-index" : "num-nonindex";
+    }
+    if (k.isString()) return "string";
+    if (k.isSymbol()) return "symbol";
+    if (k.isObject()) return "object";
+    if (k.isBool()) return "boolean";
+    if (k.isNull()) return "null";
+    if (k.isUndefined()) return "undefined";
+    return "other";
+}
+
+}  // namespace
+
+void profileRecordElem(const char* helperName, uint64_t objBits, uint64_t idxBits) {
     if (!helperName) return;
     auto& h = g_helpers[helperName];
     h.name = helperName;
     h.totalCount++;
+
+    const Value obj(objBits);
+    const Value key(idxBits);
+    std::string bucket = receiverKindName(obj);
+    // A plain receiver is the bucket the bill cannot act on without knowing
+    // WHICH object it is: `plain[num-index]` names an arm, not a design. The
+    // shape's own keys, nearest three, name the object the way a reader of the
+    // library would. Walking the parent chain reads only immortal arena
+    // memory, and nothing here allocates on the JS heap.
+    if (obj.isObject() && obj.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
+        const Shape* sh = obj.asObject<ObjectHeader>()->shape;
+        std::string keys;
+        int shown = 0;
+        for (const Shape* n = sh; n && n->parent && shown < 3; n = n->parent) {
+            if (StringHeader* ks = n->key.string()) {
+                if (!keys.empty()) keys += ",";
+                keys += rtUtf8Chars(ks);
+                ++shown;
+            }
+        }
+        if (!keys.empty()) bucket += "{" + keys + "}";
+    }
+    bucket += "[" + std::string(keyKindName(key)) + "]";
+    // A string key is the bucket that funnels to the name path, and WHICH name
+    // is the whole design question — so those get spelled out. Capped: a site
+    // that computes fresh keys must not turn the report into a heap dump.
+    if (key.isString()) {
+        StringHeader* s = key.asString<StringHeader>();
+        if (s && s->getLength() > 0 && s->getLength() <= 32 && h.subSites.size() < 4096) {
+            bucket += " ." + rtUtf8Chars(s);
+        }
+    }
+    h.subSites[bucket]++;
+}
+
+void profileSetCalleeNamer(ProfileCalleeNamer namer) {
+    s_calleeNamer = namer;
+}
+
+void profileNameNative(const void* code, std::string_view owner, std::string_view member) {
+    if (!g_profileEnabled || !code) return;
+    auto& slot = nativeNames()[code];
+    if (!slot.empty()) return;  // first installation wins; aliases are noise
+    slot.assign(owner);
+    if (!owner.empty() && !member.empty()) slot += ".";
+    slot.append(member);
 }
 
 void profileRecordCall(const char* helperName, uint64_t calleeBits) {
@@ -103,8 +211,25 @@ void profileRecordCall(const char* helperName, uint64_t calleeBits) {
                     calleeName = "fn \"" + rtUtf8Chars(fn->name) + "\"";
                 }
             } else {
-                calleeName = "fn (native/unnamed)";
+                // No `name` slot means native — the runtime's own builtins and
+                // every host function answer alike here. Three ways to tell
+                // them apart, cheapest first.
+                void* code = reinterpret_cast<void*>(fn->code);
+                char buf[160];
+                if (s_calleeNamer && s_calleeNamer(calleeBits, code, buf, sizeof(buf))) {
+                    calleeName = buf;
+                } else if (auto it = nativeNames().find(code); it != nativeNames().end()) {
+                    calleeName = "fn " + it->second + " (native)";
+                } else {
+                    std::snprintf(buf, sizeof(buf), "fn (native @%p)", code);
+                    calleeName = buf;
+                }
             }
+        } else if (hdr) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "(non-function kind %u)",
+                          static_cast<unsigned>(hdr->flags));
+            calleeName = buf;
         }
     }
     h.subSites[calleeName]++;
@@ -155,17 +280,20 @@ void dumpProfileReport() {
                           return a.first < b.first;
                       });
 
-            // Show top sub-sites (up to 10)
+            // Show top sub-sites. Twenty-five rather than ten because the
+            // element buckets carry a key name each: a bill that has to name
+            // WHICH computed key is hot cannot be read at ten rows.
+            const size_t kMaxSites = 25;
             size_t count = 0;
             for (const auto& site : sortedSites) {
-                if (++count > 10) {
-                    size_t remaining = sortedSites.size() - 10;
+                if (++count > kMaxSites) {
+                    size_t remaining = sortedSites.size() - kMaxSites;
                     std::fprintf(stderr, "    ... and %zu more site(s)\n", remaining);
                     break;
                 }
                 double sitePct = grandTotal > 0 ? (100.0 * site.second / grandTotal) : 0.0;
                 std::string label = "  " + site.first;
-                if (label.size() > 48) label = label.substr(0, 45) + "...";
+                if (label.size() > 62) label = label.substr(0, 59) + "...";
                 std::fprintf(stderr, "%-48s %12llu %7.1f%%\n",
                              label.c_str(),
                              static_cast<unsigned long long>(site.second),

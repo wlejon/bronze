@@ -21,6 +21,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -387,6 +388,11 @@ Value rtMathObject() {
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const MathFn& fn : kMathFunctions) {
+        // A native builtin records no `name` (rt_builtins.h says why), so a
+        // profile of the runtime sees a bare code pointer where a bill wants
+        // "Math.cos". The table has the name in hand right here; the registry
+        // is profile-only and no-ops unless BRONZE_PROFILE=1.
+        profileNameNative(reinterpret_cast<const void*>(fn.code), "Math", fn.name);
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);

@@ -9,6 +9,10 @@
 
 namespace bronze::codegen_llvm {
 
+// How many formals the inline call's under-arity path will pad. See the
+// comment at the cap check below for why it is not eight.
+static constexpr uint32_t kPadSlots = 16;
+
 llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                    const AbiGlobals& globals, llvm::Value* callee,
                                    llvm::Value* thisVal, uint32_t argc, llvm::Value* argv) {
@@ -60,11 +64,20 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* directOk = builder.CreateAnd(directArityOk, enabledOk, "call.directok");
     builder.CreateCondBr(directOk, dispatchBb, underArityCheckBb);
 
-    // If direct arity not ok: check if enabled and arity <= 8 (for under-arity stack padding)
+    // If direct arity not ok: pad up to kPadSlots formals with undefined.
+    //
+    // Sixteen rather than eight, because eight was under the real world: the
+    // one call three.js makes 5,000 times a frame that missed this path was
+    // `state.setBlending( material.blending )` — one argument into a function
+    // declaring TEN formals — and it took the helper for no reason but the
+    // cap. The buffer is an entry-block alloca whose live range is this call,
+    // so LLVM's stack colouring shares one slot between sites that cannot both
+    // be live; the cost of the wider cap is stack bytes in a frame that has
+    // them, and the saving is a helper entry per call.
     builder.SetInsertPoint(underArityCheckBb);
     llvm::Value* canPad = builder.CreateAnd(
         enabledOk,
-        builder.CreateICmpULE(arity, builder.getInt32(8)), "call.canpad");
+        builder.CreateICmpULE(arity, builder.getInt32(kPadSlots)), "call.canpad");
     llvm::BasicBlock* underArityBb = llvm::BasicBlock::Create(ctx, "call.underarity", fn);
     builder.CreateCondBr(canPad, underArityBb, slowBb);
 
@@ -72,26 +85,26 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     builder.SetInsertPoint(underArityBb);
     llvm::IRBuilder<> entryBuilder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     llvm::Value* padBuf = entryBuilder.CreateAlloca(
-        llvm::ArrayType::get(i64Ty, 8), nullptr, "call.padbuf");
+        llvm::ArrayType::get(i64Ty, kPadSlots), nullptr, "call.padbuf");
 
     if (argc > 0 && argv) {
-        for (uint32_t a = 0; a < argc && a < 8; ++a) {
+        for (uint32_t a = 0; a < argc && a < kPadSlots; ++a) {
             llvm::Value* srcPtr = builder.CreateGEP(i64Ty, argv, builder.getInt32(a));
             llvm::Value* val = builder.CreateAlignedLoad(i64Ty, srcPtr, llvm::Align(8));
             llvm::Value* dstPtr = builder.CreateConstInBoundsGEP2_32(
-                llvm::ArrayType::get(i64Ty, 8), padBuf, 0, a);
+                llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, a);
             builder.CreateAlignedStore(val, dstPtr, llvm::Align(8));
         }
     }
     llvm::Value* undefVal = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
-    for (uint32_t a = argc; a < 8; ++a) {
+    for (uint32_t a = argc; a < kPadSlots; ++a) {
         llvm::Value* dstPtr = builder.CreateConstInBoundsGEP2_32(
-            llvm::ArrayType::get(i64Ty, 8), padBuf, 0, a);
+            llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, a);
         builder.CreateAlignedStore(undefVal, dstPtr, llvm::Align(8));
     }
 
     llvm::Value* padArgv = builder.CreateConstInBoundsGEP2_32(
-        llvm::ArrayType::get(i64Ty, 8), padBuf, 0, 0);
+        llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, 0);
 
     llvm::Value* padEnv = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),

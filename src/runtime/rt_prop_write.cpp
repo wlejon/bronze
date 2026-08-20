@@ -437,7 +437,7 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
 // of any other type is a bug in that grammar rather than a program error, so it
 // is fatal by name rather than converted.
 void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
-    recordElemCall("bronze_method_def_computed");
+    recordElemCall("bronze_method_def_computed", objBits, keyBits);
     Value objVal(objBits);
     if (!objVal.isObject()) {
         fatal("internal: a computed class method defined on a receiver that is not an object");
@@ -523,7 +523,7 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
 
 void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t getterBits,
                                   uint64_t setterBits, bool enumerable) {
-    recordElemCall("bronze_accessor_def_computed");
+    recordElemCall("bronze_accessor_def_computed", objBits, keyBits);
     Value objVal(objBits);
     if (!objVal.isObject()) {
         fatal("internal: an accessor defined on a value that is not an object");
@@ -566,7 +566,7 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
 }
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
-    recordElemCall("bronze_elem_set");
+    recordElemCall("bronze_elem_set", objBits, idxBits);
     Value objVal(objBits);
 
     // 7.1.19 ToPropertyKey for an OBJECT key, at the entry and nowhere below,

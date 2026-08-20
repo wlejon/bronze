@@ -210,6 +210,16 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->negative_ic_enabled = 0;
     }
 
+    const char* env_no_elem = std::getenv("BRONZE_NO_ELEM_IC");
+    if (env_no_elem && std::strcmp(env_no_elem, "1") == 0) {
+        tls->elem_ic_enabled = 0;
+    }
+
+    const char* env_no_callout = std::getenv("BRONZE_NO_DIRECT_CALLOUT");
+    if (env_no_callout && std::strcmp(env_no_callout, "1") == 0) {
+        tls->direct_callout_enabled = 0;
+    }
+
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
         g_gcLog.enabled = true;

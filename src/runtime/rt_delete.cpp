@@ -212,7 +212,7 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
 }
 
 bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
-    recordElemCall("bronze_elem_delete");
+    recordElemCall("bronze_elem_delete", objBits, idxBits);
     Value objVal(objBits);
     Value idxVal(idxBits);
     if (objVal.isNull() || objVal.isUndefined()) {

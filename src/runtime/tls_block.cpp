@@ -31,6 +31,9 @@ static_assert(offsetof(bronze_tls_block, inline_accessor_enabled) ==
 static_assert(offsetof(bronze_tls_block, poly_ic_enabled) == BRONZE_TLS_POLY_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, negative_ic_enabled) ==
               BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, elem_ic_enabled) == BRONZE_TLS_ELEM_IC_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, direct_callout_enabled) ==
+              BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, array_method_tbl) == BRONZE_TLS_ARRAY_METHOD_TBL_OFF);
 
 extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
@@ -50,6 +53,8 @@ extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
         /*inline_accessor_enabled=*/1,
         /*poly_ic_enabled=*/1,
         /*negative_ic_enabled=*/1,
+        /*elem_ic_enabled=*/1,
+        /*direct_callout_enabled=*/1,
         /*array_method_tbl=*/nullptr,
     };
     return &block;
