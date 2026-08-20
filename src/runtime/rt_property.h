@@ -100,7 +100,7 @@ bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key);
 // beside the value. The one branch of the property path that is not about the
 // receiver's own storage, which is why it is not in rt_prop.cpp.
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                        struct InlineCache* ic);
+                        struct InlineCacheSite* ic);
 
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //
@@ -116,6 +116,22 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
 inline struct InlineCache* rtAsCache(uint64_t* entry) noexcept {
     return reinterpret_cast<struct InlineCache*>(entry);
 }
+
+// The same pointer read as the whole SITE. Way 0 is at offset 0, so the two
+// casts of one pointer agree by construction — which is what lets a write
+// path keep speaking of a single entry while a read path scans four.
+inline struct InlineCacheSite* rtAsCacheSite(uint64_t* entry) noexcept {
+    return reinterpret_cast<struct InlineCacheSite*>(entry);
+}
+
+// Record, in this site's cache, that `keyStr` is on NEITHER the receiver nor
+// any link of its prototype chain — after which generated code answers
+// `undefined` inline instead of walking. Refuses for every receiver and key a
+// shape-keyed entry cannot speak for; rt_prop_absent.cpp lists them.
+//
+// Called from the read path's plain-object tail only, and only once the
+// diagnostics for a name ECMA-262 defines and bronze has not built have run.
+void rtInstallAbsentEntry(struct InlineCacheSite* site, Value objVal, const std::string& keyStr);
 
 // Does this key name an ELEMENT of a receiver that stores its elements by
 // index? The canonical-array-index test and nothing else, in both spellings a

@@ -92,12 +92,20 @@ Value rtMathObject();
 // The `Atomics` namespace object (ECMA-262 25.4), built once on first use like
 // `Math`, and the named refusal for the three operations on it that need an
 // agent cluster bronze does not have.
+// Each of the receiver-gated `*CheckMissingMember` refusals below answers
+// whether it CLAIMED the receiver — whether this object is the singleton whose
+// absent members it diagnoses from a C table. The read path's negative inline
+// cache needs that answer: an entry saying "absent" is keyed on the receiver's
+// SHAPE, and a shape is not an identity, so caching one for a claimed receiver
+// could let a later read of the same shape skip a diagnostic this call made.
+// The claim is the identity test the refusal already performs, returned rather
+// than restated, so the two can never disagree.
 Value rtAtomicsObject();
-void rtAtomicsCheckMissingMember(Value obj, const std::string& key);
-void rtMathCheckMissingMember(Value obj, const std::string& key);
+bool rtAtomicsCheckMissingMember(Value obj, const std::string& key);
+bool rtMathCheckMissingMember(Value obj, const std::string& key);
 
 Value rtObjectNamespace();
-void rtObjectCheckMissingMember(Value obj, const std::string& key);
+bool rtObjectCheckMissingMember(Value obj, const std::string& key);
 
 // `Object.prototype`: the intrinsic every plain object's chain ends at, and a
 // real object rather than a table consulted beside the chain — so a program can
@@ -172,7 +180,7 @@ Value rtFunctionKindPrototype(Value fnVal);
 // an inherited `call` would read `undefined`; this makes it a diagnostic
 // instead. Fires only for those exact objects, and only once one has been
 // built.
-void rtFunctionKindCheckMissingMember(Value obj, const std::string& key);
+bool rtFunctionKindCheckMissingMember(Value obj, const std::string& key);
 
 // ---- the primitive wrappers (builtin_wrappers.cpp) --------------------------
 
@@ -323,7 +331,7 @@ Value rtGlobalNumericFunction(const std::string& name);
 void rtCheckNumberProtoMember(const std::string& key);
 
 Value rtJsonNamespace();
-void rtJsonCheckMissingMember(Value obj, const std::string& key);
+bool rtJsonCheckMissingMember(Value obj, const std::string& key);
 Value rtJsonParse(std::string_view utf8);
 
 // 25.5.2 SerializeJSONProperty over the root, which is what `JSON.stringify`
@@ -455,7 +463,7 @@ bool rtInstallMapStatics(Rooted<Value>& ctor);
 // table rather than read as `undefined` (rt_prop.cpp).
 Value rtArrayPrototypeObject();
 bool rtIsArrayPrototypeObject(Value v);
-void rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key);
+bool rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key);
 
 // `String.prototype[Symbol.iterator]` (22.1.3.36), installed by
 // builtin_wrappers.cpp's intrinsic initializer beside the string methods.

@@ -19,9 +19,17 @@ namespace bronze::codegen_llvm {
 // sound, which is the helper's business. The stride is derived from the ABI
 // constant rather than written as a literal, so growing the entry again stays
 // one edit in one file.
+//
+// The stride is a SITE — BRONZE_ABI_IC_WAYS entries — and way 0 sits at its
+// front, so the pointer generated code passes the helpers is both "this site"
+// and "this site's first entry" with no arithmetic between the two readings.
 static constexpr unsigned kIcEntryWords = BRONZE_ABI_IC_ENTRY_SIZE / sizeof(uint64_t);
+static constexpr unsigned kIcSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
 static_assert(BRONZE_ABI_IC_ENTRY_SIZE % sizeof(uint64_t) == 0,
               "the IC table is emitted as i64 words, so an entry must be a whole number of them");
+static_assert(BRONZE_ABI_IC_SITE_SIZE == BRONZE_ABI_IC_ENTRY_SIZE * BRONZE_ABI_IC_WAYS,
+              "a site is exactly its ways, with no cursor word: the install policy is "
+              "move-to-front, which needs no state beyond the entries themselves");
 static_assert(BRONZE_ABI_IC_SHAPE_OFFSET == 0, "word 0 of an entry is the cached shape");
 static_assert(BRONZE_ABI_IC_SLOTWORD_OFFSET == 8, "word 1 of an entry is (depth << 32) | slot");
 static_assert(BRONZE_ABI_IC_EPOCH_OFFSET == 16, "word 2 of an entry is the fill epoch");
@@ -106,6 +114,7 @@ AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns) {
         field(BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF, "tls.ovset_on");
     g.bronze_inline_accessor_enabled =
         field(BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF, "tls.acc_on");
+    g.bronze_poly_ic_enabled = field(BRONZE_TLS_POLY_IC_ENABLED_OFF, "tls.poly_on");
     g.bronze_array_method_tbl = field(BRONZE_TLS_ARRAY_METHOD_TBL_OFF, "tls.arrtbl");
     return g;
 }
@@ -165,7 +174,7 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
 
     if (module.icSiteCount > 0) {
         llvm::ArrayType* ty = llvm::ArrayType::get(
-            i64Ty, static_cast<uint64_t>(module.icSiteCount) * kIcEntryWords);
+            i64Ty, static_cast<uint64_t>(module.icSiteCount) * kIcSiteWords);
         tables.icTable = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
                                      "__bronze_ic_table", 8);
     }
@@ -215,7 +224,7 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
 llvm::Value* icEntryPtr(llvm::IRBuilder<>& builder, llvm::GlobalVariable* icTable,
                         uint32_t icIndex) {
     return builder.CreateConstInBoundsGEP2_32(icTable->getValueType(), icTable, 0,
-                                              icIndex * kIcEntryWords,
+                                              icIndex * kIcSiteWords,
                                               "ic" + std::to_string(icIndex));
 }
 

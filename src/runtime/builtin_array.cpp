@@ -239,8 +239,10 @@ bool rtIsArrayPrototypeObject(Value v) {
     return g_arrayPrototype.isObject() && v.rawBits() == g_arrayPrototype.rawBits();
 }
 
-void rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key) {
-    if (rtIsArrayPrototypeObject(obj)) rtCheckArrayMember(key);
+bool rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key) {
+    if (!rtIsArrayPrototypeObject(obj)) return false;
+    rtCheckArrayMember(key);
+    return true;
 }
 
 Value rtArrayMethod(const std::string& key) {

@@ -2,6 +2,10 @@
 
 #include "codegen-llvm/llvm_abi.h"
 
+#include <string>
+#include <utility>
+
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Metadata.h>
@@ -24,6 +28,76 @@ std::optional<uint32_t> parseIndexKey(std::string_view key) {
         if (val > 4294967294ULL) return std::nullopt;
     }
     return static_cast<uint32_t>(val);
+}
+
+IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
+                              llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
+                              llvm::Value* flags, llvm::Value* polyEnabledField,
+                              llvm::BasicBlock* slowBb, const std::string& prefix) {
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* scanBb = llvm::BasicBlock::Create(ctx, prefix + ".way.scan", fn);
+    llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, prefix + ".way.hit", fn);
+
+    llvm::Value* isPlain =
+        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
+                             prefix + ".way.isplain");
+    builder.CreateCondBr(isPlain, scanBb, slowBb);
+
+    builder.SetInsertPoint(scanBb);
+    llvm::Value* shapePtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    llvm::Value* shape =
+        builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), prefix + ".way.shape");
+
+    llvm::SmallVector<std::pair<llvm::Value*, llvm::BasicBlock*>, BRONZE_ABI_IC_WAYS> matched;
+
+    llvm::Value* way0Cached =
+        builder.CreateAlignedLoad(ptrTy, site, llvm::Align(8), prefix + ".way0.cached");
+    // A one-way build is a legal configuration of the constant, and the scan
+    // has to degrade to exactly the compare it used to be — no flag load, no
+    // block — rather than to a loop that happens to run once.
+    constexpr bool kHasExtraWays = BRONZE_ABI_IC_WAYS > 1;
+    llvm::BasicBlock* afterWay0 = slowBb;
+    if constexpr (kHasExtraWays) {
+        afterWay0 = llvm::BasicBlock::Create(ctx, prefix + ".way.poly", fn);
+    }
+    matched.push_back({site, builder.GetInsertBlock()});
+    builder.CreateCondBr(builder.CreateICmpEQ(shape, way0Cached), hitBb, afterWay0);
+
+    if constexpr (kHasExtraWays) {
+        builder.SetInsertPoint(afterWay0);
+        llvm::Value* polyOn = builder.CreateICmpNE(
+            builder.CreateAlignedLoad(i64Ty, polyEnabledField, llvm::Align(8),
+                                      prefix + ".way.polyflag"),
+            builder.getInt64(0));
+        llvm::BasicBlock* wayBb = llvm::BasicBlock::Create(ctx, prefix + ".way1", fn);
+        builder.CreateCondBr(polyOn, wayBb, slowBb);
+        builder.SetInsertPoint(wayBb);
+        for (unsigned k = 1; k < BRONZE_ABI_IC_WAYS; ++k) {
+            llvm::Value* entryK = builder.CreateConstInBoundsGEP1_32(
+                i8Ty, site, k * BRONZE_ABI_IC_ENTRY_SIZE,
+                prefix + ".way" + std::to_string(k));
+            llvm::Value* cachedK = builder.CreateAlignedLoad(
+                ptrTy, entryK, llvm::Align(8), prefix + ".way" + std::to_string(k) + ".cached");
+            llvm::BasicBlock* nextBb =
+                k + 1 < BRONZE_ABI_IC_WAYS
+                    ? llvm::BasicBlock::Create(ctx, prefix + ".way" + std::to_string(k + 1), fn)
+                    : slowBb;
+            matched.push_back({entryK, builder.GetInsertBlock()});
+            builder.CreateCondBr(builder.CreateICmpEQ(shape, cachedK), hitBb, nextBb);
+            if (k + 1 < BRONZE_ABI_IC_WAYS) builder.SetInsertPoint(nextBb);
+        }
+    }
+
+    builder.SetInsertPoint(hitBb);
+    llvm::PHINode* entry = builder.CreatePHI(ptrTy, static_cast<unsigned>(matched.size()),
+                                             prefix + ".way.entry");
+    for (const auto& [value, block] : matched) entry->addIncoming(value, block);
+
+    return {entry, shape, hitBb};
 }
 
 ProtoWalkResult emitProtoChainWalk(

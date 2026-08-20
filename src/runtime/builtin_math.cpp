@@ -407,9 +407,10 @@ Value rtMathObject() {
     return g_mathObject;
 }
 
-void rtMathCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_mathObject.isObject() || obj.rawBits() != g_mathObject.rawBits()) return;
+bool rtMathCheckMissingMember(Value obj, const std::string& key) {
+    if (!g_mathObject.isObject() || obj.rawBits() != g_mathObject.rawBits()) return false;
     rtCheckUnimplementedMember("Math", kMathUnimplemented, std::size(kMathUnimplemented), key);
+    return true;
 }
 
 }  // namespace bronze::runtime

@@ -142,12 +142,13 @@ extern "C" {
 // and a second copy of this dispatch would be a second answer to "does this
 // member exist?", which is the question rt_members.cpp exists to keep one of.
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCache* ic);
+                              InlineCacheSite* site);
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
     recordPropGetMiss(objBits, keyIndex, icEntry);
     Value objVal(objBits);
+    InlineCacheSite* site = rtAsCacheSite(icEntry);
     InlineCache* ic = rtAsCache(icEntry);
 
     // IC-hit fast path first: a shape match needs no key at all. Generated code
@@ -157,8 +158,18 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
         if (fastHdr->flags == HeapKind::Plain) {
+            auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
+            // The site's OTHER ways, which generated code also scanned and
+            // also missed — so reaching here means every way disagreed with
+            // the receiver's shape, or the one that matched needs a walk the
+            // inline path refuses. Scanned again rather than passed in,
+            // because the helper is entered from paths that never ran the
+            // inline scan at all.
+            if (site) ic = site->find(fastObj->shape, rtIcWayLimit());
+            if (ic && ic->describesAbsent(fastObj->shape)) {
+                return BRONZE_ABI_UNDEFINED_BITS;
+            }
             if (ic && ic->cached_shape) {
-                auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
                 if (ic->describes(fastObj->shape)) {
                     if (ic->isAccessor()) {
                         uint32_t depth = ic->realDepth();
@@ -237,11 +248,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         }
     }
 
-    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), ic);
+    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
 }
 
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCache* ic) {
+                              InlineCacheSite* ic) {
     // The interned key is needed by more than the plain-object branch now, so
     // its registration is checked once at the top rather than where it is
     // first read.
@@ -302,9 +313,12 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         if (uint32_t methodId = rtArrayMethodId(keyStr); methodId != UINT32_MAX) {
             Value method = rtArrayMethodById(methodId);
             if (!method.isUndefined()) {
+                // Way 0, always: generated code's array arm looks there and
+                // nowhere else, and InlineCacheSite::slotForInstall keeps a
+                // sentinel it finds at way 0 from being shifted away.
                 if (ic && bronze_tls_block_addr()->array_method_ic_enabled != 0 &&
                     !recv.get().asObject<ArrayHeader>()->properties.isObject()) {
-                    ic->fillArrayMethod(methodId);
+                    ic->ways[0].fillArrayMethod(methodId);
                 }
                 return method.rawBits();
             }
@@ -601,26 +615,45 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         return exotic.rawBits();
     }
     Rooted<Value> key(Value::fromString(keyHeader));
-    Value result = objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic);
+    // The walk reports whether it found the key NOWHERE and ran to the chain's
+    // end. Asked of the walk rather than re-derived afterwards: a second walk
+    // would repeat a shape lookup per link, which measured 60% on a site that
+    // rotates through more shapes than the cache holds ways.
+    bool absentThroughChain = false;
+    Value result = objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic,
+                                                                  /*receiver=*/nullptr,
+                                                                  &absentThroughChain);
     // A namespace object is an ordinary object, so a member it does not carry
     // reads `undefined` like any other miss — which for a name ECMA-262 says
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
     if (result.isUndefined()) {
-        rtFunctionKindCheckMissingMember(objRoot.get(), keyStr);
-        rtMathCheckMissingMember(objRoot.get(), keyStr);
-        rtAtomicsCheckMissingMember(objRoot.get(), keyStr);
-        rtObjectCheckMissingMember(objRoot.get(), keyStr);
-        rtJsonCheckMissingMember(objRoot.get(), keyStr);
+        // Each of these answers whether it CLAIMED this receiver as the
+        // singleton whose absent members it diagnoses from a table. They are
+        // OR'd rather than short-circuited so that every one still runs: the
+        // claim decides only whether the miss may be cached, never whether the
+        // diagnostic fires.
+        bool diagnosed = rtFunctionKindCheckMissingMember(objRoot.get(), keyStr);
+        diagnosed = rtMathCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
+        diagnosed = rtAtomicsCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
+        diagnosed = rtObjectCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
+        diagnosed = rtJsonCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         // The `Array.prototype` object, whose misses are Array's table: a name
         // 23.1.3 defines and bronze has not built must be as loud read off the
         // object as it is read off an array.
-        rtArrayPrototypeCheckMissingMember(objRoot.get(), keyStr);
+        diagnosed = rtArrayPrototypeCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         // And the chain's own end: a 20.1.3 member of `Object.prototype` that
         // bronze has not built. Applied to every plain object because every
         // plain object inherits from it — an own or nearer property of the same
-        // name was found above and never reaches here.
+        // name was found above and never reaches here. Receiver-independent, so
+        // it makes no claim: a key it lets through here it lets through for
+        // every plain object, cached or not.
         rtObjectProtoCheckMissingMember(keyStr);
+        // The walk found nothing anywhere. Say so in the site's cache, if this
+        // receiver and this key are ones a negative entry may speak for.
+        if (!diagnosed && absentThroughChain) {
+            rtInstallAbsentEntry(ic, objRoot.get(), keyStr);
+        }
     }
     return result.rawBits();
 }

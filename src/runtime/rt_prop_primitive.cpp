@@ -49,13 +49,13 @@ namespace {
 // and the walk then looked up a garbage name and answered `undefined` for
 // `"ab"["indexOf"]` on the first computed string member read of a program.
 Value protoMember(Value intrinsic, Rooted<Value>& receiver, Rooted<Value>& key,
-                  InlineCache* ic) {
+                  InlineCacheSite* ic) {
     Rooted<Value> proto{intrinsic};
     return proto.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, ic, receiver.slot_ptr());
 }
 
 Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
-                   InlineCache* ic) {
+                   InlineCacheSite* ic) {
     // Rooted first: the single-code-unit string below allocates, and so can the
     // prototype walk's first touch of the lazily built intrinsic.
     Rooted<Value> self{strVal};
@@ -87,7 +87,7 @@ Value stringMember(Value strVal, const std::string& keyStr, Rooted<Value>& key,
 }
 
 Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key,
-                    InlineCache* ic) {
+                    InlineCacheSite* ic) {
     Rooted<Value> self{boolVal};
     const Value found = protoMember(rtBooleanPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
@@ -98,7 +98,7 @@ Value booleanMember(Value boolVal, const std::string& keyStr, Rooted<Value>& key
     return Value::fromUndefined();
 }
 
-Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{numVal};
     const Value found = protoMember(rtNumberPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
@@ -111,7 +111,7 @@ Value numberMember(Value numVal, const std::string& keyStr, Rooted<Value>& key, 
     return Value::fromUndefined();
 }
 
-Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{bigVal};
     const Value found = protoMember(rtBigIntPrototype(), self, key, ic);
     if (!found.isUndefined()) return found;
@@ -124,7 +124,7 @@ Value bigintMember(Value bigVal, const std::string& keyStr, Rooted<Value>& key, 
     return Value::fromUndefined();
 }
 
-Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, InlineCache* ic) {
+Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, InlineCacheSite* ic) {
     Rooted<Value> self{symVal};
     const Value found = protoMember(rtSymbolPrototype(), self, key, ic);
     // No nearer unimplemented holder to name: 20.4.3 defines `constructor`,
@@ -141,7 +141,7 @@ Value symbolMember(Value symVal, const std::string& keyStr, Rooted<Value>& key, 
 }  // namespace
 
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                        InlineCache* ic) {
+                        InlineCacheSite* ic) {
     // The key becomes a ROOT before anything below can allocate. `keyHeader` is
     // valid on entry and is a raw pointer for the rest of this call — the two
     // prototype walks below build their intrinsic on first use, and that build

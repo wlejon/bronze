@@ -163,6 +163,21 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
     return cur;
 }
 
+bool ObjectHeader::chainIsCacheable() const noexcept {
+    if (!shape || shape->isDictionary()) return false;
+    const ObjectHeader* cur = this;
+    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
+        const Value proto = cur->shape->prototypeValue();
+        if (!proto.isObject()) return true;  // the chain ENDS here
+        const auto* hdr = proto.asObject<HeapObjectHeader>();
+        if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+        cur = reinterpret_cast<const ObjectHeader*>(hdr);
+        if (!cur->shape || cur->shape->isDictionary()) return false;
+        if (!cur->shape->used_as_prototype) return false;
+    }
+    return false;  // a cycle, or a chain past the bound: not an answer
+}
+
 void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shape* newRoot) {
     // The most direct form of "the chain an entry was filled against is not
     // the chain any more". Dictionary mode below already makes every walk
@@ -176,8 +191,8 @@ void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shap
     self.get().asObject<ObjectHeader>()->shape->root = newRoot;
 }
 
-Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
-                            const Value* receiver) {
+Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* site,
+                            const Value* receiver, bool* absentWitness) {
     (void)heap;
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
@@ -191,6 +206,8 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
     // key-representation change cannot desynchronise the open-coded fast path
     // in codegen-llvm — it compares a shape pointer and nothing else, and a
     // shape that gained a symbol-keyed transition is a different pointer.
+    InlineCache* ic = site ? site->find(shape, rtIcWayLimit()) : nullptr;
+    if (ic && ic->describesAbsent(shape)) return Value::fromUndefined();
     if (ic && ic->describes(shape)) {
         if (ic->isAccessor()) {
             uint32_t depth = ic->realDepth();
@@ -236,9 +253,11 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
         if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
             if (info.accessor) {
                 bool crossedDictionary = false;
-                if (ic && shape && !shape->isDictionary() &&
+                if (site && shape && !shape->isDictionary() &&
                     (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
-                    ic->fillAccessor(shape, info.slot, depth);
+                    if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
+                        into->fillAccessor(shape, info.slot, depth);
+                    }
                 }
                 Rooted<Value> self{receiver ? *receiver : Value::fromObject(this)};
                 Value getter = holder->getSlot(info.slot);
@@ -258,17 +277,28 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic,
             // the walk is asked here rather than the condition restated, so
             // the two cannot drift into disagreeing about the same entry.
             bool crossedDictionary = false;
-            if (ic && shape && !shape->isDictionary() &&
+            if (site && shape && !shape->isDictionary() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
-                ic->fill(shape, info.slot, depth);
+                if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
+                    into->fill(shape, info.slot, depth);
+                }
             }
             return holder->getSlot(info.slot);
         }
-        ObjectHeader* next = holder->protoAncestor(1);
-        if (!next) {
+        // One step up, with the two ways `protoAncestor` answers null told
+        // apart: a prototype that is not an object is the chain's END, and
+        // nothing having the key by then is what a negative entry records.
+        // A link that is not a plain object is a walk that STOPPED, which
+        // says nothing about whether the property exists.
+        if (!holder->shape) return Value::fromUndefined();
+        const Value proto = holder->shape->prototypeValue();
+        if (!proto.isObject()) {
+            if (absentWitness) *absentWitness = true;
             return Value::fromUndefined();
         }
-        holder = next;
+        auto* protoHdr = proto.asObject<HeapObjectHeader>();
+        if (protoHdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return Value::fromUndefined();
+        holder = reinterpret_cast<ObjectHeader*>(protoHdr);
     }
     fatal("prototype chain too deep (a cycle?)");
 }

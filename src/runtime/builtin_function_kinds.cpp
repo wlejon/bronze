@@ -203,15 +203,16 @@ Value rtFunctionKindPrototype(Value fnVal) {
     return g_kinds[slot].proto;
 }
 
-void rtFunctionKindCheckMissingMember(Value obj, const std::string& key) {
+bool rtFunctionKindCheckMissingMember(Value obj, const std::string& key) {
     for (uint32_t slot = kGenerator; slot < kKindCount; ++slot) {
         if (!g_kinds[slot].proto.isObject()) continue;
         if (obj.rawBits() != g_kinds[slot].proto.rawBits()) continue;
         const std::string receiver = std::string(kindName(slot)) + ".prototype";
         rtCheckUnimplementedMember(receiver.c_str(), kFunctionProtoMembers,
                                    std::size(kFunctionProtoMembers), key);
-        return;
+        return true;
     }
+    return false;
 }
 
 }  // namespace bronze::runtime

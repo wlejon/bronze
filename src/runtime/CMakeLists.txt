@@ -65,6 +65,7 @@ bronze_add_module(runtime
         rt_numeric.cpp
         rt_key.cpp
         rt_prop.cpp
+        rt_prop_absent.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp
         rt_prop_map.cpp

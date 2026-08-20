@@ -13,6 +13,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -36,8 +37,10 @@ TEST_CASE("ObjectHeader property access and inline cache") {
 
     InlineCache ic_set_a;
     InlineCache ic_set_b;
-    InlineCache ic_get_a;
-    InlineCache ic_get_b;
+    // Read sites are SITES now (BRONZE_ABI_IC_WAYS entries); a first install
+    // lands at way 0, which is what these assertions read.
+    InlineCacheSite ic_get_a{};
+    InlineCacheSite ic_get_b{};
 
     obj.get()->setProp(heap, arena, key_a, val_a, &ic_set_a);
     obj.get()->setProp(heap, arena, key_b, val_b, &ic_set_b);
@@ -53,10 +56,10 @@ TEST_CASE("ObjectHeader property access and inline cache") {
     CHECK(res_b.isNumber());
     CHECK(res_b.asNumber() == 20.0);
 
-    CHECK(ic_get_a.cached_shape == obj.get()->shape);
-    CHECK(ic_get_a.cached_slot == 0);
-    CHECK(ic_get_b.cached_shape == obj.get()->shape);
-    CHECK(ic_get_b.cached_slot == 1);
+    CHECK(ic_get_a.ways[0].cached_shape == obj.get()->shape);
+    CHECK(ic_get_a.ways[0].cached_slot == 0);
+    CHECK(ic_get_b.ways[0].cached_shape == obj.get()->shape);
+    CHECK(ic_get_b.ways[0].cached_slot == 1);
 
     // Fast path IC hit
     Value res_a_ic = obj.get()->getProp(heap, key_a, &ic_get_a);
@@ -134,12 +137,12 @@ TEST_CASE("an inline cache entry above depth 1 is invalidated by a prototype add
     Rooted<Value> fromTop(Value::fromDouble(1.0));
     top.get()->setProp(heap, arena, key, fromTop);
 
-    InlineCache ic;
+    InlineCacheSite ic{};
     CHECK(leaf.get()->getProp(heap, key, &ic).asNumber() == 1.0);
     // Warm, and at the depth the receiver's shape alone cannot vouch for.
-    CHECK(ic.cached_shape == leaf.get()->shape);
-    CHECK(ic.cached_depth == 2);
-    const uint64_t filledAt = ic.cached_epoch;
+    CHECK(ic.ways[0].cached_shape == leaf.get()->shape);
+    CHECK(ic.ways[0].cached_depth == 2);
+    const uint64_t filledAt = ic.ways[0].cached_epoch;
 
     // Shadow it on the INTERMEDIATE. `mid`'s shape changes; `leaf`'s does not,
     // which is exactly why the shape compare is not enough here.
@@ -148,13 +151,15 @@ TEST_CASE("an inline cache entry above depth 1 is invalidated by a prototype add
     mid.get()->setProp(heap, arena, key, fromMid);
     CHECK(leaf.get()->shape == leafShapeBefore);
     CHECK(protoMutationEpoch() != filledAt);
-    CHECK_FALSE(ic.describes(leaf.get()->shape));
+    CHECK_FALSE(ic.ways[0].describes(leaf.get()->shape));
 
     // The warm site must move to the nearer holder, and agree with a cold one.
     CHECK(leaf.get()->getProp(heap, key, &ic).asNumber() == 2.0);
-    InlineCache cold;
+    InlineCacheSite cold{};
     CHECK(leaf.get()->getProp(heap, key, &cold).asNumber() == 2.0);
-    CHECK(ic.cached_depth == 1);
+    // Refilled IN PLACE: the stale entry already named this shape, so
+    // move-to-front rewrites it rather than evicting three healthy ways.
+    CHECK(ic.ways[0].cached_depth == 1);
 }
 
 // The other half of the same decision: an add to an object that is NOT a
@@ -173,9 +178,9 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
     Rooted<Value> val(Value::fromDouble(7.0));
     proto.get()->setProp(heap, arena, key, val);
 
-    InlineCache ic;
+    InlineCacheSite ic{};
     CHECK(inst.get()->getProp(heap, key, &ic).asNumber() == 7.0);
-    const uint64_t filledAt = ic.cached_epoch;
+    const uint64_t filledAt = ic.ways[0].cached_epoch;
 
     // A brand new object, never anybody's prototype, gaining two properties.
     Rooted<ObjectHeader*> other(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
@@ -186,7 +191,7 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
     other.get()->setProp(heap, arena, keyY, one);
 
     CHECK(protoMutationEpoch() == filledAt);
-    CHECK(ic.describes(inst.get()->shape));
+    CHECK(ic.ways[0].describes(inst.get()->shape));
 }
 
 // ---- the receiver of an `Object` member that needs a property table ---------
@@ -354,4 +359,187 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
 
     setFatalHandler(nullptr);
     bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
+// ---- the multi-way site and its negative entries ---------------------------
+
+TEST_CASE("a site holds several shapes, and the fifth rotates the oldest out") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "v")));
+    Rooted<Value> pad0(Value::fromString(StringHeader::createFromUTF8(heap, "p0")));
+    Rooted<Value> pad1(Value::fromString(StringHeader::createFromUTF8(heap, "p1")));
+    Rooted<Value> pad2(Value::fromString(StringHeader::createFromUTF8(heap, "p2")));
+    Rooted<Value> pad3(Value::fromString(StringHeader::createFromUTF8(heap, "p3")));
+    Rooted<Value> zero(Value::fromDouble(0));
+
+    // Five shapes, and `v` lands at a different SLOT in each: a way answering
+    // for the wrong shape would read a real slot of the receiver and return a
+    // pad's 0 rather than accidentally agreeing.
+    Rooted<ObjectHeader*> o0(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> o1(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> o2(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> o3(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> o4(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    o1.set(o1.get()->setProp(heap, arena, pad0, zero));
+    o2.set(o2.get()->setProp(heap, arena, pad0, zero));
+    o2.set(o2.get()->setProp(heap, arena, pad1, zero));
+    o3.set(o3.get()->setProp(heap, arena, pad0, zero));
+    o3.set(o3.get()->setProp(heap, arena, pad1, zero));
+    o3.set(o3.get()->setProp(heap, arena, pad2, zero));
+    o4.set(o4.get()->setProp(heap, arena, pad0, zero));
+    o4.set(o4.get()->setProp(heap, arena, pad1, zero));
+    o4.set(o4.get()->setProp(heap, arena, pad2, zero));
+    o4.set(o4.get()->setProp(heap, arena, pad3, zero));
+
+    Rooted<Value> v1(Value::fromDouble(1));
+    Rooted<Value> v2(Value::fromDouble(2));
+    Rooted<Value> v3(Value::fromDouble(3));
+    Rooted<Value> v4(Value::fromDouble(4));
+    Rooted<Value> v5(Value::fromDouble(5));
+    o0.set(o0.get()->setProp(heap, arena, key, v1));
+    o1.set(o1.get()->setProp(heap, arena, key, v2));
+    o2.set(o2.get()->setProp(heap, arena, key, v3));
+    o3.set(o3.get()->setProp(heap, arena, key, v4));
+    o4.set(o4.get()->setProp(heap, arena, key, v5));
+
+    ObjectHeader* objs[5] = {o0.get(), o1.get(), o2.get(), o3.get(), o4.get()};
+
+    InlineCacheSite site{};
+    // Four shapes fit; each install lands at way 0 and pushes the rest down, so
+    // after four reads the ways name the receivers in reverse order.
+    for (uint32_t i = 0; i < 4; ++i) {
+        CHECK(objs[i]->getProp(heap, key, &site).asNumber() == static_cast<double>(i) + 1.0);
+    }
+    for (uint32_t i = 0; i < 4; ++i) {
+        CHECK(site.ways[i].cached_shape == objs[3 - i]->shape);
+    }
+
+    // The fifth evicts the least recently installed -- way 3, which is objs[0].
+    CHECK(objs[4]->getProp(heap, key, &site).asNumber() == 5.0);
+    CHECK(site.ways[0].cached_shape == objs[4]->shape);
+    CHECK(site.find(objs[0]->shape, BRONZE_ABI_IC_WAYS) == nullptr);
+    for (uint32_t i = 1; i < 5; ++i) {
+        CHECK(site.find(objs[i]->shape, BRONZE_ABI_IC_WAYS) != nullptr);
+    }
+
+    // Re-reading a shape a way already names must REWRITE that way rather than
+    // evict three healthy entries to say the same thing about a fourth.
+    InlineCache* before = site.find(objs[2]->shape, BRONZE_ABI_IC_WAYS);
+    CHECK(objs[2]->getProp(heap, key, &site).asNumber() == 3.0);
+    CHECK(site.find(objs[2]->shape, BRONZE_ABI_IC_WAYS) == before);
+    for (uint32_t i = 1; i < 5; ++i) {
+        CHECK(site.find(objs[i]->shape, BRONZE_ABI_IC_WAYS) != nullptr);
+    }
+
+    // Every answer is still the receiver's own, whatever the ways hold.
+    for (uint32_t i = 0; i < 5; ++i) {
+        CHECK(objs[i]->getProp(heap, key, &site).asNumber() == static_cast<double>(i) + 1.0);
+    }
+}
+
+TEST_CASE("BRONZE_NO_POLY_IC narrows a site to one way, reader and writer alike") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "v")));
+    Rooted<Value> pad(Value::fromString(StringHeader::createFromUTF8(heap, "pad")));
+    Rooted<Value> zero(Value::fromDouble(0));
+    Rooted<Value> one(Value::fromDouble(1));
+    Rooted<Value> two(Value::fromDouble(2));
+
+    Rooted<ObjectHeader*> a(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> b(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    b.set(b.get()->setProp(heap, arena, pad, zero));
+    a.set(a.get()->setProp(heap, arena, key, one));
+    b.set(b.get()->setProp(heap, arena, key, two));
+
+    bronze_tls_block_addr()->poly_ic_enabled = 0;
+    InlineCacheSite site{};
+    CHECK(a.get()->getProp(heap, key, &site).asNumber() == 1.0);
+    CHECK(b.get()->getProp(heap, key, &site).asNumber() == 2.0);
+    // The second install overwrote the first rather than moving into way 1: the
+    // seam has to narrow the WRITER as well, or ways the reader will not look
+    // at would fill with entries the seam is supposed to have prevented.
+    CHECK(site.ways[0].cached_shape == b.get()->shape);
+    CHECK(site.ways[1].cached_shape == nullptr);
+    bronze_tls_block_addr()->poly_ic_enabled = 1;
+}
+
+TEST_CASE("an absent read is recorded, and the epoch is what retires it") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+    Rooted<ObjectHeader*> inst(ObjectHeader::create(
+        heap, arena, Shape::createRoot(arena, Value::fromObject(proto.get()))));
+
+    Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "missing")));
+
+    // The walk says so, and the chain's structure allows the entry.
+    bool witness = false;
+    CHECK(inst.get()->getProp(heap, key, nullptr, nullptr, &witness).isUndefined());
+    CHECK(witness);
+    CHECK(inst.get()->chainIsCacheable());
+
+    InlineCacheSite site{};
+    runtime::rtInstallAbsentEntry(&site, Value::fromObject(inst.get()), "missing");
+    CHECK(site.ways[0].isAbsent());
+    CHECK(site.ways[0].describesAbsent(inst.get()->shape));
+    // An absent entry is NOT a positive one: `describes` must refuse it, or a
+    // caller would walk to depth 0x40000000 or read slot 0 off the receiver.
+    CHECK_FALSE(site.ways[0].describes(inst.get()->shape));
+    CHECK(inst.get()->getProp(heap, key, &site).isUndefined());
+
+    // A property added to the PROTOTYPE leaves the receiver's shape alone, so
+    // only the epoch can notice.
+    Shape* instShapeBefore = inst.get()->shape;
+    Rooted<Value> val(Value::fromDouble(11));
+    proto.set(proto.get()->setProp(heap, arena, key, val));
+    CHECK(inst.get()->shape == instShapeBefore);
+    CHECK_FALSE(site.ways[0].describesAbsent(inst.get()->shape));
+    CHECK(inst.get()->getProp(heap, key, &site).asNumber() == 11.0);
+    CHECK_FALSE(site.ways[0].isAbsent());
+}
+
+TEST_CASE("a chain the epoch does not cover is refused a negative entry") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    // A receiver in dictionary mode: its slots are not shape-indexed, and its
+    // shape belongs to it alone.
+    {
+        Rooted<Value> self{
+            Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena)))};
+        ObjectHeader::toDictionary(arena, self);
+        CHECK_FALSE(self.get().asObject<ObjectHeader>()->chainIsCacheable());
+    }
+
+    // A link that is not a plain object cannot be walked, so the chain never
+    // reaches an end and absence is never proven.
+    {
+        Rooted<Value> arrVal{Value::fromObject(ArrayHeader::create(heap, 0))};
+        Rooted<ObjectHeader*> inst(
+            ObjectHeader::create(heap, arena, Shape::createRoot(arena, arrVal.get())));
+        CHECK_FALSE(inst.get()->chainIsCacheable());
+    }
+
+    // A prototype whose shape is not MARKED: an add to it would not bump the
+    // epoch, so nothing could retire an entry filled over it. Real chains are
+    // marked by Shape::createRoot; this one is unmarked by hand to pin that the
+    // check is the cache's own and not an assumption about that function.
+    {
+        Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
+        Rooted<ObjectHeader*> inst(ObjectHeader::create(
+            heap, arena, Shape::createRoot(arena, Value::fromObject(proto.get()))));
+        CHECK(inst.get()->chainIsCacheable());
+        proto.get()->shape->used_as_prototype = false;
+        CHECK_FALSE(inst.get()->chainIsCacheable());
+        proto.get()->shape->used_as_prototype = true;
+    }
 }

@@ -1019,9 +1019,10 @@ Value rtObjectPrototype() {
     return g_objectPrototype;
 }
 
-void rtObjectCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_objectNamespace.isObject() || obj.rawBits() != g_objectNamespace.rawBits()) return;
+bool rtObjectCheckMissingMember(Value obj, const std::string& key) {
+    if (!g_objectNamespace.isObject() || obj.rawBits() != g_objectNamespace.rawBits()) return false;
     rtCheckUnimplementedMember("Object", kObjectUnimplemented, kObjectUnimplementedCount, key);
+    return true;
 }
 
 }  // namespace bronze::runtime

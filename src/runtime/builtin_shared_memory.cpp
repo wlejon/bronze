@@ -483,8 +483,8 @@ Value rtAtomicsObject() {
     return g_atomicsObject;
 }
 
-void rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_atomicsObject.isObject() || obj.rawBits() != g_atomicsObject.rawBits()) return;
+bool rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
+    if (!g_atomicsObject.isObject() || obj.rawBits() != g_atomicsObject.rawBits()) return false;
     for (const char* name : kAtomicsUnimplemented) {
         if (key != name) continue;
         // Its own message rather than the shared table's, because the REASON is
@@ -495,6 +495,7 @@ void rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
                "single agent, so there is nothing to wait for and nothing to wake)")
                   .c_str());
     }
+    return true;
 }
 
 }  // namespace bronze::runtime

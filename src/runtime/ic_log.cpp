@@ -49,6 +49,30 @@ static SectionStats g_propSetStats;
 static SectionStats g_dynamicCallStats;
 static bool s_initialized = false;
 
+// A read that found NOTHING — the case that used to be one bucket called
+// `missing_property` and never improved, because a lookup with nothing to
+// cache left the site unarmed forever. It has four outcomes now, and telling
+// them apart is what says whether the negative cache is working or refusing.
+//
+// `absent_cacheable` is a PREDICTION: the classifier runs at helper entry,
+// before the lookup, so it reports what rt_prop_absent.cpp will decide from
+// the same inputs. The one input it cannot see is whether a
+// `*CheckMissingMember` refusal will claim this receiver — true for a handful
+// of intrinsic singletons (Math, JSON, Object, Atomics, Array.prototype),
+// whose absent reads are therefore counted here as cacheable and are not.
+//
+// It is reached only where the walk above found the key nowhere, so the
+// witness half of the install's condition already holds; what is left to ask
+// is the seam, the key, and the chain's structure.
+const char* classifyAbsent(ObjectHeader* obj, uint32_t keyIndex) {
+    if (!rtNegativeIcEnabled()) return "absent_seam_disabled";
+    const std::string& keyStr = rtKeyString(keyIndex);
+    uint32_t index = 0;
+    if (keyStr == "length" || rtKeyAsIndex(keyStr, index)) return "absent_key_refused";
+    if (!obj->chainIsCacheable()) return "absent_chain_unprovable";
+    return "absent_cacheable";
+}
+
 const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     if (!ic) return "no_ic_slot";
     if (!objVal.isObject()) {
@@ -96,8 +120,33 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
         }
     }
 
-    if (!ic->cached_shape) return "ic_uninitialized";
-    if (ic->cached_shape != obj->shape) return "shape_mismatch_polymorphic";
+    // Which WAY answered, if any. The reasons below separate the three states a
+    // multi-way site can be in and that a single-entry one could not tell
+    // apart: never touched, still warming with ways to spare, and full — which
+    // is the only one of the three that means the site is genuinely wider than
+    // the cache and will keep missing.
+    auto* site = reinterpret_cast<InlineCacheSite*>(ic);
+    const uint32_t limit = rtIcWayLimit();
+    ic = site->find(obj->shape, limit);
+    if (!ic) {
+        bool anyFilled = false;
+        bool anyFree = false;
+        for (uint32_t i = 0; i < limit && i < BRONZE_ABI_IC_WAYS; ++i) {
+            if (site->ways[i].cached_shape) {
+                anyFilled = true;
+            } else {
+                anyFree = true;
+            }
+        }
+        if (!anyFilled) return "ic_uninitialized";
+        if (anyFree) return "poly_ic_ways_free";
+        return limit > 1 ? "poly_ic_full_rotation" : "shape_mismatch_polymorphic";
+    }
+
+    // A way DID name this shape. If it is the negative entry, the only thing
+    // that can have sent the read here is a prototype-chain mutation since the
+    // fill — the shape compare already matched.
+    if (ic->isAbsent()) return "negative_ic_epoch_stale";
 
     if (ic->realDepth() > 0) {
         if (ic->cached_epoch != protoMutationEpoch()) return "proto_epoch_stale";
@@ -113,7 +162,7 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
                 return "proto_overflow_or_other";
             }
         }
-        return "missing_property";
+        return classifyAbsent(obj, keyIndex);
     }
 
     if (keyHdr) {
@@ -124,9 +173,12 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
             return "depth0_overflow_or_other";
         }
     }
-    return "missing_property";
+    return classifyAbsent(obj, keyIndex);
 }
 
+// Write sites use way 0 and only way 0 (bronze_abi.h): a write's bill is
+// transitions rather than shape variety, so `ic` here is the site's first
+// entry and the other ways stay zero for the life of the program.
 const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, InlineCache* ic, bool strict) {
     (void)valVal;
     (void)strict;

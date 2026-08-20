@@ -55,6 +55,10 @@ struct AbiGlobals {
     llvm::Value* bronze_array_method_ic_enabled = nullptr;
     llvm::Value* bronze_inline_overflow_set_enabled = nullptr;
     llvm::Value* bronze_inline_accessor_enabled = nullptr;
+    // Gates the WAY SCAN, not just the install: ways 1..N-1 may already hold
+    // entries when a thread lowers the flag, so the seam has to be a fact the
+    // reader checks and not only one the writer honours.
+    llvm::Value* bronze_poly_ic_enabled = nullptr;
     llvm::Value* bronze_array_method_tbl = nullptr;
 };
 

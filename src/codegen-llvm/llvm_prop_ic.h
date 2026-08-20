@@ -32,6 +32,36 @@ void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx);
 // take the named-property path both the read and the write send them down.
 std::optional<uint32_t> parseIndexKey(std::string_view key);
 
+struct IcWayScanResult {
+    // The matched way's entry pointer, as a PHI over the ways that could have
+    // matched. Every field the rest of the fast path reads — the slot word, the
+    // fill epoch — is read off THIS and not off the site.
+    llvm::Value* entry{nullptr};
+    // The receiver's shape, loaded once inside the scan and live from there on.
+    llvm::Value* shape{nullptr};
+    // Where control is when the scan has matched; the builder is left here.
+    llvm::BasicBlock* hitBb{nullptr};
+};
+
+// The way scan that opens a property READ's fast path: is the receiver plain,
+// and does any of this site's ways name its shape?
+//
+// Way 0 is compared first and unconditionally, so a monomorphic site pays
+// exactly the load and compare it paid when a site WAS one entry. Ways
+// 1..N-1 are reached only after way 0 misses, and only through one load of
+// `polyEnabledField` — which is what makes BRONZE_NO_POLY_IC=1 a real A/B
+// rather than a slower road to the same answer, since a way installed before
+// the flag came down would otherwise still be found.
+//
+// The plain check gates the whole scan rather than being AND'd into each way:
+// the shape word of an array or a function header is a different field
+// entirely, and comparing it against a cached Shape* is a match this cache
+// must never be able to make.
+IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
+                              llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
+                              llvm::Value* flags, llvm::Value* polyEnabledField,
+                              llvm::BasicBlock* slowBb, const std::string& prefix);
+
 struct ProtoWalkResult {
     llvm::Value* holderHdr{nullptr};
     llvm::BasicBlock* latchBb{nullptr};

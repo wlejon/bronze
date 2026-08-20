@@ -38,6 +38,21 @@ enum class SetRefusal {
 uint64_t protoMutationEpoch() noexcept;
 void bumpProtoMutationEpoch() noexcept;
 
+// How many ways of a site the runtime may consult and install into: all of
+// them, or one under BRONZE_NO_POLY_IC=1. Generated code reads the same flag
+// from the TLS block, so the two halves of a site cannot disagree about how
+// wide it is.
+inline uint32_t rtIcWayLimit() noexcept {
+    return bronze_tls_block_addr()->poly_ic_enabled != 0 ? BRONZE_ABI_IC_WAYS : 1u;
+}
+
+// May the runtime install NEGATIVE entries? Read at every install and nowhere
+// else: with the flag down no absent entry exists, so generated code's absent
+// arm is dead and costs the fast path nothing to leave in.
+inline bool rtNegativeIcEnabled() noexcept {
+    return bronze_tls_block_addr()->negative_ic_enabled != 0;
+}
+
 // A monomorphic property cache: four plain words, none of which the collector
 // has to touch. `cached_depth` is how many prototype links to follow from the
 // receiver before reading `cached_slot` — 0 for an own property, so this one
@@ -75,8 +90,18 @@ struct InlineCache {
         return (cached_depth & BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG) != 0;
     }
 
+    // The NEGATIVE answer: the key is on neither the receiver nor any link of
+    // its prototype chain. `cached_slot` names nothing, and every consumer has
+    // to ask this BEFORE it reads the slot or walks to a depth, which is why
+    // `describes` below refuses an absent entry outright rather than letting
+    // one reach a walk with 0x40000000 links to take.
+    bool isAbsent() const noexcept {
+        return (cached_depth & BRONZE_ABI_IC_DEPTH_ABSENT_FLAG) != 0;
+    }
+
     uint32_t realDepth() const noexcept {
-        return cached_depth & ~BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG;
+        return cached_depth &
+               ~(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG | BRONZE_ABI_IC_DEPTH_ABSENT_FLAG);
     }
 
     // Is this entry still about the chain it was filled against? Both runtime
@@ -86,8 +111,19 @@ struct InlineCache {
     // whether the walk to the holder is safe to take; `cachedProtoHolder` owns
     // that, and a caller needs both.
     bool describes(const Shape* receiverShape) const noexcept {
-        return isRealShape() && cached_shape == receiverShape &&
+        return isRealShape() && !isAbsent() && cached_shape == receiverShape &&
                (realDepth() == 0 || cached_epoch == protoMutationEpoch());
+    }
+
+    // The same question for the negative answer. Its validity is the depth > 0
+    // entry's, and for the same two reasons: the receiver's shape covers every
+    // own add, and the epoch covers every way the key could have appeared on
+    // the chain. It is a SEPARATE question from `describes` because the two
+    // answers are different — a value from a slot, or `undefined` with no walk
+    // — and a caller that confused them would read slot 0 of the receiver.
+    bool describesAbsent(const Shape* receiverShape) const noexcept {
+        return isRealShape() && isAbsent() && cached_shape == receiverShape &&
+               cached_epoch == protoMutationEpoch();
     }
 
     // The same question for a WRITE, which additionally requires depth 0: the
@@ -114,6 +150,13 @@ struct InlineCache {
         cached_epoch = protoMutationEpoch();
     }
 
+    void fillAbsent(Shape* receiverShape) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = 0;
+        cached_depth = BRONZE_ABI_IC_DEPTH_ABSENT_FLAG;
+        cached_epoch = protoMutationEpoch();
+    }
+
     void fillArrayMethod(uint32_t methodId) noexcept {
         cached_shape = reinterpret_cast<Shape*>(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD);
         cached_slot = methodId;
@@ -121,6 +164,68 @@ struct InlineCache {
         cached_epoch = 0;
     }
 };
+
+// One property site's cache: BRONZE_ABI_IC_WAYS entries, way 0 first.
+//
+// A site rather than an entry is the table's stride because three.js asks the
+// same question of several shapes at one source position — `object.isMesh` in
+// `WebGLRenderer.projectObject` sees an Object3D, a Mesh, a Scene and two
+// lights on one pass over a tree — and a single-entry cache filled by the last
+// of them misses for every other one, forever.
+//
+// The layout is an ARRAY OF ENTRIES rather than parallel columns so that way
+// 0's three words share one cache line: the overwhelming majority of sites are
+// monomorphic, and their hit must stay exactly the load it was before the
+// other three ways existed.
+struct InlineCacheSite {
+    InlineCache ways[BRONZE_ABI_IC_WAYS];
+
+    // The entry describing `receiverShape`, or null. `limit` is how many ways
+    // may be consulted: 1 under BRONZE_NO_POLY_IC=1, which is what makes the
+    // seam a real A/B rather than a slower path to the same answer.
+    InlineCache* find(const Shape* receiverShape, uint32_t limit) noexcept {
+        for (uint32_t i = 0; i < limit && i < BRONZE_ABI_IC_WAYS; ++i) {
+            if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
+        }
+        return nullptr;
+    }
+
+    // Where the next entry for `receiverShape` goes, with the old entries
+    // shifted down to make room at way 0 — MOVE TO FRONT, so the shape that
+    // just missed is the first one generated code compares next time and the
+    // least recently installed falls off the end.
+    //
+    // Two things it will not disturb. An entry ALREADY describing this shape
+    // is rewritten in place (a refill after an epoch bump must not evict three
+    // healthy entries to say the same thing about a fourth). And an array-
+    // method sentinel at way 0 stays at way 0: generated code's array arm
+    // looks there and nowhere else, so shifting it away would silently retire
+    // a cache that is still correct. Sites mixing an array receiver with a
+    // plain one are rare; sites where the shift would have cost one is rarer
+    // still, and the alternative is an arm that reads four ways on every
+    // `arr.push`.
+    InlineCache* slotForInstall(const Shape* receiverShape, uint32_t limit) noexcept {
+        const uint32_t ways_n = limit < BRONZE_ABI_IC_WAYS ? limit : BRONZE_ABI_IC_WAYS;
+        if (ways_n == 0) return nullptr;
+        for (uint32_t i = 0; i < ways_n; ++i) {
+            if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
+        }
+        const uint32_t first = ways[0].isArrayMethod() ? 1u : 0u;
+        if (first >= ways_n) return nullptr;
+        for (uint32_t i = ways_n - 1; i > first; --i) ways[i] = ways[i - 1];
+        return &ways[first];
+    }
+};
+
+// The whole site is plain words the collector never touches, for the entry's
+// reason: shapes are immortal arena allocations, and no way ever holds a
+// Value. Nothing here needs rooting and nothing here can be mistaken for a
+// heap pointer by the payload scan, because the scan never reads a module's
+// BSS at all.
+static_assert(sizeof(InlineCacheSite) == BRONZE_ABI_IC_SITE_SIZE);
+static_assert(alignof(InlineCacheSite) <= 8);
+static_assert(offsetof(InlineCacheSite, ways) == 0,
+              "generated code takes the site pointer as way 0's entry pointer");
 
 struct ObjectHeader {
     HeapObjectHeader header;
@@ -216,8 +321,35 @@ struct ObjectHeader {
     // defaults to null. A function's STATIC members live in a side object, so
     // that one caller passes the constructor down and a static getter sees the
     // class rather than the box its properties are kept in.
-    Value getProp(Heap& heap, Rooted<Value>& key, InlineCache* ic = nullptr,
-                  const Value* receiver = nullptr);
+    // `absentWitness`, when given, is set true exactly when the walk found the
+    // key NOWHERE and reached the prototype chain's END — as opposed to
+    // stopping at a link it could not continue through, which is not an answer
+    // about the property at all. It is an out-param rather than a second walk
+    // because the walk that knows is this one, and a caller that asked again
+    // would pay a full lookup per link a second time.
+    Value getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* ic = nullptr,
+                  const Value* receiver = nullptr, bool* absentWitness = nullptr);
+
+    // Is this receiver's prototype chain one a shape-keyed NEGATIVE entry may
+    // speak for? A question about the chain's STRUCTURE and not about any key,
+    // which is why it is separate from the witness above and cheap enough to
+    // ask on the install path: a few pointer loads per link, no property
+    // lookup anywhere.
+    //
+    // Requires the receiver's shape and every link's to be a non-dictionary
+    // (a dictionary's shape belongs to one object and its slots are not
+    // shape-indexed), every link to be a plain object, and the walk to reach
+    // an end within kMaxPrototypeDepth.
+    //
+    // Every link's shape must also be MARKED `used_as_prototype`. That is the
+    // negative entry's invalidation contract stated as a check: an add to an
+    // unmarked shape does not bump the prototype-mutation epoch, so an entry
+    // filled over one could survive the very mutation that makes it wrong.
+    // Shape::createRoot marks every object that becomes a prototype and
+    // Shape::addProperty carries the mark across transitions, so this holds
+    // for every real chain — asking anyway is what keeps it a fact about the
+    // cache rather than a fact about two other files.
+    bool chainIsCacheable() const noexcept;
     // May allocate (overflow growth), which can move this object; use the
     // returned pointer afterwards, not `this`. May also run user code, for
     // the same reason getProp can: an inherited setter.

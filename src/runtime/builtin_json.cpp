@@ -207,9 +207,10 @@ Value rtJsonNamespace() {
     return g_jsonNamespace;
 }
 
-void rtJsonCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_jsonNamespace.isObject() || obj.rawBits() != g_jsonNamespace.rawBits()) return;
+bool rtJsonCheckMissingMember(Value obj, const std::string& key) {
+    if (!g_jsonNamespace.isObject() || obj.rawBits() != g_jsonNamespace.rawBits()) return false;
     rtCheckUnimplementedMember("JSON", kJsonUnimplemented, std::size(kJsonUnimplemented), key);
+    return true;
 }
 
 Value rtJsonParse(std::string_view utf8) {

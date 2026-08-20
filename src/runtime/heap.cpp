@@ -200,6 +200,16 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->inline_accessor_enabled = 0;
     }
 
+    const char* env_no_poly = std::getenv("BRONZE_NO_POLY_IC");
+    if (env_no_poly && std::strcmp(env_no_poly, "1") == 0) {
+        tls->poly_ic_enabled = 0;
+    }
+
+    const char* env_no_neg = std::getenv("BRONZE_NO_NEG_IC");
+    if (env_no_neg && std::strcmp(env_no_neg, "1") == 0) {
+        tls->negative_ic_enabled = 0;
+    }
+
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
         g_gcLog.enabled = true;

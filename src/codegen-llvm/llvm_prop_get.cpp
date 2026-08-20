@@ -344,19 +344,18 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.CreateBr(doneBb);
     }
 
-    // 3. Plain object guard
+    // 3. Plain object guard, then the site's ways
     builder.SetInsertPoint(plainCheckBb);
-    llvm::Value* isPlain =
-        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
-    llvm::Value* shapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                              BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    llvm::Value* shape = builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), "ic.shape");
-    llvm::Value* cachedShape =
-        builder.CreateAlignedLoad(ptrTy, entry, llvm::Align(8), "ic.cached");
-    llvm::Value* shapeOk = builder.CreateICmpEQ(shape, cachedShape);
+    IcWayScanResult way = emitIcWayScan(builder, ctx, fn, entry, hdr, flags,
+                                        globals.bronze_poly_ic_enabled, slowBb, "ic.get");
+    llvm::Value* shape = way.shape;
+    // Every field below is read off the MATCHED way, never off the site: with
+    // four ways a site's word 1 is way 0's slot, and reading it after way 2
+    // matched would answer with an unrelated shape's slot.
+    llvm::Value* wayEntry = way.entry;
 
     llvm::Value* slotWordPtr = builder.CreateConstInBoundsGEP1_32(
-        i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_SLOTWORD_OFFSET / sizeof(uint64_t)));
+        i64Ty, wayEntry, static_cast<unsigned>(BRONZE_ABI_IC_SLOTWORD_OFFSET / sizeof(uint64_t)));
     llvm::Value* slotWord =
         builder.CreateAlignedLoad(i64Ty, slotWordPtr, llvm::Align(8), "ic.slotword");
     llvm::Value* depth = builder.CreateLShr(slotWord, 32);
@@ -364,17 +363,51 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.CreateAnd(depth, builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG))),
         builder.getInt64(0), "ic.get.isaccessor");
     llvm::Value* realDepth = builder.CreateAnd(
-        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG)), "ic.get.realdepth");
-    llvm::Value* depthOk = builder.CreateICmpEQ(depth, builder.getInt64(0));
+        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG |
+                                                       BRONZE_ABI_IC_DEPTH_ABSENT_FLAG)),
+        "ic.get.realdepth");
 
-    llvm::Value* shapeHit = builder.CreateAnd(isPlain, shapeOk, "ic.shape.cond");
-    llvm::BasicBlock* depthSplitBb = llvm::BasicBlock::Create(ctx, "ic.depth.split", fn);
-    builder.CreateCondBr(shapeHit, depthSplitBb, slowBb);
+    // The depth word decides which arm, and the order is by how hot each is:
+    // an own-property hit (depth 0) leaves first and pays ONE compare, then the
+    // absent answer, then the two that walk. An accessor entry carries the
+    // accessor flag and an absent entry the absent flag, so neither can be
+    // mistaken for depth 0 — the flags are what make this a three-way split on
+    // a single loaded word rather than three separate tests.
+    llvm::BasicBlock* nonZeroDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.nonzero", fn);
+    builder.CreateCondBr(builder.CreateICmpEQ(depth, builder.getInt64(0), "ic.get.depthzero"),
+                         hitBb, nonZeroDepthBb);
 
-    builder.SetInsertPoint(depthSplitBb);
+    // 3a. The ABSENT answer: the key is on neither the receiver nor its chain.
+    // The shape match above covers every own add; this epoch check covers every
+    // way the key could have appeared on a prototype since the entry was filled
+    // (bronze_abi.h states the pair as the entry's whole validity condition).
+    builder.SetInsertPoint(nonZeroDepthBb);
+    llvm::BasicBlock* absentEpochBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.epoch", fn);
+    llvm::BasicBlock* flaggedDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.flagged", fn);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(depth,
+                             builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ABSENT_FLAG)),
+                             "ic.get.isabsent"),
+        absentEpochBb, flaggedDepthBb);
+
+    builder.SetInsertPoint(absentEpochBb);
+    llvm::Value* absentEpochPtr = builder.CreateConstInBoundsGEP1_32(
+        i64Ty, wayEntry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
+    llvm::Value* absentFillEpoch =
+        builder.CreateAlignedLoad(i64Ty, absentEpochPtr, llvm::Align(8), "ic.absent.fillepoch");
+    llvm::Value* absentCurEpoch = builder.CreateAlignedLoad(
+        i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "ic.absent.epoch");
+    llvm::BasicBlock* absentHitBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.hit", fn);
+    builder.CreateCondBr(builder.CreateICmpEQ(absentFillEpoch, absentCurEpoch), absentHitBb,
+                         slowBb);
+
+    builder.SetInsertPoint(absentHitBb);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(flaggedDepthBb);
     llvm::BasicBlock* getAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.get.acc.check", fn);
-    llvm::BasicBlock* getDataDepthSplitBb = llvm::BasicBlock::Create(ctx, "ic.get.data.depth", fn);
-    builder.CreateCondBr(isAccessor, getAccCheckBb, getDataDepthSplitBb);
+    llvm::BasicBlock* protoCheckBb = llvm::BasicBlock::Create(ctx, "ic.proto.check", fn);
+    builder.CreateCondBr(isAccessor, getAccCheckBb, protoCheckBb);
 
     // Accessor getter fast path
     builder.SetInsertPoint(getAccCheckBb);
@@ -394,7 +427,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // Proto check for getter:
     builder.SetInsertPoint(getAccProtoCheckBb);
     llvm::Value* getEpochPtr = builder.CreateConstInBoundsGEP1_32(
-        i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
+        i64Ty, wayEntry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
     llvm::Value* getFillEpoch =
         builder.CreateAlignedLoad(i64Ty, getEpochPtr, llvm::Align(8), "get.acc.fillepoch");
     llvm::Value* getCurEpoch = builder.CreateAlignedLoad(
@@ -472,15 +505,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         getterFnTy, getterCode, {getterEnv, objBits, builder.getInt32(0), llvm::Constant::getNullValue(ptrTy)}, "acc.get.res");
     builder.CreateBr(doneBb);
 
-    // 3b. Depth 0 is the own-property hit; depth > 0 is a PROTO hit
-    builder.SetInsertPoint(getDataDepthSplitBb);
-    llvm::BasicBlock* protoCheckBb = llvm::BasicBlock::Create(ctx, "ic.proto.check", fn);
-    builder.CreateCondBr(depthOk, hitBb, protoCheckBb);
-
+    // 3b. A depth > 0 data entry: a PROTO hit, reached with the accessor and
+    // absent arms already taken, so the depth word here is a real link count.
     builder.SetInsertPoint(protoCheckBb);
     llvm::Value* protoSlot32 = builder.CreateTrunc(slotWord, i32Ty, "proto.slot32");
     llvm::Value* epochPtr = builder.CreateConstInBoundsGEP1_32(
-        i64Ty, entry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
+        i64Ty, wayEntry, static_cast<unsigned>(BRONZE_ABI_IC_EPOCH_OFFSET / sizeof(uint64_t)));
     llvm::Value* fillEpoch =
         builder.CreateAlignedLoad(i64Ty, epochPtr, llvm::Align(8), "proto.fillepoch");
     llvm::Value* curEpoch = builder.CreateAlignedLoad(
@@ -542,7 +572,9 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    unsigned phiCount = 6;  // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb, getUndefBb
+    // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb,
+    // getUndefBb, absentHitBb
+    unsigned phiCount = 7;
     if (arrLenBb) phiCount++;
     if (taLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
@@ -566,6 +598,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     result->addIncoming(protoHitVal, protoLoadSuccessBb);
     result->addIncoming(getterRes, getCallBb);
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), getUndefBb);
+    result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), absentHitBb);
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
     if (taLenBb) result->addIncoming(taLenVal, taLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);

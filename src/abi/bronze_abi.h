@@ -428,6 +428,45 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * notice a property added to an object BETWEEN the receiver and the holder,
  * because that add changes only the intermediate's shape.
  *
+ * ---- a SITE is BRONZE_ABI_IC_WAYS entries ---------------------------------
+ *
+ * The table's stride is a SITE, not an entry: BRONZE_ABI_IC_WAYS entries laid
+ * out one after another, way 0 first. A site's way 0 is byte-identical to
+ * what a whole site used to be, which is why every runtime path that takes an
+ * `InlineCache*` still works when handed the site pointer generated code and
+ * the helpers pass around.
+ *
+ * READ sites use every way; a WRITE site uses way 0 only (a write's bill is
+ * transitions, not shape variety — bench/README.md's chunk 14 measured it).
+ * The unused ways of a write site cost BSS and nothing else.
+ *
+ * Generated code compares the receiver's shape against way 0, then — only on
+ * a way-0 miss, and only while `poly_ic_enabled` — against ways 1..N-1, and
+ * the matched way's entry pointer is what the rest of the fast path reads.
+ * The helper installs with move-to-front: a fresh entry lands at way 0 and
+ * pushes the others down, so the last shape to miss is the first one checked
+ * and the least recently installed falls off the end. No cursor word is
+ * needed, which is why the site is exactly N entries wide.
+ *
+ * ---- the ABSENT (negative) entry ------------------------------------------
+ *
+ * `cached_depth == BRONZE_ABI_IC_DEPTH_ABSENT_FLAG` means: this key is on
+ * NEITHER the receiver nor any link of its prototype chain, so the read
+ * answers `undefined` with no walk at all. `cached_slot` is unused and 0.
+ *
+ * Its validity is the depth > 0 entry's, exactly: the receiver's shape covers
+ * every own-property add (an add transitions the shape), and the epoch covers
+ * every way a key can appear on the chain — an add to any marked-prototype
+ * shape, a dictionary define, a prototype swap. The fill additionally proves
+ * the chain runs to its END through plain, non-dictionary objects whose
+ * shapes are all MARKED as prototypes, because an unmarked link is one whose
+ * adds would not bump the epoch (runtime/object.cpp, absentThroughChain).
+ *
+ * The flag is 0x40000000 rather than a shape sentinel because a negative
+ * entry still names a real shape to compare against, and because it must not
+ * collide with the accessor flag in the same field. Real depths are bounded
+ * by ObjectHeader::kMaxPrototypeDepth, far below either bit.
+ *
  * Non-shape sentinel discipline:
  * When an entry caches an Array built-in method (or the Array constructor),
  * `cached_shape` holds BRONZE_ABI_IC_SHAPE_ARRAY_METHOD ((uintptr_t)1).
@@ -448,6 +487,15 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_IC_EPOCH_OFFSET   16 /* InlineCache::cached_epoch (uint64) */
 #define BRONZE_ABI_IC_SHAPE_ARRAY_METHOD 1ull
 #define BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG 0x80000000u
+#define BRONZE_ABI_IC_DEPTH_ABSENT_FLAG   0x40000000u
+/* How many (shape -> answer) entries one property site holds, and the stride
+ * the IC table is therefore indexed by. Four, from the marker-probe evidence
+ * in brobench/analysis/chunk1_bill.md: three.js's polymorphic sites mix an
+ * Object3D/Mesh pair with a Scene and a light or two, and four ways is the
+ * width that holds that mix while keeping the way scan a short compare chain
+ * a way-0 hit never enters. */
+#define BRONZE_ABI_IC_WAYS 4
+#define BRONZE_ABI_IC_SITE_SIZE (BRONZE_ABI_IC_ENTRY_SIZE * BRONZE_ABI_IC_WAYS)
 /* slot and depth are adjacent and little-endian, so the single u64 at
  * IC_SLOT_OFFSET is (depth << 32) | slot. `that word < kInlineSlots` is
  * therefore ONE compare meaning "own property, in an inline slot" — the
@@ -678,12 +726,21 @@ typedef struct bronze_gc_frame {
  *    creation.
  *
  *  - inline_call_enabled / array_method_ic_enabled /
- *    inline_overflow_set_enabled / inline_accessor_enabled: the inline
- *    fast-path enable flags, 1 by default, each set to 0 per thread under
- *    its BRONZE_NO_* environment variable (BRONZE_NO_INLINE_CALL,
- *    BRONZE_NO_ARRAY_METHOD_IC, BRONZE_NO_INLINE_OVERFLOW_SET,
- *    BRONZE_NO_INLINE_ACCESSOR) so one binary can A/B test each inline path
- *    against its helper.
+ *    inline_overflow_set_enabled / inline_accessor_enabled / poly_ic_enabled
+ *    / negative_ic_enabled: the inline fast-path enable flags, 1 by default,
+ *    each set to 0 per thread under its BRONZE_NO_* environment variable
+ *    (BRONZE_NO_INLINE_CALL, BRONZE_NO_ARRAY_METHOD_IC,
+ *    BRONZE_NO_INLINE_OVERFLOW_SET, BRONZE_NO_INLINE_ACCESSOR,
+ *    BRONZE_NO_POLY_IC, BRONZE_NO_NEG_IC) so one binary can A/B test each
+ *    inline path against its helper.
+ *
+ *    The last two are read in different places, and deliberately:
+ *    `poly_ic_enabled` gates the WAY SCAN in generated code as well as the
+ *    install, because ways 1..N-1 may already hold entries when a thread
+ *    lowers the flag; `negative_ic_enabled` gates only the INSTALL, because
+ *    an absent entry can only exist if some install put it there, so with
+ *    the flag down generated code's absent arm is unreachable and testing it
+ *    would cost a load on a live path for nothing.
  *
  *  - array_method_tbl: the array method singleton table, published by the
  *    runtime and rooted across GC collections. Indexed by array method ID
@@ -700,6 +757,8 @@ typedef struct bronze_tls_block {
     uint64_t array_method_ic_enabled;
     uint64_t inline_overflow_set_enabled;
     uint64_t inline_accessor_enabled;
+    uint64_t poly_ic_enabled;
+    uint64_t negative_ic_enabled;
     uint64_t* array_method_tbl;
 } bronze_tls_block;
 
@@ -713,7 +772,9 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_ARRAY_METHOD_IC_ENABLED_OFF    56
 #define BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF 64
 #define BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF    72
-#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF           80
+#define BRONZE_TLS_POLY_IC_ENABLED_OFF            80
+#define BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF        88
+#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF           96
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds
