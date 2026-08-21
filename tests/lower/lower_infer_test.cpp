@@ -173,7 +173,7 @@ TEST_CASE("a closure's parameter annotations are never provable") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    CHECK(printed.find("(%0: dynamic, %1: dynamic) -> dynamic") != std::string::npos);
+    CHECK(printed.find("(%0: dynamic) -> dynamic") != std::string::npos);
     const std::string rendered = diags.render(buf);
     CHECK(rendered.find("warning: annotation 'number' on 'a' is not provable") !=
           std::string::npos);

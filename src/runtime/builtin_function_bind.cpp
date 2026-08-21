@@ -148,7 +148,7 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
         // asks this header. So both of the ordinary bits would be answers
         // about the wrong function.
         FunctionHeader::create(rtHeap(), boundCallTrampoline, Value::fromUndefined(), 0,
-                               BRONZE_ABI_FN_FLAG_NATIVE);
+                               BRONZE_ABI_FN_FLAG_NATIVE | BRONZE_ABI_FN_FLAG_NEEDS_ENV);
     fn->env_record = env.get();
     fn->header.flags = HeapKind::Function;
     Rooted<Value> fnRoot{Value::fromObject(fn)};

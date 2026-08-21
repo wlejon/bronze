@@ -467,11 +467,65 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // — and the runtime has to be able to tell it from "no name recorded".
     if (jsName) newFn.nameKeyIndex = getKeyConstantIndex(*jsName);
     newFn.returnType = il::Type::Dynamic;
-    // Every function expression is a closure: it gets the synthetic environment
-    // parameter whether or not it turns out to capture anything. An unused one
-    // costs a parameter.
-    newFn.needsEnv = true;
-    newFn.params.push_back({"__env", il::Type::Dynamic});
+    const size_t outerEnvDepth = envScopes_.size();
+    const auto* siteFnExpr = dynamic_cast<const ast::FunctionExpr*>(&site);
+    const auto* siteFnDecl = dynamic_cast<const ast::FunctionDecl*>(&site);
+    const bool isGenerator = (siteFnExpr && siteFnExpr->isGenerator) ||
+                             (siteFnDecl && siteFnDecl->isGenerator);
+    const bool isAsync =
+        (siteFnExpr && siteFnExpr->isAsync) || (siteFnDecl && siteFnDecl->isAsync);
+
+    // 15.2.5 InstantiateOrdinaryFunctionExpression, the named branch: a
+    // function expression that wrote its own name is created in a declarative
+    // environment of its own holding ONE immutable binding of that name, and
+    // that record — not the enclosing one — is the closure's scope. So the
+    // recursive reference in `(function fact(n) { return n * fact(n - 1) })` is
+    // an ordinary capture: the body resolves `fact` through the environment
+    // chain like any other free name, one hop further out than its own record.
+    //
+    // Built only where the body (or a parameter default, which is code of this
+    // function that the body does not contain) actually mentions the name. The
+    // binding is unobservable otherwise, and paying a record per evaluation for
+    // it would change the IL of every `function f() {}` in the program.
+    il::ValueId nfeEnv = il::kNoValue;
+    if (bindsOwnName && !isArrow && !declaredName.empty()) {
+        auto referenced = ast::getReferencedNames(body);
+        for (auto& name : ast::getParamReferencedNames(params)) {
+            referenced.insert(std::move(name));
+        }
+        if (referenced.contains(declaredName)) {
+            nfeEnv = emitEnvCreate(1, ilFn);
+            EnvScopeInfo info;
+            info.slotOf[declaredName] = 0;
+            info.slotNames = {declaredName};
+            info.slotIsLexical.assign(1, false);
+            // The whole point of the record: 15.2.5 step 3 is
+            // CreateImmutableBinding, so an inner `fact = x` stores nothing.
+            info.slotIsImmutable.assign(1, true);
+            info.envValue = nfeEnv;
+            envScopes_.push_back(std::move(info));
+            currentEnvValue_ = nfeEnv;
+        }
+    }
+
+    // A function only requires an environment parameter when it captures from an
+    // enclosing non-module scope, is a generator/async function, has an NFE
+    // binding, or is an arrow reading outer `this`/`arguments`. Top-level methods
+    // and closures without outer lexical scopes have `needsEnv == false`, allowing
+    // direct calls and IC latching.
+    const size_t nonModuleScopeThreshold =
+        (moduleEnvScope_ != std::numeric_limits<size_t>::max()) ? 1 : 0;
+    bool needsEnv = true;
+    if (!isGenerator && !isAsync && nfeEnv == il::kNoValue &&
+        (!isArrow || (!ast::usesThis(params, body) && !ast::usesArguments(params, body))) &&
+        outerEnvDepth <= nonModuleScopeThreshold) {
+        needsEnv = false;
+    }
+
+    newFn.needsEnv = needsEnv;
+    if (needsEnv) {
+        newFn.params.push_back({"__env", il::Type::Dynamic});
+    }
     // An arrow deliberately does NOT take a receiver parameter, however it is
     // called: its `this` is the enclosing function's, read from the
     // environment. Giving it one would be a second, contradictory answer to the
@@ -560,10 +614,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // inside sloppy code). `site` is that node, which is why nothing here has
     // to be passed a flag.
     const bool outerStrict = strictCode_;
-    if (const auto* fnExpr = dynamic_cast<const ast::FunctionExpr*>(&site)) {
-        strictCode_ = fnExpr->strict;
-    } else if (const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(&site)) {
-        strictCode_ = fnDecl->strict;
+    if (siteFnExpr) {
+        strictCode_ = siteFnExpr->strict;
+    } else if (siteFnDecl) {
+        strictCode_ = siteFnDecl->strict;
     }
     auto outerEnvBase = functionEnvBase_;
     auto outerEnvScope = functionEnvScope_;
@@ -575,56 +629,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // lowerFunctionBody points it at the nested body, so the outer pointer
     // comes back with everything else here.
     const auto* outerBodyStmts = currentBodyStmts_;
-    size_t outerEnvDepth = envScopes_.size();
 
-    // 15.2.5 InstantiateOrdinaryFunctionExpression, the named branch: a
-    // function expression that wrote its own name is created in a declarative
-    // environment of its own holding ONE immutable binding of that name, and
-    // that record — not the enclosing one — is the closure's scope. So the
-    // recursive reference in `(function fact(n) { return n * fact(n - 1) })` is
-    // an ordinary capture: the body resolves `fact` through the environment
-    // chain like any other free name, one hop further out than its own record.
-    //
-    // Built only where the body (or a parameter default, which is code of this
-    // function that the body does not contain) actually mentions the name. The
-    // binding is unobservable otherwise, and paying a record per evaluation for
-    // it would change the IL of every `function f() {}` in the program.
-    il::ValueId nfeEnv = il::kNoValue;
-    if (bindsOwnName && !isArrow && !declaredName.empty()) {
-        auto referenced = ast::getReferencedNames(body);
-        for (auto& name : ast::getParamReferencedNames(params)) {
-            referenced.insert(std::move(name));
-        }
-        if (referenced.contains(declaredName)) {
-            nfeEnv = emitEnvCreate(1, ilFn);
-            EnvScopeInfo info;
-            info.slotOf[declaredName] = 0;
-            info.slotNames = {declaredName};
-            info.slotIsLexical.assign(1, false);
-            // The whole point of the record: 15.2.5 step 3 is
-            // CreateImmutableBinding, so an inner `fact = x` stores nothing.
-            info.slotIsImmutable.assign(1, true);
-            info.envValue = nfeEnv;
-            envScopes_.push_back(std::move(info));
-            currentEnvValue_ = nfeEnv;
-        }
-    }
-
-    // The body is lowered into a DIFFERENT function, so every piece of state
-    // saved above now describes the nested one — and that has to be undone on
-    // the failure path as well. Returning early from here once left the
-    // enclosing lowering holding the callee's binding map, its (cleared) jump
-    // stack and its (cleared) label stack, so a caller that unwound past a
-    // labelled statement popped an empty vector, and one that went on to
-    // report a second diagnostic resolved names against the wrong scope. The
-    // caller stops at the first error either way, so this restores and then
-    // reports rather than reporting and leaving the wreckage.
-    const auto* siteFnExpr = dynamic_cast<const ast::FunctionExpr*>(&site);
-    const auto* siteFnDecl = dynamic_cast<const ast::FunctionDecl*>(&site);
-    const bool isGenerator = (siteFnExpr && siteFnExpr->isGenerator) ||
-                             (siteFnDecl && siteFnDecl->isGenerator);
-    const bool isAsync =
-        (siteFnExpr && siteFnExpr->isAsync) || (siteFnDecl && siteFnDecl->isAsync);
     // A `FunctionDecl` site is always the ordinary form — there is no syntax
     // for a declaration that is a method or an arrow — so only the expression
     // carries a kind worth reading.

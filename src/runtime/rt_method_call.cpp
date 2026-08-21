@@ -32,7 +32,7 @@ uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
             auto* obj = reinterpret_cast<ObjectHeader*>(objHdr);
             auto* fn = reinterpret_cast<FunctionHeader*>(fnHdr);
             if (icEntry && rtTls()->method_call_ic_enabled != 0 && fn->code) {
-                if (fn->env_record.isUndefined() ||
+                if (!fn->needsEnv() || fn->env_record.isUndefined() ||
                     fn->env_record.rawBits() == Value::fromObject(fn).rawBits()) {
                     icEntry[0] = reinterpret_cast<uint64_t>(obj->shape);
                     icEntry[1] = reinterpret_cast<uint64_t>(fn->code);
@@ -65,7 +65,7 @@ uint64_t bronze_call_method_spread(uint64_t thisBits, uint32_t keyIndex, uint64_
             auto* obj = reinterpret_cast<ObjectHeader*>(objHdr);
             auto* fn = reinterpret_cast<FunctionHeader*>(fnHdr);
             if (icEntry && rtTls()->method_call_ic_enabled != 0 && fn->code) {
-                if (fn->env_record.isUndefined() ||
+                if (!fn->needsEnv() || fn->env_record.isUndefined() ||
                     fn->env_record.rawBits() == Value::fromObject(fn).rawBits()) {
                     icEntry[0] = reinterpret_cast<uint64_t>(obj->shape);
                     icEntry[1] = reinterpret_cast<uint64_t>(fn->code);

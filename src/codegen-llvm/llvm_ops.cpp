@@ -660,11 +660,13 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // instruction carrying a copy of a callee's fact is one more place
             // for the two to disagree.
             const auto& created = shared_.module.functions[inst.calleeIndex];
+            uint32_t flags =
+                created.fnFlags | (created.needsEnv ? BRONZE_ABI_FN_FLAG_NEEDS_ENV : 0);
             callWith(abi.bronze_create_function,
                      {shared_.wrappers[inst.calleeIndex], builder_.getInt32(inst.immI32),
                       builder_.getInt32(created.requiredArgs),
                       emitKeyId(builder_, shared_.tables, created.nameKeyIndex),
-                      builder_.getInt32(static_cast<int32_t>(created.fnFlags)), env});
+                      builder_.getInt32(static_cast<int32_t>(flags)), env});
             return true;
         }
         case il::Op::FunctionRef: {
@@ -681,9 +683,10 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             // The slot is the IL function index: dense, stable, and shared by
             // every mention of one declaration, which is exactly what a
             // singleton's cache line wants to be keyed by.
+            uint32_t flags = target.fnFlags | (target.needsEnv ? BRONZE_ABI_FN_FLAG_NEEDS_ENV : 0);
             values_[inst.result] = emitFunctionSingletonCached(
                 builder_, abi, shared_.tables, shared_.wrappers[inst.calleeIndex], arity,
-                target.requiredArgs, target.nameKeyIndex, target.fnFlags, inst.calleeIndex);
+                target.requiredArgs, target.nameKeyIndex, flags, inst.calleeIndex);
             return true;
         }
         case il::Op::EnvCreate: {

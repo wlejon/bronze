@@ -271,9 +271,9 @@ TEST_CASE("a class lowers to a constructor, a prototype and property writes") {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    CHECK(printed.find("func Q(%0: dynamic, %1: dynamic)") != std::string::npos);
-    CHECK(printed.find("func Q.get(%0: dynamic, %1: dynamic)") != std::string::npos);
-    CHECK(printed.find("func P.make(%0: dynamic)") != std::string::npos);
+    CHECK(printed.find("func Q(%0: dynamic)") != std::string::npos);
+    CHECK(printed.find("func Q.get(%0: dynamic)") != std::string::npos);
+    CHECK(printed.find("func P.make()") != std::string::npos);
     // `extends` runs before any method is stored: the prototype object it
     // installs is the one they have to land on. Asserted as an ORDER rather
     // than against a value id — the id shifts whenever anything is emitted
@@ -311,10 +311,10 @@ TEST_CASE("super.m() calls the parent's method with the current receiver") {
     const size_t body = printed.find("func P.get(");
     REQUIRE(body != std::string::npos);
     // Two reads (the parent, then its prototype, then the method) and a
-    // dynamic call whose receiver is %1 — the CURRENT `this`, not the
+    // dynamic call whose receiver is %0 — the CURRENT `this`, not the
     // parent prototype the function came from. Reading `this.get` instead
     // would find the override and recurse forever.
-    CHECK(printed.find("call.dynamic %4, %1", body) != std::string::npos);
+    CHECK(printed.find("call.dynamic %4, %0", body) != std::string::npos);
 }
 
 TEST_CASE("a method with no `this` in it still gets a receiver when it uses super") {
@@ -328,7 +328,7 @@ TEST_CASE("a method with no `this` in it still gets a receiver when it uses supe
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(optMod.has_value());
     const std::string printed = il::print(*optMod);
-    CHECK(printed.find("func P.tag(%0: dynamic, %1: dynamic)") != std::string::npos);
+    CHECK(printed.find("func P.tag(%0: dynamic)") != std::string::npos);
 }
 
 TEST_CASE("a destructuring assignment reads the whole right side before writing") {

@@ -145,6 +145,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * other function object its own source — and generated code never sets it,
  * because a function bronze compiled is by construction not one of these. */
 #define BRONZE_ABI_FN_FLAG_NATIVE      0x20u
+/* The function requires its closure environment record to be passed on call.
+ * When false, the wrapper ignores `env` and passing `undefined` is sound. */
+#define BRONZE_ABI_FN_FLAG_NEEDS_ENV   0x40u
 #define BRONZE_ABI_FN_FLAGS_ORDINARY (BRONZE_ABI_FN_FLAG_CONSTRUCT | BRONZE_ABI_FN_FLAG_PROTOTYPE)
 
 /* The uninitialized-binding singleton (runtime/value.h Tag::Uninitialized):

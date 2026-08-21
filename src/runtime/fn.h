@@ -170,6 +170,9 @@ struct FunctionHeader {
     bool isNativeCode() const noexcept {
         return (function_flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0;
     }
+    bool needsEnv() const noexcept {
+        return (function_flags & BRONZE_ABI_FN_FLAG_NEEDS_ENV) != 0;
+    }
 
     Value call(Value thisArg, uint32_t argc, Value* argv) const;
 };
