@@ -38,6 +38,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/typed_array.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -771,6 +772,10 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
 extern "C" {
 
 int32_t bronze_to_int32_f64(double d) { return toInt32(d); }
+
+int32_t bronze_to_uint8_clamp_f64(double d) {
+    return static_cast<int32_t>(static_cast<uint8_t>(toUint8Clamp(d)));
+}
 
 int32_t bronze_to_int32(uint64_t bits) {
     // ToNumber first (7.1.6 step 1), which is where a string operand is parsed —

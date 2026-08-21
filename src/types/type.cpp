@@ -13,6 +13,7 @@ const char* typeKindName(TypeKind kind) {
         case TypeKind::Object: return "object";
         case TypeKind::Function: return "function";
         case TypeKind::TypedArray: return "typedarray";
+        case TypeKind::Array: return "array";
         case TypeKind::Dynamic: return "dynamic";
     }
     return "?";
@@ -25,7 +26,18 @@ std::string Type::str() const {
     } else if (kind_ == TypeKind::Function && payload_ != kNoPayload) {
         out += '#' + std::to_string(payload_);
     } else if (kind_ == TypeKind::TypedArray && payload_ != kNoPayload) {
-        out += payload_ == static_cast<uint32_t>(TypedArrayElem::Float64) ? ":f64" : ":f32";
+        switch (static_cast<TypedArrayElem>(payload_)) {
+            case TypedArrayElem::Float64: out += ":f64"; break;
+            case TypedArrayElem::Float32: out += ":f32"; break;
+            case TypedArrayElem::Int32: out += ":i32"; break;
+            case TypedArrayElem::Uint32: out += ":u32"; break;
+            case TypedArrayElem::Int16: out += ":i16"; break;
+            case TypedArrayElem::Uint16: out += ":u16"; break;
+            case TypedArrayElem::Int8: out += ":i8"; break;
+            case TypedArrayElem::Uint8: out += ":u8"; break;
+            case TypedArrayElem::Uint8Clamped: out += ":u8c"; break;
+            default: break;
+        }
     }
     return out;
 }
@@ -58,6 +70,7 @@ Type join(Type a, Type b) {
             return Type::object();
         case TypeKind::Function: return Type::function();
         case TypeKind::TypedArray: return Type::typedArray();
+        case TypeKind::Array: return Type::array();
         default: break;
     }
     // Unreachable: every identity-free kind compares equal above.

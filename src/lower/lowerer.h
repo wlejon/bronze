@@ -223,6 +223,7 @@ private:
     // The element kind travels as the raw types::TypedArrayElem number.
     static bool typedElemSeamDisabled();  // BRONZE_NO_TYPED_ELEM, read once
     std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e) const;
+    bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
     std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn);

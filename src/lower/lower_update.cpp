@@ -237,37 +237,39 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         getInst.keyIndex = *literalKey;
         getInst.icIndex = icSiteCounter_++;
         const bool mono = monomorphicPropSite(*idxAccess.object);
-        recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
-        getInst.icMonomorphic = mono;
-        stampStaticSlot(getInst, *idxAccess.object);
-    } else {
-        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
-        getInst.op = il::Op::ElemGet;
-        getInst.operands = {objBoxed.id, idxBoxed->id};
-    }
-    getInst.type = il::Type::Dynamic;
-    getInst.result = cur;
-    emitInst(ilFn, getInst);
+            recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
+            getInst.icMonomorphic = mono;
+            stampStaticSlot(getInst, *idxAccess.object);
+        } else {
+            const bool native = provenArrayOrTypedArray(*idxAccess.object);
+            recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
+            getInst.op = il::Op::ElemGet;
+            getInst.operands = {objBoxed.id, idxBoxed->id};
+        }
+        getInst.type = il::Type::Dynamic;
+        getInst.result = cur;
+        emitInst(ilFn, getInst);
 
-    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
-    Value newVal = emitUpdateStep(numOld, op, ilFn);
-    Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
+        Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
+        Value newVal = emitUpdateStep(numOld, op, ilFn);
+        Value storedBoxed = boxValueIfNeeded(newVal, ilFn);
 
-    il::Instruction setInst;
-    if (literalKey) {
-        const bool mono = monomorphicPropSite(*idxAccess.object);
-        recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
-        setInst.op = il::Op::PropSet;
-        setInst.operands = {objBoxed.id, storedBoxed.id};
-        setInst.keyIndex = *literalKey;
-        setInst.icIndex = icSiteCounter_++;
-        setInst.icMonomorphic = mono;
-        stampStaticSlot(setInst, *idxAccess.object);
-    } else {
-        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
-        setInst.op = il::Op::ElemSet;
-        setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
-    }
+        il::Instruction setInst;
+        if (literalKey) {
+            const bool mono = monomorphicPropSite(*idxAccess.object);
+            recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
+            setInst.op = il::Op::PropSet;
+            setInst.operands = {objBoxed.id, storedBoxed.id};
+            setInst.keyIndex = *literalKey;
+            setInst.icIndex = icSiteCounter_++;
+            setInst.icMonomorphic = mono;
+            stampStaticSlot(setInst, *idxAccess.object);
+        } else {
+            const bool native = provenArrayOrTypedArray(*idxAccess.object);
+            recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
+            setInst.op = il::Op::ElemSet;
+            setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
+        }
     setInst.type = il::Type::Void;
     setInst.result = il::kNoValue;
     setInst.immI32 = strictFlag();

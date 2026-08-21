@@ -435,7 +435,8 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess.index);
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
-        recordElementOp(idxAccess.span.file, false, "computed dynamic index");
+        const bool native = provenArrayOrTypedArray(*idxAccess.object);
+        recordElementOp(idxAccess.span.file, native, native ? "" : "computed dynamic index");
         auto indexVal = lowerExpr(*idxAccess.index, ilFn);
         if (!indexVal) return std::nullopt;
         auto idxBoxed = boxValueIfNeeded(*indexVal, ilFn);

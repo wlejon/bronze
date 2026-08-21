@@ -15,41 +15,6 @@
 namespace bronze::types {
 namespace {
 
-// The ordered property names a constructor installs on `this`, in source order.
-// Does not descend into nested functions: each one binds its own receiver, so
-// an inner `this.x =` says nothing about this constructor.
-//
-// Conditional assignments are collected unconditionally, so this can name a
-// class the runtime never builds. That is deliberate and safe: the inline-cache
-// check keeps the shape guard even on a proven site, because the proof is over
-// this compilation's source and the shape word is the runtime's authority.
-class ThisPropertyWalker final : public Walker {
-public:
-    std::vector<std::string> properties;
-
-    void visit(const ast::FunctionExpr&) override {}
-    void visit(const ast::FunctionDecl&) override {}
-
-    void visit(const ast::Binary& n) override {
-        if (n.op == ast::BinaryOp::Assign) {
-            if (const auto* member = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
-                // `this.#x = v` installs no PROPERTY: a private element lives
-                // in a side table keyed by the class evaluation, and no shape
-                // ever carries its name. A shape class that listed it would
-                // describe a layout no instance has.
-                if (!member->isPrivate &&
-                    dynamic_cast<const ast::ThisExpr*>(member->object.get())) {
-                    if (std::find(properties.begin(), properties.end(), member->property) ==
-                        properties.end()) {
-                        properties.push_back(member->property);
-                    }
-                }
-            }
-        }
-        Walker::visit(n);
-    }
-};
-
 bool isNonClassExpr(const ast::Expr* e) {
     if (e == nullptr) return false;
     if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
@@ -258,9 +223,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         for (const auto& el : a->elements) {
             if (el) expr(*el);
         }
-        // An array is an object with no property-name identity; there is
-        // no shape class to prove about it.
-        return Type::object();
+        return Type::array();
     }
     if (const auto* sc = dynamic_cast<const ast::SuperCall*>(&e)) {
         // The parent constructor runs on the current receiver and its
@@ -838,158 +801,18 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
     if (ident != nullptr && !resolvesToUserBinding(ident->name)) {
         if (ident->name == "Float64Array") return Type::typedArray(TypedArrayElem::Float64);
         if (ident->name == "Float32Array") return Type::typedArray(TypedArrayElem::Float32);
+        if (ident->name == "Int32Array") return Type::typedArray(TypedArrayElem::Int32);
+        if (ident->name == "Uint32Array") return Type::typedArray(TypedArrayElem::Uint32);
+        if (ident->name == "Int16Array") return Type::typedArray(TypedArrayElem::Int16);
+        if (ident->name == "Uint16Array") return Type::typedArray(TypedArrayElem::Uint16);
+        if (ident->name == "Int8Array") return Type::typedArray(TypedArrayElem::Int8);
+        if (ident->name == "Uint8Array") return Type::typedArray(TypedArrayElem::Uint8);
+        if (ident->name == "Uint8ClampedArray") return Type::typedArray(TypedArrayElem::Uint8Clamped);
+        if (ident->name == "Array") return Type::array();
     }
     const ShapeClassId cls = ident != nullptr ? constructorShape(ident->name) : kNoShapeClass;
     if (record_ && cls != kNoShapeClass) mod_.result->siteShapes[&n] = cls;
     return Type::object(cls);
-}
-
-ShapeClassId FlowAnalyzer::constructorShape(const std::string& name) {
-    // A `class` first: it is the form three.js is written in, and its identity
-    // is already interned by the layout analysis, which knows things this
-    // walker does not — the `extends` prefix, and field declarations.
-    if (const ClassLayout* cl = mod_.result->classLayouts.byName(name)) {
-        // A class name that is also a module function name is impossible: both
-        // are module-scope bindings and the parser would have rejected the
-        // redeclaration. Checking the class table first is therefore an
-        // ordering, not a precedence rule.
-        return cl->shapeClass;
-    }
-    const auto found = mod_.indexByName.find(name);
-    if (found == mod_.indexByName.end()) return kNoShapeClass;
-    const uint32_t index = found->second;
-    if (const auto it = mod_.ctorShapes.find(index); it != mod_.ctorShapes.end()) {
-        return it->second;
-    }
-    ThisPropertyWalker walker;
-    walker.walkList(mod_.functions[index].decl->body);
-    const ShapeClassId cls = mod_.result->shapes.intern(name, std::move(walker.properties));
-    mod_.ctorShapes.emplace(index, cls);
-    return cls;
-}
-
-Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
-    std::vector<std::string> props;
-    bool computedKey = false;
-    for (const auto& p : o.props) {
-        // Key then value, left to right, which is the order the language
-        // specifies and therefore the order the effects are recorded in.
-        if (p.keyExpr) {
-            computedKey = true;
-            expr(*p.keyExpr);
-        }
-        expr(*p.value);
-        if (p.keyExpr) continue;
-        // A duplicate key overwrites; it does not transition again.
-        if (std::find(props.begin(), props.end(), p.key) == props.end()) {
-            props.push_back(p.key);
-        }
-    }
-    // A computed key names its property only at run time, so this literal's
-    // own-property set is not known here. A shape class interned over the
-    // WRITTEN keys alone would be a claim about a layout the runtime never
-    // builds, and the inline caches rest on that claim being true — so a
-    // literal with any computed key is simply `dynamic`, and its sites stay
-    // polymorphic.
-    if (computedKey) return Type::dynamic();
-    // Empty constructor name: a plain literal's prototype is the one root shape
-    // every `{}` shares.
-    const ShapeClassId cls = mod_.result->shapes.intern(std::string(), std::move(props));
-    if (record_) mod_.result->siteShapes[&o] = cls;
-    return Type::object(cls);
-}
-
-Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
-                   const std::vector<ast::Param>& params,
-                   const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator,
-                   ShapeClassId thisClass, uint32_t methodIndex, uint32_t ctorIndex) {
-    std::string name = declaredName;
-    if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
-    std::vector<const ast::Stmt*> borrowed;
-    borrowed.reserve(body.size());
-    for (const auto& s : body) borrowed.push_back(s.get());
-
-    // A closure is never a direct-call target, so its parameters keep the
-    // uniform dynamic convention. A class METHOD is the exception this chunk
-    // added: its callers are enumerable through the receiver's class, so it has
-    // a signature of its own (method_ident.h). Nothing about the CALLING
-    // CONVENTION changes either way — a method is still invoked dynamically;
-    // what the signature buys is what the body may believe about its arguments.
-    std::vector<Type> paramTypes(params.size(), Type::dynamic());
-    // A CONSTRUCTOR is the second exception, and a stronger one than a method.
-    // `new C(...)` names C: there is no dispatch to be right or wrong about, so
-    // the join over the sites is a proof of the same standing as a
-    // direct-callable function's signature — and it travels whole, primitives
-    // included, because that is what makes `this.x = x` a Number write.
-    if (ctorIndex != kNoCtor) {
-        paramTypes = ctorParamTypes(ctorIndex, params.size());
-    } else if (methodIndex != kNoMethod) {
-        const MethodInfo& self = mod_.methods.methods()[methodIndex];
-        if (self.plainParams && !mod_.methodPoison.poisons(methodIndex)) {
-            for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
-                const Type proven = self.signature.params[i];
-                if (mod_.methodParamTypes) {
-                    paramTypes[i] = proven;
-                } else {
-                    if (proven.is(TypeKind::Object) && proven.shapeClass() != kNoShapeClass) {
-                        paramTypes[i] = Type::objectIdentityOnly(proven.shapeClass());
-                    } else if (proven.is(TypeKind::Never)) {
-                        paramTypes[i] = proven;
-                    }
-                }
-            }
-        }
-    }
-    FunctionAnalysisArgs args;
-    args.parent = &scope_;
-    args.qualifiedName = qualifiedName_ + "::" + name;
-    args.moduleIndex = kNoFunctionIndex;
-    args.site = &site;
-    args.directCallable = false;
-    args.params = &params;
-    args.paramTypes = std::move(paramTypes);
-    args.body = std::move(borrowed);
-    args.span = span;
-    args.record = record_;
-    args.isGenerator = isGenerator;
-    args.thisClass = thisClass;
-    args.methodIndex = methodIndex;
-    args.ctorIndex = ctorIndex;
-    args.moduleTopLevel = false;
-    return analyzeFunction(mod_, args).returnType;
-}
-
-// A class body, walked with `this` bound to the class the declaration names.
-void FlowAnalyzer::analyzeClassBody(const std::string& className,
-                                    const std::vector<ast::ClassMethod>& methods) {
-    ShapeClassId owner = kNoShapeClass;
-    if (!className.empty()) {
-        if (const ClassLayout* cl = mod_.result->classLayouts.byName(className)) {
-            owner = cl->shapeClass;
-        }
-    }
-    for (const auto& m : methods) {
-        if (m.keyExpr) expr(*m.keyExpr);
-        const ShapeClassId receiver = m.isStatic ? kNoShapeClass : owner;
-        if (m.fn) {
-            const uint32_t index =
-                mod_.interprocIdent ? mod_.methods.indexOfNode(m.fn.get()) : kNoMethod;
-            const uint32_t ctorIndex =
-                mod_.ctorParamTypes ? mod_.ctors.indexOfNode(m.fn.get()) : kNoCtor;
-            const Type returned =
-                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                              m.fn->isGenerator || m.fn->isAsync, receiver, index, ctorIndex);
-            if (index != kNoMethod) {
-                MethodInfo& self = mod_.methods.methods()[index];
-                self.observedReturn = join(self.observedReturn, returned);
-            }
-        } else if (m.init) {
-            const ShapeClassId saved = scope_.thisClass;
-            scope_.thisClass = receiver;
-            expr(*m.init);
-            scope_.thisClass = saved;
-        }
-    }
 }
 
 }  // namespace bronze::types

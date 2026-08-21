@@ -357,6 +357,7 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
         case types::TypeKind::Object:
         case types::TypeKind::Function:
         case types::TypeKind::TypedArray:
+        case types::TypeKind::Array:
         case types::TypeKind::Dynamic: fn.returnType = il::Type::Dynamic; break;
         // `Undefined` (every path returns nothing) keeps the Void return
         // the declaration already has, and `Never` is the dead-function

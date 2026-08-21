@@ -128,7 +128,14 @@ private:
 }  // namespace
 
 bool Lowerer::typedElemSeamDisabled() {
-    return std::getenv("BRONZE_NO_TYPED_ELEM") != nullptr;
+    return std::getenv("BRONZE_NO_TYPED_ELEM") != nullptr ||
+           std::getenv("BRONZE_NO_ELEM_FAST_PATH") != nullptr;
+}
+
+bool Lowerer::provenArrayOrTypedArray(const ast::Expr& e) const {
+    if (typedElemDisabled_ || inference_ == nullptr) return false;
+    const types::Type recv = inferredType(e);
+    return recv.is(types::TypeKind::TypedArray) || recv.is(types::TypeKind::Array);
 }
 
 std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e) const {

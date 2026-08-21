@@ -58,6 +58,7 @@ struct ElementKindInfo {
 };
 
 const ElementKindInfo& elementKindInfo(ElementKind kind) noexcept;
+double toUint8Clamp(double number) noexcept;
 
 // The largest byte length bronze will allocate for one buffer. Two separate
 // obligations meet at this number and both are real:

@@ -732,6 +732,25 @@ TEST_CASE("new Float64Array on the unshadowed builtin is a proven view") {
           types::Type::typedArray(types::TypedArrayElem::Float64));
 }
 
+TEST_CASE("new Int32Array, Uint8ClampedArray, Array, and array literals are proven") {
+    const auto inferred = infer(
+        "const i32 = new Int32Array(4);\n"
+        "const u8c = new Uint8ClampedArray(4);\n"
+        "const arr = new Array(4);\n"
+        "const lit = [1, 2, 3];\n");
+    const auto* d0 = dynamic_cast<const ast::VarDecl*>(inferred.module->body[0].get());
+    const auto* d1 = dynamic_cast<const ast::VarDecl*>(inferred.module->body[1].get());
+    const auto* d2 = dynamic_cast<const ast::VarDecl*>(inferred.module->body[2].get());
+    const auto* d3 = dynamic_cast<const ast::VarDecl*>(inferred.module->body[3].get());
+    REQUIRE((d0 && d1 && d2 && d3));
+    CHECK(inferred.result->typeAt(d0->init.get()) ==
+          types::Type::typedArray(types::TypedArrayElem::Int32));
+    CHECK(inferred.result->typeAt(d1->init.get()) ==
+          types::Type::typedArray(types::TypedArrayElem::Uint8Clamped));
+    CHECK(inferred.result->typeAt(d2->init.get()) == types::Type::array());
+    CHECK(inferred.result->typeAt(d3->init.get()) == types::Type::array());
+}
+
 TEST_CASE("a shadowed Float64Array is not the builtin and proves nothing") {
     const auto inferred = infer(
         "const Float64Array = function (n) { this.len = n; };\n"

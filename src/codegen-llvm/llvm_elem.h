@@ -62,10 +62,10 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
 // mirroring what bronze_elem_get / _set answer for a number index on this
 // receiver. Neither can call anything, which is what keeps a loop of them
 // free of safepoints.
-llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, llvm::Value* objBits,
-                              llvm::Value* idxDbl, bool isF64);
-void emitTypedElemSet(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm::Value* idxDbl,
-                      llvm::Value* valDbl, bool isF64);
+llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                              llvm::Value* idxDbl, uint32_t elemKind);
+void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind);
 
 // Re-boxes a double value into a NaN-boxed 64-bit value.
 llvm::Value* emitBoxDouble(llvm::IRBuilder<>& builder, llvm::Value* d);

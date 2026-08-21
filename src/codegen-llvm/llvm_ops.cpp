@@ -838,7 +838,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGetTyped instruction");
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGetTyped instruction");
             if (!obj || !idx) return false;
-            values_[inst.result] = emitTypedElemGet(builder_, obj, idx, inst.immI32 == 0);
+            values_[inst.result] =
+                emitTypedElemGet(builder_, shared_.abi, obj, idx, static_cast<uint32_t>(inst.immI32));
             return true;
         }
         case il::Op::ElemSetTyped: {
@@ -847,7 +848,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSetTyped instruction");
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSetTyped instruction");
             if (!obj || !idx || !val) return false;
-            emitTypedElemSet(builder_, obj, idx, val, inst.immI32 == 0);
+            emitTypedElemSet(builder_, shared_.abi, obj, idx, val, static_cast<uint32_t>(inst.immI32));
             return true;
         }
 

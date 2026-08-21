@@ -24,20 +24,24 @@ enum class TypeKind : uint8_t {
     Null,
     Object,     // optional shape class
     Function,   // optional module function index
-    TypedArray, // optional element kind (Float64Array / Float32Array views)
+    TypedArray, // optional element kind (all 9 views)
+    Array,      // dense JS array
     Dynamic,    // top: anything, the designed fallback
 };
 
 const char* typeKindName(TypeKind kind);
 
-// The element kind a `TypeKind::TypedArray` proof carries. Only the two float
-// views are named here because they are the two whose native element path
-// exists; a typed array of any other element kind stays `object`/`dynamic`
-// and keeps today's inline-cached dynamic path. Widening this enum is how the
-// integer views join the native path later.
+// The element kind a `TypeKind::TypedArray` proof carries.
 enum class TypedArrayElem : uint32_t {
-    Float64 = 0,
-    Float32 = 1,
+    Int8 = 0,
+    Uint8 = 1,
+    Uint8Clamped = 2,
+    Int16 = 3,
+    Uint16 = 4,
+    Int32 = 5,
+    Uint32 = 6,
+    Float32 = 7,
+    Float64 = 8,
 };
 inline constexpr uint32_t kNoTypedArrayElem = 0xFFFFFFFFu;
 
@@ -117,6 +121,7 @@ public:
     // to when two element kinds meet. Truthiness and `typeof` still know it is
     // an object; the native element path needs the kind and stays dynamic.
     static constexpr Type typedArray() { return Type(TypeKind::TypedArray); }
+    static constexpr Type array() { return Type(TypeKind::Array); }
 
     constexpr TypeKind kind() const { return kind_; }
     constexpr bool is(TypeKind k) const { return kind_ == k; }

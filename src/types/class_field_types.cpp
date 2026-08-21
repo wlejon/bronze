@@ -26,6 +26,7 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (dynamic_cast<const ast::BoolLit*>(&rhs)) return Type::boolean();
     if (dynamic_cast<const ast::NullLit*>(&rhs)) return Type::null();
     if (dynamic_cast<const ast::UndefinedLit*>(&rhs)) return Type::undefined();
+    if (dynamic_cast<const ast::ArrayLit*>(&rhs)) return Type::array();
     if (const auto* u = dynamic_cast<const ast::Unary*>(&rhs)) {
         if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate ||
             u->op == ast::UnaryOp::BitNot) {
@@ -81,6 +82,16 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&rhs)) {
         const auto* id = dynamic_cast<const ast::Ident*>(n->callee.get());
         if (id == nullptr) return Type::dynamic();
+        if (id->name == "Float64Array") return Type::typedArray(TypedArrayElem::Float64);
+        if (id->name == "Float32Array") return Type::typedArray(TypedArrayElem::Float32);
+        if (id->name == "Int32Array") return Type::typedArray(TypedArrayElem::Int32);
+        if (id->name == "Uint32Array") return Type::typedArray(TypedArrayElem::Uint32);
+        if (id->name == "Int16Array") return Type::typedArray(TypedArrayElem::Int16);
+        if (id->name == "Uint16Array") return Type::typedArray(TypedArrayElem::Uint16);
+        if (id->name == "Int8Array") return Type::typedArray(TypedArrayElem::Int8);
+        if (id->name == "Uint8Array") return Type::typedArray(TypedArrayElem::Uint8);
+        if (id->name == "Uint8ClampedArray") return Type::typedArray(TypedArrayElem::Uint8Clamped);
+        if (id->name == "Array") return Type::array();
         const auto it = classByName.find(id->name);
         if (it == classByName.end()) return Type::dynamic();
         const ShapeClassId cls = classes[it->second].shapeClass;

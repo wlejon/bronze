@@ -215,7 +215,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.icMonomorphic = mono;
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
-                recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+                const bool native = provenArrayOrTypedArray(*idxAccess->object);
+                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
                 getInst.operands = {objBoxed.id, idxBoxed->id};
             }
@@ -258,7 +259,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 setInst.icMonomorphic = mono;
                 stampStaticSlot(setInst, *idxAccess->object);
             } else {
-                recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+                const bool native = provenArrayOrTypedArray(*idxAccess->object);
+                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 setInst.op = il::Op::ElemSet;
                 setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
             }
@@ -331,7 +333,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.icMonomorphic = mono;
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
-                recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+                const bool native = provenArrayOrTypedArray(*idxAccess->object);
+                recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
                 getInst.operands = {objBoxed.id, idxBoxed->id};
             }
@@ -359,7 +362,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.icMonomorphic = mono;
             stampStaticSlot(setInst, *idxAccess->object);
         } else {
-            recordElementOp(idxAccess->span.file, false, "computed dynamic index");
+            const bool native = provenArrayOrTypedArray(*idxAccess->object);
+            recordElementOp(idxAccess->span.file, native, native ? "" : "computed dynamic index");
             setInst.op = il::Op::ElemSet;
             setInst.operands = {objBoxed.id, idxBoxed->id, storedBoxed.id};
         }

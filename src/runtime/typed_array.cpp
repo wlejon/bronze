@@ -52,6 +52,8 @@ double toIntegerModulo(double number, int bits, bool isSigned) noexcept {
 // 7.1.11 ToUint8Clamp. Not a truncation and not a modulo: out-of-range
 // saturates, and the .5 case rounds to EVEN, which is the one place JS
 // rounds differently from `Math.round`.
+}  // namespace
+
 double toUint8Clamp(double number) noexcept {
     if (std::isnan(number)) return 0.0;
     if (number <= 0.0) return 0.0;    // also catches -0
@@ -61,6 +63,8 @@ double toUint8Clamp(double number) noexcept {
     if (number < f + 0.5) return f;
     return std::fmod(f, 2.0) == 0.0 ? f : f + 1.0;
 }
+
+namespace {
 
 // IEEE 754 binary16, computed from the DOUBLE's bits and never through a
 // `float`. The two-step double -> float -> half rounds twice, and a value that
