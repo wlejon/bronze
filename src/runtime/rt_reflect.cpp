@@ -27,7 +27,7 @@
 #include <iterator>
 #include <string>
 
-#include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -35,6 +35,7 @@
 #include "runtime/gc.h"
 #include "runtime/array.h"
 #include "runtime/heap.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
@@ -336,6 +337,88 @@ static uint64_t reflectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const u
     return objectSetPrototypeOf(0, 0, argc, argv);
 }
 
+static bool isConstructor(Value v) {
+    if (!v.isObject()) return false;
+    const HeapObjectHeader* h = v.asObject<HeapObjectHeader>();
+    if (h->flags == ProxyHeader::kFlags) {
+        return v.asObject<ProxyHeader>()->callable.asBool();
+    }
+    if (h->flags == HeapKind::Function) {
+        const FunctionHeader* fn = v.asObject<FunctionHeader>();
+        return fn->hasConstruct() && !rtIsBigIntConstructor(v);
+    }
+    return false;
+}
+
+static uint64_t reflectConstruct(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 2) {
+        return rtThrowTypeError("Reflect.construct requires at least 2 arguments").rawBits();
+    }
+    Value target(argv[0]);
+    Value argsList(argv[1]);
+    Value newTarget = (argc > 2 && !Value(argv[2]).isUndefined()) ? Value(argv[2]) : target;
+
+    if (!isConstructor(target)) {
+        return rtThrowTypeError("Reflect.construct: target must be a constructor").rawBits();
+    }
+    if (!isConstructor(newTarget)) {
+        return rtThrowTypeError("Reflect.construct: newTarget must be a constructor").rawBits();
+    }
+    if (!argsList.isObject()) {
+        return rtThrowTypeError("Reflect.construct: arguments must be an object").rawBits();
+    }
+
+    Rooted<Value> targetRoot{target};
+    Rooted<Value> newTargetRoot{newTarget};
+    Rooted<Value> listRoot{argsList};
+    const uint32_t count = rtArrayLikeLength(listRoot);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!rtCheckAppliedArgumentCount(count, "Reflect.construct")) {
+        return Value::fromUndefined().rawBits();
+    }
+    RootedBlock block(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        block.set(i, rtArrayLikeElement(listRoot, i));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+
+    NewTargetScope targetScope(newTargetRoot.get());
+    if (newTargetRoot.get().rawBits() == targetRoot.get().rawBits()) {
+        return bronze_construct(targetRoot.get().rawBits(), count, block.data());
+    }
+
+    // Proxy target with different newTarget
+    if (targetRoot.get().isObject() &&
+        targetRoot.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtProxyConstruct(targetRoot.get(), count, block.data());
+    }
+
+    // Native exotic constructor target with different newTarget
+    if (const uint8_t nativeBase = rtNativeBaseOf(targetRoot.get());
+        nativeBase != NativeBase::None) {
+        Rooted<Value> self{rtAllocateNativeBaseInstance(nativeBase, newTargetRoot)};
+        NativeReceiverScope receiverScope(self.get());
+        FunctionHeader* live = targetRoot.get().asObject<FunctionHeader>();
+        Value result = live->call(self.get(), count,
+                                  const_cast<Value*>(reinterpret_cast<const Value*>(block.data())));
+        return result.isObject() ? result.rawBits() : self.get().rawBits();
+    }
+
+    // Ordinary constructor with different newTarget
+    Rooted<Value> proto{Value(bronze_elem_get(newTargetRoot.get().rawBits(), rtMakeString("prototype").rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!proto.get().isObject()) {
+        proto.set(rtObjectPrototype());
+    }
+    Rooted<Value> self{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(proto.get())))};
+    self.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    FunctionHeader* fn = targetRoot.get().asObject<FunctionHeader>();
+    Value result = fn->call(self.get(), count,
+                            const_cast<Value*>(reinterpret_cast<const Value*>(block.data())));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return result.isObject() ? result.rawBits() : self.get().rawBits();
+}
+
 static uint64_t reflectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return rtObjectGetOwnPropertyDescriptor(0, 0, argc, argv);
 }
@@ -356,6 +439,7 @@ Value rtReflectNamespace() {
 
         const NativeMethod methods[] = {
             {"apply", reflectApply, 3},
+            {"construct", reflectConstruct, 2},
             {"get", reflectGet, 2},
             {"set", reflectSet, 3},
             {"has", reflectHas, 2},

@@ -330,9 +330,16 @@ uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 uint64_t stringConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units out = thisUnits(Value(thisBits), "concat");
+    Value self(thisBits);
+    if (self.isUndefined() || self.isNull()) {
+        return rtThrowTypeError("String.prototype.concat called on null or undefined").rawBits();
+    }
+    Value thisStr = rtValueToString(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Units out = unitsOf(thisStr.asString<StringHeader>());
     for (uint32_t i = 0; i < args.count(); ++i) {
         Units piece = argUnits(args[i]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         out.insert(out.end(), piece.begin(), piece.end());
     }
     return stringFromUnits(out).rawBits();

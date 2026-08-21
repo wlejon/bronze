@@ -1,0 +1,9 @@
+true 10 20
+true hello
+true true world 42
+base true true
+true 3
+TypeError
+TypeError
+TypeError
+TypeError

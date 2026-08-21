@@ -30,6 +30,7 @@
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -46,7 +47,7 @@ bool isArray(Value v) {
 }
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
 // Element access through a ROOT, because everything in this file runs between
