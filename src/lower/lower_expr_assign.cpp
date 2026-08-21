@@ -43,6 +43,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             const bool mono = monomorphicPropSite(*mem->object);
             recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
+            stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             Value curVal{curId, il::Type::Dynamic};
 
@@ -76,6 +77,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.keyIndex = keyIdx;
             setInst.icIndex = icSiteCounter_++;
             setInst.icMonomorphic = monomorphicPropSite(*mem->object);
+            stampStaticSlot(setInst, *mem->object);
             setInst.immI32 = strictFlag();
             emitInst(ilFn, setInst);
             auto stateRhs = snapshotVarStates();
@@ -141,6 +143,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             const bool mono = monomorphicPropSite(*mem->object);
             recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
+            stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             curVal = Value{cur, il::Type::Dynamic};
         }
@@ -162,6 +165,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         const bool monoSet = monomorphicPropSite(*mem->object);
         recordPropertyAccess(mem->span.file, monoSet, monoSet ? "" : propBailReason(*mem->object));
         inst.icMonomorphic = monoSet;
+        stampStaticSlot(inst, *mem->object);
         // The reference this write goes through is strict exactly when the
         // code that wrote it is (13.15.2 PutValue step 6.d), and that is the
         // only thing that decides whether a refused Set throws.
@@ -209,6 +213,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 const bool mono = monomorphicPropSite(*idxAccess->object);
                 recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
+                stampStaticSlot(getInst, *idxAccess->object);
             } else {
                 recordElementOp(idxAccess->span.file, false, "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
@@ -251,6 +256,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 setInst.keyIndex = *literalKey;
                 setInst.icIndex = icSiteCounter_++;
                 setInst.icMonomorphic = mono;
+                stampStaticSlot(setInst, *idxAccess->object);
             } else {
                 recordElementOp(idxAccess->span.file, false, "computed dynamic index");
                 setInst.op = il::Op::ElemSet;
@@ -323,6 +329,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 const bool mono = monomorphicPropSite(*idxAccess->object);
                 recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
+                stampStaticSlot(getInst, *idxAccess->object);
             } else {
                 recordElementOp(idxAccess->span.file, false, "computed dynamic index");
                 getInst.op = il::Op::ElemGet;
@@ -350,6 +357,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setInst.keyIndex = *literalKey;
             setInst.icIndex = icSiteCounter_++;
             setInst.icMonomorphic = mono;
+            stampStaticSlot(setInst, *idxAccess->object);
         } else {
             recordElementOp(idxAccess->span.file, false, "computed dynamic index");
             setInst.op = il::Op::ElemSet;

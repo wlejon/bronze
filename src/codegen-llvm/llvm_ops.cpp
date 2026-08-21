@@ -766,7 +766,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                             : "";
             values_[inst.result] =
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex,
-                            inst.icIndex, inst.icMonomorphic, keyStr);
+                            inst.icIndex, inst.icMonomorphic, inst.staticSlot,
+                            inst.staticCellIndex, keyStr);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }
@@ -779,7 +780,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
             emitPropSet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex, val,
-                        inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, keyStr);
+                        inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, inst.staticSlot,
+                        inst.staticCellIndex, keyStr);
             return true;
         }
         case il::Op::ElemGet: {

@@ -27,6 +27,13 @@ ShapeClassId InferenceResult::shapeClassAt(const ast::Expr* site) const {
     return it == siteShapes.end() ? kNoShapeClass : it->second;
 }
 
+uint32_t InferenceResult::staticSlotAt(const ast::Expr* receiver,
+                                      const std::string& field) const {
+    const Type t = typeAt(receiver);
+    if (!t.is(TypeKind::Object)) return ClassLayoutTable::kNoSlot;
+    return classLayouts.slotOf(t.shapeClass(), field);
+}
+
 Type InferenceResult::typeOfBindingAt(const ast::Stmt* mergePoint,
                                       const std::string& name) const {
     const auto point = mergeBindings.find(mergePoint);

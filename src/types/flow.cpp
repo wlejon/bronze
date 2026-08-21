@@ -369,18 +369,11 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // closure — the same two facts the branch below states about a nested
         // declaration.
         declare(cd->name, Type::function());
-        for (const auto& m : cd->methods) {
-            if (m.keyExpr) expr(*m.keyExpr);
-            if (m.fn) {
-                // `|| isAsync` at every site: an async function's call value is
-                // the PROMISE (27.7.5.1), not what its body returns, which is
-                // exactly the generator's reason for forcing dynamic.
-                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                              m.fn->isGenerator || m.fn->isAsync);
-            } else if (m.init) {
-                expr(*m.init);
-            }
-        }
+        // `|| isAsync` at every method site (inside `analyzeClassBody`): an
+        // async function's call value is the PROMISE (27.7.5.1), not what its
+        // body returns, which is exactly the generator's reason for forcing
+        // dynamic.
+        analyzeClassBody(cd->name, cd->methods);
         return;
     }
     if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&s)) {
@@ -613,9 +606,10 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record, bool isGenerator) {
+                                bool record, bool isGenerator, ShapeClassId thisClass) {
     Scope scope;
     scope.parent = parent;
+    scope.thisClass = thisClass;
     // The same union lowering builds: a name assigned inside a `try` lives in
     // an environment record, and `queries.h`'s rule is that inference must
     // believe about a variable exactly what lowering decided about where it

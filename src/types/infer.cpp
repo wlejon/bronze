@@ -202,6 +202,11 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
 
     ModuleContext mod;
     mod.result = &result;
+    // Before any body is walked: the flow pass reads class identities to type
+    // `this` and `new C()`, and it must read the SAME identity on the probe
+    // passes and the recording pass, so the table cannot be built lazily as
+    // `constructorShape` builds constructor-function shapes.
+    result.classLayouts.build(module, result.shapes);
     mod.diags = &diags;
     for (const auto& name : ast::getScopeDeclarations(module.body)) {
         mod.moduleScopeNames.insert(name);

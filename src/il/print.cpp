@@ -386,11 +386,20 @@ std::string print(const Module& module) {
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
-                        // The site inference proved monomorphic, which is
-                        // what licenses the inlined cache check in the
-                        // backend — visible in the canonical text because
-                        // it changes the code that gets emitted.
+                        // The site inference proved monomorphic: an identity
+                        // claim about the receiver. Visible in the canonical
+                        // text because it is what --infer-stats counts.
                         if (inst.icMonomorphic) out += ", mono";
+                        // The stronger claim, and the one that changes emitted
+                        // code: a proven class layout put this key at a
+                        // constant instance slot, so the site carries a
+                        // shape-compare-and-load fast path in front of the
+                        // cache. Printed because a reader cannot otherwise tell
+                        // the two forms apart in the IL.
+                        if (inst.staticSlot != Instruction::kNoStaticSlot) {
+                            out += ", slot " + std::to_string(inst.staticSlot) + "@" +
+                                   std::to_string(inst.staticCellIndex);
+                        }
                         break;
                     // The key index, and no cache slot: a class body runs
                     // once, so a method definition has no repeat to cache
@@ -507,6 +516,12 @@ std::string print(const Module& module) {
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", " + std::to_string(inst.icIndex) + ", " +
                                std::to_string(inst.immI32);
+                        // The read twin's note applies: the static slot is
+                        // printed because it changes emitted code.
+                        if (inst.staticSlot != Instruction::kNoStaticSlot) {
+                            out += ", slot " + std::to_string(inst.staticSlot) + "@" +
+                                   std::to_string(inst.staticCellIndex);
+                        }
                         break;
                     case Op::DynamicCall: {
                         out += "call.dynamic";

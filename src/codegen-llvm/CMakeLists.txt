@@ -9,6 +9,7 @@ bronze_add_module(codegen_llvm
     SOURCES
         llvm_abi.cpp
         llvm_prop_ic.cpp
+        llvm_static_slot.cpp
         llvm_prop_get.cpp
         llvm_prop_set.cpp
         llvm_cache.cpp

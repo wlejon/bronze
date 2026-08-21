@@ -7,6 +7,7 @@
 
 #include "ast/ast.h"
 #include "support/diagnostics.h"
+#include "types/class_layout.h"
 #include "types/result.h"
 #include "types/type.h"
 
@@ -47,6 +48,25 @@ struct Scope {
     Env env;                        // flow-sensitive, per program point
     Env cells;                      // env-backed, one cell joined over the function
     std::set<std::string> captured;
+    // The class whose instances `this` names in this body, or `kNoShapeClass`.
+    //
+    // Set for a non-static class method, accessor, field initializer and
+    // constructor, and inherited by arrow functions nested in one (they close
+    // over the enclosing `this`, 15.3.4). Every other body — a plain function
+    // declaration, a non-arrow function expression, a static method, the module
+    // top level — leaves it unset, because `this` there is whatever the CALL
+    // passed and no declaration can speak for it.
+    //
+    // This is an OPTIMISTIC claim, not a proof: `Vector3.prototype.add.call(x)`
+    // makes `this` an `x`, and nothing here can see that. It is safe for the
+    // same reason every other shape claim in this file is — what consumes it
+    // compares the shape word at run time. Note the standing invariant that
+    // makes that true: `TypeKind::Object` licenses NOTHING but the property-site
+    // form. `typeof` answers `string` for any operand (operator_types.cpp),
+    // truthiness is not folded from types, and `ilTypeOf` maps every non-Number
+    // to `Dynamic`. A future rule that folds a branch or a `typeof` from
+    // Object-ness would have to stop believing this field first.
+    ShapeClassId thisClass = kNoShapeClass;
 };
 
 struct ModuleContext {
@@ -103,7 +123,8 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record, bool isGenerator = false);
+                                bool record, bool isGenerator = false,
+                                ShapeClassId thisClass = kNoShapeClass);
 
 // The `Type` of joining two program points: names in both are joined, names
 // in only one are dropped (they are block-scoped declarations that did not

@@ -156,6 +156,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     const bool mono = monomorphicPropSite(*mem.object);
     recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
     getInst.icMonomorphic = mono;
+    stampStaticSlot(getInst, *mem.object);
     emitInst(ilFn, getInst);
 
     Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
@@ -171,6 +172,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     setInst.icIndex = icSiteCounter_++;
     recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
     setInst.icMonomorphic = mono;
+    stampStaticSlot(setInst, *mem.object);
     setInst.immI32 = strictFlag();
     emitInst(ilFn, setInst);
 
@@ -237,6 +239,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         const bool mono = monomorphicPropSite(*idxAccess.object);
         recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
         getInst.icMonomorphic = mono;
+        stampStaticSlot(getInst, *idxAccess.object);
     } else {
         recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         getInst.op = il::Op::ElemGet;
@@ -259,6 +262,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         setInst.keyIndex = *literalKey;
         setInst.icIndex = icSiteCounter_++;
         setInst.icMonomorphic = mono;
+        stampStaticSlot(setInst, *idxAccess.object);
     } else {
         recordElementOp(idxAccess.span.file, false, "computed dynamic index");
         setInst.op = il::Op::ElemSet;

@@ -163,7 +163,9 @@ private:
     void analyzeNested(const ast::Node& site, const std::string& declaredName,
                        const std::vector<ast::Param>& params,
                        const std::vector<ast::StmtPtr>& body, Span span,
-                       bool isGenerator);
+                       bool isGenerator, ShapeClassId thisClass = kNoShapeClass);
+    void analyzeClassBody(const std::string& className,
+                          const std::vector<ast::ClassMethod>& methods);
 
     ModuleContext& mod_;
     Scope& scope_;

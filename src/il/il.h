@@ -487,6 +487,27 @@ struct Instruction {
     // branch), so the guard is what makes the proof sound, not a redundancy on
     // top.
     bool icMonomorphic = false;
+    // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
+    // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
+    // only an identity claim: this says the receiver's class was modellable end
+    // to end (every field it installs, in the runtime's own transition order,
+    // through the whole `extends` chain) and that this key is one of the own
+    // data properties in it — never a prototype method, never an accessor.
+    //
+    // What it licenses is a load at a COMPILE-TIME CONSTANT offset behind a
+    // single shape compare, instead of decoding a cache entry's slot word. It
+    // still does not remove the guard, and it cannot: the layout is derived
+    // from source and the shape is built at run time. The two are reconciled at
+    // `staticCellIndex` below.
+    static constexpr uint32_t kNoStaticSlot = 0xFFFFFFFFu;
+    uint32_t staticSlot = kNoStaticSlot;
+    // The module-global cell this site compares the receiver's shape against.
+    // One i64 per static site, zero-initialized, published by the runtime the
+    // first time the site's slow path sees an object that really does carry
+    // this key as an own data property at `staticSlot`. A layout that was
+    // wrong therefore never publishes, and the site simply keeps taking its
+    // slow path — the failure mode is a cost, never an answer.
+    uint32_t staticCellIndex = 0;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
 
@@ -636,6 +657,11 @@ struct Module {
     // template object 13.2.8.4 GetTemplateObject requires that site to hand its
     // tag function on every call.
     uint32_t templateSiteCount = 0;
+    // How many STATIC-SLOT sites lowering handed out. Sized exactly like
+    // `icSiteCount`: the backend emits this many i64 cells as a global array,
+    // and the verifier checks every `staticCellIndex` against it. Zero when the
+    // seam is off or nothing proved, and then no array is emitted at all.
+    uint32_t staticSiteCount = 0;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

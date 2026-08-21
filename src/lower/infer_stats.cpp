@@ -47,6 +47,9 @@ void formatCategory(std::string& out, const char* name, const CategoryStats& sta
     out += name;
     out += ":\n";
     out += "    native: " + std::to_string(stats.nativeCount) + "\n";
+    if (stats.staticSlotCount != 0) {
+        out += "    of which static-slot: " + std::to_string(stats.staticSlotCount) + "\n";
+    }
     out += "    dynamic: " + std::to_string(stats.dynamicCount) + "\n";
     if (!stats.bailReasons.empty()) {
         out += "    top bail reasons:\n";
@@ -81,6 +84,10 @@ ModuleInferStats& InferStatsCollector::getOrCreateModule(uint16_t fileId) {
     return it->second;
 }
 
+void InferStatsCollector::recordStaticSlot(uint16_t fileId) {
+    ++getOrCreateModule(fileId).propertyAccesses.staticSlotCount;
+}
+
 void InferStatsCollector::recordPropertyAccess(uint16_t fileId, bool isNative,
                                                const std::string& bailReason) {
     auto& mod = getOrCreateModule(fileId);
@@ -107,6 +114,12 @@ void InferStatsCollector::recordCall(uint16_t fileId, bool isNative,
     }
 }
 
+void InferStatsCollector::recordClassLayouts(uint32_t proven,
+                                             const std::map<std::string, uint32_t>& refusals) {
+    classesProven_ = proven;
+    classRefusals_ = refusals;
+}
+
 void InferStatsCollector::recordElementOp(uint16_t fileId, bool isNative,
                                           const std::string& bailReason) {
     auto& mod = getOrCreateModule(fileId);
@@ -127,6 +140,20 @@ std::string InferStatsCollector::format() const {
     CategoryStats totalCalls;
     CategoryStats totalElems;
 
+    uint32_t refusedClasses = 0;
+    for (const auto& [reason, count] : classRefusals_) {
+        (void)reason;
+        refusedClasses += count;
+    }
+    if (classesProven_ != 0 || refusedClasses != 0) {
+        out += "\nClass Layouts: " + std::to_string(classesProven_) + " proven, " +
+               std::to_string(refusedClasses) + " refused (" +
+               formatPct(classesProven_, classesProven_ + refusedClasses) + " proven)\n";
+        for (const auto& entry : sortedReasons(classRefusals_)) {
+            out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+    }
+
     for (const auto& [name, mod] : modules_) {
         out += "\nModule: " + name + "\n";
         formatCategory(out, "Property Accesses", mod.propertyAccesses);
@@ -134,6 +161,7 @@ std::string InferStatsCollector::format() const {
         formatCategory(out, "Element Operations", mod.elementOps);
 
         totalProps.nativeCount += mod.propertyAccesses.nativeCount;
+        totalProps.staticSlotCount += mod.propertyAccesses.staticSlotCount;
         totalProps.dynamicCount += mod.propertyAccesses.dynamicCount;
         totalCalls.nativeCount += mod.calls.nativeCount;
         totalCalls.dynamicCount += mod.calls.dynamicCount;

@@ -295,6 +295,18 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                                 std::to_string(module.icSiteCount));
                         return false;
                     }
+                    // Same shape of bug, same rule: the static-slot cell array
+                    // is a fixed-size global the backend emits, so a cell index
+                    // past the count is an out-of-bounds store.
+                    if (inst.staticSlot != Instruction::kNoStaticSlot &&
+                        inst.staticCellIndex >= module.staticSiteCount) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " names static-slot site " +
+                                                std::to_string(inst.staticCellIndex) +
+                                                ", past the module's site count " +
+                                                std::to_string(module.staticSiteCount));
+                        return false;
+                    }
                     continue;
                 }
                 // The template-slot table is the same kind of fixed-size global

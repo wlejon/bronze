@@ -73,6 +73,7 @@ bronze_add_module(runtime
         rt_prop_map.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
+        static_shape.cpp
         rt_delete.cpp
         rt_private.cpp
         iterator.cpp

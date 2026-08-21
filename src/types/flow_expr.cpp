@@ -83,10 +83,14 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (dynamic_cast<const ast::BoolLit*>(&e)) return Type::boolean();
     if (dynamic_cast<const ast::NullLit*>(&e)) return Type::null();
     if (dynamic_cast<const ast::UndefinedLit*>(&e)) return Type::undefined();
-    // `this` is the caller's receiver; nothing here proves anything about it.
-    // Sharpening it needs the shape-class work applied to constructors, which
-    // is the property-access step.
-    if (dynamic_cast<const ast::ThisExpr*>(&e)) return Type::dynamic();
+    // `this` is the caller's receiver. Inside a class body the DECLARATION
+    // names the object kind that receiver is meant to be, and `Scope::thisClass`
+    // carries it — see the standing invariant recorded there for why an
+    // optimistic answer is safe, and what would stop making it safe.
+    if (dynamic_cast<const ast::ThisExpr*>(&e)) {
+        return scope_.thisClass == kNoShapeClass ? Type::dynamic()
+                                                 : Type::object(scope_.thisClass);
+    }
     if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) return lookup(id->name);
     if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) return unary(*u);
     if (const auto* b = dynamic_cast<const ast::Binary*>(&e)) return binary(*b);
@@ -101,7 +105,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return join(a, b);
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
-        expr(*m->object);
+        const Type base = expr(*m->object);
         // The Math VALUE properties are numbers on the pristine builtin —
         // 21.3.1 lists exactly these eight, all non-writable and
         // non-configurable, though what carries the proof here is the
@@ -113,8 +117,22 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 return Type::number();
             }
         }
-        // v1 proves the receiver's shape class, never the property's type; that
-        // is what the inline-cache check consumes and all it needs.
+        // A field of a class the layout analysis modelled: the type joined over
+        // every `this.<name> = ...` the class body writes. This is what carries
+        // a class identity ACROSS a property read — `object3d.position` is a
+        // `Vector3`, so `object3d.position.x` is a proven site too, and the
+        // chain of reads three.js is made of stops being one dynamic hop per
+        // link. Anything unmodelled joined to `Dynamic` on the way in, so the
+        // miss answer is the same one this returned before.
+        //
+        // Deliberately not applied to `?.`: an optional read of an absent link
+        // produces `undefined`, which is not the field's type.
+        if (!m->optional && base.is(TypeKind::Object) &&
+            base.shapeClass() != kNoShapeClass && !m->isPrivate) {
+            return mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
+        }
+        // Otherwise: the receiver's shape class is proven, never the property's
+        // type; that is what the inline-cache check consumes and all it needs.
         return Type::dynamic();
     }
     if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(&e)) {
@@ -148,15 +166,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
     if (const auto* ce = dynamic_cast<const ast::ClassExpr*>(&e)) {
-        for (const auto& m : ce->methods) {
-            if (m.keyExpr) expr(*m.keyExpr);
-            if (m.fn) {
-                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                              m.fn->isGenerator || m.fn->isAsync);
-            } else if (m.init) {
-                expr(*m.init);
-            }
-        }
+        analyzeClassBody(ce->name, ce->methods);
         return Type::function();
     }
     // The value of a `yield` is the argument of the `next(v)` that resumed the
@@ -189,8 +199,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return value;
     }
     if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
+        // 15.3.4: an arrow has no `this` binding of its own and resolves the
+        // name in the enclosing scope, so it inherits whatever receiver is in
+        // hand. A non-arrow function expression binds its own, which the
+        // caller supplies and no declaration here can name.
         analyzeNested(*f, f->name, f->params, f->body, f->span,
-                      f->isGenerator || f->isAsync);
+                      f->isGenerator || f->isAsync,
+                      f->isArrow ? scope_.thisClass : kNoShapeClass);
         return Type::function();
     }
     fail(e.span, "saw an unknown expression node kind");
@@ -313,6 +328,16 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
 }
 
 ShapeClassId FlowAnalyzer::constructorShape(const std::string& name) {
+    // A `class` first: it is the form three.js is written in, and its identity
+    // is already interned by the layout analysis, which knows things this
+    // walker does not — the `extends` prefix, and field declarations.
+    if (const ClassLayout* cl = mod_.result->classLayouts.byName(name)) {
+        // A class name that is also a module function name is impossible: both
+        // are module-scope bindings and the parser would have rejected the
+        // redeclaration. Checking the class table first is therefore an
+        // ordering, not a precedence rule.
+        return cl->shapeClass;
+    }
     const auto found = mod_.indexByName.find(name);
     if (found == mod_.indexByName.end()) return kNoShapeClass;
     const uint32_t index = found->second;
@@ -359,7 +384,8 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
 
 void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
                    const std::vector<ast::Param>& params,
-                   const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator) {
+                   const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator,
+                   ShapeClassId thisClass) {
     std::string name = declaredName;
     if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
     std::vector<const ast::Stmt*> borrowed;
@@ -371,7 +397,40 @@ void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     const std::vector<Type> paramTypes(params.size(), Type::dynamic());
     analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
                     /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
-                    isGenerator);
+                    isGenerator, thisClass);
+}
+
+// A class body, walked with `this` bound to the class the declaration names.
+//
+// One routine for `ClassDecl` and `ClassExpr` because the two nodes differ in
+// nothing this pass reads. The receiver goes to instance members only: a static
+// method's `this` is the CONSTRUCTOR, whose own layout is a different object's,
+// and this analysis models instances.
+void FlowAnalyzer::analyzeClassBody(const std::string& className,
+                                    const std::vector<ast::ClassMethod>& methods) {
+    ShapeClassId owner = kNoShapeClass;
+    if (!className.empty()) {
+        if (const ClassLayout* cl = mod_.result->classLayouts.byName(className)) {
+            owner = cl->shapeClass;
+        }
+    }
+    for (const auto& m : methods) {
+        if (m.keyExpr) expr(*m.keyExpr);
+        const ShapeClassId receiver = m.isStatic ? kNoShapeClass : owner;
+        if (m.fn) {
+            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                          m.fn->isGenerator || m.fn->isAsync, receiver);
+        } else if (m.init) {
+            // A field initializer is evaluated with `this` already bound to the
+            // instance being constructed (15.7.10), so it sees the receiver too
+            // — but it runs in THIS walker's scope, not a nested one, so the
+            // binding has to be installed and taken back around it.
+            const ShapeClassId saved = scope_.thisClass;
+            scope_.thisClass = receiver;
+            expr(*m.init);
+            scope_.thisClass = saved;
+        }
+    }
 }
 
 }  // namespace bronze::types

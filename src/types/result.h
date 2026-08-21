@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "types/class_layout.h"
 #include "types/shape_class.h"
 #include "types/type.h"
 
@@ -63,6 +64,11 @@ struct InferenceResult {
     std::string moduleName;
     ShapeClassTable shapes;
 
+    // Every `class` in the program: its identity, and — where the whole
+    // construction sequence was modellable — the slot each instance field
+    // lands in. See class_layout.h for the two-tier claim this carries.
+    ClassLayoutTable classLayouts;
+
     // Dump order: each module-level function in source order followed by the
     // functions nested inside it, then the module top level ("main") and its
     // nested functions.
@@ -108,6 +114,16 @@ struct InferenceResult {
     // The shape class of an object-creating site (an `ObjectLit` or a
     // `NewExpr`); `kNoShapeClass` when the site's identity is not proven.
     ShapeClassId shapeClassAt(const ast::Expr* site) const;
+
+    // The instance slot `field` occupies on a receiver of the type proven at
+    // `receiver`, or `ClassLayoutTable::kNoSlot`.
+    //
+    // The answer is a claim about LAYOUT, which only a class whose whole
+    // construction sequence was modellable makes — an identity alone is never
+    // enough. `kNoSlot` for every receiver whose type is not a proven-layout
+    // class, and for every key that class does not install on the instance
+    // (a prototype method, an inherited accessor, an absent name).
+    uint32_t staticSlotAt(const ast::Expr* receiver, const std::string& field) const;
 
     // The type a binding is proven to hold at a control-flow MERGE POINT.
     //

@@ -262,6 +262,8 @@ std::optional<il::Module> Lowerer::lower() {
     // exactly this many IC entries as a global array in the object file.
     ilModule_.icSiteCount = icSiteCounter_;
     ilModule_.templateSiteCount = templateSiteCounter_;
+    ilModule_.staticSiteCount = staticSiteCounter_;
+    reportClassLayouts();
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative
     // is a remap, and the only file that can be present without a function in

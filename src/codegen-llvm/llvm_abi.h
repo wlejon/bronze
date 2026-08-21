@@ -123,6 +123,17 @@ struct ModuleTables {
     // once and never invalidated — which is what separates it from the caches
     // above, every one of which can go stale.
     llvm::GlobalVariable* templateSlots = nullptr;
+    // [staticSlotCount x i64]: one cell per property site whose class layout
+    // proved a constant instance slot. It holds the SHAPE POINTER that site
+    // expects, zero until the runtime publishes it — and zero can never match,
+    // because a live object's shape is an arena address.
+    //
+    // A raw `Shape*`, not a Value, and it never needs a GC visit: shapes are
+    // arena-allocated, immortal and non-moving, which is the same property the
+    // inline caches already rely on to keep a cached shape word valid across a
+    // collection.
+    llvm::GlobalVariable* staticSlots = nullptr;
+    uint32_t staticSlotCount = 0;
     // The module scope's environment record, as one Value cell. The top level
     // runs exactly once, so that scope has exactly one activation and its
     // record is a singleton — which is what lets a top-level function

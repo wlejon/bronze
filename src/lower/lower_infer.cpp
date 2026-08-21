@@ -10,6 +10,14 @@
 // is the uniform dynamic convention, which is always sound. A proven answer
 // only ever removes boxing. There is no speculation and no deoptimization.
 
+// For `getenv`, which MSVC deprecates and every other toolchain does not. The
+// compile-time seams are read exactly once each, at construction, from a
+// single-threaded driver — the thread-safety the _s variants buy has nothing to
+// hold onto here. Same reasoning, and same one-line define, as
+// lower_typed_elem.cpp.
+#define _CRT_SECURE_NO_WARNINGS
+
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -321,15 +329,109 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
     return true;
 }
 
+// The syntactic form of a receiver whose type came back `Dynamic`.
+//
+// "receiver is dynamic" was 94 % of three.js's dynamic property sites and told
+// nobody what to build: it is the analysis's TOP element, so it names an
+// absence of proof rather than a mechanism that refused. This splits it by the
+// expression the receiver IS, which is what a fix has to attack — `this` inside
+// a method is a different problem from a parameter, and both are different from
+// the result of a call.
+static const char* dynamicReceiverForm(const ast::Expr& expr) {
+    if (dynamic_cast<const ast::ThisExpr*>(&expr)) return "receiver is dynamic: this";
+    if (dynamic_cast<const ast::Ident*>(&expr)) return "receiver is dynamic: identifier";
+    if (dynamic_cast<const ast::MemberAccess*>(&expr)) return "receiver is dynamic: field read";
+    if (dynamic_cast<const ast::IndexAccess*>(&expr)) return "receiver is dynamic: element read";
+    if (dynamic_cast<const ast::Call*>(&expr)) return "receiver is dynamic: call result";
+    if (dynamic_cast<const ast::NewExpr*>(&expr)) return "receiver is dynamic: new expression";
+    if (dynamic_cast<const ast::SuperMember*>(&expr)) return "receiver is dynamic: super member";
+    if (dynamic_cast<const ast::Ternary*>(&expr)) return "receiver is dynamic: ternary";
+    if (dynamic_cast<const ast::Binary*>(&expr)) return "receiver is dynamic: binary";
+    if (dynamic_cast<const ast::ObjectLit*>(&expr)) return "receiver is dynamic: object literal";
+    if (dynamic_cast<const ast::ArrayLit*>(&expr)) return "receiver is dynamic: array literal";
+    return "receiver is dynamic: other";
+}
+
 std::string Lowerer::propBailReason(const ast::Expr& expr) const {
     if (inference_ == nullptr) return "inference disabled";
     const types::Type t = inferredType(expr);
-    if (t.is(types::TypeKind::Dynamic)) return "receiver is dynamic";
+    if (t.is(types::TypeKind::Dynamic)) return dynamicReceiverForm(expr);
     if (!t.is(types::TypeKind::Object)) {
         return std::string("receiver is ") + types::typeKindName(t.kind());
     }
     if (t.shapeClass() == types::kNoShapeClass) return "receiver shape class not proven";
     return "unknown";
+}
+
+bool Lowerer::staticShapeSeamDisabled() {
+    return std::getenv("BRONZE_NO_STATIC_SHAPES") != nullptr;
+}
+
+// Whether this property site can be compiled as a load at a constant offset.
+//
+// Three things have to hold, and each of them is a different kind of fact:
+//
+//   - the RECEIVER's class is proven (inference), and
+//   - that class's LAYOUT was modellable end to end (class_layout.cpp), and
+//   - the key is one of the own instance fields in it — not a prototype
+//     method, not an inherited accessor, not an absent name.
+//
+// The third is what keeps method loads on the inline-cache path where they
+// belong: `v.add` is found on `Vector3.prototype`, which is a different object
+// with a different shape, so no slot of the receiver can hold it and this
+// answers nullopt. That is not a limitation to remove later — a proto hit has
+// no receiver slot to name, and the existing IC's depth field is the right
+// mechanism for it.
+std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr& receiver,
+                                                                const std::string& key) {
+    if (staticShapesDisabled_ || inference_ == nullptr) return std::nullopt;
+
+    // `this` inside a method of a class SOMEBODY EXTENDS is the one receiver
+    // whose static class is not its runtime shape. `Object3D.updateMatrixWorld`
+    // is the case that taught this: three.js never constructs a bare Object3D,
+    // so every `this.matrixWorld` in that method runs on a Group or a Mesh, and
+    // a cell that pins one of those shapes misses on all the others — forever,
+    // at the hottest site in the scene. Measured: the hierarchy bench was 3%
+    // SLOWER with these sites claimed than with the mechanism switched off.
+    //
+    // The layout is not the thing that was wrong. A subclass's fields begin
+    // with the base's, so slot N really is the base's field N in every subclass
+    // too; what fails is the SHAPE COMPARE, which is deliberately an identity
+    // test and cannot be loosened without giving up what makes the load sound.
+    // Recognising many shapes per cell is rung 2, and this is rung 1, so the
+    // honest move is to decline the claim and name the reason.
+    //
+    // Every other receiver this analysis types is exact by construction: the
+    // type came from `new C()` or from a field whose only writes are `new C()`,
+    // neither of which can produce a subclass.
+    if (dynamic_cast<const ast::ThisExpr*>(&receiver) != nullptr) {
+        const types::Type t = inference_->typeAt(&receiver);
+        if (t.is(types::TypeKind::Object) && inference_->classLayouts.isExtended(t.shapeClass())) {
+            return std::nullopt;
+        }
+    }
+
+    const uint32_t slot = inference_->staticSlotAt(&receiver, key);
+    if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
+    return StaticSlotSite{slot, staticSiteCounter_++};
+}
+
+void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) {
+    if (inst.keyIndex >= keyStrings_.size()) return;
+    const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex]);
+    if (!site) return;
+    inst.staticSlot = site->slot;
+    inst.staticCellIndex = site->cellIndex;
+    if (stats_) stats_->recordStaticSlot(receiver.span.file);
+}
+
+void Lowerer::reportClassLayouts() {
+    if (stats_ == nullptr || inference_ == nullptr) return;
+    uint32_t proven = 0;
+    for (const auto& cl : inference_->classLayouts.all()) {
+        if (cl.layoutProven) ++proven;
+    }
+    stats_->recordClassLayouts(proven, inference_->classLayouts.refusalHistogram());
 }
 
 void Lowerer::recordPropertyAccess(uint16_t fileId, bool isNative,

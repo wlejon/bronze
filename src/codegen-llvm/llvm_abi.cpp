@@ -194,6 +194,16 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
     tables.templateSlotCount = module.templateSiteCount;
     tables.globalCacheSlotOf = assignGlobalCacheSlots(module, tables.globalCacheCount);
 
+    tables.staticSlotCount = module.staticSiteCount;
+    if (tables.staticSlotCount > 0) {
+        // Zero-initialized, unlike the caches above: zero is not a legal shape
+        // address, so an unpublished cell simply never matches and the site
+        // takes the path it would have taken without this mechanism at all.
+        llvm::ArrayType* ty = llvm::ArrayType::get(i64Ty, tables.staticSlotCount);
+        tables.staticSlots = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
+                                         "__bronze_static_shapes", 8);
+    }
+
     if (module.icSiteCount > 0) {
         llvm::ArrayType* ty = llvm::ArrayType::get(
             i64Ty, static_cast<uint64_t>(module.icSiteCount) * kIcSiteWords);

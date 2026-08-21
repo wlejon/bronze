@@ -9,6 +9,8 @@
 // llvm_prop_ic.h, which is where a guard both must agree on lives.
 
 #include "codegen-llvm/llvm_prop.h"
+
+#include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_prop_ic.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
@@ -35,7 +37,12 @@ static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& ab
 
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                          const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
-                         uint32_t icIndex, bool monomorphic, std::string_view keyStr) {
+                         uint32_t icIndex, bool monomorphic, uint32_t staticSlot,
+                         uint32_t staticCellIndex, std::string_view keyStr) {
+    // Not branched on here: `monomorphic` is an identity proof, and the
+    // sequence below is an inline cache, which is what an unproven site wants
+    // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
+    // beside it (staticSlot) is what changes emitted code.
     (void)monomorphic;
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
@@ -57,6 +64,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* overflowAccessBb = llvm::BasicBlock::Create(ctx, "ic.overflow.access", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
+
+    // 0. The static-slot fast path, in front of everything. Emits nothing when
+    //    the site has no proven layout, and leaves the builder where it was.
+    const StaticSlotGuard staticGuard = emitStaticSlotGuard(
+        builder, tables, objBits, staticSlot, staticCellIndex, doneBb, /*store=*/nullptr,
+        "get");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -566,15 +579,25 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), "ic.overflow.val");
     builder.CreateBr(doneBb);
 
-    // 5. Fallback call
+    // 5. Fallback call — and, for a static site, the one-shot publish that
+    //    turns the layout claim into a shape pointer the guard above can hit.
+    //    It runs AFTER the helper deliberately: on the very first execution the
+    //    property may not be installed yet (a constructor's own `this.x = ...`
+    //    reaches the write twin of this), and publishing before the helper had
+    //    run would pin the pre-transition shape.
+    llvm::BasicBlock* slowDoneBb = llvm::BasicBlock::Create(ctx, "ic.slow.done", fn);
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, tables, keyIndex);
+    emitStaticSlotPublish(builder, abi, tables, objBits, keyIndex, staticSlot, staticCellIndex,
+                          /*forWrite=*/false, slowDoneBb, "get");
+    builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
     // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb,
     // getUndefBb, absentHitBb
     unsigned phiCount = 7;
+    if (staticGuard.hitBb) phiCount++;
     if (arrLenBb) phiCount++;
     if (taLenBb) phiCount++;
     if (arrUndefBb) phiCount++;
@@ -594,7 +617,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::PHINode* result = builder.CreatePHI(i64Ty, phiCount, "prop");
     result->addIncoming(inlineVal, inlineHitBb);
     result->addIncoming(overflowValLoaded, overflowAccessBb);
-    result->addIncoming(slowVal, slowBb);
+    result->addIncoming(slowVal, slowDoneBb);
+    if (staticGuard.hitBb) result->addIncoming(staticGuard.value, staticGuard.hitBb);
     result->addIncoming(protoHitVal, protoLoadSuccessBb);
     result->addIncoming(getterRes, getCallBb);
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), getUndefBb);

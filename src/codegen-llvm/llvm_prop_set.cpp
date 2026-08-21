@@ -8,6 +8,8 @@
 // llvm_prop_ic.h, which is where a guard both must agree on lives.
 
 #include "codegen-llvm/llvm_prop.h"
+
+#include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_prop_ic.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
@@ -27,7 +29,9 @@ namespace bronze::codegen_llvm {
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                  const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
                  llvm::Value* valBits, uint32_t icIndex, bool strict, bool monomorphic,
-                 std::string_view keyStr) {
+                 uint32_t staticSlot, uint32_t staticCellIndex, std::string_view keyStr) {
+    // See the read twin: an identity proof does not change what is emitted; the
+    // LAYOUT proof beside it does.
     (void)monomorphic;
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
@@ -47,6 +51,17 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::BasicBlock* overflowAccessBb = llvm::BasicBlock::Create(ctx, "ic.set.overflow.access", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.done", fn);
+
+    // 0. The static-slot fast path, in front of everything. It is a bare store
+    //    at a constant offset, which is legal only because the published shape
+    //    was checked WRITABLE before the cell was filled. A property that is
+    //    not yet installed, or an object of another shape, misses here and
+    //    reaches the transition fast path below unchanged — which is the whole
+    //    reason this is emitted in front of that path rather than instead of it:
+    //    a constructor's repeated `this.x = ...` IS the transition path, and it
+    //    is not a case a static slot could serve.
+    const StaticSlotGuard staticGuard = emitStaticSlotGuard(
+        builder, tables, objBits, staticSlot, staticCellIndex, doneBb, valBits, "set");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -465,14 +480,22 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
     builder.CreateBr(doneBb);
 
-    // 5. Fallback call
+    // 5. Fallback call, then the one-shot publish. After the helper, so that a
+    //    constructor's FIRST write — which installs the property and is
+    //    therefore a shape transition, not a slot store — publishes the shape
+    //    the object ends up with rather than the one it arrived with.
+    llvm::BasicBlock* slowDoneBb = llvm::BasicBlock::Create(ctx, "ic.set.slow.done", fn);
     builder.SetInsertPoint(slowBb);
     builder.CreateCall(abi.bronze_prop_set,
                        {objBits, emitKeyId(builder, tables, keyIndex), valBits, entry,
                         builder.getInt1(strict)});
+    emitStaticSlotPublish(builder, abi, tables, objBits, keyIndex, staticSlot, staticCellIndex,
+                          /*forWrite=*/true, slowDoneBb, "set");
+    builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
+    (void)staticGuard;
 }
 
 }  // namespace bronze::codegen_llvm

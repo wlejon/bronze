@@ -156,6 +156,12 @@ uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
     if (it != keyConstants_.end()) return it->second;
     uint32_t idx = static_cast<uint32_t>(keyConstants_.size());
     keyConstants_[key] = idx;
+    // The index -> string direction, kept as it is handed out rather than
+    // rebuilt from the map at the end of lowering. Something DURING lowering
+    // needs it — the static-slot decision has to ask the class layout where a
+    // key sits, and it holds an index — and the module's own vector is not
+    // filled until every body is done.
+    keyStrings_.push_back(key);
     return idx;
 }
 

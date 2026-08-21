@@ -38,6 +38,7 @@ public:
         typedElemDisabled_ = typedElemSeamDisabled() ||
                              hostGlobals_.count("Float64Array") != 0 ||
                              hostGlobals_.count("Float32Array") != 0;
+        staticShapesDisabled_ = staticShapeSeamDisabled();
     }
 
     std::optional<il::Module> lower();
@@ -55,7 +56,13 @@ private:
     std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
+    // keyConstants_ read the other way, filled as indices are handed out.
+    std::vector<std::string> keyStrings_;
     uint32_t icSiteCounter_ = 0;
+    // One per site that took the static-slot form. Separate from
+    // `icSiteCounter_` so the cell array is proportional to what actually
+    // proved, not to every property site in the program.
+    uint32_t staticSiteCounter_ = 0;
     // One per TAGGED TEMPLATE in the module: 13.2.8.4 keeps a template
     // object per site, so each site owns a cache cell in the module's own
     // table and this is what numbers them.
@@ -361,6 +368,30 @@ private:
     // named). A compile-time seam like --no-infer, and like it, an A/B
     // bisection tool, not a runtime toggle.
     bool typedElemDisabled_ = false;
+    // BRONZE_NO_STATIC_SHAPES=1. Compile-time, exactly like the seam above and
+    // for the same reason: the mechanism it gates is a shape of EMITTED CODE,
+    // and a runtime toggle would have to be a load and a branch on the fast
+    // path it exists to measure. The class-layout ANALYSIS still runs under it
+    // — `--infer-stats` reports the same layouts and the same refusals — so
+    // what an A/B isolates is the code, not the proof.
+    bool staticShapesDisabled_ = false;
+    static bool staticShapeSeamDisabled();
+    // The instance slot a proven class layout puts `key` at on `receiver`, and
+    // the module-global cell index the site gets, or nullopt. Allocates the
+    // cell, so it is called exactly once per site.
+    struct StaticSlotSite {
+        uint32_t slot = 0;
+        uint32_t cellIndex = 0;
+    };
+    std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
+                                                  const std::string& key);
+    // Stamps a PropGet/PropSet whose `keyIndex` is already set. The key is read
+    // back out of the module's constant table rather than passed, so the
+    // fourteen call sites all say the same short thing and none of them can
+    // stamp a slot for a key the instruction is not actually using.
+    void stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver);
+    // The class-layout verdicts, forwarded to --infer-stats once per module.
+    void reportClassLayouts();
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
     types::Type provenParamType(uint32_t moduleFnIndex, size_t paramIndex) const;
