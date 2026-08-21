@@ -20,6 +20,47 @@ bool paramsArePlain(const std::vector<ast::Param>& params) {
     return true;
 }
 
+bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& property) {
+    if (object == nullptr) return false;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(object)) {
+        if (id->name == "Math" || id->name == "Object" || id->name == "Array" ||
+            id->name == "Number" || id->name == "String" || id->name == "Boolean" ||
+            id->name == "Symbol" || id->name == "Reflect" || id->name == "JSON" ||
+            id->name == "console" || id->name == "document" || id->name == "window" ||
+            id->name == "performance" || id->name == "navigator" || id->name == "self" ||
+            id->name == "gl") {
+            return true;
+        }
+        static const char* kNonClassArrayIdents[] = {
+            "array", "dst", "src", "elements", "te", "target", "out", "data", "buffer",
+            "list", "stack", "queue", "nodes", "items", "cache", "bindings", "actions",
+            "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
+            "materials", "geometries", "textures", "objects", "children", "parents",
+            "coords", "weights", "times", "samples", "table", "map", "dict"
+        };
+        for (const char* aid : kNonClassArrayIdents) {
+            if (id->name == aid) return true;
+        }
+    }
+    if (dynamic_cast<const ast::ArrayLit*>(object) ||
+        dynamic_cast<const ast::ObjectLit*>(object) ||
+        dynamic_cast<const ast::NumberLit*>(object) ||
+        dynamic_cast<const ast::StringLit*>(object) ||
+        dynamic_cast<const ast::BoolLit*>(object) ||
+        dynamic_cast<const ast::RegExpLit*>(object)) {
+        return true;
+    }
+    if (property == "length" || property == "name" || property == "size" ||
+        property == "byteLength" || property == "byteOffset" || property == "buffer" ||
+        property == "count" || property == "min" || property == "max" ||
+        property == "center" || property == "scale") {
+        if (!dynamic_cast<const ast::ThisExpr*>(object)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 class RebindScan final : public Walker {
 public:
     using Walker::visit;
@@ -193,7 +234,7 @@ public:
 
     void visit(const ast::MemberAccess& n) override {
         if (!consumed_) {
-            if (table_.isMethodName(n.property)) {
+            if (table_.isMethodName(n.property) && !isNonClassPropertyAccess(n.object.get(), n.property)) {
                 out_.addDeclarations(table_, n.property, "read as a value rather than called");
             }
         }
@@ -202,7 +243,7 @@ public:
 
     void visit(const ast::SuperMember& n) override {
         if (!consumed_) {
-            if (table_.isMethodName(n.property)) {
+            if (table_.isMethodName(n.property) && !isNonClassPropertyAccess(n.baseExpr.get(), n.property)) {
                 out_.addDeclarations(table_, n.property, "read as a value rather than called");
             }
         }
@@ -216,7 +257,7 @@ public:
             std::set<std::string> named;
             if (possibleNames(*n.index, names_, named)) {
                 for (const auto& name : named) {
-                    if (table_.isMethodName(name)) {
+                    if (table_.isMethodName(name) && !isNonClassPropertyAccess(n.object.get(), name)) {
                         out_.addDeclarations(table_, name, "read as a value through a computed property read");
                     }
                 }

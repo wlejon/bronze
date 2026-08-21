@@ -108,10 +108,10 @@ bool widenSignatures(ModuleContext& mod) {
     bool changed = false;
     for (auto& fn : mod.functions) {
         if (!fn.directCallable) continue;
-        for (size_t i = 0; i < fn.signature.params.size(); ++i) {
-            const Type widened = join(fn.signature.params[i], fn.observedParams[i]);
-            if (widened != fn.signature.params[i]) {
-                fn.signature.params[i] = widened;
+        for (size_t p = 0; p < fn.signature.params.size(); ++p) {
+            const Type widened = join(fn.signature.params[p], fn.observedParams[p]);
+            if (widened != fn.signature.params[p]) {
+                fn.signature.params[p] = widened;
                 changed = true;
             }
         }

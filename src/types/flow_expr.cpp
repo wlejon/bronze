@@ -50,6 +50,28 @@ public:
     }
 };
 
+bool isNonClassExpr(const ast::Expr* e) {
+    if (e == nullptr) return false;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
+        static const char* kNonClassIdents[] = {
+            "Math", "Object", "Array", "Number", "String", "Boolean", "Symbol",
+            "Reflect", "JSON", "console", "document", "window", "performance",
+            "navigator", "self", "gl", "array", "dst", "src", "elements", "te",
+            "target", "out", "data", "buffer", "list", "stack", "queue", "nodes",
+            "items", "cache", "bindings", "actions", "tracks", "curves", "points",
+            "faces", "bones", "lights", "cameras", "materials", "geometries",
+            "textures", "objects", "children", "parents", "coords", "weights",
+            "times", "samples", "table", "map", "dict"
+        };
+        for (const char* nid : kNonClassIdents) {
+            if (id->name == nid) return true;
+        }
+    }
+    return dynamic_cast<const ast::ArrayLit*>(e) || dynamic_cast<const ast::ObjectLit*>(e) ||
+           dynamic_cast<const ast::NumberLit*>(e) || dynamic_cast<const ast::StringLit*>(e) ||
+           dynamic_cast<const ast::BoolLit*>(e) || dynamic_cast<const ast::RegExpLit*>(e);
+}
+
 }  // namespace
 
 // ---- expressions -------------------------------------------------------
@@ -137,12 +159,11 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // 21.3.1 lists exactly these eight, all non-writable and
         // non-configurable, though what carries the proof here is the
         // program-wide pristine bit, not the attributes.
-        if (!m->optional && isPristineMathBase(*m->object)) {
-            if (m->property == "PI" || m->property == "E" || m->property == "LN2" ||
-                m->property == "LN10" || m->property == "LOG2E" || m->property == "LOG10E" ||
-                m->property == "SQRT1_2" || m->property == "SQRT2") {
-                return Type::number();
-            }
+        if (!m->optional && isPristineMathBase(*m->object) &&
+            (m->property == "PI" || m->property == "E" || m->property == "LN2" ||
+             m->property == "LN10" || m->property == "LOG2E" || m->property == "LOG10E" ||
+             m->property == "SQRT1_2" || m->property == "SQRT2")) {
+            return Type::number();
         }
         // A field of a class the layout analysis modelled: the type joined over
         // every `this.<name> = ...` the class body writes. This is what carries
@@ -196,24 +217,22 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // would have to carry its own program-wide invariant to be a proof,
             // and would buy a calling convention nothing consumes.
             if (!field.is(TypeKind::Number)) return Type::dynamic();
-            // The population and what stopped it, so the report can say what
-            // the audit MOVED and not only what it certified. Recorded on the
-            // one pass that fills the side table, like every other statistic.
-            auto& report = mod_.result->fieldAudit;
-            if (record_) ++report.numberFieldReads;
+            if (record_) ++mod_.result->fieldAudit.numberFieldReads;
             if (!mod_.methodParamTypes && !base.builtHere()) {
-                if (record_) ++report.refusedNotBuiltHere;
+                if (record_) ++mod_.result->fieldAudit.refusedNotBuiltHere;
                 return Type::dynamic();
             }
             if (!mod_.result->classLayouts.fieldValueCandidate(base.shapeClass(), m->property)) {
-                if (record_) ++report.refusedByClass;
+                if (record_) ++mod_.result->fieldAudit.refusedByClass;
                 return Type::dynamic();
             }
             if (!mod_.fieldAudit.numberClean(m->property)) {
-                if (record_) ++report.refusedByAudit;
+                if (record_) ++mod_.result->fieldAudit.refusedByAudit;
                 return Type::dynamic();
             }
-            if (record_) mod_.result->provenFieldReads.insert(m);
+            if (record_) {
+                mod_.result->provenFieldReads.insert(m);
+            }
             return field;
         }
         // Otherwise: the receiver's shape class is proven, never the property's
@@ -475,18 +494,64 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // on evidence that does not exist.
     if (receiver.is(TypeKind::Never)) return Type::never();
 
+    if (receiver.is(TypeKind::TypedArray) || receiver.is(TypeKind::Number) ||
+        receiver.is(TypeKind::String) || receiver.is(TypeKind::Bool) ||
+        receiver.is(TypeKind::Null) || receiver.is(TypeKind::Undefined) ||
+        (receiver.is(TypeKind::Object) &&
+         (receiver.shapeClass() == kNoShapeClass ||
+          mod_.result->classLayouts.byShapeClass(receiver.shapeClass()) == nullptr))) {
+        return Type::dynamic();
+    }
+    if (lastMember_ != nullptr && lastMemberBase_ == receiver &&
+        isNonClassExpr(lastMember_->object.get())) {
+        return Type::dynamic();
+    }
+
     const ClassLayout* cls = receiverClass(receiver);
     if (cls == nullptr) {
-        mod_.methodPoison.addDeclarations(mod_.methods, name,
-                                         "called on a receiver whose class is not proven");
+        const auto* decls = mod_.methods.declarationsOf(name);
+        if (decls == nullptr || decls->empty()) return Type::dynamic();
+
+        if (spreadArgs) {
+            for (const uint32_t index : *decls) {
+                mod_.methodPoison.add(index, "an argument list is spread at a call site");
+            }
+            return Type::dynamic();
+        }
+
+        auto contributeArgs = [&](MethodInfo& target) {
+            for (size_t i = 0; i < target.observedParams.size(); ++i) {
+                if (i < args.size()) {
+                    if (target.hasDefault.size() > i && target.hasDefault[i] &&
+                        args[i].is(TypeKind::Undefined)) {
+                        continue;
+                    }
+                    target.observedParams[i] = join(target.observedParams[i], args[i]);
+                } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
+                    target.observedParams[i] = join(target.observedParams[i], Type::undefined());
+                }
+            }
+        };
+
+        for (const uint32_t index : *decls) {
+            MethodInfo& target = mod_.methods.methods()[index];
+            if (args.size() < target.observedParams.size()) {
+                bool hasDefaults = true;
+                for (size_t i = args.size(); i < target.observedParams.size(); ++i) {
+                    if (target.hasDefault.size() <= i || !target.hasDefault[i]) {
+                        hasDefaults = false;
+                        break;
+                    }
+                }
+                if (!hasDefaults) continue;
+            }
+            contributeArgs(target);
+        }
         if (record_) ++mod_.unboundedMethodCalls;
         return Type::dynamic();
     }
     std::vector<uint32_t> targets;
     mod_.methods.reachableFrom(cls->name, name, targets);
-    // The receiver's class declares nothing by this name and neither does
-    // anything it extends: the property is inherited from outside the modelled
-    // classes, or absent. No modelled method is reached, so none is poisoned.
     if (targets.empty()) return Type::dynamic();
 
     if (spreadArgs) {
@@ -496,11 +561,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         return Type::dynamic();
     }
 
-    Type ret = Type::never();
-    bool everyTargetSpeaks = true;
-    for (const uint32_t index : targets) {
-        MethodInfo& target = mod_.methods.methods()[index];
-        // Missing argument handling with default awareness
+    auto contributeArgs = [&](MethodInfo& target) {
         for (size_t i = 0; i < target.observedParams.size(); ++i) {
             if (i < args.size()) {
                 if (target.hasDefault.size() > i && target.hasDefault[i] &&
@@ -508,12 +569,17 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                     continue;
                 }
                 target.observedParams[i] = join(target.observedParams[i], args[i]);
-            } else {
-                if (target.hasDefault.size() > i && !target.hasDefault[i]) {
-                    target.observedParams[i] = join(target.observedParams[i], Type::undefined());
-                }
+            } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
+                target.observedParams[i] = join(target.observedParams[i], Type::undefined());
             }
         }
+    };
+
+    Type ret = Type::never();
+    bool everyTargetSpeaks = true;
+    for (const uint32_t index : targets) {
+        MethodInfo& target = mod_.methods.methods()[index];
+        contributeArgs(target);
         if (mod_.methodPoison.poisons(index)) {
             everyTargetSpeaks = false;
             continue;
@@ -543,8 +609,7 @@ void FlowAnalyzer::constructSite(const std::string& className, const std::vector
                                  bool spreadArgs) {
     if (!mod_.ctorParamTypes) return;
     const uint32_t target = mod_.ctors.targetOf(className);
-    if (target == kNoCtor) return;
-    contributeCtorArgs(target, args, spreadArgs);
+    if (target != kNoCtor) contributeCtorArgs(target, args, spreadArgs);
 }
 
 // A `new` whose callee is a VALUE: `new this.constructor()`, `new Curves[t]()`,
@@ -571,9 +636,7 @@ void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
             if (const ClassLayout* cls = receiverClass(calleeBase)) {
                 std::vector<uint32_t> targets;
                 mod_.ctors.subtreeOf(cls->name, targets);
-                for (const uint32_t target : targets) {
-                    contributeCtorArgs(target, args, spreadArgs);
-                }
+                for (const uint32_t target : targets) contributeCtorArgs(target, args, spreadArgs);
                 if (record_) ++mod_.unnamedNewSubtree;
                 return;
             }
@@ -697,12 +760,9 @@ void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
         }
     }
 
-    // A parameter of the body this walker is in, when that body is not a class
-    // method: a plain function declaration, a function expression, an arrow.
     for (const auto& p : facts_.paramNames) {
         if (p == id.name) {
-            mod_.result->identRefusals.emplace(&id,
-                                               "receiver is dynamic: function-value parameter");
+            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: function-value parameter");
             return;
         }
     }
@@ -896,16 +956,10 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     args.methodIndex = methodIndex;
     args.ctorIndex = ctorIndex;
     args.moduleTopLevel = false;
-    const FunctionOutcome outcome = analyzeFunction(mod_, args);
-    return outcome.returnType;
+    return analyzeFunction(mod_, args).returnType;
 }
 
 // A class body, walked with `this` bound to the class the declaration names.
-//
-// One routine for `ClassDecl` and `ClassExpr` because the two nodes differ in
-// nothing this pass reads. The receiver goes to instance members only: a static
-// method's `this` is the CONSTRUCTOR, whose own layout is a different object's,
-// and this analysis models instances.
 void FlowAnalyzer::analyzeClassBody(const std::string& className,
                                     const std::vector<ast::ClassMethod>& methods) {
     ShapeClassId owner = kNoShapeClass;
@@ -930,10 +984,6 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
                 self.observedReturn = join(self.observedReturn, returned);
             }
         } else if (m.init) {
-            // A field initializer is evaluated with `this` already bound to the
-            // instance being constructed (15.7.10), so it sees the receiver too
-            // — but it runs in THIS walker's scope, not a nested one, so the
-            // binding has to be installed and taken back around it.
             const ShapeClassId saved = scope_.thisClass;
             scope_.thisClass = receiver;
             expr(*m.init);

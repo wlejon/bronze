@@ -60,6 +60,7 @@ bronze_add_module(runtime
         rt_members.cpp
         native_base.cpp
         rt_object.cpp
+        rt_global.cpp
         rt_reflect.cpp
         rt_operator.cpp
         rt_numeric.cpp
@@ -95,6 +96,7 @@ bronze_add_module(runtime
     builtin_weak_ref.cpp
         builtin_object.cpp
         builtin_object_descriptor.cpp
+        builtin_object_methods.cpp
         builtin_object_proto.cpp
         builtin_number.cpp
         builtin_number_proto.cpp

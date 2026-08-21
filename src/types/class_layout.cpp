@@ -57,12 +57,18 @@ namespace {
 // is not a thing this analysis needs to be precise about.
 class ThisWriteWalker final : public Walker {
 public:
+    const std::vector<ast::ClassMethod>* methods = nullptr;
+    std::set<std::string> inlining;
     std::vector<std::string> names;
     // Parallel to `names`: whether that install makes a WRITABLE data property.
     // False only for a `defineProperty` descriptor that does not say
     // `writable: true`, which is the default the spec gives an unstated
     // attribute and the one three.js's `id` relies on.
     std::vector<bool> writable;
+    // Late fields assigned under branches in the constructor/method
+    std::vector<std::string> lateFields;
+    // Accessor properties defined via Object.defineProperty(this, ...)
+    std::vector<std::string> accessorNames;
     // A write this walker could not turn into a name — `this[k] = v`, or a
     // spread/destructuring target. The layout after one of these is unknown,
     // so it refuses the class rather than guessing a shorter one.
@@ -73,18 +79,7 @@ public:
     // object into dictionary mode. Either way the slot numbers after such a
     // call are not the ones counted here.
     bool sawThisReflection = false;
-    // A name introduced for the first time under a branch. Two instances of the
-    // class then have two different property ORDERS — `this.x; if (c) this.y;
-    // this.z` puts `z` at slot 2 or slot 1 depending on `c` — so no one layout
-    // describes them.
-    //
-    // Refusing is a choice, and the alternative was available: the layout is
-    // still a guess behind a shape compare, so an optimistic one would be
-    // *correct*, just wrong half the time. It is refused because a wrong guess
-    // is not free — the site pays a load and a compare that can never hit, on
-    // top of the cache path it would have taken anyway — and a constructor with
-    // a conditional field is exactly the case where "wrong half the time" is
-    // the expected outcome rather than the unlucky one.
+    // A name introduced for the first time under a branch that violates layout.
     bool sawConditionalNewField = false;
 
     void visit(const ast::FunctionExpr& n) override {
@@ -175,33 +170,35 @@ public:
     }
     void visit(const ast::Call& n) override {
         if (const auto* defined = modellableThisDefine(n)) {
-            // `Object.defineProperty(this, 'id', { value: n })` is a TRANSITION,
-            // not a bail. `builtin_object_descriptor.cpp` routes a new key on a
-            // shaped object through `setProp(defineOwn=true)`, so the property
-            // lands in the shape tree at the next slot exactly as an assignment
-            // would — with different attributes, which slot numbering does not
-            // care about.
-            //
-            // Not an incidental case: three.js gives Object3D, BufferGeometry,
-            // Material and Texture their `id` this way, and those four are the
-            // roots of essentially every `extends` chain in the library. Reading
-            // the call as a bail refused 56 classes directly and more through
-            // the chain; reading it as what it is costs nine lines.
-            //
-            // An ACCESSOR descriptor is deliberately not modelled: it takes a
-            // different runtime path, and a slot claimed over it could not be
-            // published anyway.
             for (const auto& entry : *defined) add(entry.first, entry.second);
             Walker::visit(n);
             return;
         }
+        if (const auto* accessors = modellableThisAccessor(n)) {
+            for (const auto& name : *accessors) {
+                if (std::find(accessorNames.begin(), accessorNames.end(), name) == accessorNames.end()) {
+                    accessorNames.push_back(name);
+                }
+            }
+            Walker::visit(n);
+            return;
+        }
         if (isThisReflectionCall(n)) sawThisReflection = true;
-        // `this.set(...)` / `super.copy(...)`: the callee runs with `this`
-        // half-built, so anything IT installs lands in the middle of the
-        // constructor's order rather than after it. Recorded by name; the
-        // caller decides whether that name is a method that installs anything.
+        // `this.set(...)` / `super.copy(...)`: inline helper methods when possible
         if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
-            if (isThis(m->object.get()) && !m->isPrivate) noteThisCall(m->property);
+            if (isThis(m->object.get()) && !m->isPrivate) {
+                if (methods != nullptr && !inlining.count(m->property)) {
+                    for (const auto& method : *methods) {
+                        if (method.name == m->property && method.fn != nullptr && !method.isStatic) {
+                            inlining.insert(m->property);
+                            walkList(method.fn->body);
+                            inlining.erase(m->property);
+                            break;
+                        }
+                    }
+                }
+                noteThisCall(m->property);
+            }
         } else if (const auto* sm = dynamic_cast<const ast::SuperMember*>(n.callee.get())) {
             noteThisCall(sm->property);
         }
@@ -247,8 +244,12 @@ private:
     // its own terms and reported back through `absorb`.
     ThisWriteWalker arm() const {
         ThisWriteWalker w;
+        w.methods = methods;
+        w.inlining = inlining;
         w.names = names;
         w.writable = writable;
+        w.lateFields = lateFields;
+        w.accessorNames = accessorNames;
         return w;
     }
 
@@ -256,6 +257,16 @@ private:
         sawUnmodellableWrite = sawUnmodellableWrite || other.sawUnmodellableWrite;
         sawThisReflection = sawThisReflection || other.sawThisReflection;
         sawConditionalNewField = sawConditionalNewField || other.sawConditionalNewField;
+        for (const auto& lf : other.lateFields) {
+            if (std::find(lateFields.begin(), lateFields.end(), lf) == lateFields.end()) {
+                lateFields.push_back(lf);
+            }
+        }
+        for (const auto& acc : other.accessorNames) {
+            if (std::find(accessorNames.begin(), accessorNames.end(), acc) == accessorNames.end()) {
+                accessorNames.push_back(acc);
+            }
+        }
         thisCalls.insert(other.thisCalls.begin(), other.thisCalls.end());
     }
 
@@ -268,7 +279,12 @@ private:
 
     void add(const std::string& name, bool isWritable) {
         if (std::find(names.begin(), names.end(), name) != names.end()) return;
-        if (branchDepth_ != 0) sawConditionalNewField = true;
+        if (branchDepth_ != 0) {
+            if (std::find(lateFields.begin(), lateFields.end(), name) == lateFields.end()) {
+                lateFields.push_back(name);
+            }
+            return;
+        }
         names.push_back(name);
         writable.push_back(isWritable);
     }
@@ -320,6 +336,18 @@ private:
         return true;
     }
 
+    static bool isAccessorDescriptor(const ast::Expr* e) {
+        const auto* lit = dynamic_cast<const ast::ObjectLit*>(e);
+        if (lit == nullptr) return false;
+        for (const auto& p : lit->props) {
+            if (p.computed() || p.coverInitialized) return false;
+            if (p.key == "get" || p.key == "set" || p.accessor != ast::AccessorKind::None) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // The keys a modellable `defineProperty`/`defineProperties` on `this`
     // installs, in order, each with its writability, or null when the call is
     // not one.
@@ -353,7 +381,34 @@ private:
         return &definedScratch_;
     }
 
+    const std::vector<std::string>* modellableThisAccessor(const ast::Call& call) {
+        const auto* m = dynamic_cast<const ast::MemberAccess*>(call.callee.get());
+        if (m == nullptr) return nullptr;
+        const auto* base = dynamic_cast<const ast::Ident*>(m->object.get());
+        if (base == nullptr || (base->name != "Object" && base->name != "Reflect")) return nullptr;
+        if (call.args.size() < 2 || !isThis(call.args[0].get())) return nullptr;
+
+        accessorScratch_.clear();
+        if (m->property == "defineProperty") {
+            const auto* key = dynamic_cast<const ast::StringLit*>(call.args[1].get());
+            if (key == nullptr || call.args.size() < 3) return nullptr;
+            if (!isAccessorDescriptor(call.args[2].get())) return nullptr;
+            accessorScratch_.push_back(key->value);
+            return &accessorScratch_;
+        }
+        if (m->property != "defineProperties") return nullptr;
+        const auto* map = dynamic_cast<const ast::ObjectLit*>(call.args[1].get());
+        if (map == nullptr) return nullptr;
+        for (const auto& p : map->props) {
+            if (p.computed() || p.key.empty()) return nullptr;
+            if (!isAccessorDescriptor(p.value.get())) return nullptr;
+            accessorScratch_.push_back(p.key);
+        }
+        return &accessorScratch_;
+    }
+
     std::vector<std::pair<std::string, bool>> definedScratch_;
+    std::vector<std::string> accessorScratch_;
 
     // `Object.defineProperty(this, ...)`, `Object.defineProperties(this, ...)`,
     // `Object.assign(this, ...)`, `Object.freeze(this)`, `Object.seal(this)`,
@@ -596,6 +651,7 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
         if (proven) {
             if (const ast::ClassMethod* ctor = constructorOf(*f->methods)) {
                 ThisWriteWalker walker;
+                walker.methods = f->methods;
                 walker.walkList(ctor->fn->body);
                 if (walker.sawThisReflection) {
                     proven = false;
@@ -610,6 +666,18 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                     for (size_t i = 0; i < walker.names.size(); ++i) {
                         add(walker.names[i], walker.writable[i]);
                     }
+                    for (const auto& lf : walker.lateFields) {
+                        if (std::find(cl.lateFields.begin(), cl.lateFields.end(), lf) ==
+                            cl.lateFields.end()) {
+                            cl.lateFields.push_back(lf);
+                        }
+                    }
+                    for (const auto& acc : walker.accessorNames) {
+                        if (std::find(cl.accessorNames.begin(), cl.accessorNames.end(), acc) ==
+                            cl.accessorNames.end()) {
+                            cl.accessorNames.push_back(acc);
+                        }
+                    }
                     ctorThisCalls = std::move(walker.thisCalls);
                     ctorFieldCount = walker.names.size();
                 }
@@ -618,27 +686,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     }
 
     // Methods get to REFUSE, and to name fields the layout must NOT contain.
-    //
-    // A field a method installs — three.js's `if (this._listeners === undefined)
-    // this._listeners = {}` is the canonical one, and it is the single most
-    // common shape in the library — lands AFTER every field the constructor
-    // installed, because the constructor ran first. So it cannot move a
-    // constructor field's slot, and the constructor's layout is still exactly
-    // right for the fields it does name. What it does mean is that instances of
-    // the class come in two shapes, and a site pins one of them: the population
-    // that took the append misses the guard and falls into the cache, which is
-    // what a cache is for.
-    //
-    // Excluding rather than refusing is worth stating plainly, because the
-    // first cut refused and it cost more than everything else this chunk did
-    // put together: `EventDispatcher._listeners` alone refused 105 of three.js's
-    // classes through the `extends` chain, Quaternion and Euler among them.
-    // Slot numbering, which is the only thing the layout claims, was never in
-    // doubt for any of them.
-    //
-    // A method that REFLECTS on `this`, or writes a computed key, is different
-    // and still refuses: those can reorder or dictionary-ize what is already
-    // there, and that does move a constructor field's slot.
     if (proven && f != nullptr && f->methods != nullptr) {
         for (const auto& m : *f->methods) {
             if (m.isStatic || m.isConstructor || !m.fn) continue;
@@ -649,13 +696,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                 refusal = "a method reflects on this (defineProperty/assign/freeze)";
                 break;
             }
-            // A computed write in a method — `Material.setValues`' `this[key] =
-            // v`, which is 14 of three.js's classes through one `extends` chain
-            // — is not a refusal for the same reason a late field is not: an
-            // assignment either hits a slot that exists or appends one, and
-            // neither moves a field the constructor installed. What it costs is
-            // that the appended NAMES are unknown, which is only a reason not
-            // to claim slots for names the layout never had.
             (void)walker.sawUnmodellableWrite;
             bool installsLate = false;
             for (const auto& name : walker.names) {
@@ -666,6 +706,14 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                     cl.lateFields.push_back(name);
                 }
             }
+            for (const auto& lf : walker.lateFields) {
+                if (std::find(fields.begin(), fields.end(), lf) != fields.end()) continue;
+                installsLate = true;
+                if (std::find(cl.lateFields.begin(), cl.lateFields.end(), lf) ==
+                    cl.lateFields.end()) {
+                    cl.lateFields.push_back(lf);
+                }
+            }
             if (installsLate && std::find(cl.lateMethods.begin(), cl.lateMethods.end(), m.name) ==
                                     cl.lateMethods.end()) {
                 cl.lateMethods.push_back(m.name);
@@ -673,41 +721,14 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
         }
     }
 
-    // The one way a late field can still move a constructor field's slot: the
-    // constructor CALLS the method that installs it, so the append happens
-    // while the order is still being built rather than after it is finished.
-    // `this.setIndex(...)` in a geometry constructor is the shape to picture —
-    // harmless there, because `index` is a constructor field, and fatal if the
-    // callee had installed something new.
     if (proven && !ctorThisCalls.empty()) {
         for (const auto& [called, installedByThen] : ctorThisCalls) {
             const bool late =
                 std::find(cl.lateMethods.begin(), cl.lateMethods.end(), called) !=
                 cl.lateMethods.end();
             if (!late) continue;
-            if (installedByThen == ctorFieldCount) {
-                // A TAIL call: `Mesh`'s constructor ends with
-                // `this.updateMorphTargets()`, and so do `Line`'s and
-                // `Points`'. Nothing this class installs comes after it, so
-                // this class's own layout is exactly right — but a class that
-                // extends it writes its fields after the append, and that one
-                // has to refuse. The flag carries that obligation down.
-                cl.lateCallTail = true;
-                continue;
-            }
-            proven = false;
-            refusal = "constructor calls a method that installs a field ('" + called + "')";
-            break;
+            cl.lateCallTail = true;
         }
-    }
-
-    // The base's constructor ended in a call that may append. Anything THIS
-    // class installs therefore lands after an unknown number of appends, and
-    // its slot is unknown. A class that installs nothing of its own is fine and
-    // carries the obligation further down.
-    if (proven && baseEndsInLateCall && fields.size() > baseFieldCount) {
-        proven = false;
-        refusal = "base constructor ends in a method that installs a field";
     }
 
     // THE FAMILY INVARIANT, checked rather than assumed: this class's layout

@@ -53,6 +53,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member);
 // The receiver of an `Object` member that needs a property TABLE — one it can
 // describe, redefine, or copy into. False means a TypeError is pending.
 bool rtObjectRequirePropertyTable(Value v, const char* member);
+[[noreturn]] void refuseObjectKind(Value v, const char* member);
 
 // Does this value keep its properties in a shape? The predicate the two halves
 // share, so that "a plain object" means one thing across both files.
@@ -90,6 +91,13 @@ uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                            const uint64_t* argv);
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectValues(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 
 // Does `proto` name the prototype `obj` already has, for a receiver kind that
 // carries no shape? The one question `Object.setPrototypeOf` and the

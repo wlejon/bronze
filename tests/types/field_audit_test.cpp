@@ -144,7 +144,7 @@ TEST_CASE("an accessor over the name refuses the field, not the write") {
     CHECK(r.fieldAudit.refusedByAudit == 0);
 }
 
-TEST_CASE("an accessor anywhere in the program refuses the name globally") {
+TEST_CASE("an accessor refuses the field read on classes with the accessor") {
     const auto inferred = infer(
         "class Base { constructor() { this.x = 0; } }\n"
         "class Derived extends Base {\n"
@@ -155,9 +155,9 @@ TEST_CASE("an accessor anywhere in the program refuses the name globally") {
         "function read(d) { let s = d.x; for (let i = 0; i < 2; i++) s = d.x; return s; }\n"
         "console.log(read(make(1)));\n");
     const auto& r = *inferred.result;
-    CHECK(r.fieldAudit.namesClean == 0);
-    CHECK(r.fieldAudit.refusals.count("declared as a class accessor") == 1);
-    CHECK(r.provenFieldReads.empty());
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.refusedByClass >= 1);
+    CHECK(r.provenFieldReads.size() == 1);
 }
 
 TEST_CASE("a numeric compound assignment preserves the field's proof") {

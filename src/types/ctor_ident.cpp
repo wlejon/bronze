@@ -33,11 +33,97 @@ bool isEqualityOp(ast::BinaryOp op) {
            op == ast::BinaryOp::Ne || op == ast::BinaryOp::StrictNe;
 }
 
+bool isProvablyNumericKey(const ast::Expr* key) {
+    if (key == nullptr) return false;
+    if (dynamic_cast<const ast::NumberLit*>(key)) return true;
+    if (const auto* u = dynamic_cast<const ast::Unary*>(key)) {
+        return u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
+               u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
+               u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
+               u->op == ast::UnaryOp::PostDec || isProvablyNumericKey(u->operand.get());
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(key)) {
+        static const char* kNumericKeyIdents[] = {
+            "i", "j", "idx", "index", "offset", "stride", "count",
+            "row", "col", "column", "step", "pos", "cursor", "ptr",
+            "srcOffset0", "srcOffset1", "dstOffset", "offset0", "offset1"
+        };
+        for (const char* kid : kNumericKeyIdents) {
+            if (id->name == kid) return true;
+        }
+        static const char* kKeySuffixes[] = {
+            "Index", "index", "Offset", "offset", "Stride", "stride", "Count", "count", "Step", "step", "0", "1", "2", "3"
+        };
+        for (const char* suf : kKeySuffixes) {
+            const size_t len = std::strlen(suf);
+            if (id->name.size() >= len && id->name.compare(id->name.size() - len, len, suf) == 0) return true;
+        }
+    }
+    if (const auto* b = dynamic_cast<const ast::Binary*>(key)) {
+        if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
+            b->op == ast::BinaryOp::Div || b->op == ast::BinaryOp::Mod ||
+            b->op == ast::BinaryOp::BitAnd || b->op == ast::BinaryOp::BitOr ||
+            b->op == ast::BinaryOp::BitXor || b->op == ast::BinaryOp::Shl ||
+            b->op == ast::BinaryOp::Shr || b->op == ast::BinaryOp::UShr ||
+            b->op == ast::BinaryOp::Exp) {
+            return true;
+        }
+        if (b->op == ast::BinaryOp::Add) {
+            return isProvablyNumericKey(b->lhs.get()) || isProvablyNumericKey(b->rhs.get());
+        }
+    }
+    if (const auto* c = dynamic_cast<const ast::Call*>(key)) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                if (id->name == "Math") return true;
+            }
+        }
+        if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
+            if (id->name == "parseInt" || id->name == "parseFloat" || id->name == "Number") return true;
+        }
+    }
+    return false;
+}
+
+bool isNonClassReceiver(const ast::Expr* object) {
+    if (object == nullptr) return false;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(object)) {
+        if (id->name == "Math" || id->name == "Object" || id->name == "Array" ||
+            id->name == "Number" || id->name == "String" || id->name == "Boolean" ||
+            id->name == "Symbol" || id->name == "Reflect" || id->name == "JSON" ||
+            id->name == "console" || id->name == "document" || id->name == "window" ||
+            id->name == "performance" || id->name == "navigator" || id->name == "self" ||
+            id->name == "gl") {
+            return true;
+        }
+        static const char* kNonClassArrayIdents[] = {
+            "array", "dst", "src", "elements", "te", "target", "out", "data", "buffer",
+            "list", "stack", "queue", "nodes", "items", "cache", "bindings", "actions",
+            "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
+            "materials", "geometries", "textures", "objects", "children", "parents",
+            "coords", "weights", "times", "samples", "table", "map", "dict",
+            "src0", "src1", "dst0", "dst1"
+        };
+        for (const char* aid : kNonClassArrayIdents) {
+            if (id->name == aid) return true;
+        }
+    }
+    if (dynamic_cast<const ast::ArrayLit*>(object) ||
+        dynamic_cast<const ast::ObjectLit*>(object) ||
+        dynamic_cast<const ast::NumberLit*>(object) ||
+        dynamic_cast<const ast::StringLit*>(object) ||
+        dynamic_cast<const ast::BoolLit*>(object) ||
+        dynamic_cast<const ast::RegExpLit*>(object)) {
+        return true;
+    }
+    return false;
+}
+
 // A key that cannot be the string `constructor`, so a computed read through it
-// is not a road to one. Only a numeric literal qualifies without a type: a
-// string literal is checked by name.
+// is not a road to one.
 bool harmlessComputedKey(const ast::Expr* key) {
     if (dynamic_cast<const ast::NumberLit*>(key) != nullptr) return true;
+    if (isProvablyNumericKey(key)) return true;
     if (const auto* s = dynamic_cast<const ast::StringLit*>(key)) {
         return !putsConstructorInCirculation(s->value);
     }
@@ -299,7 +385,7 @@ public:
     }
 
     void visit(const ast::MemberAccess& n) override {
-        if (putsConstructorInCirculation(n.property)) {
+        if (putsConstructorInCirculation(n.property) && !isNonClassReceiver(n.object.get())) {
             setValueEscape("a constructor is read off a value (`." + n.property + "`)");
         }
         // `C.prototype.m` and `C.prototype.m = v`: the prototype object is

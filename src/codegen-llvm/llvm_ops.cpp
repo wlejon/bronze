@@ -872,107 +872,12 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
-        case il::Op::DynamicCall: {
-            if (!needs(2, false, "Invalid operands for DynamicCall")) return false;
-            llvm::Value* callee =
-                operand(inst, 0, "Undefined callee or this in DynamicCall instruction");
-            llvm::Value* thisVal =
-                operand(inst, 1, "Undefined callee or this in DynamicCall instruction");
-            if (!callee || !thisVal) return false;
-            uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
-            bool ok = false;
-            llvm::Value* argv = emitArgv(inst, 2, argc, ok);
-            if (!ok) return false;
-            // A callee read as `sqrt`/`sin`/`cos`/`abs`/`min`/`max` gets the
-            // code-pointer-guarded Math dispatch; the provenance only decides
-            // WHERE to spend the guard, never what it may assume.
-            const uint32_t calleeKey = inst.operands[0] < propGetKey_.size()
-                                           ? propGetKey_[inst.operands[0]]
-                                           : UINT32_MAX;
-            if (calleeKey < shared_.module.keyConstants.size()) {
-                if (inst.result != il::kNoValue) {
-                    if (auto kind =
-                            mathIntrinsicFor(shared_.module.keyConstants[calleeKey], argc)) {
-                        llvm::SmallVector<llvm::Value*, 2> args;
-                        for (uint32_t a = 0; a < argc; ++a) {
-                            args.push_back(values_[inst.operands[2 + a]]);
-                        }
-                        values_[inst.result] = emitMathDirectCall(builder_, abi, *kind, callee,
-                                                                  thisVal, argc, argv, args);
-                        return true;
-                    }
-                }
-                if (shared_.module.keyConstants[calleeKey] == "push" && argc == 1) {
-                    llvm::Value* argVal = values_[inst.operands[2]];
-                    llvm::Value* res = emitArrayPushDirectCall(
-                        builder_, abi, callee, thisVal, argc, argv, argVal);
-                    if (inst.result != il::kNoValue) {
-                        values_[inst.result] = res;
-                    }
-                    return true;
-                }
-            }
-            // The inline path skips the helper's NewTargetScope(undefined)
-            // push — the mask that makes new.target read undefined inside a
-            // plain call made during construction. Same rule as the inline
-            // `new` path: bronze_get_new_target is the scope stack's only
-            // observer, so one new.target anywhere keeps the whole module on
-            // the helper, and its absence makes the skip unobservable.
-            if (shared_.moduleHasNewTarget) {
-                callWith(abi.bronze_dynamic_call,
-                         {callee, thisVal, builder_.getInt32(argc), argv});
-                return true;
-            }
-            llvm::Value* res = emitDynamicCallInline(
-                builder_, abi, globals_, callee, thisVal, argc, argv);
-            if (inst.result != il::kNoValue) {
-                values_[inst.result] = res;
-            }
-            return true;
-        }
-        case il::Op::Construct: {
-            if (!needs(1, false, "Invalid operands for Construct")) return false;
-            llvm::Value* ctor = operand(inst, 0, "Undefined constructor in Construct instruction");
-            if (!ctor) return false;
-            uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
-            bool ok = false;
-            llvm::Value* argv = emitArgv(inst, 1, argc, ok);
-            if (!ok) return false;
-            // The vetted-constructor fast path: bump-allocate the instance
-            // and call the constructor's code directly, with every miss one
-            // branch into the helper. Off for the whole module when anything
-            // in it reads `new.target` (the slot is then never planned) —
-            // the inline path does not push the helper's NewTargetScope.
-            // This may SPLIT the current block.
-            if (constructSelfSlot_ != kNoSlot) {
-                llvm::Value* res =
-                    emitConstructInline(builder_, abi, globals_, ctor, argc, argv,
-                                        slotAddr(constructSelfSlot_));
-                if (inst.result != il::kNoValue) values_[inst.result] = res;
-                return true;
-            }
-            callWith(abi.bronze_construct, {ctor, builder_.getInt32(argc), argv});
-            return true;
-        }
-        case il::Op::Call: {
-            if (!require(inst.calleeIndex < shared_.entries.size(),
-                         "Invalid callee index in Call instruction")) {
-                return false;
-            }
-            llvm::Function* callee = shared_.entries[inst.calleeIndex];
-            std::vector<llvm::Value*> args;
-            args.reserve(inst.operands.size());
-            for (size_t i = 0; i < inst.operands.size(); ++i) {
-                llvm::Value* arg = operand(inst, i, "Undefined argument in Call instruction");
-                if (!arg) return false;
-                args.push_back(arg);
-            }
-            llvm::Value* res = builder_.CreateCall(callee, args);
-            if (inst.result != il::kNoValue && !callee->getReturnType()->isVoidTy()) {
-                values_[inst.result] = res;
-            }
-            return true;
-        }
+        case il::Op::DynamicCall:
+            return emitDynamicCall(inst);
+        case il::Op::Construct:
+            return emitConstruct(inst);
+        case il::Op::Call:
+            return emitCall(inst);
 
         case il::Op::IsNullish: {
             if (!needs(1, true, "Invalid operands for IsNullish")) return false;

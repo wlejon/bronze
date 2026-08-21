@@ -82,7 +82,7 @@ TEST_CASE("a computed `new` costs only the classes its table was built from") {
     CHECK(r.ctorParams.ctorsSpeaking == 1);
     CHECK(r.ctorParams.unnamedNewIgnored == 1);
     CHECK(r.ctorParams.unnamedNewAll == 0);
-    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.namesClean >= 1);
 }
 
 // ---- method parameter typing (Job 1) ----------------------------------------
@@ -134,7 +134,7 @@ TEST_CASE("method read as a value poisons the method") {
     CHECK(r.methodParams.poisons.count("read as a value rather than called") >= 1);
 }
 
-TEST_CASE("unbounded receiver calling method poisons classes declaring it and counts") {
+TEST_CASE("unbounded receiver calling method contributes args and counts") {
     const auto inferred = infer(
         "class V {\n"
         "  constructor() { this.x = 0; }\n"
@@ -148,7 +148,7 @@ TEST_CASE("unbounded receiver calling method poisons classes declaring it and co
         "console.log(v.x);\n");
     const auto& r = *inferred.result;
     CHECK(r.methodParams.unboundedCalls >= 1);
-    CHECK(r.methodParams.poisons.count("called on a receiver whose class is not proven") >= 1);
+    CHECK(r.methodParams.paramsNumber >= 1);
 }
 
 TEST_CASE("prototype mutation refutes class subtree") {

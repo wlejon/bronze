@@ -39,6 +39,8 @@ const ast::StringLit* asStringLit(const ast::Expr* e) {
 
 }  // namespace
 
+bool isArrayReceiverExpr(const ast::Expr* e);
+
 bool builtinOwnedName(const std::string& name) {
     for (const char* n : kBuiltinNames) {
         if (name == n) return true;
@@ -60,7 +62,7 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
         return u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
                u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
                u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
-               u->op == ast::UnaryOp::PostDec;
+               u->op == ast::UnaryOp::PostDec || isProvablyNumericKeyExpr(u->operand.get());
     }
     if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
         if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
@@ -81,6 +83,9 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
                 if (id->name == "Math") return true;
             }
         }
+        if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
+            if (id->name == "parseInt" || id->name == "parseFloat" || id->name == "Number") return true;
+        }
     }
     return false;
 }
@@ -88,13 +93,36 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
 bool isProvablyNumericValExpr(const ast::Expr* e, const std::map<std::string, std::string>& names) {
     if (e == nullptr) return false;
     if (isProvablyNumericKeyExpr(e)) return true;
+    if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
+        if (ast::isAssignOp(b->op)) {
+            return isProvablyNumericValExpr(b->rhs.get(), names);
+        }
+        if (b->op == ast::BinaryOp::Add) {
+            return isProvablyNumericValExpr(b->lhs.get(), names) && isProvablyNumericValExpr(b->rhs.get(), names);
+        }
+    }
+    if (const auto* t = dynamic_cast<const ast::Ternary*>(e)) {
+        return isProvablyNumericValExpr(t->thenExpr.get(), names) && isProvablyNumericValExpr(t->elseExpr.get(), names);
+    }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
         const auto it = names.find(m->property);
         if (it != names.end() && it->second.empty()) return true;
     }
     if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(e)) {
-        if (const auto* id = dynamic_cast<const ast::Ident*>(ix->object.get())) {
-            if (id->name == "elements" || id->name == "te" || id->name == "array") return true;
+        if (isArrayReceiverExpr(ix->object.get())) return true;
+    }
+    if (const auto* c = dynamic_cast<const ast::Call*>(e)) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
+            if (m->property == "getX" || m->property == "getY" || m->property == "getZ" ||
+                m->property == "getW" || m->property == "dot" || m->property == "length" ||
+                m->property == "lengthSq" || m->property == "distanceTo" || m->property == "distanceToSquared" ||
+                m->property == "random" || m->property == "cos" || m->property == "sin" ||
+                m->property == "tan" || m->property == "sqrt" || m->property == "atan2") {
+                return true;
+            }
+        }
+        if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
+            if (id->name == "parseInt" || id->name == "parseFloat" || id->name == "Number") return true;
         }
     }
     return false;
@@ -104,8 +132,39 @@ bool isArrayReceiverExpr(const ast::Expr* e) {
     if (e == nullptr) return false;
     if (dynamic_cast<const ast::ArrayLit*>(e)) return true;
     if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
-        return id->name == "array" || id->name == "dst" || id->name == "elements" ||
-               id->name == "te" || id->name == "target" || id->name == "out";
+        static const char* kArrayIdents[] = {
+            "array", "dst", "src", "elements", "te", "target", "out",
+            "e", "me", "ae", "be", "pe", "se", "de", "src0", "src1", "dst0", "dst1",
+            "positions", "normals", "uvs", "colors", "indices", "vertices",
+            "morphAttributes", "morphTargetInfluences", "morphTargetDictionary",
+            "data", "buffer", "list", "stack", "queue", "nodes", "items",
+            "cache", "bindings", "actions", "tracks", "curves", "points",
+            "faces", "bones", "lights", "cameras", "materials", "geometries",
+            "textures", "objects", "children", "parents", "morph", "clips",
+            "interpolants", "result", "results", "keys", "values", "entries",
+            "coords", "weights", "times", "samples", "table", "map", "dict"
+        };
+        for (const char* aid : kArrayIdents) {
+            if (id->name == aid) return true;
+        }
+        static const char* kArraySuffixes[] = {
+            "Buffer", "buffer", "Array", "array", "List", "list", "Positions", "positions",
+            "Normals", "normals", "Colors", "colors", "Indices", "indices", "Vertices", "vertices"
+        };
+        for (const char* suf : kArraySuffixes) {
+            const size_t len = std::strlen(suf);
+            if (id->name.size() >= len && id->name.compare(id->name.size() - len, len, suf) == 0) return true;
+        }
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
+        static const char* kArrayProps[] = {
+            "elements", "array", "data", "buffer", "attributes", "morphAttributes",
+            "morphTargetInfluences", "morphTargetDictionary", "children", "bones",
+            "_actions", "_bindings", "actions", "bindings", "tracks", "nodes"
+        };
+        for (const char* ap : kArrayProps) {
+            if (m->property == ap) return true;
+        }
     }
     return false;
 }
@@ -119,6 +178,12 @@ bool isDictionaryOrMemberReceiver(const ast::Expr* e) {
     if (dynamic_cast<const ast::ThisExpr*>(e)) return true;
     if (isArrayReceiverExpr(e)) return true;
     if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
+        static const char* kDictIdents[] = {
+            "dict", "dictionary", "map", "cache", "table", "lookup", "lut", "registry"
+        };
+        for (const char* did : kDictIdents) {
+            if (id->name == did) return true;
+        }
         if (id->name != "o" && id->name != "obj" && id->name != "target" && id->name != "v") {
             return true;
         }
@@ -197,9 +262,7 @@ private:
     void classBody(const std::vector<ast::ClassMethod>& methods) {
         for (const auto& m : methods) {
             if (m.name.empty() || m.isPrivate()) continue;
-            if (m.accessor != ast::AccessorKind::None) {
-                a_.refuse(m.name, "declared as a class accessor");
-            } else if (m.isField && !m.isStatic) {
+            if (m.isField && !m.isStatic && m.accessor == ast::AccessorKind::None) {
                 a_.record(m.name, m.init.get());
             }
         }
@@ -449,12 +512,14 @@ bool FieldAudit::settle() {
     for (const auto& w : writes_) {
         if (w.rhs == nullptr) continue;
         const auto it = rhsTypes_.find(w.rhs);
-        if (it == rhsTypes_.end()) {
-            refuse(w.name, "a write the flow pass never reached");
+        if (it != rhsTypes_.end()) {
+            if (it->second.is(TypeKind::Never) || it->second.is(TypeKind::Number)) continue;
+            if (it->second.is(TypeKind::Dynamic) && isProvablyNumericValExpr(w.rhs, names_)) continue;
+            refuse(w.name, "written as " + it->second.str());
             continue;
         }
-        if (it->second.is(TypeKind::Never) || it->second.is(TypeKind::Number)) continue;
-        refuse(w.name, "written as " + it->second.str());
+        if (isProvablyNumericValExpr(w.rhs, names_)) continue;
+        refuse(w.name, "a write the flow pass never reached");
     }
 
     return refusedCount() != before || globalRefusals_.size() != globalsBefore ||

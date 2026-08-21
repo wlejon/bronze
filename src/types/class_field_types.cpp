@@ -27,10 +27,56 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (dynamic_cast<const ast::NullLit*>(&rhs)) return Type::null();
     if (dynamic_cast<const ast::UndefinedLit*>(&rhs)) return Type::undefined();
     if (const auto* u = dynamic_cast<const ast::Unary*>(&rhs)) {
-        if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate) {
-            if (dynamic_cast<const ast::NumberLit*>(u->operand.get())) return Type::number();
+        if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate ||
+            u->op == ast::UnaryOp::BitNot) {
+            const Type opT = harvestFieldType(*u->operand, classByName, classes, paramTypes);
+            if (opT.is(TypeKind::Number)) return Type::number();
         }
         return Type::dynamic();
+    }
+    if (const auto* b = dynamic_cast<const ast::Binary*>(&rhs)) {
+        if (b->op == ast::BinaryOp::Add || b->op == ast::BinaryOp::Sub ||
+            b->op == ast::BinaryOp::Mul || b->op == ast::BinaryOp::Div ||
+            b->op == ast::BinaryOp::Mod || b->op == ast::BinaryOp::BitAnd ||
+            b->op == ast::BinaryOp::BitOr || b->op == ast::BinaryOp::BitXor ||
+            b->op == ast::BinaryOp::Shl || b->op == ast::BinaryOp::Shr ||
+            b->op == ast::BinaryOp::UShr || b->op == ast::BinaryOp::Exp) {
+            const Type lhsT = harvestFieldType(*b->lhs, classByName, classes, paramTypes);
+            const Type rhsT = harvestFieldType(*b->rhs, classByName, classes, paramTypes);
+            if (lhsT.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) return Type::number();
+            if (b->op != ast::BinaryOp::Add &&
+                (lhsT.is(TypeKind::Number) || rhsT.is(TypeKind::Number))) {
+                return Type::number();
+            }
+        }
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&rhs)) {
+        if (paramTypes != nullptr) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                const auto it = paramTypes->find(id->name);
+                if (it != paramTypes->end() && it->second.is(TypeKind::Object)) {
+                    const ShapeClassId cls = it->second.shapeClass();
+                    for (const auto& cl : classes) {
+                        if (cl.shapeClass == cls) {
+                            const auto fit = cl.fieldTypes.find(m->property);
+                            if (fit != cl.fieldTypes.end()) return fit->second;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (const auto* c = dynamic_cast<const ast::Call*>(&rhs)) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                if (id->name == "Math") return Type::number();
+            }
+        }
+    }
+    if (const auto* t = dynamic_cast<const ast::Ternary*>(&rhs)) {
+        const Type thenT = harvestFieldType(*t->thenExpr, classByName, classes, paramTypes);
+        const Type elseT = harvestFieldType(*t->elseExpr, classByName, classes, paramTypes);
+        return join(thenT, elseT);
     }
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&rhs)) {
         const auto* id = dynamic_cast<const ast::Ident*>(n->callee.get());
@@ -68,8 +114,14 @@ public:
             }
         } else if (ast::isAssignOp(n.op)) {
             if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
-                if (dynamic_cast<const ast::ThisExpr*>(m->object.get())) {
-                    record(m->property, Type::dynamic());
+                if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) && !m->isPrivate) {
+                    const Type rhsT = harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_);
+                    const auto it = out_.find(m->property);
+                    if (it != out_.end() && it->second.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) {
+                        record(m->property, Type::number());
+                    } else {
+                        record(m->property, Type::dynamic());
+                    }
                 }
             }
         }

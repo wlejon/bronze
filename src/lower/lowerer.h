@@ -12,6 +12,7 @@
 #include "ast/clone.h"
 #include "il/il.h"
 #include "lower/infer_stats.h"
+#include "lower/lowerer_state.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
 #include "types/result.h"
@@ -23,6 +24,19 @@ namespace bronze::lower {
 // which is one seam of the design it implements.
 class Lowerer {
 public:
+    using Value = lower::LowererValue;
+    using VarBinding = lower::VarBinding;
+    using JumpKind = lower::JumpKind;
+    using JumpTarget = lower::JumpTarget;
+    using CleanupKind = lower::CleanupKind;
+    using CleanupFrame = lower::CleanupFrame;
+    using EnvScopeInfo = lower::EnvScopeInfo;
+    using VarState = lower::VarState;
+    using VarStateMap = lower::VarStateMap;
+    using ExprJoin = lower::ExprJoin;
+    using StaticSlotSite = lower::StaticSlotSite;
+    using GeneratorContext = lower::GeneratorContext;
+
     // `inference` may be null: that is the no-inference mode, and it
     // reproduces the pre-inference calling convention exactly (see lower.h).
     // `hostGlobals` may be null too — no manifest — and is copied into a set
@@ -71,86 +85,6 @@ private:
     // table and this is what numbers them.
     uint32_t templateSiteCounter_ = 0;
 
-    struct Value {
-        il::ValueId id;
-        il::Type type;
-    };
-
-    struct VarBinding {
-        std::string name;
-        il::Type type = il::Type::Dynamic;
-        bool isConst = false;
-        bool isLet = false;
-        bool isVar = false;
-        bool isInitialized = true;
-        uint32_t declOrder = 0;
-        size_t scopeDepth = 0;
-        il::ValueId valueId = il::kNoValue;
-        // Captured by some nested function, so it lives in an environment
-        // record instead of in SSA. Reads become env.get and writes env.set,
-        // and it takes no part in SSA joins.
-        bool inEnv = false;
-        size_t envScopeIndex = 0;
-        uint32_t envSlot = 0;
-        // The binding this declaration displaced in `activeVarMap_`, if it
-        // shadowed one. A block's declarations are discarded on exit and the
-        // enclosing scope's are NOT (ECMA-262 14.2.2), so leaving the name
-        // simply erased made `let x = 1; { let x = 2; } x` report
-        // `undefined variable: x` — the inner declaration destroyed the outer
-        // binding instead of hiding it.
-        size_t shadowedBinding = SIZE_MAX;
-        // Created by scope entry rather than by a declaration: the binding
-        // exists and holds the uninitialized marker, which is what makes a read
-        // above the declaration resolve HERE (and throw) instead of reaching
-        // out to whatever the enclosing scope calls the name. The declaration,
-        // when lowering reaches it, initializes this binding rather than making
-        // a second one — and clears the flag, so a genuine `let x; let x;` is
-        // still the redeclaration error it was.
-        bool isTdzHoisted = false;
-    };
-
-    // Where a `break` or a `continue` goes. ONE stack for all three kinds,
-    // because the two statements search the same entries by different rules:
-    // an unlabelled `break` stops at the innermost *breakable* statement (a
-    // loop OR a switch), an unlabelled `continue` at the innermost
-    // *iteration* statement, and a labelled one at the entry carrying its
-    // label whatever kind that entry is. Two stacks would have to agree about
-    // nesting order, and the whole content of `break outer` is that order.
-    enum class JumpKind { Loop, Switch, LabeledBlock };
-
-    struct JumpTarget {
-        JumpKind kind = JumpKind::Loop;
-        // The label this statement was written under, or empty. A label is
-        // not a binding: it is only ever compared, never resolved.
-        std::string label;
-        il::BlockId headerBlock = il::kNoBlock;
-        // kNoBlock for anything but a loop — which is exactly why
-        // `continue lbl` naming a switch or a block is an early error rather
-        // than a jump to nowhere.
-        il::BlockId updateBlock = il::kNoBlock;
-        il::BlockId exitBlock = il::kNoBlock;
-        // The variables the target's blocks take as parameters, in the order
-        // those parameters were added. A jump from anywhere inside has to
-        // hand over the same list.
-        std::vector<std::string> vars;
-        // Where `cleanupStack_` stood when this statement was reached, and
-        // where it stood once the statement's OWN cleanup (a for-of's
-        // IteratorClose) was on it. The two differ for exactly one form, and
-        // the difference is the whole of "a `break` closes the iterator and a
-        // `continue` does not": both jumps cross the same finallys, and only
-        // the break crosses the loop's own close.
-        size_t cleanupDepthAtEntry = 0;
-        size_t cleanupDepthInBody = 0;
-        // The `for` loop's per-iteration environment record (14.7.4.9), which
-        // its update block takes as one more parameter than its variables. A
-        // `continue` is an edge into that block and so has to hand it over
-        // too, and the value is the loop header's — not whatever record is
-        // innermost where the `continue` is written, which may be several
-        // blocks deep inside the body. `kNoValue` for every other statement,
-        // and for a `for` whose head binds nothing a closure reaches.
-        il::ValueId perIterationEnv = il::kNoValue;
-    };
-
     std::vector<VarBinding> varBindings_;
     std::unordered_map<std::string, size_t> activeVarMap_;
     size_t currentScopeDepth_ = 0;
@@ -166,45 +100,6 @@ private:
     // here leaves the function", which is what a body outside any `try` wants
     // and what the backend turns into a frame pop and a `ret`.
     il::BlockId currentHandler_ = il::kNoBlock;
-
-    // The work an abrupt completion has to do on its way out, innermost last.
-    // Two kinds, and they are one stack because they interleave: `break outer`
-    // from inside `for (const x of it) { try { ... } finally { ... } }` runs
-    // the finally and THEN closes the iterator, and only their relative order
-    // on one stack says so.
-    //
-    // Each records the `jumpStack_` depth it was pushed at, which is the whole
-    // of "does this `break` cross it?": a `break` to the target at index i
-    // crosses every entry pushed when the stack was deeper than i.
-    //
-    // Function-local, and saved/cleared/restored across a function boundary
-    // exactly as `labelStack_` is: a `return` inside a nested function runs
-    // that function's cleanups and none of the enclosing ones.
-    enum class CleanupKind {
-        // The `finally` body, lowered again here, once per exit path.
-        Finally,
-        // IteratorClose on a for-of left early.
-        IteratorClose,
-        AsyncIteratorClose,
-    };
-
-    struct CleanupFrame {
-        CleanupKind kind = CleanupKind::Finally;
-        const ast::TryStmt* stmt = nullptr;      // Finally only
-        il::ValueId iterRecord = il::kNoValue;   // IteratorClose only
-        // Where that record lives in a MACHINE body's frame, or UINT32_MAX
-        // for a loop in ordinary code. A `break` out of a suspending loop can
-        // be reached from a resume block, where the SSA value above was never
-        // defined — so the close has to re-read the record from the frame.
-        uint32_t iterFrameSlot = UINT32_MAX;     // IteratorClose only
-        size_t jumpDepth = 0;
-        // The handler in effect OUTSIDE this try. Every copy of the finally
-        // body runs under it, never under the try's own handler: an exception
-        // the finally raises propagates outward, and a block still naming the
-        // try's handler would re-enter it and run the same finally a second
-        // time.
-        il::BlockId outerHandler = il::kNoBlock;
-    };
     std::vector<CleanupFrame> cleanupStack_;
 
     // The label a `label:` just read, waiting for the loop or switch it
@@ -213,39 +108,6 @@ private:
     std::string pendingLabel_;
     size_t currentBlockIdx_ = 0;
 
-    // --- environments --------------------------------------- One entry per
-    // open scope that declares a captured variable, innermost last. The stack
-    // spans function boundaries: that is exactly how a nested function resolves
-    // a free variable to a (depth, index) pair relative to the environment it
-    // is handed at entry.
-    struct EnvScopeInfo {
-        std::unordered_map<std::string, uint32_t> slotOf;
-        // Slot -> the name it holds. A checked read names the binding it
-        // refused, and a vector indexed by slot is the one form of that
-        // mapping no iteration order can reach.
-        std::vector<std::string> slotNames;
-        // Which slots hold a `let`, `const` or `class` binding — the ones that
-        // start out uninitialized and whose every read is 9.1.1.1.6's check.
-        // A parameter, a `var`, a hoisted `function` and the synthetic `this`
-        // and `arguments` slots are never among them.
-        std::vector<bool> slotIsLexical;
-        // Which slots hold an IMMUTABLE binding (9.1.1.1.3
-        // CreateImmutableBinding). Exactly one such slot exists in bronze: a
-        // named function expression's own name, in the one-slot record 15.2.5
-        // wraps the closure in. A write to one is a quiet no-op in sloppy code
-        // and a TypeError in strict, which is a different rule from `const`'s
-        // — a `const` is refused at COMPILE time because lowering owns the
-        // declaration, and this binding's writes are not always visible to it.
-        std::vector<bool> slotIsImmutable;
-        il::ValueId envValue = il::kNoValue;  // meaningful only in the owning function
-        // GENERATORS ONLY: the slot in THIS record that holds the record of the
-        // scope nested directly inside it. The environment chain runs upward —
-        // `env.get` walks parents — so from the frame there is no way down, and
-        // a generator needs one: a resume edge defines no SSA value, so the
-        // record innermost at that point cannot be a value carried in from
-        // wherever it was created. See `currentEnv`.
-        uint32_t childSlot = UINT32_MAX;
-    };
     std::vector<EnvScopeInfo> envScopes_;
     std::vector<il::ValueId> savedEnvValues_;
     std::vector<bool> scopeHasEnv_;
@@ -315,17 +177,6 @@ private:
     // variable assigned inside such an operand needs a join parameter,
     // exactly like an if-statement arm. States are value snapshots because
     // assignments rebind varBindings_ entries in place.
-    struct VarState {
-        il::ValueId valueId;
-        il::Type type;
-    };
-    using VarStateMap = std::unordered_map<std::string, VarState>;
-
-    struct ExprJoin {
-        std::vector<std::string> vars;
-        std::unordered_map<std::string, il::ValueId> paramId;
-        std::unordered_map<std::string, il::Type> paramType;
-    };
 
     // --- lower_infer.cpp: what inference proved -------------- The single
     // place "there is no inference result" is answered, so no other unit tests
@@ -427,15 +278,6 @@ private:
     // The instance slot a proven class layout puts `key` at on `receiver`, and
     // the module-global cell index the site gets, or nullopt. Allocates the
     // cell, so it is called exactly once per site.
-    struct StaticSlotSite {
-        uint32_t slot = 0;
-        uint32_t cellIndex = 0;
-        // Set instead of the cell when the site guards on a layout FAMILY
-        // rather than on one shape's identity — a `this` receiver in a method
-        // of a class somebody extends. See `il::Instruction::familyLo`.
-        uint32_t familyLo = il::Instruction::kNoFamily;
-        uint32_t familySpan = 0;
-    };
     std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
                                                   const std::string& key, bool forWrite);
     // Stamps a PropGet/PropSet whose `keyIndex` is already set. The key is read
@@ -471,71 +313,6 @@ private:
     // over. Set only while a resume body is being lowered, and saved and
     // restored across every nested closure exactly as the rest of the
     // per-function state is: a function written inside a generator is not one.
-    struct GeneratorContext {
-        size_t frameScope = SIZE_MAX;         // index into envScopes_
-        il::ValueId frameEnv = il::kNoValue;  // the resume function's __env
-        il::ValueId modeParam = il::kNoValue;
-        il::ValueId sentParam = il::kNoValue;
-        uint32_t stateSlot = 0;
-        // Where the iteration record of a `yield*` in progress lives, or
-        // `UINT32_MAX` in a body that has no delegation. In the FRAME, for the
-        // reason every binding is: the delegation loop is re-entered from the
-        // resume dispatch, and that edge defines no SSA value.
-        //
-        // ONE slot for a whole body, however many `yield*` sites it has. At
-        // most one delegation can be in progress at a time: the loop is
-        // straight-line control flow that is entered, driven to a completion
-        // and left, and the only way to leave it and come back is its own
-        // suspension — which comes back to the same delegation. `yield_lift`
-        // is what makes that true of nested ones as well, hoisting the inner
-        // `yield*` of `yield* (yield* g())` into a statement of its own.
-        uint32_t iterSlot = UINT32_MAX;
-
-        // An ASYNC function's machine: the same frame and resume function,
-        // driven by the promise runtime instead of by a generator object.
-        // One context type for both because every mechanism in it — the
-        // resume blocks, the state slot, the abrupt-mode dispatch, the
-        // cleanup routing through `finally` — is shared; what differs is the
-        // tail (lower_async.cpp vs lowerGeneratorTail) and what a suspension
-        // DOES (subscribe vs yield), and two context types would duplicate
-        // every shared field to say so.
-        bool isAsync = false;
-        bool isAsyncGenerator = false;
-        // Where the machine value (runtime/builtin_async.cpp's object) lives
-        // in the frame, or UINT32_MAX in a generator. In the FRAME for the
-        // reason every binding is: an `await` site needs it to subscribe the
-        // resumption, and the site is re-entered from the resume dispatch,
-        // whose edge defines no SSA value.
-        uint32_t machineSlot = UINT32_MAX;
-
-        // The frame slots reserved for the iteration records of `for-of` and
-        // `for-in` loops whose body suspends — one per level of NESTING, in
-        // depth order, because two such loops are only ever stepping at once
-        // when one is inside the other. `activeIterLoops` is how deep lowering
-        // currently is in them, and so which slot the next one claims.
-        // Empty in a body that has no such loop, which is almost every body.
-        std::vector<uint32_t> loopIterSlots;
-        uint32_t activeIterLoops = 0;
-
-        // How `next`, `return` and `throw` reach the body. Mirrors
-        // GeneratorResumeMode in src/runtime/generator.h — which lowering
-        // cannot include, because `bronze::lower` depends on `ast il support
-        // types` and a module reaching into the runtime's headers would make
-        // it depend on the runtime too. Here rather than in either unit that
-        // reads them, because both do; pinned against the runtime by
-        // tests/lower/lower_generator_test.cpp and by every oracle case that
-        // drives a generator by hand. An async resumption uses `kModeNext`
-        // and `kModeThrow` only — nothing external can `return` into an
-        // async body.
-        static constexpr double kModeNext = 0.0;
-        static constexpr double kModeReturn = 1.0;
-        static constexpr double kModeThrow = 2.0;
-        // One per suspension point, in the order they were lowered, with the
-        // body's first block at index 0. The entry block's dispatch is built
-        // from this once the whole body is done, because how many there are is
-        // not known until then.
-        std::vector<il::BlockId> resumeBlocks;
-    };
     std::optional<GeneratorContext> generator_;
 
     static const char* generatorStateSlotName();

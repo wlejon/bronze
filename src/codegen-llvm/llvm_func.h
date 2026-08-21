@@ -63,6 +63,9 @@ private:
     // Instruction families. Each returns false only after diagnosing.
     bool emitTerminator(const il::Instruction& inst);
     bool emitRuntimeOp(const il::Instruction& inst);
+    bool emitDynamicCall(const il::Instruction& inst);
+    bool emitConstruct(const il::Instruction& inst);
+    bool emitCall(const il::Instruction& inst);
     bool emitArithmetic(const il::Instruction& inst);
     // The private-element family (llvm_private.cpp). Its own unit because it
     // is one mechanism with six instructions, not six unrelated helpers.
