@@ -108,7 +108,7 @@ if(MSVC)
     # byte-for-byte the one that ships. Same reasoning as the shared-module
     # link in src/cli/link.cpp.
     target_compile_options(bronze_runtime_shared PRIVATE
-        $<$<CONFIG:Release,MinSizeRel>:/Zi>)
+        $<$<CONFIG:Release,MinSizeRel>:/Z7>)
     target_link_options(bronze_runtime_shared PRIVATE
         $<$<CONFIG:Release,MinSizeRel>:/DEBUG>
         $<$<CONFIG:Release,MinSizeRel>:/OPT:REF>

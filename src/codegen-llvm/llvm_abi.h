@@ -24,6 +24,9 @@
 
 namespace bronze::codegen_llvm {
 
+inline constexpr unsigned kIcEntryWords = BRONZE_ABI_IC_ENTRY_SIZE / sizeof(uint64_t);
+inline constexpr unsigned kIcSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
+
 // One llvm::Function* per entry in the ABI registry, named after the
 // runtime symbol itself.
 struct AbiFns {

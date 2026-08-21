@@ -98,7 +98,25 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
-Measurements recorded on this machine (median of 5 runs, warmup discarded):
+- **Chunk 12 (clean math property names, method call ICs, and typed array element fast paths)**:
+  > [!NOTE]
+  > **Summary of changes delivered in Chunk 12 (Jobs 1, 2, 3)**:
+  > - **Job 1**: Clean math property names, method parameter coverage expansion, and file decomposition under 1k lines.
+  > - **Job 2**: Method call ICs and call path fast path infrastructure (noting the residual runtime method call miss that will be closed in Chunk 13).
+  > - **Job 3**: Typed array and dense array element fast paths in lowering and LLVM codegen, achieving 3.24x speedup on typed_array_crunch (parity with Node.js at 56.29ms vs 56.27ms).
+  >
+  > **Real runs for commit `de6e5be` (median of 5 runs, warmup discarded)**:
+  > - `three_math.js`: 92.04ms (infer) vs 96.90ms (no-infer) — 1.05x (checksum=405000)
+  > - `object_graph.js`: 124.59ms (infer) vs 122.93ms (no-infer) — 0.99x (checksum=-32601148)
+  > - `typed_array_crunch.js`: 56.29ms (infer) vs 182.38ms (no-infer) — 3.24x (checksum=78849652, 1.00x vs Node 56.27ms)
+  > - `mesh_churn_2k.js`: 147.73ms (infer) vs 158.11ms (no-infer) — 1.07x (checksum=-2112298)
+  > - `instanced_mesh_churn.js`: 319.94ms (infer) vs 331.35ms (no-infer) — 1.04x (checksum=1260786)
+  > - `fib.js`: 10.48ms (infer) vs 15.28ms (no-infer) — 1.46x (checksum=832040)
+  > - `numeric_loop.js`: 37.06ms (infer) vs 95.93ms (no-infer) — 2.59x (checksum=60644102826883.61)
+  > - `property_access.js`: 10.94ms (infer) vs 11.39ms (no-infer) — 1.04x (checksum=3000000)
+  > - `proto_dispatch.js`: 47.26ms (infer) vs 24.74ms (no-infer) — 0.52x (checksum=3000000)
+  > - `proto_dispatch_churn.js`: 148.13ms (infer) vs 58.81ms (no-infer) — 0.40x (checksum=3000000)
+  > - `typed_array_loop.js`: 27.21ms (infer) vs 46.61ms (no-infer) — 1.71x (checksum=523828354.8980187)
 
 - **Chunk 11 (method-parameter typing: the first clean names — and the honest news that they are the cold ones)**:
   > [!NOTE]

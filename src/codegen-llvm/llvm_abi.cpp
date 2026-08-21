@@ -23,8 +23,6 @@ namespace bronze::codegen_llvm {
 // The stride is a SITE — BRONZE_ABI_IC_WAYS entries — and way 0 sits at its
 // front, so the pointer generated code passes the helpers is both "this site"
 // and "this site's first entry" with no arithmetic between the two readings.
-static constexpr unsigned kIcEntryWords = BRONZE_ABI_IC_ENTRY_SIZE / sizeof(uint64_t);
-static constexpr unsigned kIcSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
 static_assert(BRONZE_ABI_IC_ENTRY_SIZE % sizeof(uint64_t) == 0,
               "the IC table is emitted as i64 words, so an entry must be a whole number of them");
 static_assert(BRONZE_ABI_IC_SITE_SIZE == BRONZE_ABI_IC_ENTRY_SIZE * BRONZE_ABI_IC_WAYS,
