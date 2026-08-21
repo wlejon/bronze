@@ -29,6 +29,25 @@ namespace bronze::codegen_llvm {
 // for this to be correct. It has to be RIGHT to be fast, which is a different
 // obligation and the one class_layout.cpp discharges.
 
+// Which of the two guards a site carries, and everything both need. Passed as
+// one value because the choice is per site and the two emitters would otherwise
+// grow four parameters each, three of which are ignored either way.
+struct StaticSite {
+    // The instance slot the layout proved, or `il::Instruction::kNoStaticSlot`
+    // for a site with no layout claim at all (which emits nothing).
+    uint32_t slot = 0xFFFFFFFFu;
+    // IDENTITY form: the module cell holding the one shape this site accepts.
+    uint32_t cellIndex = 0;
+    // FAMILY form: the preorder id of the receiver's class and the size of its
+    // `extends` subtree. `kNoFamily` selects the identity form above.
+    static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
+    uint32_t familyLo = kNoFamily;
+    uint32_t familySpan = 0;
+
+    bool none() const { return slot == 0xFFFFFFFFu; }
+    bool family() const { return familyLo != kNoFamily; }
+};
+
 struct StaticSlotGuard {
     // Where the caller continues emitting the ordinary sequence. Equal to the
     // block the caller was in when nothing was emitted.
@@ -42,21 +61,42 @@ struct StaticSlotGuard {
 };
 
 // Emits the guard at the current insert point and leaves the builder in
-// `missBb`. `slot` is `il::Instruction::kNoStaticSlot` to emit nothing.
+// `missBb`. A site with no claim emits nothing.
 //
 // `store` is null for a read; non-null makes the hit block store it into the
 // slot instead of loading from it.
+//
+// The FAMILY form differs from the identity form in exactly one place: what the
+// second compare asks. Instead of `shape == the one shape this site pinned` it
+// loads the family word off that shape and asks whether it names a class in the
+// site's own `extends` subtree — `stamp - (base + lo) <=u span`, one extra load
+// (of an immortal, shared, hot word) and one extra subtract. That is the whole
+// price of serving every subclass from one site instead of one.
 StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTables& tables,
-                                    llvm::Value* objBits, uint32_t slot, uint32_t cellIndex,
+                                    llvm::Value* objBits, const StaticSite& site,
                                     llvm::BasicBlock* doneBb, llvm::Value* store,
                                     const char* prefix);
 
-// Emits the one-shot publish call: reached from the ordinary sequence's slow
-// block, and guarded there on the cell still being zero, so a site whose layout
-// was wrong probes once and never again.
+// Emits the one-shot fill reached from the ordinary sequence's slow block.
+//
+// For an identity site that is the publish call, guarded on the cell still
+// being zero, so a site whose layout was wrong probes once and never again. For
+// a family site it is the STAMP call, guarded on the shape's family word still
+// being zero — one-shot per shape rather than per site, which is what lets a
+// site that meets five subclasses end up hitting on all five instead of pinning
+// the first.
+//
+// `objSlot` is the receiver's GC ROOT SLOT, and this path may not run without
+// one. It sits after the fallback helper call, and that call allocates: a
+// collection inside it moves the receiver and writes the new address into the
+// root frame, leaving the `objBits` register the guard was built from pointing
+// into dead from-space. Every dereference here — the flags byte, the shape word,
+// the family word, and the receiver the helper is handed — has to come from the
+// slot, reloaded after the call. A null slot means the value is not rooted and
+// there is nothing to reload, and the publish is skipped rather than guessed at.
 void emitStaticSlotPublish(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                           const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
-                           uint32_t slot, uint32_t cellIndex, bool forWrite,
-                           llvm::BasicBlock* continueBb, const char* prefix);
+                           const ModuleTables& tables, llvm::Value* objBits,
+                           llvm::Value* objSlot, uint32_t keyIndex, const StaticSite& site,
+                           bool forWrite, llvm::BasicBlock* continueBb, const char* prefix);
 
 }  // namespace bronze::codegen_llvm

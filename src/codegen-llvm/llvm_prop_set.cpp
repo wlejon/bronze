@@ -27,9 +27,9 @@
 namespace bronze::codegen_llvm {
 
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
-                 const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
-                 llvm::Value* valBits, uint32_t icIndex, bool strict, bool monomorphic,
-                 uint32_t staticSlot, uint32_t staticCellIndex, std::string_view keyStr) {
+                 const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
+                 uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
+                 bool monomorphic, const StaticSite& site, std::string_view keyStr) {
     // See the read twin: an identity proof does not change what is emitted; the
     // LAYOUT proof beside it does.
     (void)monomorphic;
@@ -61,7 +61,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     //    a constructor's repeated `this.x = ...` IS the transition path, and it
     //    is not a case a static slot could serve.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
-        builder, tables, objBits, staticSlot, staticCellIndex, doneBb, valBits, "set");
+        builder, tables, objBits, site, doneBb, valBits, "set");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -489,7 +489,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.CreateCall(abi.bronze_prop_set,
                        {objBits, emitKeyId(builder, tables, keyIndex), valBits, entry,
                         builder.getInt1(strict)});
-    emitStaticSlotPublish(builder, abi, tables, objBits, keyIndex, staticSlot, staticCellIndex,
+    emitStaticSlotPublish(builder, abi, tables, objBits, objSlot, keyIndex, site,
                           /*forWrite=*/true, slowDoneBb, "set");
     builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);

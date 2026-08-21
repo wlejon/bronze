@@ -95,6 +95,24 @@ public:
     // not be, a prototype whose shape is unmarked, is what `addProperty`'s
     // propagation and `createRoot`'s marking exist to rule out.
     bool used_as_prototype{false};
+    // Which proven class layout this shape's own properties BEGIN with, as the
+    // process-wide id `bronze_family_stamp` assigns — or `UNSTAMPED` (never
+    // asked) or `NONE` (asked, and no registered class's field list is a prefix
+    // of this shape's properties).
+    //
+    // A fact about the shape, verified against the shape: the stamper walks
+    // this chain and compares every name, slot and attribute against the
+    // class's declared layout before it writes anything here. That is what lets
+    // a site in `Object3D.updateMatrixWorld` load `this.matrixWorld` at a
+    // constant offset from a Group, a Mesh and a Scene alike — the three have
+    // three shapes, and all three were checked to start with Object3D's fields.
+    //
+    // Written once and never invalidated, which is sound because every way a
+    // property's name, slot or attributes can change under an object either
+    // transitions it to a different shape or drops it into dictionary mode
+    // (`delete`, `Object.freeze`, a writable:true->false redefinition,
+    // `setPrototypeOf`). A dictionary shape is never stamped.
+    uint64_t family_stamp{BRONZE_ABI_FAMILY_UNSTAMPED};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build
@@ -187,5 +205,6 @@ static_assert(offsetof(Shape, root) == BRONZE_ABI_SHAPE_ROOT_OFFSET);
 static_assert(offsetof(Shape, prototype) == BRONZE_ABI_SHAPE_PROTO_OFFSET);
 static_assert(offsetof(Shape, dict) == BRONZE_ABI_SHAPE_DICT_OFFSET);
 static_assert(offsetof(Shape, used_as_prototype) == BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
+static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
 
 }  // namespace bronze

@@ -1,5 +1,12 @@
+// For `getenv`, which MSVC deprecates and every other toolchain does not. The
+// compile-time seam below is read exactly once, from a single-threaded driver —
+// the thread-safety the _s variants buy has nothing to hold onto here. Same
+// reasoning, and same one-line define, as lower_infer.cpp.
+#define _CRT_SECURE_NO_WARNINGS
+
 #include "types/infer.h"
 
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <vector>
@@ -8,6 +15,7 @@
 #include "ast/query_walk.h"
 #include "types/escape.h"
 #include "types/flow.h"
+#include "types/method_ident.h"
 
 namespace bronze::types {
 namespace {
@@ -97,10 +105,68 @@ bool widenSignatures(ModuleContext& mod) {
     return changed;
 }
 
+// The same fold for class methods, whose callers are enumerated through the
+// receiver's class rather than through the callee's name (method_ident.h).
+//
+// A poisoned or non-plain method is widened to the uniform dynamic convention
+// HERE rather than being skipped, so that the widening is part of the fixpoint:
+// poison only grows, so a method that gives up its parameters mid-fixpoint has
+// them dynamic on every later round, and the round that discovers it is the
+// round that reports "changed".
+bool widenMethods(ModuleContext& mod) {
+    if (!mod.interprocIdent) return false;
+    bool changed = false;
+    for (auto& m : mod.methods.methods()) {
+        const bool speaks = m.plainParams && !mod.methodPoison.poisons(m.methodName);
+        for (size_t i = 0; i < m.signature.params.size(); ++i) {
+            const Type widened =
+                speaks ? join(m.signature.params[i], m.observedParams[i]) : Type::dynamic();
+            if (widened != m.signature.params[i]) {
+                m.signature.params[i] = widened;
+                changed = true;
+            }
+        }
+        const Type widenedReturn =
+            speaks ? join(m.signature.returnType, m.observedReturn) : Type::dynamic();
+        if (widenedReturn != m.signature.returnType) {
+            m.signature.returnType = widenedReturn;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// After the fixpoint settles: a parameter still at `Never` is one no call site
+// this compilation saw ever reached. Widening it to `Dynamic` is what puts the
+// method back on the uniform convention, and it cannot be done inside the loop —
+// on the first round EVERY parameter is `Never`, and doing it there would hand
+// the whole program the dynamic answer before a single call site had been read.
+bool finalizeUnreachedMethods(ModuleContext& mod) {
+    if (!mod.interprocIdent) return false;
+    bool changed = false;
+    for (auto& m : mod.methods.methods()) {
+        for (auto& param : m.signature.params) {
+            if (!param.is(TypeKind::Never)) continue;
+            param = Type::dynamic();
+            m.unreached = true;
+            changed = true;
+        }
+        if (m.signature.returnType.is(TypeKind::Never)) {
+            m.signature.returnType = Type::dynamic();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void resetObservations(ModuleContext& mod) {
     for (auto& fn : mod.functions) {
         fn.observedParams.assign(fn.signature.params.size(), Type::never());
         fn.observedReturn = Type::never();
+    }
+    for (auto& m : mod.methods.methods()) {
+        m.observedParams.assign(m.signature.params.size(), Type::never());
+        m.observedReturn = Type::never();
     }
 }
 
@@ -207,6 +273,15 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // passes and the recording pass, so the table cannot be built lazily as
     // `constructorShape` builds constructor-function shapes.
     result.classLayouts.build(module, result.shapes);
+    // Interprocedural identity, off behind its seam. Both halves are built
+    // before any body is walked, for the same reason the class table is: the
+    // flow pass reads them on every round, and a table that filled in as it went
+    // would answer differently on the probe rounds and the recording round.
+    mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
+    if (mod.interprocIdent) {
+        mod.methods.build(module);
+        scanMethodEscapes(module, mod.methods, mod.methodPoison);
+    }
     mod.diags = &diags;
     for (const auto& name : ast::getScopeDeclarations(module.body)) {
         mod.moduleScopeNames.insert(name);
@@ -260,13 +335,25 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     }
 
     bool converged = false;
+    bool finalized = false;
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
         resetObservations(mod);
+        const size_t poisonBefore = mod.methodPoison.version();
         if (!runPass(mod, split, /*record=*/false)) return std::nullopt;
-        if (!widenSignatures(mod)) {
-            converged = true;
-            break;
+        bool changed = widenSignatures(mod);
+        changed = widenMethods(mod) || changed;
+        changed = mod.methodPoison.version() != poisonBefore || changed;
+        if (changed) continue;
+        // Nothing moved. The one widening that could not run inside the loop
+        // does so now, and the loop re-enters to let its consequences settle:
+        // a method put back on the dynamic convention makes its body's receivers
+        // dynamic, which can poison further names.
+        if (!finalized) {
+            finalized = true;
+            if (finalizeUnreachedMethods(mod)) continue;
         }
+        converged = true;
+        break;
     }
     if (!converged) {
         diags.error(Span{}, "internal: type inference call-graph signatures did not converge");

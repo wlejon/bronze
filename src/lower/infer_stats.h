@@ -18,6 +18,13 @@ struct CategoryStats {
     // counted by the backend's cache, a layout proof changes what the backend
     // emits (property accesses only; the other categories leave it zero).
     uint32_t staticSlotCount = 0;
+    // Of `staticSlotCount`, how many guard on a layout FAMILY rather than on
+    // one shape's identity. Reported separately because the two are different
+    // claims about the same slot: an identity site serves the one shape it
+    // pinned, a family site serves every proven subclass of the class its
+    // method was written in — which is the difference between claiming
+    // `this.matrixWorld` in `Object3D.updateMatrixWorld` and declining it.
+    uint32_t familySlotCount = 0;
     // Bail reason -> occurrences count
     std::map<std::string, uint32_t> bailReasons;
 
@@ -42,13 +49,14 @@ public:
     // ones (a layout proof implies the identity proof), and recorded from the
     // stamping step rather than passed to the call above, because the two
     // decisions are made at different points in lowering a site.
-    void recordStaticSlot(uint16_t fileId);
+    void recordStaticSlot(uint16_t fileId, bool family);
     void recordCall(uint16_t fileId, bool isNative, const std::string& bailReason = "");
     void recordElementOp(uint16_t fileId, bool isNative, const std::string& bailReason = "");
 
     // The class-layout verdicts, whole-program rather than per module: a class
     // is proven or refused once, wherever its declaration was written.
-    void recordClassLayouts(uint32_t proven, const std::map<std::string, uint32_t>& refusals);
+    void recordClassLayouts(uint32_t proven, uint32_t familyMembers, uint32_t familyRoots,
+                            const std::map<std::string, uint32_t>& refusals);
 
     std::string format() const;
 
@@ -60,6 +68,11 @@ private:
     std::map<std::string, ModuleInferStats> modules_;
     std::map<uint16_t, std::string> fileIdToName_;
     uint32_t classesProven_ = 0;
+    // Of the proven ones, how many are in the layout-family forest, and how
+    // many of those are its roots. A class is out of the forest when it has no
+    // fields (its field list would be a prefix of every shape in the program).
+    uint32_t classFamilyMembers_ = 0;
+    uint32_t classFamilyRoots_ = 0;
     std::map<std::string, uint32_t> classRefusals_;
 };
 

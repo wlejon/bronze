@@ -397,8 +397,17 @@ std::string print(const Module& module) {
                         // cache. Printed because a reader cannot otherwise tell
                         // the two forms apart in the IL.
                         if (inst.staticSlot != Instruction::kNoStaticSlot) {
-                            out += ", slot " + std::to_string(inst.staticSlot) + "@" +
-                                   std::to_string(inst.staticCellIndex);
+                            out += ", slot " + std::to_string(inst.staticSlot);
+                            // A family site names a RANGE of class ids and no
+                            // cell; an identity site names its cell. Two
+                            // spellings because they are two guards, and a
+                            // reader of the IL has no other way to tell.
+                            if (inst.familyLo != Instruction::kNoFamily) {
+                                out += " family " + std::to_string(inst.familyLo) + ".." +
+                                       std::to_string(inst.familyLo + inst.familySpan);
+                            } else {
+                                out += "@" + std::to_string(inst.staticCellIndex);
+                            }
                         }
                         break;
                     // The key index, and no cache slot: a class body runs
@@ -519,8 +528,17 @@ std::string print(const Module& module) {
                         // The read twin's note applies: the static slot is
                         // printed because it changes emitted code.
                         if (inst.staticSlot != Instruction::kNoStaticSlot) {
-                            out += ", slot " + std::to_string(inst.staticSlot) + "@" +
-                                   std::to_string(inst.staticCellIndex);
+                            out += ", slot " + std::to_string(inst.staticSlot);
+                            // A family site names a RANGE of class ids and no
+                            // cell; an identity site names its cell. Two
+                            // spellings because they are two guards, and a
+                            // reader of the IL has no other way to tell.
+                            if (inst.familyLo != Instruction::kNoFamily) {
+                                out += " family " + std::to_string(inst.familyLo) + ".." +
+                                       std::to_string(inst.familyLo + inst.familySpan);
+                            } else {
+                                out += "@" + std::to_string(inst.staticCellIndex);
+                            }
                         }
                         break;
                     case Op::DynamicCall: {

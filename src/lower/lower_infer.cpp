@@ -355,7 +355,18 @@ static const char* dynamicReceiverForm(const ast::Expr& expr) {
 std::string Lowerer::propBailReason(const ast::Expr& expr) const {
     if (inference_ == nullptr) return "inference disabled";
     const types::Type t = inferredType(expr);
-    if (t.is(types::TypeKind::Dynamic)) return dynamicReceiverForm(expr);
+    if (t.is(types::TypeKind::Dynamic)) {
+        // The identifier row is half of every remaining dynamic site, and
+        // "identifier" is not a reason — it is a shape. Where the identifier
+        // names a METHOD PARAMETER, the interprocedural pass knows why it could
+        // not speak for it, and that is the reason worth reporting: it is what a
+        // chunk aiming at these sites would have to remove.
+        const auto refusal = inference_->identRefusals.find(&expr);
+        if (refusal != inference_->identRefusals.end()) {
+            return "receiver is dynamic: parameter (" + refusal->second + ")";
+        }
+        return dynamicReceiverForm(expr);
+    }
     if (!t.is(types::TypeKind::Object)) {
         return std::string("receiver is ") + types::typeKindName(t.kind());
     }
@@ -365,6 +376,35 @@ std::string Lowerer::propBailReason(const ast::Expr& expr) const {
 
 bool Lowerer::staticShapeSeamDisabled() {
     return std::getenv("BRONZE_NO_STATIC_SHAPES") != nullptr;
+}
+
+bool Lowerer::familyGuardSeamDisabled() {
+    return std::getenv("BRONZE_NO_FAMILY_GUARD") != nullptr;
+}
+
+// The module's proven class layouts, in the preorder the family ids number.
+//
+// Built on demand, from the first site that claims a family, because a program
+// that proves no family should emit no table and make no registration call —
+// and because the field NAMES have to be interned into the module's key pool,
+// which is a lowering fact the analysis has no handle on.
+void Lowerer::buildClassFamilyTable() {
+    if (classFamilyTableBuilt_ || inference_ == nullptr) return;
+    classFamilyTableBuilt_ = true;
+    for (const types::ClassLayout* cl : inference_->classLayouts.familyPreorder()) {
+        il::Module::ClassFamilyEntry entry;
+        // The name is for the IL dump only; the runtime matches on the fields.
+        entry.name = cl == nullptr ? std::string() : cl->name;
+        if (cl != nullptr) {
+            for (size_t i = 0; i < cl->fields.size(); ++i) {
+                il::Module::ClassFamilyField f;
+                f.keyIndex = getKeyConstantIndex(cl->fields[i]);
+                f.writable = i < cl->fieldWritable.size() ? cl->fieldWritable[i] : true;
+                entry.fields.push_back(f);
+            }
+        }
+        ilModule_.classFamilies.push_back(std::move(entry));
+    }
 }
 
 // Whether this property site can be compiled as a load at a constant offset.
@@ -383,7 +423,8 @@ bool Lowerer::staticShapeSeamDisabled() {
 // no receiver slot to name, and the existing IC's depth field is the right
 // mechanism for it.
 std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr& receiver,
-                                                                const std::string& key) {
+                                                                const std::string& key,
+                                                                bool forWrite) {
     if (staticShapesDisabled_ || inference_ == nullptr) return std::nullopt;
 
     // `this` inside a method of a class SOMEBODY EXTENDS is the one receiver
@@ -391,47 +432,124 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
     // is the case that taught this: three.js never constructs a bare Object3D,
     // so every `this.matrixWorld` in that method runs on a Group or a Mesh, and
     // a cell that pins one of those shapes misses on all the others — forever,
-    // at the hottest site in the scene. Measured: the hierarchy bench was 3%
-    // SLOWER with these sites claimed than with the mechanism switched off.
+    // at the hottest site in the scene. Chunk 6 measured the hierarchy bench 3%
+    // SLOWER with these sites claimed than with the mechanism switched off, and
+    // declined all 952 of them.
     //
-    // The layout is not the thing that was wrong. A subclass's fields begin
+    // The layout was never the thing that was wrong. A subclass's fields begin
     // with the base's, so slot N really is the base's field N in every subclass
-    // too; what fails is the SHAPE COMPARE, which is deliberately an identity
-    // test and cannot be loosened without giving up what makes the load sound.
-    // Recognising many shapes per cell is rung 2, and this is rung 1, so the
-    // honest move is to decline the claim and name the reason.
+    // too; what failed is the SHAPE COMPARE, an identity test that cannot be
+    // loosened. So these sites get a different guard rather than a weaker one:
+    // the runtime stamps each SHAPE with the most specific proven class whose
+    // whole field list it verified as a prefix of that shape, and the site asks
+    // whether the stamp is in its own class's `extends` subtree. Same soundness
+    // story as the cell — a fact the runtime checked, so a wrong layout costs a
+    // guard that never matches — and one guard now serves every subclass.
     //
     // Every other receiver this analysis types is exact by construction: the
     // type came from `new C()` or from a field whose only writes are `new C()`,
-    // neither of which can produce a subclass.
+    // neither of which can produce a subclass, and those keep the cheaper
+    // identity compare.
     if (dynamic_cast<const ast::ThisExpr*>(&receiver) != nullptr) {
         const types::Type t = inference_->typeAt(&receiver);
         if (t.is(types::TypeKind::Object) && inference_->classLayouts.isExtended(t.shapeClass())) {
-            return std::nullopt;
+            const uint32_t slot = inference_->staticSlotAt(&receiver, key);
+            if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
+            // The FAMILY claim, which is the one thing that changed since the
+            // paragraph above was written. The layout was never the problem, so
+            // the fix is not more analysis: it is a guard that asks whether the
+            // shape in hand is one of the layouts that BEGIN with this class's
+            // fields, which is true of every subclass by 15.7.14 and which the
+            // runtime confirms name by name before it stamps the shape.
+            const types::ClassLayout* fam =
+                inference_->classLayouts.familyMemberOf(t.shapeClass());
+            if (familyGuardDisabled_ || fam == nullptr) return std::nullopt;
+            // A write needs the slot to be WRITABLE, and the stamp only stands
+            // for the attributes the class declared. `Object.defineProperty(
+            // this, 'id', {value: n})` declares a non-writable one, and a bare
+            // store into it would silently succeed where 10.4.5 refuses.
+            if (forWrite && slot < fam->fieldWritable.size() && !fam->fieldWritable[slot]) {
+                return std::nullopt;
+            }
+            buildClassFamilyTable();
+            StaticSlotSite site;
+            site.slot = slot;
+            site.cellIndex = 0;
+            site.familyLo = fam->familyIndex;
+            site.familySpan = fam->familySpan;
+            return site;
         }
     }
 
     const uint32_t slot = inference_->staticSlotAt(&receiver, key);
     if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
+
+    // An identity the interprocedural pass GUESSED does not get a CELL.
+    //
+    // A cell pins the first shape the site meets and misses on every other one,
+    // forever. That is the right trade for a receiver whose class is exact by
+    // construction — a `new C()` result, or a field whose only writes are one —
+    // because one shape really does arrive. A method PARAMETER is not that: the
+    // join says every caller this compilation saw passes a `Vector3`, and a
+    // Vector3-typed parameter still receives whichever of its subclasses, or
+    // whichever shape a late property add produced, the program actually built.
+    //
+    // Measured, on brobench, with the cell allowed here: many_meshes 37.8 vs
+    // 36.4 ms, instanced 16.0 vs 15.5, hierarchy 5.6 vs 5.3 — a 3-4% REGRESSION
+    // across all three scenes, two interleaved passes agreeing. Same shape as the
+    // 952 sites chunk 6 gave back, and the same cause. So a guessed identity may
+    // claim a slot only where the guard tolerates a family of shapes, and takes
+    // the ordinary inline cache otherwise.
+    const types::Type recvType = inference_->typeAt(&receiver);
+    if (recvType.identityOnly()) {
+        const types::ClassLayout* fam =
+            inference_->classLayouts.familyMemberOf(recvType.shapeClass());
+        if (familyGuardDisabled_ || fam == nullptr) return std::nullopt;
+        if (forWrite && slot < fam->fieldWritable.size() && !fam->fieldWritable[slot]) {
+            return std::nullopt;
+        }
+        buildClassFamilyTable();
+        StaticSlotSite site;
+        site.slot = slot;
+        site.cellIndex = 0;
+        site.familyLo = fam->familyIndex;
+        site.familySpan = fam->familySpan;
+        return site;
+    }
     return StaticSlotSite{slot, staticSiteCounter_++};
 }
 
 void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) {
     if (inst.keyIndex >= keyStrings_.size()) return;
-    const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex]);
+    const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex],
+                                      inst.op == il::Op::PropSet);
     if (!site) return;
     inst.staticSlot = site->slot;
     inst.staticCellIndex = site->cellIndex;
-    if (stats_) stats_->recordStaticSlot(receiver.span.file);
+    inst.familyLo = site->familyLo;
+    inst.familySpan = site->familySpan;
+    if (stats_) {
+        stats_->recordStaticSlot(receiver.span.file,
+                                site->familyLo != il::Instruction::kNoFamily);
+    }
 }
 
 void Lowerer::reportClassLayouts() {
     if (stats_ == nullptr || inference_ == nullptr) return;
     uint32_t proven = 0;
+    uint32_t familyRoots = 0;
     for (const auto& cl : inference_->classLayouts.all()) {
         if (cl.layoutProven) ++proven;
+        // A root of the forest is a family member whose base is not one: either
+        // it has no `extends`, or its base's layout was refused, or its base
+        // declares no fields of its own.
+        if (cl.familyIndex == types::ClassLayout::kNoFamily) continue;
+        const types::ClassLayout* base = inference_->classLayouts.byName(cl.superName);
+        if (base == nullptr || base->familyIndex == types::ClassLayout::kNoFamily) ++familyRoots;
     }
-    stats_->recordClassLayouts(proven, inference_->classLayouts.refusalHistogram());
+    stats_->recordClassLayouts(
+        proven, static_cast<uint32_t>(inference_->classLayouts.familyPreorder().size()),
+        familyRoots, inference_->classLayouts.refusalHistogram());
 }
 
 void Lowerer::recordPropertyAccess(uint16_t fileId, bool isNative,

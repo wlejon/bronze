@@ -79,6 +79,13 @@ struct InferenceResult {
     std::unordered_map<const ast::Expr*, Type> exprTypes;
     std::unordered_map<const ast::Expr*, ShapeClassId> siteShapes;
 
+    // Why an identifier that names a METHOD PARAMETER is still dynamic, for the
+    // one identifier read that asked. Diagnostics only — `--infer-stats` splits
+    // the "receiver is dynamic: identifier" row by it, which is how a chunk aimed
+    // at those sites finds out which refusal is holding them and how many. No
+    // consumer types anything from it.
+    std::unordered_map<const ast::Expr*, std::string> identRefusals;
+
     // Per merge point: the binding types the join at that point produced.
     // See `typeOfBindingAt` for what a merge point is and what the entry
     // covers. The inner map is ordered only so the analysis can compare

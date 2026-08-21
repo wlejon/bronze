@@ -257,6 +257,29 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_super_set,           BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64, BRONZE_ABI_BOOL)) \
     X(bronze_static_shape_publish,BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
+    /* The LAYOUT-FAMILY stamp: what lets one site serve every subclass of the
+     * class whose method it was written in. `bronze_static_shape_publish`
+     * above pins ONE shape, which is right for a receiver that has one, and
+     * permanently wrong for `this` inside a base-class method — three.js never
+     * constructs a bare Object3D, so `this.matrixWorld` there runs on a Group,
+     * a Mesh and a Scene, three shapes with Object3D's fields at the same
+     * slots.
+     *
+     * This helper stamps a SHAPE with the id of the most specific registered
+     * class whose whole declared field list is a genuine prefix of that
+     * shape's own properties — checked name by name, slot by slot, attribute
+     * by attribute, against the shape the object actually has. The compiler
+     * numbers its classes in PREORDER over the `extends` forest, so a class's
+     * descendants occupy a contiguous id range and a site's guard is a load of
+     * the stamp and one unsigned range compare. Ids are module-relative and
+     * biased by the base the module was handed at registration, which is what
+     * keeps two modules' class 3 apart.
+     *
+     * Nothing upstream has to be sound for this to be correct: the stamp is a
+     * fact the runtime verified about the shape in front of it, so a wrong
+     * layout claim costs a guard that never matches. Called once per shape,
+     * from a site's slow path, and only while the stamp is still zero. */ \
+    X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_iter_step,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
@@ -353,6 +376,26 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * touch, and a null one means the slot was never filled. */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    /* The module's proven class LAYOUTS, handed over at module init so that
+     * `bronze_family_stamp` can recognise a shape as an instance of one.
+     *
+     * `classes` is `classCount` pairs of u32 — a field start and a field count
+     * — indexing `fields`, which holds one u32 per field: the module's own key
+     * index shifted left one, with bit 0 set when the construction sequence
+     * installs that field WRITABLE. (`Object.defineProperty(this, 'id', {value:
+     * n})` installs a non-writable one, and three.js roots four `extends`
+     * chains that way, so the bit is not decoration: a write site may only
+     * claim a slot the stamp proved writable.) `keyMap` is the module's own
+     * key-index -> process-wide-id array, already filled by the
+     * `bronze_register_key_string` loop that precedes this call.
+     *
+     * The classes arrive in PREORDER over the `extends` forest, so ids are
+     * contiguous per subtree; the runtime allocates `classCount` consecutive
+     * ids from a process-wide counter and writes the first one into
+     * `*baseCell`, which is the one word every family guard in the module
+     * loads. Registration-only, like the two above. */ \
+    X(bronze_register_class_family, BRONZE_ABI_VOID, \
+      (BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_PU32, BRONZE_ABI_PU32, BRONZE_ABI_MU64)) \
     /* One source FILE and the functions written in it, handed over at module
      * init so that 20.2.3.5 Function.prototype.toString can return the source
      * text the spec says it returns rather than "[native code]".
@@ -656,6 +699,20 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_SHAPE_PROTO_OFFSET      32
 #define BRONZE_ABI_SHAPE_DICT_OFFSET       40
 #define BRONZE_ABI_SHAPE_USEDPROTO_OFFSET  48
+/* Shape::family_stamp — the layout-family id `bronze_family_stamp` writes and
+ * a family guard reads. It lives on the SHAPE and not on the object because
+ * that is where the fact belongs: every object at a shape has that shape's
+ * property names at that shape's slots, so one verification answers for all of
+ * them, and an object header stays the width it was. The guard already loads
+ * the shape pointer for the identity form, so this is one more load off memory
+ * that is immortal, shared by every instance, and hot. */
+#define BRONZE_ABI_SHAPE_FAMILY_OFFSET     56
+/* Not a class id: zero is "never looked at" and one is "looked at and matched
+ * no registered class". Both fail every range compare, because the runtime
+ * hands out ids from BRONZE_ABI_FAMILY_FIRST_ID up. */
+#define BRONZE_ABI_FAMILY_UNSTAMPED        0
+#define BRONZE_ABI_FAMILY_NONE             1
+#define BRONZE_ABI_FAMILY_FIRST_ID         2
 
 /* FunctionHeader::code — the identity the Math direct-dispatch guard compares
  * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */
@@ -919,6 +976,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_ABI_BOOL   bool
 #define BRONZE_ABI_CSTR   const char*
 #define BRONZE_ABI_PU64   const uint64_t*
+#define BRONZE_ABI_PU32   const uint32_t*
 #define BRONZE_ABI_MU64   uint64_t*
 #define BRONZE_ABI_TLSPTR bronze_tls_block*
 #define BRONZE_ABI_FNPTR  bronze_fn_code
@@ -936,6 +994,7 @@ BRONZE_ABI_FUNCTIONS(BRONZE_ABI_DECLARE)
 #undef BRONZE_ABI_BOOL
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
+#undef BRONZE_ABI_PU32
 #undef BRONZE_ABI_MU64
 #undef BRONZE_ABI_TLSPTR
 #undef BRONZE_ABI_FNPTR

@@ -39,6 +39,7 @@ public:
                              hostGlobals_.count("Float64Array") != 0 ||
                              hostGlobals_.count("Float32Array") != 0;
         staticShapesDisabled_ = staticShapeSeamDisabled();
+        familyGuardDisabled_ = familyGuardSeamDisabled();
     }
 
     std::optional<il::Module> lower();
@@ -376,15 +377,33 @@ private:
     // what an A/B isolates is the code, not the proof.
     bool staticShapesDisabled_ = false;
     static bool staticShapeSeamDisabled();
+    // BRONZE_NO_FAMILY_GUARD=1. The family guard alone, so an A/B can separate
+    // what chunk 6's identity cells bought from what recognising a whole
+    // `extends` subtree per site buys on top. With it on, a `this` receiver of
+    // an extended class declines its claim exactly as it did before — the
+    // 952-site refusal chunk 6 shipped.
+    bool familyGuardDisabled_ = false;
+    static bool familyGuardSeamDisabled();
+    // The module's class-layout table, in family preorder, filled once the
+    // first family site is claimed (so a program that proves nothing emits
+    // nothing). Interning the field names is what makes this a lowering step
+    // rather than a codegen one: the names have to become key-pool indices.
+    void buildClassFamilyTable();
+    bool classFamilyTableBuilt_ = false;
     // The instance slot a proven class layout puts `key` at on `receiver`, and
     // the module-global cell index the site gets, or nullopt. Allocates the
     // cell, so it is called exactly once per site.
     struct StaticSlotSite {
         uint32_t slot = 0;
         uint32_t cellIndex = 0;
+        // Set instead of the cell when the site guards on a layout FAMILY
+        // rather than on one shape's identity — a `this` receiver in a method
+        // of a class somebody extends. See `il::Instruction::familyLo`.
+        uint32_t familyLo = il::Instruction::kNoFamily;
+        uint32_t familySpan = 0;
     };
     std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
-                                                  const std::string& key);
+                                                  const std::string& key, bool forWrite);
     // Stamps a PropGet/PropSet whose `keyIndex` is already set. The key is read
     // back out of the module's constant table rather than passed, so the
     // fourteen call sites all say the same short thing and none of them can

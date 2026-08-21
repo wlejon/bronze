@@ -40,7 +40,14 @@ Type join(Type a, Type b) {
     // object is still known not to be a double, which is what lets a later
     // consumer skip a type check even when it cannot skip the shape check.
     switch (a.kind()) {
-        case TypeKind::Object: return Type::object();
+        case TypeKind::Object:
+            // Same class, one side only GUESSED at it: the guess is the weaker
+            // claim, so it is the join. Dropping to `object()` here instead
+            // would throw away an identity both sides agree on.
+            if (a.shapeClass() == b.shapeClass()) {
+                return Type::objectIdentityOnly(a.shapeClass());
+            }
+            return Type::object();
         case TypeKind::Function: return Type::function();
         case TypeKind::TypedArray: return Type::typedArray();
         default: break;

@@ -8,6 +8,7 @@
 #include "ast/ast.h"
 #include "support/diagnostics.h"
 #include "types/class_layout.h"
+#include "types/method_ident.h"
 #include "types/result.h"
 #include "types/type.h"
 
@@ -67,6 +68,10 @@ struct Scope {
     // to `Dynamic`. A future rule that folds a branch or a `typeof` from
     // Object-ness would have to stop believing this field first.
     ShapeClassId thisClass = kNoShapeClass;
+    // The class method this body IS, when it is one. Read for two things: the
+    // enclosing class of a `super.m()` call, and the stats row that attributes a
+    // still-dynamic identifier receiver to the reason its parameter was refused.
+    uint32_t methodIndex = kNoMethod;
 };
 
 struct ModuleContext {
@@ -93,6 +98,19 @@ struct ModuleContext {
     // whole licence for typing those calls (flow_expr.cpp).
     bool mathPristine = false;
     bool failed = false;
+
+    // ---- interprocedural identity (method_ident.h) --------------------------
+
+    // Every class method, and the `extends` forest that decides which of them a
+    // call on a given receiver class can reach.
+    MethodTable methods;
+    // Which method names have given up their parameters, and why. Grows only:
+    // an escape is a fact about the program text, and a call on a receiver whose
+    // class is not proven stays unproven, because a receiver's type only widens.
+    MethodPoison methodPoison;
+    // `BRONZE_NO_INTERPROC_IDENT` turns the whole mechanism off, leaving every
+    // method's parameters on the uniform dynamic convention.
+    bool interprocIdent = false;
 };
 
 struct FunctionOutcome {
@@ -124,7 +142,8 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record, bool isGenerator = false,
-                                ShapeClassId thisClass = kNoShapeClass);
+                                ShapeClassId thisClass = kNoShapeClass,
+                                uint32_t methodIndex = kNoMethod);
 
 // The `Type` of joining two program points: names in both are joined, names
 // in only one are dropped (they are block-scoped declarations that did not

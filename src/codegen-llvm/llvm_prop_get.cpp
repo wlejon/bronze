@@ -36,9 +36,9 @@ static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& ab
 }
 
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
-                         const ModuleTables& tables, llvm::Value* objBits, uint32_t keyIndex,
-                         uint32_t icIndex, bool monomorphic, uint32_t staticSlot,
-                         uint32_t staticCellIndex, std::string_view keyStr) {
+                         const ModuleTables& tables, llvm::Value* objBits,
+                         llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
+                         bool monomorphic, const StaticSite& site, std::string_view keyStr) {
     // Not branched on here: `monomorphic` is an identity proof, and the
     // sequence below is an inline cache, which is what an unproven site wants
     // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
@@ -68,8 +68,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
-        builder, tables, objBits, staticSlot, staticCellIndex, doneBb, /*store=*/nullptr,
-        "get");
+        builder, tables, objBits, site, doneBb, /*store=*/nullptr, "get");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -588,7 +587,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* slowDoneBb = llvm::BasicBlock::Create(ctx, "ic.slow.done", fn);
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, tables, keyIndex);
-    emitStaticSlotPublish(builder, abi, tables, objBits, keyIndex, staticSlot, staticCellIndex,
+    emitStaticSlotPublish(builder, abi, tables, objBits, objSlot, keyIndex, site,
                           /*forWrite=*/false, slowDoneBb, "get");
     builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);

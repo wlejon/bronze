@@ -298,13 +298,31 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                     // Same shape of bug, same rule: the static-slot cell array
                     // is a fixed-size global the backend emits, so a cell index
                     // past the count is an out-of-bounds store.
+                    // A FAMILY site names no cell at all — its guard is a
+                    // range compare against constants — so the bound is the
+                    // identity form's alone.
                     if (inst.staticSlot != Instruction::kNoStaticSlot &&
+                        inst.familyLo == Instruction::kNoFamily &&
                         inst.staticCellIndex >= module.staticSiteCount) {
                         diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                                 " names static-slot site " +
                                                 std::to_string(inst.staticCellIndex) +
                                                 ", past the module's site count " +
                                                 std::to_string(module.staticSiteCount));
+                        return false;
+                    }
+                    // And a family site's range has to be inside the table the
+                    // module actually emits, for the same reason: the runtime
+                    // registers exactly this many classes.
+                    if (inst.familyLo != Instruction::kNoFamily &&
+                        static_cast<size_t>(inst.familyLo) + inst.familySpan >=
+                            module.classFamilies.size()) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " names class-family range " +
+                                                std::to_string(inst.familyLo) + ".." +
+                                                std::to_string(inst.familyLo + inst.familySpan) +
+                                                ", past the module's class count " +
+                                                std::to_string(module.classFamilies.size()));
                         return false;
                     }
                     continue;

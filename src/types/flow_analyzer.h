@@ -159,11 +159,22 @@ private:
     Type newExpr(const ast::NewExpr& n);
     ShapeClassId constructorShape(const std::string& name);
     Type objectLit(const ast::ObjectLit& o);
+    // The arguments of `recv.name(...)` contributed to every method the call can
+    // reach, and the type its dispatch produces. See method_ident.h.
+    Type methodCall(const std::string& name, Type receiver, const std::vector<Type>& args,
+                    bool spreadArgs);
+    // The class a receiver type names, or null when it names none.
+    const ClassLayout* receiverClass(Type receiver) const;
+    // Records why a still-dynamic identifier receiver's parameter was refused,
+    // when the identifier IS a parameter of the method this body is.
+    void noteIdentRefusal(const ast::Ident& id, Type resolved);
+
     // `isGenerator` travels with the body for the reason flow.h gives.
-    void analyzeNested(const ast::Node& site, const std::string& declaredName,
+    Type analyzeNested(const ast::Node& site, const std::string& declaredName,
                        const std::vector<ast::Param>& params,
                        const std::vector<ast::StmtPtr>& body, Span span,
-                       bool isGenerator, ShapeClassId thisClass = kNoShapeClass);
+                       bool isGenerator, ShapeClassId thisClass = kNoShapeClass,
+                       uint32_t methodIndex = kNoMethod);
     void analyzeClassBody(const std::string& className,
                           const std::vector<ast::ClassMethod>& methods);
 
@@ -175,6 +186,14 @@ private:
 
     Type returnAccum_ = Type::never();
     uint32_t anonCounter_ = 0;
+    // The last member read this walker evaluated, and the type its BASE had.
+    // A call site needs the receiver's type, and the callee expression has
+    // already consumed it by the time `call` sees the result — re-walking the
+    // base to get it back would evaluate its effects twice, so the one
+    // evaluation leaves it here. One slot is enough: `expr(callee)` finishes
+    // with the outermost member read, which is the one the call is on.
+    const ast::MemberAccess* lastMember_ = nullptr;
+    Type lastMemberBase_ = Type::dynamic();
     std::vector<std::vector<Env>> breakStack_;
     std::vector<std::vector<Env>> continueStack_;
     std::vector<Env> loopBreaks_;

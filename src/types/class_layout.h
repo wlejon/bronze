@@ -44,6 +44,20 @@ struct ClassLayout {
     // only when `layoutProven`.
     std::vector<std::string> fields;
 
+    // Parallel to `fields`: whether the construction sequence installs that
+    // field as a WRITABLE data property. True for an ordinary assignment and a
+    // field declaration; false for `Object.defineProperty(this, 'id', {value:
+    // n})`, whose descriptor defaults every unstated attribute to false — which
+    // is how three.js gives Object3D, BufferGeometry, Material and Texture
+    // their `id`, i.e. how it roots nearly every `extends` chain in the
+    // library.
+    //
+    // A read does not care. A WRITE does: a fixed-offset store is a bare store
+    // and cannot fall into 10.4.5's refusal, so a site may only claim a slot the
+    // runtime confirmed writable — and the runtime confirms it by checking the
+    // shape node's attribute against this bit.
+    std::vector<bool> fieldWritable;
+
     // Per field, the type joined over every `this.<field> = ...` the class body
     // writes. Syntactic and deliberately shallow — see `harvestFieldType`.
     std::map<std::string, Type> fieldTypes;
@@ -71,6 +85,22 @@ struct ClassLayout {
     // inside them holds a subclass's shape — a different shape, even though the
     // subclass's layout begins with this one's fields.
     bool extended = false;
+
+    // This class's position in the PREORDER walk of the proven-layout classes,
+    // ordered by `extends`, and how many further classes its own subtree spans.
+    // `kNoFamily` for a class that is not in the forest: an unproven layout, or
+    // one with no fields at all (whose field list is a prefix of everything and
+    // would recognise every shape in the program).
+    //
+    // The pair is what a family guard compares against: a shape stamped with
+    // any id in [familyIndex, familyIndex + familySpan] has this class's whole
+    // field list as a prefix, because every class in that range is this class or
+    // a class that extends it, and a subclass's layout begins with its base's.
+    // That last sentence is the invariant the mechanism rests on, and `resolve`
+    // checks it rather than assuming it.
+    static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
+    uint32_t familyIndex = kNoFamily;
+    uint32_t familySpan = 0;
 
     // Whether `fields` is a claim about slot numbers, or only a name list.
     bool layoutProven = false;
@@ -111,6 +141,15 @@ public:
     // an extended class is shape-polymorphic; see `ClassLayout::extended`.
     bool isExtended(ShapeClassId id) const;
 
+    // The class a receiver of this shape class belongs to, when it is in the
+    // layout-family forest; null otherwise. What a `this` site consults to turn
+    // an identity claim it cannot use into a family claim it can.
+    const ClassLayout* familyMemberOf(ShapeClassId id) const;
+
+    // The forest in preorder — the order `familyIndex` numbers, and the order
+    // the module's registration table has to be emitted in.
+    const std::vector<const ClassLayout*>& familyPreorder() const { return preorder_; }
+
     // Every class, in first-declaration order — the reason it is a vector.
     const std::vector<ClassLayout>& all() const { return classes_; }
 
@@ -123,6 +162,13 @@ private:
     // TypeError at run time but must not be an infinite loop here.
     void resolve(size_t index, std::set<size_t>& resolving);
 
+    // Numbers the proven classes in preorder over `extends` and fills
+    // `familyIndex`/`familySpan`. Runs after every class is resolved, because
+    // the forest is only known then.
+    void buildFamilies();
+    uint32_t numberSubtree(size_t index, uint32_t next,
+                           const std::map<size_t, std::vector<size_t>>& children);
+
     // The collector's record for each class, kept only for the span of
     // `build` so `resolve` can reach a class's methods by index.
     std::vector<const FoundRef*> found_;
@@ -131,6 +177,7 @@ private:
     std::map<std::string, size_t> byName_;
     std::map<ShapeClassId, size_t> byShape_;
     std::vector<bool> resolved_;
+    std::vector<const ClassLayout*> preorder_;
     ShapeClassTable* shapes_ = nullptr;
 };
 

@@ -134,6 +134,23 @@ struct ModuleTables {
     // collection.
     llvm::GlobalVariable* staticSlots = nullptr;
     uint32_t staticSlotCount = 0;
+    // The layout-family tables. `familyClasses` is [2 x classCount] i32 — a
+    // field start and a field count — and `familyFields` is one i32 per field:
+    // the module's own key index shifted left one, with bit 0 the writable
+    // flag. Both are CONSTANT: they are what the compiler proved about the
+    // source, and nothing at run time revises it.
+    //
+    // `familyBase` is the one mutable word, and it is the reason class ids can
+    // be compile-time constants at every site: the runtime hands the module a
+    // block of consecutive ids at registration and the module remembers where
+    // the block starts, so a guard is `stamp - (base + lo) <=u span` with `lo`
+    // and `span` immediates. One word for the whole module rather than one cell
+    // per site — every family guard in the program loads the same address, so
+    // it is one cache line and LLVM can reuse the load inside a function.
+    llvm::GlobalVariable* familyBase = nullptr;
+    llvm::GlobalVariable* familyClasses = nullptr;
+    llvm::GlobalVariable* familyFields = nullptr;
+    uint32_t familyClassCount = 0;
     // The module scope's environment record, as one Value cell. The top level
     // runs exactly once, so that scope has exactly one activation and its
     // record is a singleton — which is what lets a top-level function

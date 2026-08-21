@@ -13,12 +13,20 @@
 #   tests/oracle/pin_matrix.sh <case-name> [<case-name> ...]
 #
 # Env: BRONZE=<path to bronze.exe> (default build/dev/src/cli/bronze.exe)
-#      SEAMS="BRONZE_NO_X BRONZE_NO_Y" — the seams to sweep, singly and together
+#      SEAMS="BRONZE_NO_X BRONZE_NO_Y" — RUN-time seams, swept singly and
+#        together as environment variables over one built executable.
+#      CSEAMS="BRONZE_NO_Z" — COMPILE-time seams. A seam that changes what the
+#        backend EMITS is read by the compiler, not by the program, so setting
+#        it in the run environment is a no-op and a matrix that swept it there
+#        would report a row it never tested. Each of these gets its own build
+#        instead, and the built executable is then run in the plain and
+#        GC-stress environments.
 set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRONZE="${BRONZE:-$root/build/dev/src/cli/bronze.exe}"
 SEAMS="${SEAMS:-BRONZE_NO_INLINE_ROOTS BRONZE_NO_STRICT_EQ_INLINE BRONZE_NO_ELEM_INLINE}"
+CSEAMS="${CSEAMS:-}"
 work="${TMPDIR:-/tmp}/bronze_pin_matrix"
 mkdir -p "$work"
 
@@ -71,6 +79,46 @@ for name in "$@"; do
                 diff "$expected" "$out" | head -10
                 fail=1
             fi
+        done
+
+        # The compile-time seams: one BUILD each (and one with all of them),
+        # then the plain and GC-stress environments over it.
+        cbuilds=""
+        for seam in $CSEAMS; do
+            cbuilds="$cbuilds $seam"
+        done
+        words=$(printf '%s\n' $CSEAMS | wc -w)
+        if [ "$words" -gt 1 ]; then
+            cbuilds="$cbuilds all"
+        fi
+        for spec in $cbuilds; do
+            if [ "$spec" = "all" ]; then
+                vars=""
+                for seam in $CSEAMS; do vars="$vars $seam=1"; done
+            else
+                vars="$spec=1"
+            fi
+            cexe="$work/${name}_${mode}_c_${spec}.exe"
+            if ! ( eval "export $vars"; "$BRONZE" build "$js" -o "$cexe" $flag ) \
+                 >"$work/build.log" 2>&1; then
+                echo "BUILD-FAIL $name/$mode/compiled-with-$spec"
+                cat "$work/build.log"
+                fail=1
+                continue
+            fi
+            for renv in "plain:" "stress:BRONZE_GC_STRESS=1"; do
+                rlabel="${renv%%:*}"
+                rvars="${renv#*:}"
+                out="$work/${name}_${mode}_c_${spec}_${rlabel}.out"
+                ( [ -n "$rvars" ] && eval "export $rvars"; "$cexe" ) >"$out" 2>/dev/null
+                if diff -q "$out" "$expected" >/dev/null 2>&1; then
+                    printf 'ok   %-28s %-8s built:%s/%s\n' "$name" "$mode" "$spec" "$rlabel"
+                else
+                    printf 'DIFF %-28s %-8s built:%s/%s\n' "$name" "$mode" "$spec" "$rlabel"
+                    diff "$expected" "$out" | head -10
+                    fail=1
+                fi
+            done
         done
     done
 done

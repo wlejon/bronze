@@ -606,10 +606,12 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<ast::Param>& params,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record, bool isGenerator, ShapeClassId thisClass) {
+                                bool record, bool isGenerator, ShapeClassId thisClass,
+                                uint32_t methodIndex) {
     Scope scope;
     scope.parent = parent;
     scope.thisClass = thisClass;
+    scope.methodIndex = methodIndex;
     // The same union lowering builds: a name assigned inside a `try` lives in
     // an environment record, and `queries.h`'s rule is that inference must
     // believe about a variable exactly what lowering decided about where it

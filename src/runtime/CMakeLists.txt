@@ -74,6 +74,7 @@ bronze_add_module(runtime
         rt_prop_symbol.cpp
         rt_prop_write.cpp
         static_shape.cpp
+        class_family.cpp
         rt_delete.cpp
         rt_private.cpp
         iterator.cpp
@@ -157,6 +158,7 @@ bronze_add_module(runtime
         ../../tests/runtime/native_fn_memo_test.cpp
         ../../tests/runtime/call_out_test.cpp
         ../../tests/runtime/root_slots_test.cpp
+        ../../tests/runtime/class_family_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on.

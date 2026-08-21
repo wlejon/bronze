@@ -73,6 +73,11 @@ private:
     // register was not.
     void reload(il::ValueId id);
     llvm::Value* slotAddr(uint32_t slot);
+    // The ADDRESS of an operand's root slot, for code that has to re-read the
+    // value after a call rather than before it. Null when the value has no slot
+    // (it is not Dynamic, so nothing can move it, and there is nothing to
+    // reload) — a caller that needs a live pointer must treat that as "cannot".
+    llvm::Value* rootSlotAddrOf(const il::Instruction& inst, size_t index);
     // Fills the frame's argv region and returns a pointer to it, or a null
     // pointer constant when the call takes no arguments. `first` is the index
     // of the first argument operand.

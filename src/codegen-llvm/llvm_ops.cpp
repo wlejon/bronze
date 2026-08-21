@@ -21,6 +21,22 @@
 
 namespace bronze::codegen_llvm {
 
+namespace {
+
+// The four IL fields the static-slot emitters read, in the one struct they take
+// — so a site's guard form is decided in one place instead of at each of the
+// two call sites below.
+StaticSite staticSiteOf(const il::Instruction& inst) {
+    StaticSite site;
+    site.slot = inst.staticSlot;
+    site.cellIndex = inst.staticCellIndex;
+    site.familyLo = inst.familyLo;
+    site.familySpan = inst.familySpan;
+    return site;
+}
+
+}  // namespace
+
 bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
     const AbiFns& abi = shared_.abi;
 
@@ -765,9 +781,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
             values_[inst.result] =
-                emitPropGet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex,
-                            inst.icIndex, inst.icMonomorphic, inst.staticSlot,
-                            inst.staticCellIndex, keyStr);
+                emitPropGet(builder_, abi, globals_, shared_.tables, obj,
+                            rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
+                            inst.icMonomorphic, staticSiteOf(inst), keyStr);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }
@@ -779,9 +795,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
-            emitPropSet(builder_, abi, globals_, shared_.tables, obj, inst.keyIndex, val,
-                        inst.icIndex, inst.immI32 != 0, inst.icMonomorphic, inst.staticSlot,
-                        inst.staticCellIndex, keyStr);
+            emitPropSet(builder_, abi, globals_, shared_.tables, obj, rootSlotAddrOf(inst, 0),
+                        inst.keyIndex, val, inst.icIndex, inst.immI32 != 0, inst.icMonomorphic,
+                        staticSiteOf(inst), keyStr);
             return true;
         }
         case il::Op::ElemGet: {

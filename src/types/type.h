@@ -60,6 +60,29 @@ public:
     static constexpr Type object(ShapeClassId cls = kNoShapeClass) {
         return Type(TypeKind::Object, cls);
     }
+    // The same identity, marked as one the interprocedural pass GUESSED rather
+    // than watched being made.
+    //
+    // `Type::object(C)` from `new C()` or an object literal is a fact: that
+    // expression built that object. `objectIdentityOnly(C)` is a join over the
+    // call sites of a method — "every caller this compilation could see passes a
+    // C here" — and a caller it could not see (a `.call`, a computed dispatch, a
+    // callback the host invokes) makes it wrong. It is still worth having,
+    // because an object identity licenses exactly one thing: the property-site
+    // form, whose guard is a shape compare the runtime performs. A wrong guess
+    // there costs a miss.
+    //
+    // What it must never do is become a claim about a VALUE, and there is one
+    // road from an identity to a value type — `ClassLayoutTable::fieldTypeOf`,
+    // which answers `number` for a field the class body only ever assigns
+    // numbers to. `Number` licenses unboxed f64 and IS a soundness obligation,
+    // so this bit is what stops the identity being spent on one: a field read
+    // through an identity-only base keeps a (still identity-only) object
+    // identity and drops every primitive answer to `Dynamic`.
+    static constexpr Type objectIdentityOnly(ShapeClassId cls) {
+        return cls == kNoShapeClass ? Type(TypeKind::Object, cls)
+                                    : Type(TypeKind::Object, cls, true);
+    }
     static constexpr Type function(uint32_t index = kNoFunctionIndex) {
         return Type(TypeKind::Function, index);
     }
@@ -80,6 +103,9 @@ public:
     constexpr ShapeClassId shapeClass() const {
         return kind_ == TypeKind::Object ? payload_ : kNoShapeClass;
     }
+    // See `objectIdentityOnly`. False for every non-object, and false for an
+    // object with no identity — there is nothing there to be only.
+    constexpr bool identityOnly() const { return identityOnly_; }
     constexpr uint32_t functionIndex() const {
         return kind_ == TypeKind::Function ? payload_ : kNoFunctionIndex;
     }
@@ -91,7 +117,8 @@ public:
     }
 
     friend constexpr bool operator==(Type a, Type b) {
-        return a.kind_ == b.kind_ && a.payload_ == b.payload_;
+        return a.kind_ == b.kind_ && a.payload_ == b.payload_ &&
+               a.identityOnly_ == b.identityOnly_;
     }
     friend constexpr bool operator!=(Type a, Type b) { return !(a == b); }
 
@@ -100,11 +127,13 @@ public:
 
 private:
     static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
-    constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload)
-        : kind_(k), payload_(payload) {}
+    constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload,
+                            bool identityOnly = false)
+        : kind_(k), payload_(payload), identityOnly_(identityOnly) {}
 
     TypeKind kind_ = TypeKind::Never;
     uint32_t payload_ = kNoPayload;
+    bool identityOnly_ = false;
 };
 
 // `Never ⊔ t = t`; `t ⊔ t = t`; anything else is `Dynamic` — except that two

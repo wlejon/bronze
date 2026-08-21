@@ -508,6 +508,25 @@ struct Instruction {
     // wrong therefore never publishes, and the site simply keeps taking its
     // slow path — the failure mode is a cost, never an answer.
     uint32_t staticCellIndex = 0;
+    // PropGet/PropSet: the LAYOUT FAMILY this site guards on instead of one
+    // shape's identity, as the preorder id of the receiver's class and the size
+    // of its `extends` subtree. `kNoFamily` for a site that keeps the identity
+    // form.
+    //
+    // This is what a `this` receiver inside a method of an EXTENDED class gets.
+    // Its static class is not its runtime shape — three.js never constructs a
+    // bare `Object3D`, so `this.matrixWorld` in `updateMatrixWorld` runs on a
+    // Group, a Mesh and a Scene — and a cell that pins one of those misses on
+    // the rest forever. The layout was never wrong: a proven subclass's fields
+    // begin with its base's, at the same slots. So the guard changes shape
+    // rather than the claim, from `shape == pinned` to `stamp - (base + lo) <=u
+    // span`, where the stamp is a word the runtime wrote onto the SHAPE after
+    // verifying that class's whole field list against it.
+    //
+    // `staticSlot` still says which slot; these say who may use it.
+    static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
+    uint32_t familyLo = kNoFamily;
+    uint32_t familySpan = 0;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
 
@@ -662,6 +681,19 @@ struct Module {
     // and the verifier checks every `staticCellIndex` against it. Zero when the
     // seam is off or nothing proved, and then no array is emitted at all.
     uint32_t staticSiteCount = 0;
+    // The proven class layouts, in the PREORDER the family ids number: what the
+    // module hands `bronze_register_class_family` at init so that the runtime
+    // can recognise a shape as an instance of one. Empty when nothing proved,
+    // or when the family seam is off.
+    struct ClassFamilyField {
+        uint32_t keyIndex = 0;   // into `keyConstants`
+        bool writable = true;    // as the construction sequence installs it
+    };
+    struct ClassFamilyEntry {
+        std::string name;  // the class's binding, for the IL dump only
+        std::vector<ClassFamilyField> fields;
+    };
+    std::vector<ClassFamilyEntry> classFamilies;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

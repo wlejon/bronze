@@ -91,7 +91,11 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return scope_.thisClass == kNoShapeClass ? Type::dynamic()
                                                  : Type::object(scope_.thisClass);
     }
-    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) return lookup(id->name);
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+        const Type t = lookup(id->name);
+        noteIdentRefusal(*id, t);
+        return t;
+    }
     if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) return unary(*u);
     if (const auto* b = dynamic_cast<const ast::Binary*>(&e)) return binary(*b);
     if (const auto* t = dynamic_cast<const ast::Ternary*>(&e)) {
@@ -106,6 +110,18 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
         const Type base = expr(*m->object);
+        lastMember_ = m;
+        lastMemberBase_ = base;
+        // A read from a value that never arrives produces a value that never
+        // arrives. Answering `Dynamic` here instead would be a claim, and the
+        // wrong one: `Never` is the bottom of this lattice and only widens, so a
+        // base that is `Never` on one round of the call-graph fixpoint and a
+        // class on the next would have made this expression's type NARROW
+        // between rounds. The interprocedural pass (method_ident.h) reads
+        // receiver types to decide which methods it can still speak for, and a
+        // decision taken from a narrowing sequence is not a fixpoint — it is
+        // whichever round happened to run last.
+        if (base.is(TypeKind::Never)) return Type::never();
         // The Math VALUE properties are numbers on the pristine builtin —
         // 21.3.1 lists exactly these eight, all non-writable and
         // non-configurable, though what carries the proof here is the
@@ -129,7 +145,16 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // produces `undefined`, which is not the field's type.
         if (!m->optional && base.is(TypeKind::Object) &&
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
-            return mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
+            const Type field =
+                mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
+            // An identity the interprocedural pass GUESSED cannot be spent on a
+            // value type — see `Type::objectIdentityOnly`. The identity travels
+            // (still as a guess, so the next link is bounded the same way);
+            // everything else becomes the answer this returned before the guess
+            // existed.
+            if (!base.identityOnly()) return field;
+            return field.is(TypeKind::Object) ? Type::objectIdentityOnly(field.shapeClass())
+                                              : Type::dynamic();
         }
         // Otherwise: the receiver's shape class is proven, never the property's
         // type; that is what the inline-cache check consumes and all it needs.
@@ -269,9 +294,20 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
 
 Type FlowAnalyzer::call(const ast::Call& c) {
     const Type calleeType = expr(*c.callee);
+    // The receiver of a method call, recovered from the one evaluation of the
+    // callee rather than by walking its base a second time. `lastMember_` is the
+    // outermost member read that evaluation finished with, so the pointer
+    // compare is what confirms this call really is on it.
+    const auto* member = dynamic_cast<const ast::MemberAccess*>(c.callee.get());
+    const Type receiver = (member != nullptr && lastMember_ == member) ? lastMemberBase_
+                                                                       : Type::dynamic();
     std::vector<Type> args;
     args.reserve(c.args.size());
-    for (const auto& a : c.args) args.push_back(expr(*a));
+    bool spreadArgs = false;
+    for (const auto& a : c.args) {
+        if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+        args.push_back(expr(*a));
+    }
 
     // `Math.<fn>(...)` on the pristine builtin: every OWN function property
     // of 21.3 returns a Number for ANY arguments (a BigInt argument throws
@@ -281,6 +317,32 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     if (!c.optional && mathCallReturnsNumber(c)) {
         if (record_) mod_.result->pristineMathCalls.insert(&c);
         return Type::number();
+    }
+
+    // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
+    // receiver's class rather than through the callee's name.
+    if (member != nullptr) return methodCall(member->property, receiver, args, spreadArgs);
+    // `super.m(...)`. The receiver is this method's `this` — a subclass instance
+    // — but the LOOKUP starts at the enclosing class's base, which is the one
+    // thing about the dispatch that is decided statically. So the contribution
+    // goes to whatever `m` that base would find, and to the overrides below it,
+    // exactly as an ordinary call on a base-typed receiver does.
+    if (const auto* sup = dynamic_cast<const ast::SuperMember*>(c.callee.get())) {
+        const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
+        if (here == nullptr || here->superName.empty()) {
+            if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
+                mod_.methodPoison.add(sup->property, "a `super` call whose base class is unknown");
+            }
+            return Type::dynamic();
+        }
+        const ClassLayout* base = mod_.result->classLayouts.byName(here->superName);
+        if (base == nullptr) {
+            if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
+                mod_.methodPoison.add(sup->property, "a `super` call whose base class is unknown");
+            }
+            return Type::dynamic();
+        }
+        return methodCall(sup->property, Type::object(base->shapeClass), args, spreadArgs);
     }
 
     const uint32_t index = calleeType.functionIndex();
@@ -296,6 +358,103 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         callee.observedParams[i] = join(callee.observedParams[i], at);
     }
     return callee.signature.returnType;
+}
+
+const ClassLayout* FlowAnalyzer::receiverClass(Type receiver) const {
+    if (!receiver.is(TypeKind::Object) || receiver.shapeClass() == kNoShapeClass) return nullptr;
+    const ClassLayout* cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
+    return cl == nullptr || cl->name.empty() ? nullptr : cl;
+}
+
+// One `recv.name(...)`.
+//
+// The contribution is the whole mechanism: every method this call can reach
+// joins the argument types at this site into its `observedParams`, and
+// `widenSignatures` folds those into the signature the method's body is then
+// analysed under. Everything else here is the discipline that keeps the join
+// from speaking for callers it never saw.
+Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
+                              const std::vector<Type>& args, bool spreadArgs) {
+    if (!mod_.interprocIdent) return Type::dynamic();
+    // No class declares a method by this name, so no parameter of any modelled
+    // method is at stake — this is a call on a builtin, on host code, or on a
+    // function a property happens to hold.
+    if (!mod_.methods.isMethodName(name)) return Type::dynamic();
+    // Nothing has reached this receiver yet. The call-graph fixpoint has not
+    // finished; a round that read this as "unproven" would be poisoning the name
+    // on evidence that does not exist.
+    if (receiver.is(TypeKind::Never)) return Type::never();
+
+    const ClassLayout* cls = receiverClass(receiver);
+    if (cls == nullptr) {
+        mod_.methodPoison.add(name, "called on a receiver whose class is not proven");
+        return Type::dynamic();
+    }
+    if (spreadArgs) {
+        mod_.methodPoison.add(name, "an argument list is spread at a call site");
+        return Type::dynamic();
+    }
+    std::vector<uint32_t> targets;
+    mod_.methods.reachableFrom(cls->name, name, targets);
+    // The receiver's class declares nothing by this name and neither does
+    // anything it extends: the property is inherited from outside the modelled
+    // classes, or absent. No modelled method is reached, so none is poisoned.
+    if (targets.empty()) return Type::dynamic();
+
+    Type ret = Type::never();
+    bool everyTargetSpeaks = true;
+    for (const uint32_t index : targets) {
+        MethodInfo& target = mod_.methods.methods()[index];
+        // A missing argument is `undefined`, exactly as the call delivers it.
+        for (size_t i = 0; i < target.observedParams.size(); ++i) {
+            const Type at = i < args.size() ? args[i] : Type::undefined();
+            target.observedParams[i] = join(target.observedParams[i], at);
+        }
+        if (mod_.methodPoison.poisons(target.methodName)) {
+            everyTargetSpeaks = false;
+            continue;
+        }
+        ret = join(ret, target.signature.returnType);
+    }
+    // The value: what every method this dispatch can reach returns. An identity
+    // out of here is as good as the dispatch that chose it, which is a guess —
+    // so it travels as one. `return this` is the case that pays: three.js
+    // methods chain, and `v.copy(u).add(w)` is two sites, not one.
+    if (!everyTargetSpeaks || ret.is(TypeKind::Never)) return Type::dynamic();
+    if (ret.is(TypeKind::Object) && ret.shapeClass() != kNoShapeClass) {
+        return Type::objectIdentityOnly(ret.shapeClass());
+    }
+    // Only an identity is worth carrying out of an optimistic dispatch. A
+    // primitive return type would be a claim about a VALUE, which is what
+    // `Type::objectIdentityOnly` exists to keep this mechanism out of.
+    return Type::dynamic();
+}
+
+void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
+    if (!record_ || !mod_.interprocIdent) return;
+    if (!resolved.is(TypeKind::Dynamic)) return;
+    if (scope_.methodIndex == kNoMethod) return;
+    const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
+    const auto& names = self.fn->params;
+    bool isParam = false;
+    for (const auto& p : names) {
+        if (p.name == id.name) {
+            isParam = true;
+            break;
+        }
+    }
+    if (!isParam) return;
+    std::string reason;
+    if (!self.plainParams) {
+        reason = "the method's parameter list is not plain";
+    } else if (mod_.methodPoison.poisons(self.methodName)) {
+        reason = mod_.methodPoison.reasonFor(self.methodName);
+    } else if (self.unreached) {
+        reason = "no call site this compilation saw reaches the method";
+    } else {
+        reason = "the call sites disagree about the argument's class";
+    }
+    mod_.result->identRefusals.emplace(&id, std::move(reason));
 }
 
 Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
@@ -382,10 +541,10 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
     return Type::object(cls);
 }
 
-void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
+Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
                    const std::vector<ast::Param>& params,
                    const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator,
-                   ShapeClassId thisClass) {
+                   ShapeClassId thisClass, uint32_t methodIndex) {
     std::string name = declaredName;
     if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
     std::vector<const ast::Stmt*> borrowed;
@@ -393,11 +552,37 @@ void FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     for (const auto& s : body) borrowed.push_back(s.get());
 
     // A closure is never a direct-call target, so its parameters keep the
-    // uniform dynamic convention.
-    const std::vector<Type> paramTypes(params.size(), Type::dynamic());
-    analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
-                    /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
-                    isGenerator, thisClass);
+    // uniform dynamic convention. A class METHOD is the exception this chunk
+    // added: its callers are enumerable through the receiver's class, so it has
+    // a signature of its own (method_ident.h). Nothing about the CALLING
+    // CONVENTION changes either way — a method is still invoked dynamically;
+    // what the signature buys is what the body may believe about its arguments.
+    std::vector<Type> paramTypes(params.size(), Type::dynamic());
+    if (methodIndex != kNoMethod) {
+        const MethodInfo& self = mod_.methods.methods()[methodIndex];
+        if (self.plainParams && !mod_.methodPoison.poisons(self.methodName)) {
+            for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
+                const Type proven = self.signature.params[i];
+                // An IDENTITY only. A parameter every seen caller passes a
+                // number to is not thereby a number: the dispatch that chose
+                // this method is a guess, and `Number` licenses unboxed f64,
+                // which no guess may license. An object identity licenses the
+                // guarded property-site form and nothing else, which is exactly
+                // what a guess can afford.
+                if (proven.is(TypeKind::Object) && proven.shapeClass() != kNoShapeClass) {
+                    paramTypes[i] = Type::objectIdentityOnly(proven.shapeClass());
+                } else if (proven.is(TypeKind::Never)) {
+                    // Still waiting on the fixpoint. `Never` is what says so.
+                    paramTypes[i] = proven;
+                }
+            }
+        }
+    }
+    const FunctionOutcome outcome =
+        analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
+                        /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
+                        isGenerator, thisClass, methodIndex);
+    return outcome.returnType;
 }
 
 // A class body, walked with `this` bound to the class the declaration names.
@@ -418,8 +603,15 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
         if (m.keyExpr) expr(*m.keyExpr);
         const ShapeClassId receiver = m.isStatic ? kNoShapeClass : owner;
         if (m.fn) {
-            analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                          m.fn->isGenerator || m.fn->isAsync, receiver);
+            const uint32_t index =
+                mod_.interprocIdent ? mod_.methods.indexOfNode(m.fn.get()) : kNoMethod;
+            const Type returned =
+                analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
+                              m.fn->isGenerator || m.fn->isAsync, receiver, index);
+            if (index != kNoMethod) {
+                MethodInfo& self = mod_.methods.methods()[index];
+                self.observedReturn = join(self.observedReturn, returned);
+            }
         } else if (m.init) {
             // A field initializer is evaluated with `this` already bound to the
             // instance being constructed (15.7.10), so it sees the receiver too

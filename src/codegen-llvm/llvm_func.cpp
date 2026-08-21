@@ -52,6 +52,15 @@ llvm::Value* FunctionEmitter::slotAddr(uint32_t slot) {
     return builder_.CreateGEP(i64Ty_, slotsBase_, builder_.getInt32(slot));
 }
 
+llvm::Value* FunctionEmitter::rootSlotAddrOf(const il::Instruction& inst, size_t index) {
+    if (index >= inst.operands.size()) return nullptr;
+    const il::ValueId id = inst.operands[index];
+    if (id == il::kNoValue || id >= func_.valueCount) return nullptr;
+    const uint32_t slot = slotOf_[id];
+    if (slot == kNoSlot) return nullptr;
+    return slotAddr(slot);
+}
+
 void FunctionEmitter::reload(il::ValueId id) {
     if (id == il::kNoValue || id >= func_.valueCount) return;
     uint32_t slot = slotOf_[id];
@@ -370,6 +379,22 @@ void FunctionEmitter::emitModuleInit() {
             builder_.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(), tables.keyMap, 0,
                                                 static_cast<uint32_t>(k)),
             llvm::Align(4));
+    }
+    // AFTER the key loop, and that order is the whole reason this call is here
+    // rather than at the top: the family table names fields by the module's own
+    // key index, and the runtime turns those into process-wide ids by reading
+    // `keyMap` — which is only filled once every key above has been interned.
+    if (tables.familyClasses != nullptr) {
+        builder_.CreateCall(
+            shared_.abi.bronze_register_class_family,
+            {builder_.CreateConstInBoundsGEP2_32(tables.familyClasses->getValueType(),
+                                                 tables.familyClasses, 0, 0),
+             builder_.getInt32(tables.familyClassCount),
+             builder_.CreateConstInBoundsGEP2_32(tables.familyFields->getValueType(),
+                                                 tables.familyFields, 0, 0),
+             builder_.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(), tables.keyMap, 0,
+                                                 0),
+             tables.familyBase});
     }
 }
 

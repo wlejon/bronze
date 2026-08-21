@@ -59,6 +59,7 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #define BRONZE_ABI_BOOL   llvm::Type::getInt1Ty(ctx)
 #define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_PU32   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_MU64   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_TLSPTR llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
@@ -108,6 +109,7 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #undef BRONZE_ABI_BOOL
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
+#undef BRONZE_ABI_PU32
 #undef BRONZE_ABI_MU64
 #undef BRONZE_ABI_TLSPTR
 #undef BRONZE_ABI_FNPTR
@@ -202,6 +204,45 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
         llvm::ArrayType* ty = llvm::ArrayType::get(i64Ty, tables.staticSlotCount);
         tables.staticSlots = createTable(llvmModule, ty, llvm::ConstantAggregateZero::get(ty),
                                          "__bronze_static_shapes", 8);
+    }
+
+    tables.familyClassCount = static_cast<uint32_t>(module.classFamilies.size());
+    if (tables.familyClassCount > 0) {
+        std::vector<uint32_t> classRows;
+        std::vector<uint32_t> fieldRows;
+        classRows.reserve(tables.familyClassCount * 2);
+        for (const auto& cls : module.classFamilies) {
+            classRows.push_back(static_cast<uint32_t>(fieldRows.size()));
+            classRows.push_back(static_cast<uint32_t>(cls.fields.size()));
+            for (const auto& f : cls.fields) {
+                // Key index in the high bits, writability in bit 0: one word
+                // per field keeps the table a single ConstantDataArray, and the
+                // runtime needs exactly these two facts to check a shape's
+                // prefix against the class.
+                fieldRows.push_back((f.keyIndex << 1) | (f.writable ? 1u : 0u));
+            }
+        }
+        // Zero fields across every class would make a table that matches every
+        // shape; lowering does not emit such a class, and an empty field array
+        // would be a global with no elements.
+        if (!fieldRows.empty()) {
+            tables.familyClasses = createTable(
+                llvmModule, llvm::ArrayType::get(i32Ty, classRows.size()),
+                llvm::ConstantDataArray::get(ctx, classRows), "__bronze_family_classes", 4);
+            tables.familyClasses->setConstant(true);
+            tables.familyFields = createTable(
+                llvmModule, llvm::ArrayType::get(i32Ty, fieldRows.size()),
+                llvm::ConstantDataArray::get(ctx, fieldRows), "__bronze_family_fields", 4);
+            tables.familyFields->setConstant(true);
+            // Zero until registration, and zero is below every id the runtime
+            // hands out — so a guard that runs before init (there is none, but
+            // the encoding should not depend on that) computes a huge unsigned
+            // difference and misses.
+            tables.familyBase = createTable(llvmModule, i64Ty, llvm::ConstantInt::get(i64Ty, 0),
+                                            "__bronze_family_base", 8);
+        } else {
+            tables.familyClassCount = 0;
+        }
     }
 
     if (module.icSiteCount > 0) {

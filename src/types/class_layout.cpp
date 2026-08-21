@@ -24,6 +24,7 @@
 #include "types/class_layout.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "types/walk.h"
 
@@ -57,6 +58,11 @@ namespace {
 class ThisWriteWalker final : public Walker {
 public:
     std::vector<std::string> names;
+    // Parallel to `names`: whether that install makes a WRITABLE data property.
+    // False only for a `defineProperty` descriptor that does not say
+    // `writable: true`, which is the default the spec gives an unstated
+    // attribute and the one three.js's `id` relies on.
+    std::vector<bool> writable;
     // A write this walker could not turn into a name — `this[k] = v`, or a
     // spread/destructuring target. The layout after one of these is unknown,
     // so it refuses the class rather than guessing a shorter one.
@@ -114,12 +120,12 @@ public:
         const std::vector<std::string> addedElse(elseArm.names.begin() + names.size(),
                                                  elseArm.names.end());
         if (addedThen == addedElse) {
-            for (const auto& name : addedThen) add(name);
+            for (const auto& name : addedThen) add(name, true);
             return;
         }
         branched([&] {
-            for (const auto& name : addedThen) add(name);
-            for (const auto& name : addedElse) add(name);
+            for (const auto& name : addedThen) add(name, true);
+            for (const auto& name : addedElse) add(name, true);
         });
     }
     void visit(const ast::WhileStmt& n) override { branched([&] { Walker::visit(n); }); }
@@ -185,7 +191,7 @@ public:
             // An ACCESSOR descriptor is deliberately not modelled: it takes a
             // different runtime path, and a slot claimed over it could not be
             // published anyway.
-            for (const auto& name : *defined) add(name);
+            for (const auto& entry : *defined) add(entry.first, entry.second);
             Walker::visit(n);
             return;
         }
@@ -219,7 +225,7 @@ private:
             // A private name is not a property key: no shape carries `#x`, so
             // it takes no slot and must not appear in the layout.
             if (m->isPrivate) return;
-            add(m->property);
+            add(m->property, true);
             return;
         }
         if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(&lhs)) {
@@ -228,7 +234,7 @@ private:
             // is a key this analysis cannot name, and the order after it is
             // unknown.
             if (const auto* s = dynamic_cast<const ast::StringLit*>(ix->index.get())) {
-                add(s->value);
+                add(s->value, true);
                 return;
             }
             sawUnmodellableWrite = true;
@@ -242,6 +248,7 @@ private:
     ThisWriteWalker arm() const {
         ThisWriteWalker w;
         w.names = names;
+        w.writable = writable;
         return w;
     }
 
@@ -259,10 +266,11 @@ private:
         --branchDepth_;
     }
 
-    void add(const std::string& name) {
+    void add(const std::string& name, bool isWritable) {
         if (std::find(names.begin(), names.end(), name) != names.end()) return;
         if (branchDepth_ != 0) sawConditionalNewField = true;
         names.push_back(name);
+        writable.push_back(isWritable);
     }
 
     uint32_t branchDepth_ = 0;
@@ -289,7 +297,14 @@ private:
     // A plain data descriptor: `{ value: v }`, `{ value: v, writable: true }`.
     // Refuses anything with a computed key, a spread, a method, or a `get`/`set`
     // — the last because that is an accessor, which is not this shape at all.
-    static bool isDataDescriptor(const ast::Expr* e) {
+    //
+    // `outWritable` receives what the descriptor says about writability, which
+    // is 6.2.6.5's default — FALSE — unless it says `writable: true` in so many
+    // words. Anything less literal than a boolean literal answers false too:
+    // being wrong here costs a guard that never matches, and false is the answer
+    // that is right for `{value: n}`, the form the library actually uses.
+    static bool isDataDescriptor(const ast::Expr* e, bool& outWritable) {
+        outWritable = false;
         const auto* lit = dynamic_cast<const ast::ObjectLit*>(e);
         if (lit == nullptr) return false;
         for (const auto& p : lit->props) {
@@ -297,13 +312,19 @@ private:
                 return false;
             }
             if (p.key == "get" || p.key == "set" || p.key.empty()) return false;
+            if (p.key == "writable") {
+                const auto* b = dynamic_cast<const ast::BoolLit*>(p.value.get());
+                outWritable = b != nullptr && b->value;
+            }
         }
         return true;
     }
 
     // The keys a modellable `defineProperty`/`defineProperties` on `this`
-    // installs, in order, or null when the call is not one.
-    const std::vector<std::string>* modellableThisDefine(const ast::Call& call) {
+    // installs, in order, each with its writability, or null when the call is
+    // not one.
+    const std::vector<std::pair<std::string, bool>>* modellableThisDefine(
+        const ast::Call& call) {
         const auto* m = dynamic_cast<const ast::MemberAccess*>(call.callee.get());
         if (m == nullptr) return nullptr;
         const auto* base = dynamic_cast<const ast::Ident*>(m->object.get());
@@ -311,11 +332,12 @@ private:
         if (call.args.size() < 2 || !isThis(call.args[0].get())) return nullptr;
 
         definedScratch_.clear();
+        bool isWritable = false;
         if (m->property == "defineProperty") {
             const auto* key = dynamic_cast<const ast::StringLit*>(call.args[1].get());
             if (key == nullptr || call.args.size() < 3) return nullptr;
-            if (!isDataDescriptor(call.args[2].get())) return nullptr;
-            definedScratch_.push_back(key->value);
+            if (!isDataDescriptor(call.args[2].get(), isWritable)) return nullptr;
+            definedScratch_.emplace_back(key->value, isWritable);
             return &definedScratch_;
         }
         if (m->property != "defineProperties") return nullptr;
@@ -325,13 +347,13 @@ private:
             if (p.computed() || p.key.empty() || p.accessor != ast::AccessorKind::None) {
                 return nullptr;
             }
-            if (!isDataDescriptor(p.value.get())) return nullptr;
-            definedScratch_.push_back(p.key);
+            if (!isDataDescriptor(p.value.get(), isWritable)) return nullptr;
+            definedScratch_.emplace_back(p.key, isWritable);
         }
         return &definedScratch_;
     }
 
-    std::vector<std::string> definedScratch_;
+    std::vector<std::pair<std::string, bool>> definedScratch_;
 
     // `Object.defineProperty(this, ...)`, `Object.defineProperties(this, ...)`,
     // `Object.assign(this, ...)`, `Object.freeze(this)`, `Object.seal(this)`,
@@ -535,6 +557,8 @@ void ClassLayoutTable::build(const ast::Module& module, ShapeClassTable& shapes)
         resolve(i, resolving);
     }
 
+    buildFamilies();
+
     // Pass 3: field types. Deferred to its own pass because a field's type can
     // name a class whose own identity is only minted in pass 2.
     for (size_t i = 0; i < classes_.size(); ++i) {
@@ -567,6 +591,7 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     }
 
     std::vector<std::string> fields;
+    std::vector<bool> fieldWritable;
     bool proven = true;
     std::string refusal;
     std::map<std::string, size_t> ctorThisCalls;
@@ -596,6 +621,7 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                 refusal = "base class layout refused: " + base.name;
             } else {
                 fields = base.fields;
+                fieldWritable = base.fieldWritable;
                 baseFieldCount = fields.size();
                 // A base method's late field is a late field of every derived
                 // class too — instances of the derived class are what the
@@ -614,9 +640,10 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     }
 
     if (proven && f != nullptr && f->methods != nullptr) {
-        auto add = [&fields](const std::string& name) {
+        auto add = [&fields, &fieldWritable](const std::string& name, bool isWritable) {
             if (std::find(fields.begin(), fields.end(), name) == fields.end()) {
                 fields.push_back(name);
+                fieldWritable.push_back(isWritable);
             }
         };
 
@@ -631,7 +658,7 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                 break;
             }
             if (m.isPrivate()) continue;  // no shape carries a private name
-            add(m.name);
+            add(m.name, true);
         }
 
         if (proven) {
@@ -648,7 +675,9 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                     proven = false;
                     refusal = "constructor assigns a field conditionally";
                 } else {
-                    for (const auto& name : walker.names) add(name);
+                    for (size_t i = 0; i < walker.names.size(); ++i) {
+                        add(walker.names[i], walker.writable[i]);
+                    }
                     ctorThisCalls = std::move(walker.thisCalls);
                     ctorFieldCount = walker.names.size();
                 }
@@ -749,6 +778,34 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
         refusal = "base constructor ends in a method that installs a field";
     }
 
+    // THE FAMILY INVARIANT, checked rather than assumed: this class's layout
+    // has to BEGIN with its base's, name for name, or a site in a base method
+    // that accepts a subclass shape would read the wrong slot.
+    //
+    // It holds by construction above — `super()` runs to completion before any
+    // derived field initializer (15.7.14), the base's fields seed `fields`, and
+    // `add` deduplicates so a derived class re-assigning an inherited name does
+    // not move it. That is exactly why it is worth a check: the whole family
+    // mechanism rests on a property of this loop, and a future edit to the loop
+    // that broke it would otherwise be silent. A violation refuses the class
+    // rather than firing an assertion — an unprovable layout is a thing this
+    // file already knows how to say.
+    if (proven && !cl.superName.empty()) {
+        const auto it = byName_.find(cl.superName);
+        if (it != byName_.end() && classes_[it->second].layoutProven) {
+            const ClassLayout& base = classes_[it->second];
+            const bool prefixOk =
+                fields.size() >= base.fields.size() &&
+                std::equal(base.fields.begin(), base.fields.end(), fields.begin()) &&
+                std::equal(base.fieldWritable.begin(), base.fieldWritable.end(),
+                           fieldWritable.begin());
+            if (!prefixOk) {
+                proven = false;
+                refusal = "layout does not extend the base's prefix";
+            }
+        }
+    }
+
     // The identity is minted whatever the layout verdict is: a refused class is
     // still one compile-time object kind, and the inline-cache form it already
     // licensed is unaffected by anything decided here.
@@ -756,10 +813,70 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     byShape_.emplace(cl.shapeClass, index);
 
     cl.fields = std::move(fields);
+    cl.fieldWritable = std::move(fieldWritable);
     cl.layoutProven = proven;
     cl.refusal = proven ? std::string() : refusal;
     resolved_[index] = true;
     resolving.erase(index);
+}
+
+// The layout-family forest: proven classes, linked by `extends`, numbered in
+// preorder so that a class's descendants occupy [familyIndex, familyIndex +
+// familySpan] and a guard is one unsigned range compare.
+//
+// Two classes are left out, both because their field list would recognise
+// shapes it has no business recognising:
+//
+//   - a class whose layout was refused. There is nothing to verify a shape
+//     against, so it can neither be stamped nor guard.
+//   - a class with NO fields. Its field list is the empty prefix, which every
+//     shape in the program begins with, so it would stamp every object with its
+//     own id. It has no slot to claim either, so nothing is lost — and its
+//     proven subclasses become forest roots in their own right rather than
+//     being dragged out with it.
+void ClassLayoutTable::buildFamilies() {
+    std::map<size_t, std::vector<size_t>> children;
+    std::vector<size_t> roots;
+    auto inForest = [this](size_t i) {
+        return classes_[i].layoutProven && !classes_[i].fields.empty();
+    };
+    for (size_t i = 0; i < classes_.size(); ++i) {
+        if (!inForest(i)) continue;
+        const auto parent = byName_.find(classes_[i].superName);
+        if (!classes_[i].superName.empty() && parent != byName_.end() && inForest(parent->second)) {
+            children[parent->second].push_back(i);
+        } else {
+            roots.push_back(i);
+        }
+    }
+    uint32_t next = 0;
+    for (size_t root : roots) next = numberSubtree(root, next, children);
+
+    preorder_.assign(next, nullptr);
+    for (const ClassLayout& cl : classes_) {
+        if (cl.familyIndex != ClassLayout::kNoFamily) preorder_[cl.familyIndex] = &cl;
+    }
+}
+
+uint32_t ClassLayoutTable::numberSubtree(size_t index, uint32_t next,
+                                         const std::map<size_t, std::vector<size_t>>& children) {
+    const uint32_t self = next++;
+    classes_[index].familyIndex = self;
+    const auto kids = children.find(index);
+    if (kids != children.end()) {
+        for (size_t child : kids->second) next = numberSubtree(child, next, children);
+    }
+    // The span is what the subtree consumed: every id in (self, next) belongs to
+    // a class that extends this one, transitively, and therefore lays this
+    // one's fields out at this one's slots.
+    classes_[index].familySpan = next - self - 1;
+    return next;
+}
+
+const ClassLayout* ClassLayoutTable::familyMemberOf(ShapeClassId id) const {
+    const ClassLayout* cl = byShapeClass(id);
+    if (cl == nullptr || cl->familyIndex == ClassLayout::kNoFamily) return nullptr;
+    return cl;
 }
 
 const ClassLayout* ClassLayoutTable::byName(const std::string& name) const {
