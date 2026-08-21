@@ -183,6 +183,19 @@ std::string InferStatsCollector::format() const {
                std::to_string(fa.refusedNotBuiltHere) + " receiver not built here, " +
                std::to_string(fa.refusedByClass) + " class layout, " +
                std::to_string(fa.refusedByAudit) + " write audit\n";
+        if (fa.computedSites != 0) {
+            out += "  computed key sites: " + std::to_string(fa.computedSites) + ", " +
+                   std::to_string(fa.computedSites - fa.computedRefuted) + " proven harmless (" +
+                   formatPct(fa.computedSites - fa.computedRefuted, fa.computedSites) + ")\n";
+            for (const auto& entry : sortedReasons(fa.computedKeyTypes)) {
+                out += "    unproven key typed " + entry.reason + ": " +
+                       std::to_string(entry.count) + "\n";
+            }
+            for (const auto& entry : sortedReasons(fa.computedReceiverTypes)) {
+                out += "    unproven site's receiver typed " + entry.reason + ": " +
+                       std::to_string(entry.count) + "\n";
+            }
+        }
         for (const auto& entry : sortedReasons(fa.globalRefusals)) {
             out += "  EVERY name refused, " + entry.reason + ": " +
                    std::to_string(entry.count) + " sites\n";

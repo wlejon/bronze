@@ -76,7 +76,9 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         const auto outcome = analyzeFunction(mod, /*parent=*/nullptr, kTopLevelName,
                                              kNoFunctionIndex, /*site=*/nullptr,
                                              /*directCallable=*/false, {}, {},
-                                             split.topLevel, span, record);
+                                             split.topLevel, span, record,
+                                             /*isGenerator=*/false, kNoShapeClass, kNoMethod,
+                                             /*moduleTopLevel=*/true);
         if (!outcome.ok) return false;
     }
     return true;
@@ -281,6 +283,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // before any body is walked, for the same reason the class table is: the
     // flow pass reads them on every round, and a table that filled in as it went
     // would answer differently on the probe rounds and the recording round.
+    mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     if (mod.interprocIdent) {
         mod.methods.build(module);
@@ -343,10 +346,15 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
         resetObservations(mod);
         const size_t poisonBefore = mod.methodPoison.version();
+        // The module-binding table is joined into, never rebuilt, so a round
+        // that widens one entry has to be a round that says "changed" — the
+        // consumers of the table are the very bodies this pass just walked.
+        const std::map<std::string, Type> bindingsBefore = mod.moduleBindings;
         if (!runPass(mod, split, /*record=*/false)) return std::nullopt;
         bool changed = widenSignatures(mod);
         changed = widenMethods(mod) || changed;
         changed = mod.methodPoison.version() != poisonBefore || changed;
+        changed = mod.moduleBindings != bindingsBefore || changed;
         // The field audit folds in here, and its direction is the opposite of
         // every other fold in this loop: signatures only WIDEN and field
         // cleanliness only NARROWS. Both are monotone over a finite lattice, so
@@ -380,6 +388,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     result.fieldAudit.namesClean = mod.fieldAudit.cleanCount();
     result.fieldAudit.namesLocallyClean = mod.fieldAudit.locallyCleanCount();
     result.fieldAudit.globalRefusals = mod.fieldAudit.globalRefusals();
+    result.fieldAudit.computedSites = mod.fieldAudit.computedSiteCount();
+    result.fieldAudit.computedRefuted = mod.fieldAudit.computedRefutedCount();
+    result.fieldAudit.computedKeyTypes = mod.fieldAudit.computedKeyTypes();
+    result.fieldAudit.computedReceiverTypes = mod.fieldAudit.computedReceiverTypes();
     for (const auto& [name, why] : mod.fieldAudit.report()) {
         (void)name;
         if (!why.empty()) ++result.fieldAudit.refusals[why];

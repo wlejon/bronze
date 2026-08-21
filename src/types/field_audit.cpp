@@ -111,7 +111,7 @@ public:
                 } else if (dynamic_cast<const ast::NumberLit*>(ix->index.get()) != nullptr) {
                     a_.noteNumericKeyWrite();
                 } else {
-                    a_.refuseAll("delete through a computed key");
+                    a_.recordComputedDelete(ix->object.get(), ix->index.get());
                 }
             }
         }
@@ -212,7 +212,7 @@ private:
             a_.noteNumericKeyWrite();
             return;
         }
-        a_.recordComputed(ix->index.get(), n.rhs.get());
+        a_.recordComputed(ix->object.get(), ix->index.get(), n.rhs.get());
     }
 
     // `Object.assign`, `Object.defineProperty` and the rest of the family that
@@ -347,6 +347,7 @@ void FieldAudit::scan(const ast::Module& module) {
     for (const auto& c : computed_) {
         rhsTypes_.emplace(c.key, Type::never());
         if (c.value != nullptr) rhsTypes_.emplace(c.value, Type::never());
+        if (c.receiver != nullptr) rhsTypes_.emplace(c.receiver, Type::never());
     }
 }
 
@@ -361,8 +362,14 @@ void FieldAudit::record(const std::string& name, const ast::Expr* rhs) {
     if (rhs == nullptr) refuse(name, "written by a form with no expression to type");
 }
 
-void FieldAudit::recordComputed(const ast::Expr* key, const ast::Expr* value) {
-    computed_.push_back(Computed{key, value});
+void FieldAudit::recordComputed(const ast::Expr* receiver, const ast::Expr* key,
+                                const ast::Expr* value) {
+    computed_.push_back(Computed{receiver, key, value, /*isDelete=*/false, /*refuted=*/false});
+}
+
+void FieldAudit::recordComputedDelete(const ast::Expr* receiver, const ast::Expr* key) {
+    computed_.push_back(
+        Computed{receiver, key, /*value=*/nullptr, /*isDelete=*/true, /*refuted=*/false});
 }
 
 void FieldAudit::observe(const ast::Expr* rhs, Type t) {
@@ -381,23 +388,50 @@ void FieldAudit::refuseAll(std::string why) {
     ++globalRefusals_[std::move(why)];
 }
 
+Type FieldAudit::typeOfExpr(const ast::Expr* e) const {
+    if (e == nullptr) return Type::dynamic();
+    const auto it = rhsTypes_.find(e);
+    // An expression the scan registered but no round has typed answers `Never`,
+    // which is what "undecided" is spelled as here; one it never registered
+    // could be anything.
+    return it == rhsTypes_.end() ? Type::dynamic() : it->second;
+}
+
 bool FieldAudit::settle() {
     const size_t before = refusedCount();
     const size_t globalsBefore = globalRefusals_.size();
+    const uint32_t computedBefore = computedRefuted_;
 
     // A computed write is harmless in exactly two cases, and both need a type:
     // a key the flow pass proved is a Number can only produce a numeric string,
     // which is never an ordinary field name; and a value it proved is a Number
-    // preserves the invariant whatever name it lands on.
-    for (const auto& c : computed_) {
-        const auto key = rhsTypes_.find(c.key);
-        if (key != rhsTypes_.end() && key->second.is(TypeKind::Number)) {
+    // preserves the invariant whatever name it lands on. A computed DELETE has
+    // only the first of the two — there is no value, and the hole it leaves is
+    // not a Number.
+    //
+    // `Never` on either is not evidence. The first round types nothing, so a
+    // rule that refused on `Never` refused every computed site in the program
+    // before a single expression had been walked — and the refusal is sticky,
+    // so that verdict was final and its stated reason ("the key and value are
+    // both unproven") was untrue of most of the sites it named. A settled
+    // `Never` is dead code, whose write can refute nothing because it never
+    // runs, which is exactly the rule the named writes below already keep.
+    for (auto& c : computed_) {
+        if (c.refuted) continue;
+        const Type key = typeOfExpr(c.key);
+        if (key.is(TypeKind::Number)) {
             numericKeyWrite_ = true;
             continue;
         }
-        const auto val = rhsTypes_.find(c.value);
-        if (val != rhsTypes_.end() && val->second.is(TypeKind::Number)) continue;
-        refuseAll("a computed write whose key and value are both unproven");
+        if (key.is(TypeKind::Never)) continue;
+        if (!c.isDelete) {
+            const Type val = typeOfExpr(c.value);
+            if (val.is(TypeKind::Number) || val.is(TypeKind::Never)) continue;
+        }
+        c.refuted = true;
+        ++computedRefuted_;
+        refuseAll(c.isDelete ? "delete through a computed key"
+                             : "a computed write whose key and value are both unproven");
     }
 
     for (const auto& w : writes_) {
@@ -415,7 +449,32 @@ bool FieldAudit::settle() {
         refuse(w.name, "written as " + it->second.str());
     }
 
-    return refusedCount() != before || globalRefusals_.size() != globalsBefore;
+    // `numericKeyWrite_` is not in the change test: it only ever refutes names
+    // that are spelled as numbers, and `refusedCount` does not see those
+    // (`numberClean` applies the bit at the query). Turning it on late cannot
+    // therefore un-settle anything a later round would have decided
+    // differently — every consumer reads it through `numberClean`, which reads
+    // it fresh.
+    return refusedCount() != before || globalRefusals_.size() != globalsBefore ||
+           computedRefuted_ != computedBefore;
+}
+
+std::map<std::string, uint32_t> FieldAudit::computedKeyTypes() const {
+    std::map<std::string, uint32_t> out;
+    for (const auto& c : computed_) {
+        if (!c.refuted) continue;
+        ++out[typeOfExpr(c.key).str() + (c.isDelete ? " (delete)" : "")];
+    }
+    return out;
+}
+
+std::map<std::string, uint32_t> FieldAudit::computedReceiverTypes() const {
+    std::map<std::string, uint32_t> out;
+    for (const auto& c : computed_) {
+        if (!c.refuted) continue;
+        ++out[typeOfExpr(c.receiver).str() + (c.isDelete ? " (delete)" : "")];
+    }
+    return out;
 }
 
 uint32_t FieldAudit::cleanCount() const {

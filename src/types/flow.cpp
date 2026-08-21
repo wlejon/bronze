@@ -77,6 +77,18 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
     if (const auto it = mod_.indexByName.find(name); it != mod_.indexByName.end()) {
         return Type::function(it->second);
     }
+    // The module binding, which no scope chain from here reaches: a module-level
+    // function's scope has no parent, and the module top level is a separate
+    // body. See `ModuleContext::moduleBindings` for why the answer is an
+    // identity and never a value.
+    if (mod_.valueFlow) {
+        if (const auto it = mod_.moduleBindings.find(name); it != mod_.moduleBindings.end()) {
+            const Type held = it->second;
+            if (held.is(TypeKind::Object) && held.shapeClass() != kNoShapeClass) {
+                return Type::objectIdentityOnly(held.shapeClass());
+            }
+        }
+    }
     return Type::dynamic();
 }
 
@@ -163,12 +175,22 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
     }
     // Not ours. A closure can only reach an enclosing function's
     // env-backed cells, so that is the only other thing this can be;
-    // anything else is a global, which nothing here tracks.
+    // anything else is either a MODULE binding — one cell for the whole
+    // program, which no scope chain from inside a function reaches — or a
+    // global, which nothing here tracks.
     for (Scope* p = scope_.parent; p != nullptr; p = p->parent) {
         if (const auto it = p->cells.find(name); it != p->cells.end()) {
             it->second = join(it->second, t);
             return;
         }
+    }
+    // Joined, never replaced: this is one fact about a binding the whole
+    // program shares, so a write anywhere widens it and none narrows it. That
+    // is what makes the table part of the outer fixpoint rather than a record
+    // of whichever body was walked last.
+    if (mod_.valueFlow && mod_.moduleScopeNames.count(name) != 0) {
+        Type& slot = mod_.moduleBindings[name];
+        slot = join(slot, t);
     }
 }
 
@@ -607,7 +629,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record, bool isGenerator, ShapeClassId thisClass,
-                                uint32_t methodIndex) {
+                                uint32_t methodIndex, bool moduleTopLevel) {
     Scope scope;
     scope.parent = parent;
     scope.thisClass = thisClass;
@@ -669,6 +691,20 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     recorder.runParamDefaults(params);
     recorder.runBody(body);
     if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
+
+    // The module top level DECLARES the module bindings, so its own scope is
+    // where most of what they hold is decided — `const _vector = new Vector3()`
+    // is a statement of this body and of no other. Writes from inside functions
+    // reach the table through `assign`; this is the other half.
+    if (moduleTopLevel && mod.valueFlow) {
+        for (const Env* half : {&scope.env, &scope.cells}) {
+            for (const auto& [name, t] : *half) {
+                if (mod.moduleScopeNames.count(name) == 0) continue;
+                Type& held = mod.moduleBindings[name];
+                held = join(held, t);
+            }
+        }
+    }
 
     // A generator's body describes the WALK, not the call. 27.5.1.2 runs none
     // of it at the call and hands back a generator object, so a `return 7` in

@@ -87,6 +87,18 @@ public:
     // anywhere, refusal empty for a clean one. Sorted by name.
     std::vector<std::pair<std::string, std::string>> report() const;
 
+    // How many `o[k] = v` / `delete o[k]` sites the program contains, and how
+    // many of them the flow pass proved harmless. The gap is what a global
+    // refusal costs, and the two numbers together are the only way to tell "the
+    // library barely does this" from "the key types are not there yet".
+    uint32_t computedSiteCount() const { return static_cast<uint32_t>(computed_.size()); }
+    uint32_t computedRefutedCount() const { return computedRefuted_; }
+    // What the unproven sites' KEYS were typed, so the next attempt has a
+    // target rather than a percentage. Sorted by type name.
+    std::map<std::string, uint32_t> computedKeyTypes() const;
+    // The same for their RECEIVERS. See `Computed::receiver`.
+    std::map<std::string, uint32_t> computedReceiverTypes() const;
+
     uint32_t writeSiteCount() const { return static_cast<uint32_t>(writes_.size()); }
     uint32_t nameCount() const { return static_cast<uint32_t>(names_.size()); }
     // How many of `nameCount` still stand clean. Zero whenever a global
@@ -96,7 +108,12 @@ public:
     // The scan's own recording surface, public because the walk that fills it
     // is a separate class and this is the whole of what it may do.
     void record(const std::string& name, const ast::Expr* rhs);
-    void recordComputed(const ast::Expr* key, const ast::Expr* value);
+    void recordComputed(const ast::Expr* receiver, const ast::Expr* key, const ast::Expr* value);
+    // `delete o[k]`. Recorded rather than refused outright for the same reason a
+    // computed WRITE is: a key the flow pass proves is a Number can only name a
+    // canonical numeric string, and deleting an array element is not a fact
+    // about any field this pass speaks for.
+    void recordComputedDelete(const ast::Expr* receiver, const ast::Expr* key);
     void refuse(const std::string& name, std::string why);
     void refuseAll(std::string why);
     // A write or delete through a key that is a NUMBER. It can only reach a
@@ -114,19 +131,36 @@ private:
         const ast::Expr* rhs = nullptr;
     };
 
-    // `o[k] = v`: neither the name nor, in general, the type is known here.
-    // Harmless when the flow pass proves the KEY is a Number (ToPropertyKey of
-    // one is a numeric string, which no ordinary field is called) or the VALUE
-    // is a Number (the invariant survives whatever name it lands on).
+    // `o[k] = v`, and `delete o[k]`: neither the name nor, in general, the type
+    // is known here. Harmless when the flow pass proves the KEY is a Number
+    // (ToPropertyKey of one is a numeric string, which no ordinary field is
+    // called) or — for a write — the VALUE is a Number (the invariant survives
+    // whatever name it lands on).
     struct Computed {
+        // Read for the report only. The audit's unit is the property NAME and
+        // not the receiver's class, for the reason argued at the top of this
+        // file — but which OBJECTS the unproven sites write to is the one fact
+        // that says whether a receiver-shaped narrowing could ever pay, and it
+        // is not knowable from the source without the types.
+        const ast::Expr* receiver = nullptr;
         const ast::Expr* key = nullptr;
-        const ast::Expr* value = nullptr;
+        const ast::Expr* value = nullptr;  // null for a delete
+        bool isDelete = false;
+        // Sticky, and the reason this is a per-site record rather than a
+        // running count. The verdict is re-taken every round, because the types
+        // it reads only settle at the fixpoint; without the flag the same site
+        // was counted once per round, and the report's headline number was the
+        // program's computed writes multiplied by however many rounds the
+        // fixpoint happened to take.
+        bool refuted = false;
     };
 
+    Type typeOfExpr(const ast::Expr* e) const;
     size_t refusedCount() const;
 
     std::vector<Write> writes_;
     std::vector<Computed> computed_;
+    uint32_t computedRefuted_ = 0;
     std::map<const ast::Expr*, Type> rhsTypes_;
     // Every name any write targets, with the refusal that stands against it.
     std::map<std::string, std::string> names_;

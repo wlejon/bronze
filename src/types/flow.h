@@ -113,6 +113,42 @@ struct ModuleContext {
     // method's parameters on the uniform dynamic convention.
     bool interprocIdent = false;
 
+    // ---- value flow through module-scope bindings ---------------------------
+
+    // What a name the MODULE SCOPE binds holds, joined over every declaration
+    // and every assignment anywhere in the program.
+    //
+    // The scope chain cannot answer this. A module-level function's `Scope` has
+    // no parent (infer.cpp passes null), and the module top level is analysed as
+    // a separate body with a scope of its own — so a method that reads
+    // `_vector`, which three.js declares once at module scope and shares across
+    // the whole library, resolves nothing and reads `Dynamic`. The binding is
+    // one cell for the whole program, though, so its contents CAN be joined
+    // program-wide: that is what this is, and it is the same shape of fact as
+    // `Scope::cells`, one scope further out than any scope chain reaches.
+    //
+    // The answer is handed out as `Type::objectIdentityOnly` and never as a
+    // fact, because this table says what the binding holds SOMEWHERE and not
+    // what it holds at the read. A `let` still in its temporal dead zone, or one
+    // whose `new C()` runs after the function that reads it, are both reads this
+    // has no order for — and an identity is exactly the claim that survives
+    // being wrong, since a shape guard checks it (types/type.h).
+    //
+    // A read this answers for might not be a read of the module binding at all:
+    // a `var` hoisted into some function body, or a nested declaration of the
+    // same name, is `undefined` at a read that comes before the declaring
+    // statement, and this pass resolves that read by name. Deliberately not
+    // scanned for, because the consequence is bounded by what the answer
+    // LICENSES: an object identity, checked by a shape compare the runtime
+    // performs, whose cost when wrong is a miss. It is the same trade
+    // `Scope::thisClass` records, and the same reason a primitive is never
+    // answered from here — a `number` would be an unguarded claim about a value,
+    // and this table has no program order to justify one with.
+    std::map<std::string, Type> moduleBindings;
+    // `BRONZE_NO_VALUE_FLOW` turns the table off, leaving every module-scope
+    // read `Dynamic` as it was.
+    bool valueFlow = false;
+
     // ---- the field-type write audit (field_audit.h) -------------------------
 
     // Which property names the whole program only ever writes Numbers into.
@@ -155,7 +191,8 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record, bool isGenerator = false,
                                 ShapeClassId thisClass = kNoShapeClass,
-                                uint32_t methodIndex = kNoMethod);
+                                uint32_t methodIndex = kNoMethod,
+                                bool moduleTopLevel = false);
 
 // The `Type` of joining two program points: names in both are joined, names
 // in only one are dropped (they are block-scoped declarations that did not

@@ -104,6 +104,12 @@ constexpr const char* kUsage =
     "                                      throwing ReferenceError. A lowering-level\n"
     "                                      fact: identical with --no-infer.\n"
     "\n"
+    "Options (il):\n"
+    "  --infer-stats                       Prepend the inference statistics report to\n"
+    "                                      the IL dump. Same report as `build\n"
+    "                                      --infer-stats`, without paying for object\n"
+    "                                      emission to read it.\n"
+    "\n"
     "Options (build):\n"
     "  --timings                           Print per-phase wall time to stderr. The\n"
     "                                      one deliberately nondeterministic thing\n"
@@ -254,7 +260,7 @@ int runTypes(const std::string& sourcePath, std::string* outString,
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
-          const std::string& importMapPath) {
+          const std::string& importMapPath, bool inferStats) {
     // The manifest is read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -301,10 +307,12 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // IL: `import.meta` resolves its module's URL out of the source set at
     // lowering time, so a null one would make `bronze il` dump a different
     // program from the one `bronze build` compiles.
+    lower::InferStatsCollector statsCollector;
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
-                                       &sources);
+                                       &sources,
+                                       inferStats ? &statsCollector : nullptr);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -313,7 +321,12 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     }
 
     reportWarnings(diags, sources);
-    std::string printed = il::print(*ilModule);
+    // The statistics before the dump, not after it: this command's artefact is
+    // megabytes of IL on a real library, and a report that has to be found at
+    // the end of it is a report nobody reads. Both are deterministic, so the
+    // order is a convenience and not a contract.
+    std::string printed = inferStats ? statsCollector.format() : std::string();
+    printed += il::print(*ilModule);
     if (outString) {
         *outString = printed;
     } else {
@@ -607,10 +620,13 @@ int runDriver(int argc, char** argv) {
         std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
+        bool inferStats = false;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--infer-stats") {
+                inferStats = true;
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -647,7 +663,8 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath);
+        return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
+                     inferStats);
     }
 
     if (command == "build") {

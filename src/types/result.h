@@ -135,6 +135,15 @@ struct InferenceResult {
         uint32_t refusedNotBuiltHere = 0;
         uint32_t refusedByClass = 0;
         uint32_t refusedByAudit = 0;
+        // `o[k] = v` and `delete o[k]`: how many the program contains, how many
+        // the flow pass could not prove harmless, and what those ones' KEYS were
+        // typed. One global refusal decides the whole audit, so this is the row
+        // that says whether the next move is more key types or something else
+        // entirely.
+        uint32_t computedSites = 0;
+        uint32_t computedRefuted = 0;
+        std::map<std::string, uint32_t> computedKeyTypes;
+        std::map<std::string, uint32_t> computedReceiverTypes;
     };
     FieldAuditReport fieldAudit;
 

@@ -75,9 +75,47 @@ il::Type Lowerer::ilTypeOf(types::Type t) {
     return t.is(types::TypeKind::Number) ? il::Type::F64 : il::Type::Dynamic;
 }
 
+// The node inference walked, for a node lowering is holding. See the note in
+// lowerer.h: they differ only inside a class constructor's body, which lowering
+// COPIES so that the field initializers can be spliced into it.
+//
+// The walk is a chain because a class declared inside another class's
+// constructor is a copy of a copy, and it is bounded by the number of copies
+// currently open — which is that class nesting depth, and is what makes the
+// loop terminate without a visited set.
+const ast::Node* Lowerer::inferenceNode(const ast::Node& n) const {
+    const ast::Node* cur = &n;
+    for (size_t hop = 0; hop < cloneOrigins_.size(); ++hop) {
+        const ast::Node* next = nullptr;
+        for (auto it = cloneOrigins_.rbegin(); it != cloneOrigins_.rend(); ++it) {
+            const auto found = (*it)->find(cur);
+            if (found != (*it)->end()) {
+                next = found->second;
+                break;
+            }
+        }
+        if (next == nullptr) break;
+        cur = next;
+    }
+    return cur;
+}
+
+// A copy of an expression is an expression and a copy of a statement is a
+// statement — `ast::cloneExpr` and `ast::cloneStmt` are what fill the map, and
+// neither can produce the other — so the downcast is total.
+const ast::Expr& Lowerer::inferenceExpr(const ast::Expr& e) const {
+    if (cloneOrigins_.empty()) return e;
+    return *static_cast<const ast::Expr*>(inferenceNode(e));
+}
+
+const ast::Stmt& Lowerer::inferenceStmt(const ast::Stmt& s) const {
+    if (cloneOrigins_.empty()) return s;
+    return *static_cast<const ast::Stmt*>(inferenceNode(s));
+}
+
 types::Type Lowerer::inferredType(const ast::Expr& expr) const {
     if (inference_ == nullptr) return types::Type::dynamic();
-    return inference_->typeAt(&expr);
+    return inference_->typeAt(&inferenceExpr(expr));
 }
 
 bool Lowerer::provenNumber(const ast::Expr& expr) const {
@@ -86,7 +124,7 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
 
 bool Lowerer::pristineMathCall(const ast::Expr& call) const {
     if (inference_ == nullptr) return false;
-    return inference_->pristineMathCalls.count(&call) != 0;
+    return inference_->pristineMathCalls.count(&inferenceExpr(call)) != 0;
 }
 
 // Whether a property site's receiver is proven to have ONE compile-time object
@@ -139,7 +177,7 @@ bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
 // reaches it.
 il::Type Lowerer::mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const {
     if (inference_ == nullptr) return il::Type::Dynamic;
-    switch (inference_->typeOfBindingAt(&mergePoint, name).kind()) {
+    switch (inference_->typeOfBindingAt(&inferenceStmt(mergePoint), name).kind()) {
         case types::TypeKind::Number: return il::Type::F64;
         case types::TypeKind::Bool: return il::Type::Bool;
         default: return il::Type::Dynamic;
@@ -193,7 +231,7 @@ types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
 // closure's return stays `dynamic` whatever this answers.
 types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
     if (inference_ == nullptr) return types::Type::dynamic();
-    return inference_->closureReturnAt(&site);
+    return inference_->closureReturnAt(inferenceNode(site));
 }
 
 // A TS annotation is an untrusted optimization hint.
@@ -357,14 +395,12 @@ std::string Lowerer::propBailReason(const ast::Expr& expr) const {
     const types::Type t = inferredType(expr);
     if (t.is(types::TypeKind::Dynamic)) {
         // The identifier row is half of every remaining dynamic site, and
-        // "identifier" is not a reason — it is a shape. Where the identifier
-        // names a METHOD PARAMETER, the interprocedural pass knows why it could
-        // not speak for it, and that is the reason worth reporting: it is what a
-        // chunk aiming at these sites would have to remove.
-        const auto refusal = inference_->identRefusals.find(&expr);
-        if (refusal != inference_->identRefusals.end()) {
-            return "receiver is dynamic: parameter (" + refusal->second + ")";
-        }
+        // "identifier" is not a reason — it is a shape. The analysis knows what
+        // the name RESOLVED to and which mechanism then had nothing to say, and
+        // records the whole sentence; a chunk aiming at these sites needs the
+        // mechanism that refused, not the syntax that asked.
+        const auto refusal = inference_->identRefusals.find(&inferenceExpr(expr));
+        if (refusal != inference_->identRefusals.end()) return refusal->second;
         return dynamicReceiverForm(expr);
     }
     if (!t.is(types::TypeKind::Object)) {
@@ -396,7 +432,7 @@ bool Lowerer::unboxedFieldSeamDisabled() {
 // is the one that carries a proof about the bits.
 bool Lowerer::provenFieldRead(const ast::Expr& e) const {
     if (inference_ == nullptr || unboxedFieldsDisabled_) return false;
-    return inference_->provenFieldReads.count(&e) != 0;
+    return inference_->provenFieldReads.count(&inferenceExpr(e)) != 0;
 }
 
 Lowerer::Value Lowerer::emitRawUnbox(Value boxed, il::Function& ilFn) {
@@ -480,9 +516,9 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
     // neither of which can produce a subclass, and those keep the cheaper
     // identity compare.
     if (dynamic_cast<const ast::ThisExpr*>(&receiver) != nullptr) {
-        const types::Type t = inference_->typeAt(&receiver);
+        const types::Type t = inference_->typeAt(&inferenceExpr(receiver));
         if (t.is(types::TypeKind::Object) && inference_->classLayouts.isExtended(t.shapeClass())) {
-            const uint32_t slot = inference_->staticSlotAt(&receiver, key);
+            const uint32_t slot = inference_->staticSlotAt(&inferenceExpr(receiver), key);
             if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
             // The FAMILY claim, which is the one thing that changed since the
             // paragraph above was written. The layout was never the problem, so
@@ -510,7 +546,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
         }
     }
 
-    const uint32_t slot = inference_->staticSlotAt(&receiver, key);
+    const uint32_t slot = inference_->staticSlotAt(&inferenceExpr(receiver), key);
     if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
 
     // An identity the interprocedural pass GUESSED does not get a CELL.
@@ -529,7 +565,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
     // 952 sites chunk 6 gave back, and the same cause. So a guessed identity may
     // claim a slot only where the guard tolerates a family of shapes, and takes
     // the ordinary inline cache otherwise.
-    const types::Type recvType = inference_->typeAt(&receiver);
+    const types::Type recvType = inference_->typeAt(&inferenceExpr(receiver));
     if (recvType.identityOnly()) {
         const types::ClassLayout* fam =
             inference_->classLayouts.familyMemberOf(recvType.shapeClass());

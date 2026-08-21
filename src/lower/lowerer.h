@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "ast/clone.h"
 #include "il/il.h"
 #include "lower/infer_stats.h"
 #include "support/diagnostics.h"
@@ -331,6 +332,27 @@ private:
     // inference_ and --no-infer stays one null pointer rather than a flag
     // threaded through every site.
     static il::Type ilTypeOf(types::Type t);
+
+    // The node inference actually walked, for a node lowering is holding.
+    //
+    // The two are the same node everywhere but one: a class constructor's body
+    // is COPIED here, so that the field initializers can be spliced into it
+    // without editing the tree inference read. Every proof is keyed on node
+    // identity, so without this translation a copy answers "unproven" to every
+    // question and each of three.js's 200 constructors lowers as if inference
+    // had never run — 2 088 property sites, every loop counter's f64 block
+    // parameter, and every certified field read among them.
+    //
+    // The copies that carry origins are exactly the ones evaluated where the
+    // original was; ast/clone.h states the rule and names the copy that is
+    // deliberately left without them.
+    const ast::Node* inferenceNode(const ast::Node& n) const;
+    const ast::Expr& inferenceExpr(const ast::Expr& e) const;
+    const ast::Stmt& inferenceStmt(const ast::Stmt& s) const;
+    // Innermost last. A class declared inside another class's constructor is a
+    // copy of a copy, so the translation is a chain and this is its depth.
+    std::vector<const ast::CloneOrigins*> cloneOrigins_;
+
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
     bool monomorphicPropSite(const ast::Expr& receiver) const;

@@ -98,18 +98,26 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     std::vector<ast::StmtPtr> fieldStmts =
         buildFieldInitStatements(methods, privateElements, span);
 
+    // The copy is what lets the field initializers be spliced in without
+    // editing the tree inference read, and the map is what stops that costing
+    // every proof about the body: the constructor's own statements are copied
+    // WITH origins, because the copy is evaluated exactly where the original
+    // was. The field statements carry none — they are synthesized here, and
+    // their initializer subtrees were copied out of a scope that is not this
+    // one (ast/clone.h).
+    ast::CloneOrigins ctorOrigins;
     std::vector<ast::StmtPtr> ctorBody;
     if (fieldStmts.empty()) {
-        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
     } else if (!hasSuper) {
         // Base class: fields run at the start of constructor
         for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
-        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s));
+        for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
     } else {
         // Derived class: fields run after super(...)
         bool inserted = false;
         for (const auto& s : ctor->fn->body) {
-            ctorBody.push_back(ast::cloneStmt(*s));
+            ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
             if (!inserted) {
                 if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s.get())) {
                     if (dynamic_cast<const ast::SuperCall*>(es->expr.get())) {
@@ -131,8 +139,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // 15.7.14 step 15: the constructor's `name` is the CLASS's name, not the
     // parser's synthesized `constructor`, and its `length` is the constructor's
     // own parameter list.
+    //
+    // The map is live for exactly as long as the copy it describes: pointer
+    // keys into a vector that dies with this call, so an entry that outlived it
+    // could be answered for a node the allocator later put at the same address.
+    cloneOrigins_.push_back(&ctorOrigins);
     auto ctorVal = lowerClosure(*ctor->fn, name, name, ctor->fn->params,
                                 ctor->fn->returnType, ctorBody, span, ilFn);
+    cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
 
     // `extends` REPLACES the prototype object (the prototype lives on the

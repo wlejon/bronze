@@ -481,31 +481,83 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     return Type::dynamic();
 }
 
+// Why one identifier read came back `Dynamic`.
+//
+// Diagnostics only; nothing types anything from this. It exists because
+// "receiver is dynamic: identifier" was the single largest row in the report
+// and named a SYNTAX rather than a mechanism — a method parameter the
+// interprocedural join could not speak for, a closure parameter no join covers
+// at all, and a read of a host global are three unrelated problems wearing one
+// label, and a chunk that cannot tell them apart cannot size any of them.
+//
+// The order below is the order a fix would attack them in, and each branch is
+// the mechanism that would have to change.
 void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
-    if (!record_ || !mod_.interprocIdent) return;
+    if (!record_) return;
     if (!resolved.is(TypeKind::Dynamic)) return;
-    if (scope_.methodIndex == kNoMethod) return;
-    const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
-    const auto& names = self.fn->params;
-    bool isParam = false;
-    for (const auto& p : names) {
-        if (p.name == id.name) {
-            isParam = true;
-            break;
+
+    // A class method's parameter: the interprocedural pass knows its own reason.
+    if (mod_.interprocIdent && scope_.methodIndex != kNoMethod) {
+        const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
+        bool isParam = false;
+        for (const auto& p : self.fn->params) {
+            if (p.name == id.name) {
+                isParam = true;
+                break;
+            }
+        }
+        if (isParam) {
+            std::string reason;
+            if (!self.plainParams) {
+                reason = "the method's parameter list is not plain";
+            } else if (mod_.methodPoison.poisons(self.methodName)) {
+                reason = mod_.methodPoison.reasonFor(self.methodName);
+            } else if (self.unreached) {
+                reason = "no call site this compilation saw reaches the method";
+            } else {
+                reason = "the call sites disagree about the argument's class";
+            }
+            mod_.result->identRefusals.emplace(
+                &id, "receiver is dynamic: parameter (" + reason + ")");
+            return;
         }
     }
-    if (!isParam) return;
-    std::string reason;
-    if (!self.plainParams) {
-        reason = "the method's parameter list is not plain";
-    } else if (mod_.methodPoison.poisons(self.methodName)) {
-        reason = mod_.methodPoison.reasonFor(self.methodName);
-    } else if (self.unreached) {
-        reason = "no call site this compilation saw reaches the method";
-    } else {
-        reason = "the call sites disagree about the argument's class";
+
+    // A parameter of the body this walker is in, when that body is not a class
+    // method: a plain function declaration, a function expression, an arrow.
+    for (const auto& p : facts_.paramNames) {
+        if (p == id.name) {
+            mod_.result->identRefusals.emplace(&id,
+                                               "receiver is dynamic: function-value parameter");
+            return;
+        }
     }
-    mod_.result->identRefusals.emplace(&id, std::move(reason));
+
+    // A binding of this body, or of a function enclosing it: the flow pass DID
+    // resolve the name and what it holds is genuinely unproven — a value out of
+    // a dynamic read, or a join of two kinds.
+    if (scope_.env.count(id.name) != 0 || scope_.cells.count(id.name) != 0) {
+        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: local binding");
+        return;
+    }
+    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
+        if (p->cells.count(id.name) != 0) {
+            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: captured binding");
+            return;
+        }
+    }
+
+    // A name the MODULE binds, read from a body whose scope chain does not
+    // reach the module top level. This is the road value flow opens: a module
+    // `const` is one binding for the whole program, so what it holds can be
+    // joined program-wide even though no scope chain connects the two.
+    if (mod_.moduleScopeNames.count(id.name) != 0) {
+        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: module binding");
+        return;
+    }
+
+    // Nothing in the program declares it: a builtin, or a host global.
+    mod_.result->identRefusals.emplace(&id, "receiver is dynamic: global or host name");
 }
 
 Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
