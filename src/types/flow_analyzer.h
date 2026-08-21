@@ -163,6 +163,19 @@ private:
     // reach, and the type its dispatch produces. See method_ident.h.
     Type methodCall(const std::string& name, Type receiver, const std::vector<Type>& args,
                     bool spreadArgs);
+
+    // One construction site's contribution to a constructor's parameters. See
+    // ctor_ident.h; `constructSite` is `new <a class name>(...)` and every
+    // `super(...)` that reaches one, and `constructUnbounded` is a `new` whose
+    // callee is a value.
+    void constructSite(const std::string& className, const std::vector<Type>& args,
+                       bool spreadArgs);
+    void constructUnbounded(const ast::Expr& callee, Type calleeBase,
+                            const std::vector<Type>& args, bool spreadArgs);
+    void contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type>& args, bool spreadArgs);
+    // The constructor parameter types this body may believe, when the body is a
+    // constructor whose class still speaks for its own.
+    std::vector<Type> ctorParamTypes(uint32_t ctorIndex, size_t count) const;
     // The class a receiver type names, or null when it names none.
     const ClassLayout* receiverClass(Type receiver) const;
     // Records why a still-dynamic identifier receiver's parameter was refused,
@@ -174,7 +187,7 @@ private:
                        const std::vector<ast::Param>& params,
                        const std::vector<ast::StmtPtr>& body, Span span,
                        bool isGenerator, ShapeClassId thisClass = kNoShapeClass,
-                       uint32_t methodIndex = kNoMethod);
+                       uint32_t methodIndex = kNoMethod, uint32_t ctorIndex = kNoCtor);
     void analyzeClassBody(const std::string& className,
                           const std::vector<ast::ClassMethod>& methods);
 

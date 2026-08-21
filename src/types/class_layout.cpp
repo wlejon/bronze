@@ -377,84 +377,6 @@ private:
     }
 };
 
-// What one `this.<field> = <rhs>` says about the field's type.
-//
-// Syntactic, one level deep, and deliberately so: the flow analysis that could
-// answer this properly runs AFTER this table is built (it consumes it), so
-// asking it here would be a cycle. The forms recognised are the ones that carry
-// a class identity or a number — which is the whole of what a later fixed-slot
-// or unboxed-slot decision can use — and everything else answers `Dynamic`,
-// which poisons the join and is always the safe answer.
-Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>& classByName,
-                      const std::vector<ClassLayout>& classes) {
-    if (dynamic_cast<const ast::NumberLit*>(&rhs)) return Type::number();
-    if (dynamic_cast<const ast::StringLit*>(&rhs)) return Type::string();
-    if (dynamic_cast<const ast::BoolLit*>(&rhs)) return Type::boolean();
-    if (dynamic_cast<const ast::NullLit*>(&rhs)) return Type::null();
-    if (dynamic_cast<const ast::UndefinedLit*>(&rhs)) return Type::undefined();
-    if (const auto* u = dynamic_cast<const ast::Unary*>(&rhs)) {
-        // `-1` is a unary minus over a literal, which is how every negative
-        // default in three.js is written.
-        if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate) {
-            if (dynamic_cast<const ast::NumberLit*>(u->operand.get())) return Type::number();
-        }
-        return Type::dynamic();
-    }
-    if (const auto* n = dynamic_cast<const ast::NewExpr*>(&rhs)) {
-        const auto* id = dynamic_cast<const ast::Ident*>(n->callee.get());
-        if (id == nullptr) return Type::dynamic();
-        const auto it = classByName.find(id->name);
-        if (it == classByName.end()) return Type::dynamic();
-        const ShapeClassId cls = classes[it->second].shapeClass;
-        return cls == kNoShapeClass ? Type::dynamic() : Type::object(cls);
-    }
-    return Type::dynamic();
-}
-
-// Joins field types from every `this.<name> = <rhs>` in one method body.
-class FieldTypeWalker final : public Walker {
-public:
-    FieldTypeWalker(std::map<std::string, Type>& out,
-                    const std::map<std::string, size_t>& classByName,
-                    const std::vector<ClassLayout>& classes)
-        : out_(out), classByName_(classByName), classes_(classes) {}
-
-    void visit(const ast::FunctionExpr& n) override {
-        if (n.isArrow) Walker::visit(n);
-    }
-    void visit(const ast::FunctionDecl&) override {}
-    void visit(const ast::ClassDecl&) override {}
-    void visit(const ast::ClassExpr&) override {}
-
-    void visit(const ast::Binary& n) override {
-        if (n.op == ast::BinaryOp::Assign) {
-            if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
-                if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) && !m->isPrivate) {
-                    record(m->property, harvestFieldType(*n.rhs, classByName_, classes_));
-                }
-            }
-        } else if (ast::isAssignOp(n.op)) {
-            // A compound assignment's result is an operator's, not the RHS's.
-            // Nothing here models operators, so poison the field.
-            if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
-                if (dynamic_cast<const ast::ThisExpr*>(m->object.get())) {
-                    record(m->property, Type::dynamic());
-                }
-            }
-        }
-        Walker::visit(n);
-    }
-
-private:
-    void record(const std::string& name, Type t) {
-        const auto it = out_.find(name);
-        out_[name] = it == out_.end() ? t : join(it->second, t);
-    }
-    std::map<std::string, Type>& out_;
-    const std::map<std::string, size_t>& classByName_;
-    const std::vector<ClassLayout>& classes_;
-};
-
 // Every `class` in the program, at any nesting depth. Nesting is not a problem
 // for identity — a class expression evaluated twice makes two prototypes, but
 // both instances agree on the layout, which is what is claimed here.
@@ -559,22 +481,17 @@ void ClassLayoutTable::build(const ast::Module& module, ShapeClassTable& shapes)
 
     buildFamilies();
 
+    // The class members each class declares, kept past `build` so the field-type
+    // harvest can be re-run as constructor parameter types widen.
+    methodsByIndex_.assign(classes_.size(), nullptr);
+    for (size_t i = 0; i < classes_.size(); ++i) {
+        if (found_[i] != nullptr) methodsByIndex_[i] = found_[i]->methods;
+    }
+    found_.clear();
+
     // Pass 3: field types. Deferred to its own pass because a field's type can
     // name a class whose own identity is only minted in pass 2.
-    for (size_t i = 0; i < classes_.size(); ++i) {
-        const FoundRef* f = found_[i];
-        if (f == nullptr || f->methods == nullptr) continue;
-        FieldTypeWalker walker(classes_[i].fieldTypes, byName_, classes_);
-        for (const auto& m : *f->methods) {
-            if (m.isStatic) continue;
-            if (m.fn) {
-                walker.walkList(m.fn->body);
-            } else if (m.init && !m.name.empty()) {
-                classes_[i].fieldTypes[m.name] =
-                    harvestFieldType(*m.init, byName_, classes_);
-            }
-        }
-    }
+    harvestFieldTypes(nullptr);
 }
 
 void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {

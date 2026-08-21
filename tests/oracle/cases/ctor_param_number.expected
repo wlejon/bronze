@@ -1,0 +1,27 @@
+dot=32
+lengthSq=14
+defaults=0,0,0
+vec4=1,2,3,4
+vec4 dot=17
+point=7,8,9 194
+mutated=10,20,6 536
+negzero=0 is -0: true
+1/negzero=-Infinity
+negzero+0 is +0: true
+inf=Infinity,-Infinity sum=NaN
+1/inf=0 1/neginf=0
+nan=NaN,NaN,NaN
+nan self-equal: false false
+isNaN: true true
+nan arithmetic=NaN
+Object.is(nan.x, nan.y): true
+nan bits=7ff80000:0
+keys=x,y,z,w
+json={"x":1,"y":2,"z":3}
+forin=xyz
+values=4,5,6
+computed=1;2;3;
+desc=1,true,true,true
+moving=4000
+held=86352
+held[7]=7,7.5,-7

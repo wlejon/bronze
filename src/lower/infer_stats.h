@@ -68,6 +68,11 @@ public:
     void recordFieldAudit(const types::InferenceResult::FieldAuditReport& report,
                           uint32_t provenReadSites);
 
+    // What the constructor-parameter join proved, and what stood in its way.
+    // First link of the chain the field audit finishes: a parameter still
+    // dynamic here is a `this.x = x` the audit will refuse.
+    void recordCtorParams(const types::InferenceResult::CtorParamReport& report);
+
     std::string format() const;
 
 private:
@@ -86,6 +91,7 @@ private:
     std::map<std::string, uint32_t> classRefusals_;
     types::InferenceResult::FieldAuditReport fieldAudit_;
     uint32_t fieldProvenReads_ = 0;
+    types::InferenceResult::CtorParamReport ctorParams_;
 };
 
 }  // namespace bronze::lower

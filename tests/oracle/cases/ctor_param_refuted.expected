@@ -1,0 +1,11 @@
+number=2
+string=hi!
+bool=true boolean
+rewritten=bye length=3
+renumbered=2.5 10
+clean=6,0,3,0
+clean mutated=2.5
+json={"v":"bye"}{"p":1.25}
+keys=v/p
+loop=9900
+text=s0s1s2s3

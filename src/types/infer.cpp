@@ -13,6 +13,7 @@
 
 #include "ast/queries.h"
 #include "ast/query_walk.h"
+#include "types/ctor_ident.h"
 #include "types/escape.h"
 #include "types/flow.h"
 #include "types/method_ident.h"
@@ -78,7 +79,7 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
                                              /*directCallable=*/false, {}, {},
                                              split.topLevel, span, record,
                                              /*isGenerator=*/false, kNoShapeClass, kNoMethod,
-                                             /*moduleTopLevel=*/true);
+                                             kNoCtor, /*moduleTopLevel=*/true);
         if (!outcome.ok) return false;
     }
     return true;
@@ -138,6 +139,53 @@ bool widenMethods(ModuleContext& mod) {
     return changed;
 }
 
+// The same fold for class CONSTRUCTORS, whose callers are enumerated by NAME:
+// `new C(...)`, every `super(...)` that reaches C, and every default C's own
+// parameter list writes (types/ctor_ident.h).
+//
+// A poisoned or non-plain constructor is widened to the uniform dynamic
+// convention here rather than skipped, for the reason `widenMethods` gives: the
+// widening has to be part of the fixpoint so that the round which discovers it
+// is the round that reports "changed".
+bool widenCtors(ModuleContext& mod) {
+    if (!mod.ctorParamTypes) return false;
+    bool changed = false;
+    for (auto& c : mod.ctors.ctors()) {
+        const bool speaks = c.plainParams && !mod.ctorPoison.poisons(c.className);
+        for (size_t i = 0; i < c.signature.params.size(); ++i) {
+            const Type widened =
+                speaks ? join(c.signature.params[i], c.observedParams[i]) : Type::dynamic();
+            if (widened != c.signature.params[i]) {
+                c.signature.params[i] = widened;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+bool finalizeUnreachedCtors(ModuleContext& mod) {
+    if (!mod.ctorParamTypes) return false;
+    bool changed = false;
+    for (auto& c : mod.ctors.ctors()) {
+        for (auto& param : c.signature.params) {
+            if (!param.is(TypeKind::Never)) continue;
+            param = Type::dynamic();
+            c.unreached = true;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// The class field-type harvest, re-run against the constructor signatures as
+// they stand. This is the one road from a typed parameter to a typed FIELD:
+// `this.x = x` says nothing until `x` does.
+bool refineFieldHarvest(ModuleContext& mod, InferenceResult& result) {
+    if (!mod.ctorParamTypes) return false;
+    return result.classLayouts.reharvestFieldTypes(mod.ctors.harvestOracle());
+}
+
 // After the fixpoint settles: a parameter still at `Never` is one no call site
 // this compilation saw ever reached. Widening it to `Dynamic` is what puts the
 // method back on the uniform convention, and it cannot be done inside the loop —
@@ -169,6 +217,9 @@ void resetObservations(ModuleContext& mod) {
     for (auto& m : mod.methods.methods()) {
         m.observedParams.assign(m.signature.params.size(), Type::never());
         m.observedReturn = Type::never();
+    }
+    for (auto& c : mod.ctors.ctors()) {
+        c.observedParams.assign(c.signature.params.size(), Type::never());
     }
 }
 
@@ -289,6 +340,16 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
     }
+    mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
+    if (mod.ctorParamTypes) {
+        mod.ctors.build(module);
+        scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
+        // The field harvest starts from the parameter signatures, which are all
+        // `Never` here. That is the bottom of the same lattice everything else
+        // in the loop below climbs, so the whole sequence is monotone from the
+        // first round rather than from the second.
+        refineFieldHarvest(mod, result);
+    }
     mod.diags = &diags;
     for (const auto& name : ast::getScopeDeclarations(module.body)) {
         mod.moduleScopeNames.insert(name);
@@ -346,6 +407,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
         resetObservations(mod);
         const size_t poisonBefore = mod.methodPoison.version();
+        const size_t ctorPoisonBefore = mod.ctorPoison.version();
         // The module-binding table is joined into, never rebuilt, so a round
         // that widens one entry has to be a round that says "changed" — the
         // consumers of the table are the very bodies this pass just walked.
@@ -353,7 +415,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         if (!runPass(mod, split, /*record=*/false)) return std::nullopt;
         bool changed = widenSignatures(mod);
         changed = widenMethods(mod) || changed;
+        changed = widenCtors(mod) || changed;
+        // The harvest reads the signatures `widenCtors` just folded, and the
+        // bodies that read the harvest are the ones the next round walks.
+        changed = refineFieldHarvest(mod, result) || changed;
         changed = mod.methodPoison.version() != poisonBefore || changed;
+        changed = mod.ctorPoison.version() != ctorPoisonBefore || changed;
         changed = mod.moduleBindings != bindingsBefore || changed;
         // The field audit folds in here, and its direction is the opposite of
         // every other fold in this loop: signatures only WIDEN and field
@@ -369,7 +436,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // dynamic, which can poison further names.
         if (!finalized) {
             finalized = true;
-            if (finalizeUnreachedMethods(mod)) continue;
+            bool moved = finalizeUnreachedMethods(mod);
+            moved = finalizeUnreachedCtors(mod) || moved;
+            moved = refineFieldHarvest(mod, result) || moved;
+            if (moved) continue;
         }
         converged = true;
         break;
@@ -383,6 +453,50 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // already at the fixpoint, so this pass cannot change any signature.
     resetObservations(mod);
     if (!runPass(mod, split, /*record=*/true)) return std::nullopt;
+
+    if (mod.ctorParamTypes) {
+        auto& rep = result.ctorParams;
+        rep.valueEscapes = mod.ctorEscapes.valueEscapes;
+        rep.valueEscapeReason = mod.ctorEscapes.valueEscapeReason;
+        rep.globalPoison = mod.ctorPoison.all ? mod.ctorPoison.allReason : std::string();
+        for (const auto& c : mod.ctors.ctors()) {
+            if (!c.isForwarder) ++rep.ctors;
+        }
+        rep.unnamedNewSubtree = mod.unnamedNewSubtree;
+        rep.unnamedNewIgnored = mod.unnamedNewIgnored;
+        rep.unnamedNewAll = mod.unnamedNewAll;
+        rep.classes = static_cast<uint32_t>(result.classLayouts.all().size());
+        for (const auto& c : mod.ctors.ctors()) {
+            // An implicit forwarder has no parameters of its own; counting it
+            // would report the `...args` the parser wrote as a constructor whose
+            // parameters the analysis failed to type.
+            if (c.isForwarder) {
+                ++rep.forwarders;
+                continue;
+            }
+            rep.params += static_cast<uint32_t>(c.signature.params.size());
+            if (!c.plainParams) {
+                ++rep.ctorsNotPlain;
+            } else if (mod.ctorPoison.poisons(c.className)) {
+                ++rep.poisons[mod.ctorPoison.reasonFor(c.className)];
+            } else if (c.unreached) {
+                ++rep.ctorsUnreached;
+            } else {
+                ++rep.ctorsSpeaking;
+            }
+            for (const Type& param : c.signature.params) {
+                if (param.is(TypeKind::Number)) {
+                    ++rep.paramsNumber;
+                } else if (param.is(TypeKind::Object)) {
+                    ++rep.paramsObject;
+                } else if (param.is(TypeKind::Dynamic)) {
+                    ++rep.paramsDynamic;
+                } else {
+                    ++rep.paramsOther;
+                }
+            }
+        }
+    }
 
     result.fieldAudit.namesWritten = mod.fieldAudit.nameCount();
     result.fieldAudit.namesClean = mod.fieldAudit.cleanCount();

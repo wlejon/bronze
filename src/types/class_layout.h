@@ -173,7 +173,28 @@ public:
     // reason -> how many classes it refused. The chunk's histogram.
     std::map<std::string, uint32_t> refusalHistogram() const;
 
+    // Re-runs the field-type harvest with a constructor's PARAMETERS answered
+    // from `byClass` (class name -> parameter name -> type), and says whether
+    // any field type moved.
+    //
+    // `this.x = x` is the write three.js's math classes make, and until the
+    // call-graph fixpoint has typed `x` there is nothing to harvest from it but
+    // `dynamic`. The fixpoint types it (types/ctor_ident.h), so the harvest has
+    // to be able to run again — which is why it is separated from `build` and
+    // why it recomputes rather than joins. Monotone in the fixpoint's sense: the
+    // parameter types only widen, so the field types re-harvested from them do
+    // too, and the loop in infer.cpp settles.
+    bool reharvestFieldTypes(const std::map<std::string, std::map<std::string, Type>>& byClass);
+
 private:
+    // Pass 3 of `build`, and the body of `reharvestFieldTypes`. Null runs the
+    // purely syntactic harvest.
+    void harvestFieldTypes(const std::map<std::string, std::map<std::string, Type>>* byClass);
+    // Joins one class's base's field types into its own, base first. A
+    // subclass instance HAS the base's fields; without this the table claimed a
+    // slot and knew nothing about its contents.
+    void inheritFieldTypes(size_t index, std::vector<bool>& done);
+
     // Resolves one class's `fields`/`layoutProven`, recursing through
     // `extends` first. `resolving` breaks a cyclic `extends`, which is a
     // TypeError at run time but must not be an infinite loop here.
@@ -189,6 +210,12 @@ private:
     // The collector's record for each class, kept only for the span of
     // `build` so `resolve` can reach a class's methods by index.
     std::vector<const FoundRef*> found_;
+    // The class members, by class index, kept for the life of the table: the
+    // field-type harvest re-runs on them every round of the call-graph
+    // fixpoint. The AST outlives every analysis, so borrowing is safe; the
+    // collector's own records are not, which is why this is a second vector and
+    // not a longer life for `found_`.
+    std::vector<const std::vector<ast::ClassMethod>*> methodsByIndex_;
 
     std::vector<ClassLayout> classes_;
     std::map<std::string, size_t> byName_;

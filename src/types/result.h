@@ -147,6 +147,43 @@ struct InferenceResult {
     };
     FieldAuditReport fieldAudit;
 
+    // What the constructor-parameter join decided, summarized for
+    // `--infer-stats` (types/ctor_ident.h). The chain this chunk has to move
+    // starts here: parameters typed, then the field harvest that reads them,
+    // then the audit, then the raw loads.
+    struct CtorParamReport {
+        uint32_t classes = 0;   // named classes in the program
+        uint32_t ctors = 0;     // of those, ones declaring a constructor
+        uint32_t params = 0;    // their parameters, all together
+        uint32_t paramsNumber = 0;
+        uint32_t paramsObject = 0;
+        uint32_t paramsOther = 0;    // proven, but neither a number nor an object
+        uint32_t paramsDynamic = 0;
+        uint32_t ctorsSpeaking = 0;  // neither poisoned nor unreached nor unplain
+        uint32_t ctorsUnreached = 0;
+        uint32_t ctorsNotPlain = 0;
+        // `constructor(...args) { super(...args) }`, which the parser
+        // synthesizes for every derived class that declares none. A link in the
+        // chain rather than a constructor with parameters of its own.
+        uint32_t forwarders = 0;
+        std::map<std::string, uint32_t> poisons;  // reason -> classes it stood down
+        std::string globalPoison;  // non-empty when every class stood down at once
+        // Whether a constructor VALUE can be in circulation without its class
+        // binding having been read, which is what decides whether a `new` this
+        // pass cannot name has to contribute to every class in the program.
+        bool valueEscapes = false;
+        std::string valueEscapeReason;
+        // `new <a value>(...)` sites, by how far the analysis could bound them:
+        // to the receiver's class subtree (`new x.constructor()`), to nothing at
+        // all (every class such a site can reach is already poisoned), or to the
+        // whole program — the last being the row that says whether one unnameable
+        // construction is costing every class in the library its parameters.
+        uint32_t unnamedNewSubtree = 0;
+        uint32_t unnamedNewIgnored = 0;
+        uint32_t unnamedNewAll = 0;
+    };
+    CtorParamReport ctorParams;
+
     // Per closure: the type its `return` statements were observed to produce,
     // keyed by the AST node that IS the closure — a `FunctionExpr`, or a nested
     // `FunctionDecl`, which desugars to one. See `closureReturnAt` for what

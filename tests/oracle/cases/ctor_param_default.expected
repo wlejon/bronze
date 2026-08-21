@@ -1,0 +1,13 @@
+tag1=0,none,1
+tag2=2.5,two,4
+tagN=2.5
+label typeof=string 4
+tag3=0,none,null
+pair=0,1 10,11 10,20
+pairK=20
+maybe=undefined,null,false
+maybe typeof=undefined,object,boolean
+maybe json={"w":null,"f":false}
+maybe keys=u,w,f
+mutated=7seven
+loop=3540

@@ -1,0 +1,13 @@
+held=5,five 6 five!
+held direct=2,0
+bound=7,seven 14 5
+bound direct=3
+plain call: true
+called=4,0
+passed=8,eight
+passed direct=1
+free=1.5,0,2
+free mutated=3.5
+loop=2340
+json={"f":3.5}{"h":5}{"m":7}
+keys=m/f

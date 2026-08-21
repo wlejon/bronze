@@ -958,8 +958,11 @@ TEST_CASE("an accessor anywhere in the program refuses the name globally") {
     //
     // Two mechanisms answer this, deliberately: the audit refuses the name, and
     // `fieldValueCandidate` refuses the read against the class's accessor list
-    // walked to the root of the `extends` chain. The audit gets there first,
-    // which is why the class-layout counter stays zero here.
+    // walked to the root of the `extends` chain. The class-layout one gets
+    // there first, because the harvest inherits `x: number` from `Base`
+    // (class_field_types.cpp) and so a `Derived` receiver's `d.x` IS a
+    // number-typed field read for the accessor list to refuse. Both still say
+    // no, which is the point; the counter says which one spoke.
     const auto inferred = infer(
         "class Base { constructor() { this.x = 0; } }\n"
         "class Derived extends Base {\n"
@@ -972,7 +975,7 @@ TEST_CASE("an accessor anywhere in the program refuses the name globally") {
     const auto& r = *inferred.result;
     CHECK(r.fieldAudit.namesClean == 0);
     CHECK(r.fieldAudit.refusals.count("declared as a class accessor") == 1);
-    CHECK(r.fieldAudit.refusedByClass == 0);
+    CHECK(r.fieldAudit.refusedByClass == 3);
     CHECK(r.provenFieldReads.empty());
 }
 
@@ -992,4 +995,101 @@ TEST_CASE("a numeric compound assignment preserves the field's proof") {
     CHECK(r.fieldAudit.namesClean == 1);
     // Two reads, `make`'s store, and the three compound targets.
     CHECK(r.provenFieldReads.size() == 6);
+}
+
+// ---- constructor parameter identity (types/ctor_ident.h) --------------------
+
+TEST_CASE("a constructor's parameters are joined over its construction sites") {
+    // The shape three.js's math classes are written in, and the one the write
+    // audit could say nothing about until constructors were enumerated: the
+    // field's only write is a parameter, so the field's type is the parameter's.
+    const auto inferred = infer(
+        "class Vec { constructor(x = 0, y = 0) { this.x = x; this.y = y; } }\n"
+        "function dot(a, b) { return a.x * b.x + a.y * b.y; }\n"
+        "const p = new Vec(1, 2);\n"
+        "const q = new Vec();\n"
+        "console.log(dot(p, q));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.ctors == 1);
+    CHECK(r.ctorParams.paramsNumber == 2);
+    CHECK(r.ctorParams.paramsDynamic == 0);
+    CHECK(r.fieldAudit.namesClean == 2);
+    CHECK(r.provenFieldReads.size() > 0);
+}
+
+TEST_CASE("a default is one of a constructor's call sites") {
+    // `new Tag()` binds the DEFAULT's value, not `undefined`. A join that left
+    // the default out would type `n` as `undefined | number`, which is Dynamic,
+    // and every bare `new` in three.js would take its class down.
+    const auto inferred = infer(
+        "class Tag { constructor(n = 0, label = 'none') { this.n = n; this.lbl = label; } }\n"
+        "function read(t) { return t.n; }\n"
+        "console.log(read(new Tag()) + read(new Tag(2, 'two')));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.paramsNumber == 1);
+    // The String default is a proof too — just not one worth an unboxed slot.
+    CHECK(r.ctorParams.paramsOther == 1);
+    CHECK(r.fieldAudit.namesClean == 1);
+}
+
+TEST_CASE("one non-number construction site takes the whole name back") {
+    const auto inferred = infer(
+        "class Box { constructor(v) { this.v = v; } }\n"
+        "function read(b) { return b.v; }\n"
+        "console.log(read(new Box(1)) + read(new Box('hi')));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.paramsDynamic == 1);
+    CHECK(r.fieldAudit.namesClean == 0);
+    CHECK(r.provenFieldReads.empty());
+}
+
+TEST_CASE("a class read as a value gives up its parameters, and so do its bases") {
+    // `Object.getPrototypeOf(Sub)` is the base's constructor, so a subclass in
+    // circulation puts its whole `extends` chain there with it.
+    const auto inferred = infer(
+        "class Base { constructor(a = 0) { this.a = a; } }\n"
+        "class Sub extends Base { constructor(a, b = 0) { super(a); this.b = b; } }\n"
+        "class Free { constructor(f = 0) { this.f = f; } }\n"
+        "function build(C) { return new C(1); }\n"
+        "console.log(build(Sub).a + new Free(2).f);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.poisons.count("the class binding is read as a value") == 1);
+    CHECK(r.ctorParams.poisons.at("the class binding is read as a value") == 2);
+    // `Free` never leaves `new` position, so one class's dynamism is not the
+    // program's.
+    CHECK(r.ctorParams.ctorsSpeaking == 1);
+}
+
+TEST_CASE("super and the implicit forwarder carry a parameter into a base field") {
+    // `class Mid extends Base {}` is `constructor(...args) { super(...args) }`,
+    // which the parser synthesizes. Reading its spread as evidence would poison
+    // the base of every bare `extends` in the program.
+    const auto inferred = infer(
+        "class Base { constructor(a = 0) { this.a = a; } }\n"
+        "class Mid extends Base {}\n"
+        "class Leaf extends Mid { constructor(v) { super(v * 2); } }\n"
+        "console.log(new Mid(1).a + new Leaf(3).a);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.forwarders == 1);
+    CHECK(r.ctorParams.poisons.empty());
+    CHECK(r.ctorParams.paramsNumber == 2);
+    CHECK(r.fieldAudit.namesClean == 1);
+}
+
+TEST_CASE("a computed `new` costs only the classes its table was built from") {
+    // `new Registry[name]()` is a callee named by data. It reaches only what
+    // was PUT there, and putting a class there is a read of its binding — so
+    // the poison is already paid, and a class that never left `new` position
+    // owes nothing to a construction it cannot be the target of.
+    const auto inferred = infer(
+        "class Arc { constructor(r = 1) { this.r = r; } }\n"
+        "class Solo { constructor(s = 3) { this.s = s; } }\n"
+        "const Registry = { Arc: Arc };\n"
+        "function make(name) { return new Registry[name](); }\n"
+        "console.log(make('Arc').r + new Solo(2).s);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.ctorParams.ctorsSpeaking == 1);
+    CHECK(r.ctorParams.unnamedNewIgnored == 1);
+    CHECK(r.ctorParams.unnamedNewAll == 0);
+    CHECK(r.fieldAudit.namesClean == 1);
 }

@@ -54,8 +54,26 @@ bool bodyFallsThrough(const std::vector<const ast::Stmt*>& body) {
 // it from the pass that widens callee signatures — the exact shape of an
 // unsound proof.
 void FlowAnalyzer::runParamDefaults(const std::vector<ast::Param>& params) {
-    for (const auto& param : params) {
-        if (param.defaultValue) expr(*param.defaultValue);
+    for (size_t i = 0; i < params.size(); ++i) {
+        const ast::Param& param = params[i];
+        if (param.defaultValue) {
+            const Type t = expr(*param.defaultValue);
+            // A default is one of the constructor's CALL SITES: `new Vec()`
+            // binds this expression's value, not `undefined`, and a join that
+            // left it out would type every math class in three.js by the
+            // arguments its callers happened to pass and by nothing else.
+            //
+            // Evaluated with the parameters to its left already seeded from the
+            // signature, so `constructor(k = 0, m = k + 1)` types `m` from
+            // whatever `k` is known to hold — which is the same fixpoint value,
+            // one round behind, and therefore still monotone.
+            if (scope_.ctorIndex != kNoCtor && mod_.ctorParamTypes) {
+                auto& info = mod_.ctors.ctors()[scope_.ctorIndex];
+                if (i < info.observedParams.size()) {
+                    info.observedParams[i] = join(info.observedParams[i], t);
+                }
+            }
+        }
         if (param.pattern) patternDefaults(*param.pattern);
     }
 }
@@ -629,11 +647,13 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 const std::vector<Type>& paramTypes,
                                 const std::vector<const ast::Stmt*>& body, Span span,
                                 bool record, bool isGenerator, ShapeClassId thisClass,
-                                uint32_t methodIndex, bool moduleTopLevel) {
+                                uint32_t methodIndex, uint32_t ctorIndex,
+                                bool moduleTopLevel) {
     Scope scope;
     scope.parent = parent;
     scope.thisClass = thisClass;
     scope.methodIndex = methodIndex;
+    scope.ctorIndex = ctorIndex;
     // The same union lowering builds: a name assigned inside a `try` lives in
     // an environment record, and `queries.h`'s rule is that inference must
     // believe about a variable exactly what lowering decided about where it

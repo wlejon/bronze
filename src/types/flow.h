@@ -8,6 +8,7 @@
 #include "ast/ast.h"
 #include "support/diagnostics.h"
 #include "types/class_layout.h"
+#include "types/ctor_ident.h"
 #include "types/field_audit.h"
 #include "types/method_ident.h"
 #include "types/result.h"
@@ -73,6 +74,11 @@ struct Scope {
     // enclosing class of a `super.m()` call, and the stats row that attributes a
     // still-dynamic identifier receiver to the reason its parameter was refused.
     uint32_t methodIndex = kNoMethod;
+    // The class CONSTRUCTOR this body is, when it is one. A parameter's default
+    // is evaluated in this scope, and its type is one of the constructor's call
+    // sites (types/ctor_ident.h) — so the walk that evaluates the default needs
+    // to know whose observation to join it into.
+    uint32_t ctorIndex = kNoCtor;
 };
 
 struct ModuleContext {
@@ -112,6 +118,27 @@ struct ModuleContext {
     // `BRONZE_NO_INTERPROC_IDENT` turns the whole mechanism off, leaving every
     // method's parameters on the uniform dynamic convention.
     bool interprocIdent = false;
+
+    // ---- interprocedural identity for constructors (ctor_ident.h) -----------
+
+    // Every named class, the constructor each declares, and the `extends`
+    // forest that says where an argument goes when it declares none.
+    CtorTable ctors;
+    // Which classes have given up their parameters, and why. Grows only.
+    CtorPoison ctorPoison;
+    // Whether a constructor VALUE can be in circulation without its class
+    // binding having been read — which is what decides whether a `new` this
+    // pass cannot name has to contribute to anything at all.
+    CtorEscapeFacts ctorEscapes;
+    // `BRONZE_NO_CTOR_PARAM_TYPES` turns the mechanism off, leaving every
+    // constructor's parameters on the uniform dynamic convention and the field
+    // harvest purely syntactic.
+    bool ctorParamTypes = false;
+    // How far each `new <a value>(...)` site could be bounded. Counted on the
+    // recording pass only, like every other statistic.
+    uint32_t unnamedNewSubtree = 0;
+    uint32_t unnamedNewIgnored = 0;
+    uint32_t unnamedNewAll = 0;
 
     // ---- value flow through module-scope bindings ---------------------------
 
@@ -192,6 +219,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
                                 bool record, bool isGenerator = false,
                                 ShapeClassId thisClass = kNoShapeClass,
                                 uint32_t methodIndex = kNoMethod,
+                                uint32_t ctorIndex = kNoCtor,
                                 bool moduleTopLevel = false);
 
 // The `Type` of joining two program points: names in both are joined, names

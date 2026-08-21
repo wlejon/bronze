@@ -147,6 +147,11 @@ void InferStatsCollector::recordFieldAudit(
     fieldProvenReads_ = provenReadSites;
 }
 
+void InferStatsCollector::recordCtorParams(
+    const types::InferenceResult::CtorParamReport& report) {
+    ctorParams_ = report;
+}
+
 std::string InferStatsCollector::format() const {
     std::string out = "=== Inference Statistics ===\n";
 
@@ -170,6 +175,43 @@ std::string InferStatsCollector::format() const {
         for (const auto& entry : sortedReasons(classRefusals_)) {
             out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
         }
+    }
+
+    if (ctorParams_.ctors != 0) {
+        const auto& cp = ctorParams_;
+        out += "\nConstructor Parameters: " + std::to_string(cp.ctorsSpeaking) + " of " +
+               std::to_string(cp.ctors) + " constructors keep their parameters (" +
+               formatPct(cp.ctorsSpeaking, cp.ctors) + "), over " +
+               std::to_string(cp.classes) + " classes\n";
+        out += "  parameters: " + std::to_string(cp.paramsNumber) + " number, " +
+               std::to_string(cp.paramsObject) + " object, " +
+               std::to_string(cp.paramsOther) + " other, " +
+               std::to_string(cp.paramsDynamic) + " dynamic (of " +
+               std::to_string(cp.params) + ")\n";
+        if (cp.ctorsUnreached != 0) {
+            out += "  no construction site reaches it: " +
+                   std::to_string(cp.ctorsUnreached) + "\n";
+        }
+        if (cp.forwarders != 0) {
+            out += "  implicit `super(...args)` forwarders: " +
+                   std::to_string(cp.forwarders) + "\n";
+        }
+        if (cp.ctorsNotPlain != 0) {
+            out += "  parameter list is not plain: " + std::to_string(cp.ctorsNotPlain) +
+                   "\n";
+        }
+        if (!cp.globalPoison.empty()) {
+            out += "  EVERY class refused, " + cp.globalPoison + "\n";
+        }
+        for (const auto& entry : sortedReasons(cp.poisons)) {
+            out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+        out += "  `new` through a value: " + std::to_string(cp.unnamedNewSubtree) +
+               " bounded by the receiver, " + std::to_string(cp.unnamedNewIgnored) +
+               " reaching nothing unpoisoned, " + std::to_string(cp.unnamedNewAll) +
+               " reaching every class\n";
+        out += std::string("  a constructor value can circulate unnamed: ") +
+               (cp.valueEscapes ? cp.valueEscapeReason : std::string("no")) + "\n";
     }
 
     if (fieldAudit_.namesWritten != 0) {

@@ -158,6 +158,15 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
             const Type field =
                 mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
+            // The harvest has not decided this field yet: its only writes are
+            // constructor parameters the call-graph fixpoint is still joining
+            // (types/ctor_ident.h). `Never` is how "undecided" is spelled here,
+            // and answering it is what keeps this expression's type MONOTONE
+            // over the rounds. `Dynamic` would be the top of the lattice on a
+            // round whose answer is `number` on the next one — and the write
+            // audit's refusals are STICKY, so one such round refuses the name
+            // for the rest of the compilation on evidence that does not exist.
+            if (field.is(TypeKind::Never)) return Type::never();
             // The IDENTITY travels either way, one rung weaker than the base's:
             // an object read out of a field was not watched being made, so the
             // next link is bounded the same way this one is.
@@ -237,7 +246,35 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (const auto* sc = dynamic_cast<const ast::SuperCall*>(&e)) {
         // The parent constructor runs on the current receiver and its
         // result is discarded, so nothing is proven about the value.
-        for (const auto& a : sc->args) expr(*a);
+        std::vector<Type> args;
+        args.reserve(sc->args.size());
+        bool spreadArgs = false;
+        for (const auto& a : sc->args) {
+            if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+            args.push_back(expr(*a));
+        }
+        // It is also a CALL SITE of the base's constructor, and in three.js it
+        // is the commonest one there is: every class below `Object3D` reaches
+        // its fields through one. Which constructor that is, is decided
+        // statically — the enclosing class's base, and then whatever that base
+        // forwards to when it declares none.
+        // The implicit `constructor(...args) { super(...args) }` is a link and
+        // not a call site: what reaches the base is what reached the subclass,
+        // and `CtorTable::targetOf` already walks straight through it. Reading
+        // this spread as evidence would poison the base of every bare
+        // `class X extends Y {}` in the program.
+        const bool forwarding = scope_.ctorIndex != kNoCtor &&
+                                mod_.ctors.ctors()[scope_.ctorIndex].isForwarder;
+        if (mod_.ctorParamTypes && !forwarding) {
+            const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
+            // A base this pass cannot name — an anonymous enclosing class, or
+            // `extends (expr)` — needs no poison of its own: the only road from
+            // there to one of the program's classes is a read of that class's
+            // binding, and such a read is an escape the scan already saw.
+            if (here != nullptr && !here->superName.empty()) {
+                constructSite(here->superName, args, spreadArgs);
+            }
+        }
         return Type::dynamic();
     }
     if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
@@ -481,6 +518,127 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     return Type::dynamic();
 }
 
+// One `new <a class name>(...)`, and every `super(...)` that reaches one.
+//
+// The site's arguments join into the parameters of whatever constructor the
+// name positionally reaches — the class's own, or, when it declares none, the
+// one its base reaches, because the implicit constructor forwards everything.
+void FlowAnalyzer::constructSite(const std::string& className, const std::vector<Type>& args,
+                                 bool spreadArgs) {
+    if (!mod_.ctorParamTypes) return;
+    const uint32_t target = mod_.ctors.targetOf(className);
+    if (target == kNoCtor) return;
+    contributeCtorArgs(target, args, spreadArgs);
+}
+
+// A `new` whose callee is a VALUE: `new this.constructor()`, `new Curves[t]()`,
+// `new Ctor(x)` through a parameter.
+//
+// Which constructors such a site can reach is the whole question this chunk had
+// to get right, and the answer is not "all of them". A constructor value gets
+// into circulation two ways. The first is a read of the class binding, and that
+// read is an escape the scan already poisoned the class for — so those classes
+// have nothing left to give up. The second is a read off an OBJECT
+// (`o.constructor`, `Object.getPrototypeOf(o)`, `new.target`, a computed read
+// that could name `constructor`), and a program that does none of those cannot
+// reach an unpoisoned class here at all.
+//
+// `new <recv>.constructor(...)` is the one form worth being precise about,
+// because it is how three.js's `clone()` is written on half its classes: the
+// classes it reaches are the ones `recv` can be, which is its class and
+// everything that extends it.
+void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
+                                      const std::vector<Type>& args, bool spreadArgs) {
+    if (!mod_.ctorParamTypes) return;
+    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&callee)) {
+        if (m->property == "constructor" && !m->optional) {
+            if (const ClassLayout* cls = receiverClass(calleeBase)) {
+                std::vector<uint32_t> targets;
+                mod_.ctors.subtreeOf(cls->name, targets);
+                for (const uint32_t target : targets) {
+                    contributeCtorArgs(target, args, spreadArgs);
+                }
+                if (record_) ++mod_.unnamedNewSubtree;
+                return;
+            }
+        }
+    }
+    if (!mod_.ctorEscapes.valueEscapes) {
+        if (record_) ++mod_.unnamedNewIgnored;
+        return;
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&callee)) {
+        // A top-level `function` used as a constructor — which is how three.js
+        // writes its whole WebGL back end, `new WebGLTextures(...)` and thirty
+        // more. The name resolves to a module function and to nothing else, so
+        // the object it builds is that function's `this`, and no CLASS
+        // constructor is reached at all.
+        if (lookup(id->name).functionIndex() != kNoFunctionIndex) {
+            if (record_) ++mod_.unnamedNewIgnored;
+            return;
+        }
+        // A name the program does not bind is a GLOBAL: `new Error(msg)`,
+        // `new Map()`, `new Float64Array(n)`. It can hold one of the program's
+        // own classes only if the program writes globals, which is a fact about
+        // the text and not about this site.
+        if (!resolvesToUserBinding(id->name) && !mod_.ctorEscapes.freeGlobalWrite) {
+            if (record_) ++mod_.unnamedNewIgnored;
+            return;
+        }
+    }
+    if (spreadArgs) {
+        mod_.ctorPoison.addAll("an argument list is spread at a `new` whose callee is a value");
+        return;
+    }
+    if (record_) ++mod_.unnamedNewAll;
+    for (uint32_t i = 0; i < mod_.ctors.ctors().size(); ++i) {
+        contributeCtorArgs(i, args, /*spreadArgs=*/false);
+    }
+}
+
+void FlowAnalyzer::contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type>& args,
+                                      bool spreadArgs) {
+    CtorInfo& info = mod_.ctors.ctors()[ctorIndex];
+    if (spreadArgs) {
+        mod_.ctorPoison.add(info.className, "an argument list is spread at a construction site");
+        return;
+    }
+    for (size_t i = 0; i < info.observedParams.size(); ++i) {
+        if (i < args.size()) {
+            // `undefined` at a defaulted position runs the DEFAULT, so the
+            // value bound here is not the argument and the argument is not
+            // evidence. The default's own type is joined in by the walk that
+            // evaluates it (`runParamDefaults`).
+            if (info.hasDefault[i] && args[i].is(TypeKind::Undefined)) continue;
+            info.observedParams[i] = join(info.observedParams[i], args[i]);
+            continue;
+        }
+        // A missing argument at a position with no default binds `undefined`,
+        // exactly as the construction delivers it.
+        if (!info.hasDefault[i]) {
+            info.observedParams[i] = join(info.observedParams[i], Type::undefined());
+        }
+    }
+}
+
+// What a constructor's body may believe about its own parameters.
+//
+// The whole proven type, unlike a method's, which is cut down to an identity
+// because the dispatch that chose it is a guess. There is no dispatch here:
+// `new C(...)` names C, `super(...)` names the base statically, and a class
+// whose binding never left `new` position has no other callers. So `Number`
+// travels, and an unboxed f64 with it — which is the point of the chunk.
+std::vector<Type> FlowAnalyzer::ctorParamTypes(uint32_t ctorIndex, size_t count) const {
+    std::vector<Type> out(count, Type::dynamic());
+    if (!mod_.ctorParamTypes || ctorIndex == kNoCtor) return out;
+    const CtorInfo& self = mod_.ctors.ctors()[ctorIndex];
+    if (!self.plainParams || mod_.ctorPoison.poisons(self.className)) return out;
+    for (size_t i = 0; i < count && i < self.signature.params.size(); ++i) {
+        out[i] = self.signature.params[i];
+    }
+    return out;
+}
+
 // Why one identifier read came back `Dynamic`.
 //
 // Diagnostics only; nothing types anything from this. It exists because
@@ -573,8 +731,29 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
     // its effects are recorded first. A bare name is deliberately not walked:
     // reading it is not what `new` does with it, and `constructorShape` below
     // is the fact this site contributes about that name.
-    if (ident == nullptr) expr(*n.callee);
-    for (const auto& a : n.args) expr(*a);
+    //
+    // The RECEIVER of a member callee is captured here rather than after the
+    // arguments, because walking them overwrites `lastMember_`. It is what
+    // bounds `new x.constructor()` to the classes `x` can be.
+    Type calleeBase = Type::dynamic();
+    if (ident == nullptr) {
+        expr(*n.callee);
+        const auto* member = dynamic_cast<const ast::MemberAccess*>(n.callee.get());
+        if (member != nullptr && lastMember_ == member) calleeBase = lastMemberBase_;
+    }
+    std::vector<Type> args;
+    args.reserve(n.args.size());
+    bool spreadArgs = false;
+    for (const auto& a : n.args) {
+        if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+        args.push_back(expr(*a));
+    }
+    // This site's contribution to the constructor's parameters (ctor_ident.h).
+    if (ident != nullptr && mod_.ctors.isClassName(ident->name)) {
+        constructSite(ident->name, args, spreadArgs);
+    } else {
+        constructUnbounded(*n.callee, calleeBase, args, spreadArgs);
+    }
     // `new Float64Array(...)` on the UNSHADOWED name is the builtin: assigning
     // to a builtin global is a compile error, so the only way the name can
     // mean anything else is a program binding — which `resolvesToUserBinding`
@@ -647,7 +826,7 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
 Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& declaredName,
                    const std::vector<ast::Param>& params,
                    const std::vector<ast::StmtPtr>& body, Span span, bool isGenerator,
-                   ShapeClassId thisClass, uint32_t methodIndex) {
+                   ShapeClassId thisClass, uint32_t methodIndex, uint32_t ctorIndex) {
     std::string name = declaredName;
     if (name.empty()) name = "<anon" + std::to_string(anonCounter_++) + ">";
     std::vector<const ast::Stmt*> borrowed;
@@ -661,7 +840,14 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     // CONVENTION changes either way — a method is still invoked dynamically;
     // what the signature buys is what the body may believe about its arguments.
     std::vector<Type> paramTypes(params.size(), Type::dynamic());
-    if (methodIndex != kNoMethod) {
+    // A CONSTRUCTOR is the second exception, and a stronger one than a method.
+    // `new C(...)` names C: there is no dispatch to be right or wrong about, so
+    // the join over the sites is a proof of the same standing as a
+    // direct-callable function's signature — and it travels whole, primitives
+    // included, because that is what makes `this.x = x` a Number write.
+    if (ctorIndex != kNoCtor) {
+        paramTypes = ctorParamTypes(ctorIndex, params.size());
+    } else if (methodIndex != kNoMethod) {
         const MethodInfo& self = mod_.methods.methods()[methodIndex];
         if (self.plainParams && !mod_.methodPoison.poisons(self.methodName)) {
             for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
@@ -684,7 +870,7 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     const FunctionOutcome outcome =
         analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
                         /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
-                        isGenerator, thisClass, methodIndex);
+                        isGenerator, thisClass, methodIndex, ctorIndex);
     return outcome.returnType;
 }
 
@@ -708,9 +894,11 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
         if (m.fn) {
             const uint32_t index =
                 mod_.interprocIdent ? mod_.methods.indexOfNode(m.fn.get()) : kNoMethod;
+            const uint32_t ctorIndex =
+                mod_.ctorParamTypes ? mod_.ctors.indexOfNode(m.fn.get()) : kNoCtor;
             const Type returned =
                 analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
-                              m.fn->isGenerator || m.fn->isAsync, receiver, index);
+                              m.fn->isGenerator || m.fn->isAsync, receiver, index, ctorIndex);
             if (index != kNoMethod) {
                 MethodInfo& self = mod_.methods.methods()[index];
                 self.observedReturn = join(self.observedReturn, returned);
