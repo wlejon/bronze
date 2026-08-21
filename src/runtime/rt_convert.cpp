@@ -559,7 +559,26 @@ bool bronze_is_nullish(uint64_t bits) {
     return v.isNull() || v.isUndefined() || v.isHole();
 }
 
+// The two facts generated code's inline `===` is built on, asserted where the
+// helper it stands in front of lives (llvm_arith.cpp emitStrictEq).
+//
+// `aBits == bBits` decides every value in the model EXCEPT a string and a
+// BigInt: those two are the only rows below that can answer true for
+// different bits, so an inline arm that refuses exactly those two tags and
+// answers `false` for everything else is this function, minus the call.
+static_assert(BRONZE_ABI_TAG_STRING == static_cast<uint16_t>(Tag::String));
+static_assert(BRONZE_ABI_TAG_BIGINT == static_cast<uint16_t>(Tag::BigInt));
+// And the number range is BELOW every tag, so a number's top sixteen bits can
+// never be mistaken for either of them.
+static_assert(BRONZE_ABI_NUMBER_MAX_BITS <
+              (static_cast<uint64_t>(BRONZE_ABI_TAG_STRING) << BRONZE_ABI_VALUE_TAG_SHIFT));
+
 bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
+    // The attribution for this chunk's fast/slow split: with the inline arms
+    // emitted, the only `===` that arrives here has a String or a BigInt on
+    // the left, so this count IS the residue and BRONZE_NO_STRICT_EQ_INLINE=1
+    // measures what the arms took away.
+    recordHelperCall("bronze_strict_eq");
     Value a(aBits);
     Value b(bBits);
     if (a.isNumber() && b.isNumber()) {

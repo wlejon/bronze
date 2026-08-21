@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "abi/bronze_abi.h"
+#include "runtime/tls_block.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -43,14 +44,14 @@ void bumpProtoMutationEpoch() noexcept;
 // from the TLS block, so the two halves of a site cannot disagree about how
 // wide it is.
 inline uint32_t rtIcWayLimit() noexcept {
-    return bronze_tls_block_addr()->poly_ic_enabled != 0 ? BRONZE_ABI_IC_WAYS : 1u;
+    return runtime::rtTls()->poly_ic_enabled != 0 ? BRONZE_ABI_IC_WAYS : 1u;
 }
 
 // May the runtime install NEGATIVE entries? Read at every install and nowhere
 // else: with the flag down no absent entry exists, so generated code's absent
 // arm is dead and costs the fast path nothing to leave in.
 inline bool rtNegativeIcEnabled() noexcept {
-    return bronze_tls_block_addr()->negative_ic_enabled != 0;
+    return runtime::rtTls()->negative_ic_enabled != 0;
 }
 
 // A monomorphic property cache: four plain words, none of which the collector

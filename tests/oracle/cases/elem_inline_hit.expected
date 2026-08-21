@@ -1,0 +1,23 @@
+a b c h
+undefined undefined undefined
+a a true
+nan inf ninf
+T F undefined undefined
+absent undefined
+present now
+proto-absent undefined
+proto-present fromProto
+sp-before undefined
+sp-after p2nine
+accessor getter5 5
+dict-before three
+dict-after three undefined
+kinds 20 undefined 1.5 undefined
+kinds2 onfn b undefined undefined one
+len 3 3
+depth basalt own4
+shadow shadow basalt
+two-shapes S1S2
+two-keys abc
+string-key 1 2 undefined
+warm 2222000

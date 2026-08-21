@@ -124,6 +124,12 @@ ElemProbe elemCacheProbe(Value objVal, Value key);
 // copy this table keys on is made here, so no caller has to know the budget.
 void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCacheSite& site);
 
+// Publish this thread's table into `bronze_tls_block::elem_cache_tbl`, so that
+// generated code can probe it without a call (codegen-llvm/llvm_elem_cache.cpp
+// emits the committed hit for a NUMBER or BOOLEAN key). Called from Heap's
+// constructor, which is the per-thread first touch.
+void elemCachePublish() noexcept;
+
 // BRONZE_NO_ELEM_IC=1. Read through the per-thread ABI block like every other
 // seam, so one binary can A/B.
 bool elemCacheEnabled() noexcept;

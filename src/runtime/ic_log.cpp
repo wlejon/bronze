@@ -52,6 +52,12 @@ static SectionStats g_dynamicCallStats;
 // the receiver's kind, never to a key the site names — a computed site names
 // no key, which is the whole reason the cache exists.
 static SectionStats g_elemIcStats;
+// Root blocks that outgrew their inline storage (runtime/root_slots.h). The
+// "key" column is the WIDTH the block had reached, because that is the number
+// kRootSlotsInline and kRootBlockInline are guesses at: a report whose spills
+// all sit at 17 says raise it by one, and a report with no rows at all says
+// the guess was right and this chunk's C-heap traffic really did go to zero.
+static SectionStats g_rootSpillStats;
 static bool s_initialized = false;
 
 // A read that found NOTHING — the case that used to be one bucket called
@@ -382,6 +388,17 @@ void icLogRecordElemIcMiss(const char* reason, uint64_t objBits, uint64_t keyBit
     ks.reasonCounts[r]++;
 }
 
+void icLogRecordRootSpill(const char* reason, uint32_t reached) {
+    g_rootSpillStats.totalCount++;
+    const char* r = reason ? reason : "(none)";
+    g_rootSpillStats.reasonCounts[r]++;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "width %u", reached);
+    auto& ks = g_rootSpillStats.keyStats[buf];
+    ks.totalCount++;
+    ks.reasonCounts[r]++;
+}
+
 void icLogRecordDynamicCall(uint64_t calleeBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits) {
     (void)thisBits;
     (void)argvBits;
@@ -473,6 +490,7 @@ void dumpIcLogReport() {
     printSectionReport("bronze_prop_set Misses", "Key", g_propSetStats);
     printSectionReport("bronze_dynamic_call Misses", "Callee", g_dynamicCallStats);
     printSectionReport("bronze_elem_get Cache Misses", "Key", g_elemIcStats);
+    printSectionReport("GC Root Block Spills", "Width", g_rootSpillStats);
 
     std::fprintf(stderr, "\n");
     std::fflush(stderr);

@@ -3,6 +3,7 @@
 // here is C++ the runtime calls on its own behalf.
 
 #include "runtime/exception.h"
+#include "runtime/tls_block.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -141,7 +142,7 @@ void ensureExceptionRoots() {
         // The cell lives in this thread's bronze_tls_block, so the root goes
         // to this thread's heap and covers exactly this thread's pending
         // exception — another thread's cell is another block on another heap.
-        rtHeap().add_permanent_root(reinterpret_cast<Value*>(&bronze_tls_block_addr()->exception_cell));
+        rtHeap().add_permanent_root(reinterpret_cast<Value*>(&rtTls()->exception_cell));
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (ErrorClass& c : g_errorClasses) {
                 visit(c.constructor);
@@ -386,11 +387,11 @@ bool lookupDataProperty(ObjectHeader* obj, StringHeader* key, Value& out) {
 }  // namespace
 
 bool rtExceptionPending() noexcept {
-    return bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
+    return rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 void rtClearException() noexcept {
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 Value rtThrow(Value thrown) noexcept {
@@ -405,7 +406,7 @@ Value rtThrow(Value thrown) noexcept {
     if (rtExceptionPending()) {
         fatal("internal: a second exception raised while one is already pending");
     }
-    bronze_tls_block_addr()->exception_cell = thrown.rawBits();
+    rtTls()->exception_cell = thrown.rawBits();
     return Value::fromUndefined();
 }
 
@@ -549,7 +550,7 @@ uint64_t bronze_immutable_assign(void) {
 // which is what node does and what keeps an uncaught-throw oracle case
 // pinnable: stdout holds exactly what the program printed before it died.
 void bronze_uncaught_exception() {
-    const std::string text = rtUncaughtText(Value(bronze_tls_block_addr()->exception_cell));
+    const std::string text = rtUncaughtText(Value(rtTls()->exception_cell));
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);

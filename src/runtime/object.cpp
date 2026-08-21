@@ -1,4 +1,5 @@
 #include "runtime/object.h"
+#include "runtime/tls_block.h"
 
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
@@ -16,8 +17,8 @@ namespace bronze {
 // generated code reads it: the inline proto-hit and shape-transition fast
 // paths compare an entry's fill epoch against it, which is the same question
 // `describes` asks here. Per-thread because the shapes and ICs it guards are.
-uint64_t protoMutationEpoch() noexcept { return bronze_tls_block_addr()->proto_epoch; }
-void bumpProtoMutationEpoch() noexcept { ++bronze_tls_block_addr()->proto_epoch; }
+uint64_t protoMutationEpoch() noexcept { return runtime::rtTls()->proto_epoch; }
+void bumpProtoMutationEpoch() noexcept { ++runtime::rtTls()->proto_epoch; }
 
 namespace {
 

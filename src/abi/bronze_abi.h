@@ -508,6 +508,37 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * which is the bug the cached depth exists to prevent. */
 #define BRONZE_ABI_IC_SLOTWORD_OFFSET BRONZE_ABI_IC_SLOT_OFFSET
 
+/* ---- the COMPUTED-read cache, as generated code reads it -----------------
+ *
+ * runtime/elem_ic.h's `ElemCacheEntry`: an `InlineCache` (the same struct a
+ * property site's way is, so the validity questions are literally the same
+ * code) followed by the witness that pins the KEY, the arena copy of that key,
+ * and the key's kind. Direct-mapped, one thread's table published into
+ * `elem_cache_tbl` above.
+ *
+ * Generated code inlines the hit for a NUMBER or BOOLEAN key only, and the
+ * omission is not an oversight: the entry's `key` is an ARENA COPY, so a live
+ * key string is never the same object, and confirming a string key means a
+ * length compare and a memcmp — a loop, not a guard. A string key therefore
+ * keeps `bronze_elem_get`, which owns `StringHeader::equals`.
+ *
+ * The bucket function is splitmix64's finalizer applied twice, and generated
+ * code must reproduce it EXACTLY: a probe that hashes differently from the
+ * fill does not answer wrongly, it simply never hits, which is a silent
+ * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
+#define BRONZE_ABI_ELEM_ENTRY_SIZE      48 /* sizeof(ElemCacheEntry) */
+#define BRONZE_ABI_ELEM_IC_OFFSET        0 /* ElemCacheEntry::ic (InlineCache) */
+#define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */
+#define BRONZE_ABI_ELEM_KEY_OFFSET      32 /* ElemCacheEntry::key (StringHeader*) */
+#define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
+#define BRONZE_ABI_ELEM_ENTRIES       4096 /* kElemCacheEntries, a power of two */
+#define BRONZE_ABI_ELEM_KIND_NUMBER      1
+#define BRONZE_ABI_ELEM_KIND_STRING      2
+#define BRONZE_ABI_ELEM_KIND_BOOL        3
+#define BRONZE_ABI_MIX64_ADD  0x9E3779B97F4A7C15ull
+#define BRONZE_ABI_MIX64_MUL1 0xBF58476D1CE4E5B9ull
+#define BRONZE_ABI_MIX64_MUL2 0x94D049BB133111EBull
+
 /* Value: NaN-boxed, tag in the top 16 bits (runtime/value.h). */
 #define BRONZE_ABI_VALUE_TAG_SHIFT      48
 #define BRONZE_ABI_VALUE_PAYLOAD_MASK   0x0000FFFFFFFFFFFFull
@@ -518,6 +549,12 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_TAG_NULL             0xFFF5
 #define BRONZE_ABI_TAG_UNDEFINED        0xFFF6
 #define BRONZE_ABI_TAG_HOLE             0xFFF7
+/* Above the number range like every other tag, and named here because the
+ * inline `===` needs to tell the two values whose equality is NOT bit
+ * equality — a string and a BigInt — from every value whose equality is.
+ * runtime/value.h holds the definition; runtime/rt_convert.cpp asserts the
+ * two agree. */
+#define BRONZE_ABI_TAG_BIGINT           0xFFFB
 #define BRONZE_ABI_CANONICAL_NAN_BITS   0x7FF8000000000000ull
 #define BRONZE_ABI_NUMBER_MAX_BITS      0xFFF0000000000000ull
 #define BRONZE_ABI_HOLE_BITS            0xFFF7000000000000ull
@@ -790,6 +827,32 @@ typedef struct bronze_tls_block {
      * is why it sits after the table pointer rather than with them: the seam
      * has to be a load generated code can make. */
     uint64_t iter_fast_enabled;
+    /* BRONZE_NO_INLINE_ROOTS=1. The small-buffer root blocks (runtime/
+     * root_slots.h): a shadow-stack frame's slot list and the two argument
+     * blocks hold their first few entries INLINE and reach the C heap only
+     * beyond them. With the flag down every block mallocs the way a
+     * std::vector did, which is what makes the A/B a same-binary one.
+     * Runtime-only — nothing generated reads it. */
+    uint64_t inline_roots_enabled;
+    /* BRONZE_NO_STRICT_EQ_INLINE=1. The `===` arms generated code emits ahead
+     * of `bronze_strict_eq` (llvm_arith.cpp): both-numbers, then bit identity,
+     * then the tags that can only answer false. Read from GENERATED code. */
+    uint64_t strict_eq_inline_enabled;
+    /* BRONZE_NO_ELEM_INLINE=1. The committed hit path of the computed-read
+     * cache, emitted INLINE at the element site (llvm_elem.cpp) instead of
+     * reached through `bronze_elem_get`. Read from GENERATED code.
+     *
+     * Distinct from `elem_ic_enabled` above, which owns the TABLE. Lowering
+     * that one lowers this one too — with nothing installed the inline probe
+     * could only ever miss, and an A/B of chunk 3's mechanism must not be
+     * charged for a probe that cannot hit. Lowering this one alone leaves the
+     * table filling and answering, from the helper. */
+    uint64_t elem_inline_enabled;
+    /* The computed-read cache's entry table, published by the runtime on first
+     * touch (runtime/elem_ic.cpp) so generated code can probe it without a
+     * call. Null until then, and a null base is the inline path's first
+     * refusal — same shape as `array_method_tbl` above. */
+    uint64_t* elem_cache_tbl;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -810,6 +873,10 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_FN_SINGLETON_CACHE_ENABLED_OFF 120
 #define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          128
 #define BRONZE_TLS_ITER_FAST_ENABLED_OFF         136
+#define BRONZE_TLS_INLINE_ROOTS_ENABLED_OFF      144
+#define BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF  152
+#define BRONZE_TLS_ELEM_INLINE_ENABLED_OFF       160
+#define BRONZE_TLS_ELEM_CACHE_TBL_OFF            168
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------

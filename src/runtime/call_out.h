@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "abi/bronze_abi.h"
+#include "runtime/tls_block.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/rt_builtins.h"
@@ -85,7 +86,7 @@ public:
 
 private:
     static bool directCalloutEnabled() noexcept {
-        return bronze_tls_block_addr()->direct_callout_enabled != 0;
+        return rtTls()->direct_callout_enabled != 0;
     }
 
     bool bound_ = false;

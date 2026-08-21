@@ -33,11 +33,19 @@ namespace {
 
 // Two distinct code pointers with nothing behind them: these are interned as
 // function objects and never called, which is all the memo is about.
+//
+// The bodies differ, and they have to. Written identically, MSVC's `/OPT:ICF`
+// — on by default in Release, which is what the `dev` preset builds — folds
+// two identical COMDATs into ONE address, and the test's whole premise ("two
+// code pointers are two objects") evaporates: `probeCodeB == probeCodeA`, the
+// memo correctly answers with the same object, and the assertion fails for a
+// reason that has nothing to do with the memo. Distinguishing the bodies is
+// what makes the linker keep them apart.
 uint64_t probeCodeA(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return BRONZE_ABI_UNDEFINED_BITS;
 }
 uint64_t probeCodeB(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    return BRONZE_ABI_UNDEFINED_BITS;
+    return BRONZE_ABI_NULL_BITS;
 }
 
 struct MemoOn {

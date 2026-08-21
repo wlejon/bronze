@@ -9,6 +9,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/tls_block.h"
 
 namespace bronze::runtime {
 
@@ -21,6 +22,21 @@ namespace {
 // entry has a null shape, and `InlineCache::isRealShape` refuses it.
 thread_local ElemCacheEntry g_elemCache[kElemCacheEntries];
 
+// Everything generated code assumes about the table's shape, asserted beside
+// the table rather than beside the constants: a layout fact is only true where
+// the type is, and a probe that reads the wrong offset does not fail loudly —
+// it simply never hits.
+static_assert(sizeof(ElemCacheEntry) == BRONZE_ABI_ELEM_ENTRY_SIZE);
+static_assert(offsetof(ElemCacheEntry, ic) == BRONZE_ABI_ELEM_IC_OFFSET);
+static_assert(offsetof(ElemCacheEntry, witness) == BRONZE_ABI_ELEM_WITNESS_OFFSET);
+static_assert(offsetof(ElemCacheEntry, key) == BRONZE_ABI_ELEM_KEY_OFFSET);
+static_assert(offsetof(ElemCacheEntry, kind) == BRONZE_ABI_ELEM_KIND_OFFSET);
+static_assert(kElemCacheEntries == BRONZE_ABI_ELEM_ENTRIES);
+static_assert((kElemCacheEntries & (kElemCacheEntries - 1)) == 0, "bucket masking needs a power of two");
+static_assert(static_cast<uint8_t>(ElemKeyKind::Number) == BRONZE_ABI_ELEM_KIND_NUMBER);
+static_assert(static_cast<uint8_t>(ElemKeyKind::String) == BRONZE_ABI_ELEM_KIND_STRING);
+static_assert(static_cast<uint8_t>(ElemKeyKind::Boolean) == BRONZE_ABI_ELEM_KIND_BOOL);
+
 // splitmix64's finalizer. Both inputs need it and one of them needs it badly:
 // a NUMBER witness is a DOUBLE's bit pattern, and a small integer's double has
 // about forty ZERO low bits. A mix that only multiplies leaves those zeros in
@@ -31,9 +47,9 @@ thread_local ElemCacheEntry g_elemCache[kElemCacheEntries];
 // problem at the other end (arena alignment zeros at the bottom), so both go
 // through the finalizer rather than only the one that was caught.
 uint64_t mix64(uint64_t x) noexcept {
-    x += 0x9E3779B97F4A7C15ull;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    x += BRONZE_ABI_MIX64_ADD;
+    x = (x ^ (x >> 30)) * BRONZE_ABI_MIX64_MUL1;
+    x = (x ^ (x >> 27)) * BRONZE_ABI_MIX64_MUL2;
     return x ^ (x >> 31);
 }
 
@@ -114,12 +130,22 @@ StringHeader* elemCacheInternKey(StringHeader* live) {
     return copy;
 }
 
+void elemCachePublish() noexcept {
+    // Where generated code finds the table, published once per thread from
+    // Heap's constructor — the same first touch that reads the BRONZE_NO_*
+    // environment, so the base and the seam word that gates reading it are set
+    // together and can never disagree. A thread that has not reached that
+    // point sees a null base, which is the inline path's first refusal and
+    // costs it the helper it already had.
+    rtTls()->elem_cache_tbl = reinterpret_cast<uint64_t*>(g_elemCache);
+}
+
 bool elemCacheEnabled() noexcept {
-    return bronze_tls_block_addr()->elem_ic_enabled != 0;
+    return rtTls()->elem_ic_enabled != 0;
 }
 
 bool elemAbsentEnabled() noexcept {
-    return bronze_tls_block_addr()->elem_absent_enabled != 0;
+    return rtTls()->elem_absent_enabled != 0;
 }
 
 ElemProbe elemCacheProbe(Value objVal, Value key) {

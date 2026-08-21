@@ -4,33 +4,48 @@
 #include <cstdint>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "runtime/heap.h"
+#include "runtime/root_slots.h"
 #include "runtime/value.h"
 
 namespace bronze {
 
+// A frame is opened and closed once per host call and its slots are pushed and
+// popped one at a time, so every member here is inline and the only calls that
+// survive are the cold ones: the growth past kRootSlotsInline and the
+// out-of-order pop. The chunk-4 sampler put `ShadowStackFrame::push` at 2.09 %
+// of the `many_meshes` frame and `::pop` at 0.93 % — a call and a return
+// around one store, at the rate a render loop roots things.
+//
+// Inlining is safe because the whole shadow stack is one image's business:
+// runtime/gc.h is included only by src/runtime, src/embed and src/rt, and all
+// three are compiled into the same static archive or the same shared runtime.
+// A host reaches roots through embed's annotated surface, never through this.
 class ShadowStackFrame {
 public:
-    ShadowStackFrame() noexcept;
-    ~ShadowStackFrame() noexcept;
+    ShadowStackFrame() noexcept {
+        prev_ = top_frame_;
+        top_frame_ = this;
+    }
+
+    ~ShadowStackFrame() noexcept { top_frame_ = prev_; }
 
     ShadowStackFrame(const ShadowStackFrame&) = delete;
     ShadowStackFrame& operator=(const ShadowStackFrame&) = delete;
 
     ShadowStackFrame* prev() const noexcept { return prev_; }
-    Value** roots() const noexcept { return const_cast<Value**>(roots_.data()); }
+    Value** roots() const noexcept { return roots_.data(); }
     size_t count() const noexcept { return roots_.size(); }
 
-    void push(Value* slot);
-    void pop(Value* slot);
+    void push(Value* slot) { roots_.push(slot); }
+    void pop(Value* slot) noexcept { roots_.pop(slot); }
 
-    static ShadowStackFrame* current() noexcept;
+    static ShadowStackFrame* current() noexcept { return top_frame_; }
 
 private:
     ShadowStackFrame* prev_{nullptr};
-    std::vector<Value*> roots_;
+    RootSlotList roots_;
     static thread_local ShadowStackFrame* top_frame_;
 };
 
@@ -62,7 +77,18 @@ private:
 // slots and needs no help, but a runtime helper it calls roots into THIS chain,
 // so the entry frame has to be there — which it is, because compiled code is
 // only ever reached through one of the entries above.
-ShadowStackFrame* requireFrameForRoot();
+//
+// The death is out of line and the check is not: `requireFrameForRoot` runs on
+// every Rooted<> and every argument slot of every builtin call, and the
+// sampler charged it 0.93 % of the `many_meshes` frame for what is a TLS read
+// and a null test.
+[[noreturn]] void fatalNoRootFrame();
+
+inline ShadowStackFrame* requireFrameForRoot() {
+    ShadowStackFrame* frame = ShadowStackFrame::current();
+    if (!frame) fatalNoRootFrame();
+    return frame;
+}
 
 template <typename T = Value>
 class Rooted {

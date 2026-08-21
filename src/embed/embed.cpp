@@ -11,6 +11,7 @@
 // HOST holds across a call is the host's to keep alive (embed.h, Persistent).
 
 #include "embed/embed.h"
+#include "runtime/tls_block.h"
 
 #include <string>
 
@@ -84,9 +85,9 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     // propagation ends: there is no enclosing JS frame left to unwind to, and
     // a pending cell left set would make the NEXT call into compiled code
     // appear to throw its predecessor's exception.
-    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
-        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
+        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return out;
     }
     return CallResult{result.get(), /*thrown=*/false};
@@ -104,9 +105,9 @@ CallResult construct(Value fn, std::span<const Value> args) {
     Rooted<Value> result{
         Value(bronze_construct(fnRoot.get().rawBits(), block.count(), block.data()))};
 
-    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
-        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
+        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return out;
     }
     return CallResult{result.get(), /*thrown=*/false};
@@ -123,8 +124,8 @@ namespace {
 // entry into compiled code.
 Value elemGetAtHostBoundary(uint64_t objBits, uint64_t keyBits) {
     Rooted<Value> result{Value(bronze_elem_get(objBits, keyBits))};
-    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return Value::fromUndefined();
     }
     return result.get();
@@ -223,9 +224,9 @@ bool isBool(Value v) { return v.isBool(); }
 CallResult parseJson(std::string_view jsonUtf8) {
     ShadowStackFrame frame;
     Rooted<Value> result{runtime::rtJsonParse(jsonUtf8)};
-    if (bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(bronze_tls_block_addr()->exception_cell), /*thrown=*/true};
-        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
+        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return out;
     }
     return CallResult{result.get(), /*thrown=*/false};

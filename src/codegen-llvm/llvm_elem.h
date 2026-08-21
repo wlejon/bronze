@@ -29,6 +29,26 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
 void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                  llvm::Value* idxBits, llvm::Value* valBits, bool strict);
 
+struct ElemCacheHit {
+    // The hit value, as a PHI over the entry's two answers: a slot off the
+    // receiver, or `undefined` for a proven-absent pair.
+    llvm::Value* value{nullptr};
+    // The block that PHI lives in, and the one the caller's own join must name
+    // as its predecessor.
+    llvm::BasicBlock* hitBb{nullptr};
+};
+
+// The committed hit of the computed-read cache, at the site
+// (llvm_elem_cache.cpp). Emitted into the CURRENT block, which must be the one
+// every fast-path refusal above already branches to: on a hit it branches to
+// `doneBb`, and on any refusal of its own to `slowBb`, so it is a filter in
+// front of `bronze_elem_get` rather than a fourth receiver arm. NUMBER and
+// BOOLEAN keys only — the file says why a string key cannot be confirmed
+// without a loop.
+ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                              llvm::Value* keyBits, llvm::BasicBlock* slowBb,
+                              llvm::BasicBlock* doneBb);
+
 // Computes the element pointer for a typed array view.
 llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
                                    llvm::Value* idx32, uint32_t elemSize);

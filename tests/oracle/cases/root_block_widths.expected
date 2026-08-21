@@ -1,0 +1,24 @@
+of 0 0 0
+of 1 1 0
+of 8 8 28
+of 9 9 36
+of 64 64 2016
+only 7/8/9
+bound 0 0 0
+bound 1 2 0
+bound 8 16 56
+bound 9 18 72
+bound 64 128 4032
+apply 0 0 0
+apply 1 1 0
+apply 8 8 28
+apply 9 9 36
+apply 64 64 2016
+map 40 40 118 3160
+deep 7 6,11,15,18,20,21,22
+proxy 0 0 0
+proxy 1 2 0
+proxy 9 18 72
+recv 136 1
+churn 199 198
+again 2016 36

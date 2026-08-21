@@ -1,4 +1,5 @@
 #include "runtime/native_fn_memo.h"
+#include "runtime/tls_block.h"
 
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -52,7 +53,7 @@ thread_local MemberMemoEntry g_memberMemo[kMemberMemoEntries];
 }  // namespace
 
 bool rtNativeMemoEnabled() noexcept {
-    return bronze_tls_block_addr()->fn_singleton_cache_enabled != 0;
+    return rtTls()->fn_singleton_cache_enabled != 0;
 }
 
 Value rtNativeSingleton(bronze_fn_code code, uint32_t arity) {

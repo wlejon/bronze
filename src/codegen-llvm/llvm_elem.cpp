@@ -20,7 +20,7 @@ static void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
 // The shared front half of both access forms: is the receiver an object, and
 // is the index a non-negative integral number small enough to be an element
 // index? Mirrors the guard ladder at the top of bronze_elem_get /
-// bronze_elem_set — the fcmp range check comes BEFORE the fptoui because an
+// bronze_elem_set â€” the fcmp range check comes BEFORE the fptoui because an
 // out-of-range fptoui is poison, where the helper's C++ cast is merely wrong.
 //
 // On success the builder is left in a fresh block with the receiver's header
@@ -54,8 +54,8 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
 
     // The conversion is fed a value the range check has ALREADY accepted, and
     // the select is what makes that true rather than merely likely. `fptoui` of
-    // anything outside the destination range is POISON — not a wrong number, a
-    // value LLVM may assume never happens — and the poison flows through
+    // anything outside the destination range is POISON â€” not a wrong number, a
+    // value LLVM may assume never happens â€” and the poison flows through
     // `isIntegral` into the branch condition below, where a branch on poison is
     // undefined behaviour. For a key the optimizer can see is constant it
     // folded exactly that way: `o[false]` bit-casts to a NaN, and the guard
@@ -85,7 +85,7 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
 }  // namespace
 
 // The address of element `idx32` of a typed-array view, computed from
-// the view's buffer Value on every access — never cached across allocations,
+// the view's buffer Value on every access â€” never cached across allocations,
 // per the GC rule the header documents. The builder must already be in the
 // view's arm.
 llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
@@ -111,8 +111,8 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
 
     // The buffer's external-storage word: zero for an ordinary buffer (bytes
     // inline past the header), else the address of a non-moving host store.
-    // NOT an invariant load — externalizeArrayBuffer flips it once, inside a
-    // host call — but element stores can never change it, so it carries the
+    // NOT an invariant load â€” externalizeArrayBuffer flips it once, inside a
+    // host call â€” but element stores can never change it, so it carries the
     // view-length alias scope and hoists out of call-free element loops for
     // the same reason `length` does.
     llvm::Value* extPtrPtr =
@@ -156,26 +156,32 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
+    // Two blocks where there used to be one. `cacheBb` is what every fast-path
+    // refusal below branches to, and the computed-read cache's inline hit is
+    // emitted there; `slowBb` — the helper — is now reached only through it.
+    // So the array and typed-array arms are byte for byte what they were, and
+    // the receiver kind they cannot answer for (PLAIN) stops costing a call.
+    llvm::BasicBlock* cacheBb = llvm::BasicBlock::Create(ctx, "eg.cache", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "eg.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "eg.done", fn);
 
-    ElemGuards g = emitElemGuards(builder, objBits, idxBits, slowBb, "eg.");
+    ElemGuards g = emitElemGuards(builder, objBits, idxBits, cacheBb, "eg.");
 
     llvm::BasicBlock* arrBb = llvm::BasicBlock::Create(ctx, "eg.arr", fn);
     llvm::BasicBlock* taBb = llvm::BasicBlock::Create(ctx, "eg.ta", fn);
-    llvm::SwitchInst* swFlags = builder.CreateSwitch(g.flags, slowBb, 2);
+    llvm::SwitchInst* swFlags = builder.CreateSwitch(g.flags, cacheBb, 2);
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), arrBb);
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY), taBb);
 
     // Array: in bounds, elements block present, hole answers undefined. An
     // out-of-bounds read goes to the helper, whose own fast path answers the
-    // undefined — rare enough that the extra call is not worth a fourth arm.
+    // undefined â€” rare enough that the extra call is not worth a fourth arm.
     builder.SetInsertPoint(arrBb);
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     llvm::Value* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "eg.len");
     llvm::BasicBlock* arrLoadBb = llvm::BasicBlock::Create(ctx, "eg.arr.load", fn);
-    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, len), arrLoadBb, slowBb);
+    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, len), arrLoadBb, cacheBb);
 
     builder.SetInsertPoint(arrLoadBb);
     llvm::Value* elemsPtr =
@@ -185,7 +191,7 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::BasicBlock* arrReadBb = llvm::BasicBlock::Create(ctx, "eg.arr.read", fn);
     builder.CreateCondBr(
         builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), arrReadBb,
-        slowBb);
+        cacheBb);
 
     builder.SetInsertPoint(arrReadBb);
     llvm::Value* elemsAddr =
@@ -214,7 +220,7 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     // The length word is MAINTAINED, not fixed: `transfer` and `resize` close
     // and reopen views by rewriting it (closeOrReopenViews). So it is scoped,
-    // never invariant — hoistable past element and env stores, reloaded past
+    // never invariant â€” hoistable past element and env stores, reloaded past
     // any call, which is the only place a window can move.
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "eg.talen");
     tagViewLengthAccess(taLen, ctx);
@@ -240,7 +246,7 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::BasicBlock* i8Bb = llvm::BasicBlock::Create(ctx, "eg.i8", fn);
     llvm::BasicBlock* u8Bb = llvm::BasicBlock::Create(ctx, "eg.u8", fn);
 
-    llvm::SwitchInst* swKind = builder.CreateSwitch(kind, slowBb, 9);
+    llvm::SwitchInst* swKind = builder.CreateSwitch(kind, cacheBb, 9);
     swKind->addCase(builder.getInt32(BRONZE_ABI_TA_KIND_FLOAT64), f64Bb);
     swKind->addCase(builder.getInt32(BRONZE_ABI_TA_KIND_FLOAT32), f32Bb);
     swKind->addCase(builder.getInt32(BRONZE_ABI_TA_KIND_INT32), i32Bb);
@@ -315,12 +321,16 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::BasicBlock* u8EndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
+    builder.SetInsertPoint(cacheBb);
+    ElemCacheHit cached = emitElemCacheGet(builder, abi, objBits, idxBits, slowBb, doneBb);
+
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(abi.bronze_elem_get, {objBits, idxBits});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(i64Ty, 11, "eg.result");
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 12, "eg.result");
+    result->addIncoming(cached.value, cached.hitBb);
     result->addIncoming(arrVal, arrEndBb);
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), taUndefBb);
     result->addIncoming(f64Val, f64EndBb);
@@ -357,7 +367,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), arrBb);
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY), taBb);
 
-    // Array: in bounds, within capacity, and no named-properties side object —
+    // Array: in bounds, within capacity, and no named-properties side object â€”
     // the same three conditions the helper's fast path requires before it will
     // store without consulting the property machinery.
     builder.SetInsertPoint(arrBb);
@@ -406,7 +416,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     // Typed array: a numeric value into a typed array view. An in-range index
     // stores; an out-of-range one DISCARDS the write for the Number kinds,
     // exactly as the helper and 10.4.5.16 do (ToNumber of a number is the
-    // number, so nothing observable is skipped) — but a BIGINT kind still
+    // number, so nothing observable is skipped) â€” but a BIGINT kind still
     // owes the ToBigInt that THROWS for a Number value even when the index is
     // invalid, conversion-before-validity being 10.4.5.16's own order. So the
     // out-of-bounds edge lands on a cold kind test rather than on `done`: at
@@ -472,7 +482,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
 namespace {
 
 // The shared front half of the two PROVEN forms: validate the index the way
-// 23.2 does — an integral, in-range value inside the view — and hand back the
+// 23.2 does â€” an integral, in-range value inside the view â€” and hand back the
 // header pointer and the i32 index. The receiver needs NO guard at all: the
 // op only exists where inference proved the view, which is the contract that
 // separates these from emitElemGet above. The select-before-fptoui is the
@@ -481,7 +491,7 @@ namespace {
 //
 // The bounds check is against the view's length, exactly the bound
 // bronze_elem_get / _set use, so the two modes answer identically byte for
-// byte — including over a detached or shrunk-away buffer, whose views the
+// byte â€” including over a detached or shrunk-away buffer, whose views the
 // runtime CLOSES by zeroing this very length word (closeOrReopenViews), so
 // the one compare below is also the 10.4.5.9 out-of-bounds check. That is
 // why the length load is scoped rather than invariant (llvm_alias.h).
@@ -578,7 +588,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm::Va
         tagTypedArrayAccess(st, ctx);
     } else {
         // 23.2.5's narrowing for a Float32 element is IEEE round-to-nearest,
-        // which is exactly fptrunc — and exactly the static_cast<float> the
+        // which is exactly fptrunc â€” and exactly the static_cast<float> the
         // helper's TypedArrayHeader::set performs.
         llvm::Value* narrowed =
             builder.CreateFPTrunc(valDbl, llvm::Type::getFloatTy(ctx), "tes.f32");

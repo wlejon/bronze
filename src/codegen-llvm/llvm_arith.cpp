@@ -154,6 +154,106 @@ llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, llvm::Function* helper,
     return result;
 }
 
+// The seam word for the inline `===`. `bronze_tls_block_addr` is `readnone` +
+// `willreturn`, so this call CSEs with the prologue's fetch and a loop hoists
+// it — the same shape llvm_iter.cpp's `emitIterFastEnabled` uses, and for the
+// same reason: this file has `AbiFns` but not `AbiGlobals`.
+llvm::Value* emitStrictEqInlineEnabled(llvm::IRBuilder<>& builder, const AbiFns& abi) {
+    llvm::Value* base = builder.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
+    llvm::Value* cellPtr = builder.CreateConstInBoundsGEP1_64(
+        builder.getInt8Ty(), base, BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF, "tls.seqinline");
+    llvm::Value* cell =
+        builder.CreateAlignedLoad(builder.getInt64Ty(), cellPtr, llvm::Align(8), "seq.seam");
+    return builder.CreateICmpNE(cell, builder.getInt64(0), "seq.seam.on");
+}
+
+// `a === b` over boxed operands, as three arms and a helper.
+//
+// The helper (rt_convert.cpp `bronze_strict_eq`) is four tests, and the
+// chunk-4 sampler charged the CALL to it 2.71 % of the `many_meshes` frame —
+// three.js asks this question about markers, `undefined`, `null` and object
+// identity thousands of times a draw. Every one of those is answered here.
+//
+// The arms, and why each is exactly the helper's answer:
+//
+//  1. BOTH NUMBERS -> one ORDERED fcmp. This arm exists first and not as a
+//     special case of bit equality, because bit equality gets both of the
+//     IEEE-754 edges wrong in opposite directions: two values that are the
+//     SAME NaN have identical bits and `===` says false, and `+0` and `-0`
+//     have different bits and `===` says true. `fcmp oeq` is both of those,
+//     which is why the helper's number row is `==` on doubles and not on bits.
+//
+//  2. NOT both numbers, and the BITS ARE EQUAL -> true. Sound because equal
+//     bits means both operands are numbers or neither is, and arm 1 already
+//     took the case where both are: so here neither is a number, and identical
+//     bits are the same object, the same string, the same BigInt, the same
+//     symbol or the same immediate. Every one of those is `===`.
+//
+//  3. Bits differ -> false, UNLESS the left operand is a String or a BigInt.
+//     Those are the only two rows in the helper that can answer true for
+//     different bits (content equality and mathematical-value equality); for
+//     every other tag "different bits" is the helper's own final `aBits ==
+//     bBits`. A number's top sixteen bits are below every tag, so the tag test
+//     is safe on an operand arm 1 rejected.
+//
+// A String or BigInt on the left is the only thing that reaches the helper,
+// and there it takes the path it always took.
+llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* lhs,
+                          llvm::Value* rhs) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* dblTy = builder.getDoubleTy();
+
+    llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "seq.seam.ok", fn);
+    llvm::BasicBlock* nonNumBb = llvm::BasicBlock::Create(ctx, "seq.nonnum", fn);
+    llvm::BasicBlock* differBb = llvm::BasicBlock::Create(ctx, "seq.differ", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "seq.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "seq.done", fn);
+
+    builder.CreateCondBr(emitStrictEqInlineEnabled(builder, abi), seamBb, slowBb);
+    builder.SetInsertPoint(seamBb);
+
+    // Arm 1.
+    llvm::Value* lhsNum = builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
+                                                "seq.lnum");
+    llvm::Value* rhsNum = builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
+                                                "seq.rnum");
+    llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "seq.num", fn);
+    builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum, "seq.bothnum"), numBb, nonNumBb);
+
+    builder.SetInsertPoint(numBb);
+    llvm::Value* numVal = builder.CreateFCmpOEQ(builder.CreateBitCast(lhs, dblTy),
+                                                builder.CreateBitCast(rhs, dblTy), "seq.numcmp");
+    llvm::BasicBlock* numEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    // Arm 2.
+    builder.SetInsertPoint(nonNumBb);
+    builder.CreateCondBr(builder.CreateICmpEQ(lhs, rhs, "seq.samebits"), doneBb, differBb);
+
+    // Arm 3.
+    builder.SetInsertPoint(differBb);
+    llvm::Value* tag = builder.CreateLShr(lhs, BRONZE_ABI_VALUE_TAG_SHIFT, "seq.tag");
+    llvm::Value* isStr =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "seq.isstr");
+    llvm::Value* isBig =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_BIGINT), "seq.isbig");
+    builder.CreateCondBr(builder.CreateOr(isStr, isBig, "seq.byvalue"), slowBb, doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(abi.bronze_strict_eq, {lhs, rhs}, "seq.slowres");
+    llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 4, "seq.result");
+    result->addIncoming(numVal, numEndBb);
+    result->addIncoming(builder.getTrue(), nonNumBb);
+    result->addIncoming(builder.getFalse(), differBb);
+    result->addIncoming(slowVal, slowEndBb);
+    return result;
+}
+
 }  // namespace
 
 bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
@@ -263,7 +363,7 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
 
     switch (inst.op) {
         case il::Op::StrictEq:
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_strict_eq, {lhs, rhs});
+            values_[inst.result] = emitStrictEq(builder_, shared_.abi, lhs, rhs);
             return true;
         case il::Op::LooseEq:
             values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_loose_eq, {lhs, rhs});

@@ -3,6 +3,7 @@
 #include "runtime/heap.h"
 
 #include "abi/bronze_abi.h"
+#include "runtime/elem_ic.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 
@@ -234,6 +235,30 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     if (env_no_iter_fast && std::strcmp(env_no_iter_fast, "1") == 0) {
         tls->iter_fast_enabled = 0;
     }
+
+    const char* env_no_inline_roots = std::getenv("BRONZE_NO_INLINE_ROOTS");
+    if (env_no_inline_roots && std::strcmp(env_no_inline_roots, "1") == 0) {
+        tls->inline_roots_enabled = 0;
+    }
+
+    const char* env_no_strict_eq = std::getenv("BRONZE_NO_STRICT_EQ_INLINE");
+    if (env_no_strict_eq && std::strcmp(env_no_strict_eq, "1") == 0) {
+        tls->strict_eq_inline_enabled = 0;
+    }
+
+    // Two ways to lower the inline elem probe, and the second is not a
+    // convenience: with the TABLE off nothing is ever installed, so an inline
+    // probe could only miss, and charging chunk 3's A/B for a probe that
+    // cannot hit would read as a regression in a mechanism that is not there.
+    const char* env_no_elem_inline = std::getenv("BRONZE_NO_ELEM_INLINE");
+    if ((env_no_elem_inline && std::strcmp(env_no_elem_inline, "1") == 0) ||
+        tls->elem_ic_enabled == 0) {
+        tls->elem_inline_enabled = 0;
+    }
+
+    // The computed-read cache's table address, published where the seam that
+    // gates reading it is set, so a thread never has one without the other.
+    runtime::elemCachePublish();
 
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
