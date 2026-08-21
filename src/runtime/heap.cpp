@@ -257,6 +257,12 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->elem_inline_enabled = 0;
     }
 
+    const char* env_no_method_call_ic = std::getenv("BRONZE_NO_METHOD_CALL_IC");
+    if (!env_no_method_call_ic) env_no_method_call_ic = std::getenv("BRONZE_NO_CALL_IC");
+    if (env_no_method_call_ic && std::strcmp(env_no_method_call_ic, "1") == 0) {
+        tls->method_call_ic_enabled = 0;
+    }
+
     // The computed-read cache's table address, published where the seam that
     // gates reading it is set, so a thread never has one without the other.
     runtime::elemCachePublish();

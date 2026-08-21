@@ -127,6 +127,8 @@ const char* opName(Op op) {
         case Op::ObjectSpread: return "object.spread";
         case Op::ObjectRest: return "object.rest";
         case Op::DynamicCallSpread: return "call.dynamic.spread";
+        case Op::MethodCall: return "method.call";
+        case Op::MethodCallSpread: return "method.call.spread";
         case Op::ConstructSpread: return "new.spread";
         case Op::CreateArray: return "create.array";
         case Op::CreateFunction: return "create.func";
@@ -559,6 +561,34 @@ std::string print(const Module& module) {
                         out += ", " + std::to_string(argc);
                         for (size_t i = 2; i < inst.operands.size(); ++i) {
                             out += ", %" + std::to_string(inst.operands[i]);
+                        }
+                        break;
+                    }
+                    case Op::MethodCall: {
+                        out += "method.call";
+                        if (!inst.operands.empty()) {
+                            out += " %" + std::to_string(inst.operands[0]);
+                        }
+                        out += ", " + std::to_string(inst.keyIndex) + ", " +
+                               std::to_string(inst.icIndex);
+                        if (inst.icMonomorphic) out += ", mono";
+                        size_t argc = inst.operands.size() > 1 ? inst.operands.size() - 1 : 0;
+                        out += ", " + std::to_string(argc);
+                        for (size_t i = 1; i < inst.operands.size(); ++i) {
+                            out += ", %" + std::to_string(inst.operands[i]);
+                        }
+                        break;
+                    }
+                    case Op::MethodCallSpread: {
+                        out += "method.call.spread";
+                        if (!inst.operands.empty()) {
+                            out += " %" + std::to_string(inst.operands[0]);
+                        }
+                        out += ", " + std::to_string(inst.keyIndex) + ", " +
+                               std::to_string(inst.icIndex);
+                        if (inst.icMonomorphic) out += ", mono";
+                        if (inst.operands.size() > 1) {
+                            out += ", %" + std::to_string(inst.operands[1]);
                         }
                         break;
                     }

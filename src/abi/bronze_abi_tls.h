@@ -39,6 +39,7 @@ typedef struct bronze_tls_block {
     uint64_t strict_eq_inline_enabled;
     uint64_t elem_inline_enabled;
     uint64_t* elem_cache_tbl;
+    uint64_t method_call_ic_enabled;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -63,6 +64,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF  152
 #define BRONZE_TLS_ELEM_INLINE_ENABLED_OFF       160
 #define BRONZE_TLS_ELEM_CACHE_TBL_OFF            168
+#define BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF    176
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------

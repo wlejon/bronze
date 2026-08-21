@@ -465,7 +465,7 @@ const StaticFn kArrayStatics[] = {
 
 const StaticFn kStringStatics[] = {
     {"fromCharCode", stringFromCharCode, 0},
-    {"fromCodePoint", stringFromCodePoint, 1},
+    {"fromCodePoint", stringFromCodePoint, 0},
     // Arity 0, not 1: `raw` is variadic and a short call padded to one argument
     // would hand it an `undefined` substitution that step 8.e would then
     // stringify into the result.

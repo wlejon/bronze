@@ -156,6 +156,9 @@ void FunctionEmitter::planRootFrame() {
             if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2) {
                 maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 2));
             }
+            if (inst.op == il::Op::MethodCall && !inst.operands.empty()) {
+                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 1));
+            }
             if (inst.op == il::Op::SuperCall && inst.operands.size() >= 2) {
                 maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 2));
             }

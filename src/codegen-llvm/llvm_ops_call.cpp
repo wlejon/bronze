@@ -7,6 +7,7 @@
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_call.h"
+#include "codegen-llvm/llvm_method_call.h"
 #include "codegen-llvm/llvm_construct.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
@@ -70,6 +71,54 @@ bool FunctionEmitter::emitDynamicCall(const il::Instruction& inst) {
     }
     llvm::Value* res = emitDynamicCallInline(
         builder_, abi, globals_, callee, thisVal, argc, argv);
+    if (inst.result != il::kNoValue) {
+        values_[inst.result] = res;
+    }
+    return true;
+}
+
+bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
+    const AbiFns& abi = shared_.abi;
+    auto needs = [&](size_t operandCount, bool needsResult, const char* what) {
+        return require(inst.operands.size() >= operandCount &&
+                           (!needsResult || inst.result != il::kNoValue),
+                       what);
+    };
+
+    if (!needs(1, false, "Invalid operands for MethodCall")) return false;
+    llvm::Value* thisVal =
+        operand(inst, 0, "Undefined this in MethodCall instruction");
+    if (!thisVal) return false;
+    uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
+    bool ok = false;
+    llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+    if (!ok) return false;
+
+    llvm::Value* res = emitMethodCallInline(
+        builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex, inst.icIndex, argc, argv);
+    if (inst.result != il::kNoValue) {
+        values_[inst.result] = res;
+    }
+    return true;
+}
+
+bool FunctionEmitter::emitMethodCallSpread(const il::Instruction& inst) {
+    const AbiFns& abi = shared_.abi;
+    auto needs = [&](size_t operandCount, bool needsResult, const char* what) {
+        return require(inst.operands.size() >= operandCount &&
+                           (!needsResult || inst.result != il::kNoValue),
+                       what);
+    };
+
+    if (!needs(2, false, "Invalid operands for MethodCallSpread")) return false;
+    llvm::Value* thisVal =
+        operand(inst, 0, "Undefined this in MethodCallSpread instruction");
+    llvm::Value* argsArr =
+        operand(inst, 1, "Undefined args in MethodCallSpread instruction");
+    if (!thisVal || !argsArr) return false;
+
+    llvm::Value* res = emitMethodCallSpreadInline(
+        builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex, inst.icIndex, argsArr);
     if (inst.result != il::kNoValue) {
         values_[inst.result] = res;
     }

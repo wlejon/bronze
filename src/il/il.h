@@ -382,6 +382,8 @@ enum class Op : uint8_t {
     // runtime fact: the arguments are built into an array and the callee is
     // entered through the uniform convention over it.
     DynamicCallSpread,  // a = call.dynamic.spread callee, thisArg, args
+    MethodCall,         // a = method.call thisArg, <key_const_index>, <ic_site_index>, args...
+    MethodCallSpread,   // a = method.call.spread thisArg, <key_const_index>, <ic_site_index>, argsArr
     SuperCall,          // a = call.super base, thisArg, args...
     SuperCallSpread,    // a = call.super.spread base, thisArg, args
     // 13.2.8.4 GetTemplateObject. The pair is a CACHE, not one instruction

@@ -60,6 +60,7 @@ struct AbiGlobals {
     // reader checks and not only one the writer honours.
     llvm::Value* bronze_poly_ic_enabled = nullptr;
     llvm::Value* bronze_array_method_tbl = nullptr;
+    llvm::Value* bronze_method_call_ic_enabled = nullptr;
 };
 
 // Declares every registry symbol into `llvmModule`. Declarations only: the

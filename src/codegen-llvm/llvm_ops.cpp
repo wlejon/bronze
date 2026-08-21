@@ -874,6 +874,10 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
 
         case il::Op::DynamicCall:
             return emitDynamicCall(inst);
+        case il::Op::MethodCall:
+            return emitMethodCall(inst);
+        case il::Op::MethodCallSpread:
+            return emitMethodCallSpread(inst);
         case il::Op::Construct:
             return emitConstruct(inst);
         case il::Op::Call:

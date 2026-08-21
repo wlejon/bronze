@@ -64,6 +64,8 @@ private:
     bool emitTerminator(const il::Instruction& inst);
     bool emitRuntimeOp(const il::Instruction& inst);
     bool emitDynamicCall(const il::Instruction& inst);
+    bool emitMethodCall(const il::Instruction& inst);
+    bool emitMethodCallSpread(const il::Instruction& inst);
     bool emitConstruct(const il::Instruction& inst);
     bool emitCall(const il::Instruction& inst);
     bool emitArithmetic(const il::Instruction& inst);

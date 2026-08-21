@@ -140,6 +140,8 @@ AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns) {
         field(BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF, "tls.acc_on");
     g.bronze_poly_ic_enabled = field(BRONZE_TLS_POLY_IC_ENABLED_OFF, "tls.poly_on");
     g.bronze_array_method_tbl = field(BRONZE_TLS_ARRAY_METHOD_TBL_OFF, "tls.arrtbl");
+    g.bronze_method_call_ic_enabled =
+        field(BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF, "tls.method_call_ic_on");
     return g;
 }
 

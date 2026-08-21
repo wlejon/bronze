@@ -14,6 +14,7 @@ bronze_add_module(codegen_llvm
         llvm_prop_set.cpp
         llvm_cache.cpp
         llvm_call.cpp
+        llvm_method_call.cpp
         llvm_construct.cpp
         llvm_elem.cpp
         llvm_elem_cache.cpp

@@ -49,6 +49,8 @@ static_assert(offsetof(bronze_tls_block, strict_eq_inline_enabled) ==
 static_assert(offsetof(bronze_tls_block, elem_inline_enabled) ==
               BRONZE_TLS_ELEM_INLINE_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, elem_cache_tbl) == BRONZE_TLS_ELEM_CACHE_TBL_OFF);
+static_assert(offsetof(bronze_tls_block, method_call_ic_enabled) ==
+              BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF);
 
 namespace bronze::runtime {
 
@@ -83,6 +85,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*strict_eq_inline_enabled=*/1,
     /*elem_inline_enabled=*/1,
     /*elem_cache_tbl=*/nullptr,
+    /*method_call_ic_enabled=*/1,
 };
 
 }  // namespace bronze::runtime

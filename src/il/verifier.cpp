@@ -286,7 +286,8 @@ bool verify(const Module& module, DiagnosticSink& diags) {
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
-                if (inst.op == Op::PropGet || inst.op == Op::PropSet) {
+                if (inst.op == Op::PropGet || inst.op == Op::PropSet ||
+                    inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {
                         diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                                 " names inline-cache site " +
