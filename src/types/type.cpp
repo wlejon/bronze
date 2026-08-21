@@ -41,11 +41,19 @@ Type join(Type a, Type b) {
     // consumer skip a type check even when it cannot skip the shape check.
     switch (a.kind()) {
         case TypeKind::Object:
-            // Same class, one side only GUESSED at it: the guess is the weaker
-            // claim, so it is the join. Dropping to `object()` here instead
-            // would throw away an identity both sides agree on.
+            // Same class, the two sides disagreeing about how well it is known:
+            // the weaker claim on each axis is the join. Dropping to `object()`
+            // here instead would throw away an identity both sides agree on.
+            //
+            // The two axes are independent, so both are joined: a value one
+            // edge watched being made and another read out of a field is not
+            // built here, and one edge's joined-over-call-sites guess makes the
+            // merged identity one too.
             if (a.shapeClass() == b.shapeClass()) {
-                return Type::objectIdentityOnly(a.shapeClass());
+                if (a.identityOnly() || b.identityOnly()) {
+                    return Type::objectIdentityOnly(a.shapeClass());
+                }
+                return Type::objectNotBuiltHere(a.shapeClass());
             }
             return Type::object();
         case TypeKind::Function: return Type::function();

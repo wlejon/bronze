@@ -40,6 +40,7 @@ public:
                              hostGlobals_.count("Float32Array") != 0;
         staticShapesDisabled_ = staticShapeSeamDisabled();
         familyGuardDisabled_ = familyGuardSeamDisabled();
+        unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
     }
 
     std::optional<il::Module> lower();
@@ -384,6 +385,17 @@ private:
     // 952-site refusal chunk 6 shipped.
     bool familyGuardDisabled_ = false;
     static bool familyGuardSeamDisabled();
+    // BRONZE_NO_UNBOXED_FIELDS=1. The audited field's raw load and the native
+    // arithmetic over it, so an A/B can separate what the write AUDIT costs
+    // (correctness, always on — there is no seam for it) from what CASHING the
+    // proof buys. With it on, a proven field read is the boxed value it always
+    // was and its conversion is the checked unbox.
+    bool unboxedFieldsDisabled_ = false;
+    static bool unboxedFieldSeamDisabled();
+    // A read of an audited field on a receiver watched being made: the one
+    // licence for the raw unbox.
+    bool provenFieldRead(const ast::Expr& e) const;
+    Value emitRawUnbox(Value boxed, il::Function& ilFn);
     // The module's class-layout table, in family preorder, filled once the
     // first family site is claimed (so a program that proves nothing emits
     // nothing). Interning the field names is what makes this a lowering step

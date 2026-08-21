@@ -639,6 +639,21 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
         refusal = "base class is a computed expression";
     }
 
+    // Accessor names are collected whether or not the layout is proven, and
+    // before every refusal below: they are what a PRIMITIVE field claim is
+    // checked against (`fieldValueCandidate`), and that question is asked of a
+    // class through its whole `extends` chain, so a link that refused its own
+    // layout still has to answer it.
+    if (f != nullptr && f->methods != nullptr) {
+        for (const auto& m : *f->methods) {
+            if (m.accessor == ast::AccessorKind::None || m.name.empty()) continue;
+            if (std::find(cl.accessorNames.begin(), cl.accessorNames.end(), m.name) ==
+                cl.accessorNames.end()) {
+                cl.accessorNames.push_back(m.name);
+            }
+        }
+    }
+
     if (proven && f != nullptr && f->methods != nullptr) {
         auto add = [&fields, &fieldWritable](const std::string& name, bool isWritable) {
             if (std::find(fields.begin(), fields.end(), name) == fields.end()) {
@@ -903,6 +918,38 @@ Type ClassLayoutTable::fieldTypeOf(ShapeClassId id, const std::string& field) co
     if (cl == nullptr) return Type::dynamic();
     const auto it = cl->fieldTypes.find(field);
     return it == cl->fieldTypes.end() ? Type::dynamic() : it->second;
+}
+
+// Everything about the CLASS that a primitive field claim needs, which is
+// everything except the program-wide write audit (field_audit.h).
+//
+// Three conditions, and each is a way the claim has failed in practice:
+//
+//   - the layout is proven, and `field` is in it. `fieldTypes` also carries
+//     the fields a METHOD installs, which the constructor does not: reading one
+//     off a fresh instance produces `undefined`, and a `number` claim over that
+//     is the same miscompile in a different disguise.
+//   - no ACCESSOR of that name anywhere on the prototype chain. A getter
+//     answers the read with a call, so the harvest describes a slot the read
+//     never touches; a setter intercepts the constructor's own write, so the
+//     own property the layout claims is never created at all.
+//   - the chain is walked to the root, because an accessor two classes up
+//     shadows exactly as well as one declared here.
+bool ClassLayoutTable::fieldValueCandidate(ShapeClassId id, const std::string& field) const {
+    const ClassLayout* cl = byShapeClass(id);
+    if (cl == nullptr || !cl->layoutProven) return false;
+    if (std::find(cl->fields.begin(), cl->fields.end(), field) == cl->fields.end()) return false;
+    for (const ClassLayout* walk = cl; walk != nullptr;) {
+        if (std::find(walk->accessorNames.begin(), walk->accessorNames.end(), field) !=
+            walk->accessorNames.end()) {
+            return false;
+        }
+        if (walk->superName.empty()) break;
+        const ClassLayout* base = byName(walk->superName);
+        if (base == walk) break;
+        walk = base;
+    }
+    return true;
 }
 
 bool ClassLayoutTable::isExtended(ShapeClassId id) const {

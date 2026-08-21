@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "support/source.h"
+#include "types/result.h"
 
 namespace bronze::lower {
 
@@ -58,6 +59,15 @@ public:
     void recordClassLayouts(uint32_t proven, uint32_t familyMembers, uint32_t familyRoots,
                             const std::map<std::string, uint32_t>& refusals);
 
+    // The whole-program field-type write audit: how many property names the
+    // program writes at all, how many of those hold nothing but Numbers, why
+    // the rest were refused, and how many READ SITES ended up cashing the proof
+    // as a raw f64 load. The refusal histogram is the instrument this chunk
+    // leaves behind: it is the list of what a name-global invariant costs on a
+    // real library, ranked.
+    void recordFieldAudit(const types::InferenceResult::FieldAuditReport& report,
+                          uint32_t provenReadSites);
+
     std::string format() const;
 
 private:
@@ -74,6 +84,8 @@ private:
     uint32_t classFamilyMembers_ = 0;
     uint32_t classFamilyRoots_ = 0;
     std::map<std::string, uint32_t> classRefusals_;
+    types::InferenceResult::FieldAuditReport fieldAudit_;
+    uint32_t fieldProvenReads_ = 0;
 };
 
 }  // namespace bronze::lower

@@ -797,3 +797,199 @@ TEST_CASE("an update on a possibly-BigInt binding does not sharpen it to number"
     CHECK(r.signatureOf(*r.functionIndexOf("big")).returnType == types::Type::dynamic());
     CHECK(r.signatureOf(*r.functionIndexOf("small")).returnType == types::Type::number());
 }
+
+// ---- the field-type write audit ---------------------------------------------
+//
+// A harvested field type is a claim about every write in the program, and
+// nothing a JS program prints can distinguish "proven, so read raw" from
+// "refused, so read boxed" — both answer the same value. These check the
+// decision itself: which names survived, why the others did not, and which read
+// sites the licence actually reached.
+//
+// One counting note the numbers below only make sense with: a STORE target is a
+// member expression too, so `v.x = n` is one of the sites these counters see and
+// one of the nodes the licence lands on. That is harmless — lowering only ever
+// consults the set from a read position, and a compound assignment's read of its
+// own target is the same node — but it means a source with two reads and one
+// write of a proven field reports three sites, not two.
+
+TEST_CASE("a field written only with numbers licenses a raw read") {
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function make(n) { const v = new V(); v.x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "console.log(read(make(1)));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.refusals.empty());
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    // Both reads of `v.x` inside `read`, plus the store target in `make`.
+    CHECK(r.provenFieldReads.size() == 3);
+    // The fourth site is `this.x = 0` in the constructor, whose base is a
+    // receiver and not an object this compilation watched being made.
+    CHECK(r.fieldAudit.numberFieldReads == 4);
+    CHECK(r.fieldAudit.refusedNotBuiltHere == 1);
+    CHECK(r.fieldAudit.refusedByAudit == 0);
+}
+
+TEST_CASE("one string write anywhere in the program refuses the name") {
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function make(n) { const v = new V(); v.x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "const v = make(1);\n"
+        "v.x = 'hi';\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 0);
+    CHECK(r.fieldAudit.refusals.count("written as string") == 1);
+    CHECK(r.provenFieldReads.empty());
+    // The sites were still a Number harvest; the audit is what stood them down —
+    // all but the constructor's `this.x`, which never got that far.
+    CHECK(r.fieldAudit.numberFieldReads == 5);
+    CHECK(r.fieldAudit.refusedByAudit == 4);
+    CHECK(r.fieldAudit.refusedNotBuiltHere == 1);
+}
+
+TEST_CASE("the audit's unit is the property name, not the class") {
+    // `W` never writes a string, but a write to some OTHER object's `x` is a
+    // write a dynamic receiver could have aimed at a `W`. Scoping the audit to
+    // the class that declared the field would certify this and be wrong.
+    const auto inferred = infer(
+        "class W { constructor() { this.x = 0; } }\n"
+        "function make(n) { const w = new W(); w.x = n; return w; }\n"
+        "function read(w) { let s = w.x; for (let i = 0; i < 2; i++) s = w.x; return s; }\n"
+        "const other = { x: 1 };\n"
+        "other.x = 'not a number';\n"
+        "console.log(read(make(1)));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 0);
+    CHECK(r.fieldAudit.refusals.count("written as string") == 1);
+    CHECK(r.provenFieldReads.empty());
+}
+
+TEST_CASE("one computed write stands every name in the module down") {
+    // The key is not a literal, so the write names no property and the audit
+    // cannot bound what it touched. This is the refutation that costs three.js
+    // its field types, so it is worth pinning what it does and does not do:
+    // every name is refused, and the refusal is recorded as GLOBAL, not as a
+    // fact about `x`.
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function make(n) { const v = new V(); v.x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "function poke(o, k, val) { o[k] = val; }\n"
+        "const v = make(1);\n"
+        "poke(v, 'x', 'hi');\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 0);
+    CHECK(r.fieldAudit.namesLocallyClean == 1);  // `x` itself is otherwise clean
+    CHECK(r.fieldAudit.globalRefusals.size() == 1);
+    CHECK(r.provenFieldReads.empty());
+}
+
+TEST_CASE("a computed write with a number key cannot name a non-numeric field") {
+    // `o[i] = s` can only produce a numeric property key, so it refutes nothing
+    // about `x`. Without this the audit loses every name to any indexed write.
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function make(n) { const v = new V(); v.x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "function fill(o) { for (let i = 0; i < 4; i++) o[i] = 'text'; }\n"
+        "const v = make(1);\n"
+        "fill([]);\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.provenFieldReads.size() == 3);
+}
+
+TEST_CASE("a `this` receiver is refused even when the name is clean") {
+    // A method's receiver is whatever the call passed. The name survives the
+    // audit — nothing writes a string — but the base was not watched being
+    // made, so the field's PRESENCE is not proven and the read stays boxed.
+    const auto inferred = infer(
+        "class V {\n"
+        "  constructor() { this.x = 0; }\n"
+        "  read() { let s = this.x; for (let i = 0; i < 2; i++) s = this.x; return s; }\n"
+        "}\n"
+        "console.log(new V().read());\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.provenFieldReads.empty());
+    // Both reads, and the constructor's own store target.
+    CHECK(r.fieldAudit.refusedNotBuiltHere == 3);
+    CHECK(r.fieldAudit.refusedByAudit == 0);
+}
+
+TEST_CASE("an accessor over the name refuses the field, not the write") {
+    // `get x()` means the read runs code. The audit sees no bad write, so the
+    // refusal has to come from the class layout's accessor list.
+    const auto inferred = infer(
+        "class V {\n"
+        "  constructor() { this._x = 0; }\n"
+        "  get x() { return this._x; }\n"
+        "}\n"
+        "function make(n) { const v = new V(); v._x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "console.log(read(make(1)));\n");
+    const auto& r = *inferred.result;
+    // The two `v.x` reads are refused a rung EARLIER than the audit: an accessor
+    // name is not an instance field, so the class harvest never types the read
+    // `number` and there is no Number claim to refuse. They are not in the
+    // population at all — the three sites counted are the ones naming `_x`,
+    // which IS a field and IS clean, and only `make`'s store target has a base
+    // this compilation watched being made.
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.numberFieldReads == 3);
+    CHECK(r.fieldAudit.refusedNotBuiltHere == 2);
+    CHECK(r.provenFieldReads.size() == 1);
+    CHECK(r.fieldAudit.refusedByAudit == 0);
+}
+
+TEST_CASE("an accessor anywhere in the program refuses the name globally") {
+    // `x` is a data field of `Base` and every write of it is a number, so the
+    // write scan alone would certify it. A subclass declaring `get x`/`set x`
+    // is what refuses it, and it refuses the NAME — the audit cannot know which
+    // objects reach a `d.x` store, so a getter declared for the name anywhere
+    // makes every claim about a slot of that name a claim about a call.
+    //
+    // Two mechanisms answer this, deliberately: the audit refuses the name, and
+    // `fieldValueCandidate` refuses the read against the class's accessor list
+    // walked to the root of the `extends` chain. The audit gets there first,
+    // which is why the class-layout counter stays zero here.
+    const auto inferred = infer(
+        "class Base { constructor() { this.x = 0; } }\n"
+        "class Derived extends Base {\n"
+        "  get x() { return 5; }\n"
+        "  set x(v) { this._v = v; }\n"
+        "}\n"
+        "function make(n) { const d = new Derived(); d.x = n; return d; }\n"
+        "function read(d) { let s = d.x; for (let i = 0; i < 2; i++) s = d.x; return s; }\n"
+        "console.log(read(make(1)));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 0);
+    CHECK(r.fieldAudit.refusals.count("declared as a class accessor") == 1);
+    CHECK(r.fieldAudit.refusedByClass == 0);
+    CHECK(r.provenFieldReads.empty());
+}
+
+TEST_CASE("a numeric compound assignment preserves the field's proof") {
+    // `+=` on a number-typed read is a number, and so are `++`, `*=` and `-`.
+    // Refusing them would cost every accumulator field in a math library.
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function make(n) { const v = new V(); v.x = n; return v; }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "const v = make(1);\n"
+        "v.x += 5;\n"
+        "v.x++;\n"
+        "v.x *= 2;\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 1);
+    // Two reads, `make`'s store, and the three compound targets.
+    CHECK(r.provenFieldReads.size() == 6);
+}

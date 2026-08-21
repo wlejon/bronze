@@ -8,6 +8,7 @@
 #include "ast/ast.h"
 #include "support/diagnostics.h"
 #include "types/class_layout.h"
+#include "types/field_audit.h"
 #include "types/method_ident.h"
 #include "types/result.h"
 #include "types/type.h"
@@ -111,6 +112,17 @@ struct ModuleContext {
     // `BRONZE_NO_INTERPROC_IDENT` turns the whole mechanism off, leaving every
     // method's parameters on the uniform dynamic convention.
     bool interprocIdent = false;
+
+    // ---- the field-type write audit (field_audit.h) -------------------------
+
+    // Which property names the whole program only ever writes Numbers into.
+    // Part of the same fixpoint as the signatures: a write's type depends on
+    // whether the fields it reads are clean, and whether a field is clean
+    // depends on the types of the writes. Refutation is monotone, so the two
+    // settle together. There is NO seam for this one — it is what makes a
+    // primitive field type a proof rather than a guess, and a compiler with it
+    // switched off miscompiles.
+    FieldAudit fieldAudit;
 };
 
 struct FunctionOutcome {

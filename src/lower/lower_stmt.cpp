@@ -194,7 +194,13 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         // gets no shadow-stack slot. The unbox here cannot fail: the proof says
         // every value that reaches this initialiser is a number.
         if (initVal->type == il::Type::Dynamic && provenNumber(*varDecl->init)) {
-            initVal = unboxValueIfNeeded(*initVal, il::Type::F64, ilFn);
+            // An AUDITED field read is the one initialiser whose proof reaches
+            // the BITS and not only the lattice, so it converts with a bitcast
+            // and no test. Everything else keeps the checked unbox, which is
+            // ToNumber and stays correct however the `number` was arrived at.
+            initVal = provenFieldRead(*varDecl->init)
+                          ? emitRawUnbox(*initVal, ilFn)
+                          : unboxValueIfNeeded(*initVal, il::Type::F64, ilFn);
             declType = il::Type::F64;
         }
 

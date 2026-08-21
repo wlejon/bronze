@@ -487,6 +487,19 @@ struct Instruction {
     // branch), so the guard is what makes the proof sound, not a redundancy on
     // top.
     bool icMonomorphic = false;
+    // Unbox: the operand is PROVEN to be a Number, so the conversion is a
+    // bitcast and nothing else — no tag test, no branch, no ToNumber helper, no
+    // phi. bronze's Value is NaN-boxed with the doubles at the bottom of the
+    // encoding, so a Number's bits ARE its double's bits: an unboxed f64 field
+    // needs no second representation, only permission to stop checking.
+    //
+    // Granted by exactly one thing, `InferenceResult::provenFieldReads`: a read
+    // of a field whose class installs it on every construction path, whose
+    // receiver this compilation watched being made, and whose name the
+    // whole-program write audit certified. `false` is the checked form, which
+    // is ToNumber and correct for anything, and is what every other Number
+    // claim in the lattice keeps.
+    bool rawUnbox = false;
     // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
     // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
     // only an identity claim: this says the receiver's class was modellable end

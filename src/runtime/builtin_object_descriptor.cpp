@@ -92,6 +92,21 @@ DictEntry* entryOf(Value objVal, PropertyKey name) {
     return obj->shape->dict->find(name);
 }
 
+// The attributes a DICTIONARY object's own property carries, in the same shape
+// `Shape::lookupProperty` answers in. The two roads to "what is there now" are
+// asked the same question by the descriptor defaults below, so they answer in
+// the same type rather than in two.
+bool dictAttributes(Value objVal, PropertyKey name, PropertyInfo& out) {
+    const DictEntry* entry = entryOf(objVal, name);
+    if (entry == nullptr) return false;
+    out.slot = entry->slot;
+    out.enumerable = entry->enumerable;
+    out.accessor = entry->accessor;
+    out.writable = entry->writable;
+    out.configurable = entry->configurable;
+    return true;
+}
+
 }  // namespace
 
 // ECMA-262 10.1.6.3 DefineOwnProperty, for the one caller that can express a
@@ -131,15 +146,34 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
             .rawBits();
     }
     const bool accessor = hasGet || hasSet;
-    const bool writable = hasWritable && bronze_truthy(writableV.get().rawBits());
-    const bool enumerable = hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
-    const bool configurable = hasConfigurable && bronze_truthy(configurableV.get().rawBits());
+    const bool wantWritable = hasWritable && bronze_truthy(writableV.get().rawBits());
+    const bool wantEnumerable = hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
+    const bool wantConfigurable = hasConfigurable && bronze_truthy(configurableV.get().rawBits());
 
     // The key is built before the object is disturbed, and interned so the
     // entry can hold it forever.
     PropertyKey name = rtInternPropertyKey(args[1]);
 
     auto* obj = target.get().asObject<ObjectHeader>();
+
+    // 10.1.6.3 step 4: "For each field of Desc, set the corresponding attribute
+    // of the property named P to the value of the field." A field the
+    // descriptor does NOT mention is left alone on an EXISTING property, and
+    // only defaults to false on a new one (step 3, through
+    // CompletePropertyDescriptor). Reading the three defaults as false either
+    // way turned `Object.defineProperty(o, 'x', { value: 42 })` on a live
+    // property into a silent freeze — non-writable, non-enumerable and
+    // non-configurable — which is how three.js's `Object3D` gives itself an
+    // `id` and how any code updates one value through a descriptor.
+    PropertyInfo current;
+    const bool present =
+        obj->shape != nullptr &&
+        (obj->shape->isDictionary() ? dictAttributes(target.get(), name, current)
+                                    : obj->shape->lookupProperty(name, current));
+    const bool writable = hasWritable ? wantWritable : (present && current.writable);
+    const bool enumerable = hasEnumerable ? wantEnumerable : (present && current.enumerable);
+    const bool configurable =
+        hasConfigurable ? wantConfigurable : (present && current.configurable);
     if (shapeDefineEnabled() && obj->shape && !obj->shape->isDictionary()) {
         PropertyInfo existing;
         bool hasExisting = obj->shape->lookupProperty(name, existing);

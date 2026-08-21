@@ -57,6 +57,11 @@ public:
 Type FlowAnalyzer::expr(const ast::Expr& e) {
     const Type t = exprKind(e);
     if (record_) mod_.result->exprTypes[&e] = t;
+    // EVERY round, not only the recording one: the audit is part of the outer
+    // fixpoint and has to see the types each round produced. It ignores every
+    // expression that is not the right-hand side of a write it recorded, so
+    // this is one lookup in a table sized by the program's property writes.
+    mod_.fieldAudit.observe(&e, t);
     return t;
 }
 
@@ -88,8 +93,14 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     // carries it — see the standing invariant recorded there for why an
     // optimistic answer is safe, and what would stop making it safe.
     if (dynamic_cast<const ast::ThisExpr*>(&e)) {
+        // NOT BUILT HERE. The declaration says what the receiver is MEANT to
+        // be; `Vector3.prototype.add.call(x)` says what it can actually be, and
+        // nothing in this file can see that call. The identity is still worth
+        // having — a shape guard checks it, and a wrong guess costs a miss —
+        // but a claim about what is INSIDE the object is not guarded by
+        // anything, so `this.x` may not be typed `number` on this evidence.
         return scope_.thisClass == kNoShapeClass ? Type::dynamic()
-                                                 : Type::object(scope_.thisClass);
+                                                 : Type::objectNotBuiltHere(scope_.thisClass);
     }
     if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
         const Type t = lookup(id->name);
@@ -147,14 +158,54 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
             const Type field =
                 mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
-            // An identity the interprocedural pass GUESSED cannot be spent on a
-            // value type — see `Type::objectIdentityOnly`. The identity travels
-            // (still as a guess, so the next link is bounded the same way);
-            // everything else becomes the answer this returned before the guess
-            // existed.
-            if (!base.identityOnly()) return field;
-            return field.is(TypeKind::Object) ? Type::objectIdentityOnly(field.shapeClass())
-                                              : Type::dynamic();
+            // The IDENTITY travels either way, one rung weaker than the base's:
+            // an object read out of a field was not watched being made, so the
+            // next link is bounded the same way this one is.
+            if (field.is(TypeKind::Object)) {
+                return base.identityOnly() ? Type::objectIdentityOnly(field.shapeClass())
+                                           : Type::objectNotBuiltHere(field.shapeClass());
+            }
+            // A PRIMITIVE is a different kind of claim and takes two proofs.
+            //
+            // The base has to have been watched being made (`builtHere`). Every
+            // other rung — `this`, a method parameter, a field read — is a guess
+            // that the value is an instance at all, and a guess is checked by a
+            // shape guard, which is a check on the OBJECT and not on what the
+            // slot holds. A `Vector3`-typed `o.position` that is really the
+            // string "hi" reads `undefined` at `.x`, and `undefined` is not a
+            // number.
+            //
+            // And every write in the program has to preserve the type. The
+            // harvest that produced `field` read one class body; `v.x = "hi"`
+            // three lines below it is a write the harvest never saw, and until
+            // the audit existed it reached `mergeParamType`, an f64 block
+            // parameter and a hard unbox — `NaN` where the language says `hi`.
+            //
+            // NUMBER is the only primitive the audit certifies, and the only
+            // one worth certifying: it is the one lattice element with unboxed
+            // IL ops behind it (`ilTypeOf`). A `string` or `bool` field type
+            // would have to carry its own program-wide invariant to be a proof,
+            // and would buy a calling convention nothing consumes.
+            if (!field.is(TypeKind::Number)) return Type::dynamic();
+            // The population and what stopped it, so the report can say what
+            // the audit MOVED and not only what it certified. Recorded on the
+            // one pass that fills the side table, like every other statistic.
+            auto& report = mod_.result->fieldAudit;
+            if (record_) ++report.numberFieldReads;
+            if (!base.builtHere()) {
+                if (record_) ++report.refusedNotBuiltHere;
+                return Type::dynamic();
+            }
+            if (!mod_.result->classLayouts.fieldValueCandidate(base.shapeClass(), m->property)) {
+                if (record_) ++report.refusedByClass;
+                return Type::dynamic();
+            }
+            if (!mod_.fieldAudit.numberClean(m->property)) {
+                if (record_) ++report.refusedByAudit;
+                return Type::dynamic();
+            }
+            if (record_) mod_.result->provenFieldReads.insert(m);
+            return field;
         }
         // Otherwise: the receiver's shape class is proven, never the property's
         // type; that is what the inline-cache check consumes and all it needs.

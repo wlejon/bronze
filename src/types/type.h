@@ -81,7 +81,31 @@ public:
     // identity and drops every primitive answer to `Dynamic`.
     static constexpr Type objectIdentityOnly(ShapeClassId cls) {
         return cls == kNoShapeClass ? Type(TypeKind::Object, cls)
-                                    : Type(TypeKind::Object, cls, true);
+                                    : Type(TypeKind::Object, cls, true, false);
+    }
+    // The same identity, reached WITHOUT watching the object be made. Two
+    // expressions produce one: `this` inside a class body, which is whatever
+    // the call passed, and a field read the class harvest typed —
+    // `object3d.position` is a `Vector3` because `Object3D`'s constructor
+    // assigns one there, and for no other reason.
+    //
+    // A separate rung from the one above, because the two are guesses about
+    // DIFFERENT things and the consumers differ accordingly. A joined-over-call-
+    // sites identity is a guess about WHICH member of a family arrives, and its
+    // cost is a pinned cell that misses forever, so `claimStaticSlot` hands it a
+    // family guard instead. These two are guesses about whether the value is an
+    // instance AT ALL — `o.position = "hi"` and `V.prototype.m.call(x)` are
+    // lines the harvest never saw — and they are exact about which class when
+    // they are right, so the cell stays and it is the VALUE claim that has to
+    // go: `o.position.x` may not be typed `number` on the strength of a
+    // `position` that might be a string, and `this.x` may not be typed `number`
+    // when `this` might not be an instance.
+    //
+    // Both rungs answer `builtHere() == false`, which is the one question a
+    // primitive field type may be spent on.
+    static constexpr Type objectNotBuiltHere(ShapeClassId cls) {
+        return cls == kNoShapeClass ? Type(TypeKind::Object, cls)
+                                    : Type(TypeKind::Object, cls, false, false);
     }
     static constexpr Type function(uint32_t index = kNoFunctionIndex) {
         return Type(TypeKind::Function, index);
@@ -106,6 +130,13 @@ public:
     // See `objectIdentityOnly`. False for every non-object, and false for an
     // object with no identity — there is nothing there to be only.
     constexpr bool identityOnly() const { return identityOnly_; }
+    // Did this compilation WATCH this object being made? True only for a value
+    // that came from a `new C()` or an object literal in this program (or from
+    // a join of nothing but those). It is the precondition on every claim about
+    // what is INSIDE the object — a field's type, and the presence of the field
+    // at all — because a guessed identity is checked by a shape guard and a
+    // guessed VALUE is not checked by anything.
+    constexpr bool builtHere() const { return kind_ == TypeKind::Object && builtHere_; }
     constexpr uint32_t functionIndex() const {
         return kind_ == TypeKind::Function ? payload_ : kNoFunctionIndex;
     }
@@ -118,7 +149,7 @@ public:
 
     friend constexpr bool operator==(Type a, Type b) {
         return a.kind_ == b.kind_ && a.payload_ == b.payload_ &&
-               a.identityOnly_ == b.identityOnly_;
+               a.identityOnly_ == b.identityOnly_ && a.builtHere_ == b.builtHere_;
     }
     friend constexpr bool operator!=(Type a, Type b) { return !(a == b); }
 
@@ -128,12 +159,13 @@ public:
 private:
     static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
     constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload,
-                            bool identityOnly = false)
-        : kind_(k), payload_(payload), identityOnly_(identityOnly) {}
+                            bool identityOnly = false, bool builtHere = true)
+        : kind_(k), payload_(payload), identityOnly_(identityOnly), builtHere_(builtHere) {}
 
     TypeKind kind_ = TypeKind::Never;
     uint32_t payload_ = kNoPayload;
     bool identityOnly_ = false;
+    bool builtHere_ = true;
 };
 
 // `Never ⊔ t = t`; `t ⊔ t = t`; anything else is `Dynamic` — except that two

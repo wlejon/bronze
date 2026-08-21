@@ -1,0 +1,29 @@
+dot=32
+lengthSq=14
+scaled=64
+negzero=0
+negzero is -0: true
+1/negzero=-Infinity
+negzero+0 is +0: true
+inf=Infinity,-Infinity
+inf plus neg inf=NaN
+1/inf=0 1/neginf=0
+nan=NaN,NaN,NaN
+nan self-equal: false false
+isNaN: true true
+nan arithmetic=NaN
+Object.is(nan.x, nan.y): true
+nan bits=7ff80000:0
+keys=x,y,z
+json={"x":1.5,"y":0,"z":3}
+forin=xyz
+entries=[["x",1.5],["y",0],["z",3]]
+values=1.5,0,3
+computed=1.5;0;3;
+desc=1.5,true,true,true
+defined=42 42
+still writable=43
+frozen slot=7 7
+moving=4000
+held=258064
+held[7]=7,7.5,-7

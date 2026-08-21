@@ -141,6 +141,12 @@ void InferStatsCollector::recordElementOp(uint16_t fileId, bool isNative,
     }
 }
 
+void InferStatsCollector::recordFieldAudit(
+    const types::InferenceResult::FieldAuditReport& report, uint32_t provenReadSites) {
+    fieldAudit_ = report;
+    fieldProvenReads_ = provenReadSites;
+}
+
 std::string InferStatsCollector::format() const {
     std::string out = "=== Inference Statistics ===\n";
 
@@ -162,6 +168,30 @@ std::string InferStatsCollector::format() const {
                    std::to_string(classFamilyMembers_) + " classes\n";
         }
         for (const auto& entry : sortedReasons(classRefusals_)) {
+            out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+    }
+
+    if (fieldAudit_.namesWritten != 0) {
+        const auto& fa = fieldAudit_;
+        out += "\nField-Type Audit: " + std::to_string(fa.namesClean) + " of " +
+               std::to_string(fa.namesWritten) +
+               " written property names hold only numbers (" +
+               formatPct(fa.namesClean, fa.namesWritten) + ")\n";
+        out += "  number field reads: " + std::to_string(fa.numberFieldReads) + " sites, " +
+               std::to_string(fieldProvenReads_) + " proven; refused " +
+               std::to_string(fa.refusedNotBuiltHere) + " receiver not built here, " +
+               std::to_string(fa.refusedByClass) + " class layout, " +
+               std::to_string(fa.refusedByAudit) + " write audit\n";
+        for (const auto& entry : sortedReasons(fa.globalRefusals)) {
+            out += "  EVERY name refused, " + entry.reason + ": " +
+                   std::to_string(entry.count) + " sites\n";
+        }
+        if (!fa.globalRefusals.empty()) {
+            out += "  names with no refusal of their own: " +
+                   std::to_string(fa.namesLocallyClean) + "\n";
+        }
+        for (const auto& entry : sortedReasons(fa.refusals)) {
             out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
         }
     }

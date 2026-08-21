@@ -382,6 +382,35 @@ bool Lowerer::familyGuardSeamDisabled() {
     return std::getenv("BRONZE_NO_FAMILY_GUARD") != nullptr;
 }
 
+bool Lowerer::unboxedFieldSeamDisabled() {
+    return std::getenv("BRONZE_NO_UNBOXED_FIELDS") != nullptr;
+}
+
+// Is this expression a read of a field the write audit certified, on a receiver
+// this compilation watched being made?
+//
+// The one licence for the RAW unbox and for the native arithmetic that follows
+// it. Deliberately not `provenNumber`: the lattice types plenty of things
+// `number` whose conversion is a CHECKED unbox and is therefore ToNumber —
+// correct however the claim came about. This asks for the narrower fact, which
+// is the one that carries a proof about the bits.
+bool Lowerer::provenFieldRead(const ast::Expr& e) const {
+    if (inference_ == nullptr || unboxedFieldsDisabled_) return false;
+    return inference_->provenFieldReads.count(&e) != 0;
+}
+
+Lowerer::Value Lowerer::emitRawUnbox(Value boxed, il::Function& ilFn) {
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::Unbox;
+    inst.type = il::Type::F64;
+    inst.rawUnbox = true;
+    inst.result = res;
+    inst.operands = {boxed.id};
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::F64};
+}
+
 // The module's proven class layouts, in the preorder the family ids number.
 //
 // Built on demand, from the first site that claims a family, because a program
@@ -550,6 +579,8 @@ void Lowerer::reportClassLayouts() {
     stats_->recordClassLayouts(
         proven, static_cast<uint32_t>(inference_->classLayouts.familyPreorder().size()),
         familyRoots, inference_->classLayouts.refusalHistogram());
+    stats_->recordFieldAudit(inference_->fieldAudit,
+                             static_cast<uint32_t>(inference_->provenFieldReads.size()));
 }
 
 void Lowerer::recordPropertyAccess(uint16_t fileId, bool isNative,

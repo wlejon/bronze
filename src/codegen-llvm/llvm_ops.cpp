@@ -219,6 +219,19 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 values_[inst.result] = phi;
                 return true;
             }
+            if (inst.type == il::Type::F64 && inst.rawUnbox) {
+                // The whole of an "unboxed f64 field", and it is one
+                // instruction. bronze's Value is NaN-boxed with the number
+                // range at the BOTTOM of the encoding (`kNumberMaxBits`), so a
+                // Number's 64 bits are exactly its double's 64 bits — a slot
+                // holding one already IS raw f64 storage, and the collector
+                // already walks past it as a non-pointer. Nothing about the
+                // representation has to change; what changes is that a site
+                // carrying the proof stops paying for the test.
+                values_[inst.result] = builder_.CreateBitCast(src, builder_.getDoubleTy(),
+                                                              "unbox.raw");
+                return true;
+            }
             if (inst.type == il::Type::F64) {
                 llvm::Value* isNum = builder_.CreateICmpULE(
                     src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.isnum");

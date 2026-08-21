@@ -273,6 +273,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // passes and the recording pass, so the table cannot be built lazily as
     // `constructorShape` builds constructor-function shapes.
     result.classLayouts.build(module, result.shapes);
+    // The write audit's syntactic half, for the same reason: it is read on
+    // every round and a table that filled in as it went would answer
+    // differently on the probe rounds and the recording round.
+    mod.fieldAudit.scan(module);
     // Interprocedural identity, off behind its seam. Both halves are built
     // before any body is walked, for the same reason the class table is: the
     // flow pass reads them on every round, and a table that filled in as it went
@@ -343,6 +347,13 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         bool changed = widenSignatures(mod);
         changed = widenMethods(mod) || changed;
         changed = mod.methodPoison.version() != poisonBefore || changed;
+        // The field audit folds in here, and its direction is the opposite of
+        // every other fold in this loop: signatures only WIDEN and field
+        // cleanliness only NARROWS. Both are monotone over a finite lattice, so
+        // the combination still terminates — a refuted name widens the types
+        // that read it, which can refute further names, which can never
+        // un-refute one.
+        changed = mod.fieldAudit.settle() || changed;
         if (changed) continue;
         // Nothing moved. The one widening that could not run inside the loop
         // does so now, and the loop re-enters to let its consequences settle:
@@ -364,6 +375,15 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // already at the fixpoint, so this pass cannot change any signature.
     resetObservations(mod);
     if (!runPass(mod, split, /*record=*/true)) return std::nullopt;
+
+    result.fieldAudit.namesWritten = mod.fieldAudit.nameCount();
+    result.fieldAudit.namesClean = mod.fieldAudit.cleanCount();
+    result.fieldAudit.namesLocallyClean = mod.fieldAudit.locallyCleanCount();
+    result.fieldAudit.globalRefusals = mod.fieldAudit.globalRefusals();
+    for (const auto& [name, why] : mod.fieldAudit.report()) {
+        (void)name;
+        if (!why.empty()) ++result.fieldAudit.refusals[why];
+    }
 
     result.moduleSignatures.reserve(mod.functions.size());
     result.moduleDirectCallable.reserve(mod.functions.size());

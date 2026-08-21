@@ -100,6 +100,44 @@ struct InferenceResult {
     // that is why the site itself is recorded and not only its type.
     std::unordered_set<const ast::Expr*> pristineMathCalls;
 
+    // Every property read whose `Number` came from the AUDITED field path: the
+    // receiver was watched being made, the class installs the field on every
+    // construction path with no accessor over it, and the whole program writes
+    // nothing but Numbers into that name (types/field_audit.h).
+    //
+    // Recorded as a site rather than left to `typeAt` because the two are
+    // different claims. `typeAt` answering `Number` is the ordinary lattice
+    // fact, and every consumer of it converts through a CHECKED unbox, which is
+    // ToNumber and therefore harmless if the claim is somehow wrong. A site in
+    // here additionally licenses the RAW unbox — a bitcast with no tag test and
+    // no helper — which is harmless only if the claim is right. So the stronger
+    // licence is granted by name, to the one path that carries the proof, and
+    // is not inherited by every expression that happens to type `number`.
+    std::unordered_set<const ast::Expr*> provenFieldReads;
+
+    // What the write audit decided, summarized for `--infer-stats`. The audit
+    // itself is a fixpoint-local table (`ModuleContext::fieldAudit`); this is
+    // the part of it a report needs after inference has returned.
+    struct FieldAuditReport {
+        uint32_t namesWritten = 0;
+        uint32_t namesClean = 0;
+        // Names carrying no refusal of their OWN. Equal to `namesClean` unless
+        // one whole-program construct stood everything down, and then it is the
+        // size of what that one construct cost.
+        uint32_t namesLocallyClean = 0;
+        std::map<std::string, uint32_t> globalRefusals;  // reason -> sites
+        std::map<std::string, uint32_t> refusals;  // reason -> names refused for it
+        // The read-site population, so the report can say what the audit moved
+        // rather than only what it certified. Every property read whose base
+        // carries a shape class and whose class harvest says `number`, split by
+        // what stopped it.
+        uint32_t numberFieldReads = 0;
+        uint32_t refusedNotBuiltHere = 0;
+        uint32_t refusedByClass = 0;
+        uint32_t refusedByAudit = 0;
+    };
+    FieldAuditReport fieldAudit;
+
     // Per closure: the type its `return` statements were observed to produce,
     // keyed by the AST node that IS the closure — a `FunctionExpr`, or a nested
     // `FunctionDecl`, which desugars to one. See `closureReturnAt` for what

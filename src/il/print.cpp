@@ -254,8 +254,10 @@ bool canThrow(const Instruction& inst) {
             // coercion — and ToNumber runs ToPrimitive on an object and throws
             // for a Symbol. `unbox.bool` is ToBoolean, which is total, and
             // `unbox.i32` reads a number it has already tested for; neither
-            // calls anything.
-            return inst.type == Type::F64;
+            // calls anything. The RAW form calls nothing either: its operand is
+            // proven a Number, so ToNumber is the identity and the emitted code
+            // is one bitcast.
+            return inst.type == Type::F64 && !inst.rawUnbox;
         case Op::ToInt32:
             // Same conversion under a different name: 7.1.6 step 1 is ToNumber,
             // so `{} | 0` and `sym | 0` reach user code and the TypeError. Only
@@ -382,6 +384,10 @@ std::string print(const Module& module) {
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        // The raw form is a different instruction in every way
+                        // that matters — it cannot throw and it emits one
+                        // bitcast — so the canonical text names it.
+                        if (inst.rawUnbox) out += ", raw";
                         break;
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

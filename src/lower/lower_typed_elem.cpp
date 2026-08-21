@@ -211,7 +211,22 @@ std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
     if (const auto kind = typedElemAccessKind(e)) {
         return lowerTypedElemRead(static_cast<const ast::IndexAccess&>(e), *kind, ilFn);
     }
-    return lowerExpr(e, ilFn);
+    auto val = lowerExpr(e, ilFn);
+    // An AUDITED field read, in a context that coerces it: the property load is
+    // the one it always was, and the value that comes back is turned into a
+    // double by a bitcast rather than by a tag test, a branch and a phi.
+    //
+    // Doing it HERE and not at the read is what keeps the boxed uses free.
+    // `console.log(p.x)` wants the Value, and an eager unbox would have to be
+    // re-boxed through the canonicalizing select. This runs only where the
+    // operator is going to convert anyway — and it is what turns `v.x * m.x +
+    // v.y * m.y` from five dynamic operators, each with its own number test,
+    // NaN canonicalization and phi, into three fmuls and two fadds in
+    // registers.
+    if (val && val->type == il::Type::Dynamic && provenFieldRead(e)) {
+        return emitRawUnbox(*val, ilFn);
+    }
+    return val;
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerTypedElemRead(const ast::IndexAccess& idx,

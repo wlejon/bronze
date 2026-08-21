@@ -74,6 +74,14 @@ struct ClassLayout {
     // constructor-calls-a-late-method check reads this.
     std::vector<std::string> lateMethods;
 
+    // Every name this class declares a `get` or `set` for. A property with an
+    // accessor on the prototype chain is a CALL in both directions: the read is
+    // the getter's return value, not the slot, and the constructor's own write
+    // goes to the setter and creates no own property at all. Either way what
+    // the field-type harvest says about the slot describes something no site
+    // touches, so a name in here can never carry a primitive claim.
+    std::vector<std::string> accessorNames;
+
     // The construction sequence ends with a call to one of those methods, so
     // the fields listed above are all correct but an unknown number of others
     // may follow them. Harmless for this class; fatal for one that extends it
@@ -134,8 +142,17 @@ public:
     static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
     uint32_t slotOf(ShapeClassId id, const std::string& field) const;
 
-    // The type of a proven class's field, or `Dynamic`.
+    // The type of a proven class's field, or `Dynamic`. A HARVEST over the
+    // class body, which is evidence and not proof — see `fieldValueCandidate`
+    // and `types/field_audit.h` for the two things a caller must add before
+    // spending a primitive answer on anything.
     Type fieldTypeOf(ShapeClassId id, const std::string& field) const;
+
+    // Everything about the class that a PRIMITIVE field claim needs: the layout
+    // is proven, the construction sequence installs `field` on every path, and
+    // no accessor of that name sits anywhere on the prototype chain. The
+    // remaining condition is program-wide and lives in `FieldAudit`.
+    bool fieldValueCandidate(ShapeClassId id, const std::string& field) const;
 
     // Whether any class in the program extends this one. A `this` receiver of
     // an extended class is shape-polymorphic; see `ClassLayout::extended`.
