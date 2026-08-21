@@ -184,12 +184,16 @@ public:
     // why it recomputes rather than joins. Monotone in the fixpoint's sense: the
     // parameter types only widen, so the field types re-harvested from them do
     // too, and the loop in infer.cpp settles.
-    bool reharvestFieldTypes(const std::map<std::string, std::map<std::string, Type>>& byClass);
+    bool reharvestFieldTypes(
+        const std::map<std::string, std::map<std::string, Type>>& byClass,
+        const std::map<std::string, std::map<std::string, std::map<std::string, Type>>>* methodByClass = nullptr);
 
 private:
     // Pass 3 of `build`, and the body of `reharvestFieldTypes`. Null runs the
     // purely syntactic harvest.
-    void harvestFieldTypes(const std::map<std::string, std::map<std::string, Type>>* byClass);
+    void harvestFieldTypes(
+        const std::map<std::string, std::map<std::string, Type>>* byClass,
+        const std::map<std::string, std::map<std::string, std::map<std::string, Type>>>* methodByClass = nullptr);
     // Joins one class's base's field types into its own, base first. A
     // subclass instance HAS the base's fields; without this the table claimed a
     // slot and knew nothing about its contents.

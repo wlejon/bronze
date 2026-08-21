@@ -201,7 +201,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // one pass that fills the side table, like every other statistic.
             auto& report = mod_.result->fieldAudit;
             if (record_) ++report.numberFieldReads;
-            if (!base.builtHere()) {
+            if (!mod_.methodParamTypes && !base.builtHere()) {
                 if (record_) ++report.refusedNotBuiltHere;
                 return Type::dynamic();
             }
@@ -419,14 +419,16 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
         if (here == nullptr || here->superName.empty()) {
             if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
-                mod_.methodPoison.add(sup->property, "a `super` call whose base class is unknown");
+                mod_.methodPoison.addDeclarations(mod_.methods, sup->property,
+                                                 "a `super` call whose base class is unknown");
             }
             return Type::dynamic();
         }
         const ClassLayout* base = mod_.result->classLayouts.byName(here->superName);
         if (base == nullptr) {
             if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
-                mod_.methodPoison.add(sup->property, "a `super` call whose base class is unknown");
+                mod_.methodPoison.addDeclarations(mod_.methods, sup->property,
+                                                 "a `super` call whose base class is unknown");
             }
             return Type::dynamic();
         }
@@ -475,11 +477,9 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
 
     const ClassLayout* cls = receiverClass(receiver);
     if (cls == nullptr) {
-        mod_.methodPoison.add(name, "called on a receiver whose class is not proven");
-        return Type::dynamic();
-    }
-    if (spreadArgs) {
-        mod_.methodPoison.add(name, "an argument list is spread at a call site");
+        mod_.methodPoison.addDeclarations(mod_.methods, name,
+                                         "called on a receiver whose class is not proven");
+        if (record_) ++mod_.unboundedMethodCalls;
         return Type::dynamic();
     }
     std::vector<uint32_t> targets;
@@ -489,16 +489,32 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // classes, or absent. No modelled method is reached, so none is poisoned.
     if (targets.empty()) return Type::dynamic();
 
+    if (spreadArgs) {
+        for (const uint32_t index : targets) {
+            mod_.methodPoison.add(index, "an argument list is spread at a call site");
+        }
+        return Type::dynamic();
+    }
+
     Type ret = Type::never();
     bool everyTargetSpeaks = true;
     for (const uint32_t index : targets) {
         MethodInfo& target = mod_.methods.methods()[index];
-        // A missing argument is `undefined`, exactly as the call delivers it.
+        // Missing argument handling with default awareness
         for (size_t i = 0; i < target.observedParams.size(); ++i) {
-            const Type at = i < args.size() ? args[i] : Type::undefined();
-            target.observedParams[i] = join(target.observedParams[i], at);
+            if (i < args.size()) {
+                if (target.hasDefault.size() > i && target.hasDefault[i] &&
+                    args[i].is(TypeKind::Undefined)) {
+                    continue;
+                }
+                target.observedParams[i] = join(target.observedParams[i], args[i]);
+            } else {
+                if (target.hasDefault.size() > i && !target.hasDefault[i]) {
+                    target.observedParams[i] = join(target.observedParams[i], Type::undefined());
+                }
+            }
         }
-        if (mod_.methodPoison.poisons(target.methodName)) {
+        if (mod_.methodPoison.poisons(index)) {
             everyTargetSpeaks = false;
             continue;
         }
@@ -668,8 +684,8 @@ void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
             std::string reason;
             if (!self.plainParams) {
                 reason = "the method's parameter list is not plain";
-            } else if (mod_.methodPoison.poisons(self.methodName)) {
-                reason = mod_.methodPoison.reasonFor(self.methodName);
+            } else if (mod_.methodPoison.poisons(scope_.methodIndex)) {
+                reason = mod_.methodPoison.reasonFor(scope_.methodIndex);
             } else if (self.unreached) {
                 reason = "no call site this compilation saw reaches the method";
             } else {
@@ -849,28 +865,38 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
         paramTypes = ctorParamTypes(ctorIndex, params.size());
     } else if (methodIndex != kNoMethod) {
         const MethodInfo& self = mod_.methods.methods()[methodIndex];
-        if (self.plainParams && !mod_.methodPoison.poisons(self.methodName)) {
+        if (self.plainParams && !mod_.methodPoison.poisons(methodIndex)) {
             for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
                 const Type proven = self.signature.params[i];
-                // An IDENTITY only. A parameter every seen caller passes a
-                // number to is not thereby a number: the dispatch that chose
-                // this method is a guess, and `Number` licenses unboxed f64,
-                // which no guess may license. An object identity licenses the
-                // guarded property-site form and nothing else, which is exactly
-                // what a guess can afford.
-                if (proven.is(TypeKind::Object) && proven.shapeClass() != kNoShapeClass) {
-                    paramTypes[i] = Type::objectIdentityOnly(proven.shapeClass());
-                } else if (proven.is(TypeKind::Never)) {
-                    // Still waiting on the fixpoint. `Never` is what says so.
+                if (mod_.methodParamTypes) {
                     paramTypes[i] = proven;
+                } else {
+                    if (proven.is(TypeKind::Object) && proven.shapeClass() != kNoShapeClass) {
+                        paramTypes[i] = Type::objectIdentityOnly(proven.shapeClass());
+                    } else if (proven.is(TypeKind::Never)) {
+                        paramTypes[i] = proven;
+                    }
                 }
             }
         }
     }
-    const FunctionOutcome outcome =
-        analyzeFunction(mod_, &scope_, qualifiedName_ + "::" + name, kNoFunctionIndex, &site,
-                        /*directCallable=*/false, params, paramTypes, borrowed, span, record_,
-                        isGenerator, thisClass, methodIndex, ctorIndex);
+    FunctionAnalysisArgs args;
+    args.parent = &scope_;
+    args.qualifiedName = qualifiedName_ + "::" + name;
+    args.moduleIndex = kNoFunctionIndex;
+    args.site = &site;
+    args.directCallable = false;
+    args.params = &params;
+    args.paramTypes = std::move(paramTypes);
+    args.body = std::move(borrowed);
+    args.span = span;
+    args.record = record_;
+    args.isGenerator = isGenerator;
+    args.thisClass = thisClass;
+    args.methodIndex = methodIndex;
+    args.ctorIndex = ctorIndex;
+    args.moduleTopLevel = false;
+    const FunctionOutcome outcome = analyzeFunction(mod_, args);
     return outcome.returnType;
 }
 

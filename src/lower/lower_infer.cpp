@@ -617,6 +617,7 @@ void Lowerer::reportClassLayouts() {
         familyRoots, inference_->classLayouts.refusalHistogram());
     stats_->recordFieldAudit(inference_->fieldAudit,
                              static_cast<uint32_t>(inference_->provenFieldReads.size()));
+    stats_->recordMethodParams(inference_->methodParams);
     stats_->recordCtorParams(inference_->ctorParams);
 }
 

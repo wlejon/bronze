@@ -125,6 +125,7 @@ struct InferenceResult {
         // one whole-program construct stood everything down, and then it is the
         // size of what that one construct cost.
         uint32_t namesLocallyClean = 0;
+        std::vector<std::string> cleanNames;
         std::map<std::string, uint32_t> globalRefusals;  // reason -> sites
         std::map<std::string, uint32_t> refusals;  // reason -> names refused for it
         // The read-site population, so the report can say what the audit moved
@@ -144,8 +145,33 @@ struct InferenceResult {
         uint32_t computedRefuted = 0;
         std::map<std::string, uint32_t> computedKeyTypes;
         std::map<std::string, uint32_t> computedReceiverTypes;
+
+        struct ResidueSite {
+            std::string reason;
+            uint32_t count = 0;
+            std::string representativeSite;
+        };
+        std::vector<ResidueSite> residue;
     };
     FieldAuditReport fieldAudit;
+
+    // What the method-parameter join decided, summarized for `--infer-stats`.
+    struct MethodParamReport {
+        uint32_t classes = 0;
+        uint32_t methods = 0;
+        uint32_t params = 0;
+        uint32_t paramsNumber = 0;
+        uint32_t paramsObject = 0;
+        uint32_t paramsOther = 0;
+        uint32_t paramsDynamic = 0;
+        uint32_t methodsSpeaking = 0;
+        uint32_t methodsUnreached = 0;
+        uint32_t methodsNotPlain = 0;
+        std::map<std::string, uint32_t> poisons;
+        std::string globalPoison;
+        uint32_t unboundedCalls = 0;
+    };
+    MethodParamReport methodParams;
 
     // What the constructor-parameter join decided, summarized for
     // `--infer-stats` (types/ctor_ident.h). The chain this chunk has to move

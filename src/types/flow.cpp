@@ -72,6 +72,11 @@ void FlowAnalyzer::runParamDefaults(const std::vector<ast::Param>& params) {
                 if (i < info.observedParams.size()) {
                     info.observedParams[i] = join(info.observedParams[i], t);
                 }
+            } else if (scope_.methodIndex != kNoMethod && mod_.methodParamTypes) {
+                auto& info = mod_.methods.methods()[scope_.methodIndex];
+                if (i < info.observedParams.size()) {
+                    info.observedParams[i] = join(info.observedParams[i], t);
+                }
             }
         }
         if (param.pattern) patternDefaults(*param.pattern);
@@ -640,37 +645,32 @@ Env joinEnv(const Env& a, const Env& b) {
     return out;
 }
 
-FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
-                                const std::string& qualifiedName, uint32_t moduleIndex,
-                                const ast::Node* site, bool directCallable,
-                                const std::vector<ast::Param>& params,
-                                const std::vector<Type>& paramTypes,
-                                const std::vector<const ast::Stmt*>& body, Span span,
-                                bool record, bool isGenerator, ShapeClassId thisClass,
-                                uint32_t methodIndex, uint32_t ctorIndex,
-                                bool moduleTopLevel) {
+FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& args) {
     Scope scope;
-    scope.parent = parent;
-    scope.thisClass = thisClass;
-    scope.methodIndex = methodIndex;
-    scope.ctorIndex = ctorIndex;
+    scope.parent = args.parent;
+    scope.thisClass = args.thisClass;
+    scope.methodIndex = args.methodIndex;
+    scope.ctorIndex = args.ctorIndex;
     // The same union lowering builds: a name assigned inside a `try` lives in
     // an environment record, and `queries.h`'s rule is that inference must
     // believe about a variable exactly what lowering decided about where it
     // lives. Flow sensitivity on a cell would be unsound — a handler can
     // observe any of the writes.
-    const auto captured = ast::getCapturedNames(body);
+    const auto captured = ast::getCapturedNames(args.body);
     scope.captured.insert(captured.begin(), captured.end());
-    const auto tryAssigned = ast::getTryAssignedNames(body);
+    const auto tryAssigned = ast::getTryAssignedNames(args.body);
     scope.captured.insert(tryAssigned.begin(), tryAssigned.end());
 
+    static const std::vector<ast::Param> kEmptyParams;
+    const auto& params = args.params != nullptr ? *args.params : kEmptyParams;
+
     FunctionFacts facts;
-    facts.name = qualifiedName;
-    facts.index = moduleIndex;
-    facts.directCallable = directCallable;
+    facts.name = args.qualifiedName;
+    facts.index = args.moduleIndex;
+    facts.directCallable = args.directCallable;
     facts.paramNames.reserve(params.size());
     for (const auto& p : params) facts.paramNames.push_back(p.name);
-    facts.signature.params = paramTypes;
+    facts.signature.params = args.paramTypes;
 
     // The env-backed cells are one value per name over the whole function, so
     // a write late in the body has to be visible to a read early in it. That
@@ -680,10 +680,10 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
         const Env beforeCells = scope.cells;
         scope.env.clear();
-        seedParams(scope, params, paramTypes);
-        FlowAnalyzer probe(mod, scope, facts, qualifiedName, /*record=*/false);
+        seedParams(scope, params, args.paramTypes);
+        FlowAnalyzer probe(mod, scope, facts, args.qualifiedName, /*record=*/false);
         probe.runParamDefaults(params);
-        probe.runBody(body);
+        probe.runBody(args.body);
         if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
         if (scope.cells == beforeCells) {
             converged = true;
@@ -692,31 +692,31 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     }
     if (!converged) {
         mod.failed = true;
-        mod.diags->error(span, "internal: type inference captured-variable types did not "
-                               "converge in '" + qualifiedName + "'");
+        mod.diags->error(args.span, "internal: type inference captured-variable types did not "
+                                   "converge in '" + args.qualifiedName + "'");
         return FunctionOutcome{Type::dynamic(), false};
     }
 
     // The slot is reserved before the final walk so that functions nested
     // inside this one, which append as they are discovered, land after it.
     size_t slot = kNoSlot;
-    if (record) {
+    if (args.record) {
         mod.result->functions.emplace_back();
         slot = mod.result->functions.size() - 1;
     }
 
     scope.env.clear();
-    seedParams(scope, params, paramTypes);
-    FlowAnalyzer recorder(mod, scope, facts, qualifiedName, record);
+    seedParams(scope, params, args.paramTypes);
+    FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, args.record);
     recorder.runParamDefaults(params);
-    recorder.runBody(body);
+    recorder.runBody(args.body);
     if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
 
     // The module top level DECLARES the module bindings, so its own scope is
     // where most of what they hold is decided — `const _vector = new Vector3()`
     // is a statement of this body and of no other. Writes from inside functions
     // reach the table through `assign`; this is the other half.
-    if (moduleTopLevel && mod.valueFlow) {
+    if (args.moduleTopLevel && mod.valueFlow) {
         for (const Env* half : {&scope.env, &scope.cells}) {
             for (const auto& [name, t] : *half) {
                 if (mod.moduleScopeNames.count(name) == 0) continue;
@@ -734,13 +734,13 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, Scope* parent,
     // ToNumber on an object and a hard error at runtime — and only for a
     // numeric return, because the other types need no coercion to be wrong.
     const Type returnType =
-        isGenerator ? Type::dynamic() : recorder.inferredReturn(body);
+        args.isGenerator ? Type::dynamic() : recorder.inferredReturn(args.body);
     facts.signature.returnType = returnType;
     // A closure's only queryable proof (signature specialization excludes it,
     // so its parameters stay dynamic — but what its body returns is a fact
     // about the body alone, and throwing it away is what made every annotation
     // on a closure unprovable).
-    if (record && site != nullptr) mod.result->closureReturns[site] = returnType;
+    if (args.record && args.site != nullptr) mod.result->closureReturns[args.site] = returnType;
     // Ordered map in, sorted vector out.
     for (const auto& cell : scope.cells) {
         facts.cells.push_back(BindingChange{cell.first, cell.second});

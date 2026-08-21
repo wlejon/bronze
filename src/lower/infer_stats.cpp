@@ -147,6 +147,11 @@ void InferStatsCollector::recordFieldAudit(
     fieldProvenReads_ = provenReadSites;
 }
 
+void InferStatsCollector::recordMethodParams(
+    const types::InferenceResult::MethodParamReport& report) {
+    methodParams_ = report;
+}
+
 void InferStatsCollector::recordCtorParams(
     const types::InferenceResult::CtorParamReport& report) {
     ctorParams_ = report;
@@ -174,6 +179,36 @@ std::string InferStatsCollector::format() const {
         }
         for (const auto& entry : sortedReasons(classRefusals_)) {
             out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+    }
+
+    if (methodParams_.methods != 0) {
+        const auto& mp = methodParams_;
+        out += "\nMethod Parameters: " + std::to_string(mp.methodsSpeaking) + " of " +
+               std::to_string(mp.methods) + " methods keep their parameters (" +
+               formatPct(mp.methodsSpeaking, mp.methods) + "), over " +
+               std::to_string(mp.classes) + " classes\n";
+        out += "  parameters: " + std::to_string(mp.paramsNumber) + " number, " +
+               std::to_string(mp.paramsObject) + " object, " +
+               std::to_string(mp.paramsOther) + " other, " +
+               std::to_string(mp.paramsDynamic) + " dynamic (of " +
+               std::to_string(mp.params) + ")\n";
+        if (mp.methodsUnreached != 0) {
+            out += "  no call site reaches it: " +
+                   std::to_string(mp.methodsUnreached) + "\n";
+        }
+        if (mp.methodsNotPlain != 0) {
+            out += "  parameter list is not plain: " + std::to_string(mp.methodsNotPlain) +
+                   "\n";
+        }
+        if (!mp.globalPoison.empty()) {
+            out += "  EVERY method refused, " + mp.globalPoison + "\n";
+        }
+        for (const auto& entry : sortedReasons(mp.poisons)) {
+            out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+        if (mp.unboundedCalls != 0) {
+            out += "  calls on unproven receivers: " + std::to_string(mp.unboundedCalls) + "\n";
         }
     }
 
@@ -225,6 +260,14 @@ std::string InferStatsCollector::format() const {
                std::to_string(fa.refusedNotBuiltHere) + " receiver not built here, " +
                std::to_string(fa.refusedByClass) + " class layout, " +
                std::to_string(fa.refusedByAudit) + " write audit\n";
+        if (!fa.cleanNames.empty()) {
+            out += "  clean names (" + std::to_string(fa.cleanNames.size()) + "): ";
+            for (size_t i = 0; i < fa.cleanNames.size(); ++i) {
+                if (i > 0) out += ", ";
+                out += fa.cleanNames[i];
+            }
+            out += "\n";
+        }
         if (fa.computedSites != 0) {
             out += "  computed key sites: " + std::to_string(fa.computedSites) + ", " +
                    std::to_string(fa.computedSites - fa.computedRefuted) + " proven harmless (" +
@@ -248,6 +291,16 @@ std::string InferStatsCollector::format() const {
         }
         for (const auto& entry : sortedReasons(fa.refusals)) {
             out += "  " + entry.reason + ": " + std::to_string(entry.count) + "\n";
+        }
+        if (!fa.residue.empty()) {
+            out += "  irreducible residue:\n";
+            for (const auto& r : fa.residue) {
+                out += "    " + r.reason + ": " + std::to_string(r.count) + " sites";
+                if (!r.representativeSite.empty()) {
+                    out += " (e.g. at " + r.representativeSite + ")";
+                }
+                out += "\n";
+            }
         }
     }
 

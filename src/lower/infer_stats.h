@@ -68,6 +68,8 @@ public:
     void recordFieldAudit(const types::InferenceResult::FieldAuditReport& report,
                           uint32_t provenReadSites);
 
+    void recordMethodParams(const types::InferenceResult::MethodParamReport& report);
+
     // What the constructor-parameter join proved, and what stood in its way.
     // First link of the chain the field audit finishes: a parameter still
     // dynamic here is a `this.x = x` the audit will refuse.
@@ -91,6 +93,7 @@ private:
     std::map<std::string, uint32_t> classRefusals_;
     types::InferenceResult::FieldAuditReport fieldAudit_;
     uint32_t fieldProvenReads_ = 0;
+    types::InferenceResult::MethodParamReport methodParams_;
     types::InferenceResult::CtorParamReport ctorParams_;
 };
 

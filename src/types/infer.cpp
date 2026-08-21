@@ -58,11 +58,20 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         body.reserve(fn.decl->body.size());
         for (const auto& s : fn.decl->body) body.push_back(s.get());
 
-        const auto outcome =
-            analyzeFunction(mod, /*parent=*/nullptr, fn.name, i, /*site=*/nullptr,
-                            fn.directCallable, fn.decl->params, fn.signature.params, body,
-                            fn.decl->span, record,
-                            fn.decl->isGenerator || fn.decl->isAsync);
+        FunctionAnalysisArgs args;
+        args.parent = nullptr;
+        args.qualifiedName = fn.name;
+        args.moduleIndex = i;
+        args.site = nullptr;
+        args.directCallable = fn.directCallable;
+        args.params = &fn.decl->params;
+        args.paramTypes = fn.signature.params;
+        args.body = std::move(body);
+        args.span = fn.decl->span;
+        args.record = record;
+        args.isGenerator = fn.decl->isGenerator || fn.decl->isAsync;
+
+        const auto outcome = analyzeFunction(mod, args);
         if (!outcome.ok) return false;
         // Only a direct-callable function's return is a proof about its
         // callers; an escaping one is reached through the dynamic convention,
@@ -74,12 +83,19 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         Span span{};
         span.begin = split.topLevel.front()->span.begin;
         span.end = split.topLevel.back()->span.end;
-        const auto outcome = analyzeFunction(mod, /*parent=*/nullptr, kTopLevelName,
-                                             kNoFunctionIndex, /*site=*/nullptr,
-                                             /*directCallable=*/false, {}, {},
-                                             split.topLevel, span, record,
-                                             /*isGenerator=*/false, kNoShapeClass, kNoMethod,
-                                             kNoCtor, /*moduleTopLevel=*/true);
+
+        FunctionAnalysisArgs args;
+        args.parent = nullptr;
+        args.qualifiedName = kTopLevelName;
+        args.moduleIndex = kNoFunctionIndex;
+        args.site = nullptr;
+        args.directCallable = false;
+        args.body = split.topLevel;
+        args.span = span;
+        args.record = record;
+        args.moduleTopLevel = true;
+
+        const auto outcome = analyzeFunction(mod, args);
         if (!outcome.ok) return false;
     }
     return true;
@@ -119,13 +135,14 @@ bool widenSignatures(ModuleContext& mod) {
 bool widenMethods(ModuleContext& mod) {
     if (!mod.interprocIdent) return false;
     bool changed = false;
-    for (auto& m : mod.methods.methods()) {
-        const bool speaks = m.plainParams && !mod.methodPoison.poisons(m.methodName);
-        for (size_t i = 0; i < m.signature.params.size(); ++i) {
+    for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
+        auto& m = mod.methods.methods()[i];
+        const bool speaks = m.plainParams && !mod.methodPoison.poisons(i);
+        for (size_t p = 0; p < m.signature.params.size(); ++p) {
             const Type widened =
-                speaks ? join(m.signature.params[i], m.observedParams[i]) : Type::dynamic();
-            if (widened != m.signature.params[i]) {
-                m.signature.params[i] = widened;
+                speaks ? join(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
+            if (widened != m.signature.params[p]) {
+                m.signature.params[p] = widened;
                 changed = true;
             }
         }
@@ -182,8 +199,14 @@ bool finalizeUnreachedCtors(ModuleContext& mod) {
 // they stand. This is the one road from a typed parameter to a typed FIELD:
 // `this.x = x` says nothing until `x` does.
 bool refineFieldHarvest(ModuleContext& mod, InferenceResult& result) {
-    if (!mod.ctorParamTypes) return false;
-    return result.classLayouts.reharvestFieldTypes(mod.ctors.harvestOracle());
+    if (!mod.ctorParamTypes && !mod.methodParamTypes) return false;
+    const auto ctorOracle = mod.ctorParamTypes ? mod.ctors.harvestOracle()
+                                               : std::map<std::string, std::map<std::string, Type>>();
+    if (mod.methodParamTypes) {
+        const auto methodOracle = mod.methods.harvestOracle();
+        return result.classLayouts.reharvestFieldTypes(ctorOracle, &methodOracle);
+    }
+    return result.classLayouts.reharvestFieldTypes(ctorOracle, nullptr);
 }
 
 // After the fixpoint settles: a parameter still at `Never` is one no call site
@@ -336,14 +359,17 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // would answer differently on the probe rounds and the recording round.
     mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
+    mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
     }
     mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
-    if (mod.ctorParamTypes) {
-        mod.ctors.build(module);
-        scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
+    if (mod.ctorParamTypes || mod.methodParamTypes) {
+        if (mod.ctorParamTypes) {
+            mod.ctors.build(module);
+            scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
+        }
         // The field harvest starts from the parameter signatures, which are all
         // `Never` here. That is the bottom of the same lattice everything else
         // in the loop below climbs, so the whole sequence is monotone from the
@@ -498,6 +524,38 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         }
     }
 
+    if (mod.interprocIdent) {
+        auto& rep = result.methodParams;
+        rep.classes = static_cast<uint32_t>(result.classLayouts.all().size());
+        rep.methods = static_cast<uint32_t>(mod.methods.methods().size());
+        rep.globalPoison = mod.methodPoison.all ? mod.methodPoison.allReason : std::string();
+        rep.unboundedCalls = mod.unboundedMethodCalls;
+        for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
+            const auto& m = mod.methods.methods()[i];
+            rep.params += static_cast<uint32_t>(m.signature.params.size());
+            if (!m.plainParams) {
+                ++rep.methodsNotPlain;
+            } else if (mod.methodPoison.poisons(i)) {
+                ++rep.poisons[mod.methodPoison.reasonFor(i)];
+            } else if (m.unreached) {
+                ++rep.methodsUnreached;
+            } else {
+                ++rep.methodsSpeaking;
+            }
+            for (const Type& param : m.signature.params) {
+                if (param.is(TypeKind::Number)) {
+                    ++rep.paramsNumber;
+                } else if (param.is(TypeKind::Object)) {
+                    ++rep.paramsObject;
+                } else if (param.is(TypeKind::Dynamic)) {
+                    ++rep.paramsDynamic;
+                } else {
+                    ++rep.paramsOther;
+                }
+            }
+        }
+    }
+
     result.fieldAudit.namesWritten = mod.fieldAudit.nameCount();
     result.fieldAudit.namesClean = mod.fieldAudit.cleanCount();
     result.fieldAudit.namesLocallyClean = mod.fieldAudit.locallyCleanCount();
@@ -507,8 +565,15 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     result.fieldAudit.computedKeyTypes = mod.fieldAudit.computedKeyTypes();
     result.fieldAudit.computedReceiverTypes = mod.fieldAudit.computedReceiverTypes();
     for (const auto& [name, why] : mod.fieldAudit.report()) {
-        (void)name;
-        if (!why.empty()) ++result.fieldAudit.refusals[why];
+        if (!why.empty()) {
+            ++result.fieldAudit.refusals[why];
+        } else if (mod.fieldAudit.numberClean(name)) {
+            result.fieldAudit.cleanNames.push_back(name);
+        }
+    }
+    for (const auto& r : mod.fieldAudit.residue()) {
+        result.fieldAudit.residue.push_back(
+            InferenceResult::FieldAuditReport::ResidueSite{r.reason, r.count, r.representativeSite});
     }
 
     result.moduleSignatures.reserve(mod.functions.size());
