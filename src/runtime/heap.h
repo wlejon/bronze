@@ -314,6 +314,7 @@ private:
     // measuring the inline path in one binary.
     bool inline_lab_enabled_{true};
     bool in_gc_{false};
+    size_t gc_threshold_bytes_{16 * 1024 * 1024};
     uint64_t collections_{0};
     uint64_t relocations_{0};
     CollectionHook collection_hook_;

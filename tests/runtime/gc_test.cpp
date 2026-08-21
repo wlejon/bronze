@@ -343,3 +343,55 @@ TEST_CASE("gc stress mode triggers collection on every allocation") {
         }
     }
 }
+
+TEST_CASE("heap dynamically scales for deep hierarchy without bad_alloc") {
+    Heap heap(1024 * 1024 * 1024, 64 * 1024);
+    heap.set_gc_stress(false);
+    ShadowStackFrame frame;
+
+    // Build a 21,844 node hierarchy tree (branching=4, depth=7)
+    struct Node {
+        HeapObjectHeader* obj;
+    };
+    std::vector<Rooted<Value>*> allRoots;
+    allRoots.reserve(21844);
+
+    Rooted<Value> rootNode(heap, Value::fromNull());
+    size_t nodeCount = 0;
+
+    std::function<Value(int, int)> build = [&](int branching, int depth) -> Value {
+        auto* raw = heap.allocate(sizeof(Value) * 5, Tag::Object);
+        raw->flags = HeapKind::Plain;
+        Value* payload = raw->payload<Value>();
+        payload[0] = Value::fromDouble(static_cast<double>(nodeCount++));
+        payload[1] = Value::fromDouble(static_cast<double>(depth));
+        payload[2] = Value::fromNull();
+        payload[3] = Value::fromNull();
+        payload[4] = Value::fromNull();
+
+        if (depth > 1) {
+            for (int i = 0; i < branching; ++i) {
+                Value child = build(branching, depth - 1);
+                payload[2 + (i % 3)] = child;
+            }
+        }
+        return Value::fromObject(raw);
+    };
+
+    auto* sceneRaw = heap.allocate(sizeof(Value) * 5, Tag::Object);
+    sceneRaw->flags = HeapKind::Plain;
+    rootNode.set(Value::fromObject(sceneRaw));
+    for (int i = 0; i < 4; ++i) {
+        Value branch = build(4, 7);
+        sceneRaw->payload<Value>()[i] = branch;
+    }
+    CHECK(nodeCount == 21844);
+
+    // Collect to verify all surviving objects copy cleanly
+    heap.collect();
+    CHECK(rootNode.get().isObject());
+    auto* liveHdr = rootNode.get().asObject<HeapObjectHeader>();
+    CHECK(liveHdr != nullptr);
+    CHECK(liveHdr->tag == static_cast<uint16_t>(Tag::Object));
+}
+

@@ -153,6 +153,7 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         size_t commit_target = std::min(initial_commit_bytes, semispace_size_);
         ensure_commit(from_space_, commit_target);
     }
+    gc_threshold_bytes_ = std::min(semispace_size_, static_cast<size_t>(16 * 1024 * 1024));
 
     const char* env_stress = std::getenv("BRONZE_GC_STRESS");
     if (env_stress && (std::strcmp(env_stress, "1") == 0 ||
@@ -334,6 +335,12 @@ void* Heap::allocate_raw(size_t bytes) {
     size_t aligned_bytes = (bytes + 7) & ~static_cast<size_t>(7);
     size_t current_used = from_space_.bump_ptr - from_space_.base;
     size_t needed = current_used + aligned_bytes;
+
+    if (!in_gc_ && needed > gc_threshold_bytes_) {
+        collect();
+        current_used = from_space_.bump_ptr - from_space_.base;
+        needed = current_used + aligned_bytes;
+    }
 
     if (needed > from_space_.size || needed > from_space_.committed_bytes) {
         if (!ensure_commit(from_space_, needed)) {
@@ -724,6 +731,12 @@ void Heap::collect() {
         std::memset(from_space_.base, 0xDB,
                     static_cast<size_t>(from_space_.bump_ptr - from_space_.base));
     }
+
+    const size_t live_bytes = to_space_.bump_ptr - to_space_.base;
+    constexpr size_t kMinThreshold = 16 * 1024 * 1024;
+    constexpr size_t kMinHeadroom = 8 * 1024 * 1024;
+    const size_t next_threshold = live_bytes + std::max(live_bytes, kMinHeadroom);
+    gc_threshold_bytes_ = std::min(semispace_size_, std::max(kMinThreshold, next_threshold));
 
     from_space_.bump_ptr = from_space_.base;
     std::swap(from_space_, to_space_);

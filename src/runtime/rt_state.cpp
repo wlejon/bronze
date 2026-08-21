@@ -71,7 +71,7 @@ static void registerThreadRootSources(Heap& heap);
 Heap& rtHeap() {
     static thread_local Heap* heap = nullptr;
     if (!heap) {
-        heap = new Heap(64 * 1024 * 1024);
+        heap = new Heap(1024 * 1024 * 1024);
         registerThreadRootSources(*heap);
     }
     return *heap;
