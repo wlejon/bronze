@@ -389,6 +389,36 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
         {reinterpret_cast<FnSingletonSlot*>(cells), count, g_currentModuleEpoch});
 }
 
+}  // extern "C"
+
+// ---- the interned-native table, as the memo in front of it sees it --------
+//
+// `runtime/native_fn_memo.cpp` keeps a direct-mapped (code -> INDEX) table so
+// a repeat interning costs a hash and two loads instead of an unordered_map
+// probe and a cross-module call. It stores an index and never a Value, which
+// is the whole reason these two functions exist rather than the memo reaching
+// into the vector: the index is meaningless without the vector's own
+// bounds-and-identity check, and that check is also what makes the memo
+// self-healing across a module UNLOAD, which erases entries and renumbers
+// everything after them.
+
+uint32_t rtFunctionSingletonIndexOf(bronze_fn_code code) {
+    if (auto it = g_functionSingletonIndex.find(reinterpret_cast<void*>(code));
+        it != g_functionSingletonIndex.end()) {
+        return static_cast<uint32_t>(it->second);
+    }
+    return UINT32_MAX;
+}
+
+Value rtFunctionSingletonAt(uint32_t index, bronze_fn_code expect) {
+    if (index >= g_functionSingletons.size()) return Value::fromUndefined();
+    const auto& entry = g_functionSingletons[index];
+    if (entry.first != expect) return Value::fromUndefined();
+    return entry.second;
+}
+
+extern "C" {
+
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
                                    uint32_t nameKey, uint32_t fnFlags, uint64_t* slotCell) {
     recordHelperCall("bronze_function_singleton");

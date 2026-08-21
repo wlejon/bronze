@@ -65,6 +65,7 @@ bronze_add_module(runtime
         rt_numeric.cpp
         rt_key.cpp
         elem_ic.cpp
+        native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp
         rt_prop_primitive.cpp
@@ -152,6 +153,7 @@ bronze_add_module(runtime
         ../../tests/runtime/native_base_test.cpp
         ../../tests/runtime/thread_isolation_test.cpp
         ../../tests/runtime/elem_ic_test.cpp
+        ../../tests/runtime/native_fn_memo_test.cpp
         ../../tests/runtime/call_out_test.cpp
 )
 

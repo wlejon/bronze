@@ -2,8 +2,11 @@
 
 #include <bit>
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
 #include "runtime/ic_log.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 
@@ -82,8 +85,41 @@ bool keyMatches(const ElemCacheEntry& e, ElemKeyKind kind, uint64_t witness,
 
 }  // namespace
 
+namespace {
+
+// hash -> the arena copies made under it. A vector rather than one entry
+// because the hash is a filter, not an identity, and two distinct keys sharing
+// one must both be reachable. Keys here are ARENA copies: immortal, never
+// moved, never scanned — so this map is a plain C++ container and no root
+// source knows about it.
+thread_local std::unordered_map<uint64_t, std::vector<StringHeader*>> g_elemKeyArena;
+thread_local uint32_t g_elemKeyCount = 0;
+
+}  // namespace
+
+StringHeader* elemCacheInternKey(StringHeader* live) {
+    if (!live) return nullptr;
+    const uint64_t h = live->hash();
+    auto& bucket = g_elemKeyArena[h];
+    for (StringHeader* candidate : bucket) {
+        if (candidate == live || candidate->equals(*live)) return candidate;
+    }
+    // The budget, and the one place it is spent. A program that computes a
+    // fresh key per iteration reaches it, stops growing the arena, and keeps
+    // the uncached read it always had — a slow answer, never a wrong one.
+    if (g_elemKeyCount >= kElemKeyBudget) return nullptr;
+    StringHeader* copy = StringHeader::internToArena(rtArena(), live);
+    ++g_elemKeyCount;
+    bucket.push_back(copy);
+    return copy;
+}
+
 bool elemCacheEnabled() noexcept {
     return bronze_tls_block_addr()->elem_ic_enabled != 0;
+}
+
+bool elemAbsentEnabled() noexcept {
+    return bronze_tls_block_addr()->elem_absent_enabled != 0;
 }
 
 ElemProbe elemCacheProbe(Value objVal, Value key) {
@@ -143,8 +179,24 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
 
     // From here the questions are exactly the property path's, asked of its
     // own code so the two cannot answer differently. `describes` refuses an
-    // absent entry outright, and nothing ever stores one here — see the fill
-    // side for why absence is not cached on this path.
+    // absent entry outright — that is a separate question with a separate
+    // answer, so it is asked separately, first.
+    if (e.ic.isAbsent()) {
+        if (!e.ic.describesAbsent(shape)) {
+            recordElemIcMiss(e.ic.cached_shape == shape ? "entry_absent_epoch_stale"
+                                                        : "entry_absent_other_shape",
+                             objVal.rawBits(), key.rawBits());
+            return probe;
+        }
+        // `undefined`, with no own-slot lookup and no chain walk. The entry's
+        // validity is the receiver's shape (every own add transitions it) and
+        // `bronze_proto_epoch` (every way a key can appear above it) — the
+        // pair chunk 1 proved for the named negative IC, asked here of the
+        // same words by the same code.
+        probe.hit = true;
+        probe.value = Value::fromUndefined();
+        return probe;
+    }
     if (!e.ic.describes(shape)) {
         recordElemIcMiss(e.ic.cached_shape == shape ? "entry_epoch_stale" : "entry_other_shape",
                          objVal.rawBits(), key.rawBits());
@@ -175,9 +227,8 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
     return probe;
 }
 
-void elemCacheFill(const ElemProbe& probe, StringHeader* internedKey,
-                   const InlineCacheSite& site) {
-    if (!probe.entry || !internedKey) return;
+void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCacheSite& site) {
+    if (!probe.entry || !liveKey) return;
     // Way 0 or nothing. The walk installs move-to-front, so way 0 is what it
     // just decided about THIS receiver — and a stack site handed to one read
     // has no older ways for the scan to have found. Nothing here re-decides
@@ -189,13 +240,20 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* internedKey,
     // receivers — but the entry is copied verbatim, so the assertion is worth
     // the branch rather than the trust.
     if (filled.isArrayMethod()) return;
-    // Absence is the walk's to cache in a property SITE, whose key is a
-    // compile-time constant that already exists. Here the key is a value, and
-    // a key that names nothing need exist in the arena at all — so caching
-    // absence would mean interning an immortal string for every fresh missing
-    // name a loop asks for. The read stays uncached and the diagnostics on the
-    // miss path keep running, which is the conservative half of both answers.
-    if (filled.isAbsent()) return;
+    if (filled.isAbsent() && !elemAbsentEnabled()) {
+        recordElemIcMiss("absent_seam_disabled", 0, 0);
+        return;
+    }
+    // The key has to become immortal before an entry can name it, and for an
+    // ABSENT key that is the whole risk: a present key is already a shape key
+    // somewhere, an absent one need exist nowhere. `elemCacheInternKey`
+    // deduplicates and spends a fixed budget, so a stable absent pair costs one
+    // copy and a rotating one costs nothing after the budget.
+    StringHeader* internedKey = elemCacheInternKey(liveKey);
+    if (!internedKey) {
+        recordElemIcMiss("key_budget_spent", 0, 0);
+        return;
+    }
     probe.entry->ic = filled;
     probe.entry->witness = probe.witness;
     probe.entry->kind = probe.kind;

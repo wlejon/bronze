@@ -99,6 +99,20 @@ if(MSVC)
     # A .def source is how CMake spells /DEF: for the MSVC-family linkers.
     target_sources(bronze_runtime_shared PRIVATE ${_bronze_abi_def})
     set_source_files_properties(${_bronze_abi_def} PROPERTIES GENERATED TRUE)
+    # A shipped Release runtime that cannot be symbolized is a runtime whose
+    # cost can only ever be attributed to "the nearest export before here",
+    # and the exports are the API surface, not the helpers that do the work.
+    # /Zi is a debug-INFORMATION switch: it does not change what the optimizer
+    # emits. /DEBUG does change the LINKER's defaults, silently turning off the
+    # two /OPT folds, so both are named back on and the module stays
+    # byte-for-byte the one that ships. Same reasoning as the shared-module
+    # link in src/cli/link.cpp.
+    target_compile_options(bronze_runtime_shared PRIVATE
+        $<$<CONFIG:Release,MinSizeRel>:/Zi>)
+    target_link_options(bronze_runtime_shared PRIVATE
+        $<$<CONFIG:Release,MinSizeRel>:/DEBUG>
+        $<$<CONFIG:Release,MinSizeRel>:/OPT:REF>
+        $<$<CONFIG:Release,MinSizeRel>:/OPT:ICF>)
 else()
     target_compile_options(bronze_runtime_shared PRIVATE
         -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)

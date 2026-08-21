@@ -74,6 +74,12 @@ struct ElemCacheEntry {
     // questions — `describes`, `describesAbsent`, `cachedProtoHolder`'s
     // preconditions — are asked of the same code the property path asks, and
     // cannot drift from it.
+    // An ABSENT entry lives here too — `InlineCache::isAbsent()`, filled by
+    // the same `rtInstallAbsentEntry` the named path uses, answered by the
+    // same `describesAbsent`. It is the single largest line item chunk 3 left
+    // behind: 1.80 M of that chunk's 1.80 M residual misses were `entry_empty`
+    // on STABLE (shape, key) pairs — computed reads of a key that is absent
+    // and stays absent, which under a present-only cache can never fill.
     InlineCache ic;
     uint64_t witness = 0;
     // The key this entry is about, ARENA-interned so it is immortal. Null when
@@ -106,13 +112,45 @@ ElemProbe elemCacheProbe(Value objVal, Value key);
 // Record what a completed uncached read found, from the single-entry site the
 // caller handed the walk. `site` is a stack `InlineCacheSite` the walk filled
 // by its own rules — dictionary refusal, `chainIsCacheable`, the diagnostic
-// claims — so nothing here re-decides cacheability; it copies way 0 across
-// when the walk chose to fill it, and does nothing when it did not.
-void elemCacheFill(const ElemProbe& probe, StringHeader* internedKey,
-                   const InlineCacheSite& site);
+// claims, the index-like-key and `length` refusals — so nothing here
+// re-decides cacheability; it copies way 0 across when the walk chose to fill
+// it, and does nothing when it did not. That is the whole of why an ABSENT
+// entry is sound on this path: absence reaches way 0 only through
+// `rtInstallAbsentEntry`, which is the same gate the named-property negative
+// IC passes, and the entry carries the same (shape, epoch) validity.
+//
+// `liveKey` is the key string AS IT IS NOW — the caller must re-read it
+// through its root after the walk, because the walk can allocate. The arena
+// copy this table keys on is made here, so no caller has to know the budget.
+void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCacheSite& site);
 
 // BRONZE_NO_ELEM_IC=1. Read through the per-thread ABI block like every other
 // seam, so one binary can A/B.
 bool elemCacheEnabled() noexcept;
+
+// BRONZE_NO_ELEM_ABSENT=1, the ABSENT half. Its own seam because the present
+// half is chunk 3's and has to stay measurable alone: with this off, an absent
+// pair falls back to the walk it always took and every present pair is
+// untouched.
+bool elemAbsentEnabled() noexcept;
+
+// The arena copy of `live` this table will key an entry on, or null when the
+// key budget is spent.
+//
+// Why a table and not a bare copy. `StringHeader::internToArena` is a COPY,
+// not a hash-cons — it grows the arena by the string's bytes on every call —
+// and the arena is immortal. That was harmless while only PRESENT keys were
+// cached, because a present key is already a shape key and a fill is rare; it
+// is not harmless for absence, whose key need exist nowhere, so a loop asking
+// for fresh missing names would grow the arena once per iteration. This
+// deduplicates, so a repeated key costs one copy for the process, and refuses
+// past `kElemKeyBudget` distinct keys, so a rotating one costs a bounded
+// number and then simply stops being cached. Both halves of the cache use it.
+StringHeader* elemCacheInternKey(StringHeader* live);
+
+// How many distinct keys the table above will ever copy into the arena.
+// three.js touches a couple of hundred; the budget exists for the program that
+// does not.
+inline constexpr uint32_t kElemKeyBudget = 8192;
 
 }  // namespace bronze::runtime

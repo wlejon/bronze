@@ -89,12 +89,26 @@ struct SeamOn {
     SeamOn() {
         (void)rtHeap();
         saved = bronze_tls_block_addr()->elem_ic_enabled;
+        savedAbsent = bronze_tls_block_addr()->elem_absent_enabled;
+        savedNeg = bronze_tls_block_addr()->negative_ic_enabled;
         bronze_tls_block_addr()->elem_ic_enabled = 1;
+        bronze_tls_block_addr()->elem_absent_enabled = 1;
+        // The absent half of this table is filled by the SAME
+        // `rtInstallAbsentEntry` the named negative IC uses, so
+        // BRONZE_NO_NEG_IC=1 switches it off too — an ambient one would make
+        // the absence tests below fail for a reason that is not their subject.
+        bronze_tls_block_addr()->negative_ic_enabled = 1;
     }
-    ~SeamOn() { bronze_tls_block_addr()->elem_ic_enabled = saved; }
+    ~SeamOn() {
+        bronze_tls_block_addr()->elem_ic_enabled = saved;
+        bronze_tls_block_addr()->elem_absent_enabled = savedAbsent;
+        bronze_tls_block_addr()->negative_ic_enabled = savedNeg;
+    }
 
 private:
     uint64_t saved = 0;
+    uint64_t savedAbsent = 0;
+    uint64_t savedNeg = 0;
 };
 
 }  // namespace
@@ -234,7 +248,7 @@ TEST_CASE("a shape change retires the entry rather than answering from it") {
     CHECK(elemGet(obj, str("first")).asNumber() == 1.0);
 }
 
-TEST_CASE("an absent key is never cached, so an add is seen at once") {
+TEST_CASE("a proven-absent computed read arms the cache and answers undefined from it") {
     ShadowStackFrame frame;
     SeamOn seam;
 
@@ -243,7 +257,96 @@ TEST_CASE("an absent key is never cached, so an add is seen at once") {
 
     CHECK(warm(obj, str("missing")).isUndefined());
     Rooted<Value> k{str("missing")};
-    CHECK_FALSE(elemCacheProbe(obj.get(), k.get()).hit);
+    const ElemProbe probe = elemCacheProbe(obj.get(), k.get());
+    // The whole point of this chunk: chunk 3 measured 1.80 M of 1.80 M residual
+    // misses as `entry_empty` on stable pairs, and every one of them is now a
+    // hit — from the ENTRY, with no own-slot lookup and no chain walk.
+    CHECK(probe.hit);
+    CHECK(probe.value.isUndefined());
+    REQUIRE(probe.entry != nullptr);
+    CHECK(probe.entry->ic.isAbsent());
+}
+
+TEST_CASE("an absent entry is retired by the key appearing, on the object and above it") {
+    ShadowStackFrame frame;
+    SeamOn seam;
+
+    SUBCASE("an own add transitions the shape") {
+        Rooted<Value> obj{plainObject()};
+        put(obj, "present", Value::fromDouble(1.0));
+        CHECK(warm(obj, str("late")).isUndefined());
+
+        put(obj, "late", Value::fromDouble(9.0));
+        CHECK(elemGet(obj, str("late")).asNumber() == 9.0);
+    }
+
+    SUBCASE("an add to the PROTOTYPE bumps the epoch") {
+        Rooted<Value> proto{plainObject()};
+        put(proto, "anchor", Value::fromDouble(0.0));
+        Rooted<Value> obj{Value::fromObject(ObjectHeader::create(
+            rtHeap(), rtArena(), rtRootShapeForPrototype(proto.get())))};
+        put(obj, "own", Value::fromDouble(1.0));
+
+        CHECK(warm(obj, str("inherited")).isUndefined());
+        Rooted<Value> k{str("inherited")};
+        CHECK(elemCacheProbe(obj.get(), k.get()).hit);
+
+        put(proto, "inherited", Value::fromDouble(7.0));
+        // The receiver's own shape did not change; the epoch is what retires
+        // the entry, and it is asked by `describesAbsent` and nothing else.
+        CHECK_FALSE(elemCacheProbe(obj.get(), k.get()).hit);
+        CHECK(elemGet(obj, str("inherited")).asNumber() == 7.0);
+    }
+}
+
+TEST_CASE("an absent entry survives collection, because it holds nothing movable") {
+    ShadowStackFrame frame;
+    SeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "present", Value::fromDouble(1.0));
+    CHECK(warm(obj, str("gone")).isUndefined());
+
+    rtHeap().collect();
+    rtHeap().collect();
+
+    Rooted<Value> k{str("gone")};
+    // A FRESH key string, built after two flips: the entry is keyed on the
+    // arena copy and matched by content, so the heap string it was filled from
+    // being long dead is not a question the table has to answer.
+    CHECK(elemCacheProbe(obj.get(), k.get()).hit);
+    CHECK(elemGet(obj, str("gone")).isUndefined());
+}
+
+TEST_CASE("the absent seam narrows this table without touching the present half") {
+    ShadowStackFrame frame;
+    SeamOn seam;
+    bronze_tls_block_addr()->elem_absent_enabled = 0;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "here", Value::fromDouble(3.0));
+
+    CHECK(warm(obj, str("here")).asNumber() == 3.0);
+    Rooted<Value> present{str("here")};
+    CHECK(elemCacheProbe(obj.get(), present.get()).hit);
+
+    CHECK(warm(obj, str("nowhere")).isUndefined());
+    Rooted<Value> absent{str("nowhere")};
+    CHECK_FALSE(elemCacheProbe(obj.get(), absent.get()).hit);
+}
+
+TEST_CASE("the arena key table deduplicates, so a repeated absent key is copied once") {
+    ShadowStackFrame frame;
+    SeamOn seam;
+
+    Rooted<Value> a{str("repeated")};
+    StringHeader* first = elemCacheInternKey(a.get().asString<StringHeader>());
+    REQUIRE(first != nullptr);
+    // A different heap string with the same content, after a collection has
+    // moved everything: same arena copy, because the table matches on content.
+    rtHeap().collect();
+    Rooted<Value> b{str("repeated")};
+    CHECK(elemCacheInternKey(b.get().asString<StringHeader>()) == first);
 }
 
 TEST_CASE("a key kind with no string form is refused before anything is recorded") {

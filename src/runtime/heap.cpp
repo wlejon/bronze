@@ -220,6 +220,21 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->direct_callout_enabled = 0;
     }
 
+    const char* env_no_elem_absent = std::getenv("BRONZE_NO_ELEM_ABSENT");
+    if (env_no_elem_absent && std::strcmp(env_no_elem_absent, "1") == 0) {
+        tls->elem_absent_enabled = 0;
+    }
+
+    const char* env_no_fn_singleton = std::getenv("BRONZE_NO_FN_SINGLETON_CACHE");
+    if (env_no_fn_singleton && std::strcmp(env_no_fn_singleton, "1") == 0) {
+        tls->fn_singleton_cache_enabled = 0;
+    }
+
+    const char* env_no_iter_fast = std::getenv("BRONZE_NO_ITER_FAST");
+    if (env_no_iter_fast && std::strcmp(env_no_iter_fast, "1") == 0) {
+        tls->iter_fast_enabled = 0;
+    }
+
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
         g_gcLog.enabled = true;

@@ -95,12 +95,26 @@ static bool mapOwnNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value&
 // the `size` line missing — 24.3.3 and 24.4.3 define no such accessor, so its
 // absence is the language's answer and not a gap.
 static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& keyStr,
-                                        StringHeader* keyHeader) {
+                                        StringHeader* keyHeader, uint32_t keyIndex) {
     if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
-    const bool weakSet =
-        recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kWeakSetFlags;
+    // The memo (runtime/native_fn_memo.h), below the own-property read that
+    // shadows it and above the ladder it replaces. `.get` and `.set` on a
+    // WeakMap are three.js's fourth, fifth and sixth largest helper sites —
+    // 5,000 reads a frame each, every one of them walking a C table to an
+    // interning of a function object that has existed since the first read.
+    const uint16_t kind = recv.get().asObject<HeapObjectHeader>()->flags;
+    if (Value memo = rtNativeMemberProbe(kind, keyIndex); !memo.isUndefined()) return memo;
+    const bool weakSet = kind == MapHeader::kWeakSetFlags;
     Value method = rtWeakCollectionMethod(weakSet, keyStr);
-    if (!method.isUndefined()) return method;
+    // Filled only from the LADDER's answer, never from `rtObjectProtoMember`'s
+    // below it: the ladder is a C table and cannot change, while
+    // `Object.prototype.toString = f` replaces a slot's value without
+    // transitioning a shape or bumping an epoch — so a memo over that answer
+    // would have no invalidation to hang on.
+    if (!method.isUndefined()) {
+        rtNativeMemberFill(kind, keyIndex, method);
+        return method;
+    }
     rtCheckWeakCollectionMember(weakSet, keyStr);
     return rtObjectProtoMember(recv, keyStr);
 }
@@ -110,7 +124,7 @@ static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& 
 // the computed-index path cannot treat the key as an element the way it does
 // for an array.
 static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
-                             StringHeader* keyHeader) {
+                             StringHeader* keyHeader, uint32_t keyIndex) {
     // An ORDINARY own property first, because it shadows everything below it:
     // 24.1.3's members are `Map.prototype`'s and an own property of the
     // receiver is found before its prototype's. The presence test is the
@@ -118,7 +132,13 @@ static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
     // own property, and answering the builtin for it would un-shadow one the
     // program really created.
     if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
-    const bool set = recv.get().asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags;
+    const uint16_t kind = recv.get().asObject<HeapObjectHeader>()->flags;
+    // The memo, in the same position it takes above: after the own-property
+    // read that shadows it, before the ladder it replaces — and before `size`,
+    // which it can never hold, because a number is not an interned native and
+    // `rtNativeMemberFill` refuses one.
+    if (Value memo = rtNativeMemberProbe(kind, keyIndex); !memo.isUndefined()) return memo;
+    const bool set = kind == MapHeader::kSetFlags;
     // `size` is an ACCESSOR in the specification (24.1.3.10) and a plain read
     // here: bronze has no Map.prototype for a getter to live on, and the
     // observable difference — `Object.getOwnPropertyDescriptor` of it — is
@@ -127,7 +147,10 @@ static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
         return Value::fromDouble(recv.get().asObject<MapHeader>()->liveSize());
     }
     Value method = rtMapMethod(set, keyStr);
-    if (!method.isUndefined()) return method;
+    if (!method.isUndefined()) {
+        rtNativeMemberFill(kind, keyIndex, method);
+        return method;
+    }
     rtCheckMapMember(set, keyStr);
     // 24.1.3 / 24.2.3 name nothing else, and the chain does not stop there:
     // `m.hasOwnProperty` and `m.toString` are `Object.prototype`'s, one link up.
@@ -142,8 +165,12 @@ extern "C" {
 // key the compiler registered, one with the key ToPropertyKey just produced -
 // and a second copy of this dispatch would be a second answer to "does this
 // member exist?", which is the question rt_members.cpp exists to keep one of.
+// `keyIndex` is the interned key id when the caller has one — the named read
+// does, the computed read does not (its key is a value, and BRONZE_ABI_KEY_NONE
+// says so). Nothing in the walk needs it; the native-member memo does, because
+// an integer key is the only key a table that holds no heap pointers can have.
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCacheSite* site);
+                              InlineCacheSite* site, uint32_t keyIndex);
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
@@ -249,11 +276,11 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
         }
     }
 
-    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site, keyIndex);
 }
 
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCacheSite* ic) {
+                              InlineCacheSite* ic, uint32_t keyIndex) {
     // The interned key is needed by more than the plain-object branch now, so
     // its registration is checked once at the top rather than where it is
     // first read.
@@ -368,11 +395,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     }
     if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
         Rooted<Value> recv{objVal};
-        return mapMemberByName(recv, keyStr, keyHeader).rawBits();
+        return mapMemberByName(recv, keyStr, keyHeader, keyIndex).rawBits();
     }
     if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
         Rooted<Value> recv{objVal};
-        return weakCollectionMemberByName(recv, keyStr, keyHeader).rawBits();
+        return weakCollectionMemberByName(recv, keyStr, keyHeader, keyIndex).rawBits();
     }
     if (hdr->flags == WeakRefHeader::kFlags ||
         hdr->flags == FinalizationRegistryHeader::kFlags) {
@@ -894,7 +921,8 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
         if (!probe.entry) {
             StringHeader* plainKey = key.get().asString<StringHeader>();
-            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr);
+            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr,
+                                 BRONZE_ABI_KEY_NONE);
         }
         // A single-entry site on the STACK. The walk fills it by its own rules
         // — the dictionary refusal, `chainIsCacheable`, the diagnostic claims —
@@ -904,19 +932,20 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         InlineCacheSite site{};
         StringHeader* keyHeader = key.get().asString<StringHeader>();
         const uint64_t result =
-            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site);
-        if (site.ways[0].isRealShape() && !site.ways[0].isAbsent()) {
-            // Interned only once the walk has proven the answer cacheable, and
-            // only for a PRESENT property — whose key is already an arena shape
-            // key, so this is a lookup that finds it rather than an allocation
-            // that grows the arena. Absence is deliberately not cached here:
-            // its key need exist nowhere, and a loop over fresh missing names
-            // would intern an immortal string per iteration.
+            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site,
+                          BRONZE_ABI_KEY_NONE);
+        if (site.ways[0].isRealShape()) {
+            // Filled only once the walk has proven the answer cacheable —
+            // including ABSENCE, which reaches way 0 only through
+            // `rtInstallAbsentEntry` and therefore only after the chain was
+            // proven cacheable end to end, the key proven neither index-like
+            // nor `length`, and no `*CheckMissingMember` diagnostic proven to
+            // have claimed the receiver. This line asks none of that again; it
+            // hands over what the walk decided.
             //
             // Re-read through the root: propGetByName above can allocate, and
             // the header this had before it is a pre-collection address.
-            StringHeader* live = key.get().asString<StringHeader>();
-            elemCacheFill(probe, StringHeader::internToArena(rtArena(), live), site);
+            elemCacheFill(probe, key.get().asString<StringHeader>(), site);
         }
         return result;
     }

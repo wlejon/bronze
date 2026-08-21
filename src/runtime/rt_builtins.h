@@ -6,6 +6,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/gc.h"
+#include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -69,17 +70,16 @@ void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uin
 inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
     // No slot cell: a native builtin belongs to no compiled module, so there
     // is no module-local table to cache it in. The by-code-pointer map is the
-    // authority regardless, and it is what answers here.
+    // authority regardless, and `rtNativeSingleton` is a direct-mapped memo in
+    // front of it (runtime/native_fn_memo.h) — the same object, found without
+    // an unordered_map probe or a cross-module call, which is what took this
+    // path off the top of the three.js bill.
     // BRONZE_ABI_FN_FLAGS_ORDINARY, because a native builtin has no syntax
     // behind it to say otherwise: `Array` and `Map` really are constructors,
     // and the tables these are built from do not record which of the rest are
     // not. So the constructibility of a NATIVE stays what it has always been,
     // and only functions bronze COMPILED carry the syntax's answer.
-    return Value(bronze_function_singleton(code, arity, /*length=*/0,
-                                           BRONZE_ABI_FN_NAME_NONE,
-                                           BRONZE_ABI_FN_FLAGS_ORDINARY |
-                                               BRONZE_ABI_FN_FLAG_NATIVE,
-                                           /*slotCell=*/nullptr));
+    return rtNativeSingleton(code, arity);
 }
 
 // ---- builtin namespaces ---------------------------------------------------

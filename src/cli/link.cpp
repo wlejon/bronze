@@ -569,17 +569,37 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
         // A bronze-emitted object carries no directives, so the request has to
         // be made on the command line; making it as an input file is what broke
         // `--emit-shared` from a shell with an empty %LIB%.
+        // /DEBUG, and the two /OPT switches that undo what it changes.
+        //
+        // A module is a DLL full of anonymous machine code otherwise: a sampling
+        // profiler, a crash dump and a debugger can all name the MODULE a stack
+        // frame is in and nothing finer, because the compiled functions have
+        // internal linkage and are not exported. The COFF objects bronze emits
+        // DO carry a symbol per function, and /DEBUG is what asks the linker to
+        // copy those into a PDB beside the module — which is the whole of what
+        // `brobench/analysis/chunk4_native_bill.md` needed to attribute a frame
+        // to a JS function rather than to "app.dll+0x1a4c20".
+        //
+        // The two /OPT switches are not an optimisation request; they are what
+        // keeps the module BYTE-FOR-BYTE what it was. /DEBUG silently flips the
+        // defaults to /OPT:NOREF /OPT:NOICF, so without them a module built for
+        // measurement would not be the module that ships, and the measurement
+        // would be of something else.
+        //
+        // ELF and Mach-O need no equivalent: a .so and a .dylib carry a symbol
+        // table with local function symbols already, and perf and Instruments
+        // read it.
         switch (index) {
             case 0:
-                return "lld-link /nologo /DLL /defaultlib:msvcrt /out:\"" + outputPath + "\" \"" +
-                       objPath + "\" \"" + s_state.libStr + "\"";
+                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"";
             case 1:
                 // MSVC's own linker has no such detection and does need %LIB%,
                 // which is why it is second — and it is identified before it is
                 // run, because `link` is not a name MSVC has to itself.
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /DLL /defaultlib:msvcrt /out:\"" + outputPath + "\" \"" +
-                       objPath + "\" \"" + s_state.libStr + "\"";
+                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"";
             default:
                 return "";
         }

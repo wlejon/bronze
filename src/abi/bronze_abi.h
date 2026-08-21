@@ -110,6 +110,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * been, rather than answering "" and 0, which would be two wrong facts about
  * `Object.keys`. */
 #define BRONZE_ABI_FN_NAME_NONE 0xFFFFFFFFu
+/* "there is no interned key index for this read" — what a COMPUTED read passes
+ * where a named one passes its site's key id. Runtime-side callers only:
+ * no instruction is ever emitted with it. */
+#define BRONZE_ABI_KEY_NONE 0xFFFFFFFFu
 
 /* What the SYNTAX of a function decided about the object, as one byte the
  * compiler hands `bronze_create_function` and `bronze_function_singleton`.
@@ -768,7 +772,24 @@ typedef struct bronze_tls_block {
      * (runtime/call_out.h) — a sort comparator and its kin. Runtime-only like
      * the two above it. */
     uint64_t direct_callout_enabled;
+    /* BRONZE_NO_ELEM_ABSENT=1. The ABSENT half of the computed-read cache
+     * (runtime/elem_ic.h): a proven-absent (shape, key) pair answering
+     * `undefined` with no walk. Separate from `elem_ic_enabled` so the two
+     * halves A/B independently — the present half was chunk 3's and must stay
+     * measurable on its own. Runtime-only. */
+    uint64_t elem_absent_enabled;
+    /* BRONZE_NO_FN_SINGLETON_CACHE=1. The by-code-pointer memo in front of
+     * `bronze_function_singleton` (runtime/native_fn_memo.h), and the
+     * (kind, key) memo over the native member ladders that sits on top of it.
+     * Runtime-only. */
+    uint64_t fn_singleton_cache_enabled;
     uint64_t* array_method_tbl;
+    /* BRONZE_NO_ITER_FAST=1. The INLINE for-of step generated code emits for a
+     * record the open already classified as an array or typed-array walk
+     * (llvm_iter.cpp). Read from GENERATED code, unlike the three above, which
+     * is why it sits after the table pointer rather than with them: the seam
+     * has to be a load generated code can make. */
+    uint64_t iter_fast_enabled;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -785,7 +806,40 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF        88
 #define BRONZE_TLS_ELEM_IC_ENABLED_OFF            96
 #define BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF    104
-#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          112
+#define BRONZE_TLS_ELEM_ABSENT_ENABLED_OFF       112
+#define BRONZE_TLS_FN_SINGLETON_CACHE_ENABLED_OFF 120
+#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          128
+#define BRONZE_TLS_ITER_FAST_ENABLED_OFF         136
+
+/*
+ * ---- the iteration record, as generated code reads it ---------------------
+ *
+ * `iter.open` classifies the value ONCE (runtime/iterator.cpp): an array, a
+ * string, a typed array, a Map or a Set gets a cursor the runtime steps
+ * directly, and everything else gets the protocol. That decision is the `kind`
+ * word below, and it is what makes an INLINE step sound: generated code never
+ * re-derives it, it reads the answer the open recorded and refuses every kind
+ * but the two it can walk itself.
+ *
+ * Every field is a Value, because the collector's generic payload scan
+ * forwards an iteration record without iterator.cpp owning a root source. So
+ * `cursor` and `kind` are DOUBLES and `done` is a boolean Value — which costs
+ * nothing to compare, since a double's Value is its IEEE bits and the kinds
+ * this path admits are 0.0 and 2.0.
+ */
+#define BRONZE_ABI_OBJ_FLAGS_ITERATOR    10
+#define BRONZE_ABI_ITER_TARGET_OFFSET     8
+#define BRONZE_ABI_ITER_NEXTFN_OFFSET    16
+#define BRONZE_ABI_ITER_CURRENT_OFFSET   24
+#define BRONZE_ABI_ITER_CURSOR_OFFSET    32
+#define BRONZE_ABI_ITER_KIND_OFFSET      40
+#define BRONZE_ABI_ITER_DONE_OFFSET      48
+/* IterRecordHeader::Kind as the raw bits of its Value — `Value::fromDouble(k)`
+ * of a non-NaN double is its IEEE bit pattern, so these are literals rather
+ * than a computation generated code would have to make. runtime/iterator.cpp
+ * static_asserts each one against the enumerator it names. */
+#define BRONZE_ABI_ITER_KIND_ARRAY_BITS       0x0000000000000000ull
+#define BRONZE_ABI_ITER_KIND_TYPED_ARRAY_BITS 0x4000000000000000ull
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds

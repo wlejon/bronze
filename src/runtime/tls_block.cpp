@@ -34,7 +34,12 @@ static_assert(offsetof(bronze_tls_block, negative_ic_enabled) ==
 static_assert(offsetof(bronze_tls_block, elem_ic_enabled) == BRONZE_TLS_ELEM_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, direct_callout_enabled) ==
               BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, elem_absent_enabled) ==
+              BRONZE_TLS_ELEM_ABSENT_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, fn_singleton_cache_enabled) ==
+              BRONZE_TLS_FN_SINGLETON_CACHE_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, array_method_tbl) == BRONZE_TLS_ARRAY_METHOD_TBL_OFF);
+static_assert(offsetof(bronze_tls_block, iter_fast_enabled) == BRONZE_TLS_ITER_FAST_ENABLED_OFF);
 
 extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
     // proto_epoch starts at 1 so that a zeroed IC entry (epoch word 0) can
@@ -55,7 +60,10 @@ extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
         /*negative_ic_enabled=*/1,
         /*elem_ic_enabled=*/1,
         /*direct_callout_enabled=*/1,
+        /*elem_absent_enabled=*/1,
+        /*fn_singleton_cache_enabled=*/1,
         /*array_method_tbl=*/nullptr,
+        /*iter_fast_enabled=*/1,
     };
     return &block;
 }

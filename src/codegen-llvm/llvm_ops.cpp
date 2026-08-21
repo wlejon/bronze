@@ -13,6 +13,7 @@
 #include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_construct.h"
 #include "codegen-llvm/llvm_elem.h"
+#include "codegen-llvm/llvm_iter.h"
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
@@ -467,8 +468,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 case il::Op::IterOpen: callWith(abi.bronze_iter_open, {rec}); break;
                 case il::Op::AsyncIterOpen: callWith(abi.bronze_async_iter_open, {rec}); break;
                 case il::Op::AsyncIterNext: callWith(abi.bronze_async_iter_next, {rec}); break;
-                case il::Op::IterStep: callWith(abi.bronze_iter_step, {rec}); break;
-                case il::Op::IterValue: callWith(abi.bronze_iter_value, {rec}); break;
+                // The two the loop pays per ELEMENT, and the only two with an
+                // inline path (codegen-llvm/llvm_iter.h). Both keep the helper
+                // as their fallback edge, so the record kinds this cannot walk
+                // cost exactly what they cost before.
+                case il::Op::IterStep:
+                    values_[inst.result] = emitIterStep(builder_, abi, rec);
+                    break;
+                case il::Op::IterValue:
+                    values_[inst.result] = emitIterValue(builder_, abi, rec);
+                    break;
                 default: callWith(abi.bronze_iter_rest, {rec}); break;
             }
             return true;
