@@ -2,6 +2,9 @@ bronze_add_module(runtime
     SOURCES
         profile.cpp
         ic_log.cpp
+        symbolize.cpp
+        sampler.cpp
+        shape_census.cpp
         fatal.cpp
         abi_guard.cpp
         number_format.cpp

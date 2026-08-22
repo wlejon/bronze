@@ -16,6 +16,7 @@
 #include "runtime/heap.h"
 #include "runtime/microtask.h"
 #include "runtime/rt_state.h"
+#include "runtime/sampler.h"
 
 namespace bronze::embed {
 
@@ -23,6 +24,11 @@ uint32_t abiFingerprint() { return BRONZE_ABI_FINGERPRINT; }
 
 void runEntry(ModuleEntry entry) {
     if (entry == nullptr) return;
+    // The thread that runs a module's entry is the thread that runs its
+    // compiled JS from then on — the fact the sampling profiler
+    // (BRONZE_SAMPLE=1) needs and the one place a loaded module's home
+    // thread is knowable. A no-op unless the sampler is armed.
+    runtime::samplerNoteJsThread();
     // The root frame runMain opens, for the same reason: Rooted<> handles
     // inside runtime helpers register here, and a host calling in from its own
     // frame loop has no bronze frame on the stack. Generated code links its

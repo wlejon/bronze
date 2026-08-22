@@ -10,6 +10,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
+#include "runtime/sampler.h"
 
 extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
@@ -29,6 +30,9 @@ int main() {
     // register here. Generated code registers its own contiguous slot frames
     // separately.
     bronze::ShadowStackFrame root_frame;
+    // This thread runs the program's compiled JS — the sampling profiler's
+    // target (BRONZE_SAMPLE=1; a no-op otherwise).
+    bronze::runtime::samplerNoteJsThread();
     bronze_main();
     // The synchronous half of the program is over; the promise jobs it queued
     // are the rest of it. bronze has no event loop — no timers, no IO — so ONE

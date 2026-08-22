@@ -14,6 +14,7 @@
 #include "runtime/abi_guard.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
+#include "runtime/sampler.h"
 
 extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
@@ -27,6 +28,9 @@ void runMain() {
     // object dies here with both fingerprints named, not thirty seconds into
     // a helper reading a parameter the object never passed.
     runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
+    // The statically-linked twin of runEntry's note: this thread runs the
+    // program's compiled JS. A no-op unless BRONZE_SAMPLE=1 armed the sampler.
+    runtime::samplerNoteJsThread();
     // Root frame for the program's top level: Rooted<> handles inside runtime
     // helpers register here, exactly as under the standalone main. Generated
     // code registers its own contiguous slot frames separately.
