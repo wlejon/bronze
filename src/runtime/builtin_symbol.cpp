@@ -183,7 +183,7 @@ uint64_t symbolProtoDescription(uint64_t, uint64_t thisBits, uint32_t, const uin
     // `undefined`, not "", for a symbol made without one — the clause reads
     // [[Description]] straight out and that field is genuinely absent.
     if (!desc) return Value::fromUndefined().rawBits();
-    return rtCopyKeyToHeap(desc).rawBits();
+    return rtKeyAsValue(desc).rawBits();
 }
 
 const NativeMethod kSymbolProtoMethods[] = {

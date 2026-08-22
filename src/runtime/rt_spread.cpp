@@ -228,7 +228,7 @@ void spreadStringSource(Rooted<Value>& target, Rooted<Value>& stringData,
 // key is an arena-interned shape string, so it is copied into the heap first:
 // the result holds ordinary JS strings, never pointers into the shape arena.
 void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name) {
-    Rooted<Value> key{name.isSymbol() ? name.toValue() : rtCopyKeyToHeap(name.string())};
+    Rooted<Value> key{name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string())};
     Rooted<Value> val{source.get().asObject<ObjectHeader>()->getProp(rtHeap(), key)};
     // A proxy target's [[Set]] is its `set` trap; a direct shape write here
     // would be exactly the bypass the proxy exists to prevent.
@@ -425,7 +425,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(named))) {
                 return;
             }
-            Rooted<Value> key{rtCopyKeyToHeap(named)};
+            Rooted<Value> key{rtKeyAsValue(named)};
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
@@ -447,7 +447,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name))) {
                 return;
             }
-            Rooted<Value> key{rtCopyKeyToHeap(name)};
+            Rooted<Value> key{rtKeyAsValue(name)};
             // The read runs the export's getter, so it can throw; carrying on
             // to the next name would be the runtime continuing past an
             // exception.
@@ -513,7 +513,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 return;
             }
             Rooted<Value> key{name.isSymbol() ? name.toValue()
-                                              : rtCopyKeyToHeap(name.string())};
+                                              : rtKeyAsValue(name.string())};
             // Read through the COLLECTION, not through the box: an accessor
             // stored there must see the Map as its receiver, which is the same
             // rule `rtMapNamedSet` writes under.

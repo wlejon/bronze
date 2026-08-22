@@ -610,7 +610,7 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
     Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(ordered.size())))};
     uint32_t at = 0;
     for (StringHeader* name : ordered) {
-        Rooted<Value> key{rtCopyKeyToHeap(name)};
+        Rooted<Value> key{rtKeyAsValue(name)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
     }
     return out.get().rawBits();

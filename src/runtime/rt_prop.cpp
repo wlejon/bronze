@@ -555,7 +555,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // replace the property.
         if (const FunctionHeader* fn = recv.get().asObject<FunctionHeader>(); fn->name) {
             if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
-            if (keyStr == "name") return rtCopyKeyToHeap(fn->name).rawBits();
+            if (keyStr == "name") return rtKeyAsValue(fn->name).rawBits();
         } else if (keyStr == "length" || keyStr == "name") {
             // A function bronze did not compile: a native builtin, or a method
             // whose key is computed at run time. rt_members.cpp's table would

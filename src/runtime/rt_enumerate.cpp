@@ -166,7 +166,7 @@ uint64_t proxyChainForInKeys(Value receiver) {
             ObjectHeader* next = holder->protoAncestor(1);
             Rooted<Value> nextLevel{next ? Value::fromObject(next) : Value::fromNull()};
             for (size_t i = 0; i < levelKeys.size(); ++i) {
-                Rooted<Value> copy{rtCopyKeyToHeap(levelKeys[i])};
+                Rooted<Value> copy{rtKeyAsValue(levelKeys[i])};
                 if (listHasKey(visited, seenCount, copy.get())) continue;
                 visited.get().asObject<ArrayHeader>()->setElem(rtHeap(), seenCount++, copy);
                 if (!levelEnumerable[i]) continue;
@@ -259,10 +259,13 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         // 22.1.3 put nothing enumerable on the other two either.
         if (isArray) {
             // The keys are arena-interned and immortal, so the vector survives
-            // the allocations the copy below makes.
+            // the allocations `setElem` makes — and the array is handed the
+            // arena keys THEMSELVES (rtKeyAsValue), which is what keeps the
+            // computed-read cache's identity latch hitting for keys a program
+            // reads back through `a[k]`.
             for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
-                Rooted<Value> copy{rtCopyKeyToHeap(named)};
-                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, copy);
+                Rooted<Value> key{rtKeyAsValue(named)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
             }
         }
         return out.get().rawBits();
@@ -307,12 +310,19 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         holder = holder->protoAncestor(1);
     }
 
+    // The result array holds the arena keys THEMSELVES (rtKeyAsValue), not
+    // per-call heap copies. That is what makes `for (name in attributes)
+    // ... attributes[name]` present the SAME string object every frame, which
+    // the computed-read cache's identity latch (elem_ic.h's `key_ident`)
+    // turns into an inline hit — and it deletes the one-heap-string-per-key-
+    // per-enumeration bill the copy used to run (three.js's many_meshes made
+    // ~5M such copies a run).
     const auto total = static_cast<uint32_t>(keys.size());
     Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
     uint32_t at = 0;
     for (StringHeader* key : keys) {
-        Rooted<Value> copy{rtCopyKeyToHeap(key)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, copy);
+        Rooted<Value> keyVal{rtKeyAsValue(key)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
     }
     return out.get().rawBits();
 }

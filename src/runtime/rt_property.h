@@ -40,12 +40,15 @@ std::vector<PropertyKey> rtOwnKeysOrdered(const struct ObjectHeader* obj,
 std::vector<StringHeader*> rtOwnStringKeysOrdered(const struct ObjectHeader* obj,
                                                   bool enumerableOnly = true);
 
-// A heap copy of an arena-interned key. Every consumer that hands a shape key
-// back to a program needs one — the arena string is immortal and the heap
-// string is an ordinary JS value — and it has to preserve the ENCODING:
-// re-reading a UTF-16 key's bytes as UTF-8 produced mojibake for any property
-// name outside Latin-1.
-Value rtCopyKeyToHeap(const StringHeader* key);
+// An arena-interned key as an ordinary JS value — the arena object ITSELF,
+// not a copy. A JS string has no observable identity (`===` is content
+// equality) and every string is immutable, so a program cannot tell the
+// immortal arena key from the heap copy this used to mint; the collector
+// skips out-of-reservation payloads by design. What handing out the one
+// object buys is stated at the definition (rt_object.cpp): no allocation per
+// key per enumeration, and frame-stable identity for the computed-read
+// cache's string-key latch.
+Value rtKeyAsValue(const StringHeader* key);
 
 // The own keys of a STRING as a fresh array of heap strings, in 10.4.3.3
 // OwnPropertyKeys order: the indices ascending, then `length` — which

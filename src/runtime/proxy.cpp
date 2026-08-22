@@ -93,7 +93,7 @@ Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot) {
         Rooted<Value> out{Value(bronze_create_array(0))};
         uint32_t at = 0;
         for (PropertyKey name : names) {
-            Rooted<Value> key{name.isSymbol() ? name.toValue() : rtCopyKeyToHeap(name.string())};
+            Rooted<Value> key{name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string())};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get();

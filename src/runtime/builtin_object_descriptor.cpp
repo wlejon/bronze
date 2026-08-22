@@ -369,7 +369,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
                         value.set(
                             Value::fromDouble(self.get().asObject<FunctionHeader>()->length));
                     } else {
-                        value.set(rtCopyKeyToHeap(self.get().asObject<FunctionHeader>()->name));
+                        value.set(rtKeyAsValue(self.get().asObject<FunctionHeader>()->name));
                     }
                     // 10.2.4 makes `prototype` non-enumerable and
                     // non-configurable, writable unless the function is one

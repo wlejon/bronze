@@ -182,7 +182,7 @@ Value rtSymbolKeyFor(Value symbol) {
         // whose description happens to equal a registered key is not in the
         // registry, and `Symbol.keyFor(Symbol("shared"))` is `undefined` even
         // when `Symbol.for("shared")` has been called.
-        if (e.symbol == sym) return rtCopyKeyToHeap(e.key);
+        if (e.symbol == sym) return rtKeyAsValue(e.key);
     }
     return Value::fromUndefined();
 }

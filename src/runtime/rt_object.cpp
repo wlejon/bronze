@@ -273,13 +273,23 @@ Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
     return out.get();
 }
 
-Value rtCopyKeyToHeap(const StringHeader* key) {
-    if (key->isLatin1()) {
-        return Value::fromString(
-            StringHeader::createLatin1(rtHeap(), key->latin1Data(), key->getLength()));
-    }
-    return Value::fromString(
-        StringHeader::createUTF16(rtHeap(), key->utf16Data(), key->getLength()));
+Value rtKeyAsValue(const StringHeader* key) {
+    // The ARENA key itself, not a copy — and that is the mechanism, not a
+    // shortcut. Every caller hands this an arena-interned key (a shape key
+    // walked by for-in / Object.keys, a module export name, a function
+    // static's name): immortal, non-moving, and IMMUTABLE like every string,
+    // while a JS string has no observable identity — `===` is content
+    // equality — so the aliasing cannot be told apart from the copy this
+    // function used to make. What CAN be told apart is the cost: the copy
+    // allocated one heap string per key per enumeration (three.js's for-in
+    // over `geometry.attributes` made ~5M a run), and it broke object
+    // identity, which the computed-read cache's string-key latch
+    // (elem_ic.h's `key_ident`) guards on — a fresh copy per frame missed
+    // the latch exactly once per site per enumeration, where the arena key
+    // hits forever. The collector is indifferent: `forward_value` skips a
+    // payload outside the reservation, and the heap verifier admits arena
+    // strings in scanned slots by name.
+    return Value::fromString(key);
 }
 
 extern "C" {
@@ -611,7 +621,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         // rest. The keys are arena-interned and immortal, so the vector
         // survives the allocations the copy below makes.
         for (StringHeader* k : rtArrayOwnNamedKeys(src.get())) {
-            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            Rooted<Value> key{rtKeyAsValue(k)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
@@ -643,7 +653,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(names.size())))};
         uint32_t at = 0;
         for (StringHeader* name : names) {
-            Rooted<Value> key{rtCopyKeyToHeap(name)};
+            Rooted<Value> key{rtKeyAsValue(name)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
@@ -663,7 +673,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
         uint32_t at = 0;
         for (StringHeader* k : named) {
-            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            Rooted<Value> key{rtKeyAsValue(k)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
@@ -683,7 +693,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
         uint32_t at = 0;
         for (StringHeader* k : named) {
-            Rooted<Value> key{rtCopyKeyToHeap(k)};
+            Rooted<Value> key{rtKeyAsValue(k)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
@@ -747,7 +757,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     for (StringHeader* name : ordered) {
         // Copy the immortal arena string into the heap: the result array holds
         // ordinary JS strings, not pointers into the shape arena.
-        Rooted<Value> key{rtCopyKeyToHeap(name)};
+        Rooted<Value> key{rtKeyAsValue(name)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
     }
 
