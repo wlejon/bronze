@@ -29,6 +29,8 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     llvm::BasicBlock* plainBb = llvm::BasicBlock::Create(ctx, "mic.plain", fn);
     llvm::BasicBlock* shapeBb = llvm::BasicBlock::Create(ctx, "mic.shape", fn);
+    llvm::BasicBlock* exoticBb = llvm::BasicBlock::Create(ctx, "mic.exotic", fn);
+    llvm::BasicBlock* exoticBoxBb = llvm::BasicBlock::Create(ctx, "mic.exotic.box", fn);
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "mic.hit", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "mic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "mic.done", fn);
@@ -53,7 +55,42 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         llvm::Align(2), "mic.flags");
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "mic.isplain");
-    builder.CreateCondBr(isPlain, shapeBb, slowBb);
+    builder.CreateCondBr(isPlain, shapeBb, exoticBb);
+
+    // 2b. EXOTIC receiver (Array or a collection): the entry may hold the
+    // kind-guarded direct form (bronze_abi.h's method-site contract). Word 0's
+    // low half must be ((kind << 1) | 1) for the LIVE receiver's kind — an odd
+    // word can never be a Shape*, and a never-latched or plain-latched entry
+    // can never be odd, so this one compare is the whole form dispatch.
+    builder.SetInsertPoint(exoticBb);
+    llvm::Value* exoWord0 = builder.CreateAlignedLoad(i64Ty, entry, llvm::Align(8), "mic.exo.word0");
+    llvm::Value* exoLow = builder.CreateAnd(
+        exoWord0, builder.getInt64(0xFFFFFFFFull), "mic.exo.low");
+    llvm::Value* flags64 = builder.CreateZExt(flags, i64Ty, "mic.exo.flags64");
+    llvm::Value* exoExpect = builder.CreateOr(
+        builder.CreateShl(flags64, BRONZE_ABI_METHOD_IC_KIND_SHIFT),
+        builder.getInt64(BRONZE_ABI_METHOD_IC_EXOTIC_BIT), "mic.exo.expect");
+    llvm::Value* exoKindOk = builder.CreateICmpEQ(exoLow, exoExpect, "mic.exo.kindok");
+    builder.CreateCondBr(exoKindOk, exoticBoxBb, slowBb);
+
+    // The receiver's named-property box — the ONLY thing that can shadow a
+    // table method (an own property, or a subclass prototype chain hanging off
+    // it) — at the byte offset the latch recorded in word 0's high half. A
+    // receiver carrying one takes the helper, which walks the box first.
+    builder.SetInsertPoint(exoticBoxBb);
+    llvm::Value* boxOff = builder.CreateLShr(
+        exoWord0, builder.getInt64(BRONZE_ABI_METHOD_IC_BOX_SHIFT), "mic.exo.boxoff");
+    llvm::Value* boxPtr = builder.CreateGEP(i8Ty, hdr, boxOff, "mic.exo.boxptr");
+    llvm::Value* boxVal =
+        builder.CreateAlignedLoad(i64Ty, boxPtr, llvm::Align(8), "mic.exo.boxval");
+    llvm::Value* boxTag =
+        builder.CreateLShr(boxVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.exo.boxtag");
+    llvm::Value* boxIsObj = builder.CreateICmpEQ(
+        boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.exo.boxisobj");
+    // An exotic entry is always the DIRECT form (word 2's high half is zero),
+    // so the shared hit dispatch reads code/arity/env exactly as a shape hit
+    // would.
+    builder.CreateCondBr(boxIsObj, slowBb, hitBb);
 
     // 3. Shape comparison (receiver shape == icEntry[0])
     builder.SetInsertPoint(shapeBb);

@@ -76,4 +76,14 @@ void rtDropModuleEpoch(uint64_t epoch);
 void rtSetEnvMethodIcEnabled(bool enabled);
 bool rtEnvMethodIcEnabled() noexcept;
 
+// BRONZE_NO_EXOTIC_METHOD_IC=1 (read beside the seam above) gates the INSTALL
+// of the exotic-receiver method-IC form — the kind-guarded direct entry an
+// Array or collection (Map/Set/WeakMap/WeakSet) receiver latches — and nothing
+// else. Latch-side only, for the same reason the env seam is: the generated
+// hit path's exotic arm can only match an entry this latch wrote, so with the
+// seam down the arm is dead and the helper serves every exotic receiver, which
+// is exactly the pre-mechanism behaviour.
+void rtSetExoticMethodIcEnabled(bool enabled);
+bool rtExoticMethodIcEnabled() noexcept;
+
 }  // namespace bronze::runtime

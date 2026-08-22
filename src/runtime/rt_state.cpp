@@ -416,6 +416,14 @@ static thread_local bool g_envMethodIcEnabled = true;
 void rtSetEnvMethodIcEnabled(bool enabled) { g_envMethodIcEnabled = enabled; }
 bool rtEnvMethodIcEnabled() noexcept { return g_envMethodIcEnabled; }
 
+// Default ON for the reason the seam above is: the flag exists to turn the
+// exotic-receiver latch OFF for an A/B, and a thread that never ran heap.cpp's
+// env scan should behave like the shipped configuration.
+static thread_local bool g_exoticMethodIcEnabled = true;
+
+void rtSetExoticMethodIcEnabled(bool enabled) { g_exoticMethodIcEnabled = enabled; }
+bool rtExoticMethodIcEnabled() noexcept { return g_exoticMethodIcEnabled; }
+
 // ---- the interned-native table, as the memo in front of it sees it --------
 //
 // `runtime/native_fn_memo.cpp` keeps a direct-mapped (code -> INDEX) table so

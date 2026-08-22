@@ -1,0 +1,18 @@
+array push/shift 0 1999000
+includes 100 44 744
+own-prop shadow shadow:9 4 4
+subclass shadow loud:7 5 5
+subclass no-override 50 true
+late box 100 hello
+map get/set 1000 1498500
+map has/delete true true false 999
+map shadow shadowGet:k 3
+map subclass sub:x 6
+set add/has 100 100
+weakmap 44850 true false
+weakset true false
+forEach 1396
+mixed 100 100
+plain/array mix 19,20plain,
+spread 3 9
+done

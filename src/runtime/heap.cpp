@@ -272,6 +272,14 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         runtime::rtSetEnvMethodIcEnabled(false);
     }
 
+    // Narrower still: the method IC keeps every plain-receiver form, but never
+    // latches the exotic-receiver (Array/collection) entries —
+    // rt_state.h's rtSetExoticMethodIcEnabled says why latch-side is enough.
+    const char* env_no_exotic_method_ic = std::getenv("BRONZE_NO_EXOTIC_METHOD_IC");
+    if (env_no_exotic_method_ic && std::strcmp(env_no_exotic_method_ic, "1") == 0) {
+        runtime::rtSetExoticMethodIcEnabled(false);
+    }
+
     // The computed-read cache's table address, published where the seam that
     // gates reading it is set, so a thread never has one without the other.
     runtime::elemCachePublish();

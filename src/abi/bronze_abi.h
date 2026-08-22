@@ -607,11 +607,58 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * the value is a Function, and calls its CURRENT code with its CURRENT env
  * and arity — the same universal dispatch bronze_dynamic_call performs, so a
  * swapped-in non-function still reaches the helper's TypeError. No heap word
- * lands in the entry at all, which is what makes the form GC-free. */
+ * lands in the entry at all, which is what makes the form GC-free.
+ *
+ * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array,
+ * or one of the four collections (Map/Set/WeakMap/WeakSet) — whose methods
+ * are native builtins answered from an immutable C table beside the value
+ * rather than from any shape-indexed slot. Word 0 then holds, instead of a
+ * shape:
+ *
+ *      (boxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT)
+ *    | (receiver kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT)
+ *    | BRONZE_ABI_METHOD_IC_EXOTIC_BIT
+ *
+ * Bit 0 set is what distinguishes it: a real Shape* is an 8-byte-aligned
+ * arena allocation and can never be odd (the same argument the property IC's
+ * BRONZE_ABI_IC_SHAPE_ARRAY_METHOD sentinel makes). The kind is the
+ * receiver's HeapObjectHeader::flags as latched — a runtime value the guard
+ * compares against the live receiver's flags, so no kind number is baked
+ * into generated code. `boxOffset` is the byte offset, from the receiver's
+ * header, of the Value holding its ordinary named-property box
+ * (ArrayHeader::properties / MapHeader::properties — runtime layouts, again
+ * carried in the entry rather than baked into code). The guard is:
+ *
+ *   receiver flags == latched kind, AND the Value at boxOffset is not
+ *   Object-tagged.
+ *
+ * That second clause is the whole shadowing story: the ONLY way one of these
+ * receivers can answer a member with anything but the C table is through
+ * that box — an own named property (`a.push = f`) lives in it, and a
+ * subclass instance's [[Prototype]] chain hangs off it (runtime/
+ * native_base.h) — so a receiver carrying one takes the helper, which walks
+ * the box first exactly as the read path does. The table itself cannot
+ * change: decorating `Array.prototype` is a hard error by construction
+ * (rt_prop_write.cpp), and the collections have no prototype object at all —
+ * their members ARE the C ladder (rt_prop.cpp), which `Object.prototype`
+ * sits below, never above. Words 1–3 are the DIRECT form's: the native's
+ * code pointer (a C function in the runtime image, immortal), its arity with
+ * a zero high half, and BRONZE_ABI_UNDEFINED_BITS for env — a native builtin
+ * is created env-free (rt_builtins.h's rtNativeFunction) and the latch
+ * refuses any callee that is not. No heap word in the entry: GC-free, like
+ * the slot form.
+ *
+ * Mixed binaries stay sound in both directions: an old hit path compares the
+ * odd word against a real shape and misses; a new exotic arm compares an old
+ * runtime's shape-or-zero word 0 against an odd expectation and misses. Both
+ * fall to the helper, which is always correct. */
 #define BRONZE_ABI_METHOD_IC_CODE_WORD   1
 #define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
 #define BRONZE_ABI_METHOD_IC_ENV_WORD    3
 #define BRONZE_ABI_METHOD_IC_SLOT_SHIFT 32
+#define BRONZE_ABI_METHOD_IC_EXOTIC_BIT  1ull
+#define BRONZE_ABI_METHOD_IC_KIND_SHIFT  1
+#define BRONZE_ABI_METHOD_IC_BOX_SHIFT  32
 
 /* ---- the COMPUTED-read cache, as generated code reads it -----------------
  *
