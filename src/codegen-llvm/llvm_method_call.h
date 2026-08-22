@@ -9,13 +9,17 @@
 namespace bronze::codegen_llvm {
 
 // Emits an inlined MethodCall with IC check in generated code:
-// Fast path:
+// Guards (any failure -> slow path):
 //   - TLS flag method_call_ic_enabled != 0
 //   - Receiver is Object (TAG_OBJECT)
 //   - Receiver is plain Object (flags == BRONZE_ABI_OBJ_FLAGS_PLAIN)
 //   - Receiver shape == cached_shape (icEntry[0])
-//   -> Loads cached_fn_code (icEntry[1]) and cached_arity (icEntry[2])
-//   -> Direct call cached_fn_code(BRONZE_ABI_UNDEFINED_BITS, thisVal, argc, argv)
+// Hit: word 2's high half selects the form (bronze_abi.h's METHOD-CALL site
+// contract): DIRECT calls the cached code with the cached env and arity;
+// SLOT loads the receiver's own slot the entry names, verifies a Function is
+// there now, and calls its current code/env/arity — the callee itself is
+// never cached, which is what keeps per-instance closures and host functions
+// correct on shared shapes.
 // Slow path:
 //   -> abi.bronze_call_method(thisVal, emitKeyId(...), argc, argv, icEntry)
 llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,

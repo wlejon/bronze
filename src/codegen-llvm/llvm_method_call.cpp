@@ -25,6 +25,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
     llvm::Value* safeArgv = argv ? argv : llvm::ConstantPointerNull::get(ptrTy);
+    llvm::Value* undefVal = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
 
     llvm::BasicBlock* plainBb = llvm::BasicBlock::Create(ctx, "mic.plain", fn);
     llvm::BasicBlock* shapeBb = llvm::BasicBlock::Create(ctx, "mic.shape", fn);
@@ -65,17 +66,125 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* shapeMatch = builder.CreateICmpEQ(shape, cachedShape, "mic.shapematch");
     builder.CreateCondBr(shapeMatch, hitBb, slowBb);
 
-    // 4. Hit path: load code pointer (icEntry[1]) and arity (icEntry[2])
+    // 4. Hit: the entry's word 2 selects the form (bronze_abi.h's method-site
+    // contract). High half zero is the DIRECT form — cached code, cached env,
+    // cached arity. Nonzero is the SLOT form carrying the receiver's own slot
+    // index plus one: the callee lives in that slot NOW, so code, env and
+    // arity are all read from the function object found there, never cached.
     builder.SetInsertPoint(hitBb);
-    llvm::Value* codeSlot = builder.CreateConstInBoundsGEP1_32(i64Ty, entry, 1);
-    llvm::Value* codeInt =
-        builder.CreateAlignedLoad(i64Ty, codeSlot, llvm::Align(8), "mic.codeint");
-    llvm::Value* codePtr = builder.CreateIntToPtr(codeInt, ptrTy, "mic.codeptr");
+    llvm::Value* arityWord = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ARITY_WORD),
+        llvm::Align(8), "mic.arityword");
+    llvm::Value* formBits = builder.CreateLShr(
+        arityWord, BRONZE_ABI_METHOD_IC_SLOT_SHIFT, "mic.formbits");
+    llvm::Value* isSlotForm =
+        builder.CreateICmpNE(formBits, builder.getInt64(0), "mic.isslotform");
 
-    llvm::Value* aritySlot = builder.CreateConstInBoundsGEP1_32(i64Ty, entry, 2);
-    llvm::Value* arity64 =
-        builder.CreateAlignedLoad(i64Ty, aritySlot, llvm::Align(8), "mic.arity64");
-    llvm::Value* arity = builder.CreateTrunc(arity64, i32Ty, "mic.arity");
+    llvm::BasicBlock* directBb = llvm::BasicBlock::Create(ctx, "mic.direct", fn);
+    llvm::BasicBlock* slotBb = llvm::BasicBlock::Create(ctx, "mic.slot", fn);
+    llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(ctx, "mic.join", fn);
+    builder.CreateCondBr(isSlotForm, slotBb, directBb);
+
+    // 4a. Direct form: everything the call needs is in the entry.
+    builder.SetInsertPoint(directBb);
+    llvm::Value* directCode = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_CODE_WORD),
+        llvm::Align(8), "mic.dircode");
+    llvm::Value* directEnv = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ENV_WORD),
+        llvm::Align(8), "mic.direnv");
+    llvm::Value* directArity = builder.CreateTrunc(arityWord, i32Ty, "mic.dirarity");
+    builder.CreateBr(joinBb);
+
+    // 4b. Slot form: load the receiver's own slot, inline or overflow.
+    builder.SetInsertPoint(slotBb);
+    llvm::Value* slotIdx =
+        builder.CreateSub(formBits, builder.getInt64(1), "mic.slotidx");
+    llvm::Value* isInline = builder.CreateICmpULT(
+        slotIdx, builder.getInt64(BRONZE_ABI_OBJ_INLINE_SLOTS), "mic.isinline");
+
+    llvm::BasicBlock* slotInlBb = llvm::BasicBlock::Create(ctx, "mic.slot.inl", fn);
+    llvm::BasicBlock* slotOvBb = llvm::BasicBlock::Create(ctx, "mic.slot.ov", fn);
+    llvm::BasicBlock* slotLoadBb = llvm::BasicBlock::Create(ctx, "mic.slot.load", fn);
+    builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+
+    builder.SetInsertPoint(slotInlBb);
+    llvm::Value* inlBase =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* inlPtr = builder.CreateGEP(i64Ty, inlBase, slotIdx, "mic.slot.inlptr");
+    builder.CreateBr(slotLoadBb);
+
+    // The overflow block is a heap object whose payload is a Value array; the
+    // shape that just matched guarantees the block exists and covers the
+    // cached index (ObjectHeader::getSlot states the invariant).
+    builder.SetInsertPoint(slotOvBb);
+    llvm::Value* ovBits = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET),
+        llvm::Align(8), "mic.slot.ovbits");
+    llvm::Value* ovAddr =
+        builder.CreateAnd(ovBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* ovHdr = builder.CreateIntToPtr(ovAddr, ptrTy, "mic.slot.ovhdr");
+    llvm::Value* ovBase = builder.CreateConstInBoundsGEP1_32(i8Ty, ovHdr, BRONZE_ABI_HDR_BYTES);
+    llvm::Value* ovIdx = builder.CreateSub(
+        slotIdx, builder.getInt64(BRONZE_ABI_OBJ_INLINE_SLOTS), "mic.slot.ovidx");
+    llvm::Value* ovPtr = builder.CreateGEP(i64Ty, ovBase, ovIdx, "mic.slot.ovptr");
+    builder.CreateBr(slotLoadBb);
+
+    builder.SetInsertPoint(slotLoadBb);
+    llvm::PHINode* slotPtr = builder.CreatePHI(ptrTy, 2, "mic.slot.ptr");
+    slotPtr->addIncoming(inlPtr, slotInlBb);
+    slotPtr->addIncoming(ovPtr, slotOvBb);
+    llvm::Value* slotVal =
+        builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "mic.slot.val");
+
+    // The slot may hold ANYTHING a same-shape write put there; only a Function
+    // heap object dispatches directly, everything else takes the helper and
+    // its TypeError — the same split bronze_dynamic_call performs.
+    llvm::Value* vTag = builder.CreateLShr(slotVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.slot.tag");
+    llvm::Value* vIsObj =
+        builder.CreateICmpEQ(vTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.slot.isobj");
+    llvm::BasicBlock* slotFnBb = llvm::BasicBlock::Create(ctx, "mic.slot.fn", fn);
+    builder.CreateCondBr(vIsObj, slotFnBb, slowBb);
+
+    builder.SetInsertPoint(slotFnBb);
+    llvm::Value* fnAddr =
+        builder.CreateAnd(slotVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* fnPtr = builder.CreateIntToPtr(fnAddr, ptrTy, "mic.slot.fnptr");
+    llvm::Value* fnFlags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), "mic.slot.fnflags");
+    llvm::Value* isFn = builder.CreateICmpEQ(
+        fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "mic.slot.isfn");
+    llvm::BasicBlock* slotOkBb = llvm::BasicBlock::Create(ctx, "mic.slot.ok", fn);
+    builder.CreateCondBr(isFn, slotOkBb, slowBb);
+
+    builder.SetInsertPoint(slotOkBb);
+    llvm::Value* slotCode = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+        llvm::Align(8), "mic.slot.code");
+    llvm::Value* slotEnv = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+        llvm::Align(8), "mic.slot.env");
+    llvm::Value* slotArity = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
+        llvm::Align(4), "mic.slot.arity");
+    builder.CreateBr(joinBb);
+
+    // 4c. Both forms meet with (code, env, arity) resolved.
+    builder.SetInsertPoint(joinBb);
+    llvm::PHINode* codeInt = builder.CreatePHI(i64Ty, 2, "mic.codeint");
+    codeInt->addIncoming(directCode, directBb);
+    codeInt->addIncoming(slotCode, slotOkBb);
+    llvm::PHINode* envVal = builder.CreatePHI(i64Ty, 2, "mic.env");
+    envVal->addIncoming(directEnv, directBb);
+    envVal->addIncoming(slotEnv, slotOkBb);
+    llvm::PHINode* arity = builder.CreatePHI(i32Ty, 2, "mic.arity");
+    arity->addIncoming(directArity, directBb);
+    arity->addIncoming(slotArity, slotOkBb);
+    llvm::Value* codePtr = builder.CreateIntToPtr(codeInt, ptrTy, "mic.codeptr");
 
     llvm::Value* directArityOk =
         builder.CreateICmpULE(arity, builder.getInt32(argc), "mic.dirarityok");
@@ -86,14 +195,14 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     builder.CreateCondBr(directArityOk, dispatchBb, underArityCheckBb);
 
-    // 4a. Under-arity check
+    // 4d. Under-arity check
     builder.SetInsertPoint(underArityCheckBb);
     llvm::Value* canPad =
         builder.CreateICmpULE(arity, builder.getInt32(kPadSlots), "mic.canpad");
     llvm::BasicBlock* underArityBb = llvm::BasicBlock::Create(ctx, "mic.underarity", fn);
     builder.CreateCondBr(canPad, underArityBb, slowBb);
 
-    // 4b. Under-arity padding
+    // 4e. Under-arity padding
     builder.SetInsertPoint(underArityBb);
     llvm::IRBuilder<> entryBuilder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     llvm::Value* padBuf = entryBuilder.CreateAlloca(
@@ -108,7 +217,6 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
             builder.CreateAlignedStore(val, dstPtr, llvm::Align(8));
         }
     }
-    llvm::Value* undefVal = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
     for (uint32_t a = argc; a < kPadSlots; ++a) {
         llvm::Value* dstPtr = builder.CreateConstInBoundsGEP2_32(
             llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, a);
@@ -121,14 +229,14 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::FunctionType* codeTy =
         llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
     llvm::Value* padRes = builder.CreateCall(
-        codeTy, codePtr, {undefVal, thisVal, builder.getInt32(argc), padArgv}, "mic.padres");
+        codeTy, codePtr, {envVal, thisVal, builder.getInt32(argc), padArgv}, "mic.padres");
     llvm::BasicBlock* padEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
-    // 4c. Direct dispatch (argc >= arity)
+    // 4f. Direct dispatch (argc >= arity)
     builder.SetInsertPoint(dispatchBb);
     llvm::Value* fastRes = builder.CreateCall(
-        codeTy, codePtr, {undefVal, thisVal, builder.getInt32(argc), safeArgv}, "mic.fastres");
+        codeTy, codePtr, {envVal, thisVal, builder.getInt32(argc), safeArgv}, "mic.fastres");
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

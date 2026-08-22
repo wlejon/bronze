@@ -6,6 +6,7 @@
 #include "runtime/elem_ic.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/rt_state.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -261,6 +262,14 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     if (!env_no_method_call_ic) env_no_method_call_ic = std::getenv("BRONZE_NO_CALL_IC");
     if (env_no_method_call_ic && std::strcmp(env_no_method_call_ic, "1") == 0) {
         tls->method_call_ic_enabled = 0;
+    }
+
+    // Narrower than the switch above: the method IC stays, but latches only
+    // the env-free direct entries it originally could — rt_state.h's
+    // rtSetEnvMethodIcEnabled says what the two gated forms are.
+    const char* env_no_env_method_ic = std::getenv("BRONZE_NO_ENV_METHOD_IC");
+    if (env_no_env_method_ic && std::strcmp(env_no_env_method_ic, "1") == 0) {
+        runtime::rtSetEnvMethodIcEnabled(false);
     }
 
     // The computed-read cache's table address, published where the seam that

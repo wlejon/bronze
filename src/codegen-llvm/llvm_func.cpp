@@ -1,5 +1,6 @@
 #include "codegen-llvm/llvm_func.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -371,6 +372,43 @@ void FunctionEmitter::emitModuleInit() {
                             {builder_.CreateConstInBoundsGEP2_32(
                                  tables.fnSlots->getValueType(), tables.fnSlots, 0, 0),
                              builder_.getInt64(tables.fnSlotCount)});
+    }
+    // The method-call sites' env words, registered as value cells so a latched
+    // direct-form env — a heap Value in the module's .bss — is forwarded in
+    // place at every collection (bronze_abi.h's METHOD-CALL site contract).
+    // The site list is DATA for the same reason the source tables are: one
+    // call hands the whole array over, instead of a call per site in the
+    // entry block. The IL is scanned here rather than carried in ModuleTables
+    // because the site numbers are already in it and nothing else needs them.
+    if (tables.icTable) {
+        std::vector<uint64_t> methodSites;
+        for (const il::Function& ilFn : shared_.module.functions) {
+            for (const il::Block& block : ilFn.blocks) {
+                for (const il::Instruction& inst : block.instructions) {
+                    if (inst.op == il::Op::MethodCall || inst.op == il::Op::MethodCallSpread) {
+                        methodSites.push_back(inst.icIndex);
+                    }
+                }
+            }
+        }
+        std::sort(methodSites.begin(), methodSites.end());
+        methodSites.erase(std::unique(methodSites.begin(), methodSites.end()),
+                          methodSites.end());
+        if (!methodSites.empty()) {
+            llvm::Module& llvmModule = *llvmFunc_->getParent();
+            auto* arrTy = llvm::ArrayType::get(i64Ty_, methodSites.size());
+            auto* sitesTable = new llvm::GlobalVariable(
+                llvmModule, arrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantDataArray::get(shared_.ctx, llvm::ArrayRef<uint64_t>(methodSites)),
+                "__bronze_method_ic_sites");
+            sitesTable->setAlignment(llvm::Align(8));
+            builder_.CreateCall(
+                shared_.abi.bronze_register_method_ic_cells,
+                {builder_.CreateConstInBoundsGEP2_32(tables.icTable->getValueType(),
+                                                     tables.icTable, 0, 0),
+                 builder_.CreateConstInBoundsGEP2_32(arrTy, sitesTable, 0, 0),
+                 builder_.getInt64(methodSites.size())});
+        }
     }
     emitFunctionSourceTables();
     for (size_t k = 0; k < shared_.module.keyConstants.size(); ++k) {

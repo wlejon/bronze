@@ -389,7 +389,32 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
         {reinterpret_cast<FnSingletonSlot*>(cells), count, g_currentModuleEpoch});
 }
 
+// The env words of the module's method-call sites, as ordinary value cells —
+// one single-cell span each, because the words sit one per site at the IC
+// table's stride and the span walk wants contiguous cells. The count is the
+// module's method-site count (hundreds, not millions), paid once at init;
+// the per-collection cost is one visit per site, the same bill the global
+// cache already pays per cell.
+void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteIndexes,
+                                     uint64_t count) {
+    if (!icTable || !siteIndexes || count == 0) return;
+    constexpr uint64_t kSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
+    for (uint64_t k = 0; k < count; ++k) {
+        uint64_t* cell = icTable + siteIndexes[k] * kSiteWords + BRONZE_ABI_METHOD_IC_ENV_WORD;
+        g_moduleValueCells.push_back(
+            {reinterpret_cast<Value*>(cell), 1, g_currentModuleEpoch});
+    }
+}
+
 }  // extern "C"
+
+// Default ON: the seam exists to turn the mechanism OFF for an A/B, and a
+// thread that never ran heap.cpp's env scan (there is none, but the default
+// should not depend on that) behaves like the shipped configuration.
+static thread_local bool g_envMethodIcEnabled = true;
+
+void rtSetEnvMethodIcEnabled(bool enabled) { g_envMethodIcEnabled = enabled; }
+bool rtEnvMethodIcEnabled() noexcept { return g_envMethodIcEnabled; }
 
 // ---- the interned-native table, as the memo in front of it sees it --------
 //

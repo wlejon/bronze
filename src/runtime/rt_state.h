@@ -67,4 +67,13 @@ void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 uint64_t rtBeginModuleEpoch();
 void rtDropModuleEpoch(uint64_t epoch);
 
+// BRONZE_NO_ENV_METHOD_IC=1 (read where every other seam is, heap.cpp's TLS
+// init) gates the INSTALL of the two env-capable method-IC forms — the
+// env-carrying direct latch and the own-slot latch — and nothing else, so one
+// binary A/Bs the mechanism: with the seam down the helper latches exactly
+// the env-free entries it always did, and the generated hit path, which
+// handles all three forms unconditionally, simply never sees the new two.
+void rtSetEnvMethodIcEnabled(bool enabled);
+bool rtEnvMethodIcEnabled() noexcept;
+
 }  // namespace bronze::runtime

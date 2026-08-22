@@ -380,6 +380,19 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * touch, and a null one means the slot was never filled. */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    /* The module's METHOD-CALL sites, handed over at module init: `siteIndexes`
+     * is `count` u64 site numbers into the module's IC table (`icTable` is its
+     * base). Word BRONZE_ABI_METHOD_IC_ENV_WORD of each named site is the env
+     * argument a latched direct-form hit passes verbatim, and a latch may put a
+     * closure's environment record there — a HEAP Value in module .bss, which
+     * only registration as an ordinary value cell keeps current across a
+     * collection. The runtime registers exactly those words, one cell each, so
+     * the collector forwards them in place under the same module epoch as the
+     * spans above; an unregistered env word would dangle at the first flip,
+     * which is why the latch never installs an env-carrying entry into a table
+     * whose module did not make this call (fingerprint pairing guarantees it
+     * did). Registration-only, like the value-cell spans it rides on. */ \
+    X(bronze_register_method_ic_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_PU64, BRONZE_ABI_U64)) \
     /* The module's proven class LAYOUTS, handed over at module init so that
      * `bronze_family_stamp` can recognise a shape as an instance of one.
      *
@@ -559,6 +572,47 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * which is the bug the cached depth exists to prevent. */
 #define BRONZE_ABI_IC_SLOTWORD_OFFSET BRONZE_ABI_IC_SLOT_OFFSET
 
+/* ---- the METHOD-CALL site, as generated code reads it ---------------------
+ *
+ * A method-call site owns the same BRONZE_ABI_IC_SITE_SIZE bytes a property
+ * site does — the lowerer numbers them out of one table — but its words mean
+ * something different, and only the first four are used (the rest stay the
+ * zero .bss gave them):
+ *
+ *   word 0: the receiver shape the entry was latched against, or 0 for an
+ *           entry that has never latched. The guard, exactly as before.
+ *   word 1: the callee's code pointer (DIRECT form; unused in slot form).
+ *   word 2: low 32 bits the callee's arity; HIGH 32 bits select the form:
+ *           zero is DIRECT, and any nonzero value is SLOT form carrying the
+ *           receiver's own slot index PLUS ONE (so an all-zero word cannot
+ *           read as slot 0).
+ *   word 3: DIRECT form's env argument, passed to the code pointer verbatim.
+ *           BRONZE_ABI_UNDEFINED_BITS for an env-free callee — and for every
+ *           slot-form entry, so the word always parses as a Value — or the
+ *           callee's environment record, a HEAP Value the module registered
+ *           as a value cell via bronze_register_method_ic_cells at init.
+ *
+ * The DIRECT form is the original mechanism plus one load: shape match calls
+ * word 1 with word 3 as env. It is latched for an env-free callee found
+ * anywhere, and for an env-CARRYING callee found on the PROTOTYPE CHAIN
+ * (depth >= 1), where the receiver's shape determines the holder and so the
+ * function object — caching its env is exactly as sound as caching its code.
+ *
+ * The SLOT form is for a callee that is the receiver's OWN data property
+ * (depth 0), where same-shape receivers can hold DIFFERENT functions in the
+ * same slot — per-instance closures, and every host function an embedder
+ * hangs on an object — so nothing about the callee may be cached. The entry
+ * caches only WHERE the method lives: generated code loads the receiver's
+ * slot (inline or overflow, split at BRONZE_ABI_OBJ_INLINE_SLOTS), verifies
+ * the value is a Function, and calls its CURRENT code with its CURRENT env
+ * and arity — the same universal dispatch bronze_dynamic_call performs, so a
+ * swapped-in non-function still reaches the helper's TypeError. No heap word
+ * lands in the entry at all, which is what makes the form GC-free. */
+#define BRONZE_ABI_METHOD_IC_CODE_WORD   1
+#define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
+#define BRONZE_ABI_METHOD_IC_ENV_WORD    3
+#define BRONZE_ABI_METHOD_IC_SLOT_SHIFT 32
+
 /* ---- the COMPUTED-read cache, as generated code reads it -----------------
  *
  * runtime/elem_ic.h's `ElemCacheEntry`: an `InlineCache` (the same struct a
@@ -641,6 +695,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * index past the record is a lowering bug and must still reach the fatal
  * rather than a load past the object. Pinned in runtime/object.h. */
 #define BRONZE_ABI_HDR_SIZE_OFFSET       4
+
+/* Total bytes of HeapObjectHeader itself — where a heap block's payload
+ * starts. The method-IC slot form reads an overflow block's Value array
+ * through it. Pinned in runtime/object.h. */
+#define BRONZE_ABI_HDR_BYTES             8
 
 /* TypedArrayHeader (runtime/typed_array.h): the buffer Value, the window,
  * and the element kind. BUF_EXTPTR_OFFSET is the buffer's external-storage
