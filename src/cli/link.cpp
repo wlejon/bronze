@@ -426,17 +426,24 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
 
     auto makeCommand = [&](int index) -> std::string {
 #ifdef _WIN32
+        // /DEBUG /OPT:REF /OPT:ICF for the same reason the --emit-shared path
+        // carries them (the long comment there): the COFF objects carry a
+        // symbol per compiled JS function, /DEBUG copies those into a PDB
+        // beside the exe — which is what lets BRONZE_SAMPLE name a frame
+        // `hotPath` instead of `program.exe+0x1a4c` — and the two /OPT
+        // switches undo the fold defaults /DEBUG silently flips, so the
+        // binary stays byte-for-byte what it was without them.
         switch (index) {
             case 0:
-                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
             case 1:
-                return "lld-link /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+                return "lld-link /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 2:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
             case 3:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+                return "link.exe /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 4:
                 return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
             case 5:

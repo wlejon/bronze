@@ -2,6 +2,10 @@
 // each function is llvm_func.cpp; every symbol generated code links against is
 // llvm_abi.cpp.
 
+// getenv (BRONZE_EMIT_FN_SYMBOLS), as heap.cpp: the CRT-deprecation opt-out,
+// not a blanket C4996 disable.
+#define _CRT_SECURE_NO_WARNINGS
+
 #include "codegen-llvm/llvm_backend.h"
 
 #include <algorithm>
@@ -542,6 +546,20 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
     }
 
     if (parts <= 1) {
+        // BRONZE_EMIT_FN_SYMBOLS=1: run the split path's local-symbol
+        // promotion even for a single object. A promoted symbol is EXTERNAL,
+        // and external symbols are what the linker copies into the PDB's
+        // publics stream — bronze emits no CodeView records, so an internal
+        // function is invisible to dbghelp and a sampling profile of a small
+        // program attributes everything to `bronze_main`. The split path gets
+        // this for free (every large module is promoted to link at all); this
+        // makes it OPT-IN for the small ones, because the renamed
+        // `__bronze_part$` spellings are diagnostics, not a contract.
+        static const bool emitFnSymbols = [] {
+            const char* env = std::getenv("BRONZE_EMIT_FN_SYMBOLS");
+            return env != nullptr && env[0] == '1';
+        }();
+        if (emitFnSymbols) promoteLocalsForSplit(llvmModule);
         std::string err;
         if (!optimizeAndEmitOne(llvmModule, *targetMachine, outputPath,
                                 support::timingsEnabled(), err)) {
