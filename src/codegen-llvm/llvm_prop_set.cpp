@@ -414,10 +414,16 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* sizePtr = builder.CreateConstInBoundsGEP1_32(
             i8Ty, overflowObj, BRONZE_ABI_HDR_SIZE_OFFSET);
         llvm::Value* sizeVal = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "overflow.size");
-        llvm::Value* capVal = builder.CreateSub(
-            builder.CreateLShr(sizeVal, 3), builder.getInt32(1), "overflow.cap");
+        // `slotIdx` is a WORD index from the block's start — the header word is
+        // word 0 and slot k lives at word k - kInlineSlots + 1 — so the exact
+        // in-bounds test is `slotIdx < size/8` (total words). The old
+        // `slotIdx < size/8 - 1` compared a header-inclusive index against a
+        // header-exclusive capacity and permanently refused the block's LAST
+        // slot: every store to the final overflow slot of a full block —
+        // three.js's `renderItem.group`, 1.8M helper calls a run — missed here.
+        llvm::Value* wordCount = builder.CreateLShr(sizeVal, 3, "overflow.words");
         llvm::Value* slotIdx = builder.CreateSub(transSlot32, builder.getInt32(3));
-        llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, capVal, "trans.withincap");
+        llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, wordCount, "trans.withincap");
         builder.CreateCondBr(withinCap, transOverflowAccessBb, slowBb);
 
         builder.SetInsertPoint(transOverflowAccessBb);
@@ -469,10 +475,12 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* sizePtr = builder.CreateConstInBoundsGEP1_32(
         i8Ty, overflowObj, BRONZE_ABI_HDR_SIZE_OFFSET);
     llvm::Value* sizeVal = builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "overflow.size");
-    llvm::Value* capVal = builder.CreateSub(
-        builder.CreateLShr(sizeVal, 3), builder.getInt32(1), "overflow.cap");
+    // Word-index bound, exactly as the transition arm above states it: the
+    // valid word indices are 1..size/8-1, so `slotIdx < size/8` is the test
+    // and the old `- 1` refused the last overflow slot forever.
+    llvm::Value* wordCount = builder.CreateLShr(sizeVal, 3, "overflow.words");
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
-    llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, capVal, "set.withincap");
+    llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, wordCount, "set.withincap");
     builder.CreateCondBr(withinCap, overflowAccessBb, slowBb);
 
     builder.SetInsertPoint(overflowAccessBb);
