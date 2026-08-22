@@ -19,10 +19,16 @@
 //
 // WHAT IT REFUSES, and why each refusal is a scope decision rather than a gap:
 //
-//  - a STRING key. The entry's `key` is an ARENA COPY, so the live key string
-//    at a read site is never the same object, and confirming a string key is
-//    therefore a length compare and a memcmp — a loop, not a guard. The
-//    helper owns `StringHeader::equals` and keeps this half.
+//  - a STRING key whose hash is not memoized yet, or whose bits differ from
+//    the entry's IDENT word. A string key's confirmation cannot be content —
+//    the entry's `key` is an ARENA COPY, so equality is a length compare and
+//    a memcmp, a loop this path must not carry — so it is IDENTITY against
+//    the last live key the helper proved content-equal (`StringHeader::equals`
+//    stays the helper's). bronze_abi.h states the two invariants that make
+//    the one compare sound; a fresh key object misses once, confirms in the
+//    helper, and hits from then on — and the enumeration paths hand out
+//    IMMORTAL arena shape keys, so the for-in-driven three.js sites present
+//    the same object forever.
 //  - depth > 0 (a prototype hit). The walk exists — llvm_prop_ic.cpp's
 //    `emitProtoChainWalk` — but a computed read that finds its answer up the
 //    chain is not what the bill is made of, and every block emitted here is
@@ -32,7 +38,9 @@
 //
 // Seam: BRONZE_NO_ELEM_INLINE=1, and BRONZE_NO_ELEM_IC=1 lowers it too —
 // with the table off the probe could only ever miss, and chunk 3's A/B must
-// not be charged for that.
+// not be charged for that. The string arm's own seam is BRONZE_NO_ELEM_KEY_IC,
+// latch-side in the runtime: no ident is ever written, so the arm here can
+// only miss and needs no flag of its own.
 
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -141,15 +149,19 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
         builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy), "ec.notdict"), keyBb,
         slowBb);
 
-    // --- the key's witness: a number's bits, or a boolean's 0/1 -------------
+    // --- the key's witness: a number's bits, a string's memoized hash, or a
+    // boolean's 0/1 ----------------------------------------------------------
     builder.SetInsertPoint(keyBb);
     llvm::BasicBlock* numKeyBb = llvm::BasicBlock::Create(ctx, "ec.key.num", fn);
+    llvm::BasicBlock* tagKeyBb = llvm::BasicBlock::Create(ctx, "ec.key.tag", fn);
+    llvm::BasicBlock* strHashBb = llvm::BasicBlock::Create(ctx, "ec.key.strhash", fn);
+    llvm::BasicBlock* strOkBb = llvm::BasicBlock::Create(ctx, "ec.key.str", fn);
     llvm::BasicBlock* boolKeyBb = llvm::BasicBlock::Create(ctx, "ec.key.boolchk", fn);
     llvm::BasicBlock* boolOkBb = llvm::BasicBlock::Create(ctx, "ec.key.bool", fn);
     llvm::BasicBlock* bucketBb = llvm::BasicBlock::Create(ctx, "ec.bucket", fn);
     builder.CreateCondBr(builder.CreateICmpULE(keyBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
                                                "ec.key.isnum"),
-                         numKeyBb, boolKeyBb);
+                         numKeyBb, tagKeyBb);
 
     // A NUMBER witness is the double's raw bits, compared bitwise — so -0 and
     // +0 land in different entries even though they name one property, which
@@ -158,8 +170,41 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     builder.SetInsertPoint(numKeyBb);
     builder.CreateBr(bucketBb);
 
-    builder.SetInsertPoint(boolKeyBb);
+    // STRING before BOOLEAN: the three.js bill this file exists for is almost
+    // entirely string keys, and a boolean key is a curiosity kept off the
+    // string path by one compare.
+    builder.SetInsertPoint(tagKeyBb);
     llvm::Value* keyTag = builder.CreateLShr(keyBits, BRONZE_ABI_VALUE_TAG_SHIFT, "ec.keytag");
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(keyTag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ec.key.isstr"),
+        strHashBb, boolKeyBb);
+
+    // A STRING witness is the memoized hash off the flags word — the load
+    // `StringHeader::hash` answers with after its first call. Not memoized
+    // yet means this string object has never been hashed, which means it has
+    // never confirmed against ANY entry, so the ident guard below could not
+    // pass anyway: the helper both answers and memoizes. NOT an invariant
+    // load — the word is written once, by that first hash.
+    builder.SetInsertPoint(strHashBb);
+    llvm::Value* strHdr = builder.CreateIntToPtr(
+        builder.CreateAnd(keyBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy,
+        "ec.strhdr");
+    llvm::Value* strFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_FLAGS_OFFSET);
+    llvm::Value* strFlags =
+        builder.CreateAlignedLoad(i32Ty, strFlagsPtr, llvm::Align(4), "ec.strflags");
+    llvm::Value* hashedBit = builder.CreateAnd(
+        strFlags, builder.getInt32(BRONZE_ABI_STRING_HASHED_BIT), "ec.strhashedbit");
+    builder.CreateCondBr(
+        builder.CreateICmpNE(hashedBit, builder.getInt32(0), "ec.strhashed"), strOkBb, slowBb);
+
+    builder.SetInsertPoint(strOkBb);
+    llvm::Value* strWitness = builder.CreateZExt(
+        builder.CreateAnd(strFlags, builder.getInt32(BRONZE_ABI_STRING_HASH_MASK)), i64Ty,
+        "ec.strwit");
+    builder.CreateBr(bucketBb);
+
+    builder.SetInsertPoint(boolKeyBb);
     builder.CreateCondBr(
         builder.CreateICmpEQ(keyTag, builder.getInt64(BRONZE_ABI_TAG_BOOL), "ec.key.isbool"),
         boolOkBb, slowBb);
@@ -170,11 +215,13 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
 
     // --- the bucket --------------------------------------------------------
     builder.SetInsertPoint(bucketBb);
-    llvm::PHINode* witness = builder.CreatePHI(i64Ty, 2, "ec.witness");
+    llvm::PHINode* witness = builder.CreatePHI(i64Ty, 3, "ec.witness");
     witness->addIncoming(keyBits, numKeyBb);
+    witness->addIncoming(strWitness, strOkBb);
     witness->addIncoming(boolWitness, boolOkBb);
-    llvm::PHINode* keyKind = builder.CreatePHI(i8Ty, 2, "ec.keykind");
+    llvm::PHINode* keyKind = builder.CreatePHI(i8Ty, 3, "ec.keykind");
     keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_NUMBER), numKeyBb);
+    keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_STRING), strOkBb);
     keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_BOOL), boolOkBb);
 
     // `bucketOf` is exactly `mix64(shape ^ mix64(witness)) & (N - 1)`: TWO
@@ -211,8 +258,25 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
                           builder.CreateICmpEQ(entWit, witness, "ec.witok")),
         builder.CreateICmpNE(entKey, llvm::Constant::getNullValue(ptrTy), "ec.keyok"), "ec.pairok");
 
+    // A STRING key's whole confirmation is the IDENT word: the raw bits of
+    // the last live key the helper proved content-equal to the entry's arena
+    // key by `equals`. Equality here subsumes the kind/witness questions —
+    // the runtime rewrites the ident beside them on every fill, and the
+    // collector clears every movable ident inside the pause, so bits that
+    // compare equal name the very object that confirmed (the two invariants
+    // bronze_abi.h states above the offsets). The memcmp the old refusal
+    // comment feared stays in the helper, which re-latches after running it.
+    llvm::Value* entIdentPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_IDENT_OFFSET);
+    llvm::Value* entIdent =
+        builder.CreateAlignedLoad(i64Ty, entIdentPtr, llvm::Align(8), "ec.entident");
+    llvm::Value* identOk = builder.CreateICmpEQ(entIdent, keyBits, "ec.identok");
+    llvm::Value* isStrKey = builder.CreateICmpEQ(
+        keyKind, builder.getInt8(BRONZE_ABI_ELEM_KIND_STRING), "ec.keyisstr");
+    llvm::Value* entryOk = builder.CreateSelect(isStrKey, identOk, pairOk, "ec.entryok");
+
     llvm::BasicBlock* shapeCmpBb = llvm::BasicBlock::Create(ctx, "ec.shapecmp", fn);
-    builder.CreateCondBr(pairOk, shapeCmpBb, slowBb);
+    builder.CreateCondBr(entryOk, shapeCmpBb, slowBb);
 
     // The cached shape against the LIVE one. This subsumes `isRealShape()`:
     // the live shape is non-null (checked above) and can never be the

@@ -720,25 +720,64 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * and the key's kind. Direct-mapped, one thread's table published into
  * `elem_cache_tbl` above.
  *
- * Generated code inlines the hit for a NUMBER or BOOLEAN key only, and the
- * omission is not an oversight: the entry's `key` is an ARENA COPY, so a live
- * key string is never the same object, and confirming a string key means a
- * length compare and a memcmp — a loop, not a guard. A string key therefore
- * keeps `bronze_elem_get`, which owns `StringHeader::equals`.
+ * Generated code inlines the hit for a NUMBER, BOOLEAN or STRING key. The
+ * first two confirm against the WITNESS word (raw double bits, 0/1); a string
+ * cannot — the entry's `key` is an ARENA COPY, so a live key string is never
+ * the same object, and confirming content means a length compare and a memcmp,
+ * a loop the inline path must not carry. What it confirms against instead is
+ * the IDENT word: the raw Value bits of the last LIVE string
+ * `bronze_elem_get` proved content-equal to the entry's arena key (by
+ * `StringHeader::equals`, which stays the helper's job). The guard is one
+ * 64-bit compare — key bits against the ident word — and it is sound because
+ * the runtime maintains two invariants around that word:
+ *
+ *   - a non-zero ident always names a string object content-equal to the
+ *     entry's `key` AT THE SAME TIME as the entry's other words: every fill
+ *     rewrites ident beside kind/witness/key (zero for a non-string kind),
+ *     and the helper re-latches it only after `equals` has confirmed the
+ *     live key against the entry it is latched into;
+ *   - a moving collection clears, in the same pause, every ident that points
+ *     into the MOVABLE reservation (elem_ic.h's sweep, a per-heap
+ *     post-collection hook). The Cheney collector reuses an address only
+ *     across a collection, so an ident that survives to compare equal still
+ *     names the object it was latched from. An ident pointing OUTSIDE the
+ *     reservation is an immortal arena string (a shape key handed out by
+ *     for-in / Object.keys) and survives the sweep, which is what makes the
+ *     enumeration-driven three.js sites hit across GC.
+ *
+ * The string arm needs the key's memoized hash to find the bucket, so it
+ * reads the string's flags word (offsets below) and takes the helper when the
+ * hash has not been memoized yet — the helper's first probe memoizes it.
+ *
+ * Seam: BRONZE_NO_ELEM_KEY_IC=1 gates the LATCH side (fills write 0, hits do
+ * not re-latch), so an old-style run and a new one are one binary: with the
+ * seam off, no ident is ever non-zero and the inline string arm can only
+ * miss into the helper it always took.
  *
  * The bucket function is splitmix64's finalizer applied twice, and generated
  * code must reproduce it EXACTLY: a probe that hashes differently from the
  * fill does not answer wrongly, it simply never hits, which is a silent
  * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
-#define BRONZE_ABI_ELEM_ENTRY_SIZE      48 /* sizeof(ElemCacheEntry) */
+#define BRONZE_ABI_ELEM_ENTRY_SIZE      56 /* sizeof(ElemCacheEntry) */
 #define BRONZE_ABI_ELEM_IC_OFFSET        0 /* ElemCacheEntry::ic (InlineCache) */
 #define BRONZE_ABI_ELEM_WITNESS_OFFSET  24 /* ElemCacheEntry::witness (uint64) */
 #define BRONZE_ABI_ELEM_KEY_OFFSET      32 /* ElemCacheEntry::key (StringHeader*) */
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
+#define BRONZE_ABI_ELEM_IDENT_OFFSET    48 /* ElemCacheEntry::key_ident (uint64) */
 #define BRONZE_ABI_ELEM_ENTRIES       4096 /* kElemCacheEntries, a power of two */
 #define BRONZE_ABI_ELEM_KIND_NUMBER      1
 #define BRONZE_ABI_ELEM_KIND_STRING      2
 #define BRONZE_ABI_ELEM_KIND_BOOL        3
+
+/* StringHeader, as the inline string-key arm reads it: the mutable flags
+ * word carries the memoized hash. Bit 0 is the UTF-16 flag, bit 1 says the
+ * hash IS memoized, and the top 30 bits are the hash itself (hash() returns
+ * `h & ~3u`, so masking the flags word with the same mask recovers exactly
+ * what witnessFor stored). runtime/elem_ic.cpp static_asserts all four
+ * against the real struct. */
+#define BRONZE_ABI_STRING_FLAGS_OFFSET  12 /* StringHeader::flags (uint32) */
+#define BRONZE_ABI_STRING_HASHED_BIT     2 /* StringHeader::kHasHashFlag */
+#define BRONZE_ABI_STRING_HASH_MASK     0xFFFFFFFCu
 #define BRONZE_ABI_MIX64_ADD  0x9E3779B97F4A7C15ull
 #define BRONZE_ABI_MIX64_MUL1 0xBF58476D1CE4E5B9ull
 #define BRONZE_ABI_MIX64_MUL2 0x94D049BB133111EBull

@@ -228,6 +228,14 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->elem_absent_enabled = 0;
     }
 
+    // The string-key identity latch, latch-side: with this off no fill or hit
+    // ever writes a non-zero key_ident, so the inline string arm can only
+    // miss into the helper it always took (elem_ic.h).
+    const char* env_no_elem_key = std::getenv("BRONZE_NO_ELEM_KEY_IC");
+    if (env_no_elem_key && std::strcmp(env_no_elem_key, "1") == 0) {
+        tls->elem_key_ic_enabled = 0;
+    }
+
     const char* env_no_fn_singleton = std::getenv("BRONZE_NO_FN_SINGLETON_CACHE");
     if (env_no_fn_singleton && std::strcmp(env_no_fn_singleton, "1") == 0) {
         tls->fn_singleton_cache_enabled = 0;
@@ -291,6 +299,25 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     // The computed-read cache's table address, published where the seam that
     // gates reading it is set, so a thread never has one without the other.
     runtime::elemCachePublish();
+
+    // The ident sweep runs inside every collection pause of THIS heap: an
+    // address is reused only across a collection, so clearing every
+    // movable-heap ident before the mutator resumes is what makes the inline
+    // string arm's single-compare guard sound (elem_ic.h). The bounds are the
+    // whole reservation — both semispaces — so a stale ident can never
+    // straddle the swap.
+    {
+        const uintptr_t ident_lo = reinterpret_cast<uintptr_t>(reserved_base_);
+        const uintptr_t ident_hi = ident_lo + reserved_bytes_;
+        add_post_collection_hook(
+            [ident_lo, ident_hi] { runtime::elemCacheSweepIdent(ident_lo, ident_hi); });
+        // And a full wipe now: the thread's table may carry idents from an
+        // earlier Heap (unit tests construct them directly), and a fresh
+        // reservation can land where an old one was. The runtime's own heap
+        // is a leaked per-thread singleton, so for programs this wipes an
+        // empty table exactly once.
+        runtime::elemCacheSweepIdent(0, UINTPTR_MAX);
+    }
 
     const char* env_log = std::getenv("BRONZE_GC_LOG");
     if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {

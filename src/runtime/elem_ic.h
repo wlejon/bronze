@@ -87,6 +87,21 @@ struct ElemCacheEntry {
     // no second interning happens per read.
     StringHeader* key = nullptr;
     ElemKeyKind kind = ElemKeyKind::Empty;
+    // The IDENTITY latch the inline string arm guards on: the raw Value bits
+    // of the last LIVE string key `equals` proved content-equal to `key`, or
+    // 0. Generated code compares its key bits against this ONE word and, on
+    // equality, trusts the entry — sound under two invariants the runtime
+    // keeps: (1) every write that changes what the entry is about rewrites
+    // this word in the same breath (elemCacheFill; zero for a non-string
+    // kind), and a re-latch happens only after `equals` confirmed the live
+    // key against THIS entry's `key`; (2) elemCacheSweepIdent clears, inside
+    // every collection pause, each ident pointing into the movable
+    // reservation — the Cheney collector reuses an address only across a
+    // collection, so an ident that survives to compare equal still names the
+    // very object it was latched from. An ident naming an ARENA string (a
+    // shape key handed out by enumeration) is immortal and survives the
+    // sweep, which is what keeps the hot three.js pairs latched across GC.
+    uint64_t key_ident = 0;
 };
 
 // Enough entries that the fifteen (shape, key) pairs three.js touches in its
@@ -126,7 +141,8 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
 
 // Publish this thread's table into `bronze_tls_block::elem_cache_tbl`, so that
 // generated code can probe it without a call (codegen-llvm/llvm_elem_cache.cpp
-// emits the committed hit for a NUMBER or BOOLEAN key). Called from Heap's
+// emits the committed hit for a NUMBER or BOOLEAN key by witness, and for a
+// STRING key by the `key_ident` identity latch). Called from Heap's
 // constructor, which is the per-thread first touch.
 void elemCachePublish() noexcept;
 
@@ -139,6 +155,21 @@ bool elemCacheEnabled() noexcept;
 // pair falls back to the walk it always took and every present pair is
 // untouched.
 bool elemAbsentEnabled() noexcept;
+
+// BRONZE_NO_ELEM_KEY_IC=1, the string-key IDENTITY latch. Latch-side, like
+// the method-IC seams: with it off no fill or hit ever writes a non-zero
+// `key_ident`, so the inline string arm can only miss into the helper it
+// always took, and one binary A/Bs the mechanism against its own absence.
+bool elemKeyIcEnabled() noexcept;
+
+// Clear every `key_ident` that points into the movable heap — the range
+// [lo, hi) is the reservation covering both semispaces. Registered by Heap's
+// constructor as a post-collection hook, and running it inside the pause is
+// the entire soundness story of the ident guard: an address is reused only
+// across a collection, so after each collection no surviving ident can alias
+// a recycled address. Idents OUTSIDE the range are immortal arena strings
+// and stay latched.
+void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept;
 
 // The arena copy of `live` this table will key an entry on, or null when the
 // key budget is spent.

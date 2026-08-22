@@ -31,7 +31,14 @@ static_assert(offsetof(ElemCacheEntry, ic) == BRONZE_ABI_ELEM_IC_OFFSET);
 static_assert(offsetof(ElemCacheEntry, witness) == BRONZE_ABI_ELEM_WITNESS_OFFSET);
 static_assert(offsetof(ElemCacheEntry, key) == BRONZE_ABI_ELEM_KEY_OFFSET);
 static_assert(offsetof(ElemCacheEntry, kind) == BRONZE_ABI_ELEM_KIND_OFFSET);
+static_assert(offsetof(ElemCacheEntry, key_ident) == BRONZE_ABI_ELEM_IDENT_OFFSET);
 static_assert(kElemCacheEntries == BRONZE_ABI_ELEM_ENTRIES);
+// The string-key arm reads the key's memoized hash straight off the flags
+// word, so the layout and the two masks are ABI now.
+static_assert(offsetof(StringHeader, flags) == BRONZE_ABI_STRING_FLAGS_OFFSET);
+static_assert(StringHeader::kHasHashFlag == BRONZE_ABI_STRING_HASHED_BIT);
+static_assert((0xFFFFFFFFu & ~(StringHeader::kHasHashFlag | StringHeader::kUTF16Flag)) ==
+              BRONZE_ABI_STRING_HASH_MASK);
 static_assert((kElemCacheEntries & (kElemCacheEntries - 1)) == 0, "bucket masking needs a power of two");
 static_assert(static_cast<uint8_t>(ElemKeyKind::Number) == BRONZE_ABI_ELEM_KIND_NUMBER);
 static_assert(static_cast<uint8_t>(ElemKeyKind::String) == BRONZE_ABI_ELEM_KIND_STRING);
@@ -148,6 +155,24 @@ bool elemAbsentEnabled() noexcept {
     return rtTls()->elem_absent_enabled != 0;
 }
 
+bool elemKeyIcEnabled() noexcept {
+    return rtTls()->elem_key_ic_enabled != 0;
+}
+
+void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept {
+    // Inside the collection pause, before the mutator resumes: clear every
+    // ident naming a MOVABLE string. What survives is 0 or an arena string,
+    // and neither can alias an address the next allocation cycle hands out —
+    // which is invariant (2) of the inline guard. The payload mask, not a
+    // tag check, because the word is either 0 (payload 0, outside any live
+    // range) or a string Value this thread latched.
+    for (ElemCacheEntry& e : g_elemCache) {
+        const uintptr_t target =
+            static_cast<uintptr_t>(e.key_ident & BRONZE_ABI_VALUE_PAYLOAD_MASK);
+        if (target >= lo && target < hi) e.key_ident = 0;
+    }
+}
+
 ElemProbe elemCacheProbe(Value objVal, Value key) {
     ElemProbe probe;
     if (!elemCacheEnabled()) {
@@ -201,6 +226,17 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
                          : e.ic.cached_shape == shape ? "entry_same_shape_other_key"
                                                       : "entry_other_pair_collision", objVal.rawBits(), key.rawBits());
         return probe;
+    }
+
+    // The identity latch. `keyMatches` just proved the LIVE key content-equal
+    // to this entry's arena key — by `equals`, the loop the inline arm must
+    // not carry — and that proof is the whole of what the arm's single
+    // ident-vs-key-bits compare stands on. Latched on every helper string
+    // hit, even one the shape or epoch questions below are about to refuse:
+    // the invariant is about the KEY pair only, and the entry's shape words
+    // answer for themselves on the next probe.
+    if (kind == ElemKeyKind::String && elemKeyIcEnabled()) {
+        e.key_ident = key.rawBits();
     }
 
     // From here the questions are exactly the property path's, asked of its
@@ -284,6 +320,18 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     probe.entry->witness = probe.witness;
     probe.entry->kind = probe.kind;
     probe.entry->key = internedKey;
+    // The ident is rewritten with the rest of the entry, in the same breath —
+    // the first invariant the inline guard stands on. For a string fill it
+    // names the LIVE key (`liveKey`, re-read through the caller's root after
+    // the walk, so post-collection bits); `internedKey` content-equals it by
+    // construction of `elemCacheInternKey`. For a number or boolean fill the
+    // key that reached this function is the STRINGIFIED key, an object no
+    // read site will ever present, so the word goes to zero rather than
+    // carrying a pointer the sweep would have to chase for nothing.
+    probe.entry->key_ident =
+        (probe.kind == ElemKeyKind::String && elemKeyIcEnabled())
+            ? Value::fromString(liveKey).rawBits()
+            : 0;
 }
 
 }  // namespace bronze::runtime
