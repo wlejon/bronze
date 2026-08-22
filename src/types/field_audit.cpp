@@ -1,6 +1,7 @@
 #include "types/field_audit.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "types/literal_scan.h"
 #include "types/walk.h"

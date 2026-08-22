@@ -1,6 +1,7 @@
 #include "types/ctor_ident.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "types/walk.h"
 

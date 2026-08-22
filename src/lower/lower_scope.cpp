@@ -3,6 +3,7 @@
 // the environment innermost at its creation site.
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>

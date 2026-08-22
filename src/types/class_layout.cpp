@@ -567,9 +567,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
     bool proven = true;
     std::string refusal;
     std::map<std::string, size_t> ctorThisCalls;
-    size_t ctorFieldCount = 0;
-    bool baseEndsInLateCall = false;
-    size_t baseFieldCount = 0;
 
     if (!cl.superName.empty()) {
         const auto it = byName_.find(cl.superName);
@@ -594,7 +591,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
             } else {
                 fields = base.fields;
                 fieldWritable = base.fieldWritable;
-                baseFieldCount = fields.size();
                 // A base method's late field is a late field of every derived
                 // class too — instances of the derived class are what the
                 // method runs on — and so is the method name, for the
@@ -602,7 +598,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                 cl.lateFields = base.lateFields;
                 cl.lateMethods = base.lateMethods;
                 cl.lateCallTail = base.lateCallTail;
-                baseEndsInLateCall = base.lateCallTail;
             }
         }
     } else if (f != nullptr && f->hasSuperExpr) {
@@ -679,7 +674,6 @@ void ClassLayoutTable::resolve(size_t index, std::set<size_t>& resolving) {
                         }
                     }
                     ctorThisCalls = std::move(walker.thisCalls);
-                    ctorFieldCount = walker.names.size();
                 }
             }
         }
