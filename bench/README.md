@@ -98,6 +98,56 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **brobench Chunk 3 (String-Keyed Computed Reads: Identity Latch + Arena Keys)** — commits `04e0b51`, `1ae6c03`, `a105585`:
+  > [!NOTE]
+  > **The bill**: `bronze_elem_get` was 16,254,913 calls/run on `many_meshes` — 55.0% of all
+  > 29.54M helper invocations — every one a string-keyed computed read of a plain object
+  > (`attributes[name]`, `uniforms[name]`) that HIT the elem cache in C++ but paid the call.
+  >
+  > **Three commits**:
+  > 1. `key_ident` identity latch: ElemCacheEntry grows a word holding the last live string
+  >    `equals` proved content-equal to the arena key; the inline string arm confirms with ONE
+  >    64-bit compare. GC story: per-collection sweep clears movable-heap idents inside the
+  >    pause (arena idents survive); every fill rewrites the ident beside kind/witness/key.
+  >    Seam `BRONZE_NO_ELEM_KEY_IC=1`, latch-side. ABI fingerprint moved (entry 48→56).
+  > 2. `rtKeyAsValue`: for-in / Object.keys / getOwnPropertyNames / spread hand out the ARENA
+  >    shape keys themselves — identity-stable enumeration, ~5M copies/run deleted.
+  > 3. `bronze_box_str_key` returns the arena key header: every string literal evaluation is
+  >    the same immortal object — no allocation, and string `===` on literals now takes the
+  >    inline bit-equality path (`bronze_strict_eq` fell off `many_meshes`' profile entirely,
+  >    3.60M → 0 listed).
+  >
+  > **Helper counts, `many_meshes` (360 frames)**: total 29,542,347 → **9,724,848** (−67%);
+  > `bronze_elem_get` 16,254,913 → **37,572** (−99.77%); `bronze_strict_eq` 3,601,170 → gone
+  > from the table. `bronze_elem_set` measured immaterial (7,772). `object_graph` checksum and
+  > helper profile byte-stable (its bill is named prop_get on array receivers, untouched).
+  >
+  > **brobench wall (medians of 5, settled idle machine; session ran ~4–10% slower than the
+  > chunk-2 session — Chromium moved 3.90→4.27 / 2.88→3.00 / 0.91→1.16 on the same code — so
+  > ratios are the honest cross-session comparison)**:
+  > - `many_meshes`: 36.28 ms/frame (seam-off 36.20; chunk-2 baseline 34.96, Chromium 4.27) —
+  >   ratio **8.96x → 8.50x**. jsMs≈wallMs and BRO_GL_PROFILE puts GL host self-time at
+  >   1.9 ms/frame (drawElements 266 ns × 5000), so the frame is inline compiled code, and the
+  >   ~0.5 ms/frame the latch buys sits inside ±0.9 noise here.
+  > - `instanced`: 14.70 ms/frame (seam-off 14.70; baseline 15.51, Chromium 3.00) — ratio
+  >   **5.39x → 4.90x**; the win is commits 2+3 (identity-stable keys, no per-literal allocs).
+  > - `hierarchy`: 5.10 ms/frame (seam-off 5.51; baseline 5.04, Chromium 1.16) — the latch is
+  >   worth **7.4%** same-binary; ratio **5.54x → 4.40x**.
+  >
+  > **Suite (this session)**: `object_graph.js` **53.48ms** — 1.30x vs Node (69.38), first WIN
+  > on record (was 121.40 at chunk 13, 0.57x); `three_math` 46.55 (1.04x, parity); no checksum
+  > moved anywhere; 29/29 ctest, Debug 275/157,564 + 36/330 under GC stress/verify/poison.
+  >
+  > **Next cost classes, measured**: `many_meshes` residual helpers are the for-in triple
+  > (`iter_step`/`iter_open`/`for_in_keys`, 1.80M each = 5.4M, 55% of what remains), the
+  > `.group` `bronze_prop_set` site (1.795M — a named write missing its IC), and `rel_gt`
+  > (1.80M) — together ~95% of the remaining 9.7M. But the frame itself is now inline compiled
+  > code (~36 ms/frame with helpers ≤ ~1.5 ms and GL ~1.9 ms of it): the 8.5x gap to Chromium
+  > lives in compiled-JS property access / boxing quality, not in helper traffic.
+  > `object_graph`'s gap is 9.28M named `bronze_prop_get` misses on ARRAY receivers
+  > (`.length` / `.shift` / `.children`, 48.7% of its helpers) — the named-IC-refuses-arrays
+  > class, sized and ready to cut.
+
 - **Chunk 13 (Method-Call IC Miss Closed, Clean Math Property Names & Raw-f64 Field Loads)**:
   > [!NOTE]
   > **Job 0 — CI Fixes & Record Restoration**:
