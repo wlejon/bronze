@@ -35,6 +35,7 @@
 #include "runtime/object.h"
 #include "runtime/property_key.h"
 #include "runtime/rt_property.h"
+#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -46,6 +47,9 @@ void rtInstallAbsentEntry(InlineCacheSite* site, Value objVal, const std::string
     // with no absent entry ever written, generated code's absent arm is
     // unreachable and every absent read takes the helper it always took.
     if (!rtNegativeIcEnabled()) return;
+    // Census mode suppresses every latch so all traffic keeps reaching the
+    // helpers it records in (shape_census.h).
+    if (censusFillsSuppressed()) return;
     if (!objVal.isObject()) return;
     auto* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return;

@@ -38,6 +38,7 @@
 #include "runtime/array.h"
 #include "runtime/bigint.h"
 #include "runtime/profile.h"
+#include "runtime/shape_census.h"
 #include "runtime/ic_log.h"
 #include "runtime/exception.h"
 #include "runtime/proxy.h"
@@ -173,7 +174,7 @@ extern "C" {
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                               InlineCacheSite* site, uint32_t keyIndex);
 
-uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
     recordPropGetMiss(objBits, keyIndex, icEntry);
     Value objVal(objBits);
@@ -278,6 +279,21 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
     }
 
     return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site, keyIndex);
+}
+
+uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        // Receiver identity is read BEFORE the body: the walk below can
+        // allocate, and a collection would move the receiver out from under a
+        // post-hoc read. The RESULT is classified after, from its bits alone.
+        CensusToken tok =
+            censusRecordAccess(CensusKind::PropGet, objBits, keyIndex, 0, icEntry,
+                               BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
+        const uint64_t r = propGetHelperBody(objBits, keyIndex, icEntry);
+        censusRecordResult(tok, r);
+        return r;
+    }
+    return propGetHelperBody(objBits, keyIndex, icEntry);
 }
 
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
@@ -717,6 +733,13 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
 // instance, silently.
 uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits) {
     recordPropCall("bronze_super_get", keyIndex, nullptr);
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        // Keyed by return address — a super read has no IC site by design.
+        // The RECEIVER (`this`) is the identity that matters for a
+        // monomorphizer, not the prototype the walk starts from.
+        censusRecordAccess(CensusKind::SuperGet, thisBits, keyIndex, 0, nullptr,
+                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
+    }
     Value protoVal(protoBits);
     if (!protoVal.isObject() ||
         protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -739,6 +762,10 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
 void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
                       uint64_t valBits) {
     recordPropCall("bronze_super_set", keyIndex, nullptr);
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        censusRecordAccess(CensusKind::SuperSet, thisBits, keyIndex, 0, nullptr,
+                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
+    }
     Value protoVal(protoBits);
     if (!protoVal.isObject() ||
         protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -757,7 +784,7 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
                   /*defineOwn=*/false, receiver.slot_ptr());
 }
 
-uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
+static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
     recordElemCall("bronze_elem_get", objBits, idxBits);
     Value objVal(objBits);
 
@@ -971,6 +998,25 @@ uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
         }
         return result;
     }
+}
+
+uint64_t bronze_elem_get(uint64_t objBits, uint64_t idxBits) {
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        // An OBJECT key is skipped: the body converts it (ToPropertyKey runs
+        // user code) and re-enters this wrapper with the primitive, which is
+        // the observation worth recording — one per access, keyed the way the
+        // cache would have keyed it.
+        if (!Value(idxBits).isObject()) {
+            CensusToken tok =
+                censusRecordAccess(CensusKind::ElemGet, objBits, /*keyIndex=*/0xFFFFFFFFu,
+                                   idxBits, /*siteId=*/nullptr, BRONZE_CENSUS_RET_ADDR(),
+                                   /*hasValue=*/false, 0);
+            const uint64_t r = elemGetHelperBody(objBits, idxBits);
+            censusRecordResult(tok, r);
+            return r;
+        }
+    }
+    return elemGetHelperBody(objBits, idxBits);
 }
 
 }  // extern "C"

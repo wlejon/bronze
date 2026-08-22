@@ -42,6 +42,7 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
+#include "runtime/shape_census.h"
 #include "runtime/namespace.h"
 #include "runtime/proxy.h"
 #include "runtime/regexp.h"
@@ -116,6 +117,12 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                      bool strict) {
     recordPropCall("bronze_prop_set", keyIndex, icEntry);
     recordPropSetMiss(objBits, keyIndex, valBits, icEntry, strict);
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        // At entry, before anything can allocate: the receiver's shape and
+        // whether this store ADDS the key (a transition) are both read here.
+        censusRecordAccess(CensusKind::PropSet, objBits, keyIndex, 0, icEntry,
+                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
+    }
     Value objVal(objBits);
     Value valVal(valBits);
     InlineCache* ic = rtAsCache(icEntry);
@@ -567,6 +574,13 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
 
 void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool strict) {
     recordElemCall("bronze_elem_set", objBits, idxBits);
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled) && !Value(idxBits).isObject()) {
+        // Object keys are skipped for elem_get's reason: ToPropertyKey runs
+        // user code and the helper re-enters itself with the primitive.
+        censusRecordAccess(CensusKind::ElemSet, objBits, /*keyIndex=*/0xFFFFFFFFu, idxBits,
+                           /*siteId=*/nullptr, BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true,
+                           valBits);
+    }
     Value objVal(objBits);
 
     // 7.1.19 ToPropertyKey for an OBJECT key, at the entry and nowhere below,

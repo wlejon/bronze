@@ -1,4 +1,5 @@
 #include "runtime/object.h"
+#include "runtime/shape_census.h"
 #include "runtime/tls_block.h"
 
 #include "runtime/accessor.h"
@@ -254,7 +255,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
         if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
             if (info.accessor) {
                 bool crossedDictionary = false;
-                if (site && shape && !shape->isDictionary() &&
+                if (site && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
                     (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                     if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
                         into->fillAccessor(shape, info.slot, depth);
@@ -278,7 +279,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             // the walk is asked here rather than the condition restated, so
             // the two cannot drift into disagreeing about the same entry.
             bool crossedDictionary = false;
-            if (site && shape && !shape->isDictionary() &&
+            if (site && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                 if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
                     into->fill(shape, info.slot, depth);
@@ -380,7 +381,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // Refill rather than leave alone: the bump above (or an epoch the
         // entry outlived) would otherwise expire an entry that has just
         // proven itself.
-        ic->fill(next, slot, /*depth=*/0);
+        if (!runtime::censusFillsSuppressed()) ic->fill(next, slot, /*depth=*/0);
         live->setSlot(slot, val.get());
         return live;
     }
@@ -395,7 +396,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 // so it is named rather than half-built.
                 fatal("redefining an accessor property as a data property is unsupported");
             }
-            if (ic && !shape->isDictionary()) {
+            if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
                 ic->fillAccessor(shape, own.slot, /*depth=*/0);
             }
             Rooted<Value> live{Value::fromObject(this)};
@@ -417,7 +418,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (refused) *refused = SetRefusal::NotWritable;
             return this;
         }
-        if (ic && !shape->isDictionary()) ic->fill(shape, own.slot, /*depth=*/0);
+        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+            ic->fill(shape, own.slot, /*depth=*/0);
+        }
         setSlot(own.slot, val.get());
         return this;
     }
@@ -449,7 +452,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 break;
             }
             bool crossedDictionary = false;
-            if (ic && shape && !shape->isDictionary() &&
+            if (ic && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
                 cachedProtoHolder(depth, crossedDictionary) == holder) {
                 ic->fillAccessor(shape, info.slot, depth);
             }
@@ -506,7 +509,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                                writable, configurable);
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
-        if (ic) ic->fill(next_shape, new_slot, /*depth=*/0);
+        if (ic && !runtime::censusFillsSuppressed()) ic->fill(next_shape, new_slot, /*depth=*/0);
     }
     live->setSlot(new_slot, val.get());
     return live;

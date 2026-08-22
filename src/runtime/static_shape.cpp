@@ -39,6 +39,7 @@
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -75,6 +76,12 @@ extern "C" {
 void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* cell,
                                  uint32_t slot, bool forWrite) {
     recordHelperCall("bronze_static_shape_publish");
+    // Census mode: never publish, so the static guard keeps missing into the
+    // ordinary sequence and its traffic reaches bronze_prop_get / _set, where
+    // the census records it. The emitter calls-and-continues (no retry loop),
+    // so a permanently-zero cell costs one helper call per access and nothing
+    // else — the census's stated price.
+    if (censusFillsSuppressed()) return;
     if (cell == nullptr || *cell != 0) return;
 
     Value objVal(objBits);

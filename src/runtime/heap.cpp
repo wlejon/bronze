@@ -303,6 +303,23 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         runtime::rtSetPolyMethodIcEnabled(false);
     }
 
+    // Shape-census mode (BRONZE_SHAPE_CENSUS=1, runtime/shape_census.h):
+    // every latch the runtime can reach through a TLS word goes down, so all
+    // property traffic keeps missing into the helpers that record it. The
+    // remaining latches — the property-IC fills, the absent install, the
+    // static publish, the family stamp, the method-IC latch — consult
+    // censusFillsSuppressed() (or method_call_ic_enabled below) at their own
+    // sites.
+    const char* env_census = std::getenv("BRONZE_SHAPE_CENSUS");
+    if (env_census && std::strcmp(env_census, "1") == 0) {
+        tls->elem_ic_enabled = 0;
+        tls->elem_inline_enabled = 0;
+        tls->elem_key_ic_enabled = 0;
+        tls->elem_absent_enabled = 0;
+        tls->array_method_ic_enabled = 0;
+        tls->method_call_ic_enabled = 0;
+    }
+
     // The computed-read cache's table address, published where the seam that
     // gates reading it is set, so a thread never has one without the other.
     runtime::elemCachePublish();
