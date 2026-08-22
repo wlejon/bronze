@@ -98,6 +98,77 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **brobench Chunk 4 (for-in machinery, overflow-store off-by-one, undef-vs-number rel)** — commits `92f1cad`, `b342560`, `a57cf81`, `b5ee5a2`:
+  > [!NOTE]
+  > **Four targets from chunk 3's exit profile; three landed, one was premise-false.**
+  >
+  > 1. **Array named-get "9.28M misses" — premise false.** Measured at HEAD, `object_graph`
+  >    makes **74** `bronze_prop_get` calls total (75 with `--no-infer`); the chunk-12 log
+  >    entry itself says 132. The chunk-3 exit number came from a stale binary (the MSBuild
+  >    static-lib relink staleness class). No code change; documented so the next profile
+  >    is taken from a freshly-linked exe.
+  > 2. **for-in machinery** (`92f1cad` was the set fix; iter work is `b342560`, cache is
+  >    `a57cf81`): (a) Array-kind `iter_step`'s END of walk is now inline (the old inline
+  >    path covered only in-range steps, so the LAST step of every loop paid a helper) —
+  >    `bronze_iter_step` 1,801,811 → **7** on `many_meshes`; (b) `IterOpen` on an ARRAY
+  >    allocates the 56-byte iteration record inline from the LAB (`bronze_iter_open` helper
+  >    refills the window when an allocation-free loop starves it) — 1,801,804 → **1,554**;
+  >    (c) a shape-keyed enumeration cache in `bronze_for_in_keys` (thread-local
+  >    `Shape* → {proto_epoch, arena key list}`; guards: shape identity for own-adds/deletes,
+  >    epoch for marked-prototype adds/dict defines/proto swaps, `chainIsCacheable` re-walk
+  >    for prototype dict-ification) — call count unchanged at 1,801,804 but the per-call
+  >    shape walk + key build is now one probe + arena-key array stamp. Seam
+  >    `BRONZE_NO_ENUM_CACHE=1`; `BRONZE_NO_ITER_FAST=1` already covered (a)/(b).
+  > 3. **`.group` `bronze_prop_set` site** (`92f1cad`): the inline overflow-store's capacity
+  >    guard was off by one — `slotIdx` (= slot − 3) indexes overflow words *including the
+  >    block header*, so comparing it against `capacity − 1` refused the LAST slot of every
+  >    overflow block, and both the transition arm and the depth-0 hit arm sent that slot to
+  >    the helper forever. `many_meshes` `bronze_prop_set` 1,845,677 → **35,639**;
+  >    `object_graph` 127,238 → 76,360. Rides the existing `BRONZE_NO_INLINE_OVERFLOW_SET`
+  >    seam; oracle case `overflow_last_slot` pins the boundary.
+  > 4. **`bronze_rel_gt` 1.80M** (`b5ee5a2`): a symbolized-stack diag showed every call is
+  >    `undefined > 0.0` from `WebGLRenderList.push` — three.js asks
+  >    `material.transmission > 0.0` on materials with no such property, once per visible
+  >    object per frame. New second arm in `emitDynamicRel`: not-both-numbers but each
+  >    operand number-or-undefined ⇒ constant false (ToPrimitive is identity on both, so no
+  >    user code; NaN loses every ordered compare). null keeps the helper (`null >= 0` is
+  >    true); strings/booleans/BigInt/objects keep the helper; valueOf still runs once per
+  >    compare. Seam `BRONZE_NO_UNDEF_REL=1` (TLS slot 192); oracle `undef_rel_guards`.
+  >    `bronze_rel_gt` fell off the `many_meshes` table entirely.
+  >
+  > **Helper counts, `many_meshes` (300 frames)**: total 9,724,854 → **2,512,724** (−74%);
+  > residual: `for_in_keys` 1,801,804 (71.7%, all cache hits), `has_property` 210,815,
+  > `dynamic_add`/`string_concat` 95,806 each, `prop_get` 47,188.
+  >
+  > **brobench wall (medians of 5, idle machine; this session ran slower than chunk 3's on
+  > BOTH engines — Chromium moved 4.27→5.75 / 3.00→3.23 / 1.16→1.33 on the same code — so
+  > ratios are the honest cross-session comparison)**:
+  > - `many_meshes`: **39.23 ms/frame** (chunk-4 seams off 41.23, so ~2.0 ms/frame — ~5% —
+  >   is the same-binary win; Chromium 5.75) — ratio **8.50x → 6.82x**.
+  > - `instanced`: 16.63 ms/frame (seams-off 15.68; Chromium 3.23) — ratio 4.90x → 5.15x;
+  >   deltas within noise, these mechanisms don't sit in instanced's frame.
+  > - `hierarchy`: 5.70 ms/frame (seams-off 5.34; Chromium 1.33) — ratio 4.40x → 4.28x;
+  >   within noise.
+  > - Suite: `object_graph.js` **60.20 ms** — 1.15x vs pinned Node (69.38), and 1.53x vs
+  >   node run live this session (91.86). Checksum stable.
+  >
+  > **Correctness**: 29/29 Release ctest (`BRONZE_WITH_LLVM=ON` verified via `ctest -N`);
+  > Debug `bronze_runtime_tests` 157,564 assertions + `bronze_embed_tests` 330, both plain
+  > and under `BRONZE_GC_STRESS=1 BRONZE_HEAP_VERIFY=1 BRONZE_GC_POISON=1`; oracle cases
+  > `enum_cache_guards`, `iter_inline_endpoints`, `overflow_last_slot`, `undef_rel_guards`
+  > byte-identical vs node with inference, `--no-infer`, per-mechanism seams off, all seams
+  > off, and under the GC adversary.
+  >
+  > **Where the next arc lives**: helpers are now ≤ ~2.5M calls of a ~39 ms frame — well
+  > under 1 ms — and the 6.8x gap to Chromium is INLINE COMPILED CODE: nan-boxed property
+  > access and re-boxing in three.js's per-object math, exactly the frontier the brass
+  > post-mortem named. The one helper line still worth a look is `for_in_keys`' 1.8M
+  > cache-HIT calls (inline the probe, or lower for-in over the cached key array without a
+  > call). `object_graph`'s residue is `strict_eq` 133,500 + `prop_set` 76,360
+  > (`.children`/`.worldZ`/`.y` at 25,440 each — a write-IC refusal class still unnamed).
+  > Next chunk should be profile-driven INSIDE compiled code (sampling profiler, then
+  > monomorphization / payload unboxing), not helper whack-a-mole.
+
 - **brobench Chunk 3 (String-Keyed Computed Reads: Identity Latch + Arena Keys)** — commits `04e0b51`, `1ae6c03`, `a105585`:
   > [!NOTE]
   > **The bill**: `bronze_elem_get` was 16,254,913 calls/run on `many_meshes` — 55.0% of all
