@@ -98,6 +98,40 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **Chunk 13 (Method-Call IC Miss Closed, Clean Math Property Names & Raw-f64 Field Loads)**:
+  > [!NOTE]
+  > **Job 0 — CI Fixes & Record Restoration**:
+  > 1. Windows debug-info switch updated to `/Z7` (from `/Zi`) in `cmake/bronze_shared_runtime.cmake` to prevent parallel build PDB races.
+  > 2. `kIcEntryWords` and `kIcSiteWords` exposed with inline visibility in `src/codegen-llvm/llvm_abi.h`.
+  > 3. Recorded missing Chunk 12 benchmarks and historical results into `bench/README.md`.
+  >
+  > **Job 1 — Runtime Method-Call IC Miss Closed**:
+  > Diagnosed the root cause: class methods were created with module environment in `fn->env_record`, failing the runtime IC latch check `(env_record.isUndefined() || ...)`. Implemented environment capture detection (`BRONZE_ABI_FN_FLAG_NEEDS_ENV` and `FunctionHeader::needsEnv()`). Methods without lexical captures now latch ICs directly:
+  > - Total Dynamic ABI Helper Invocations on `three_math` plummeted from **1,410,804** to **60,846** (**-95.7%**).
+  > - Residual `bronze_call_method` dropped from 450,013 to 27; `bronze_prop_get` dropped from 450,053 to 67.
+  > - `three_math` speedup: 44.39ms (infer) vs 122.49ms (`BRONZE_NO_METHOD_CALL_IC=1`, **2.66x faster**).
+  > - `instanced_mesh_churn.js` dropped from 319.94ms to 137.85ms (**2.32x faster**).
+  > - `mesh_churn_2k.js` dropped from 147.73ms to 101.12ms (**1.46x faster**).
+  >
+  > **Job 2 — Clean Math Names & Unboxed Raw-f64 Field Access**:
+  > Whittled field audit blockers for math properties (`x`, `y`, `z`, `w`, `_x`, `_y`, `_z`, `_w`):
+  > - Clean written property names jumped from **138 / 933 (14.8%)** to **175 / 933 (18.8%)** on `three.module.js`.
+  > - Proven number field reads increased from **0** to **1,785** sites.
+  > - Direct `unbox.f64 ..., raw` loads active in generated IL for Vector3/Matrix4/Quaternion math operations.
+  >
+  > **Real runs for Chunk 13 (median of 5 runs, warmup discarded)**:
+  > - `three_math.js`: **44.39ms** (infer) vs 47.52ms (no-infer) — **1.09x vs Node (48.40ms), WIN** (checksum=405000, down from 92.04ms)
+  > - `object_graph.js`: **121.40ms** (infer) vs 155.10ms (no-infer) — **0.57x vs Node (69.38ms)** (checksum=-32601148)
+  > - `typed_array_crunch.js`: **57.57ms** (infer) vs 183.50ms (no-infer) — **0.98x vs Node (56.27ms), PARITY** (checksum=78849652)
+  > - `mesh_churn_2k.js`: **101.12ms** (infer) vs 106.74ms (no-infer) — **0.92x vs Node (92.70ms)** (checksum=-2112298, down from 147.73ms)
+  > - `instanced_mesh_churn.js`: **137.85ms** (infer) vs 148.67ms (no-infer) — **0.69x vs Node (95.28ms)** (checksum=1260786, down from 319.94ms)
+  > - `fib.js`: **11.23ms** (infer) vs 15.03ms (no-infer) — **3.66x vs Node (41.06ms), WIN** (checksum=832040)
+  > - `numeric_loop.js`: **36.82ms** (infer) vs 96.14ms (no-infer) — **1.78x vs Node (65.62ms), WIN** (checksum=60644102826883.61)
+  > - `property_access.js`: **10.53ms** (infer) vs 10.85ms (no-infer) — **3.52x vs Node (37.09ms), WIN** (checksum=3000000)
+  > - `proto_dispatch.js`: **47.89ms** (infer) vs 24.73ms (no-infer) — **0.75x vs Node (36.13ms)** (checksum=3000000)
+  > - `proto_dispatch_churn.js`: **57.95ms** (infer) vs 61.06ms (no-infer) — **0.66x vs Node (38.14ms)** (checksum=3000000, down from 148.13ms)
+  > - `typed_array_loop.js`: **28.86ms** (infer) vs 46.68ms (no-infer) — **1.41x vs Node (40.75ms), WIN** (checksum=523828354.8980187)
+
 - **Chunk 12 (clean math property names, method call ICs, and typed array element fast paths)**:
   > [!NOTE]
   > **Summary of changes delivered in Chunk 12 (Jobs 1, 2, 3)**:
