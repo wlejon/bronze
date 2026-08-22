@@ -610,10 +610,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * lands in the entry at all, which is what makes the form GC-free.
  *
  * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array,
- * or one of the four collections (Map/Set/WeakMap/WeakSet) — whose methods
- * are native builtins answered from an immutable C table beside the value
- * rather than from any shape-indexed slot. Word 0 then holds, instead of a
- * shape:
+ * one of the four collections (Map/Set/WeakMap/WeakSet), or a typed-array
+ * view — whose methods are native builtins answered from an immutable C
+ * table beside the value rather than from any shape-indexed slot. Word 0
+ * then holds, instead of a shape:
  *
  *      (boxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT)
  *    | (receiver kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT)
@@ -637,7 +637,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * that box — an own named property (`a.push = f`) lives in it, and a
  * subclass instance's [[Prototype]] chain hangs off it (runtime/
  * native_base.h) — so a receiver carrying one takes the helper, which walks
- * the box first exactly as the read path does. The table itself cannot
+ * the box first exactly as the read path does. A typed-array view has no box
+ * AT ALL, so its latch points boxOffset at the {byteOffset, length} word,
+ * which by construction never carries a pointer tag in its top 16 bits
+ * (typed_array.h) and therefore always passes. The table itself cannot
  * change: decorating `Array.prototype` is a hard error by construction
  * (rt_prop_write.cpp), and the collections have no prototype object at all —
  * their members ARE the C ladder (rt_prop.cpp), which `Object.prototype`

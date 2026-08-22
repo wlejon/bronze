@@ -51,9 +51,11 @@ Value rtNativeSingleton(bronze_fn_code code, uint32_t arity);
 
 // The member memo: `(receiver kind, interned key index) -> that same interned
 // native`. Answers only for a receiver kind whose member ladder is a C table
-// with no object behind it — a Map, Set, WeakMap or WeakSet — and only for a
-// receiver carrying no own-property box, so an expando can never be shadowed
-// by one of these answers.
+// with no object behind it — a Map, Set, WeakMap, WeakSet, or a typed-array
+// view (whose METHOD table is one shared table across all nine views; the
+// fill site gates on it by name so the per-kind members like `constructor`
+// never land here) — and only for a receiver carrying no own-property box, so
+// an expando can never be shadowed by one of these answers.
 //
 // `kind` is the receiver's `HeapObjectHeader::flags`. Returns undefined on a
 // miss, which is also what it returns for a key whose answer is not a plain

@@ -10,14 +10,16 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/tls_block.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
 
 namespace {
 
-// The EXOTIC-receiver latch: an Array or collection (Map/Set/WeakMap/WeakSet)
-// whose method is a native builtin from an immutable C table. The entry is the
+// The EXOTIC-receiver latch: an Array, a collection (Map/Set/WeakMap/WeakSet)
+// or a typed-array view, whose method is a native builtin from an immutable C
+// table. The entry is the
 // DIRECT form under a kind guard instead of a shape guard — bronze_abi.h's
 // method-site contract states the word 0 encoding and why the box-offset
 // clause is the complete shadowing story. What makes each latch sound:
@@ -58,6 +60,17 @@ void latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         const Value memo = rtNativeMemberProbe(kind, keyIndex);
         if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return;
         boxOffset = offsetof(MapHeader, properties);
+    } else if (kind == TypedArrayHeader::kFlags) {
+        // Memo-keyed like the collections (the fill is gated on the shared
+        // method table, rt_prop.cpp's typed-array branch). A view carries no
+        // named-property box AT ALL, so no shadowing channel exists and the
+        // guard's box clause only needs a word that can never read as
+        // Object-tagged: the {byteOffset, length} word, whose top 16 bits
+        // stay far below a pointer tag by construction (typed_array.h keeps
+        // that word scan-safe for the collector, which is the same property).
+        const Value memo = rtNativeMemberProbe(kind, keyIndex);
+        if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return;
+        boxOffset = offsetof(TypedArrayHeader, byteOffset);
     } else {
         return;
     }

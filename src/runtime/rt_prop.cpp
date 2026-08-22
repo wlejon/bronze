@@ -370,9 +370,30 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
             // to the chain below).
             return rtTypedArrayElement(objVal, idx).rawBits();
         }
+        // The memo, METHOD-TABLE answers only. A view has no own-property box
+        // at all (TypedArrayHeader stores nothing named), so there is no
+        // own-property read to order this after — but the fill is gated on the
+        // method table's name-only check because the ladder's OTHER answers
+        // (`length`, `buffer`, `constructor`, ...) are computed from the
+        // receiver: `constructor` differs per element kind while the memo key
+        // is (TypedArray, name), one entry for all nine views. The methods are
+        // the one shared table (rtTypedArrayMethod serves every view), which
+        // is exactly the invariant the memo exists to exploit — three.js's
+        // WebGLUniforms reads `.set` off its matrix upload arrays 6,000 times
+        // a frame, every one of them walking the ladder to the same interned
+        // native.
+        if (Value memo = rtNativeMemberProbe(TypedArrayHeader::kFlags, keyIndex);
+            !memo.isUndefined()) {
+            return memo.rawBits();
+        }
         Rooted<Value> recv{objVal};
         const Value found = rtTypedArrayMember(recv.get(), keyStr);
-        if (!found.isUndefined()) return found.rawBits();
+        if (!found.isUndefined()) {
+            if (rtTypedArrayHasMethod(keyStr)) {
+                rtNativeMemberFill(TypedArrayHeader::kFlags, keyIndex, found);
+            }
+            return found.rawBits();
+        }
         return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) {

@@ -125,3 +125,55 @@ spreadArr.push(...parts);
 console.log("spread", spreadArr.length, spreadArr[2]);
 
 console.log("done");
+
+// --- TypedArray: hot .set/.fill/.indexOf latch and hit; no shadowing channel exists ---
+let f32 = new Float32Array(16);
+let src = new Float32Array(16);
+for (let i = 0; i < 16; i++) src[i] = i * 0.5;
+function upload(dst, s) { dst.set(s); }
+let acc = 0;
+for (let i = 0; i < 2000; i++) { upload(f32, src); acc += f32[3]; }
+console.log("ta set", acc, f32[15]);
+
+f32.fill(2.5, 0, 4);
+console.log("ta fill/indexOf", f32[0], f32.indexOf(2.5), f32.indexOf(999));
+
+// subarray/slice through a hot site
+function sub(v) { return v.subarray(2, 6); }
+let subLen = 0;
+for (let i = 0; i < 500; i++) subLen = sub(f32).length;
+console.log("ta subarray", subLen, sub(src)[0]);
+
+// per-view constructor must stay per-view (the memo must never serve it)
+let f64 = new Float64Array(4);
+let u8 = new Uint8Array(4);
+console.log("ta ctors", f32.constructor === Float32Array, f64.constructor === Float64Array,
+            u8.constructor === Uint8Array, f32.constructor === f64.constructor);
+
+// mixed TypedArray kinds at ONE site (one shared method table -> same native)
+function fillIt(v) { v.fill(1); return v[0]; }
+console.log("ta mixed kinds", fillIt(new Float64Array(2)), fillIt(new Uint8Array(2)),
+            fillIt(new Float32Array(2)));
+
+// a site mixing a typed array and a PLAIN receiver
+function callSet(o, a, b) { return o.set(a, b); }
+let plainSet = { set: (a, b) => "plain:" + a + ":" + b };
+let mix32 = new Float32Array(8);
+let mixResult = "";
+for (let i = 0; i < 30; i++) {
+  callSet(mix32, [i, i + 1], 2);
+  mixResult = callSet(plainSet, i, i + 1);
+}
+console.log("ta plain mix", mixResult, mix32[2], mix32[3]);
+
+// Map/Set at the same site as a TypedArray (kind guard between exotic kinds)
+function callHasOrIndex(r, k) { return r.has ? r.has(k) : r.indexOf(k) >= 0; }
+let hs = new Set([1, 2, 3]);
+let hi = new Float32Array([1, 2, 3]);
+let agree = true;
+for (let i = 0; i < 50; i++) {
+  if (callHasOrIndex(hs, 2) !== callHasOrIndex(hi, 2)) agree = false;
+}
+console.log("ta/set mixed", agree);
+
+console.log("done2");
