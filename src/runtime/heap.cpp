@@ -236,6 +236,13 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->elem_key_ic_enabled = 0;
     }
 
+    // The undefined-vs-number relational arm: with this off, a compare whose
+    // operand is `undefined` keeps the bronze_rel_* helper it always took.
+    const char* env_no_undef_rel = std::getenv("BRONZE_NO_UNDEF_REL");
+    if (env_no_undef_rel && std::strcmp(env_no_undef_rel, "1") == 0) {
+        tls->undef_rel_enabled = 0;
+    }
+
     const char* env_no_fn_singleton = std::getenv("BRONZE_NO_FN_SINGLETON_CACHE");
     if (env_no_fn_singleton && std::strcmp(env_no_fn_singleton, "1") == 0) {
         tls->fn_singleton_cache_enabled = 0;

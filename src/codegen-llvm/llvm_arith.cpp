@@ -127,29 +127,61 @@ llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper
 // The four relational operators over boxed operands: two numbers are one
 // ORDERED fcmp — false for a NaN on either side, which is exactly 13.10's
 // "undefined becomes false" for all four members of the family. Everything
-// else (strings compare by code unit, objects unwrap) keeps the helper.
-llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, llvm::Function* helper,
+// else (strings compare by code unit, objects unwrap) keeps the helper —
+// except an `undefined` paired with a number (or another `undefined`), which
+// a second, off-the-hot-path arm answers with constant false: 13.10.1 calls
+// ToPrimitive on both operands first, but `undefined` and a number are
+// already primitive, so no user code can run, ToNumeric(undefined) is NaN,
+// and every ordered comparison against a NaN is false. three.js leans on
+// this shape once per visible object per frame (`material.transmission >
+// 0.0` in WebGLRenderList.push, where the property does not exist). The arm
+// sits behind the BRONZE_NO_UNDEF_REL seam; the both-numbers arm is
+// unchanged and never pays for it.
+llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Function* helper,
                             llvm::CmpInst::Predicate pred, llvm::Value* lhs, llvm::Value* rhs) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
 
+    llvm::BasicBlock* undefBb = llvm::BasicBlock::Create(ctx, "drel.undef", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "drel.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "drel.done", fn);
 
-    branchIfBothNumbers(builder, lhs, rhs, slowBb, "drel.fast");
+    branchIfBothNumbers(builder, lhs, rhs, undefBb, "drel.fast");
     llvm::Value* fastVal = builder.CreateFCmp(pred, builder.CreateBitCast(lhs, dblTy),
                                               builder.CreateBitCast(rhs, dblTy), "drel.cmp");
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
+
+    // Not both numbers: if the seam is on and each operand is a number or
+    // `undefined`, at least one is `undefined` (both-numbers already left),
+    // so the answer is false for all four ordered predicates.
+    builder.SetInsertPoint(undefBb);
+    llvm::Value* base = builder.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
+    llvm::Value* cellPtr = builder.CreateConstInBoundsGEP1_64(
+        builder.getInt8Ty(), base, BRONZE_TLS_UNDEF_REL_ENABLED_OFF, "tls.undefrel");
+    llvm::Value* cell =
+        builder.CreateAlignedLoad(builder.getInt64Ty(), cellPtr, llvm::Align(8), "undefrel.seam");
+    llvm::Value* seamOn = builder.CreateICmpNE(cell, builder.getInt64(0), "undefrel.on");
+    llvm::Value* undef = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+    llvm::Value* numMax = builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS);
+    llvm::Value* lOk = builder.CreateOr(builder.CreateICmpULE(lhs, numMax),
+                                        builder.CreateICmpEQ(lhs, undef), "drel.lok");
+    llvm::Value* rOk = builder.CreateOr(builder.CreateICmpULE(rhs, numMax),
+                                        builder.CreateICmpEQ(rhs, undef), "drel.rok");
+    llvm::Value* take =
+        builder.CreateAnd(seamOn, builder.CreateAnd(lOk, rOk), "drel.undef.take");
+    llvm::BasicBlock* undefEndBb = builder.GetInsertBlock();
+    builder.CreateCondBr(take, doneBb, slowBb);
 
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 2, "drel.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 3, "drel.result");
     result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(builder.getFalse(), undefEndBb);
     result->addIncoming(slowVal, slowBb);
     return result;
 }
@@ -373,19 +405,19 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         // case is inlined; the runtime keeps ECMA-262 13.10.1's string branch
         // and the object unwrap.
         case il::Op::RelLt:
-            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_lt,
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi, shared_.abi.bronze_rel_lt,
                                                   llvm::CmpInst::FCMP_OLT, lhs, rhs);
             return true;
         case il::Op::RelGt:
-            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_gt,
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi, shared_.abi.bronze_rel_gt,
                                                   llvm::CmpInst::FCMP_OGT, lhs, rhs);
             return true;
         case il::Op::RelLe:
-            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_le,
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi, shared_.abi.bronze_rel_le,
                                                   llvm::CmpInst::FCMP_OLE, lhs, rhs);
             return true;
         case il::Op::RelGe:
-            values_[inst.result] = emitDynamicRel(builder_, shared_.abi.bronze_rel_ge,
+            values_[inst.result] = emitDynamicRel(builder_, shared_.abi, shared_.abi.bronze_rel_ge,
                                                   llvm::CmpInst::FCMP_OGE, lhs, rhs);
             return true;
         case il::Op::Pow:

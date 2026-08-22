@@ -1,0 +1,15 @@
+u>0 false u<0 false u>=0 false u<=0 false
+0>u false 0<u false 0>=u false 0<=u false
+u>1.5 false 1.5<u false u>=-inf false -inf<=u false
+u>u false u<u false u>=u false u<=u false
+u>nan false nan<=u false
+missing>0 false
+null>=0 true null<=0 true null>0 false null<0 false
+null>-1 true 0>=null true null>=u false u<=null false
+s>9 true s<'9' true u>'' false ''<=u false
+true>0 true u>false false false<=u false
+big>9 true u>big false big<=u false
+loud>u false u<loud false loud>=3 true
+valueOf calls 3
+a<b true b>a true order a,b,b,a
+a<=u false u>=b false order2 a,b

@@ -53,6 +53,8 @@ static_assert(offsetof(bronze_tls_block, method_call_ic_enabled) ==
               BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, elem_key_ic_enabled) ==
               BRONZE_TLS_ELEM_KEY_IC_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, undef_rel_enabled) ==
+              BRONZE_TLS_UNDEF_REL_ENABLED_OFF);
 
 namespace bronze::runtime {
 
@@ -89,6 +91,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*elem_cache_tbl=*/nullptr,
     /*method_call_ic_enabled=*/1,
     /*elem_key_ic_enabled=*/1,
+    /*undef_rel_enabled=*/1,
 };
 
 }  // namespace bronze::runtime
