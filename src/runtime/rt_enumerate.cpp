@@ -12,8 +12,13 @@
 // where several levels define it. Per level the order is own-enumerable order:
 // integer -like keys ascending, then the rest in insertion order.
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <charconv>
+#include <cstdlib>
+#include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -209,6 +214,61 @@ uint64_t emptyKeyArray() {
     return Value::fromObject(arr).rawBits();
 }
 
+// ---- the shape-keyed enumeration cache -------------------------------------
+//
+// A `for-in` over a plain-object chain answers a question that is a pure
+// function of (holder shape, prototype-mutation epoch) whenever the chain is
+// one the IC machinery can already vouch for: the shape pins the holder's own
+// enumerable keys AND its prototype (a Shape carries its chain root), the
+// epoch moves on every way a key can appear on a marked chain — an add to any
+// marked-prototype shape, a dictionary define, a prototype swap — and
+// `chainIsCacheable` (the ABSENT entry's own witness, runtime/object.cpp)
+// proves at probe time that no link has since been demoted to a dictionary,
+// which is what a DELETE on a prototype does. So the guard is exactly the
+// negative-entry validity condition, asked of the holder: same shape, same
+// epoch, chain still provable.
+//
+// What the cache holds is the ordered key LIST — arena-interned StringHeader
+// pointers, immortal and non-moving — so the entry contains no heap pointer at
+// all and the collector never needs to know the cache exists. The per-call
+// result array is still built fresh (the loop mutates a cursor over it), but a
+// hit skips the chain walk, the per-level key-vector allocations, and the
+// O(keys^2) cross-level dedup that made three.js's per-mesh-per-frame
+// enumerations (1.8M a run on `many_meshes`) the third-largest helper cost.
+//
+// Seam: BRONZE_NO_ENUM_CACHE=1 disables both probe and fill, so one binary
+// A/Bs the cache against the walk it replaces.
+struct EnumCacheEntry {
+    uint64_t epoch = 0;
+    std::vector<StringHeader*> keys;
+};
+
+bool enumCacheEnabled() {
+    static const bool disabled = [] {
+        const char* env = std::getenv("BRONZE_NO_ENUM_CACHE");
+        return env != nullptr && std::strcmp(env, "1") == 0;
+    }();
+    return !disabled;
+}
+
+std::unordered_map<Shape*, EnumCacheEntry>& enumCache() {
+    static thread_local std::unordered_map<Shape*, EnumCacheEntry> cache;
+    return cache;
+}
+
+// The result array for a key list: the arena keys THEMSELVES, for the same
+// identity-latch reason the walk's own foot states below.
+uint64_t keyListToArray(const std::vector<StringHeader*>& keys) {
+    const auto total = static_cast<uint32_t>(keys.size());
+    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
+    uint32_t at = 0;
+    for (StringHeader* key : keys) {
+        Rooted<Value> keyVal{rtKeyAsValue(key)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
+    }
+    return out.get().rawBits();
+}
+
 }  // namespace
 
 extern "C" {
@@ -291,6 +351,24 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     ObjectHeader* holder = namedPropertyHolder(v);
     if (!holder) return emptyKeyArray();
 
+    // The enumeration cache, probed and (on the walk below) filled under one
+    // decision: the holder's key list is a function of (shape, epoch) only for
+    // a non-dictionary shape over a chain `chainIsCacheable` vouches for. Both
+    // sides ask before anything allocates, so the raw holder pointer is live
+    // for the whole question; shapes are immortal, so `cacheShape` outlives
+    // everything below.
+    Shape* cacheShape = nullptr;
+    const uint64_t epochNow = protoMutationEpoch();
+    if (enumCacheEnabled() && holder->shape && !holder->shape->isDictionary() &&
+        holder->chainIsCacheable()) {
+        cacheShape = holder->shape;
+        auto& cache = enumCache();
+        if (auto it = cache.find(cacheShape);
+            it != cache.end() && it->second.epoch == epochNow) {
+            return keyListToArray(it->second.keys);
+        }
+    }
+
     // Phase one collects only arena-interned shape keys, which are immortal and
     // non-moving. That is what lets the whole chain be walked before a single
     // allocation happens: no raw object pointer here has to survive one.
@@ -310,6 +388,16 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         holder = holder->protoAncestor(1);
     }
 
+    // The fill: exactly what the walk just proved, under the decision taken
+    // before it ran. The epoch could not have moved in between — phase one
+    // neither allocates nor runs user code — so the entry's epoch is the one
+    // the keys were collected at.
+    if (cacheShape) {
+        EnumCacheEntry& entry = enumCache()[cacheShape];
+        entry.epoch = epochNow;
+        entry.keys = keys;
+    }
+
     // The result array holds the arena keys THEMSELVES (rtKeyAsValue), not
     // per-call heap copies. That is what makes `for (name in attributes)
     // ... attributes[name]` present the SAME string object every frame, which
@@ -317,14 +405,7 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // turns into an inline hit — and it deletes the one-heap-string-per-key-
     // per-enumeration bill the copy used to run (three.js's many_meshes made
     // ~5M such copies a run).
-    const auto total = static_cast<uint32_t>(keys.size());
-    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-    uint32_t at = 0;
-    for (StringHeader* key : keys) {
-        Rooted<Value> keyVal{rtKeyAsValue(key)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
-    }
-    return out.get().rawBits();
+    return keyListToArray(keys);
 }
 
 }  // extern "C"

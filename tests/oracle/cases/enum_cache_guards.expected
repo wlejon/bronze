@@ -1,0 +1,21 @@
+id,tag,weight
+id,tag,weight
+id,tag,weight
+id,tag,weight,extra
+id,tag,weight
+id,weight,extra
+id,weight,extra,tag
+own,mine
+own,mine,addedOnProto
+own,mine,addedOnProto
+own,mine,addedOnProto
+shadow
+later
+own,mine
+own,mine,addedOnProto
+own[own+mine] mine[own+mine]
+p,q
+p,q,late_p,late_q
+0,1,2,label
+0,2,label
+empty:[]
