@@ -502,6 +502,21 @@ uint64_t bronze_box_str(const char* s) {
 }
 
 uint64_t bronze_box_str_key(uint32_t keyIndex) {
+    // The ARENA key header itself — the same immortal object every evaluation
+    // of the literal, and the same identity discipline rtKeyAsValue states
+    // for enumeration keys: a JS string has no observable identity, so the
+    // aliasing is invisible, while what it buys is not. Every string literal
+    // boxes through here (llvm_ops.cpp's Box/Str names a registered key), so
+    // this is what makes `uniforms['modelViewMatrix']` present the SAME key
+    // object forever — the computed-read cache's identity latch hits inline,
+    // and the latch word points outside the movable reservation, surviving
+    // the per-collection ident sweep — and it deletes a heap allocation per
+    // literal evaluation besides. Registration interned the header eagerly
+    // (bronze_register_key_string), so the fallback is unreachable for any
+    // index generated code can hold; it stays because this is ABI surface.
+    if (StringHeader* header = rtKeyHeader(keyIndex)) {
+        return Value::fromString(header).rawBits();
+    }
     return bronze_box_str(rtKeyString(keyIndex).c_str());
 }
 
