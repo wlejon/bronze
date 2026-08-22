@@ -610,13 +610,15 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * lands in the entry at all, which is what makes the form GC-free.
  *
  * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array,
- * one of the four collections (Map/Set/WeakMap/WeakSet), or a typed-array
- * view — whose methods are native builtins answered from an immutable C
- * table beside the value rather than from any shape-indexed slot. Word 0
- * then holds, instead of a shape:
+ * one of the four collections (Map/Set/WeakMap/WeakSet), a typed-array
+ * view, or a global-constructor FUNCTION (`Array.isArray(x)`) — whose
+ * methods are native builtins answered from an immutable C table beside the
+ * value rather than from any shape-indexed slot. Word 0 then holds, instead
+ * of a shape:
  *
- *      (boxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT)
+ *      (auxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT)
  *    | (receiver kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT)
+ *    | [BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT]
  *    | BRONZE_ABI_METHOD_IC_EXOTIC_BIT
  *
  * Bit 0 set is what distinguishes it: a real Shape* is an 8-byte-aligned
@@ -624,32 +626,48 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * BRONZE_ABI_IC_SHAPE_ARRAY_METHOD sentinel makes). The kind is the
  * receiver's HeapObjectHeader::flags as latched — a runtime value the guard
  * compares against the live receiver's flags, so no kind number is baked
- * into generated code. `boxOffset` is the byte offset, from the receiver's
- * header, of the Value holding its ordinary named-property box
- * (ArrayHeader::properties / MapHeader::properties — runtime layouts, again
- * carried in the entry rather than baked into code). The guard is:
+ * into generated code. The guard's first clause is always
  *
- *   receiver flags == latched kind, AND the Value at boxOffset is not
- *   Object-tagged.
+ *   receiver flags == latched kind,
  *
- * That second clause is the whole shadowing story: the ONLY way one of these
- * receivers can answer a member with anything but the C table is through
- * that box — an own named property (`a.push = f`) lives in it, and a
- * subclass instance's [[Prototype]] chain hangs off it (runtime/
- * native_base.h) — so a receiver carrying one takes the helper, which walks
- * the box first exactly as the read path does. A typed-array view has no box
- * AT ALL, so its latch points boxOffset at the {byteOffset, length} word,
- * which by construction never carries a pointer tag in its top 16 bits
- * (typed_array.h) and therefore always passes. The table itself cannot
- * change: decorating `Array.prototype` is a hard error by construction
- * (rt_prop_write.cpp), and the collections have no prototype object at all —
- * their members ARE the C ladder (rt_prop.cpp), which `Object.prototype`
- * sits below, never above. Words 1–3 are the DIRECT form's: the native's
- * code pointer (a C function in the runtime image, immortal), its arity with
- * a zero high half, and BRONZE_ABI_UNDEFINED_BITS for env — a native builtin
- * is created env-free (rt_builtins.h's rtNativeFunction) and the latch
- * refuses any callee that is not. No heap word in the entry: GC-free, like
- * the slot form.
+ * and its second clause loads the u64 at `auxOffset` bytes from the
+ * receiver's header and asks one of two questions, selected by bit 1:
+ *
+ *   bit 1 clear (BOX guard): the loaded Value must not be Object-tagged.
+ *   `auxOffset` names the receiver's ordinary named-property box
+ *   (ArrayHeader::properties / MapHeader::properties — runtime layouts,
+ *   carried in the entry rather than baked into code). The box is the ONLY
+ *   way such a receiver can answer a member with anything but the C table —
+ *   an own named property (`a.push = f`) lives in it, and a subclass
+ *   instance's [[Prototype]] chain hangs off it (runtime/native_base.h) —
+ *   so a receiver carrying one takes the helper, which walks the box first
+ *   exactly as the read path does. A typed-array view has no box AT ALL, so
+ *   its latch points auxOffset at the {byteOffset, length} word, which by
+ *   construction never carries a pointer tag in its top 16 bits
+ *   (typed_array.h) and therefore always passes. The table itself cannot
+ *   change: decorating `Array.prototype` is a hard error by construction
+ *   (rt_prop_write.cpp), and the collections have no prototype object at
+ *   all — their members ARE the C ladder (rt_prop.cpp), which
+ *   `Object.prototype` sits below, never above.
+ *
+ *   bit 1 set (CODE guard): the loaded word must EQUAL word
+ *   BRONZE_ABI_METHOD_IC_AUX_WORD of the site. Latched for a Function
+ *   receiver whose callee is a global constructor's static
+ *   (builtin_constructors.cpp's kCtors): `auxOffset` is the FunctionHeader
+ *   code offset and the aux word is the constructor's own code pointer, the
+ *   one identity a moving collector never rewrites. No box clause is needed
+ *   at all, because the statics table is consulted FIRST on the
+ *   function-receiver ladder, ahead even of the own-property box
+ *   (rt_prop.cpp) — nothing can shadow it, so the answer is a pure function
+ *   of (receiver code, key). The aux word is a raw C function pointer,
+ *   never a Value: the collector must not touch it, and it never does — a
+ *   module's method-site registration covers word 3 only.
+ *
+ * Words 1–3 are the DIRECT form's: the native's code pointer (a C function
+ * in the runtime image, immortal), its arity with a zero high half, and
+ * BRONZE_ABI_UNDEFINED_BITS for env — a native builtin is created env-free
+ * (rt_builtins.h's rtNativeFunction) and the latch refuses any callee that
+ * is not.  No heap word in the entry: GC-free, like the slot form.
  *
  * Mixed binaries stay sound in both directions: an old hit path compares the
  * odd word against a real shape and misses; a new exotic arm compares an old
@@ -659,9 +677,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
 #define BRONZE_ABI_METHOD_IC_ENV_WORD    3
 #define BRONZE_ABI_METHOD_IC_SLOT_SHIFT 32
-#define BRONZE_ABI_METHOD_IC_EXOTIC_BIT  1ull
-#define BRONZE_ABI_METHOD_IC_KIND_SHIFT  1
+#define BRONZE_ABI_METHOD_IC_EXOTIC_BIT       1ull
+#define BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT   2ull
+#define BRONZE_ABI_METHOD_IC_KIND_SHIFT  2
 #define BRONZE_ABI_METHOD_IC_BOX_SHIFT  32
+#define BRONZE_ABI_METHOD_IC_AUX_WORD    4
 
 /* ---- the COMPUTED-read cache, as generated code reads it -----------------
  *

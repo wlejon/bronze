@@ -17,9 +17,9 @@ namespace bronze::runtime {
 
 namespace {
 
-// The EXOTIC-receiver latch: an Array, a collection (Map/Set/WeakMap/WeakSet)
-// or a typed-array view, whose method is a native builtin from an immutable C
-// table. The entry is the
+// The EXOTIC-receiver latch: an Array, a collection (Map/Set/WeakMap/WeakSet),
+// a typed-array view, or a global-constructor function receiver, whose method
+// is a native builtin from an immutable C table. The entry is the
 // DIRECT form under a kind guard instead of a shape guard — bronze_abi.h's
 // method-site contract states the word 0 encoding and why the box-offset
 // clause is the complete shadowing story. What makes each latch sound:
@@ -51,15 +51,16 @@ void latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         return;
     }
     const uint16_t kind = objHdr->flags;
-    uint64_t boxOffset = 0;
+    uint64_t auxOffset = 0;
+    uint64_t guardBits = 0;
     if (kind == HeapKind::Array) {
         if (!probe.isArrayMethod()) return;
-        boxOffset = offsetof(ArrayHeader, properties);
+        auxOffset = offsetof(ArrayHeader, properties);
     } else if (kind == MapHeader::kMapFlags || kind == MapHeader::kSetFlags ||
                kind == MapHeader::kWeakMapFlags || kind == MapHeader::kWeakSetFlags) {
         const Value memo = rtNativeMemberProbe(kind, keyIndex);
         if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return;
-        boxOffset = offsetof(MapHeader, properties);
+        auxOffset = offsetof(MapHeader, properties);
     } else if (kind == TypedArrayHeader::kFlags) {
         // Memo-keyed like the collections (the fill is gated on the shared
         // method table, rt_prop.cpp's typed-array branch). A view carries no
@@ -70,16 +71,33 @@ void latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         // that word scan-safe for the collector, which is the same property).
         const Value memo = rtNativeMemberProbe(kind, keyIndex);
         if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return;
-        boxOffset = offsetof(TypedArrayHeader, byteOffset);
+        auxOffset = offsetof(TypedArrayHeader, byteOffset);
+    } else if (kind == HeapKind::Function) {
+        // A global constructor's static (`Array.isArray`, `String.raw`):
+        // answered FIRST on the function-receiver ladder from a fixed C table
+        // keyed by the RECEIVER'S code pointer, ahead even of the own-property
+        // box (rt_prop.cpp) — nothing a program writes can shadow one, so the
+        // answer is a pure function of (receiver code, key). The witness walks
+        // the same table with raw code pointers (no allocation), and the hit
+        // guard re-checks the live receiver's code word against the aux word —
+        // the one identity a moving collector never rewrites.
+        const auto* recvFn = reinterpret_cast<const FunctionHeader*>(objHdr);
+        if (!recvFn->code) return;
+        if (!rtGlobalConstructorStaticMatches(recvFn->code, rtKeyString(keyIndex), fn->code)) {
+            return;
+        }
+        icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(recvFn->code);
+        auxOffset = offsetof(FunctionHeader, code);
+        guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
     } else {
         return;
     }
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
     icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
-    icEntry[0] = (boxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT) |
+    icEntry[0] = (auxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT) |
                  (static_cast<uint64_t>(kind) << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
-                 BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+                 guardBits | BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
 }
 
 // One latch for both method helpers. `probe` is the scratch site the property

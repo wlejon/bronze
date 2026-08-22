@@ -57,15 +57,17 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "mic.isplain");
     builder.CreateCondBr(isPlain, shapeBb, exoticBb);
 
-    // 2b. EXOTIC receiver (Array or a collection): the entry may hold the
-    // kind-guarded direct form (bronze_abi.h's method-site contract). Word 0's
-    // low half must be ((kind << 1) | 1) for the LIVE receiver's kind — an odd
-    // word can never be a Shape*, and a never-latched or plain-latched entry
-    // can never be odd, so this one compare is the whole form dispatch.
+    // 2b. EXOTIC receiver (Array, collection, typed-array view, or a global
+    // constructor): the entry may hold the kind-guarded direct form
+    // (bronze_abi.h's method-site contract). Word 0's low half, its guard-kind
+    // bit masked off, must be ((kind << 2) | 1) for the LIVE receiver's kind —
+    // an odd word can never be a Shape*, and a never-latched or plain-latched
+    // entry can never be odd, so this one compare is the whole form dispatch.
     builder.SetInsertPoint(exoticBb);
     llvm::Value* exoWord0 = builder.CreateAlignedLoad(i64Ty, entry, llvm::Align(8), "mic.exo.word0");
     llvm::Value* exoLow = builder.CreateAnd(
-        exoWord0, builder.getInt64(0xFFFFFFFFull), "mic.exo.low");
+        exoWord0, builder.getInt64(0xFFFFFFFFull & ~BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT),
+        "mic.exo.low");
     llvm::Value* flags64 = builder.CreateZExt(flags, i64Ty, "mic.exo.flags64");
     llvm::Value* exoExpect = builder.CreateOr(
         builder.CreateShl(flags64, BRONZE_ABI_METHOD_IC_KIND_SHIFT),
@@ -73,23 +75,46 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* exoKindOk = builder.CreateICmpEQ(exoLow, exoExpect, "mic.exo.kindok");
     builder.CreateCondBr(exoKindOk, exoticBoxBb, slowBb);
 
-    // The receiver's named-property box — the ONLY thing that can shadow a
-    // table method (an own property, or a subclass prototype chain hanging off
-    // it) — at the byte offset the latch recorded in word 0's high half. A
-    // receiver carrying one takes the helper, which walks the box first.
+    // The guard's second clause: load the u64 at the aux offset word 0
+    // carries in its high half, then ask the question bit 1 selects.
+    //   BOX guard (bit clear): the receiver's named-property box — the ONLY
+    //   thing that can shadow a table method (an own property, or a subclass
+    //   prototype chain hanging off it) — must not be Object-tagged; a
+    //   receiver carrying one takes the helper, which walks the box first.
+    //   CODE guard (bit set): the word — the receiver Function's code
+    //   pointer — must equal the site's aux word, pinning the receiver to
+    //   the one global constructor the entry was latched against.
     builder.SetInsertPoint(exoticBoxBb);
-    llvm::Value* boxOff = builder.CreateLShr(
-        exoWord0, builder.getInt64(BRONZE_ABI_METHOD_IC_BOX_SHIFT), "mic.exo.boxoff");
-    llvm::Value* boxPtr = builder.CreateGEP(i8Ty, hdr, boxOff, "mic.exo.boxptr");
-    llvm::Value* boxVal =
-        builder.CreateAlignedLoad(i64Ty, boxPtr, llvm::Align(8), "mic.exo.boxval");
-    llvm::Value* boxTag =
-        builder.CreateLShr(boxVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.exo.boxtag");
-    llvm::Value* boxIsObj = builder.CreateICmpEQ(
-        boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.exo.boxisobj");
+    llvm::Value* auxOff = builder.CreateLShr(
+        exoWord0, builder.getInt64(BRONZE_ABI_METHOD_IC_BOX_SHIFT), "mic.exo.auxoff");
+    llvm::Value* auxPtr = builder.CreateGEP(i8Ty, hdr, auxOff, "mic.exo.auxptr");
+    llvm::Value* auxVal =
+        builder.CreateAlignedLoad(i64Ty, auxPtr, llvm::Align(8), "mic.exo.auxval");
+    llvm::Value* guardKind = builder.CreateAnd(
+        exoWord0, builder.getInt64(BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT), "mic.exo.guardkind");
+    llvm::Value* isCodeGuard = builder.CreateICmpNE(
+        guardKind, builder.getInt64(0), "mic.exo.iscodeguard");
+
+    llvm::BasicBlock* exoCodeBb = llvm::BasicBlock::Create(ctx, "mic.exotic.code", fn);
+    llvm::BasicBlock* exoBoxChkBb = llvm::BasicBlock::Create(ctx, "mic.exotic.boxchk", fn);
+    builder.CreateCondBr(isCodeGuard, exoCodeBb, exoBoxChkBb);
+
+    builder.SetInsertPoint(exoCodeBb);
+    llvm::Value* auxWord = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_AUX_WORD),
+        llvm::Align(8), "mic.exo.auxword");
+    llvm::Value* codeMatch = builder.CreateICmpEQ(auxVal, auxWord, "mic.exo.codematch");
     // An exotic entry is always the DIRECT form (word 2's high half is zero),
     // so the shared hit dispatch reads code/arity/env exactly as a shape hit
     // would.
+    builder.CreateCondBr(codeMatch, hitBb, slowBb);
+
+    builder.SetInsertPoint(exoBoxChkBb);
+    llvm::Value* boxTag =
+        builder.CreateLShr(auxVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.exo.boxtag");
+    llvm::Value* boxIsObj = builder.CreateICmpEQ(
+        boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.exo.boxisobj");
     builder.CreateCondBr(boxIsObj, slowBb, hitBb);
 
     // 3. Shape comparison (receiver shape == icEntry[0])

@@ -177,3 +177,31 @@ for (let i = 0; i < 50; i++) {
 console.log("ta/set mixed", agree);
 
 console.log("done2");
+
+// --- Global-constructor statics: Function receivers (Array.isArray et al.) ---
+function checkArr(v) { return Array.isArray(v); }
+let isArrCount = 0;
+for (let i = 0; i < 2000; i++) {
+  if (checkArr([i])) isArrCount++;
+  if (checkArr(i)) isArrCount += 1000;
+}
+console.log("isArray hot", isArrCount);
+console.log("statics", String.fromCharCode(72, 105), Array.of(1, 2, 3).length,
+            Array.from("abc").join("|"));
+
+// The statics table answers FIRST on the ladder, ahead of any own property —
+// a write cannot shadow it (bronze's documented divergence; pin it).
+Array.isArray = function () { return "nope"; };
+console.log("static unshadowable", checkArr([1]), checkArr(0));
+
+// A subclass reaches the same statics through its realized box — a DIFFERENT
+// receiver code pointer, so the site serves it through the helper, and its
+// box CAN shadow.
+class StatArr extends Array {}
+function checkVia(c, v) { return c.isArray(v); }
+console.log("subclass static", checkVia(StatArr, [1]), StatArr.of(9).length);
+let t = 0;
+for (let i = 0; i < 100; i++) if (checkVia(Array, [i])) t++;
+console.log("mixed ctor site", t, checkVia(StatArr, [2]));
+
+console.log("done3");

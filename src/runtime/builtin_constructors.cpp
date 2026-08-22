@@ -789,6 +789,25 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
     return false;
 }
 
+bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string& key,
+                                      bronze_fn_code calleeCode) noexcept {
+    // The exotic method-IC latch's witness (rt_method_call.cpp): does
+    // (ctorCode, key) name a static in the table above whose body IS
+    // calleeCode? A pure walk over the same C arrays the read path answers
+    // from — comparing code pointers rather than function objects, because the
+    // latch runs where an allocation would invalidate its caller's raw
+    // pointers and interning an object is exactly an allocation.
+    if (!ctorCode || !calleeCode) return false;
+    for (const CtorEntry& entry : kCtors) {
+        if (entry.code != ctorCode) continue;
+        for (size_t i = 0; i < entry.staticCount; ++i) {
+            if (key == entry.statics[i].name) return entry.statics[i].code == calleeCode;
+        }
+        return false;
+    }
+    return false;
+}
+
 bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
     if (!ctor.get().isObject() ||
         ctor.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {

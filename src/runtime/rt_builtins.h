@@ -508,6 +508,16 @@ Value rtNumberConstructorObject();
 // ordinary function-member path so `Array.call` keeps its own diagnosis.
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
 
+// The exotic method-IC latch's witness: does (ctorCode, key) name a static of
+// one of those constructors whose body IS calleeCode? A pure walk over the
+// same C tables the read above answers from — no interning, no allocation —
+// so the latch can ask it with raw pointers in hand. What makes the latched
+// entry sound is the read path's ORDER: the statics table is consulted first
+// on the function-receiver ladder, ahead even of the own-property box, so
+// nothing a program writes can shadow a static this answers true for.
+bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string& key,
+                                      bronze_fn_code calleeCode) noexcept;
+
 // The statics half of that table, written into the constructor's `properties`
 // box for the reason `rtInstallMapStatics` above is — `class MyArr extends
 // Array` must reach `Array.of` — and off the SAME `kCtors` entry the read path

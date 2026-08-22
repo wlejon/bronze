@@ -24,3 +24,9 @@ ta mixed kinds 1 1 1
 ta plain mix plain:29:30 29 30
 ta/set mixed true
 done2
+isArray hot 2000
+statics Hi 3 a|b|c
+static unshadowable true false
+subclass static true 1
+mixed ctor site 100 true
+done3
