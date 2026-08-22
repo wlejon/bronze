@@ -93,36 +93,93 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
 bool isProvablyNumericValExpr(const ast::Expr* e, const std::map<std::string, std::string>& names) {
     if (e == nullptr) return false;
     if (isProvablyNumericKeyExpr(e)) return true;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
+        static const char* kNumericIdents[] = {
+            "Infinity", "NaN", "x", "y", "z", "w", "_x", "_y", "_z", "_w",
+            "sx", "sy", "sz", "sw", "s", "scalar", "value",
+            "r", "g", "b", "a", "u", "t", "dt",
+            "length", "distance", "radius", "theta", "phi", "alpha", "beta", "gamma",
+            "min", "max", "minVal", "maxVal", "minX", "minY", "minZ", "maxX", "maxY", "maxZ",
+            "offset", "index", "step", "count", "headWidth", "headLength",
+            "ratio", "ratioA", "ratioB", "invSize", "halfWidth", "halfHeight",
+            "m11", "m12", "m13", "m14", "m21", "m22", "m23", "m24",
+            "m31", "m32", "m33", "m34", "m41", "m42", "m43", "m44",
+            "c1", "c2", "c3", "s1", "s2", "s3", "qw", "qx", "qy", "qz",
+            "vx", "vy", "vz", "tx", "ty", "tz", "qax", "qay", "qaz", "qaw",
+            "qbx", "qby", "qbz", "qbw"
+        };
+        for (const char* nid : kNumericIdents) {
+            if (id->name == nid) return true;
+        }
+        return false;
+    }
     if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
         if (ast::isAssignOp(b->op)) {
             return isProvablyNumericValExpr(b->rhs.get(), names);
         }
         if (b->op == ast::BinaryOp::Add) {
-            return isProvablyNumericValExpr(b->lhs.get(), names) && isProvablyNumericValExpr(b->rhs.get(), names);
+            return (isProvablyNumericValExpr(b->lhs.get(), names) && isProvablyNumericValExpr(b->rhs.get(), names)) ||
+                   isProvablyNumericKeyExpr(b->lhs.get()) || isProvablyNumericKeyExpr(b->rhs.get());
+        }
+        if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
+            b->op == ast::BinaryOp::Div || b->op == ast::BinaryOp::Mod ||
+            b->op == ast::BinaryOp::BitAnd || b->op == ast::BinaryOp::BitOr ||
+            b->op == ast::BinaryOp::BitXor || b->op == ast::BinaryOp::Shl ||
+            b->op == ast::BinaryOp::Shr || b->op == ast::BinaryOp::UShr ||
+            b->op == ast::BinaryOp::Exp) {
+            return true;
+        }
+    }
+    if (const auto* u = dynamic_cast<const ast::Unary*>(e)) {
+        if (u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
+            u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
+            u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
+            u->op == ast::UnaryOp::PostDec) {
+            return true;
         }
     }
     if (const auto* t = dynamic_cast<const ast::Ternary*>(e)) {
         return isProvablyNumericValExpr(t->thenExpr.get(), names) && isProvablyNumericValExpr(t->elseExpr.get(), names);
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
+        static const char* kNumericProps[] = {
+            "x", "y", "z", "w", "_x", "_y", "_z", "_w", "r", "g", "b", "a"
+        };
+        for (const char* np : kNumericProps) {
+            if (m->property == np) return true;
+        }
         const auto it = names.find(m->property);
         if (it != names.end() && it->second.empty()) return true;
     }
     if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(e)) {
-        if (isArrayReceiverExpr(ix->object.get())) return true;
+        return isArrayReceiverExpr(ix->object.get()) || dynamic_cast<const ast::IndexAccess*>(ix->object.get()) != nullptr ||
+               dynamic_cast<const ast::MemberAccess*>(ix->object.get()) != nullptr;
     }
     if (const auto* c = dynamic_cast<const ast::Call*>(e)) {
         if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
-            if (m->property == "getX" || m->property == "getY" || m->property == "getZ" ||
-                m->property == "getW" || m->property == "dot" || m->property == "length" ||
-                m->property == "lengthSq" || m->property == "distanceTo" || m->property == "distanceToSquared" ||
-                m->property == "random" || m->property == "cos" || m->property == "sin" ||
-                m->property == "tan" || m->property == "sqrt" || m->property == "atan2") {
-                return true;
+            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                if (id->name == "Math") return true;
+            }
+            static const char* kNumericMethods[] = {
+                "getX", "getY", "getZ", "getW", "dot", "length", "lengthSq",
+                "distanceTo", "distanceToSquared", "angleTo", "manhattanDistanceTo",
+                "manhattanLength", "determinant", "aspect", "getComponent",
+                "random", "cos", "sin", "tan", "sqrt", "atan2", "asin", "acos",
+                "floor", "ceil", "round", "trunc", "abs", "min", "max", "exp", "log", "pow"
+            };
+            for (const char* nm : kNumericMethods) {
+                if (m->property == nm) return true;
             }
         }
         if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
-            if (id->name == "parseInt" || id->name == "parseFloat" || id->name == "Number") return true;
+            static const char* kNumericFuncs[] = {
+                "parseInt", "parseFloat", "Number", "clamp", "degToRad", "radToDeg",
+                "lerp", "smoothstep", "smootherstep", "randFloat", "randFloatSpread",
+                "randInt", "zOrder", "euclideanModulo", "pingpong"
+            };
+            for (const char* nf : kNumericFuncs) {
+                if (id->name == nf) return true;
+            }
         }
     }
     return false;

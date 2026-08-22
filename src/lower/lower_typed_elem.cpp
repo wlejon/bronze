@@ -208,8 +208,8 @@ bool Lowerer::typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs
 }
 
 bool Lowerer::binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const {
-    if (alwaysCoercingBinary(op)) return true;
-    if (op == ast::BinaryOp::Add) return definitelyNumericOperand(other, 8);
+    if (alwaysCoercingBinary(op) || alwaysCoercingCompound(op)) return true;
+    if (op == ast::BinaryOp::Add || op == ast::BinaryOp::PlusAssign) return definitelyNumericOperand(other, 8);
     return false;
 }
 

@@ -142,7 +142,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // produces `undefined`, which is not the field's type.
         if (!m->optional && base.is(TypeKind::Object) &&
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
-            const Type field =
+            Type field =
                 mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
             // The harvest has not decided this field yet: its only writes are
             // constructor parameters the call-graph fixpoint is still joining
@@ -159,6 +159,9 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             if (field.is(TypeKind::Object)) {
                 return base.identityOnly() ? Type::objectIdentityOnly(field.shapeClass())
                                            : Type::objectNotBuiltHere(field.shapeClass());
+            }
+            if (field.is(TypeKind::Dynamic) && mod_.fieldAudit.numberClean(m->property)) {
+                field = Type::number();
             }
             // A PRIMITIVE is a different kind of claim and takes two proofs.
             //
