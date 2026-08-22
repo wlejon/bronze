@@ -9,6 +9,7 @@
 // time is always the cell's CURRENT address, and the finalizer registry
 // deletes the std::function when the function object dies.
 
+#include <cstdio>
 #include <span>
 #include <utility>
 
@@ -18,6 +19,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -47,8 +49,29 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
     // read once, before the callback can move anything.
     auto* fn = static_cast<NativeFn*>(handleData(Value(env_bits)));
     if (!fn) {
-        fatal("embed: a host function whose environment is not a native handle "
-              "(the trampoline reached a function the factory did not build)");
+        // Diagnostic dump before dying: what the environment slot actually
+        // holds decides which corruption class this is.
+        Value env(env_bits);
+        char buf[256];
+        const char* shape = "non-object";
+        uint64_t kindBits = 0, slot2 = 0;
+        uint32_t slots = 0;
+        if (env.isObject()) {
+            auto* hdr = env.asObject<HeapObjectHeader>();
+            kindBits = static_cast<uint64_t>(hdr->flags);
+            shape = (hdr->flags == HeapKind::Plain) ? "plain-object" : "other-heap-kind";
+            if (hdr->flags == HeapKind::Plain) {
+                auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+                slots = obj->internalSlotCount();
+                if (slots >= 3) slot2 = obj->internalSlot(2).rawBits();
+            }
+        }
+        std::snprintf(buf, sizeof buf,
+                      "embed: host fn env not a native handle: env=%016llx (%s kind=%llu "
+                      "islots=%u slot2=%016llx) this=%016llx argc=%u",
+                      (unsigned long long)env_bits, shape, (unsigned long long)kindBits,
+                      slots, (unsigned long long)slot2, (unsigned long long)this_bits, argc);
+        fatal(buf);
     }
 
     // The span points at RootedArgs' own slots: the collector updates them in
@@ -77,9 +100,13 @@ Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
     // Same shape as bronze_create_function (rt_object.cpp): allocate first,
     // then read the environment through the root — the allocation can collect,
     // and a copy taken before it would point into dead from-space.
+    // NEEDS_ENV like the bound-function and promise-pair factories: the
+    // trampoline reads the env cell on every call, so the method-call IC must
+    // never latch this function onto its env-less direct dispatch.
     FunctionHeader* fnObj =
         FunctionHeader::create(runtime::rtHeap(), hostTrampoline, Value::fromUndefined(), arity,
-                               BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE);
+                               BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE |
+                                   BRONZE_ABI_FN_FLAG_NEEDS_ENV);
     fnObj->env_record = env.get();
     fnObj->header.flags = HeapKind::Function;
     // Unnamed by default, like every native builtin: `f.name` then stays the
