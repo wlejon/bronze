@@ -86,4 +86,12 @@ bool rtEnvMethodIcEnabled() noexcept;
 void rtSetExoticMethodIcEnabled(bool enabled);
 bool rtExoticMethodIcEnabled() noexcept;
 
+// BRONZE_NO_POLY_METHOD_IC=1 gates way-1 DISPLACEMENT at the method-call
+// latch — with it down, an overwritten way-0 entry is simply lost, exactly
+// the pre-poly behaviour — and nothing else: the generated way-1 compare can
+// only match a shape the displacement wrote, so an empty way 1 keeps the arm
+// dead. Latch-side for the same one-binary A/B reason the two seams above.
+void rtSetPolyMethodIcEnabled(bool enabled);
+bool rtPolyMethodIcEnabled() noexcept;
+
 }  // namespace bronze::runtime

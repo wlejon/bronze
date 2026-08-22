@@ -30,3 +30,9 @@ static unshadowable true false
 subclass static true 1
 mixed ctor site 100 true
 done3
+poly 2-shape 13504500 3000 6000
+poly 3-shape 2970900 900
+poly env 844000
+poly array/plain 250500 500 500
+poly latched a1 b1
+done4

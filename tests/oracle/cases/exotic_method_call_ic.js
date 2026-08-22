@@ -205,3 +205,68 @@ for (let i = 0; i < 100; i++) if (checkVia(Array, [i])) t++;
 console.log("mixed ctor site", t, checkVia(StatArr, [2]));
 
 console.log("done3");
+
+// --- WAY 1: 2+-shape method sites (recursive tree walk pattern) ---
+class NodeA {
+  constructor() { this.kids = []; this.tag = "A"; this.n = 0; }
+  bump() { this.n += 1; return this.n; }
+}
+class NodeB {
+  constructor() { this.kids = []; this.tag = "B"; this.extra = true; this.n = 0; }
+  bump() { this.n += 2; return this.n; }
+}
+// One call site, two shapes alternating every call — the way-0-only cache
+// relatches forever; way 1 keeps both.
+function walkBump(node) { return node.bump(); }
+let na = new NodeA(), nb = new NodeB();
+let polySum = 0;
+for (let i = 0; i < 3000; i++) { polySum += walkBump(na); polySum += walkBump(nb); }
+console.log("poly 2-shape", polySum, na.n, nb.n);
+
+// Three shapes at one site: the third keeps missing (2 ways), answers stay right.
+class NodeC {
+  constructor() { this.c1 = 1; this.c2 = 2; this.c3 = 3; this.n = 0; }
+  bump() { this.n += 3; return this.n; }
+}
+let nc = new NodeC();
+let tri = 0;
+for (let i = 0; i < 300; i++) { tri += walkBump(na) + walkBump(nb) + walkBump(nc); }
+console.log("poly 3-shape", tri, nc.n);
+
+// env-carrying prototype methods (closures installed on prototypes) across
+// two shapes at one site
+function makeProtoFam(base) {
+  function Fam() { this.v = base; }
+  Fam.prototype.calc = function (x) { return this.v + base + x; };
+  return Fam;
+}
+const Fam1 = makeProtoFam(10);
+const Fam2 = makeProtoFam(200);
+function callCalc(o, x) { return o.calc(x); }
+let f1 = new Fam1(), f2 = new Fam2();
+let envSum = 0;
+for (let i = 0; i < 2000; i++) { envSum += callCalc(f1, 1); envSum += callCalc(f2, 1); }
+console.log("poly env", envSum);
+
+// a site mixing an ARRAY with a plain shape must keep both entries
+function len2(o) { return o.size2(); }
+let arrForMix = [1, 2, 3];
+// (array methods via a mixed plain/array site was pinned above; here way-1
+// displacement by an exotic install is what runs)
+function pushMix(o, v) { return o.push(v); }
+let plainPush = { list: [], push(v) { this.list.push(v); return this.list.length; } };
+let mixTotal = 0;
+let arrMix = [];
+for (let i = 0; i < 500; i++) { mixTotal += pushMix(arrMix, i); mixTotal += pushMix(plainPush, i); }
+console.log("poly array/plain", mixTotal, arrMix.length, plainPush.list.length);
+
+// method REPLACED on a prototype after both ways latched: the no-epoch
+// envelope pins way-parity with way 0 (same looseness, same answer)
+class SwapA { m() { return "a1"; } }
+class SwapB { m() { return "b1"; } }
+function callM(o) { return o.m(); }
+let sa = new SwapA(), sb = new SwapB();
+for (let i = 0; i < 50; i++) { callM(sa); callM(sb); }
+console.log("poly latched", callM(sa), callM(sb));
+
+console.log("done4");

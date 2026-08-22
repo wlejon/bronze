@@ -117,7 +117,9 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.exo.boxisobj");
     builder.CreateCondBr(boxIsObj, slowBb, hitBb);
 
-    // 3. Shape comparison (receiver shape == icEntry[0])
+    // 3. Shape comparison (receiver shape == icEntry[0]); a way-0 miss falls
+    // to the site's WAY 1 (words 6-9, bronze_abi.h's site contract) before
+    // the helper — the polymorphic-site arm, plain DIRECT entries only.
     builder.SetInsertPoint(shapeBb);
     llvm::Value* shape = builder.CreateAlignedLoad(
         ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
@@ -126,7 +128,39 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateAlignedLoad(i64Ty, entry, llvm::Align(8), "mic.cachedshape");
     llvm::Value* cachedShape = builder.CreateIntToPtr(cachedShapeInt, ptrTy, "mic.cachedshapeptr");
     llvm::Value* shapeMatch = builder.CreateICmpEQ(shape, cachedShape, "mic.shapematch");
-    builder.CreateCondBr(shapeMatch, hitBb, slowBb);
+    llvm::BasicBlock* way1Bb = llvm::BasicBlock::Create(ctx, "mic.way1", fn);
+    builder.CreateCondBr(shapeMatch, hitBb, way1Bb);
+
+    // 3b. WAY 1: shape against word 6; a hit reads the direct triple from
+    // words 7-9 and joins the dispatch below with no form split — displacement
+    // only ever writes a plain DIRECT resident here. A never-filled way 1 is
+    // word 6 == 0, which no real shape equals.
+    builder.SetInsertPoint(way1Bb);
+    llvm::Value* w1ShapeInt = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD),
+        llvm::Align(8), "mic.w1.shape");
+    llvm::Value* w1Shape = builder.CreateIntToPtr(w1ShapeInt, ptrTy, "mic.w1.shapeptr");
+    llvm::Value* w1Match = builder.CreateICmpEQ(shape, w1Shape, "mic.w1.match");
+    llvm::BasicBlock* way1HitBb = llvm::BasicBlock::Create(ctx, "mic.way1.hit", fn);
+    builder.CreateCondBr(w1Match, way1HitBb, slowBb);
+
+    builder.SetInsertPoint(way1HitBb);
+    llvm::Value* w1Code = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD),
+        llvm::Align(8), "mic.w1.code");
+    llvm::Value* w1ArityWord = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD),
+        llvm::Align(8), "mic.w1.arityword");
+    llvm::Value* w1Env = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD),
+        llvm::Align(8), "mic.w1.env");
+    llvm::Value* w1Arity = builder.CreateTrunc(w1ArityWord, i32Ty, "mic.w1.arity");
+    // Falls through to the join built after the way-0 hit dispatch below;
+    // the branch is created there once the join block exists.
 
     // 4. Hit: the entry's word 2 selects the form (bronze_abi.h's method-site
     // contract). High half zero is the DIRECT form — cached code, cached env,
@@ -235,17 +269,25 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         llvm::Align(4), "mic.slot.arity");
     builder.CreateBr(joinBb);
 
-    // 4c. Both forms meet with (code, env, arity) resolved.
+    // The way-1 hit joins here too — its branch is created now that the join
+    // block exists (the loads were emitted in 3b, before the hit dispatch).
+    builder.SetInsertPoint(way1HitBb);
+    builder.CreateBr(joinBb);
+
+    // 4c. All three ways meet with (code, env, arity) resolved.
     builder.SetInsertPoint(joinBb);
-    llvm::PHINode* codeInt = builder.CreatePHI(i64Ty, 2, "mic.codeint");
+    llvm::PHINode* codeInt = builder.CreatePHI(i64Ty, 3, "mic.codeint");
     codeInt->addIncoming(directCode, directBb);
     codeInt->addIncoming(slotCode, slotOkBb);
-    llvm::PHINode* envVal = builder.CreatePHI(i64Ty, 2, "mic.env");
+    codeInt->addIncoming(w1Code, way1HitBb);
+    llvm::PHINode* envVal = builder.CreatePHI(i64Ty, 3, "mic.env");
     envVal->addIncoming(directEnv, directBb);
     envVal->addIncoming(slotEnv, slotOkBb);
-    llvm::PHINode* arity = builder.CreatePHI(i32Ty, 2, "mic.arity");
+    envVal->addIncoming(w1Env, way1HitBb);
+    llvm::PHINode* arity = builder.CreatePHI(i32Ty, 3, "mic.arity");
     arity->addIncoming(directArity, directBb);
     arity->addIncoming(slotArity, slotOkBb);
+    arity->addIncoming(w1Arity, way1HitBb);
     llvm::Value* codePtr = builder.CreateIntToPtr(codeInt, ptrTy, "mic.codeptr");
 
     llvm::Value* directArityOk =

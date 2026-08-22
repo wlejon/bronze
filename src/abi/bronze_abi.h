@@ -672,7 +672,32 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * Mixed binaries stay sound in both directions: an old hit path compares the
  * odd word against a real shape and misses; a new exotic arm compares an old
  * runtime's shape-or-zero word 0 against an odd expectation and misses. Both
- * fall to the helper, which is always correct. */
+ * fall to the helper, which is always correct.
+ *
+ * ---- WAY 1: the site's second method entry --------------------------------
+ *
+ * Words 6-9 are a SECOND way, holding only a PLAIN-receiver DIRECT entry —
+ * shape, code, arity, env at the same relative layout way 0 uses (6 <-> 0,
+ * 7 <-> 1, 8 <-> 2, 9 <-> 3). It exists for the polymorphic method site a
+ * recursive scene-graph walk makes — `node.updateMatrixWorld()` over a tree
+ * mixing Object3D, Mesh and Scene shapes — which under one way misses
+ * forever, relatching per receiver (three.js's `hierarchy` bench measures
+ * 392 K such misses a run, ~1.9 % of its method calls).
+ *
+ * The fill policy is displacement, not scan-install: the latch always writes
+ * way 0, and when doing so would overwrite a healthy plain-direct entry for
+ * a DIFFERENT shape, that entry is copied into way 1 first. So way 0 is
+ * always the most recent latch and way 1 the previous resident, and the
+ * generated way-1 compare happens only after a way-0 shape miss. SLOT and
+ * EXOTIC entries never occupy way 1 (their word-2/word-0 machinery stays
+ * way-0-only), but either may displace a plain-direct entry into it.
+ *
+ * A way-1 hit obeys the same envelope as the way-0 direct entry it once was:
+ * shape match, no epoch guard (the deliberate looseness the depth >= 1 form
+ * documents above). Word 9 is an env argument exactly as word 3 is, and
+ * bronze_register_method_ic_cells registers BOTH as value cells — which is
+ * why this contract change moves the fingerprint: an old runtime would leave
+ * way 1's env word dangling at the first flip. */
 #define BRONZE_ABI_METHOD_IC_CODE_WORD   1
 #define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
 #define BRONZE_ABI_METHOD_IC_ENV_WORD    3
@@ -682,6 +707,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_METHOD_IC_KIND_SHIFT  2
 #define BRONZE_ABI_METHOD_IC_BOX_SHIFT  32
 #define BRONZE_ABI_METHOD_IC_AUX_WORD    4
+#define BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD 6
+#define BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD  7
+#define BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD 8
+#define BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD   9
 
 /* ---- the COMPUTED-read cache, as generated code reads it -----------------
  *

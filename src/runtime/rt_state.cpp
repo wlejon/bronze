@@ -391,18 +391,27 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
 
 // The env words of the module's method-call sites, as ordinary value cells —
 // one single-cell span each, because the words sit one per site at the IC
-// table's stride and the span walk wants contiguous cells. The count is the
-// module's method-site count (hundreds, not millions), paid once at init;
-// the per-collection cost is one visit per site, the same bill the global
-// cache already pays per cell.
+// table's stride and the span walk wants contiguous cells. TWO cells per site
+// since the site grew a second way: word BRONZE_ABI_METHOD_IC_ENV_WORD is way
+// 0's env argument and word BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD is way 1's
+// (the site contract in bronze_abi.h). A module whose sites never fill way 1
+// leaves that word 0 — a double, which the forwarding walk ignores — so
+// registering it unconditionally costs one dead visit per site and no
+// correctness anywhere. The count is the module's method-site count
+// (hundreds, not millions), paid once at init; the per-collection cost is one
+// visit per cell, the same bill the global cache already pays.
 void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteIndexes,
                                      uint64_t count) {
     if (!icTable || !siteIndexes || count == 0) return;
     constexpr uint64_t kSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
     for (uint64_t k = 0; k < count; ++k) {
-        uint64_t* cell = icTable + siteIndexes[k] * kSiteWords + BRONZE_ABI_METHOD_IC_ENV_WORD;
+        uint64_t* site = icTable + siteIndexes[k] * kSiteWords;
         g_moduleValueCells.push_back(
-            {reinterpret_cast<Value*>(cell), 1, g_currentModuleEpoch});
+            {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_ENV_WORD), 1,
+             g_currentModuleEpoch});
+        g_moduleValueCells.push_back(
+            {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD), 1,
+             g_currentModuleEpoch});
     }
 }
 
@@ -423,6 +432,11 @@ static thread_local bool g_exoticMethodIcEnabled = true;
 
 void rtSetExoticMethodIcEnabled(bool enabled) { g_exoticMethodIcEnabled = enabled; }
 bool rtExoticMethodIcEnabled() noexcept { return g_exoticMethodIcEnabled; }
+
+static thread_local bool g_polyMethodIcEnabled = true;
+
+void rtSetPolyMethodIcEnabled(bool enabled) { g_polyMethodIcEnabled = enabled; }
+bool rtPolyMethodIcEnabled() noexcept { return g_polyMethodIcEnabled; }
 
 // ---- the interned-native table, as the memo in front of it sees it --------
 //

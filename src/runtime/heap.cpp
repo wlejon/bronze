@@ -280,6 +280,14 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         runtime::rtSetExoticMethodIcEnabled(false);
     }
 
+    // And narrower again: way-0 latching keeps every form, but a displaced
+    // plain-direct entry is dropped instead of moved to way 1
+    // (rt_state.h's rtSetPolyMethodIcEnabled).
+    const char* env_no_poly_method_ic = std::getenv("BRONZE_NO_POLY_METHOD_IC");
+    if (env_no_poly_method_ic && std::strcmp(env_no_poly_method_ic, "1") == 0) {
+        runtime::rtSetPolyMethodIcEnabled(false);
+    }
+
     // The computed-read cache's table address, published where the seam that
     // gates reading it is set, so a thread never has one without the other.
     runtime::elemCachePublish();

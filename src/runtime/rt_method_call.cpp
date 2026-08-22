@@ -17,6 +17,31 @@ namespace bronze::runtime {
 
 namespace {
 
+// Way-1 displacement (the site contract's WAY 1 section, bronze_abi.h):
+// before way 0 is overwritten for a DIFFERENT guard, a healthy PLAIN-receiver
+// DIRECT resident is copied into words 6-9, so the two shapes of a
+// polymorphic site — three.js's recursive `updateMatrixWorld` over a tree of
+// Object3D/Mesh/Scene — each keep an entry instead of relatching forever.
+// Only the direct form moves: a SLOT entry's code word is 0 and its word-2
+// high half is its slot machinery, and an EXOTIC entry's word 0 carries the
+// sentinel bit — both are refused, so way 1 can only ever hold what the
+// generated way-1 arm knows how to dispatch. The env copy in word 9 is a
+// registered value cell exactly as word 3 is (bronze_register_method_ic_cells
+// registers both), which is what keeps the copy current across a flip.
+void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
+    if (!rtPolyMethodIcEnabled()) return;
+    const uint64_t w0 = icEntry[0];
+    if (w0 == 0 || w0 == newWord0) return;
+    if (w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) return;
+    const uint64_t arityWord = icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD];
+    if ((arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0) return;
+    if (icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] == 0) return;
+    icEntry[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD] = icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD];
+    icEntry[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD] = arityWord;
+    icEntry[BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD] = icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD];
+    icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] = w0;
+}
+
 // The EXOTIC-receiver latch: an Array, a collection (Map/Set/WeakMap/WeakSet),
 // a typed-array view, or a global-constructor function receiver, whose method
 // is a native builtin from an immutable C table. The entry is the
@@ -92,12 +117,16 @@ void latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     } else {
         return;
     }
+    const uint64_t newWord0 = (auxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT) |
+                              (static_cast<uint64_t>(kind) << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
+                              guardBits | BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+    // An exotic install may still displace a PLAIN resident to way 1 — a
+    // site mixing an array with a plain receiver keeps both entries.
+    displaceMethodWay0(icEntry, newWord0);
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
     icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
-    icEntry[0] = (auxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT) |
-                 (static_cast<uint64_t>(kind) << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
-                 guardBits | BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+    icEntry[0] = newWord0;
 }
 
 // One latch for both method helpers. `probe` is the scratch site the property
@@ -154,6 +183,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     if (rtEnvMethodIcEnabled() && probe.isRealShape() && !probe.isAccessor() &&
         !probe.isAbsent() && probe.cached_shape == obj->shape) {
         if (probe.realDepth() == 0) {
+            displaceMethodWay0(icEntry, shapeWord);
             icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
             icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
                 (static_cast<uint64_t>(probe.cached_slot) + 1)
@@ -164,6 +194,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
         }
         if (fn->needsEnv() && !fn->env_record.isUndefined() &&
             fn->env_record.rawBits() != fnVal.rawBits()) {
+            displaceMethodWay0(icEntry, shapeWord);
             icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
             icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
             icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = fn->env_record.rawBits();
@@ -179,6 +210,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     // function, which its code never reads) may be called with undefined.
     if (!fn->needsEnv() || fn->env_record.isUndefined() ||
         fn->env_record.rawBits() == fnVal.rawBits()) {
+        displaceMethodWay0(icEntry, shapeWord);
         icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
         icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
         icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
