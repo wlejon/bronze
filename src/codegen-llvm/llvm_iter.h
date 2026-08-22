@@ -38,9 +38,20 @@
 
 namespace bronze::codegen_llvm {
 
+// Emits `iter.open` and returns the i64 record Value. An ARRAY source builds
+// its record inline — the classification `rtOpenIterator` would make for it is
+// its header flags and nothing else, and the record is six stores into the
+// inline-allocation window (llvm_construct.cpp's bump pattern) — so the
+// per-loop record allocation stops being a helper call. Every other source,
+// and a window without headroom, takes bronze_iter_open at exactly the old
+// cost. Same seam as the step: BRONZE_NO_ITER_FAST=1.
+llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                          const AbiGlobals& globals, llvm::Value* srcBits);
+
 // Emits `iter.step` and returns its i1 result: true when the record advanced
 // and `current` now holds the element, false when the walk is finished (or the
-// helper decided so).
+// helper decided so). The Array kind's END is inline too: done := true,
+// current := undefined, answer false — the helper's exact foot.
 llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits);
 
 // Emits `iter.value` and returns the i64 (NaN-boxed) element the last step

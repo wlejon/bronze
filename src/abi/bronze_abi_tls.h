@@ -82,6 +82,12 @@ typedef struct bronze_tls_block {
 #define BRONZE_ABI_ITER_KIND_ARRAY_BITS       0x0000000000000000ull
 #define BRONZE_ABI_ITER_KIND_TYPED_ARRAY_BITS 0x4000000000000000ull
 
+/* Total bytes of one iteration record — header plus its six Value fields —
+ * which is what the inline `iter.open` fast path bump-allocates from the
+ * inline-allocation window for an ARRAY source (codegen-llvm/llvm_iter.cpp).
+ * Pinned against sizeof(IterRecordHeader) in runtime/iterator.cpp. */
+#define BRONZE_ABI_ITER_RECORD_BYTES     56
+
 #ifdef __cplusplus
 }
 #endif

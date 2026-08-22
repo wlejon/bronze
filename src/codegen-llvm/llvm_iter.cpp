@@ -61,6 +61,112 @@ llvm::Value* emitIterFastEnabled(llvm::IRBuilder<>& builder, const AbiFns& abi) 
 
 }  // namespace
 
+llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                          const AbiGlobals& globals, llvm::Value* srcBits) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "io.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "io.done", fn);
+
+    llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "io.seam", fn);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.SetInsertPoint(seamBb);
+
+    // ONLY an Array source: `rtOpenIterator` classifies by the receiver's
+    // header flags and nothing else — an array has no per-value say in how it
+    // iterates (its @@iterator is the C table's, which rt_prop_write.cpp's
+    // Array.prototype refusal keeps undecoratable) — so flags == Array is the
+    // WHOLE of the open's classification for this kind, re-asked here. Every
+    // other source (string, typed array, Map, Set, protocol) keeps the helper.
+    llvm::Value* tag = builder.CreateLShr(srcBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isObj = builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::BasicBlock* flagsBb = llvm::BasicBlock::Create(ctx, "io.flags", fn);
+    builder.CreateCondBr(isObj, flagsBb, slowBb);
+
+    builder.SetInsertPoint(flagsBb);
+    llvm::Value* srcAddr =
+        builder.CreateAnd(srcBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* srcHdr = builder.CreateIntToPtr(srcAddr, ptrTy, "io.srchdr");
+    llvm::Value* srcFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, srcHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    llvm::Value* srcFlags =
+        builder.CreateAlignedLoad(i16Ty, srcFlagsPtr, llvm::Align(2), "io.srcflags");
+    llvm::Value* isArr =
+        builder.CreateICmpEQ(srcFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+    llvm::BasicBlock* allocBb = llvm::BasicBlock::Create(ctx, "io.alloc", fn);
+    builder.CreateCondBr(isArr, allocBb, slowBb);
+
+    // The record, bump-allocated from the inline-allocation window exactly as
+    // the inline `new` fast path allocates its instances (llvm_construct.cpp):
+    // the window is from-space memory carved out for generated code, the
+    // inline path only ever ADVANCES the cursor when the record fits, and a
+    // window that is empty, invalidated, or disabled reads as headroom 0 and
+    // falls to the helper, which can collect.
+    builder.SetInsertPoint(allocBb);
+    llvm::Value* cursor = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_cursor,
+                                                    llvm::Align(8), "io.cursor");
+    llvm::Value* limit = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_limit,
+                                                   llvm::Align(8), "io.limit");
+    llvm::Value* headroom = builder.CreateSub(limit, cursor, "io.headroom");
+    llvm::Value* fits =
+        builder.CreateICmpUGE(headroom, builder.getInt64(BRONZE_ABI_ITER_RECORD_BYTES), "io.fits");
+    llvm::BasicBlock* buildBb = llvm::BasicBlock::Create(ctx, "io.build", fn);
+    builder.CreateCondBr(fits, buildBb, slowBb);
+
+    // The stores IterRecordHeader::create performs, spelled out: header word,
+    // then the six Value fields. Pure pointer arithmetic — no call, no
+    // collection — so the raw source bits stay valid across all of it.
+    builder.SetInsertPoint(buildBb);
+    builder.CreateAlignedStore(
+        builder.CreateAdd(cursor, builder.getInt64(BRONZE_ABI_ITER_RECORD_BYTES)),
+        globals.bronze_alloc_cursor, llvm::Align(8));
+    llvm::Value* recPtr = builder.CreateIntToPtr(cursor, ptrTy, "io.rec");
+    constexpr uint64_t kHeaderWord =
+        static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) |
+        (static_cast<uint64_t>(BRONZE_ABI_OBJ_FLAGS_ITERATOR) << 16) |
+        (static_cast<uint64_t>(BRONZE_ABI_ITER_RECORD_BYTES) << 32);
+    builder.CreateAlignedStore(builder.getInt64(kHeaderWord), recPtr, llvm::Align(8));
+    auto storeWord = [&](unsigned byteOffset, llvm::Value* word) {
+        builder.CreateAlignedStore(
+            word, builder.CreateConstInBoundsGEP1_32(i8Ty, recPtr, byteOffset), llvm::Align(8));
+    };
+    llvm::Value* undef = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+    storeWord(BRONZE_ABI_ITER_TARGET_OFFSET, srcBits);
+    storeWord(BRONZE_ABI_ITER_NEXTFN_OFFSET, undef);
+    storeWord(BRONZE_ABI_ITER_CURRENT_OFFSET, undef);
+    // cursor 0.0 and kind Array are BOTH all-zero bit patterns (a double's
+    // Value is its IEEE bits; Kind::Array is 0).
+    storeWord(BRONZE_ABI_ITER_CURSOR_OFFSET, builder.getInt64(0));
+    storeWord(BRONZE_ABI_ITER_KIND_OFFSET,
+              builder.getInt64(BRONZE_ABI_ITER_KIND_ARRAY_BITS));
+    storeWord(BRONZE_ABI_ITER_DONE_OFFSET,
+              builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL)
+                               << BRONZE_ABI_VALUE_TAG_SHIFT));
+    llvm::Value* fastVal = builder.CreateOr(
+        cursor,
+        builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT)
+                         << BRONZE_ABI_VALUE_TAG_SHIFT),
+        "io.fastval");
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = builder.CreateCall(abi.bronze_iter_open, {srcBits}, "io.slowval");
+    llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "io.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowEndBb);
+    return result;
+}
+
 llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
@@ -118,9 +224,13 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
         builder.CreateICmpEQ(arrFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY)), boundsBb,
         slowBb);
 
-    // `i >= length` is the walk's END, and it goes to the helper: the helper is
-    // what marks the record done and clears `current`, and one call per loop is
-    // not worth a second copy of that bookkeeping here.
+    // `i >= length` is the walk's END, handled INLINE: the whole of the
+    // helper's end-of-walk bookkeeping for the Array kind is two stores —
+    // done := true, current := undefined (iterator.cpp's stepFast foot) — and
+    // paying a helper call for them billed one call per loop, which on
+    // three.js's for-in-per-mesh frames was 1.8M calls a run (the largest
+    // single iter helper bucket). A NaN cursor fails both compares and still
+    // reaches the helper, so nothing unproven is answered here.
     builder.SetInsertPoint(boundsBb);
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, arr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
@@ -131,17 +241,36 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
         builder.CreateAlignedLoad(i64Ty, cursorPtr, llvm::Align(8), "is.cursorbits");
     llvm::Value* cursor = builder.CreateBitCast(cursorBits, dblTy, "is.cursor");
     llvm::Value* lenDbl = builder.CreateUIToFP(len, dblTy, "is.lendbl");
-    llvm::Value* inRange = builder.CreateAnd(
-        builder.CreateFCmpOGE(cursor, llvm::ConstantFP::get(dblTy, 0.0), "is.nonneg"),
-        builder.CreateFCmpOLT(cursor, lenDbl, "is.under"), "is.inrange");
+    llvm::Value* nonneg =
+        builder.CreateFCmpOGE(cursor, llvm::ConstantFP::get(dblTy, 0.0), "is.nonneg");
+    llvm::Value* under = builder.CreateFCmpOLT(cursor, lenDbl, "is.under");
+    llvm::Value* inRange = builder.CreateAnd(nonneg, under, "is.inrange");
     llvm::BasicBlock* readBb = llvm::BasicBlock::Create(ctx, "is.read", fn);
+    llvm::BasicBlock* endSplitBb = llvm::BasicBlock::Create(ctx, "is.end.split", fn);
+    llvm::BasicBlock* endBb = llvm::BasicBlock::Create(ctx, "is.end", fn);
     // Selected to a value that certainly converts BEFORE the conversion, not
     // after: `fptoui` of anything outside the destination range is poison, and
     // a poison value the branch was supposed to have excluded is the shape of
     // miscompile that survives every test on one optimiser and not the next.
     llvm::Value* safeCursor =
         builder.CreateSelect(inRange, cursor, llvm::ConstantFP::get(dblTy, 0.0), "is.safecursor");
-    builder.CreateCondBr(inRange, readBb, slowBb);
+    builder.CreateCondBr(inRange, readBb, endSplitBb);
+
+    // Out of range: a non-negative cursor at or past the length is the END
+    // (the only way the loop's own arithmetic gets here); anything else —
+    // NaN, negative — is not this path's to answer.
+    builder.SetInsertPoint(endSplitBb);
+    builder.CreateCondBr(nonneg, endBb, slowBb);
+
+    builder.SetInsertPoint(endBb);
+    llvm::Value* trueBits = builder.getInt64(
+        (static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL) << BRONZE_ABI_VALUE_TAG_SHIFT) | 1u);
+    builder.CreateAlignedStore(trueBits, donePtr, llvm::Align(8));
+    llvm::Value* endCurrentPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_CURRENT_OFFSET);
+    builder.CreateAlignedStore(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), endCurrentPtr,
+                               llvm::Align(8));
+    builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(readBb);
     llvm::Value* idx32 = builder.CreateFPToUI(safeCursor, i32Ty, "is.idx");
@@ -185,9 +314,10 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 2, "is.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 3, "is.result");
     result->addIncoming(builder.getTrue(), fastEndBb);
     result->addIncoming(slowVal, slowEndBb);
+    result->addIncoming(builder.getFalse(), endBb);
     return result;
 }
 

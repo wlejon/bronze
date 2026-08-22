@@ -494,7 +494,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* rec = operand(inst, 0, "Undefined value in an iteration instruction");
             if (!rec) return false;
             switch (inst.op) {
-                case il::Op::IterOpen: callWith(abi.bronze_iter_open, {rec}); break;
+                case il::Op::IterOpen:
+                    values_[inst.result] = emitIterOpen(builder_, abi, globals_, rec);
+                    break;
                 case il::Op::AsyncIterOpen: callWith(abi.bronze_async_iter_open, {rec}); break;
                 case il::Op::AsyncIterNext: callWith(abi.bronze_async_iter_next, {rec}); break;
                 // The two the loop pays per ELEMENT, and the only two with an

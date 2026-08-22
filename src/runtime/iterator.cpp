@@ -17,9 +17,11 @@
 #include "runtime/generator.h"
 #include "runtime/iterator.h"
 
+#include <cstddef>
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/tls_block.h"
 #include "runtime/array.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -36,6 +38,20 @@
 #include "runtime/typed_array.h"
 
 namespace bronze {
+
+// The record layout as generated code reads it (bronze_abi_tls.h): the inline
+// step/value fast paths load these fields at fixed offsets, and the inline
+// `iter.open` fast path bump-allocates the whole record at this size — so the
+// struct below is ABI, and a field moving is a compile error here rather than
+// a silent miscompile there.
+static_assert(offsetof(IterRecordHeader, target) == BRONZE_ABI_ITER_TARGET_OFFSET);
+static_assert(offsetof(IterRecordHeader, nextFn) == BRONZE_ABI_ITER_NEXTFN_OFFSET);
+static_assert(offsetof(IterRecordHeader, current) == BRONZE_ABI_ITER_CURRENT_OFFSET);
+static_assert(offsetof(IterRecordHeader, cursor) == BRONZE_ABI_ITER_CURSOR_OFFSET);
+static_assert(offsetof(IterRecordHeader, kind) == BRONZE_ABI_ITER_KIND_OFFSET);
+static_assert(offsetof(IterRecordHeader, done) == BRONZE_ABI_ITER_DONE_OFFSET);
+static_assert(sizeof(IterRecordHeader) == BRONZE_ABI_ITER_RECORD_BYTES);
+static_assert(IterRecordHeader::kFlags == BRONZE_ABI_OBJ_FLAGS_ITERATOR);
 
 IterRecordHeader* IterRecordHeader::create(Heap& heap, uint32_t kind) {
     HeapObjectHeader* raw =
@@ -442,7 +458,24 @@ extern "C" {
 
 uint64_t bronze_iter_open(uint64_t srcBits) {
     recordHelperCall("bronze_iter_open");
-    return rtOpenIterator(Value(srcBits)).rawBits();
+    Rooted<Value> rec{rtOpenIterator(Value(srcBits))};
+    // The inline `iter.open` fast path (codegen-llvm/llvm_iter.cpp) builds an
+    // ARRAY record out of the inline-allocation window, and the window is
+    // refilled only by a helper that missed — the same contract
+    // bronze_create_object keeps for the inline `new` path. Without this, a
+    // loop that opens iterators but constructs nothing drains the window once
+    // and misses forever after. Array records only: they are the one kind the
+    // inline path serves, so a protocol-heavy program pays nothing here. The
+    // refill may collect, which is what the root above is for.
+    if (rec.get().isObject() &&
+        rec.get().asObject<HeapObjectHeader>()->flags == IterRecordHeader::kFlags &&
+        rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::Array) {
+        const bronze_tls_block* tls = bronze_tls_block_addr();
+        if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_ITER_RECORD_BYTES) {
+            rtHeap().refill_inline_lab();
+        }
+    }
+    return rec.get().rawBits();
 }
 
 bool bronze_iter_step(uint64_t recBits) {
