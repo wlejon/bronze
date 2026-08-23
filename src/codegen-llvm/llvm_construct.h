@@ -10,6 +10,7 @@
 
 #include <cstdint>
 
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 
@@ -37,7 +38,9 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                  const AbiGlobals& globals, llvm::Value* ctor, uint32_t argc,
                                  llvm::Value* argv, llvm::Value* selfSlotAddr,
                                  llvm::Function* knownWrapper = nullptr,
-                                 const il::Function* knownFunc = nullptr);
+                                 const il::Function* knownFunc = nullptr,
+                                 llvm::Function* knownEntry = nullptr,
+                                 llvm::ArrayRef<llvm::Value*> directArgs = {});
 
 // Emits the inline bump-pointer allocation for plain `{}` object literals,
 // falling back to bronze_create_object on window miss.

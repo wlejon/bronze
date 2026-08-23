@@ -157,14 +157,46 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
     llvm::Function* knownWrapper = (calleeIdx < shared_.wrappers.size())
                                        ? shared_.wrappers[calleeIdx]
                                        : nullptr;
+    llvm::Function* knownEntry = (calleeIdx < shared_.entries.size())
+                                     ? shared_.entries[calleeIdx]
+                                     : nullptr;
     const il::Function* knownFunc = (calleeIdx < shared_.module.functions.size())
                                         ? &shared_.module.functions[calleeIdx]
                                         : nullptr;
 
+    std::vector<llvm::Value*> directArgs;
+    bool canDirect = false;
+    if (knownEntry && knownFunc && !knownFunc->hasRestParam && !knownFunc->needsArguments) {
+        size_t expectedParams = knownFunc->params.size();
+        size_t envOffset = knownFunc->needsEnv ? 1 : 0;
+        size_t thisOffset = envOffset + (knownFunc->needsThis ? 1 : 0);
+        size_t sourceParamCount = expectedParams - thisOffset;
+        if (argc == sourceParamCount) {
+            bool typesMatch = true;
+            for (size_t p = 0; p < argc; ++p) {
+                il::ValueId opId = inst.operands[1 + p];
+                llvm::Value* opVal = (opId < values_.size()) ? values_[opId] : nullptr;
+                if (!opVal) { typesMatch = false; break; }
+                llvm::Type* expectedTy = knownEntry->getFunctionType()->getParamType(static_cast<unsigned>(thisOffset + p));
+                if (opVal->getType() != expectedTy) {
+                    typesMatch = false;
+                    break;
+                }
+                directArgs.push_back(opVal);
+            }
+            if (typesMatch && directArgs.size() == argc) {
+                canDirect = true;
+            } else {
+                directArgs.clear();
+            }
+        }
+    }
+
     if (constructSelfSlot_ != kNoSlot) {
         llvm::Value* res =
             emitConstructInline(builder_, abi, globals_, ctor, argc, argv,
-                                slotAddr(constructSelfSlot_), knownWrapper, knownFunc);
+                                slotAddr(constructSelfSlot_), knownWrapper, knownFunc,
+                                canDirect ? knownEntry : nullptr, directArgs);
         if (inst.result != il::kNoValue) values_[inst.result] = res;
         return true;
     }

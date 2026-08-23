@@ -27,7 +27,9 @@ static_assert(BRONZE_ABI_PLAIN_OBJECT_BYTES ==
 llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                  const AbiGlobals& globals, llvm::Value* ctor, uint32_t argc,
                                  llvm::Value* argv, llvm::Value* selfSlotAddr,
-                                 llvm::Function* knownWrapper, const il::Function* knownFunc) {
+                                 llvm::Function* knownWrapper, const il::Function* knownFunc,
+                                 llvm::Function* knownEntry,
+                                 llvm::ArrayRef<llvm::Value*> directArgs) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -137,14 +139,55 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          << BRONZE_ABI_VALUE_TAG_SHIFT),
         "new.inst");
     builder.CreateStore(instBits, selfSlotAddr);
-    llvm::Value* env = builder.CreateAlignedLoad(
-        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
-        llvm::Align(8), "new.env");
     llvm::Value* callRes = nullptr;
-    if (knownWrapper) {
+    if (knownEntry && knownFunc) {
+        llvm::SmallVector<llvm::Value*, 4> callArgs;
+        if (knownFunc->needsEnv) {
+            llvm::Value* env = builder.CreateAlignedLoad(
+                i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+                llvm::Align(8), "new.env");
+            callArgs.push_back(env);
+        }
+        if (knownFunc->needsThis) {
+            callArgs.push_back(instBits);
+        }
+        for (llvm::Value* arg : directArgs) {
+            callArgs.push_back(arg);
+        }
+        if (callArgs.size() == knownEntry->getFunctionType()->getNumParams()) {
+            if (knownFunc->returnType == il::Type::Void || knownEntry->getReturnType()->isVoidTy()) {
+                builder.CreateCall(knownEntry, callArgs);
+            } else {
+                callRes = builder.CreateCall(knownEntry, callArgs, "new.callres");
+            }
+        } else if (knownWrapper) {
+            llvm::Value* env = builder.CreateAlignedLoad(
+                i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+                llvm::Align(8), "new.env");
+            callRes = builder.CreateCall(
+                knownWrapper, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+        } else {
+            llvm::Value* env = builder.CreateAlignedLoad(
+                i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+                llvm::Align(8), "new.env");
+            llvm::Value* code = builder.CreateAlignedLoad(
+                ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+                llvm::Align(8), "new.code");
+            llvm::FunctionType* codeTy =
+                llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
+            callRes = builder.CreateCall(
+                codeTy, code, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+        }
+    } else if (knownWrapper) {
+        llvm::Value* env = builder.CreateAlignedLoad(
+            i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+            llvm::Align(8), "new.env");
         callRes = builder.CreateCall(
             knownWrapper, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
     } else {
+        llvm::Value* env = builder.CreateAlignedLoad(
+            i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+            llvm::Align(8), "new.env");
         llvm::Value* code = builder.CreateAlignedLoad(
             ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
             llvm::Align(8), "new.code");
@@ -158,7 +201,7 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // return value (including the undefined a pending exception rides out
     // on) leaves the instance as the answer — the helper's exact foot rule.
     llvm::Value* fastVal = nullptr;
-    if (knownFunc && knownFunc->returnType == il::Type::Void) {
+    if (knownFunc && (knownFunc->returnType == il::Type::Void || (callRes && callRes->getType()->isVoidTy()))) {
         fastVal = self;
     } else {
         llvm::Value* resIsObj = builder.CreateICmpEQ(
