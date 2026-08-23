@@ -6,6 +6,7 @@
 #include <llvm/IR/Function.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_prop_ic.h"
 
 namespace bronze::codegen_llvm {
 
@@ -41,22 +42,25 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* calleeAddr =
         builder.CreateAnd(callee, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* fnPtr = builder.CreateIntToPtr(calleeAddr, ptrTy, "call.fnptr");
-    llvm::Value* flags = builder.CreateAlignedLoad(
+    auto* flags = builder.CreateAlignedLoad(
         i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
         llvm::Align(2), "call.flags");
+    markInvariant(flags, ctx);
     llvm::Value* isFn = builder.CreateICmpEQ(
         flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "call.isfn");
     builder.CreateCondBr(isFn, fastBb, slowBb);
 
     // 3. Arity check and A/B seam check
     builder.SetInsertPoint(fastBb);
-    llvm::Value* enabled = builder.CreateAlignedLoad(
+    auto* enabled = builder.CreateAlignedLoad(
         i64Ty, globals.bronze_inline_call_enabled, llvm::Align(8), "call.enabled");
+    markInvariant(enabled, ctx);
     llvm::Value* enabledOk = builder.CreateICmpNE(enabled, builder.getInt64(0), "call.enabledok");
 
-    llvm::Value* arity = builder.CreateAlignedLoad(
+    auto* arity = builder.CreateAlignedLoad(
         i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
         llvm::Align(4), "call.arity");
+    markInvariant(arity, ctx);
     llvm::Value* directArityOk = builder.CreateICmpULE(arity, builder.getInt32(argc), "call.dirarityok");
 
     llvm::BasicBlock* dispatchBb = llvm::BasicBlock::Create(ctx, "call.dispatch", fn);
@@ -107,17 +111,19 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* padArgv = builder.CreateConstInBoundsGEP2_32(
         llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, 0);
 
-    llvm::Value* padEnv = builder.CreateAlignedLoad(
+    auto* padEnv = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "call.padenv");
+    markInvariant(padEnv, ctx);
     llvm::Value* padRes = nullptr;
     if (knownWrapper) {
         padRes = builder.CreateCall(
             knownWrapper, {padEnv, thisVal, builder.getInt32(argc), padArgv}, "call.padres");
     } else {
-        llvm::Value* padCode = builder.CreateAlignedLoad(
+        auto* padCode = builder.CreateAlignedLoad(
             ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
             llvm::Align(8), "call.padcode");
+        markInvariant(padCode, ctx);
         llvm::FunctionType* codeTy =
             llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
         padRes = builder.CreateCall(
@@ -128,17 +134,19 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
 
     // 4b. Fast direct dispatch (argc >= arity)
     builder.SetInsertPoint(dispatchBb);
-    llvm::Value* env = builder.CreateAlignedLoad(
+    auto* env = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "call.env");
+    markInvariant(env, ctx);
     llvm::Value* fastRes = nullptr;
     if (knownWrapper) {
         fastRes = builder.CreateCall(
             knownWrapper, {env, thisVal, builder.getInt32(argc), argv}, "call.fastres");
     } else {
-        llvm::Value* code = builder.CreateAlignedLoad(
+        auto* code = builder.CreateAlignedLoad(
             ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
             llvm::Align(8), "call.code");
+        markInvariant(code, ctx);
         llvm::FunctionType* codeTy =
             llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
         fastRes = builder.CreateCall(
@@ -146,6 +154,7 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     }
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
+
 
     // 5. Slow path: helper trampoline
     builder.SetInsertPoint(slowBb);

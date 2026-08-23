@@ -175,25 +175,22 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
 
     // Array: in bounds, elements block present, hole answers undefined. An
     // out-of-bounds read goes to the helper, whose own fast path answers the
-    // undefined â€” rare enough that the extra call is not worth a fourth arm.
+    // undefined — rare enough that the extra call is not worth a fourth arm.
     builder.SetInsertPoint(arrBb);
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
     auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "eg.len");
     tagArrayHeaderAccess(len, ctx);
-    llvm::BasicBlock* arrLoadBb = llvm::BasicBlock::Create(ctx, "eg.arr.load", fn);
-    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, len), arrLoadBb, cacheBb);
-
-    builder.SetInsertPoint(arrLoadBb);
     llvm::Value* elemsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
     auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "eg.elems");
     tagArrayHeaderAccess(elemsVal, ctx);
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* inBounds = builder.CreateICmpULT(g.idx32, len);
+    llvm::Value* elemsIsObj =
+        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::BasicBlock* arrReadBb = llvm::BasicBlock::Create(ctx, "eg.arr.read", fn);
-    builder.CreateCondBr(
-        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), arrReadBb,
-        cacheBb);
+    builder.CreateCondBr(builder.CreateAnd(inBounds, elemsIsObj), arrReadBb, cacheBb);
 
     builder.SetInsertPoint(arrReadBb);
     llvm::Value* elemsAddr =
@@ -372,7 +369,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), arrBb);
     swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY), taBb);
 
-    // Array: in bounds, within capacity, and no named-properties side object â€”
+    // Array: in bounds, within capacity, and no named-properties side object —
     // the same three conditions the helper's fast path requires before it will
     // store without consulting the property machinery.
     builder.SetInsertPoint(arrBb);
@@ -399,19 +396,18 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
         builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::Value* inBounds = builder.CreateAnd(builder.CreateICmpULT(g.idx32, len),
                                               builder.CreateICmpULT(actualIdx, cap));
-    llvm::BasicBlock* arrElemsBb = llvm::BasicBlock::Create(ctx, "es.arr.elems", fn);
-    builder.CreateCondBr(builder.CreateAnd(inBounds, noProps), arrElemsBb, slowBb);
-
-    builder.SetInsertPoint(arrElemsBb);
     llvm::Value* elemsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
     auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "es.elems");
     tagArrayHeaderAccess(elemsVal, ctx);
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* elemsIsObj =
+        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+
+    llvm::Value* canStore =
+        builder.CreateAnd(builder.CreateAnd(inBounds, noProps), elemsIsObj);
     llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "es.arr.store", fn);
-    builder.CreateCondBr(
-        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), arrStoreBb,
-        slowBb);
+    builder.CreateCondBr(canStore, arrStoreBb, slowBb);
 
     builder.SetInsertPoint(arrStoreBb);
     llvm::Value* elemsAddr =
@@ -427,7 +423,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     // Typed array: a numeric value into a typed array view. An in-range index
     // stores; an out-of-range one DISCARDS the write for the Number kinds,
     // exactly as the helper and 10.4.5.16 do (ToNumber of a number is the
-    // number, so nothing observable is skipped) â€” but a BIGINT kind still
+    // number, so nothing observable is skipped) — but a BIGINT kind still
     // owes the ToBigInt that THROWS for a Number value even when the index is
     // invalid, conversion-before-validity being 10.4.5.16's own order. So the
     // out-of-bounds edge lands on a cold kind test rather than on `done`: at
@@ -435,19 +431,22 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(taBb);
     llvm::Value* valIsNum =
         builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
-    llvm::BasicBlock* taLenBb = llvm::BasicBlock::Create(ctx, "es.ta.len", fn);
-    builder.CreateCondBr(valIsNum, taLenBb, slowBb);
-
-    builder.SetInsertPoint(taLenBb);
     llvm::Value* taLenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "es.talen");
     tagViewLengthAccess(taLen, ctx);
+    llvm::Value* inLen = builder.CreateICmpULT(g.idx32, taLen);
+    llvm::Value* fastOk = builder.CreateAnd(valIsNum, inLen);
+
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "es.ta.kind", fn);
     llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "es.ta.oob", fn);
-    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, taOobBb);
+    builder.CreateCondBr(fastOk, taKindBb, taOobBb);
 
     builder.SetInsertPoint(taOobBb);
+    llvm::BasicBlock* oobNumChkBb = llvm::BasicBlock::Create(ctx, "es.ta.oobnum", fn);
+    builder.CreateCondBr(valIsNum, oobNumChkBb, slowBb);
+
+    builder.SetInsertPoint(oobNumChkBb);
     llvm::Value* oobKindPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_KIND_OFFSET);
     auto* oobKind = builder.CreateAlignedLoad(i32Ty, oobKindPtr, llvm::Align(4), "es.oob.kind");

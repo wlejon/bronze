@@ -6,6 +6,7 @@
 #include <llvm/IR/Function.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_prop_ic.h"
 
 namespace bronze::codegen_llvm {
 
@@ -36,8 +37,9 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "mic.done", fn);
 
     // 1. Feature enable check & Object tag check
-    llvm::Value* enabled = builder.CreateAlignedLoad(
+    auto* enabled = builder.CreateAlignedLoad(
         i64Ty, globals.bronze_method_call_ic_enabled, llvm::Align(8), "mic.enabled");
+    markInvariant(enabled, ctx);
     llvm::Value* isEnabled = builder.CreateICmpNE(enabled, builder.getInt64(0), "mic.isenabled");
 
     llvm::Value* tag = builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.tag");
@@ -50,12 +52,14 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.SetInsertPoint(plainBb);
     llvm::Value* addr = builder.CreateAnd(thisVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "mic.hdr");
-    llvm::Value* flags = builder.CreateAlignedLoad(
+    auto* flags = builder.CreateAlignedLoad(
         i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
         llvm::Align(2), "mic.flags");
+    markInvariant(flags, ctx);
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "mic.isplain");
     builder.CreateCondBr(isPlain, shapeBb, exoticBb);
+
 
     // 2b. EXOTIC receiver (Array, collection, typed-array view, or a global
     // constructor): the entry may hold the kind-guarded direct form
@@ -249,24 +253,28 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* fnAddr =
         builder.CreateAnd(slotVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* fnPtr = builder.CreateIntToPtr(fnAddr, ptrTy, "mic.slot.fnptr");
-    llvm::Value* fnFlags = builder.CreateAlignedLoad(
+    auto* fnFlags = builder.CreateAlignedLoad(
         i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
         llvm::Align(2), "mic.slot.fnflags");
+    markInvariant(fnFlags, ctx);
     llvm::Value* isFn = builder.CreateICmpEQ(
         fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "mic.slot.isfn");
     llvm::BasicBlock* slotOkBb = llvm::BasicBlock::Create(ctx, "mic.slot.ok", fn);
     builder.CreateCondBr(isFn, slotOkBb, slowBb);
 
     builder.SetInsertPoint(slotOkBb);
-    llvm::Value* slotCode = builder.CreateAlignedLoad(
+    auto* slotCode = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
         llvm::Align(8), "mic.slot.code");
-    llvm::Value* slotEnv = builder.CreateAlignedLoad(
+    markInvariant(slotCode, ctx);
+    auto* slotEnv = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "mic.slot.env");
-    llvm::Value* slotArity = builder.CreateAlignedLoad(
+    markInvariant(slotEnv, ctx);
+    auto* slotArity = builder.CreateAlignedLoad(
         i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
         llvm::Align(4), "mic.slot.arity");
+    markInvariant(slotArity, ctx);
     builder.CreateBr(joinBb);
 
     // The way-1 hit joins here too — its branch is created now that the join
