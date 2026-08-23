@@ -243,6 +243,38 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->undef_rel_enabled = 0;
     }
 
+    // Array.prototype.sort's hoisted-roots merge engine: with this off the
+    // sort keeps the per-comparison Rooted churn it always had (one binary
+    // A/B; builtin_array_sort.cpp).
+    const char* env_no_sort_fast = std::getenv("BRONZE_NO_SORT_FAST");
+    if (env_no_sort_fast && std::strcmp(env_no_sort_fast, "1") == 0) {
+        tls->sort_fast_enabled = 0;
+    }
+
+    // The allocation-free Map/WeakMap lookup probe: with this off every
+    // `get`/`has` runs the full rooted prologue it always did (map.cpp,
+    // builtin_weak_map.cpp).
+    const char* env_no_map_fast = std::getenv("BRONZE_NO_MAP_FAST");
+    if (env_no_map_fast && std::strcmp(env_no_map_fast, "1") == 0) {
+        tls->map_fast_enabled = 0;
+    }
+
+    // %TypedArray%.prototype.set's number-elements fast loop over a plain
+    // array source: with this off every element keeps its rooted spec-shaped
+    // iteration (builtin_typed_array_methods.cpp).
+    const char* env_no_ta_set = std::getenv("BRONZE_NO_TA_SET_FAST");
+    if (env_no_ta_set && std::strcmp(env_no_ta_set, "1") == 0) {
+        tls->ta_set_fast_enabled = 0;
+    }
+
+    // The inline truthiness arms for bool/undefined/null/object operands:
+    // with this off only the pre-existing number arm stays inline and every
+    // other operand keeps the bronze_unbox_bool helper (llvm_ops.cpp).
+    const char* env_no_truthy = std::getenv("BRONZE_NO_TRUTHY_INLINE");
+    if (env_no_truthy && std::strcmp(env_no_truthy, "1") == 0) {
+        tls->truthy_inline_enabled = 0;
+    }
+
     const char* env_no_fn_singleton = std::getenv("BRONZE_NO_FN_SINGLETON_CACHE");
     if (env_no_fn_singleton && std::strcmp(env_no_fn_singleton, "1") == 0) {
         tls->fn_singleton_cache_enabled = 0;

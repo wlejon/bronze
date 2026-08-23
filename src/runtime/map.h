@@ -110,6 +110,17 @@ struct MapHeader {
     // taken by value would be read after a collection had moved it.
     static uint32_t find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key);
 
+    // The allocation-free half of `find`, for a lookup that wants to skip the
+    // rooted prologue entirely (seam: BRONZE_NO_MAP_FAST=1, checked by the
+    // CALLER so the seam covers the whole fast prologue). Answers true — with
+    // `slot` set to the entry index or UINT32_MAX for a miss — only when the
+    // probe provably cannot allocate: the map is empty, or the index is
+    // present and both its epoch and its anchor still agree that nothing has
+    // moved since it was built. Answers false when only the reindexing `find`
+    // can say, and the caller falls back to the rooted path. Raw pointers are
+    // safe exactly BECAUSE nothing in here allocates.
+    static bool findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept;
+
     // Insert or update. Updating an EXISTING key keeps its position, which is
     // 24.1.3.9 step 4 and the reason the table is ordered at all.
     static void set(Heap& heap, Rooted<Value>& self, Rooted<Value>& key, Rooted<Value>& val);

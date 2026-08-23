@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include <filesystem>
 #include <functional>
@@ -853,6 +854,18 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     for (size_t i = 0; i < module.functions.size(); ++i) {
         FunctionEmitter emitter(shared, module.functions[i], entries[i]);
         if (!emitter.emit()) return false;
+    }
+
+    // Every used TLS-block fetch becomes a load of a module-local
+    // thread_local cache (llvm_abi.cpp, cacheTlsFetches). CLI-time seam:
+    // BRONZE_NO_TLS_CACHE=1 keeps the per-prologue accessor calls, so a
+    // bisection recompiles the module rather than flipping a runtime word —
+    // the shape being A/B'd is the emitted prologue itself.
+    {
+        const char* env = std::getenv("BRONZE_NO_TLS_CACHE");
+        if (!(env && std::strcmp(env, "1") == 0)) {
+            codegen_llvm::cacheTlsFetches(*llvmModule, abi.bronze_tls_block_addr);
+        }
     }
     lap("ir-build");
 

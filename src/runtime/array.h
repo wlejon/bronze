@@ -51,24 +51,71 @@ struct ArrayHeader {
     // `undefined` for an index past the end AND for a HOLE — the internal
     // sentinel is never user-visible, so reading a deleted element answers
     // exactly what reading a missing property does.
-    Value getElem(uint32_t index) const;
+    //
+    // Inline (with hasElem and deleteElem below) for the reason
+    // runtime/tls_block.h gives for its accessor: these are a bounds check and
+    // one load, and the sort alone asks getElem three times per comparison —
+    // the chunk-6 sampler charged the out-of-line pair 0.44 ms/frame of
+    // `many_meshes`, all of it call overhead.
+    Value getElem(uint32_t index) const {
+        if (index >= length) {
+            return Value::fromUndefined();
+        }
+        Value v = elementsData()[index];
+        return v.isHole() ? Value::fromUndefined() : v;
+    }
 
     // Whether the index is an OWN property, which a hole is not: `delete a[1]`
     // leaves `length` alone and takes index 1 out of `Object.keys`, `for-in`
     // and `in`. This is the question those three ask and `getElem` cannot
     // answer, since both a hole and a stored `undefined` read as `undefined`.
-    bool hasElem(uint32_t index) const noexcept;
+    bool hasElem(uint32_t index) const noexcept {
+        if (index >= length) return false;
+        return !elementsData()[index].isHole();
+    }
 
     // `delete a[i]`. Punches a hole and leaves `length` where it was; an
     // index at or past the end was never an own property, so it is a no-op.
-    void deleteElem(uint32_t index) noexcept;
+    void deleteElem(uint32_t index) noexcept {
+        if (index >= length) return;
+        elementsData()[index] = Value::fromHole();
+    }
 
     // Writing at `length` appends and grows the block as needed. Writing past
     // `length` is a sparse write and a named hard error until dictionary
     // elements land. Growth allocates, which can move this object, so the write
     // is performed through a rooted self-reference and `this` must not be used
-    // afterwards.
-    void setElem(Heap& heap, uint32_t index, Rooted<Value>& val);
+    // afterwards — but only on the GROWTH path: a write that lands inside the
+    // current block allocates nothing, so it runs in place with no root at
+    // all. The old shape opened a `Rooted` per call whether or not the call
+    // could allocate, which billed every in-range store — the sort's write
+    // path above all — for a defense only the growth edge needs.
+    void setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
+        if (head_offset + index < capacity && index <= length) {
+            elementsData()[index] = val.get();
+            if (index >= length) length = index + 1;
+            return;
+        }
+        setElemSlow(heap, index, val);
+    }
+
+    // The same write for a caller holding a plain Value: in place when the
+    // write cannot allocate, rooted only across the growth edge. Safe because
+    // the fast path performs no allocation between reading `v` and storing it,
+    // and the slow path roots `v` before anything can move.
+    void setElem(Heap& heap, uint32_t index, Value v) {
+        if (head_offset + index < capacity && index <= length) {
+            elementsData()[index] = v;
+            if (index >= length) length = index + 1;
+            return;
+        }
+        Rooted<Value> val{v};
+        setElemSlow(heap, index, val);
+    }
+
+    // The growth/compaction edge of setElem: past-the-end fatal, in-place
+    // compaction when head headroom covers the write, block growth otherwise.
+    void setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val);
 
     // `length` moved to exactly `newLength`, which is the storage half of
     // ArraySetLength (ECMA-262 10.4.2.4) and nothing else: the WRITABILITY of

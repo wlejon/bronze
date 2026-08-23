@@ -25,6 +25,7 @@
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -154,6 +155,22 @@ Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
 // ---- the methods ------------------------------------------------------------
 
 uint64_t mapGet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // The allocation-free prologue (seam: BRONZE_NO_MAP_FAST=1): a hit or a
+    // miss against a valid index runs no allocation anywhere, so the rooted
+    // copy of the arguments below defends nothing on this path. A stale or
+    // absent index — and every receiver the brand check refuses — falls
+    // through to the full path and its exact answers.
+    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+        Value selfV{Value(thisBits)};
+        if (isMapLike(selfV)) {
+            auto* map = selfV.asObject<MapHeader>();
+            uint32_t slot;
+            if (MapHeader::findFast(rtHeap(), map, Value(argv[0]), slot)) {
+                if (slot == UINT32_MAX) return Value::fromUndefined().rawBits();
+                return map->valueAt(slot).rawBits();
+            }
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireMapLike(self.get(), "get")) return Value::fromUndefined().rawBits();
@@ -185,6 +202,18 @@ uint64_t setAdd(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
 }
 
 uint64_t mapHas(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // As mapGet's fast prologue: no allocation on a valid-index probe, so no
+    // roots. Seam: BRONZE_NO_MAP_FAST=1.
+    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+        Value selfV{Value(thisBits)};
+        if (isMapLike(selfV)) {
+            auto* map = selfV.asObject<MapHeader>();
+            uint32_t slot;
+            if (MapHeader::findFast(rtHeap(), map, Value(argv[0]), slot)) {
+                return Value::fromBool(slot != UINT32_MAX).rawBits();
+            }
+        }
+    }
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireMapLike(self.get(), "has")) return Value::fromUndefined().rawBits();

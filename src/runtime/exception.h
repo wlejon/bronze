@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "abi/bronze_abi.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 // The pending-exception cell and the `Error` family.
@@ -24,14 +26,24 @@ namespace bronze::runtime {
 // must ask after each callback and stop — `[1,2,3].forEach(f)` where `f`
 // throws must visit one element, not three, and no generated check runs
 // inside a builtin's loop.
-bool rtExceptionPending() noexcept;
+//
+// Inline for the same reason runtime/tls_block.h's accessor is: this is one
+// TLS word compared against one constant, asked after every callback of every
+// runtime loop, and the chunk-6 sampler charged the out-of-line version 0.21
+// ms/frame of `many_meshes` — all of it call overhead. The cell's meaning and
+// every write to it are unchanged; only the read stopped being a call.
+inline bool rtExceptionPending() noexcept {
+    return rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
+}
 
 // Discard whatever is pending. Exactly one caller, and it is ECMA-262 7.4.9
 // step 6: closing an iterator while a throw is already in flight discards an
 // error the iterator's `return` method raises, because the completion already
 // on its way out is the one the program is entitled to see. Anywhere else this
 // would be a silent swallow.
-void rtClearException() noexcept;
+inline void rtClearException() noexcept {
+    rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
 
 // The three ways to raise, all of which RETURN `undefined` so that a helper can
 // `return rtThrowTypeError(...)`. That is not a convenience: the caller stores

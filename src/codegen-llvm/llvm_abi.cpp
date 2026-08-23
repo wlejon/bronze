@@ -337,4 +337,110 @@ llvm::Value* fnSlotPtr(llvm::IRBuilder<>& builder, const ModuleTables& tables, u
                                               "fnslot" + std::to_string(slot));
 }
 
+// The per-module TLS-block cache (seam: BRONZE_NO_TLS_CACHE=1 at CLI time).
+//
+// bindTlsBlock's prologue call is CSE'd within a function, but it is still a
+// CALL — through the import table into the runtime DLL, into a dynamic-TLS
+// address computation, and back — once per entry of every function that
+// touches the block, with the full volatile-register clobber a call implies.
+// The chunk-6 sampler charged the accessor itself 0.36 ms/frame on
+// `many_meshes` and it was the top runtime line on `instanced`, all of it
+// per-entry overhead: three.js's hot path is small functions entered millions
+// of times a frame.
+//
+// The address the accessor answers is a per-thread CONSTANT (the runtime's
+// own tls_block.h says so), so a module may remember it: a module-local
+// `thread_local bronze_tls_block* cache`, null on each new thread, filled by
+// the one accessor call the null-check miss path keeps. Module-local TLS is
+// a TEB access — no call, no IAT, no clobber — and the null test is a
+// perfectly predicted branch after the first entry on a thread.
+//
+// This runs as a REWRITE after emission rather than as a change to
+// bindTlsBlock, because foldability is load-bearing: a function whose fetch
+// is unused sees the plain call folded away by `readnone`, and an inline
+// load-test-branch sequence would not fold (its miss-path store pins it). So
+// only functions with a USED fetch are rewritten, and the entry-block call —
+// which dominates every other fetch in the function, seam arms included —
+// becomes the phi every fetch's users read. Entry-block allocas are hoisted
+// into the new entry block the rewrite prepends, so mem2reg still sees every
+// alloca in the function's entry block.
+void cacheTlsFetches(llvm::Module& llvmModule, llvm::Function* tlsFn) {
+    if (!tlsFn) return;
+    llvm::LLVMContext& ctx = llvmModule.getContext();
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::GlobalVariable* cache = nullptr;
+
+    for (llvm::Function& f : llvmModule) {
+        if (f.isDeclaration()) continue;
+
+        llvm::SmallVector<llvm::CallInst*, 8> calls;
+        bool anyUsed = false;
+        for (llvm::BasicBlock& bb : f) {
+            for (llvm::Instruction& inst : bb) {
+                auto* call = llvm::dyn_cast<llvm::CallInst>(&inst);
+                if (!call || call->getCalledOperand() != tlsFn) continue;
+                calls.push_back(call);
+                anyUsed = anyUsed || !call->use_empty();
+            }
+        }
+        if (calls.empty() || !anyUsed) continue;
+
+        llvm::BasicBlock& oldEntry = f.getEntryBlock();
+        llvm::CallInst* entryCall = nullptr;
+        for (llvm::CallInst* c : calls) {
+            if (c->getParent() == &oldEntry) {
+                entryCall = c;
+                break;
+            }
+        }
+        // No entry-block fetch means no fetch that dominates the others;
+        // leave the function on the plain-call shape rather than reason about
+        // dominance here. bindTlsBlock puts one in every function it touches,
+        // so this is the wrapper-without-arguments case and nothing else.
+        if (!entryCall) continue;
+
+        if (!cache) {
+            cache = new llvm::GlobalVariable(
+                llvmModule, ptrTy, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantPointerNull::get(ptrTy), "__bronze_tls_block_cache",
+                /*InsertBefore=*/nullptr, llvm::GlobalValue::GeneralDynamicTLSModel);
+        }
+
+        llvm::BasicBlock* checkBb =
+            llvm::BasicBlock::Create(ctx, "tls.cache", &f, &oldEntry);
+        llvm::BasicBlock* missBb =
+            llvm::BasicBlock::Create(ctx, "tls.cache.miss", &f, &oldEntry);
+
+        // Static allocas move first, so the new entry block holds them and
+        // mem2reg's entry-block-only promotion still applies to all of them.
+        llvm::SmallVector<llvm::AllocaInst*, 8> allocas;
+        for (llvm::Instruction& inst : oldEntry) {
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&inst)) allocas.push_back(a);
+        }
+        for (llvm::AllocaInst* a : allocas) a->moveBefore(*checkBb, checkBb->end());
+
+        llvm::IRBuilder<> check(checkBb);
+        llvm::LoadInst* cached =
+            check.CreateAlignedLoad(ptrTy, cache, llvm::Align(8), "tls.cached");
+        llvm::Value* isNull =
+            check.CreateICmpEQ(cached, llvm::ConstantPointerNull::get(ptrTy), "tls.isnull");
+        check.CreateCondBr(isNull, missBb, &oldEntry);
+
+        llvm::IRBuilder<> miss(missBb);
+        llvm::CallInst* fresh = miss.CreateCall(tlsFn, {}, "tls.fresh");
+        miss.CreateAlignedStore(fresh, cache, llvm::Align(8));
+        miss.CreateBr(&oldEntry);
+
+        llvm::IRBuilder<> top(&oldEntry, oldEntry.begin());
+        llvm::PHINode* tls = top.CreatePHI(ptrTy, 2, "tls.base");
+        tls->addIncoming(cached, checkBb);
+        tls->addIncoming(fresh, missBb);
+
+        for (llvm::CallInst* c : calls) {
+            c->replaceAllUsesWith(tls);
+            c->eraseFromParent();
+        }
+    }
+}
+
 }  // namespace bronze::codegen_llvm

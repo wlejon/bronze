@@ -216,6 +216,41 @@ ObjectHeader* MapHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
     return props;
 }
 
+bool MapHeader::findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
+    // The same first answer `find` gives: an empty collection misses without
+    // ever consulting — or building — the index.
+    if (map->liveSize() == 0) {
+        slot = UINT32_MAX;
+        return true;
+    }
+    // ensureIndex's validity test, verbatim: index present, epoch unmoved,
+    // anchor unmoved. Any disagreement means a rebuild — an allocation — so
+    // the rooted path must run instead.
+    if (!map->index.isPointer() ||
+        map->indexEpoch.asNumber() != static_cast<double>(heap.relocation_epoch()) ||
+        map->indexAnchor.asNumber() !=
+            static_cast<double>(reinterpret_cast<uintptr_t>(map))) {
+        return false;
+    }
+    const uint32_t count = bucketCountOf(map);
+    if (count == 0) {
+        return false;
+    }
+    const uint32_t mask = count - 1;
+    const uint32_t* buckets = bucketsOf(map);
+    uint32_t b = hashKey(key) & mask;
+    while (buckets[b] != 0) {
+        const uint32_t s = buckets[b] - 1;
+        if (map->liveAt(s) && sameValueZero(map->keyAt(s), key)) {
+            slot = s;
+            return true;
+        }
+        b = (b + 1) & mask;
+    }
+    slot = UINT32_MAX;
+    return true;
+}
+
 uint32_t MapHeader::find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {
     if (self.get().asObject<MapHeader>()->liveSize() == 0) return UINT32_MAX;
     ensureIndex(heap, self);

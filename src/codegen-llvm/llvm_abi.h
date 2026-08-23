@@ -92,6 +92,15 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 // away entirely rather than paying for the fetch.
 AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns);
 
+// Rewrites every USED bronze_tls_block_addr call in the module into a load of
+// a module-local `thread_local bronze_tls_block*` cache, with a once-per-
+// thread null-check miss path that still calls the accessor (the one place
+// the address can come from). Runs after emission and before optimization;
+// the CLI-time seam BRONZE_NO_TLS_CACHE=1 skips it, keeping the per-prologue
+// cross-DLL call shape. Functions whose fetches are all unused are left
+// alone — their calls fold away exactly as before.
+void cacheTlsFetches(llvm::Module& llvmModule, llvm::Function* tlsFn);
+
 // The four tables a compiled module owns, all internal to its object file.
 //
 // They are the module's data rather than the runtime's because a process can

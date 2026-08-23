@@ -42,6 +42,10 @@ typedef struct bronze_tls_block {
     uint64_t method_call_ic_enabled;
     uint64_t elem_key_ic_enabled;
     uint64_t undef_rel_enabled;
+    uint64_t sort_fast_enabled;
+    uint64_t map_fast_enabled;
+    uint64_t ta_set_fast_enabled;
+    uint64_t truthy_inline_enabled;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -69,6 +73,10 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF    176
 #define BRONZE_TLS_ELEM_KEY_IC_ENABLED_OFF       184
 #define BRONZE_TLS_UNDEF_REL_ENABLED_OFF         192
+#define BRONZE_TLS_SORT_FAST_ENABLED_OFF         200
+#define BRONZE_TLS_MAP_FAST_ENABLED_OFF          208
+#define BRONZE_TLS_TA_SET_FAST_ENABLED_OFF       216
+#define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     224
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------

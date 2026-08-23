@@ -79,24 +79,6 @@ ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
     return props;
 }
 
-Value ArrayHeader::getElem(uint32_t index) const {
-    if (index >= length) {
-        return Value::fromUndefined();
-    }
-    Value v = elementsData()[index];
-    return v.isHole() ? Value::fromUndefined() : v;
-}
-
-bool ArrayHeader::hasElem(uint32_t index) const noexcept {
-    if (index >= length) return false;
-    return !elementsData()[index].isHole();
-}
-
-void ArrayHeader::deleteElem(uint32_t index) noexcept {
-    if (index >= length) return;
-    elementsData()[index] = Value::fromHole();
-}
-
 void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength) {
     {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
@@ -120,7 +102,7 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     arr->length = newLength;
 }
 
-void ArrayHeader::setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
+void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
     if (index > length) {
         fatal("sparse array write (index past the end) is unsupported until dictionary "
               "elements land");

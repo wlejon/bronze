@@ -55,6 +55,13 @@ static_assert(offsetof(bronze_tls_block, elem_key_ic_enabled) ==
               BRONZE_TLS_ELEM_KEY_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, undef_rel_enabled) ==
               BRONZE_TLS_UNDEF_REL_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, sort_fast_enabled) ==
+              BRONZE_TLS_SORT_FAST_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, map_fast_enabled) == BRONZE_TLS_MAP_FAST_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, ta_set_fast_enabled) ==
+              BRONZE_TLS_TA_SET_FAST_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
+              BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF);
 
 namespace bronze::runtime {
 
@@ -92,6 +99,10 @@ thread_local bronze_tls_block g_tls_block = {
     /*method_call_ic_enabled=*/1,
     /*elem_key_ic_enabled=*/1,
     /*undef_rel_enabled=*/1,
+    /*sort_fast_enabled=*/1,
+    /*map_fast_enabled=*/1,
+    /*ta_set_fast_enabled=*/1,
+    /*truthy_inline_enabled=*/1,
 };
 
 }  // namespace bronze::runtime

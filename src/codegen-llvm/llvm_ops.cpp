@@ -194,6 +194,19 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 return true;
             }
             if (inst.type == il::Type::Bool) {
+                // Truthiness, three arms. The number arm is the shape it
+                // always was: an ordered compare against 0.0, which answers
+                // false for NaN by itself. The second arm (seam:
+                // BRONZE_NO_TRUTHY_INLINE=1, the tls word below) answers
+                // every operand whose truthiness is its BIT PATTERN:
+                // `true`/`false`, `undefined`/`null`/the hole are five exact
+                // constants, an Int32 is its low payload against zero, and an
+                // object — three.js's `if (object.visible)` receivers' other
+                // half being plain `material.transparent` booleans — is
+                // always true (7.1.2 has no falsy object row; bronze hosts no
+                // IsHTMLDDA exotic). A string's truthiness is its LENGTH and
+                // a BigInt's is its limbs — both behind a pointer — so those
+                // two keep the bronze_unbox_bool helper they always took.
                 llvm::Value* isNum = builder_.CreateICmpULE(
                     src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.bool.isnum");
                 llvm::Value* fastDouble = builder_.CreateBitCast(src, builder_.getDoubleTy());
@@ -201,11 +214,57 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
 
                 llvm::LLVMContext& ctx = builder_.getContext();
                 llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+                llvm::BasicBlock* tagBb = llvm::BasicBlock::Create(ctx, "unbox.bool.tag", fn);
                 llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "unbox.bool.slow", fn);
                 llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "unbox.bool.done", fn);
                 llvm::BasicBlock* curBb = builder_.GetInsertBlock();
 
-                builder_.CreateCondBr(isNum, doneBb, slowBb);
+                builder_.CreateCondBr(isNum, doneBb, tagBb);
+
+                builder_.SetInsertPoint(tagBb);
+                llvm::Value* base = builder_.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
+                llvm::Value* seamPtr = builder_.CreateConstInBoundsGEP1_64(
+                    builder_.getInt8Ty(), base, BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF,
+                    "tls.truthy");
+                llvm::Value* seamCell = builder_.CreateAlignedLoad(
+                    builder_.getInt64Ty(), seamPtr, llvm::Align(8), "truthy.seam");
+                llvm::Value* seamOn =
+                    builder_.CreateICmpNE(seamCell, builder_.getInt64(0), "truthy.on");
+                const uint64_t trueBits =
+                    (static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL) << BRONZE_ABI_VALUE_TAG_SHIFT) |
+                    1ull;
+                const uint64_t falseBits = static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL)
+                                           << BRONZE_ABI_VALUE_TAG_SHIFT;
+                llvm::Value* isTrue =
+                    builder_.CreateICmpEQ(src, builder_.getInt64(trueBits), "truthy.istrue");
+                llvm::Value* isFalseLike = builder_.CreateOr(
+                    builder_.CreateOr(
+                        builder_.CreateICmpEQ(src, builder_.getInt64(falseBits)),
+                        builder_.CreateICmpEQ(src,
+                                              builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS))),
+                    builder_.CreateOr(
+                        builder_.CreateICmpEQ(src, builder_.getInt64(BRONZE_ABI_NULL_BITS)),
+                        builder_.CreateICmpEQ(src, builder_.getInt64(BRONZE_ABI_HOLE_BITS))),
+                    "truthy.isfalselike");
+                llvm::Value* tag = builder_.CreateLShr(
+                    src, builder_.getInt64(BRONZE_ABI_VALUE_TAG_SHIFT), "truthy.tagbits");
+                llvm::Value* isObj = builder_.CreateICmpEQ(
+                    tag, builder_.getInt64(BRONZE_ABI_TAG_OBJECT), "truthy.isobj");
+                llvm::Value* isInt32 = builder_.CreateICmpEQ(
+                    tag, builder_.getInt64(BRONZE_ABI_TAG_INT32), "truthy.isint32");
+                llvm::Value* int32Truthy = builder_.CreateICmpNE(
+                    builder_.CreateTrunc(src, builder_.getInt32Ty()),
+                    builder_.getInt32(0), "truthy.i32val");
+                llvm::Value* known = builder_.CreateOr(
+                    builder_.CreateOr(isTrue, isFalseLike),
+                    builder_.CreateOr(isObj, isInt32), "truthy.known");
+                llvm::Value* take =
+                    builder_.CreateAnd(seamOn, known, "truthy.take");
+                llvm::Value* armVal = builder_.CreateOr(
+                    builder_.CreateOr(isTrue, isObj),
+                    builder_.CreateAnd(isInt32, int32Truthy), "truthy.armval");
+                llvm::BasicBlock* tagEndBb = builder_.GetInsertBlock();
+                builder_.CreateCondBr(take, doneBb, slowBb);
 
                 builder_.SetInsertPoint(slowBb);
                 llvm::Value* slowVal = builder_.CreateCall(abi.bronze_unbox_bool, {src});
@@ -213,8 +272,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 builder_.CreateBr(doneBb);
 
                 builder_.SetInsertPoint(doneBb);
-                llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "unbox.bool.res");
+                llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt1Ty(), 3, "unbox.bool.res");
                 phi->addIncoming(fastTruthy, curBb);
+                phi->addIncoming(armVal, tagEndBb);
                 phi->addIncoming(slowVal, slowEndBb);
                 values_[inst.result] = phi;
                 return true;

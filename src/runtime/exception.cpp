@@ -386,14 +386,6 @@ bool lookupDataProperty(ObjectHeader* obj, StringHeader* key, Value& out) {
 
 }  // namespace
 
-bool rtExceptionPending() noexcept {
-    return rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
-}
-
-void rtClearException() noexcept {
-    rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-}
-
 Value rtThrow(Value thrown) noexcept {
     // `throw "x"` never touches the Error classes, so this is the one place
     // every raise passes through and therefore where the cell's root has to
