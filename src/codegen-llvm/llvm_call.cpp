@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -25,6 +26,7 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* fnBb = llvm::BasicBlock::Create(ctx, "call.fn", fn);
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "call.fast", fn);
@@ -35,7 +37,8 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* tag = builder.CreateLShr(callee, BRONZE_ABI_VALUE_TAG_SHIFT, "call.tag");
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "call.isobj");
-    builder.CreateCondBr(isObj, fnBb, slowBb);
+    auto* brObj = builder.CreateCondBr(isObj, fnBb, slowBb);
+    brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 2. Is it a FunctionHeapObject?
     builder.SetInsertPoint(fnBb);
@@ -48,7 +51,8 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     markInvariant(flags, ctx);
     llvm::Value* isFn = builder.CreateICmpEQ(
         flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "call.isfn");
-    builder.CreateCondBr(isFn, fastBb, slowBb);
+    auto* brFn = builder.CreateCondBr(isFn, fastBb, slowBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 3. Arity check and A/B seam check
     builder.SetInsertPoint(fastBb);
@@ -67,7 +71,8 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::BasicBlock* underArityCheckBb = llvm::BasicBlock::Create(ctx, "call.underarity.check", fn);
 
     llvm::Value* directOk = builder.CreateAnd(directArityOk, enabledOk, "call.directok");
-    builder.CreateCondBr(directOk, dispatchBb, underArityCheckBb);
+    auto* brDir = builder.CreateCondBr(directOk, dispatchBb, underArityCheckBb);
+    brDir->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // If direct arity not ok: pad up to kPadSlots formals with undefined.
     //

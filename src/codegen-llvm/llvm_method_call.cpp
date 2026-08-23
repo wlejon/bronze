@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -23,6 +24,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
     llvm::Value* safeArgv = argv ? argv : llvm::ConstantPointerNull::get(ptrTy);
@@ -46,7 +48,8 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.isobj");
     llvm::Value* checkOk = builder.CreateAnd(isEnabled, isObj, "mic.checkok");
-    builder.CreateCondBr(checkOk, plainBb, slowBb);
+    auto* brCheck = builder.CreateCondBr(checkOk, plainBb, slowBb);
+    brCheck->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 2. Plain Object check (flags == BRONZE_ABI_OBJ_FLAGS_PLAIN)
     builder.SetInsertPoint(plainBb);
@@ -133,7 +136,8 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* cachedShape = builder.CreateIntToPtr(cachedShapeInt, ptrTy, "mic.cachedshapeptr");
     llvm::Value* shapeMatch = builder.CreateICmpEQ(shape, cachedShape, "mic.shapematch");
     llvm::BasicBlock* way1Bb = llvm::BasicBlock::Create(ctx, "mic.way1", fn);
-    builder.CreateCondBr(shapeMatch, hitBb, way1Bb);
+    auto* brShape = builder.CreateCondBr(shapeMatch, hitBb, way1Bb);
+    brShape->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 3b. WAY 1: shape against word 6; a hit reads the direct triple from
     // words 7-9 and joins the dispatch below with no form split — displacement

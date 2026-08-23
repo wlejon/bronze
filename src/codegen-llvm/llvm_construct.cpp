@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
 #include "il/il.h"
@@ -37,6 +38,7 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* fnBb = llvm::BasicBlock::Create(ctx, "new.fn", fn);
     llvm::BasicBlock* allocBb = llvm::BasicBlock::Create(ctx, "new.alloc", fn);
@@ -48,7 +50,8 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* tag = builder.CreateLShr(ctor, BRONZE_ABI_VALUE_TAG_SHIFT, "new.tag");
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "new.isobj");
-    builder.CreateCondBr(isObj, fnBb, slowBb);
+    auto* brObj = builder.CreateCondBr(isObj, fnBb, slowBb);
+    brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // Guard: the Function heap kind. The flags word is within the minimum
     // payload every Object-tagged allocation has, so this load is safe before
@@ -63,7 +66,8 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         llvm::Align(2), "new.flags");
     llvm::Value* isFn = builder.CreateICmpEQ(
         flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "new.isfn");
-    builder.CreateCondBr(isFn, allocBb, slowBb);
+    auto* brFn = builder.CreateCondBr(isFn, allocBb, slowBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // The remaining guards, all loads off the (now known) FunctionHeader and
     // the window globals, folded into one branch:
@@ -102,7 +106,8 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                         builder.CreateAnd(shapeOk, fits), "new.ok");
 
     llvm::BasicBlock* buildBb = llvm::BasicBlock::Create(ctx, "new.build", fn);
-    builder.CreateCondBr(ok, buildBb, slowBb);
+    auto* brOk = builder.CreateCondBr(ok, buildBb, slowBb);
+    brOk->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // The instance, spelled as the stores ObjectHeader::create performs:
     // header word, shape, undefined overflow, undefined inline slots. Pure
@@ -247,7 +252,9 @@ llvm::Value* emitCreateObjectInline(llvm::IRBuilder<>& builder, const AbiFns& ab
         headroom, builder.getInt64(BRONZE_ABI_PLAIN_OBJECT_BYTES), "obj.fits");
     llvm::Value* shapeOk = builder.CreateICmpNE(shape, builder.getInt64(0), "obj.shapeok");
     llvm::Value* ok = builder.CreateAnd(fits, shapeOk, "obj.ok");
-    builder.CreateCondBr(ok, buildBb, slowBb);
+    auto* brObjOk = builder.CreateCondBr(ok, buildBb, slowBb);
+    brObjOk->setMetadata(llvm::LLVMContext::MD_prof,
+                         llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(buildBb);
     builder.CreateAlignedStore(

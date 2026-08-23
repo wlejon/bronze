@@ -7,6 +7,8 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -48,26 +50,12 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
     llvm::Value* objAndNum = builder.CreateAnd(isObject, idxIsNum);
 
     llvm::Value* d = builder.CreateBitCast(idxBits, dblTy);
-    llvm::Value* ge0 = builder.CreateFCmpOGE(d, llvm::ConstantFP::get(dblTy, 0.0));
-    llvm::Value* ltMax = builder.CreateFCmpOLT(d, llvm::ConstantFP::get(dblTy, 4294967296.0));
-    llvm::Value* inRange = builder.CreateAnd(ge0, ltMax);
-
-    // The conversion is fed a value the range check has ALREADY accepted, and
-    // the select is what makes that true rather than merely likely. `fptoui` of
-    // anything outside the destination range is POISON â€” not a wrong number, a
-    // value LLVM may assume never happens â€” and the poison flows through
-    // `isIntegral` into the branch condition below, where a branch on poison is
-    // undefined behaviour. For a key the optimizer can see is constant it
-    // folded exactly that way: `o[false]` bit-casts to a NaN, and the guard
-    // ladder collapsed into the ARRAY arm, which then read a plain object's
-    // words as an elements block. Ordering the checks is not enough when both
-    // live in one basic block; the operand has to be safe on every path.
-    llvm::Value* inRangeD = builder.CreateSelect(inRange, d, llvm::ConstantFP::get(dblTy, 0.0));
-    llvm::Value* idx32 = builder.CreateFPToUI(inRangeD, builder.getInt32Ty(), "elem.idx");
+    llvm::Value* idx32 = builder.CreateIntrinsic(
+        llvm::Intrinsic::fptoui_sat, {builder.getInt32Ty(), dblTy}, {d}, nullptr, "elem.idx");
     llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
     llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, d);
 
-    llvm::Value* ok = builder.CreateAnd(objAndNum, builder.CreateAnd(inRange, isIntegral));
+    llvm::Value* ok = builder.CreateAnd(objAndNum, isIntegral);
     llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, std::string(prefix) + "ok", fn);
     builder.CreateCondBr(ok, cont, slowBb);
     builder.SetInsertPoint(cont);
@@ -124,15 +112,15 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
     llvm::Value* isExt = builder.CreateICmpNE(extBits, builder.getInt64(0), "ta.isext");
     llvm::Value* base = builder.CreateSelect(isExt, extBits, inlineBase, "ta.base");
 
-    llvm::Value* byteIdx = (elemSize == 8)
-                               ? builder.CreateShl(idx32, builder.getInt32(3), "ta.byteidx")
-                               : ((elemSize == 4) ? builder.CreateShl(idx32, builder.getInt32(2), "ta.byteidx")
-                                                  : ((elemSize == 2) ? builder.CreateShl(idx32, builder.getInt32(1), "ta.byteidx")
-                                                                     : idx32));
-    llvm::Value* totalOffset =
-        builder.CreateZExt(builder.CreateAdd(byteOff, byteIdx), i64Ty, "ta.totaloff");
     llvm::Value* basePtr = builder.CreateIntToPtr(base, ptrTy, "ta.base.ptr");
-    return builder.CreateInBoundsGEP(i8Ty, basePtr, totalOffset, "ta.elem.ptr");
+    llvm::Value* byteOff64 = builder.CreateZExt(byteOff, i64Ty, "ta.byteoff64");
+    llvm::Value* dataPtr = builder.CreateInBoundsGEP(i8Ty, basePtr, byteOff64, "ta.data.ptr");
+    llvm::Value* idx64 = builder.CreateZExt(idx32, i64Ty, "ta.idx64");
+    llvm::Type* elemTy = (elemSize == 8)
+                             ? builder.getDoubleTy()
+                             : ((elemSize == 4) ? builder.getFloatTy()
+                                                : ((elemSize == 2) ? builder.getInt16Ty() : i8Ty));
+    return builder.CreateInBoundsGEP(elemTy, dataPtr, idx64, "ta.elem.ptr");
 }
 
 // A double as a NaN-boxed Value: the same NaN-canonicalizing select the Box
@@ -566,12 +554,8 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::Value* ge0 = builder.CreateFCmpOGE(idxDbl, llvm::ConstantFP::get(dblTy, 0.0));
-    llvm::Value* ltMax =
-        builder.CreateFCmpOLT(idxDbl, llvm::ConstantFP::get(dblTy, 4294967296.0));
-    llvm::Value* inRange = builder.CreateAnd(ge0, ltMax);
-    llvm::Value* safe = builder.CreateSelect(inRange, idxDbl, llvm::ConstantFP::get(dblTy, 0.0));
-    llvm::Value* idx32 = builder.CreateFPToUI(safe, i32Ty, "tel.idx");
+    llvm::Value* idx32 = builder.CreateIntrinsic(
+        llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
     llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
     llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
 
@@ -583,7 +567,7 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     tagViewLengthAccess(len, ctx);
     llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
 
-    llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(inRange, isIntegral), inLen);
+    llvm::Value* ok = builder.CreateAnd(isIntegral, inLen);
     return {hdr, idx32, ok};
 }
 
@@ -602,9 +586,11 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
 
     TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
     llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "tel.load", fn);
-    llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, "tel.miss", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tel.done", fn);
-    builder.CreateCondBr(g.ok, loadBb, missBb);
+    llvm::BasicBlock* entryBb = builder.GetInsertBlock();
+    auto* condBr = builder.CreateCondBr(g.ok, loadBb, doneBb);
+    condBr->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(loadBb);
     llvm::Value* loaded = nullptr;
@@ -673,14 +659,11 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     llvm::BasicBlock* loadEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
-    builder.SetInsertPoint(missBb);
-    builder.CreateBr(doneBb);
-
     builder.SetInsertPoint(doneBb);
     llvm::PHINode* result = builder.CreatePHI(dblTy, 2, "tel.result");
     result->addIncoming(loaded, loadEndBb);
     // ToNumber(undefined): the invalid-index answer in a coercing position.
-    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), missBb);
+    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), entryBb);
     return result;
 }
 
@@ -695,7 +678,9 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
     TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
     llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "tes.store", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tes.done", fn);
-    builder.CreateCondBr(g.ok, storeBb, doneBb);
+    auto* condBr = builder.CreateCondBr(g.ok, storeBb, doneBb);
+    condBr->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(storeBb);
     switch (elemKind) {

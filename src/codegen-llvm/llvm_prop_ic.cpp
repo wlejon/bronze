@@ -126,13 +126,15 @@ ProtoWalkResult emitProtoChainWalk(
     stepIdx->addIncoming(builder.getInt64(0), entryBb);
 
     llvm::Value* rootPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, curShape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
-    llvm::Value* rootShape = builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), prefix + ".proto.root");
+    auto* rootShape = builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), prefix + ".proto.root");
+    markInvariant(rootShape, ctx);
     llvm::Value* rootNonNull = builder.CreateICmpNE(rootShape, llvm::Constant::getNullValue(ptrTy));
     builder.CreateCondBr(rootNonNull, loadBb, slowBb);
 
     builder.SetInsertPoint(loadBb);
     llvm::Value* protoValPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, rootShape, BRONZE_ABI_SHAPE_PROTO_OFFSET);
-    llvm::Value* protoVal = builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), prefix + ".proto.val");
+    auto* protoVal = builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), prefix + ".proto.val");
+    markInvariant(protoVal, ctx);
     llvm::Value* protoTag = builder.CreateLShr(protoVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* protoIsObj = builder.CreateICmpEQ(protoTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     builder.CreateCondBr(protoIsObj, stepBb, slowBb);
@@ -141,19 +143,20 @@ ProtoWalkResult emitProtoChainWalk(
     llvm::Value* protoAddr = builder.CreateAnd(protoVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* protoHdr = builder.CreateIntToPtr(protoAddr, ptrTy, prefix + ".proto.hdr");
     llvm::Value* protoFlagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    llvm::Value* protoFlags = builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), prefix + ".proto.flags");
+    auto* protoFlags = builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), prefix + ".proto.flags");
+    markInvariant(protoFlags, ctx);
     llvm::Value* protoPlain = builder.CreateICmpEQ(protoFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
     builder.CreateCondBr(protoPlain, dictBb, slowBb);
 
     builder.SetInsertPoint(dictBb);
     llvm::Value* protoShapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    llvm::Value* protoShape = builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), prefix + ".proto.shape");
+    auto* protoShape = builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), prefix + ".proto.shape");
     llvm::Value* protoShapeNonNull = builder.CreateICmpNE(protoShape, llvm::Constant::getNullValue(ptrTy));
     builder.CreateCondBr(protoShapeNonNull, dictLoadBb, slowBb);
 
     builder.SetInsertPoint(dictLoadBb);
     llvm::Value* dictPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoShape, BRONZE_ABI_SHAPE_DICT_OFFSET);
-    llvm::Value* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), prefix + ".proto.dict");
+    auto* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), prefix + ".proto.dict");
     llvm::Value* notDict = builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy));
     llvm::Value* stepNext = builder.CreateAdd(stepIdx, builder.getInt64(1), prefix + ".proto.inext");
     llvm::Value* walked = builder.CreateICmpEQ(stepNext, depth);
