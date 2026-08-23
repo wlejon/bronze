@@ -503,14 +503,29 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             // visible in every other.
             auto fnIt = functionIndices_.find(ident->name);
             if (fnIt != functionIndices_.end()) {
+                auto refIt = functionRefMap_.find(fnIt->second);
+                if (refIt != functionRefMap_.end()) {
+                    return refIt->second;
+                }
                 il::ValueId res = ilFn.valueCount++;
                 il::Instruction inst;
                 inst.op = il::Op::FunctionRef;
                 inst.type = il::Type::Dynamic;
                 inst.result = res;
                 inst.calleeIndex = fnIt->second;
-                emitInst(ilFn, inst);
-                return Value{res, il::Type::Dynamic};
+                if (currentBlockIdx_ == 0 || ilFn.blocks.empty()) {
+                    emitInst(ilFn, inst);
+                } else {
+                    auto& b0 = ilFn.blocks[0];
+                    if (!b0.instructions.empty() && il::isTerminator(b0.instructions.back().op)) {
+                        b0.instructions.insert(b0.instructions.end() - 1, inst);
+                    } else {
+                        b0.instructions.push_back(inst);
+                    }
+                }
+                Value val{res, il::Type::Dynamic};
+                functionRefMap_[fnIt->second] = val;
+                return val;
             }
             // A global bronze provides. The set is closed and checked HERE, at
             // compile time, so an unknown free identifier is a compile error

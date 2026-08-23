@@ -201,6 +201,7 @@ std::optional<il::Module> Lowerer::lower() {
         // unrelated instruction in `main`.
         varBindings_.clear();
         activeVarMap_.clear();
+        functionRefMap_.clear();
         currentScopeDepth_ = 0;
         varDeclCounter_ = 0;
         jumpStack_.clear();
@@ -299,6 +300,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
     capturedNames_ = ast::getCapturedNames(body);
+    functionRefMap_.clear();
     // The second reason a binding cannot be in SSA. Unioned here and nowhere
     // else, so `capturedNames_` keeps meaning exactly "a closure can reach it"
     // for the one consumer that needs that narrower question.

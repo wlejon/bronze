@@ -69,8 +69,14 @@ bool FunctionEmitter::emitDynamicCall(const il::Instruction& inst) {
                  {callee, thisVal, builder_.getInt32(argc), argv});
         return true;
     }
+    uint32_t calleeIdx = (inst.operands[0] < funcRefIndex_.size())
+                             ? funcRefIndex_[inst.operands[0]]
+                             : UINT32_MAX;
+    llvm::Function* knownWrapper = (calleeIdx < shared_.wrappers.size())
+                                       ? shared_.wrappers[calleeIdx]
+                                       : nullptr;
     llvm::Value* res = emitDynamicCallInline(
-        builder_, abi, globals_, callee, thisVal, argc, argv);
+        builder_, abi, globals_, callee, thisVal, argc, argv, knownWrapper);
     if (inst.result != il::kNoValue) {
         values_[inst.result] = res;
     }
@@ -145,10 +151,20 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
     llvm::Value* argv = emitArgv(inst, 1, argc, ok);
     if (!ok) return false;
 
+    uint32_t calleeIdx = (inst.operands[0] < funcRefIndex_.size())
+                             ? funcRefIndex_[inst.operands[0]]
+                             : UINT32_MAX;
+    llvm::Function* knownWrapper = (calleeIdx < shared_.wrappers.size())
+                                       ? shared_.wrappers[calleeIdx]
+                                       : nullptr;
+    const il::Function* knownFunc = (calleeIdx < shared_.module.functions.size())
+                                        ? &shared_.module.functions[calleeIdx]
+                                        : nullptr;
+
     if (constructSelfSlot_ != kNoSlot) {
         llvm::Value* res =
             emitConstructInline(builder_, abi, globals_, ctor, argc, argv,
-                                slotAddr(constructSelfSlot_));
+                                slotAddr(constructSelfSlot_), knownWrapper, knownFunc);
         if (inst.result != il::kNoValue) values_[inst.result] = res;
         return true;
     }

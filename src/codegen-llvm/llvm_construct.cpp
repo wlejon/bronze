@@ -6,6 +6,7 @@
 #include <llvm/IR/Function.h>
 
 #include "abi/bronze_abi.h"
+#include "il/il.h"
 
 namespace bronze::codegen_llvm {
 
@@ -25,7 +26,8 @@ static_assert(BRONZE_ABI_PLAIN_OBJECT_BYTES ==
 
 llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                  const AbiGlobals& globals, llvm::Value* ctor, uint32_t argc,
-                                 llvm::Value* argv, llvm::Value* selfSlotAddr) {
+                                 llvm::Value* argv, llvm::Value* selfSlotAddr,
+                                 llvm::Function* knownWrapper, const il::Function* knownFunc) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -138,21 +140,32 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* env = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "new.env");
-    llvm::Value* code = builder.CreateAlignedLoad(
-        ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
-        llvm::Align(8), "new.code");
-    llvm::FunctionType* codeTy =
-        llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
-    llvm::Value* callRes = builder.CreateCall(
-        codeTy, code, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+    llvm::Value* callRes = nullptr;
+    if (knownWrapper) {
+        callRes = builder.CreateCall(
+            knownWrapper, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+    } else {
+        llvm::Value* code = builder.CreateAlignedLoad(
+            ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+            llvm::Align(8), "new.code");
+        llvm::FunctionType* codeTy =
+            llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
+        callRes = builder.CreateCall(
+            codeTy, code, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+    }
     llvm::Value* self = builder.CreateLoad(i64Ty, selfSlotAddr, "new.self");
     // A constructor returning an object replaces the instance; any other
     // return value (including the undefined a pending exception rides out
     // on) leaves the instance as the answer — the helper's exact foot rule.
-    llvm::Value* resIsObj = builder.CreateICmpEQ(
-        builder.CreateLShr(callRes, BRONZE_ABI_VALUE_TAG_SHIFT),
-        builder.getInt64(BRONZE_ABI_TAG_OBJECT), "new.resisobj");
-    llvm::Value* fastVal = builder.CreateSelect(resIsObj, callRes, self, "new.fastval");
+    llvm::Value* fastVal = nullptr;
+    if (knownFunc && knownFunc->returnType == il::Type::Void) {
+        fastVal = self;
+    } else {
+        llvm::Value* resIsObj = builder.CreateICmpEQ(
+            builder.CreateLShr(callRes, BRONZE_ABI_VALUE_TAG_SHIFT),
+            builder.getInt64(BRONZE_ABI_TAG_OBJECT), "new.resisobj");
+        fastVal = builder.CreateSelect(resIsObj, callRes, self, "new.fastval");
+    }
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

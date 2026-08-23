@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
@@ -21,7 +22,8 @@ namespace bronze::codegen_llvm {
 //   Calls `bronze_dynamic_call(callee, thisVal, argc, argv)` on any miss.
 llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                    const AbiGlobals& globals, llvm::Value* callee,
-                                   llvm::Value* thisVal, uint32_t argc, llvm::Value* argv);
+                                   llvm::Value* thisVal, uint32_t argc, llvm::Value* argv,
+                                   llvm::Function* knownWrapper = nullptr);
 
 // Emits an inlined direct dispatch for Array.prototype.push:
 // Guard:

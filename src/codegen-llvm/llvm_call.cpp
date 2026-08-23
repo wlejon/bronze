@@ -15,7 +15,8 @@ static constexpr uint32_t kPadSlots = 16;
 
 llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                    const AbiGlobals& globals, llvm::Value* callee,
-                                   llvm::Value* thisVal, uint32_t argc, llvm::Value* argv) {
+                                   llvm::Value* thisVal, uint32_t argc, llvm::Value* argv,
+                                   llvm::Function* knownWrapper) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -109,14 +110,19 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* padEnv = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "call.padenv");
-    llvm::Value* padCode = builder.CreateAlignedLoad(
-        ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
-        llvm::Align(8), "call.padcode");
-
-    llvm::FunctionType* codeTy =
-        llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
-    llvm::Value* padRes = builder.CreateCall(
-        codeTy, padCode, {padEnv, thisVal, builder.getInt32(argc), padArgv}, "call.padres");
+    llvm::Value* padRes = nullptr;
+    if (knownWrapper) {
+        padRes = builder.CreateCall(
+            knownWrapper, {padEnv, thisVal, builder.getInt32(argc), padArgv}, "call.padres");
+    } else {
+        llvm::Value* padCode = builder.CreateAlignedLoad(
+            ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+            llvm::Align(8), "call.padcode");
+        llvm::FunctionType* codeTy =
+            llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
+        padRes = builder.CreateCall(
+            codeTy, padCode, {padEnv, thisVal, builder.getInt32(argc), padArgv}, "call.padres");
+    }
     llvm::BasicBlock* padEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
@@ -125,12 +131,19 @@ llvm::Value* emitDynamicCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi
     llvm::Value* env = builder.CreateAlignedLoad(
         i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
         llvm::Align(8), "call.env");
-    llvm::Value* code = builder.CreateAlignedLoad(
-        ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
-        llvm::Align(8), "call.code");
-
-    llvm::Value* fastRes = builder.CreateCall(
-        codeTy, code, {env, thisVal, builder.getInt32(argc), argv}, "call.fastres");
+    llvm::Value* fastRes = nullptr;
+    if (knownWrapper) {
+        fastRes = builder.CreateCall(
+            knownWrapper, {env, thisVal, builder.getInt32(argc), argv}, "call.fastres");
+    } else {
+        llvm::Value* code = builder.CreateAlignedLoad(
+            ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+            llvm::Align(8), "call.code");
+        llvm::FunctionType* codeTy =
+            llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
+        fastRes = builder.CreateCall(
+            codeTy, code, {env, thisVal, builder.getInt32(argc), argv}, "call.fastres");
+    }
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

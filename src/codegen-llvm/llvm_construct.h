@@ -10,9 +10,14 @@
 
 #include <cstdint>
 
+#include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 
 #include "codegen-llvm/llvm_abi.h"
+
+namespace bronze::il {
+struct Function;
+}
 
 namespace bronze::codegen_llvm {
 
@@ -30,11 +35,13 @@ namespace bronze::codegen_llvm {
 // that scope's only observer.
 llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                  const AbiGlobals& globals, llvm::Value* ctor, uint32_t argc,
-                                 llvm::Value* argv, llvm::Value* selfSlotAddr);
+                                 llvm::Value* argv, llvm::Value* selfSlotAddr,
+                                 llvm::Function* knownWrapper = nullptr,
+                                 const il::Function* knownFunc = nullptr);
 
 // Emits the inline bump-pointer allocation for plain `{}` object literals,
 // falling back to bronze_create_object on window miss.
 llvm::Value* emitCreateObjectInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                                    const AbiGlobals& globals);
+                                     const AbiGlobals& globals);
 
 }  // namespace bronze::codegen_llvm

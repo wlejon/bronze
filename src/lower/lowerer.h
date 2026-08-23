@@ -72,6 +72,7 @@ private:
     // list, so a read of one lowers to `global.get` like a builtin's does.
     std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
+    std::unordered_map<uint32_t, Value> functionRefMap_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
     // keyConstants_ read the other way, filled as indices are handed out.
     std::vector<std::string> keyStrings_;

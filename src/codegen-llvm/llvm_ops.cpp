@@ -737,6 +737,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                          "FunctionRef to an out-of-range function index")) {
                 return false;
             }
+            if (inst.result < funcRefIndex_.size()) {
+                funcRefIndex_[inst.result] = inst.calleeIndex;
+            }
             const auto& target = shared_.module.functions[inst.calleeIndex];
             // The arity a call is ADAPTED to: the parameters a caller supplies.
             // A rest parameter is not one of them — padding argv up to it would

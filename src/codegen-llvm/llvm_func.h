@@ -125,6 +125,9 @@ private:
     // code-pointer-guarded direct dispatch (llvm_math.h). Provenance only —
     // soundness lives entirely in the emitted guard.
     std::vector<uint32_t> propGetKey_;
+    // The IL function index a FunctionRef result was read by (UINT32_MAX otherwise):
+    // what lets DynamicCall and Construct invoke the known wrapper directly.
+    std::vector<uint32_t> funcRefIndex_;
 
     std::vector<uint32_t> slotOf_;
     uint32_t argvBase_ = 0;
