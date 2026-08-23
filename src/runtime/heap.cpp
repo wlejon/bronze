@@ -407,8 +407,10 @@ bool Heap::ensure_commit(Semispace& space, size_t required_bytes) {
         return false;
     }
 
-    constexpr size_t kPageStep = 64 * 1024;
-    size_t target_commit = (required_bytes + kPageStep - 1) & ~(kPageStep - 1);
+    constexpr size_t kMinStep = 64 * 1024;
+    size_t growth = std::max(kMinStep, space.committed_bytes);
+    size_t target_commit = std::max(required_bytes, space.committed_bytes + growth);
+    target_commit = (target_commit + kMinStep - 1) & ~(kMinStep - 1);
     target_commit = std::min(target_commit, space.size);
     size_t commit_size = target_commit - space.committed_bytes;
     uint8_t* commit_addr = space.base + space.committed_bytes;
@@ -506,7 +508,7 @@ void Heap::refill_inline_lab() {
     // the helper, whose allocations collect. Without stress: a run long
     // enough that the helper is a rounding error, small enough that a
     // collection abandons nothing worth naming.
-    constexpr size_t kLabBytes = 64 * 1024;
+    constexpr size_t kLabBytes = 256 * 1024;
     const size_t bytes = gc_stress_mode_ ? BRONZE_ABI_PLAIN_OBJECT_BYTES : kLabBytes;
     // allocate_raw may collect (stress does so every time), which zeroes the
     // window — publishing AFTER it returns is what keeps the two ordered.
