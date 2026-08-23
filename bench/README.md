@@ -98,6 +98,35 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **brobench Chunk 7 (scoped memory alias domains: disjoint heap metadata for LLVM codegen)** — commits `6671fa1`, `9712f58`:
+  > [!NOTE]
+  > **Expands LLVM scoped alias analysis across 6 disjoint memory domains (`BronzeAliasDomain` in `llvm_alias.h`), licensing LLVM to hoist, reorder, and vectorize across array, object, and header memory accesses.**
+  >
+  > 1. **Disjoint Heap Memory Domains** (`llvm_alias.h`):
+  >    - `TypedArrayData`: element payload bytes of TypedArray views.
+  >    - `ArrayElementsData`: JS Array elements slots (`elemsObj->slots[1..]`).
+  >    - `ObjectPropertySlots`: inline and overflow property Value slots of plain objects.
+  >    - `EnvRecordSlots`: lexical environment record Value slots.
+  >    - `TypedArrayViewLength`: view header length word and buffer extbits.
+  >    - `ArrayHeaderFields`: JS Array header fields (`length`, `capacity`, `head`, `props`, `elems`).
+  > 2. **Metadata Tagging in Codegen**:
+  >    - Applied across `llvm_elem.cpp`, `llvm_prop_get.cpp`, `llvm_prop_ic.cpp`, `llvm_prop_set.cpp`, and `llvm_static_slot.cpp`.
+  >
+  > **Suite Performance (5 runs, Release build, median with warmup discarded vs Node.js v24.2.0 baseline)**:
+  > - `three_math.js`: **46.07ms** (infer) vs 46.93ms (no-infer) — **1.05x WIN** vs Node (48.40ms)
+  > - `object_graph.js`: **49.75ms** (infer) vs 51.79ms (no-infer) — **1.39x WIN** vs Node (69.38ms)
+  > - `typed_array_crunch.js`: **58.73ms** (infer) vs 203.26ms (no-infer) — **0.96x PARITY** vs Node (56.27ms)
+  > - `mesh_churn_2k.js`: **88.03ms** (infer) vs 92.67ms (no-infer) — **1.05x WIN** vs Node (92.70ms)
+  > - `instanced_mesh_churn.js`: **125.32ms** (infer) vs 135.81ms (no-infer) — **0.76x BEHIND** vs Node (95.28ms)
+  > - `fib.js`: **10.90ms** (infer) vs 16.64ms (no-infer) — **3.77x WIN** vs Node (41.06ms)
+  > - `numeric_loop.js`: **35.96ms** (infer) vs 93.57ms (no-infer) — **1.82x WIN** vs Node (65.62ms)
+  > - `property_access.js`: **10.88ms** (infer) vs 11.54ms (no-infer) — **3.41x WIN** vs Node (37.09ms)
+  > - `proto_dispatch.js`: **24.76ms** (infer) vs 26.57ms (no-infer) — **1.46x WIN** vs Node (36.13ms)
+  > - `proto_dispatch_churn.js`: **56.15ms** (infer) vs 64.03ms (no-infer) — **0.68x BEHIND** vs Node (38.14ms)
+  > - `typed_array_loop.js`: **30.92ms** (infer) vs 47.68ms (no-infer) — **1.32x WIN** vs Node (40.75ms)
+  >
+  > **Correctness**: 29/29 Release ctest passing cleanly.
+
 - **brobench Chunk 6 (runtime tail knockdown: TLS cache, sort fast-path, Map/WeakMap probe, TypedArray copy, truthy inline, exception inlining)**:
   > [!NOTE]
   > **Addresses the 5.02 ms/frame runtime tail on `many_meshes` identified in Chunk 5's sampler breakdown (Rooted/rooting churn, `tls_block_addr`, sort `mergeRuns`, `unbox_bool`, Map/WeakMap lookup probe, and TypedArray element copies).**
