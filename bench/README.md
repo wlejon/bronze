@@ -98,6 +98,36 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **brobench Chunk 6 (runtime tail knockdown: TLS cache, sort fast-path, Map/WeakMap probe, TypedArray copy, truthy inline, exception inlining)**:
+  > [!NOTE]
+  > **Addresses the 5.02 ms/frame runtime tail on `many_meshes` identified in Chunk 5's sampler breakdown (Rooted/rooting churn, `tls_block_addr`, sort `mergeRuns`, `unbox_bool`, Map/WeakMap lookup probe, and TypedArray element copies).**
+  >
+  > 1. **Module-local TLS block cache** (`llvm_abi.cpp`, `cacheTlsFetches`, seam `BRONZE_NO_TLS_CACHE=1`):
+  >    Rewrites every used `bronze_tls_block_addr` call into a load from a module-local `thread_local bronze_tls_block*` cache with a once-per-thread miss initialization path, eliminating cross-DLL function calls in function prologues.
+  > 2. **`Array.prototype.sort` hoisted-roots merge engine** (`builtin_array_sort.cpp`, seam `BRONZE_NO_SORT_FAST=1`):
+  >    Presizes scratch & list buffers to eliminate incremental doubling and GC churn; hoists three `Rooted<Value>` slots (`s.a`, `s.b`, `s.answer`) once for the entire sort instead of constructing/destructing 4 `Rooted` frames per element comparison (~61k times per frame on Three.js render lists).
+  > 3. **Allocation-free Map & WeakMap lookup probes** (`map.cpp`, `map.h`, `builtin_map.cpp`, `builtin_weak_map.cpp`, seam `BRONZE_NO_MAP_FAST=1`):
+  >    `MapHeader::findFast` probes hash buckets directly without `RootedArgs` or GC frame allocations when index, relocation epoch, and anchor are valid. Accelerates `weakMapGet` (Three.js per-object renderer state) and `mapGet`/`mapHas`.
+  > 4. **`%TypedArray%.prototype.set` numeric fast loop** (`builtin_typed_array_methods.cpp`, seam `BRONZE_NO_TA_SET_FAST=1`):
+  >    Direct numeric copy loop reading `ArrayHeader::elementsData()` directly into `TypedArrayHeader::set()` without per-element rooting when copying plain array matrix elements into uniform upload buffers.
+  > 5. **Inline truthiness in LLVM codegen** (`llvm_ops.cpp`, seam `BRONZE_NO_TRUTHY_INLINE=1`):
+  >    Inlines direct bit-pattern checks in LLVM IR for booleans, `undefined`, `null`, the hole, `int32`, and objects (always truthy per ECMA-262), eliminating out-of-line `bronze_unbox_bool` helper calls.
+  > 6. **Inlined exception checking** (`exception.h`, `exception.cpp`):
+  >    Inlined `rtExceptionPending()` and `rtClearException()` into single-word TLS comparisons against `BRONZE_ABI_NO_EXCEPTION_BITS`, eliminating call overhead after every loop/callback step.
+  >
+  > **Suite Performance (5 runs, Release build, pure-compute suite vs Node.js v24.2.0 baseline)**:
+  > - `three_math.js`: **42.37ms** (infer) vs 48.83ms (no-infer) — **1.14x WIN** vs Node (48.40ms)
+  > - `object_graph.js`: **49.49ms** (infer) vs 49.41ms (no-infer) — **1.40x WIN** vs Node (69.38ms)
+  > - `typed_array_crunch.js`: **55.94ms** (infer) vs 196.17ms (no-infer) — **1.01x PARITY** vs Node (56.27ms)
+  > - `mesh_churn_2k.js`: **81.63ms** (infer) vs 85.67ms (no-infer) — **1.14x WIN** vs Node (92.70ms)
+  > - `fib.js`: **9.56ms** (infer) vs 14.97ms (no-infer) — **4.29x WIN** vs Node (41.06ms)
+  > - `numeric_loop.js`: **36.99ms** (infer) vs 94.37ms (no-infer) — **1.77x WIN** vs Node (65.62ms)
+  > - `property_access.js`: **11.69ms** (infer) vs 10.49ms (no-infer) — **3.17x WIN** vs Node (37.09ms)
+  > - `proto_dispatch.js`: **22.71ms** (infer) vs 24.55ms (no-infer) — **1.59x WIN** vs Node (36.13ms)
+  > - `typed_array_loop.js`: **28.42ms** (infer) vs 44.82ms (no-infer) — **1.43x WIN** vs Node (40.75ms)
+  >
+  > **Correctness**: 29/29 Release ctest passing cleanly (oracle, threejs, pixi, gc-stress, threaded-modules, hot-swap).
+
 - **brobench Chunk 5 (observability: sampling profiler + shape-flow census)** — commits `338ec41`, `1a84f5d`, `d8395a3`, `53ab5a6`, `7b4963d`:
   > [!NOTE]
   > **Measurement chunk, no perf claims. Two instruments, then the numbers that decide the
