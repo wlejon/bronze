@@ -1,6 +1,7 @@
 #include "codegen-llvm/llvm_static_slot.h"
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_alias.h"
 #include "il/il.h"
 
 #include <llvm/IR/Constants.h>
@@ -155,10 +156,12 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     }
 
     if (store != nullptr) {
-        builder.CreateAlignedStore(store, slotPtr, llvm::Align(8));
+        auto* st = builder.CreateAlignedStore(store, slotPtr, llvm::Align(8));
+        tagObjectSlotAccess(st, ctx);
     } else {
-        out.value =
-            builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), p + ".static.val");
+        auto* ld = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), p + ".static.val");
+        tagObjectSlotAccess(ld, ctx);
+        out.value = ld;
     }
     out.hitBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);

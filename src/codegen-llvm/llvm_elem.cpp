@@ -179,14 +179,16 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     builder.SetInsertPoint(arrBb);
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-    llvm::Value* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "eg.len");
+    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "eg.len");
+    tagArrayHeaderAccess(len, ctx);
     llvm::BasicBlock* arrLoadBb = llvm::BasicBlock::Create(ctx, "eg.arr.load", fn);
     builder.CreateCondBr(builder.CreateICmpULT(g.idx32, len), arrLoadBb, cacheBb);
 
     builder.SetInsertPoint(arrLoadBb);
     llvm::Value* elemsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    llvm::Value* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "eg.elems");
+    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "eg.elems");
+    tagArrayHeaderAccess(elemsVal, ctx);
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::BasicBlock* arrReadBb = llvm::BasicBlock::Create(ctx, "eg.arr.read", fn);
     builder.CreateCondBr(
@@ -199,13 +201,15 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
     llvm::Value* headPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
-    llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "eg.head");
+    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "eg.head");
+    tagArrayHeaderAccess(head, ctx);
     llvm::Value* actualIdx = builder.CreateAdd(g.idx32, head, "eg.actidx");
     // +1: the elements block's payload begins one i64 past its header.
     llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty),
                                              builder.getInt64(1));
     llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-    llvm::Value* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "eg.raw");
+    auto* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "eg.raw");
+    tagArrayElementsAccess(raw, ctx);
     llvm::Value* rawTag = builder.CreateLShr(raw, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isHole = builder.CreateICmpEQ(rawTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
     llvm::Value* arrVal =
@@ -374,18 +378,22 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(arrBb);
     llvm::Value* lenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-    llvm::Value* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "es.len");
+    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "es.len");
+    tagArrayHeaderAccess(len, ctx);
     llvm::Value* capPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
-    llvm::Value* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "es.cap");
+    auto* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "es.cap");
+    tagArrayHeaderAccess(cap, ctx);
     llvm::Value* headPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
-    llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "es.head");
+    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "es.head");
+    tagArrayHeaderAccess(head, ctx);
     llvm::Value* actualIdx = builder.CreateAdd(g.idx32, head, "es.actidx");
     llvm::Value* propsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    llvm::Value* propsVal =
+    auto* propsVal =
         builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "es.props");
+    tagArrayHeaderAccess(propsVal, ctx);
     llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* noProps =
         builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
@@ -397,7 +405,8 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(arrElemsBb);
     llvm::Value* elemsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    llvm::Value* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "es.elems");
+    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "es.elems");
+    tagArrayHeaderAccess(elemsVal, ctx);
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "es.arr.store", fn);
     builder.CreateCondBr(
@@ -411,7 +420,8 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty),
                                              builder.getInt64(1));
     llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-    builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    auto* sArr = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    tagArrayElementsAccess(sArr, ctx);
     builder.CreateBr(doneBb);
 
     // Typed array: a numeric value into a typed array view. An in-range index

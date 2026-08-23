@@ -1,6 +1,7 @@
 #include "codegen-llvm/llvm_prop_ic.h"
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_alias.h"
 
 #include <string>
 #include <utility>
@@ -184,7 +185,8 @@ llvm::Value* emitObjectSlotLoad(
     builder.SetInsertPoint(inlineBb);
     llvm::Value* slotsBase = builder.CreateConstInBoundsGEP1_32(i8Ty, holderHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
     llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
-    llvm::Value* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), prefix + ".inline.val");
+    auto* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), prefix + ".inline.val");
+    tagObjectSlotAccess(inlineVal, ctx);
     builder.CreateBr(successBb);
 
     builder.SetInsertPoint(overflowBb);
@@ -199,7 +201,8 @@ llvm::Value* emitObjectSlotLoad(
     llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
     llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
-    llvm::Value* overflowLoadedVal = builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), prefix + ".overflow.val");
+    auto* overflowLoadedVal = builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), prefix + ".overflow.val");
+    tagObjectSlotAccess(overflowLoadedVal, ctx);
     builder.CreateBr(successBb);
 
     builder.SetInsertPoint(successBb);

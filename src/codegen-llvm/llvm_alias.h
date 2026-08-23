@@ -6,47 +6,81 @@
 
 namespace bronze::codegen_llvm {
 
-// Three scoped-alias families, one domain. The claims are about DISJOINT
-// BYTES, which is what makes each of them true unconditionally:
+// Six scoped-alias families under one domain ("BronzeAliasDomain").
+// The claims are about DISJOINT BYTES, which makes each of them true unconditionally:
 //
 //  - TypedArrayData: the element bytes of a typed-array view — everything at
-//    or past BRONZE_ABI_BUF_DATA_OFFSET in some buffer.
-//  - EnvRecordSlots: the value slots of an environment record.
-//  - TypedArrayViewLength: a view header's `length` word. An element store
-//    can never change a view's length, and declaring that is what lets the
-//    length load on every inline element path hoist out of a call-free
-//    element loop DESPITE not being an invariant load. It must not be one:
-//    `transfer` and a `resize` really do rewrite view lengths
-//    (closeOrReopenViews in runtime/typed_array.cpp) — but only ever inside
-//    a call, which clobbers, so the reload happens exactly when it must.
+//    or past BRONZE_ABI_BUF_DATA_OFFSET in some buffer (or external buffer).
+//  - ArrayElementsData: the element Value slots of a JS Array (elemsObj->slots[1..]).
+//  - ObjectPropertySlots: the inline/overflow property Value slots of plain objects.
+//  - EnvRecordSlots: the Value slots of an environment record.
+//  - TypedArrayViewLength: a view header's `length` word and buffer's `extbits`.
+//  - ArrayHeaderFields: an Array header's `length`, `capacity`, `head`, `props`, `elems`.
 struct ScopedAliasInfo {
     llvm::MDNode* taScopeList;
+    llvm::MDNode* arrElemScopeList;
+    llvm::MDNode* objSlotScopeList;
     llvm::MDNode* envScopeList;
     llvm::MDNode* viewLenScopeList;
-    llvm::MDNode* taNoaliasList;       // env + viewLen
-    llvm::MDNode* envNoaliasList;      // ta + viewLen
-    llvm::MDNode* viewLenNoaliasList;  // ta + env
+    llvm::MDNode* arrHdrScopeList;
+
+    llvm::MDNode* taNoaliasList;
+    llvm::MDNode* arrElemNoaliasList;
+    llvm::MDNode* objSlotNoaliasList;
+    llvm::MDNode* envNoaliasList;
+    llvm::MDNode* viewLenNoaliasList;
+    llvm::MDNode* arrHdrNoaliasList;
 };
 
 inline ScopedAliasInfo getScopedAliasInfo(llvm::LLVMContext& ctx) {
     llvm::MDNode* domain = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "BronzeAliasDomain")});
     llvm::MDNode* taScope = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "TypedArrayData"), domain});
+    llvm::MDNode* arrElemScope = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "ArrayElementsData"), domain});
+    llvm::MDNode* objSlotScope = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "ObjectPropertySlots"), domain});
     llvm::MDNode* envScope = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "EnvRecordSlots"), domain});
     llvm::MDNode* viewLenScope =
         llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "TypedArrayViewLength"), domain});
+    llvm::MDNode* arrHdrScope = llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "ArrayHeaderFields"), domain});
 
-    return {llvm::MDNode::get(ctx, {taScope}),
-            llvm::MDNode::get(ctx, {envScope}),
-            llvm::MDNode::get(ctx, {viewLenScope}),
-            llvm::MDNode::get(ctx, {envScope, viewLenScope}),
-            llvm::MDNode::get(ctx, {taScope, viewLenScope}),
-            llvm::MDNode::get(ctx, {taScope, envScope})};
+    llvm::MDNode* taScopeList = llvm::MDNode::get(ctx, {taScope});
+    llvm::MDNode* arrElemScopeList = llvm::MDNode::get(ctx, {arrElemScope});
+    llvm::MDNode* objSlotScopeList = llvm::MDNode::get(ctx, {objSlotScope});
+    llvm::MDNode* envScopeList = llvm::MDNode::get(ctx, {envScope});
+    llvm::MDNode* viewLenScopeList = llvm::MDNode::get(ctx, {viewLenScope});
+    llvm::MDNode* arrHdrScopeList = llvm::MDNode::get(ctx, {arrHdrScope});
+
+    return {
+        taScopeList,
+        arrElemScopeList,
+        objSlotScopeList,
+        envScopeList,
+        viewLenScopeList,
+        arrHdrScopeList,
+        llvm::MDNode::get(ctx, {arrElemScope, objSlotScope, envScope, viewLenScope, arrHdrScope}),
+        llvm::MDNode::get(ctx, {taScope, objSlotScope, envScope, viewLenScope, arrHdrScope}),
+        llvm::MDNode::get(ctx, {taScope, arrElemScope, envScope, viewLenScope, arrHdrScope}),
+        llvm::MDNode::get(ctx, {taScope, arrElemScope, objSlotScope, viewLenScope, arrHdrScope}),
+        llvm::MDNode::get(ctx, {taScope, arrElemScope, objSlotScope, envScope, arrHdrScope}),
+        llvm::MDNode::get(ctx, {taScope, arrElemScope, objSlotScope, envScope, viewLenScope}),
+    };
 }
 
 inline void tagTypedArrayAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx) {
     auto alias = getScopedAliasInfo(ctx);
     inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.taScopeList);
     inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.taNoaliasList);
+}
+
+inline void tagArrayElementsAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx) {
+    auto alias = getScopedAliasInfo(ctx);
+    inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.arrElemScopeList);
+    inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.arrElemNoaliasList);
+}
+
+inline void tagObjectSlotAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx) {
+    auto alias = getScopedAliasInfo(ctx);
+    inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.objSlotScopeList);
+    inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.objSlotNoaliasList);
 }
 
 inline void tagEnvRecordAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx) {
@@ -59,6 +93,12 @@ inline void tagViewLengthAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx)
     auto alias = getScopedAliasInfo(ctx);
     inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.viewLenScopeList);
     inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.viewLenNoaliasList);
+}
+
+inline void tagArrayHeaderAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx) {
+    auto alias = getScopedAliasInfo(ctx);
+    inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.arrHdrScopeList);
+    inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.arrHdrNoaliasList);
 }
 
 }  // namespace bronze::codegen_llvm

@@ -129,7 +129,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.SetInsertPoint(arrLenBb);
         llvm::Value* arrLenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                    BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-        llvm::Value* arrLen = builder.CreateAlignedLoad(i32Ty, arrLenPtr, llvm::Align(4), "arr.len");
+        auto* arrLen = builder.CreateAlignedLoad(i32Ty, arrLenPtr, llvm::Align(4), "arr.len");
+        tagArrayHeaderAccess(arrLen, ctx);
         llvm::Value* arrLenDbl = builder.CreateUIToFP(arrLen, llvm::Type::getDoubleTy(ctx), "arr.len.dbl");
         arrLenVal = builder.CreateBitCast(arrLenDbl, i64Ty, "arr.len.bits");
         builder.CreateBr(doneBb);
@@ -181,7 +182,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.SetInsertPoint(arrElemBb);
         llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                 BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-        llvm::Value* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
+        auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
+        tagArrayHeaderAccess(len, ctx);
         llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
         builder.CreateCondBr(inBounds, arrReadBb, arrUndefBb);
 
@@ -191,7 +193,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.SetInsertPoint(arrReadBb);
         llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                   BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-        llvm::Value* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
+        auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
+        tagArrayHeaderAccess(elemsVal, ctx);
         llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* elemsIsObj =
             builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
@@ -203,11 +206,13 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
         llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                                                  BRONZE_ABI_ARRAY_HEAD_OFFSET);
-        llvm::Value* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        tagArrayHeaderAccess(head, ctx);
         llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
         llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
         llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-        llvm::Value* elemVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "arr.elem.raw");
+        auto* elemVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "arr.elem.raw");
+        tagArrayElementsAccess(elemVal, ctx);
         llvm::Value* elemTag = builder.CreateLShr(elemVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* isHole = builder.CreateICmpEQ(elemTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
         arrPayloadVal = builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), elemVal, "arr.elem");
@@ -555,7 +560,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* slotsBase =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
     llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
-    llvm::Value* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), "ic.inline.val");
+    auto* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), "ic.inline.val");
+    tagObjectSlotAccess(inlineVal, ctx);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(overflowHitBb);
@@ -574,8 +580,9 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
     llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
-    llvm::Value* overflowValLoaded =
+    auto* overflowValLoaded =
         builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), "ic.overflow.val");
+    tagObjectSlotAccess(overflowValLoaded, ctx);
     builder.CreateBr(doneBb);
 
     // 5. Fallback call — and, for a static site, the one-shot publish that
