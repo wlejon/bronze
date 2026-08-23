@@ -4,7 +4,9 @@
 
 // getenv (BRONZE_EMIT_FN_SYMBOLS), as heap.cpp: the CRT-deprecation opt-out,
 // not a blanket C4996 disable.
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include "codegen-llvm/llvm_backend.h"
 
