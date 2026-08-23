@@ -98,6 +98,82 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **brobench Chunk 5 (observability: sampling profiler + shape-flow census)** — commits `338ec41`, `1a84f5d`, `d8395a3`, `53ab5a6`, `7b4963d`:
+  > [!NOTE]
+  > **Measurement chunk, no perf claims. Two instruments, then the numbers that decide the
+  > monomorphization arc.**
+  >
+  > 1. **In-process sampling profiler** (`338ec41`, `BRONZE_SAMPLE=1`, default 1 kHz):
+  >    runtime-owned Win32 sampler thread — `SuspendThread` + `GetThreadContext` +
+  >    `RtlVirtualUnwind` against the JS thread, walk bounded by a module-range map, no
+  >    allocation or symbolization during suspension; dbghelp at exit; per-function
+  >    self/total tables (full run + `BRONZE_SAMPLE_TAIL_MS` steady-state window) as text +
+  >    `bronze-sample-v0` JSON. `1a84f5d` gives it names: `/DEBUG` on exe links and
+  >    `BRONZE_EMIT_FN_SYMBOLS=1` promotion of single-object locals to linker publics.
+  >    Validation (`d8395a3`): a constructed 90/10 hot/cold split sampled as
+  >    **656/73 = 90.0%/10.0%** (and en route pinned LLVM devirtualizing plain-call,
+  >    ternary, AND const-array callees — only a spread call defeats it).
+  > 2. **Shape-flow census** (`53ab5a6`, `BRONZE_SHAPE_CENSUS=1`): suppresses every latch
+  >    (IC fills, absent installs, elem-cache TLS words, method-IC, static publishes,
+  >    family stamps — all call-and-continue, so full traffic misses to helpers) and
+  >    records per site: receiver Shape\* identity, poly degree, transitions, value-tag
+  >    counts. Schema `bronze-shape-census-v0`, documented in `docs/shape-census.md`.
+  >    `bench/tools/census_join.mjs` (`7b4963d`) joins both artifacts into the go/no-go.
+  >
+  > **The go/no-go numbers (fraction of inline compiled-code self time in functions whose
+  > property traffic is monomorphic-in-practice, site threshold 99%)**:
+  > - `many_meshes`: **98.4%** of 20.15 ms/frame app-code self time (census: 4,692 sites,
+  >   151M observations, 94.78% at mono sites). Top self: `Matrix4.multiplyMatrices` 2.69
+  >   ms/frame, `setProgram` 1.89, `Vector3.applyMatrix4` 1.23, `projectObject` 1.16,
+  >   `painterSortStable` 0.99, `Matrix4.compose` 0.77.
+  > - `instanced`: **95.3%** of 7.49 ms/frame (census 93.82% mono). Top: `Matrix4.toArray`
+  >   1.58, `compose` 1.40, `__anon_fn_470` 1.33, `Quaternion.setFromEuler` 0.95; ucrtbase
+  >   (sin/cos/fmod) is 1.62 ms/frame of the residue.
+  > - `hierarchy`: **87.1%** of 2.71 ms/frame (census 70.64% mono) — the polymorphic residue
+  >   is the tree walkers seeing every node class: `Object3D.updateMatrixWorld` monoCov
+  >   15.4%, `projectObject` 36.3%, `updateMatrix` 16.7%. A family/subtree guard story, not
+  >   per-site latching.
+  > - `object_graph` micro: **100%** mono (117 sites, 10.2M obs); `searchBFS` 23.8% +
+  >   `traverseDFS` 23.0% of samples, 88.5% number-typed loads in the traversals.
+  >
+  > **Gap attribution, `many_meshes` (sampler tail, ms/frame of ~40)**: app.dll inline code
+  > 20.15 (74.2% of self time), runtime DLL 5.02 (18.5%), bronze_host 0.64, nvoglv64 0.62.
+  > The runtime 5.02 is a long tail, biggest lines: `Rooted` ctor 0.33,
+  > `bronze_tls_block_addr` 0.30, sort `mergeRuns` 0.30, GC `forward_value` 0.29,
+  > `rtToNumber` 0.27, `unbox_bool` 0.26, typed-array stores ~0.5 combined —
+  > allocation/rooting + re-boxing, not any one helper. `bronze_for_in_keys` is **0.10
+  > ms/frame**, so chunk 4's "inline the for-in cache hit" item is dead: skipped on
+  > evidence.
+  >
+  > **Overheads**: env unset, compiled-in instrumentation costs nothing measurable —
+  > interleaved A/B (pre-chunk `cbecf92` runtime DLL vs HEAD, same app.dll/exe, paired
+  > legs): medians −4.3%/−6.6%/−1.6% (head faster; noise on a fleet-loaded box, min-stat
+  > delta +0.3% worst case) — passes the ≤1% gate. Enabled: sampler ≈ +0.5% at 1 kHz;
+  > census ≈ **12x/13.7x/11.5x** (mm/in/hi) — a census artifact is counts, so load-immune.
+  > This session's machine was never idle (concurrent agent fleet); cross-engine numbers
+  > below are same-window interleaved medians of 5, and bro drifted 39.7 → 52.0 ms/frame on
+  > `many_meshes` across the evening under fleet load while Chromium held ~6.9, so treat
+  > ratios as bounds, not points: bro 51.95/20.35/6.20 vs Chromium 6.93/3.40/1.39 —
+  > 7.50x/5.98x/4.45x loaded; the quiet-window bro floor (39.7, matching chunk 4's 39.23)
+  > against the same-session Chromium floor (6.9) reproduces chunk 4's ~6x.
+  >
+  > **Correctness**: 29/29 Release ctest at final HEAD (`BRONZE_WITH_LLVM=ON` verified via
+  > `ctest -N`, 853.6s); Debug `bronze_runtime_tests` + `bronze_embed_tests` plain and
+  > under `BRONZE_GC_STRESS=1 BRONZE_HEAP_VERIFY=1 BRONZE_GC_POISON=1`; oracle
+  > byte-identical vs node. Known and intended: 48 Debug assertions fire if the *tests*
+  > run under `BRONZE_SHAPE_CENSUS=1`, because they assert that latches latch and the
+  > census's whole mechanism is suppressing latches.
+  >
+  > **Where the next arc lives**: the census says GO — 94-98% of hot-scene property traffic
+  > is monomorphic-in-practice and the hot functions are the three.js math kernels
+  > (`Matrix4.*`, `Vector3.*`, `Quaternion.*`), so whole-program shape monomorphization v1
+  > should target straight-line kernels with slot-direct loads/stores + number-payload
+  > unboxing (object_graph's 88.5% number-typed loads is the unboxing proxy). `hierarchy`'s
+  > 70.6% says v1 also needs a *family* guard (one guard per subtree walk, not per site) or
+  > the walkers stay helper-bound. Separate follow-up, not monomorphization: the 5 ms/frame
+  > runtime tail on `many_meshes` (Rooted/rooting, tls_block_addr, ToNumber/unbox — ABI and
+  > allocation shape, addressable without whole-program analysis).
+
 - **brobench Chunk 4 (for-in machinery, overflow-store off-by-one, undef-vs-number rel)** — commits `92f1cad`, `b342560`, `a57cf81`, `b5ee5a2`:
   > [!NOTE]
   > **Four targets from chunk 3's exit profile; three landed, one was premise-false.**
