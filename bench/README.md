@@ -173,6 +173,182 @@ node bench/typed_array_loop.js
 > out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
 > first and the millisecond second.
 
+- **Stage E1 (direct call edges to sibling closures, and LLVM inlining across them)** — 2026-08-25:
+  > [!NOTE]
+  > **The stage did what it was chartered to do, the call boundary on
+  > `env_slot_kernel` is now spent, and the kernel moved 11 %.** Both halves of
+  > that sentence are the entry. `env_slot_kernel` goes **56.89 → 50.82**
+  > ns/iter (checksum `126000020` in every row), and a PROBE that writes the
+  > five sibling bodies out by hand in the loop — same captured state, same
+  > arithmetic, same checksum — runs at **48.6**. So the edge closed about 6.3
+  > ns of an 8.1 ns call gap and there is roughly 1.7 ns of boundary left on
+  > this shape. Everything else between here and node's 5.30 is inside the
+  > bodies, and most of it is one helper.
+  >
+  > **What landed: a STATIC CALL PLAN over function-declaration bindings**
+  > (`src/lower/lower_scope.cpp planStableFunctionSlots`,
+  > `il::Instruction::callEnvHops`). A `function f() {}` written in a scope is
+  > the one binding form whose value this compilation knows outright: the
+  > declaration IS the value, it is installed before the scope's first statement
+  > runs, and — when no assignment anywhere in the scope's whole LEXICAL REACH
+  > names `f` — nothing the program can do puts anything else in the slot. The
+  > environment that closure captured is the record holding its binding, because
+  > a nested declaration is created over the record innermost where it is
+  > written. Those two facts together are a direct edge with **no guard at
+  > all**, and that is the point: this is the static-plan licence class
+  > `llvm_env.cpp` states, the one of the three that owes nothing to the running
+  > program. It is a different kind of claim from Stage 3.3's method edge, which
+  > is a GUESS spent on a compare — a wrong method target costs a fast path, a
+  > wrong target here would be a miscompile.
+  >
+  > The environment is DERIVED, never loaded: the site hands over the CALLER's
+  > own record plus the number of parent links the scope plan counted
+  > (`emitEnvAncestor`), so the fast path never reads the closure value, never
+  > tests an object tag, and never compares a code pointer. On this kernel the
+  > count is **zero** for all five callees — `render` has no record of its own,
+  > so its `__env` already IS the record its siblings closed over, and the call
+  > forwards a register.
+  >
+  > **The refusals are the load-bearing half** and every one is name-based and
+  > in the safe direction (`ast::getDeeplyAssignedNames`, a walk that crosses
+  > nested functions and class bodies, unlike the SSA-sizing walk beside it):
+  > a name assigned or re-declared anywhere in the subtree, a name a parameter
+  > default writes, a generator or async declaration, any caller or callee
+  > inside a machine body, a callee needing an `arguments` object, an over-long
+  > call, a `switch` clause's declaration, and a callee not yet lowered when the
+  > caller's body was. That last one also makes the edge graph **acyclic** — an
+  > edge can only point at a function whose lowering already finished — which is
+  > what licenses the unconditional `alwaysinline` ask on it. Self-calls and one
+  > direction of a mutually recursive pair therefore keep the dynamic path.
+  >
+  > **Inlining is asked for at the SITE**, reusing Stage 3.3's `kDirectMethodMD`
+  > and its measured 2048-instruction budget, so the boxed path keeps one
+  > out-of-line copy of each callee. The ask is made for the CLOSURE edges only:
+  > a direct call to a top-level function has been an ordinary LLVM call since
+  > the compiler had one, and widening the ask to those is a separate change
+  > with its own measurement.
+  >
+  > `BRONZE_NO_CLOSURE_EDGE=1` is the A/B seam, in the house style of
+  > `BRONZE_NO_DIRECT_METHOD`: it refuses every edge and leaves the rest of the
+  > compiler alone, so both columns come out of one binary and interleave.
+  >
+  > Commands (medians of 13 rounds, one run of every column per round, warmup
+  > round discarded, idle box):
+  > ```
+  > bronze build bench/env_slot_kernel.js -o env_b.exe --pins bench/pins/env-slot-kernel.pins
+  > sed 's/const ITERS = 6000000;/const ITERS = 600000;/' bench/env_slot_kernel.js > small.js
+  > bronze build small.js                 -o env_s.exe --pins bench/pins/env-slot-kernel.pins
+  > BRONZE_NO_CLOSURE_EDGE=1 bronze build ...        # the other column
+  > # ns/iter = (median(env_b) - median(env_s)) * 1e6 / 5400000
+  > BRONZE_DUMP_LLVM_IR=<prefix> bronze build ...    # the IR evidence below
+  > ```
+  >
+  > | fixture | edge OFF | edge ON | delta | checksums |
+  > |---|---:|---:|---:|---|
+  > | `env_slot_kernel` ns/iter | 56.89 | **50.82** | **−6.07** | `126000020` / `12600020` |
+  > | `mat4_kernel` ns/call | 23.60 | 23.72 | +0.12 | `400000` / `940000` |
+  > | `call_chain_kernel` chained / flat ns | 20.13 / 18.50 | 20.00 / 18.63 | −0.13 / +0.13 | `296000000 / 296000000` |
+  > | `three_math` ms | 21.48 | 22.14 | +0.66 | `405000` |
+  > | `mesh_churn_2k` ms | 71.75 | 72.00 | +0.25 | `-2112298` |
+  > | `nullish_pin_kernel` ms (raw) | 422.39 | 419.23 | −3.16 | `825756/700159/NaN/-563350` |
+  >
+  > Only `env_slot_kernel` has a sibling-closure call in it, so only
+  > `env_slot_kernel` moves; the other five are the no-regression column and
+  > every one of them is inside its run-to-run width. `three_math` is the one to
+  > read carefully — it reads +0.66 here and **−0.08** in an earlier session of
+  > the same 13 rounds on the same binaries, which is the width and not an
+  > effect, and its IL is byte-for-byte identical in both columns because it has
+  > no sibling-closure call site at all. Checksums are identical across both
+  > columns of every row; the small twin's differs from the big one's by
+  > construction (`ITERS` is in the checksum), so they are compared ACROSS
+  > columns and never across counts.
+  >
+  > **IR evidence** (`BRONZE_DUMP_LLVM_IR`, `env.post.ll`, `__wrapper_render`):
+  >
+  > | | edge OFF | edge ON |
+  > |---|---:|---:|
+  > | optimized instructions in `__wrapper_render` | 705 | 1463 |
+  > | basic blocks | 74 | 183 |
+  > | indirect calls through a cached code pointer | 10 | **0** |
+  > | `bronze_dynamic_call` slow paths | 5 | **0** |
+  > | `bronze_env_get` helper edges | 5 | **0** |
+  > | `bronze_to_int32_f64` calls | 8 | 8 |
+  > | `bronze_tls_block_addr` fetches | 1 | 6 |
+  >
+  > The five callee bodies are gone from the loop as call targets and present as
+  > inlined regions; `__wrapper_setBlending` (531 optimized instructions),
+  > `useProgram` (218), `setDepthFunc` (216), `endFrame` (112) and `total` (277)
+  > are all still emitted at exactly their old sizes, which is the out-of-line
+  > copy the boxed path keeps.
+  >
+  > **The honest negatives, and they are the useful part of this entry.** The
+  > four figures below come from one interleaved session of 13 rounds that timed
+  > the kernel and both probes together; its own `env_slot_kernel` column reads
+  > 56.76 / 50.42, which is how it lines up with the table above.
+  >
+  > 1. **The ceiling probe says the call is nearly spent and the kernel is
+  >    still ~10× node.** Hand-inlining the five bodies into the loop in JS
+  >    gives **48.71 / 48.53** ns/iter (the two columns of a probe with no
+  >    sibling call in it, so they agree, which is the sanity check) against the
+  >    edge's 50.42. At most ~1.7 ns of what remains is the boundary. node runs
+  >    the same hand-inlined probe at **3.95** and the kernel itself at
+  >    **5.30**. The gap is not the call.
+  > 2. **`bronze_to_int32_f64` is more than half of this kernel.** A second
+  >    probe replacing the loop's three ToInt32-producing bitwise ops
+  >    (`i & 7`, `(i >> 1) & 3`, `i & 3`) with f64 counters — a DIFFERENT
+  >    checksum by design (`138000003`), so it prices the helper and not the
+  >    kernel — runs at **20.31** ns/iter with the edge on and **30.62** with it
+  >    off. Three real cross-module calls per iteration are worth roughly 25–30
+  >    ns of the 50, and node pays nothing for them (its own probe is 5.08
+  >    against 5.30 for the kernel).
+  > 3. **Those helper calls are also SUPPRESSING this stage's win.** With them
+  >    present the edge is worth 6.34 ns (11 %); with them gone it is worth
+  >    **10.31 ns (34 %)**. A call to an opaque external function is a barrier
+  >    the inlined bodies cannot be optimized across, so the edge cannot collect
+  >    most of what it opened up until ToInt32 is inlined. **This is the single
+  >    most important fact for stage E2**: the two items compound, and measuring
+  >    either one alone under-reads it.
+  > 4. **Access-guard elision and the edge are additive here, and both are
+  >    small.** The full 2×2 on this kernel: edge off / guards on **56.76**,
+  >    edge on / guards on **50.42**, edge off / `BRONZE_ELIDE_ENV_GUARDS=1`
+  >    **51.16**, edge on / elided **47.18**. The guards are re-derived once per
+  >    access in each of the five now-inlined bodies, which is why elision keeps
+  >    its ~5 ns here; it is still not a uniform win elsewhere and still ships
+  >    off by default.
+  > 5. **An uncaptured nested declaration gets no edge, and could.** A
+  >    `function f(){}` nothing closes over never gets an environment slot at
+  >    all — its value stays in SSA — so this plan, which is keyed on slots,
+  >    says nothing about it. Every caller of such a binding is in the declaring
+  >    body itself, so the record is derivable there too; it was left out
+  >    because the ceiling probe says the call is not what is left to win.
+  >
+  > **What stage E2 is handed.** The loop is now ONE region of 1463 optimized
+  > instructions with no calls in it but eight `bronze_to_int32_f64` and the
+  > frame bookkeeping. What that region is made of: 183 basic blocks, of which
+  > the large majority are `env.ok` / `env.get.slow` / `env.set.slow` — the
+  > access guard and its helper edge, re-derived at every one of ~23 slot
+  > touches — plus **six** GC root frames and six `bronze_tls_block_addr`
+  > fetches per iteration, one for `render` and one for each inlined body, none
+  > of which LLVM merged. So E2's list, in the order this stage would rank it:
+  > inline ToInt32 (worth ~25–30 ns here, and it unlocks another ~4 of this
+  > stage's); merge the per-body root frames and TLS fetches now that the bodies
+  > are one function; then the slot traffic itself (alias scopes per slot, the
+  > slow-path merges that block GVN, box/unbox folding). Note also that the
+  > closure slots are `let`-shaped, so every read carries the TDZ compare and
+  > its helper block — visible as `bronze_env_get_tdz` on the cold edges.
+  >
+  > Semantics: a new oracle case, `tests/oracle/cases/stable_closure_call.js`,
+  > pins thirteen of them — a reassigned declaration binding calling the new
+  > value, closures escaping the factory, recursion and mutual recursion,
+  > two-level hops, shadowing, short and over-long calls, rest parameters,
+  > `this`, per-iteration records, block scopes, generators, and a throw across
+  > the edge — byte-identical to node on all of it, under inference, under
+  > `--no-infer`, and under `BRONZE_GC_STRESS=1`. Plus twelve lowering tests
+  > (`tests/lower/lower_stable_closure_call_test.cpp`), most of them about which
+  > sites get NO edge. Full suite green **29/29**, hot-swap and shared-load
+  > included; a module swap replaces the whole module, so an intra-module direct
+  > edge has nothing to say to it.
+
 - **Stage 3.4 (guard elision + integration)** — 2026-08-25:
   > [!NOTE]
   > **The stage was chartered to elide guards and instead found that LLVM was
