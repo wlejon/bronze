@@ -20,7 +20,8 @@ mkdir -p "$OUT"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 
 # Every seam this campaign added, all on: stage 3.4's compiler.
-S4="BRONZE_NO_PURE_PREDICATES=1 BRONZE_NO_CLOSURE_PARAM_PROOF=1 BRONZE_NO_DEFINITE_REACH=1"
+S5="BRONZE_NO_XPART_INLINE=1"
+S4="BRONZE_NO_PURE_PREDICATES=1 BRONZE_NO_CLOSURE_PARAM_PROOF=1 BRONZE_NO_DEFINITE_REACH=1 $S5"
 S3="BRONZE_NO_FRAME_MERGE=1 BRONZE_NO_DEFINITE_INIT=1 $S4"
 S2="BRONZE_NO_INLINE_TOINT32=1 BRONZE_NO_PURE_CONVERSIONS=1 BRONZE_NO_ENV_TRIPWIRE=1 $S3"
 S1="BRONZE_NO_CLOSURE_EDGE=1 $S2"
@@ -29,14 +30,15 @@ S1="BRONZE_NO_CLOSURE_EDGE=1 $S2"
 # pairs splits every seam into a column of its own and silently builds a table
 # that is not the ladder. It looks like it worked — 85 executables instead of
 # 55 is the only tell.
-TAGS="s34 e1 e2 e3 e4"
+TAGS="s34 e1 e2 e3 e4 e5"
 seams_for() {
   case $1 in
     s34) echo "$S1" ;;
     e1) echo "$S2" ;;
     e2) echo "$S3" ;;
     e3) echo "$S4" ;;
-    e4) echo "" ;;
+    e4) echo "$S5" ;;
+    e5) echo "" ;;
   esac
 }
 

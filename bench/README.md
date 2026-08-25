@@ -115,7 +115,8 @@ node bench/typed_array_loop.js
 > | E2 ToInt32 inline (`4098379`) | **16.86** | `a.elements[0] = 1.0 + (i & 7) * 0.125` stops calling out per iteration |
 > | E3 one root frame per inlined region (`fa24b1f`) | **16.13** | the direct method edge stops carrying the callee's prologue (17.01 for the same session's E2 column) |
 > | E4 dead-zone reach widening | 18.09 | a REGRESSION, and not one of the analysis: this kernel's `run` changed PARTITION, so `Matrix4.multiplyMatrices.inl` became a `declare` and stopped inlining. Stage E4's entry has the isolation |
-> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session, 14.31 in E3's, 14.39 in E4's) |
+> | E5 cross-partition inlining (`llvm_partition.cpp`) | **16.43** | the callee is kept in the caller's partition as `available_externally`, so the split stops eating stage 3.3's inline. Recovers all of E4's regression and 0.57 ns more; the same session's E3 column reads 17.00 |
+> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session, 14.31 in E3's, 14.39 in E4's, 14.83 in E5's) |
 >
 > **12.2× against where the campaign started and 1.14× off node on this
 > kernel.** The pre-registered ≤ 20 ns target IS reached, at stage E2, and NOT
@@ -180,7 +181,7 @@ node bench/typed_array_loop.js
 > out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
 > first and the millisecond second.
 
-### Campaign summary — stage E, closures and environment records (E1 → E4)
+### Campaign summary — stage E, closures and environment records (E1 → E5)
 
 > [!IMPORTANT]
 > **THE CANONICAL LADDER. One idle session, ONE compiler binary, the campaign's
@@ -190,35 +191,35 @@ node bench/typed_array_loop.js
 > invocation, so `BRONZE_NO_CLOSURE_EDGE` + `BRONZE_NO_INLINE_TOINT32` +
 > `BRONZE_NO_PURE_CONVERSIONS` + `BRONZE_NO_ENV_TRIPWIRE` +
 > `BRONZE_NO_FRAME_MERGE` + `BRONZE_NO_DEFINITE_INIT` + `BRONZE_NO_PURE_PREDICATES`
-> + `BRONZE_NO_CLOSURE_PARAM_PROOF` + `BRONZE_NO_DEFINITE_REACH` all on IS the
-> stage 3.4 compiler, and dropping them a stage at a time walks forward to
-> today. This exists because stages E2 and E3 both documented cross-session
-> drift of ±50 % on the millisecond fixtures with identical IL: a five-stage
-> table assembled from five sessions is not a ladder, it is five ladders. The
-> manifest is the COMMITTED one in every row — peeling seams is a statement
-> about the compiler, and changing the manifest under it would be a statement
-> about the manifest.
+> + `BRONZE_NO_CLOSURE_PARAM_PROOF` + `BRONZE_NO_DEFINITE_REACH` +
+> `BRONZE_NO_XPART_INLINE` all on IS the stage 3.4 compiler, and dropping them
+> a stage at a time walks forward to today. This exists because stages E2 and
+> E3 both documented cross-session drift of ±50 % on the millisecond fixtures
+> with identical IL: a six-stage table assembled from six sessions is not a
+> ladder, it is six ladders. The manifest is the COMMITTED one in every row —
+> peeling seams is a statement about the compiler, and changing the manifest
+> under it would be a statement about the manifest.
 >
-> **Kernels, 101 rounds, two-count wall delta; node re-measured in the same
-> session at 41. Checksums identical in every cell of every row.**
+> **Kernels, 101 rounds, two-count wall delta; node re-measured out of band in
+> the same session. Checksums identical in every cell of every row.**
 >
-> | | stage 3.4 | E1 | E2 | E3 | E4 | node v24.2.0 |
-> |---|---:|---:|---:|---:|---:|---:|
-> | `env_slot_kernel` ns/iter | 56.38 | 48.36 | 15.51 | 10.94 | **10.91** | 4.67 |
-> | `mat4_kernel` ns/call | 23.59 | 23.68 | 17.10 | **16.25** | 18.09 | 14.39 |
-> | `nullish_pin_kernel` ns/step | 12.99 | 12.96 | 11.43 | **11.29** | 11.31 | 5.36 |
-> | `call_chain_kernel` chained / flat | 20.25 / 18.75 | 20.25 / 18.75 | 11.50 / 12.63 | 9.50 / 9.88 | **9.50 / 8.75** | 1.88 / 2.00 |
+> | | stage 3.4 | E1 | E2 | E3 | E4 | E5 | node v24.2.0 |
+> |---|---:|---:|---:|---:|---:|---:|---:|
+> | `env_slot_kernel` ns/iter | 56.62 | 47.38 | 15.12 | 10.86 | 10.92 | **10.90** | 5.35 |
+> | `mat4_kernel` ns/call | 24.50 | 23.98 | 17.34 | 17.00 | 18.31 | **16.43** | 14.83 |
+> | `nullish_pin_kernel` ns/step | 13.09 | 13.10 | 11.54 | **11.40** | 11.41 | 11.42 | 5.59 |
+> | `call_chain_kernel` chained / flat | 20.50 / 19.00 | 20.50 / 19.00 | 11.63 / 12.88 | 9.63 / 10.00 | 9.63 / 8.88 | **9.63 / 8.75** | 2.00 / 1.88 |
 >
 > **Millisecond fixtures, 51 rounds, raw wall medians** (a bronze exe's process
 > floor and node's differ by ~27 ms on this box; never compare the absolutes
 > across engines, only within a row):
 >
-> | | stage 3.4 | E1 | E2 | E3 | E4 | node |
-> |---|---:|---:|---:|---:|---:|---:|
-> | `typed_array_crunch` | 53.62 | 53.41 | 48.28 | 47.97 | **36.95** | 54.73 |
-> | `three_math` | **41.21** | 41.78 | 41.90 | 42.32 | 42.70 | 48.77 |
-> | `mesh_churn_2k` | 75.81 | 76.01 | 76.43 | 73.98 | **72.21** | 89.04 |
-> | `object_graph` | 47.82 | 48.13 | 47.59 | 47.73 | **47.44** | 68.47 |
+> | | stage 3.4 | E1 | E2 | E3 | E4 | E5 | node |
+> |---|---:|---:|---:|---:|---:|---:|---:|
+> | `typed_array_crunch` | 54.70 | 54.63 | 49.35 | 49.45 | **37.74** | 37.91 | 59.06 |
+> | `three_math` | 43.86 | 45.92 | **43.04** | 45.80 | 45.67 | 44.64 | 52.49 |
+> | `mesh_churn_2k` | 77.44 | 79.05 | 78.73 | 75.56 | **74.13** | 75.31 | 96.53 |
+> | `object_graph` | 48.81 | 48.90 | **48.46** | 49.09 | 48.44 | 48.95 | 74.62 |
 >
 > Checksums `126000020 / 12600020`, `400000 / 940000`, `825756/700159/NaN/-563350`,
 > `296000000`, `78849652`, `405000`, `-2112298`, `-32601148` — every cell, every
@@ -226,13 +227,221 @@ node bench/typed_array_loop.js
 >
 > **What the ladder shows that no single stage's entry could.** The campaign is
 > **5.2×** on `env_slot_kernel` and **2.1×** on `call_chain_kernel`'s chained
-> arm; it is **1.30×** on `mat4_kernel` and **1.45×** on `typed_array_crunch`,
+> arm; it is **1.49×** on `mat4_kernel` and **1.44×** on `typed_array_crunch`,
 > and it is worth NOTHING on `object_graph`, which is the honest shape of a
-> campaign aimed at closures and environment records. Two cells contradict a
-> published stage number and both are written up in the Stage E4 entry: E1's
-> `env_slot` column reads 48.36 where E1 published 50.82, and E4's `mat4`
-> column is a 1.9 ns REGRESSION against E3 that has nothing to do with any
-> mechanism E4 shipped.
+> campaign aimed at closures and environment records. The one cell that still
+> contradicts a published stage number is E1's `env_slot`, which reads 47.38
+> where E1 published 50.82 — the seam-off compiler is TODAY's compiler with
+> E1's mechanism disabled, so it carries every later stage's work that E1's
+> binary did not, and a peeled ladder is a clean set of DIFFERENCES and only
+> approximately a set of historical absolutes. The other one is now closed:
+> E4's `mat4` column was a 1.9 ns regression against E3 caused by the emission
+> split un-inlining a callee, and stage E5's mechanism takes that column past
+> where E3 stood. This session runs ~1 % slower than E4's throughout (E3's
+> `mat4` reads 17.00 here against 16.25 published), so read DOWN a column, not
+> across sessions.
+
+- **Stage E5 (the split stops eating the inline plan)** — 2026-08-25:
+  > [!NOTE]
+  > **One mechanism, and it is not an optimization — it is a leak in the
+  > build.** `mat4_kernel` goes **18.31 → 16.43 ns/call** with every E4
+  > mechanism left ON, which is not only the whole of E4's regression but
+  > **0.57 ns past** the E3 column measured in the same session (17.00). The
+  > kernel's IL did not change. What changed is that a callee in another
+  > emission partition is no longer a bare `declare`. Checksums identical in
+  > every column of every row.
+  >
+  > **What E4 found and this stage confirmed unchanged.** bronze splits a
+  > module over 400 000 instructions into per-thread partitions by greedy
+  > largest-first bin packing (`src/codegen-llvm/llvm_backend.cpp`), and the
+  > worker loop called `f.deleteBody()` on every function outside its bin. The
+  > assignment had never heard of a call edge. Re-verified here from the IR
+  > before touching anything: in `mat4_kernel` (452k instructions, 2
+  > partitions) `run` is defined in `p0` while
+  > `mod1.Matrix4.multiplyMatrices.inl` is defined in `p1`, so `p0` held
+  > `declare hidden i64 @"__bronze_part$mod1.Matrix4.multiplyMatrices.inl"` and
+  > the `alwaysinline` stage 3.3 put on that call site was unsatisfiable. E4's
+  > root cause held up **exactly**; nothing in it needed amendment.
+  >
+  > **The repair** (`src/codegen-llvm/llvm_partition.{h,cpp}`, seam
+  > `BRONZE_NO_XPART_INLINE=1`). A body a bin does not own but does CALL is kept
+  > in that bin as `available_externally` instead of deleted. That linkage is
+  > exactly the shape of the claim: a definition the optimizer may read and
+  > copy, and the emitter must not emit, because the bin that owns it will.
+  > The pipeline's own `EliminateAvailableExternallyPass` — part of
+  > `buildPerModuleDefaultPipeline`, after the inliner and before the MC
+  > backend — drops the kept body back to a declaration, so every partition
+  > object still defines only what it owns. Nothing is compiled twice, and the
+  > link is the oracle for that: a body emitted from two partitions is a
+  > duplicate-symbol error, not a silent doubling.
+  >
+  > The IR, before and after, in `p0` — the caller's partition:
+  >
+  > ```
+  > ; before, p0 pre-O3
+  > declare hidden i64 @"__bronze_part$mod1.Matrix4.multiplyMatrices.inl"(i64, i64, i64, ptr "bronze.frame_region", ptr "bronze.tls_block")
+  > ; after, p0 pre-O3
+  > define available_externally hidden i64 @"__bronze_part$mod1.Matrix4.multiplyMatrices.inl"(i64 %__this, i64 %a, i64 %b, ptr "bronze.frame_region" %__region, ptr "bronze.tls_block" %__tls) {
+  > ; after, p0 post-O3 — no definition, no declaration, no call: inlined and gone
+  > ```
+  >
+  > `run` post-O3 goes from 2 341 to 3 826 lines of IR, which is the multiply
+  > arriving. The E2–E4 attribute machinery travels with the body untouched:
+  > the `bronze.frame_region` and `bronze.tls_block` parameter attributes are
+  > there verbatim above, because a kept body is not rewritten — it is the same
+  > bitcode every partition parses, and the ONLY per-partition mutations in the
+  > backend are this linkage choice, `deleteBody`, the DLL storage class, and
+  > partition 0's ownership of global initializers. That last one is a
+  > difference in what the optimizer KNOWS (a global's initializer is visible
+  > in `p0` and not in `p7`), never in what a body SAYS, and it predates this
+  > stage: every partition already referenced those globals from its own
+  > members.
+  >
+  > **THE CAP, and it is not a taste question.** The shipped cap is **2048**
+  > instructions and it is forced, not chosen: `Matrix4.multiplyMatrices.inl`
+  > is 1 782 instructions, and the site-level direct-edge budget
+  > (`markDirectMethodInlining`, stage 3.3) is also 2048. A cap of 1024 leaves
+  > the body outside and the regression completely unrepaired. 101 rounds,
+  > interleaved, one session:
+  >
+  > | `mat4_kernel` | ns/call | compile (452k insts, 2 partitions) |
+  > |---|---:|---:|
+  > | xpart off (= E4) | 18.318 | 15.15 s |
+  > | cap 1024 | **18.311** | 15.46 s |
+  > | cap 2048, depth 1 | 16.457 | 17.11 s |
+  > | cap 2048, depth 2 (**shipped**) | **16.448** | 17.38 s |
+  > | cap 2048, every direct call | 16.428 | 19.06 s |
+  >
+  > Checksums `400000 / 940000` in all five. The right way to read the cap is
+  > that it must EQUAL the site budget: the set this mechanism exists to
+  > protect is exactly the set that budget admits, so any smaller cap silently
+  > un-protects part of it and any larger one carries bodies no site would
+  > inline anyway.
+  >
+  > **WHICH callees, and the wide rule loses.** E4 sketched "direct-call
+  > callees under a size cap". Measured, the narrow rule is strictly better:
+  > keep only the callees of sites the compiler ALREADY marked `alwaysinline`
+  > — the direct method and closure edges stages 3.3 and E1 built, which is
+  > precisely the set a blind split can silently un-inline. On `mat4_kernel`
+  > that is 20 bodies against 133 for every direct call, it reads the same
+  > 16.43 against 16.43, and it costs **1.7 s less compile** (17.38 s against
+  > 19.06 s).
+  > `BRONZE_XPART_INLINE_MODE=all` is the seam that took that column. So E4's
+  > sketch needed narrowing — not correcting.
+  >
+  > **DEPTH, and the one thing here no fixture decides.** Every member of a bin
+  > is in the depth-0 frontier, so depth 1 already means "every direct callee
+  > of anything this bin owns"; depth only buys the hops through bodies that
+  > are themselves kept — `a → b → c` split across three bins, which is E3's
+  > nested-inline-edge shape. **No fixture distinguishes depth 1 from depth 2**
+  > (16.457 vs 16.448 on `mat4_kernel`, 44.87 vs 45.05 on `three_math`, 77.88
+  > vs 77.55 on `mesh_churn_2k` — all inside the width). Depth 2 ships anyway,
+  > on two grounds that are arguments and not measurements, and are labelled as
+  > such: the shape is real and populated (going 1 → 2 keeps 28 more bodies on
+  > `mesh_churn_2k`, i.e. 28 second-hop chain edges that exist), and the point
+  > of the mechanism is to make the split invisible to the inline plan, which a
+  > depth-1 rule leaves one shape short of. It costs one extra body on the
+  > two-partition fixtures. `BRONZE_XPART_INLINE_DEPTH=<n>` is the seam.
+  >
+  > **The ladder, six columns, one session, one compiler binary** (the E4
+  > column is today's compiler with `BRONZE_NO_XPART_INLINE=1`; `bench/tools/`
+  > carries the harness, and `ladder.sh` now peels six stages instead of five).
+  > Kernels at 101 rounds, millisecond fixtures at 51.
+  >
+  > | | stage 3.4 | E1 | E2 | E3 | E4 | E5 |
+  > |---|---:|---:|---:|---:|---:|---:|
+  > | `mat4_kernel` ns/call | 24.50 | 23.98 | 17.34 | 17.00 | 18.31 | **16.43** |
+  > | `env_slot_kernel` ns/iter | 56.62 | 47.38 | 15.12 | 10.86 | 10.92 | 10.90 |
+  > | `nullish_pin_kernel` ns/step | 13.09 | 13.10 | 11.54 | 11.40 | 11.41 | 11.42 |
+  > | `call_chain_kernel` chained / flat | 20.50 / 19.00 | 20.50 / 19.00 | 11.63 / 12.88 | 9.63 / 10.00 | 9.63 / 8.88 | 9.63 / 8.75 |
+  > | `typed_array_crunch` ms | 54.70 | 54.63 | 49.35 | 49.45 | 37.74 | 37.91 |
+  > | `three_math` ms | 43.86 | 45.92 | 43.04 | 45.80 | 45.67 | **44.64** |
+  > | `mesh_churn_2k` ms | 77.44 | 79.05 | 78.73 | 75.56 | 74.13 | 75.31 |
+  > | `object_graph` ms | 48.81 | 48.90 | 48.46 | 49.09 | 48.44 | 48.95 |
+  >
+  > Checksums `400000 / 940000`, `126000020 / 12600020`,
+  > `825756/700159/NaN/-563350`, `296000000`, `78849652`, `405000`,
+  > `-2112298`, `-32601148` — every cell of every column. This session runs
+  > about 1 % slower than E4's across the board (E3's `mat4` column reads 17.00
+  > here against 16.25 published, E4's 18.31 against 18.09), which is why the
+  > claim to read off this table is the WITHIN-session one: E5 is 1.88 ns under
+  > E4 and 0.57 under E3.
+  >
+  > **Only three fixtures in the suite can be touched by this at all**, and
+  > saying so is most of the honesty in the table. `typed_array_crunch`
+  > (10 587 instructions), `object_graph` (34 683), `env_slot_kernel` (2 236),
+  > `nullish_pin_kernel` (9 579) and `call_chain_kernel` (11 071) are all below
+  > the 400 000-instruction partition threshold, compile to one object, and
+  > never reach this code — their `BRONZE_NO_XPART_INLINE=1` and default LLVM
+  > IR are byte-identical (`cmp` on the pre- and post-O3 dumps, no diff). The
+  > three that partition are `mat4_kernel` (2), `three_math` (2) and
+  > `mesh_churn_2k` (8).
+  >
+  > **THE HONEST NEGATIVE: `mesh_churn_2k` pays about 1 ms.** Three
+  > independent interleaved sessions put it at +1.18, +0.86 and +1.02 ms
+  > (+1.2 – 1.6 %), and it is not the depth or the mode — off 76.53, depth 1
+  > 77.88, depth 2 77.55, every-direct-call 77.53. It is inlining's ordinary
+  > tax: the fixture touches 1 811 functions and its binary grows **9.44 →
+  > 11.21 MB** (+19 %). `three_math`, the other partitioned fixture, moves the
+  > other way by about the same amount (−1.03, −1.33 and −1.45 ms across the
+  > same three sessions, binary 4.72 → 5.06 MB). So the mechanism is not free on a
+  > fixture with no hot cross-partition edge, and the campaign should carry
+  > that: it repairs a broken inline plan, it does not improve one that was
+  > intact.
+  >
+  > **COMPILE TIME, measured because a kept body costs one.** Interleaved,
+  > median of three, `--timings` wall:
+  >
+  > | build | instructions | partitions | off | E5 | borrowed |
+  > |---|---:|---:|---:|---:|---|
+  > | `three_math` | 582 002 | 2 | 20.29 s | **23.45 s** (+16 %) | 23 fns / 24 519 insts |
+  > | `tests/oracle/threejs/main.js` | 1 808 946 | 9 | 20.77 s | **25.38 s** (+22 %) | 250 fns / 243 050 insts |
+  >
+  > Medians of five, interleaved. Below 400 000 instructions the cost is
+  > exactly zero, because the split never happens. Above it, the tax is
+  > 16 – 22 % of a build that was already parallel, and it buys back an inline
+  > the same build had silently lost.
+  >
+  > **Determinism.** Partition contents feed nothing that is hashed — the ABI
+  > stamp is `BRONZE_ABI_FINGERPRINT`, a constant of the header the compiler
+  > was built against, not a digest of any emitted object — so the requirement
+  > here is reproducibility, not identity with a recorded value. The keep sets
+  > are a fixpoint over a bin assignment whose only tie-break is the symbol
+  > NAME, and `planPartitions` called twice on one module returns equal plans
+  > (unit test, including the two equal-sized functions the module lists in the
+  > wrong order). Through the real compiler: two builds of `mat4_kernel` write
+  > byte-identical `p0` and `p1` pre-O3 IR, 13 `available_externally` bodies in
+  > `p0` and 7 in `p1` both times. Byte-comparing two whole EXECUTABLES proves
+  > nothing on Windows either way: the linker stamps a timestamp, so two builds
+  > of one source at one configuration already differ at byte 129.
+  >
+  > **The five checks** (`tests/codegen_llvm/codegen_llvm_test.cpp`), on
+  > hand-built modules, because what has to hold is a statement about a PLAN
+  > and about LINKAGE: a cross-bin direct-call callee is kept; an over-cap one
+  > and an uncalled one are not; a call with no inline request does not drag a
+  > body across; a chain is followed to the shipped depth and no further; and
+  > the end-to-end one — after `applyPartition` the callee is
+  > `available_externally` with a body and no dllexport, the module verifies,
+  > and after the real O3 module pipeline the caller holds no call to it and
+  > the module holds no definition of it. Every one of them has a
+  > `BRONZE_NO_XPART_INLINE=1` arm, so the seam column is green too. Both
+  > contract configurations — default and `BRONZE_ELIDE_ENV_GUARDS=1` — are
+  > green.
+  >
+  > **HANDOFF: what door 2 (pin enforcement) learns from this.** Nothing about
+  > store paths, and one thing about ITS OWN measurements. Every claim door 2
+  > will make about a barrier's cost is a difference between two compiled
+  > binaries, and until today two binaries built from IL that differed
+  > ANYWHERE could differ in which functions got inlined, for reasons having
+  > nothing to do with the change under test — a barrier that grows a function
+  > by 30 instructions could tip the packing and un-inline a hot callee three
+  > functions away, and the measurement would read that as the barrier's cost.
+  > That failure mode is now closed for the direct edges; it is NOT closed for
+  > LLVM's own cost-based inlining across a split, which `BRONZE_XPART_INLINE_MODE=all`
+  > would cover and which measured worth nothing today. If a door-2 A/B on a
+  > partitioned fixture ever shows a cost that the IL cannot explain, check the
+  > partition placement FIRST — `--timings` now prints the borrowed count per
+  > partition, and `BRONZE_DUMP_LLVM_IR` names the bin of every definition.
 
 - **Stage E4 (a parameter proof for closures, predicate attributes, and a dead zone nothing can reach through)** — 2026-08-25:
   > [!NOTE]
@@ -339,7 +548,10 @@ node bench/typed_array_loop.js
   > `available_externally` instead — for direct-call callees under a size cap —
   > is inlinable without being emitted twice. That is a mechanism with its own
   > seam and its own measurement, and it is the first thing the next campaign
-  > should build.
+  > should build. *(Built as stage E5, above. The root cause held exactly; the
+  > sketch needed narrowing — "direct-call callees" turned out to be wider than
+  > necessary, and the callees of sites already marked `alwaysinline` buy the
+  > same nanoseconds for a fifth less compile time.)*
   >
   > **The residual that measured zero and was dropped.** E3 reported two
   > `bronze_dynamic_add` in the `env_slot` kernel and got it to one, leaving the
