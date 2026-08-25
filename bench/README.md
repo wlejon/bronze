@@ -98,6 +98,99 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **Stage 3.3 (typed calling convention)** — 2026-08-24:
+  > [!NOTE]
+  > **Two declarations and one edge.** `param <owner>(<parameter>): number` and
+  > `return <owner>: number` (`src/types/pins.h`) type ONE POSITION of a
+  > calling convention f64; the direct method-call edge
+  > (`lower_infer.cpp resolveDirectMethodTargets`, `il::Instruction::directTarget`)
+  > names the function a `method.call` site will reach so the backend can emit
+  > a real call to the typed entry instead of an indirect one through the
+  > cache. Neither is worth much alone. Together they are the compounder,
+  > because a direct call to a typed entry is an ordinary LLVM call an ordinary
+  > LLVM inliner may take.
+  >
+  > The name is a GUESS and is emitted as one. The guard reuses the site's own
+  > inline-cache words — enabled, object tag, PLAIN flags, shape, DIRECT form —
+  > and adds exactly one question: is the cached code pointer `@__wrapper_F`
+  > for the F this site named? The cache already did the real lookup, so a
+  > wrong guess (an override, a subclass, a monkey-patch) simply never matches
+  > and the miss block is the boxed path unchanged. That is what makes a
+  > GUESSED receiver class admissible where a proof is not available.
+  >
+  > **Receivers and object arguments stayed BOXED, and this is not a
+  > conservatism — it is the GC.** The collector moves; `planRootFrame`'s
+  > eligibility is exactly `ty == il::Type::Dynamic` and `forward_value` only
+  > rewrites a `Value`. A raw object pointer in a register across an allocating
+  > call points into dead from-space. So `this` is a parameter, but a boxed
+  > one; the cost is one AND, which is why nothing was lost by refusing it.
+  >
+  > Commands (medians of 5, warmup discarded, idle box):
+  > ```
+  > bronze build bench/mat4_kernel.js       -o m.exe --pins bench/pins/threejs-math.pins
+  > bronze build bench/call_chain_kernel.js -o c.exe --pins bench/pins/call-chain-kernel.pins
+  > BRONZE_NO_DIRECT_METHOD=1        bronze build ...   # edge off
+  > BRONZE_DIRECT_INLINE_BUDGET=0    bronze build ...   # edge on, inlining off
+  > ```
+  >
+  > **Call-chain kernel (`bench/call_chain_kernel.js`, three-deep
+  > `setValue → same → store`, in-process ns/op over 8e6, `chained` against the
+  > hand-inlined `flat` in the same binary; checksums `296000000 / 296000000`
+  > in every row including node's):**
+  > - nothing: **28.13** / 20.50, ratio **1.38**
+  > - direct edge only, no signature pins: **25.00** / 21.00, ratio 1.20
+  > - signature pins, edge off: **29.25** / 20.25, ratio **1.46**
+  > - signature pins + edge, inlining off: **25.38** / 18.25, ratio 1.38
+  > - **shipped (pins + edge + inlining): 21.38 / 18.75, ratio 1.14**
+  > - node v24.2.0: 1.88 / 1.88, ratio 1.00
+  >
+  > Read the third row: **signature pins WITHOUT a direct edge are a small
+  > REGRESSION** (28.13 → 29.25). The typed entry is reached through the boxed
+  > wrapper, which now pays an inlined ToNumber per argument for a body whose
+  > win nothing can collect. Pin a signature where the edge is direct or do not
+  > pin it. That is also why `bench/pins/env-slot-kernel.pins` did NOT gain
+  > `param setBlending(blending): number` and friends, even though the pin does
+  > exactly what it promises there — the IL confirms the compare family
+  > collapses from `box.f64` + `strict.eq` + `const.bool` + `cmp.eq` to a
+  > single `cmp.ne %1, %5`, an fcmp on two doubles — because `setBlending` is a
+  > sibling CLOSURE call with no method site to make direct, and the kernel
+  > answers 59.16 → **60.78** ns/iter for it (checksum `126000020` both).
+  >
+  > **Kernel (`bench/mat4_kernel*.js`, ns/call by the two-count wall delta over
+  > 18e6 calls, checksums 400000 / 940000 in every row):**
+  > - default, no manifest **182.09**
+  > - `--pins`, edge off **27.53**
+  > - `--pins`, edge on, inlining off **27.09**
+  > - **`--pins`, shipped 25.05**; node v24.2.0 same method **15.7**
+  >
+  > **The pre-registered ≤ 20 ns target was not reached, and the two rows above
+  > it say why the convention alone cannot reach it.** The boundary this stage
+  > removes is worth ~0.5 ns (the argument vector) plus ~2.4 ns (the callee
+  > prologue: ten callee-saved XMM spills on Windows x64, a GC root frame, a
+  > TLS fetch, and every field guard re-derived inside a caller that already
+  > established it). The probe's "the remaining ~12 ns is call-boundary cost"
+  > was a reasonable guess and is now measured to be wrong: after inlining, the
+  > loop's opcode histogram is 233 `movq` / 111 `cmpq` / 173 branches / 70
+  > `bzhiq` against 65 `vmulsd` + 51 `vaddsd`. **The residual is guard-dominated,
+  > not boundary-dominated** — which is the same answer the env-slot kernel gave
+  > in Stage 3.2, now confirmed from the other side. `call_chain_kernel` is the
+  > fixture where the boundary IS the work, and there the stage is worth −24%
+  > with the ratio moving 1.38 → 1.14 against node's 1.00.
+  >
+  > The inline budget (2048 IL-lowered instructions, `BRONZE_DIRECT_INLINE_BUDGET`)
+  > is measured, not chosen: 1024 refuses `Matrix4.multiplyMatrices` — verified
+  > by the surviving `callq __bronze_part$mod1.Matrix4.multiplyMatrices`
+  > relocation in `llvm-objdump -dr` output — and leaves the kernel at 27.0.
+  >
+  > **References held** (same build): `three_math` **20.82 ms** checksum 405000
+  > (was 21.78); `mesh_churn_2k` **73.12 ms** checksum **-2112298** (was 74.49);
+  > `env_slot_kernel` **59.16 ns/iter** checksum 126000020 (was 59.23);
+  > `nullish_pin_kernel` **12.93 ns/step** checksums
+  > `825756/700159/NaN/-563350` and `743742/271170/NaN/-453295` (was 13.21).
+  > Every pure fixture in this directory also compiles under
+  > `--pins bench/pins/threejs-math.pins` with byte-identical output. Suite
+  > green with no flags (29/29).
+
 - **Stage 3.2 (nullish-widened pins + env-slot typing)** — 2026-08-24:
   > [!NOTE]
   > Two new declarations, and one of them pays. `--pins ... number-or-nullish`

@@ -124,6 +124,9 @@ std::optional<il::Module> Lowerer::lower() {
             if (fnDecl->isAsync) fn.returnType = il::Type::Dynamic;
             fn.fnFlags = functionObjectFlags(ast::FunctionKind::Normal, fnDecl->isGenerator,
                                              fnDecl->isAsync);
+            // Last, because a pin is a promise about a convention every proof
+            // and every convention statement above has already had its say on.
+            if (!applySignaturePins(fnDecl->params, fnDecl->span, fn)) return std::nullopt;
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;
@@ -264,6 +267,10 @@ std::optional<il::Module> Lowerer::lower() {
     ilModule_.icSiteCount = icSiteCounter_;
     ilModule_.templateSiteCount = templateSiteCounter_;
     ilModule_.staticSiteCount = staticSiteCounter_;
+    // The one pass that needs the module WHOLE: a method-call site and the
+    // class body that answers it are lowered in the opposite order to the one
+    // resolution wants (lowerer.h, `methodCallSites_`).
+    resolveDirectMethodTargets();
     reportClassLayouts();
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative

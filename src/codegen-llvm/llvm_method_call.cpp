@@ -374,6 +374,98 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     return result;
 }
 
+MethodDirectGuard emitMethodDirectGuard(llvm::IRBuilder<>& builder, const AbiGlobals& globals,
+                                        const ModuleTables& tables, llvm::Value* thisVal,
+                                        uint32_t icIndex, llvm::Function* wrapper,
+                                        bool needsEnv) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
+    llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
+
+    llvm::BasicBlock* plainBb = llvm::BasicBlock::Create(ctx, "mdc.plain", fn);
+    llvm::BasicBlock* shapeBb = llvm::BasicBlock::Create(ctx, "mdc.shape", fn);
+    llvm::BasicBlock* formBb = llvm::BasicBlock::Create(ctx, "mdc.form", fn);
+    llvm::BasicBlock* codeBb = llvm::BasicBlock::Create(ctx, "mdc.code", fn);
+    llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "mdc.hit", fn);
+    llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, "mdc.miss", fn);
+
+    auto* enabled = builder.CreateAlignedLoad(
+        i64Ty, globals.bronze_method_call_ic_enabled, llvm::Align(8), "mdc.enabled");
+    markInvariant(enabled, ctx);
+    llvm::Value* isEnabled = builder.CreateICmpNE(enabled, builder.getInt64(0), "mdc.isenabled");
+    llvm::Value* tag = builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mdc.tag");
+    llvm::Value* isObj =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mdc.isobj");
+    auto* br0 = builder.CreateCondBr(builder.CreateAnd(isEnabled, isObj), plainBb, missBb);
+    br0->setMetadata(llvm::LLVMContext::MD_prof, likely);
+
+    // A non-plain heap object has no shape word at that offset, so the flags
+    // test is what makes the load below a load of a shape at all — the same
+    // rule llvm_static_slot.cpp states.
+    builder.SetInsertPoint(plainBb);
+    llvm::Value* addr = builder.CreateAnd(thisVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "mdc.hdr");
+    auto* flags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), "mdc.flags");
+    markInvariant(flags, ctx);
+    auto* br1 = builder.CreateCondBr(
+        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN)), shapeBb, missBb);
+    br1->setMetadata(llvm::LLVMContext::MD_prof, likely);
+
+    builder.SetInsertPoint(shapeBb);
+    llvm::Value* shape = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+        llvm::Align(8), "mdc.shape");
+    llvm::Value* cachedShape =
+        builder.CreateAlignedLoad(i64Ty, entry, llvm::Align(8), "mdc.cachedshape");
+    auto* br2 =
+        builder.CreateCondBr(builder.CreateICmpEQ(shape, cachedShape), formBb, missBb);
+    br2->setMetadata(llvm::LLVMContext::MD_prof, likely);
+
+    // Only the DIRECT form (word 2's high half zero) caches a code pointer. The
+    // SLOT form says the callee lives in one of the receiver's OWN slots right
+    // now — a per-instance closure or a host function, never a prototype method
+    // this module compiled — so there is nothing here to pin.
+    builder.SetInsertPoint(formBb);
+    llvm::Value* arityWord = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ARITY_WORD),
+        llvm::Align(8), "mdc.arityword");
+    llvm::Value* formBits =
+        builder.CreateLShr(arityWord, BRONZE_ABI_METHOD_IC_SLOT_SHIFT, "mdc.formbits");
+    auto* br3 = builder.CreateCondBr(
+        builder.CreateICmpEQ(formBits, builder.getInt64(0)), codeBb, missBb);
+    br3->setMetadata(llvm::LLVMContext::MD_prof, likely);
+
+    // The one question the cache does not already answer for itself, and the
+    // whole of what makes the guessed callee sound.
+    builder.SetInsertPoint(codeBb);
+    llvm::Value* code = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_CODE_WORD),
+        llvm::Align(8), "mdc.code");
+    llvm::Value* want = builder.CreatePtrToInt(wrapper, i64Ty, "mdc.want");
+    auto* br4 = builder.CreateCondBr(builder.CreateICmpEQ(code, want), hitBb, missBb);
+    br4->setMetadata(llvm::LLVMContext::MD_prof, likely);
+
+    MethodDirectGuard out;
+    out.hit = hitBb;
+    out.miss = missBb;
+    if (needsEnv) {
+        builder.SetInsertPoint(hitBb);
+        out.env = builder.CreateAlignedLoad(
+            i64Ty, builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ENV_WORD),
+            llvm::Align(8), "mdc.env");
+    }
+    builder.SetInsertPoint(missBb);
+    return out;
+}
+
 llvm::Value* emitMethodCallSpreadInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                         const AbiGlobals& globals, const ModuleTables& tables,
                                         llvm::Value* thisVal, uint32_t keyIndex, uint32_t icIndex,

@@ -102,3 +102,79 @@ TEST_CASE("an empty manifest is empty in both namespaces") {
     CHECK(m.parse("# nothing\n", "test.pins", err));
     CHECK(m.empty());
 }
+
+// ---- the signature forms ----------------------------------------------------
+
+TEST_CASE("a parameter pin names one position of one function") {
+    const auto m = parsed(
+        "param setBlending(blending): number\n"
+        "param setBlending(src): number\n"
+        "param Matrix4.multiplyMatrices(a): number\n");
+    CHECK(m.size() == 3);
+    CHECK(m.paramPinned("setBlending", "blending"));
+    CHECK(m.paramPinned("setBlending", "src"));
+    CHECK_FALSE(m.paramPinned("setBlending", "dst"));
+    CHECK_FALSE(m.paramPinned("useProgram", "blending"));
+}
+
+TEST_CASE("a return pin names the function and nothing in it") {
+    const auto m = parsed("return useProgram: number\n");
+    CHECK(m.size() == 1);
+    CHECK(m.returnPinned("useProgram"));
+    CHECK_FALSE(m.returnPinned("setBlending"));
+    CHECK_FALSE(m.paramPinned("useProgram", "program"));
+}
+
+// The linker renames every module-level binding into one namespace before
+// inference runs, so the IL name of a method carries a module prefix the
+// manifest was not written against.
+TEST_CASE("a signature entry matches any dot-boundary suffix of the IL name") {
+    const auto m = parsed(
+        "param Matrix4.multiplyMatrices(a): number\n"
+        "return Matrix4.multiplyMatrices: number\n");
+    CHECK(m.paramPinned("mod1.Matrix4.multiplyMatrices", "a"));
+    CHECK(m.returnPinned("mod1.Matrix4.multiplyMatrices"));
+    // A same-named method on another class is a different function, and the
+    // entry names the class precisely so the two can be told apart.
+    CHECK_FALSE(m.paramPinned("mod1.Matrix3.multiplyMatrices", "a"));
+    CHECK_FALSE(m.returnPinned("mod1.Matrix3.multiplyMatrices"));
+}
+
+// A suffix match must not let a general entry override a specific one: the
+// first spelling that names the owner at all answers, hit or miss.
+TEST_CASE("the most specific spelling of an owner is the one that answers") {
+    const auto m = parsed(
+        "param Matrix4.multiplyMatrices(a): number\n"
+        "param multiplyMatrices(b): number\n");
+    CHECK(m.paramPinned("mod1.Matrix4.multiplyMatrices", "a"));
+    CHECK_FALSE(m.paramPinned("mod1.Matrix4.multiplyMatrices", "b"));
+    CHECK(m.paramPinned("mod1.Matrix3.multiplyMatrices", "b"));
+}
+
+TEST_CASE("the signature forms live beside the field forms, not inside them") {
+    const auto m = parsed(
+        "Vector3.x: number\n"
+        "param Vector3.setX(x): number\n");
+    REQUIRE(m.lookup("Vector3", "x") != nullptr);
+    // `setX` is not a field of Vector3, and `x` is not a parameter of Vector3.
+    CHECK(m.lookup("Vector3", "setX") == nullptr);
+    CHECK(m.paramPinned("Vector3.setX", "x"));
+    CHECK_FALSE(m.paramPinned("Vector3", "x"));
+}
+
+TEST_CASE("a malformed signature line is named, never skipped") {
+    CHECK(rejected("param setBlending: number\n").find("parameter pin target needs") !=
+          std::string::npos);
+    CHECK(rejected("param setBlending(x: number\n").find("parameter pin target needs") !=
+          std::string::npos);
+    CHECK(rejected("param setBlending(x): numeric-elements\n")
+              .find("parameter pin's only kind") != std::string::npos);
+    CHECK(rejected("return f: number-or-nullish\n").find("return pin's only kind") !=
+          std::string::npos);
+    CHECK(rejected("param 9f(x): number\n").find("not a valid function name") !=
+          std::string::npos);
+    CHECK(rejected("param f(9x): number\n").find("not a valid parameter name") !=
+          std::string::npos);
+    CHECK(rejected("return 9f: number\n").find("not a valid function name") !=
+          std::string::npos);
+}

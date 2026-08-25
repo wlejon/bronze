@@ -49,6 +49,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
 
     const bool hasSuper = superClass != nullptr || !superName.empty();
 
+    // The heritage link, recorded before any method is, because a class that
+    // declares NO instance method of its own still inherits every one of its
+    // base's — and a site calling one of those is exactly the site that needs
+    // the walk. Recording the link only alongside a method would lose the edge
+    // for a subclass that adds fields and nothing else.
+    recordClassSuper(name, superName);
+
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's
     // private environment is created at step 2 and the heritage evaluated at
@@ -244,6 +251,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             computedInst.operands = {homeObject, keyBoxed->id, fnVal->id};
             emitInst(ilFn, computedInst);
             continue;
+        }
+
+        // The definition half of the direct method-call edge (lowerer.h,
+        // `methodCallSites_`). Instance methods only: a static one is not
+        // reached as `recv.<name>`, and the accessor, private and computed-key
+        // forms have all `continue`d above.
+        if (!m.isStatic) {
+            recordClassMethod(name, superName, m.name, lastClosureFnIndex_);
         }
 
         il::Instruction setInst;

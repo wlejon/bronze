@@ -65,6 +65,8 @@ private:
     bool emitRuntimeOp(const il::Instruction& inst);
     bool emitDynamicCall(const il::Instruction& inst);
     bool emitMethodCall(const il::Instruction& inst);
+    // The guarded direct edge in front of it, or false when this site has none.
+    bool emitMethodCallDirect(const il::Instruction& inst, llvm::Value* thisVal, uint32_t argc);
     bool emitMethodCallSpread(const il::Instruction& inst);
     bool emitConstruct(const il::Instruction& inst);
     bool emitCall(const il::Instruction& inst);

@@ -5,6 +5,11 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/MDBuilder.h>
+#include <llvm/IR/Metadata.h>
+#include <llvm/IR/Module.h>
+#include <llvm/ADT/DenseMap.h>
+
+#include <cstdlib>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -303,6 +308,96 @@ llvm::Value* emitArrayPushDirectCall(llvm::IRBuilder<>& builder, const AbiFns& a
     result->addIncoming(fastRes, fastEndBb);
     result->addIncoming(slowRes, slowEndBb);
     return result;
+}
+
+void markDirectMethodInlining(llvm::Module& llvmModule) {
+    // How many IR instructions a direct-edge callee may hold and still be
+    // inlined at the site. Measured, not guessed: swept at 0, 1024, 2048, 4096
+    // and unbounded over `mat4_kernel`, `three_math` and `mesh_churn_2k`.
+    // `Matrix4.multiplyMatrices` sits between 1024 and 2048 and is exactly the
+    // body this exists for — the kernel goes 27.05 -> 24.99 ns/call the moment
+    // the budget admits it. Above 2048 nothing on the suite gets faster and
+    // three_math's object grows 19 %, so 2048 is where the curve turns.
+    //
+    // BRONZE_DIRECT_INLINE_BUDGET overrides it, as a compile-time seam like the
+    // rest: 0 turns the mechanism off while leaving the direct edge itself in,
+    // which is what separates "the call was the cost" from "the prologue was".
+    // (It was the prologue, and it was worth 2 ns of 27.)
+    static const unsigned budget = [] {
+        if (const char* env = std::getenv("BRONZE_DIRECT_INLINE_BUDGET")) {
+            return static_cast<unsigned>(std::strtoul(env, nullptr, 10));
+        }
+        return 2048u;
+    }();
+
+    llvm::DenseMap<llvm::Function*, unsigned> sizes;
+    auto sizeOf = [&](llvm::Function* fn) {
+        auto it = sizes.find(fn);
+        if (it != sizes.end()) return it->second;
+        unsigned n = 0;
+        for (const llvm::BasicBlock& bb : *fn) n += static_cast<unsigned>(bb.size());
+        sizes[fn] = n;
+        return n;
+    };
+
+    for (llvm::Function& fn : llvmModule) {
+        for (llvm::BasicBlock& bb : fn) {
+            for (llvm::Instruction& inst : bb) {
+                auto* call = llvm::dyn_cast<llvm::CallInst>(&inst);
+                if (call == nullptr || call->getMetadata(kDirectMethodMD) == nullptr) continue;
+                llvm::Function* callee = call->getCalledFunction();
+                // A recursive edge is refused outright rather than budgeted:
+                // `alwaysinline` on one is an infinite expansion, and the
+                // guard's whole point is that the site keeps a correct
+                // out-of-line path.
+                if (callee == nullptr || callee == &fn || callee->isDeclaration()) continue;
+                if (callee->hasFnAttribute(llvm::Attribute::NoInline)) continue;
+                if (budget == 0 || sizeOf(callee) > budget) continue;
+                call->addFnAttr(llvm::Attribute::AlwaysInline);
+            }
+        }
+    }
+}
+
+llvm::Value* emitToNumberInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                llvm::Value* bits) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* f64Ty = llvm::Type::getDoubleTy(ctx);
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "tonum.fast", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "tonum.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tonum.done", fn);
+
+    llvm::Value* isNum =
+        builder.CreateICmpULE(bits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "tonum.isnum");
+    auto* br = builder.CreateCondBr(isNum, numBb, slowBb);
+    br->setMetadata(llvm::LLVMContext::MD_prof,
+                    llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(numBb);
+    // A Number's Value bits ARE its double's bits, so this is the whole
+    // conversion — no tag test beyond the compare above, no helper.
+    llvm::Value* asDouble = builder.CreateBitCast(bits, f64Ty, "tonum.asdouble");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* coerced = builder.CreateCall(abi.bronze_unbox_f64, {bits}, "tonum.helper");
+    llvm::BasicBlock* slowEnd = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* phi = builder.CreatePHI(f64Ty, 2, "tonum.res");
+    phi->addIncoming(asDouble, numBb);
+    phi->addIncoming(coerced, slowEnd);
+    return phi;
+}
+
+llvm::Value* emitBoxF64Inline(llvm::IRBuilder<>& builder, llvm::Value* value) {
+    llvm::Value* isNan = builder.CreateFCmpUNO(value, value, "box.isnan");
+    llvm::Value* bits = builder.CreateBitCast(value, builder.getInt64Ty(), "box.bits");
+    return builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), bits,
+                                "box.res");
 }
 
 }  // namespace bronze::codegen_llvm

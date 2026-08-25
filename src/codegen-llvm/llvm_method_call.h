@@ -33,4 +33,34 @@ llvm::Value* emitMethodCallSpreadInline(llvm::IRBuilder<>& builder, const AbiFns
                                         llvm::Value* thisVal, uint32_t keyIndex, uint32_t icIndex,
                                         llvm::Value* argsArr);
 
+// The guard in front of a DIRECT method-call edge (il.h, `directTarget`).
+//
+// It asks exactly what the inline cache above already asks — the site is
+// enabled, the receiver is a plain object, its shape is the one the entry was
+// filled for, and the entry is in its DIRECT form — and then one question more:
+// is the code pointer the cache resolved this key to `wrapper`? The cache
+// filled those words by performing the real lookup, so a yes means the callee
+// really is that IL function, whatever the compiler guessed and whatever the
+// prototype chain has since been made to hold. A no is the ordinary indirect
+// dispatch, which is what the miss block goes on to emit.
+//
+// Nothing here is a claim ABOUT the receiver, which is why a guessed receiver
+// class is admissible: the compiler proposes a callee and the runtime's own
+// cache disposes.
+//
+// The builder is left positioned in the MISS block. `hit` is empty and
+// unterminated; the caller emits the typed call into it. `env` is the cached
+// environment word, loaded in the hit block, or null when `needsEnv` is false —
+// a function object with this code pointer is not necessarily the one the
+// module created (two evaluations of one class body make two), so the env has
+// to come from the entry rather than be assumed.
+struct MethodDirectGuard {
+    llvm::BasicBlock* hit = nullptr;
+    llvm::BasicBlock* miss = nullptr;
+    llvm::Value* env = nullptr;
+};
+MethodDirectGuard emitMethodDirectGuard(llvm::IRBuilder<>& builder, const AbiGlobals& globals,
+                                        const ModuleTables& tables, llvm::Value* thisVal,
+                                        uint32_t icIndex, llvm::Function* wrapper, bool needsEnv);
+
 }  // namespace bronze::codegen_llvm

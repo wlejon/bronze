@@ -50,6 +50,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
@@ -73,6 +74,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_func.h"
 #include "il/print.h"
 #include "il/verifier.h"
@@ -82,6 +84,7 @@ namespace bronze {
 
 using codegen_llvm::AbiFns;
 using codegen_llvm::AbiGlobals;
+using codegen_llvm::emitToNumberInline;
 using codegen_llvm::FunctionEmitter;
 using codegen_llvm::mapILType;
 
@@ -314,7 +317,7 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
             llvm::Value* bits = loaded[sourceIndex];
             switch (func.params[p].type) {
                 case il::Type::F64:
-                    callArgs.push_back(builder.CreateCall(abi.bronze_unbox_f64, {bits}));
+                    callArgs.push_back(emitToNumberInline(builder, abi, bits));
                     break;
                 case il::Type::I32:
                     callArgs.push_back(builder.CreateCall(abi.bronze_unbox_i32, {bits}));
@@ -869,6 +872,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             codegen_llvm::cacheTlsFetches(*llvmModule, abi.bronze_tls_block_addr);
         }
     }
+    // Every direct method-call edge whose callee fits the budget asks to be
+    // inlined at the site (llvm_call.h, markDirectMethodInlining). After the
+    // TLS rewrite, so a callee's fetch is already the cached form when its body
+    // is copied into a caller that has one of its own.
+    codegen_llvm::markDirectMethodInlining(*llvmModule);
     lap("ir-build");
 
     std::string errStr;

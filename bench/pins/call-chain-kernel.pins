@@ -1,0 +1,44 @@
+# The typed calling convention, declared for one class (src/types/pins.h).
+#
+# `Uniform` is bench/call_chain_kernel.js: a three-deep chain of method calls
+# whose every parameter and every return is a Number, and none of which any
+# proof can type. A method signature is joined over call sites, and a parameter
+# that also received one argument the pass declined to look at is demoted to a
+# guess with its primitive claim thrown away (types/infer.cpp `widenMethods`) —
+# so these declarations are the whole of what gives these entries f64 slots.
+#
+# What a WRONG entry here costs is a COERCION, not a wrong read of bits: the
+# uniform path still enters through the call wrapper, and the wrapper converts
+# with ToNumber. That is what makes the signature forms the weakest pin in the
+# file, and it is why they may name a parameter no audit ever saw.
+
+# --- the cache slots ----------------------------------------------------------
+Uniform.c0: number
+Uniform.c1: number
+Uniform.c2: number
+Uniform.c3: number
+Uniform.writes: number
+
+# --- depth 1: the setter, and the hand-inlined ceiling it is measured against --
+param Uniform.setValue(x): number
+param Uniform.setValue(y): number
+param Uniform.setValue(z): number
+param Uniform.setValue(w): number
+return Uniform.setValue: number
+param Uniform.setValueFlat(x): number
+param Uniform.setValueFlat(y): number
+param Uniform.setValueFlat(z): number
+param Uniform.setValueFlat(w): number
+return Uniform.setValueFlat: number
+
+# --- depth 2 and 3 ------------------------------------------------------------
+param Uniform.same(x): number
+param Uniform.same(y): number
+param Uniform.same(z): number
+param Uniform.same(w): number
+return Uniform.same: number
+param Uniform.store(x): number
+param Uniform.store(y): number
+param Uniform.store(z): number
+param Uniform.store(w): number
+return Uniform.store: number

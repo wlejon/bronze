@@ -96,6 +96,9 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
         operand(inst, 0, "Undefined this in MethodCall instruction");
     if (!thisVal) return false;
     uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
+
+    if (emitMethodCallDirect(inst, thisVal, argc)) return true;
+
     bool ok = false;
     llvm::Value* argv = emitArgv(inst, 1, argc, ok);
     if (!ok) return false;
@@ -104,6 +107,116 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
         builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex, inst.icIndex, argc, argv);
     if (inst.result != il::kNoValue) {
         values_[inst.result] = res;
+    }
+    return true;
+}
+
+// The DIRECT method-call edge (il.h, `directTarget`): a guard on the site's own
+// inline cache, and on its hit a call to the callee's TYPED ENTRY with the
+// arguments in registers.
+//
+// What it deletes at a hit is the whole uniform boundary — the argument vector
+// is not built, the wrapper's unpack does not run, and the callee is an
+// ordinary internal function that LLVM may inline into this one. `emitArgv` is
+// emitted into the MISS block instead of before the guard, which is the half of
+// this that costs the fast path nothing.
+//
+// Answers false when the site has no target or the target's shape cannot be
+// expressed as a fixed operand list, and then nothing has been emitted and the
+// caller's ordinary path is untouched.
+bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Value* thisVal,
+                                           uint32_t argc) {
+    if (inst.directTarget >= shared_.entries.size()) return false;
+    const il::Function& callee = shared_.module.functions[inst.directTarget];
+    llvm::Function* entry = shared_.entries[inst.directTarget];
+    llvm::Function* wrapper = shared_.wrappers[inst.directTarget];
+    // A method is reached through a receiver, so `__this` must be a parameter
+    // the convention carries; lowering refuses the rest and `arguments` forms
+    // (lower_infer.cpp, `resolveDirectMethodTargets`) and this re-states the
+    // one fact the emitted call would otherwise get silently wrong.
+    if (!callee.needsThis || callee.needsArguments || callee.hasRestParam) return false;
+
+    const size_t base = callee.firstSourceParam();
+    const size_t fixed = callee.callerParamCount();
+    if (argc > fixed) return false;
+
+    const AbiFns& abi = shared_.abi;
+    llvm::LLVMContext& ctx = shared_.ctx;
+
+    // The arguments, read out of the value table BEFORE the guard splits the
+    // block: they were reloaded from their root slots at the top of this
+    // instruction, and the guard allocates nothing, so these bits are current
+    // in the hit block too.
+    std::vector<llvm::Value*> argBits;
+    argBits.reserve(argc);
+    for (uint32_t a = 0; a < argc; ++a) {
+        llvm::Value* v = operand(inst, 1 + a, "Undefined argument in MethodCall instruction");
+        if (!v) return false;
+        argBits.push_back(v);
+    }
+
+    MethodDirectGuard guard = emitMethodDirectGuard(builder_, globals_, shared_.tables, thisVal,
+                                                    inst.icIndex, wrapper, callee.needsEnv);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "mdc.done", llvmFunc_);
+
+    // The hit: the typed entry, entered positionally.
+    builder_.SetInsertPoint(guard.hit);
+    std::vector<llvm::Value*> callArgs;
+    if (callee.needsEnv) callArgs.push_back(guard.env);
+    callArgs.push_back(thisVal);
+    for (size_t p = 0; p < fixed; ++p) {
+        const il::Type slot = callee.params[p + base].type;
+        if (p >= argc) {
+            // An omitted argument IS `undefined`, which is the value the
+            // callee's default tests for. Lowering has already refused a site
+            // whose padding would land in a typed slot.
+            callArgs.push_back(builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS));
+            continue;
+        }
+        callArgs.push_back(slot == il::Type::F64 ? emitToNumberInline(builder_, abi, argBits[p])
+                                                 : argBits[p]);
+    }
+    if (callArgs.size() != entry->getFunctionType()->getNumParams()) {
+        // A drift between the IL signature and the LLVM one. Nothing after the
+        // guard has been emitted into `hit` that a `br` cannot follow, so the
+        // honest thing is a diagnosis rather than a mismatched call.
+        require(false, "internal: direct method-call arity does not match the typed entry");
+        return false;
+    }
+    llvm::CallInst* hitCall = builder_.CreateCall(entry, callArgs);
+    // The ask for inlining, spent by `markDirectMethodInlining` once the
+    // module is whole and the callee's size is known (llvm_call.h says why the
+    // ask is here and the decision is not).
+    hitCall->setMetadata(kDirectMethodMD, llvm::MDNode::get(ctx, {}));
+    llvm::Value* hitRes = hitCall;
+    switch (callee.returnType) {
+        case il::Type::Void: hitRes = builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS); break;
+        case il::Type::F64: hitRes = emitBoxF64Inline(builder_, hitRes); break;
+        case il::Type::Dynamic: break;
+        default:
+            require(false, "internal: unsupported return type on a direct method-call target");
+            return false;
+    }
+    llvm::BasicBlock* hitEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(doneBb);
+
+    // The miss: the site exactly as it was, argument vector and all.
+    builder_.SetInsertPoint(guard.miss);
+    bool ok = false;
+    llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+    if (!ok) return false;
+    llvm::Value* missRes =
+        emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                             inst.icIndex, argc, argv);
+    llvm::BasicBlock* missEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(doneBb);
+
+    builder_.SetInsertPoint(doneBb);
+    if (inst.result != il::kNoValue) {
+        llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt64Ty(), 2, "mdc.result");
+        phi->addIncoming(hitRes, hitEnd);
+        phi->addIncoming(missRes, missEnd);
+        values_[inst.result] = phi;
     }
     return true;
 }

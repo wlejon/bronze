@@ -55,6 +55,8 @@ enum class PinKind : uint8_t {
 //     <class>.<field>: <kind>
 //     <class>.*: <kind>
 //     function <function>.<binding>: number
+//     param <owner>(<parameter>): number
+//     return <owner>: number
 //
 // `<kind>` is `number`, `numeric-elements` or `number-or-nullish`. `<class>` is
 // matched on its LAST
@@ -80,6 +82,29 @@ enum class PinKind : uint8_t {
 // has to be exact, and one wrong name is a pointer's bits read as a double.
 // `<function>` is matched on its last dotted component, for the reason
 // `<class>` is.
+//
+// The `param` and `return` forms pin one position of a CALLING CONVENTION: the
+// named parameter becomes an f64 slot of the function's typed entry
+// (llvm_backend.cpp `declareEntries`), and the return an f64 result. `<owner>`
+// is the function as the source spells it — `setBlending` for a plain function
+// or closure, `Matrix4.multiplyMatrices` for a class method — and it matches an
+// IL function whose name IS it or ENDS WITH `.` + it, which is the same
+// last-components rule the forms above use and for the same reason.
+//
+// This is the WEAKEST pin in the file, and the only one whose miss is not a
+// wrong read of bits. The uniform convention still enters through the call
+// wrapper, and the wrapper converts with ToNumber (7.1.4) — inline for the
+// number case, `bronze_unbox_f64` for everything else — so a non-number that
+// reaches a pinned parameter is COERCED, never reinterpreted. What the promise
+// buys is the typed slot; what a wrong entry costs is JS semantics (`f("5")`
+// sees 5, and `x === "5"` inside the body is then false), not a pointer read as
+// a double.
+//
+// Only `number`, and only a parameter the caller always supplies a value for: a
+// parameter with a default, a destructuring pattern, or `...rest` is refused,
+// because there is no `undefined` in an f64 and each of those three is a
+// position whose value the language may synthesize. A pinned RETURN on a body
+// that can fall off its end is refused by lowering for the same reason.
 class PinManifest {
 public:
     // Parses manifest text. `path` appears only in the error message. Returns
@@ -96,7 +121,17 @@ public:
     // may carry the module linker's prefix.
     bool envSlotPinned(const std::string& functionName, const std::string& binding) const;
 
-    bool empty() const { return byClass_.empty() && byFunction_.empty(); }
+    // Is the parameter `param` of the IL function `ilName` pinned Number?
+    // `ilName` is the IL function's whole name; the entry may spell any suffix
+    // of it that begins at a dot boundary.
+    bool paramPinned(const std::string& ilName, const std::string& param) const;
+    // Is the IL function `ilName` pinned to return a Number? Same matching.
+    bool returnPinned(const std::string& ilName) const;
+
+    bool empty() const {
+        return byClass_.empty() && byFunction_.empty() && paramsBySignature_.empty() &&
+               pinnedReturns_.empty();
+    }
     // Entries, counting a `*` as one. Diagnostics only.
     size_t size() const;
 
@@ -105,6 +140,13 @@ private:
     std::map<std::string, std::map<std::string, PinKind>> byClass_;
     // function base name -> the captured bindings of its body pinned Number.
     std::map<std::string, std::set<std::string>> byFunction_;
+    // `<owner>` as the manifest spelled it -> the parameter names pinned
+    // Number. Keyed on the whole spelling, dots and all, because a `param`
+    // entry's owner may be one component (`setBlending`) or two
+    // (`Matrix4.multiplyMatrices`) and the lookup tries the IL name's suffixes
+    // against it rather than the other way round.
+    std::map<std::string, std::set<std::string>> paramsBySignature_;
+    std::set<std::string> pinnedReturns_;
 };
 
 }  // namespace bronze::types

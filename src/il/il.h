@@ -558,6 +558,26 @@ struct Instruction {
     static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
     uint32_t familyLo = kNoFamily;
     uint32_t familySpan = 0;
+    // MethodCall: the module function this site's key resolves to, on the class
+    // lowering believes the receiver has — a GUESS, and named as one, because
+    // the receiver's static class is not its runtime shape and a subclass may
+    // override the name.
+    //
+    // What makes the guess sound is that the backend does not spend it on the
+    // receiver at all. The site's own inline cache has already established, for
+    // a matching shape, WHICH function object the key resolves to and what its
+    // code pointer is; the direct edge adds one compare of that code pointer
+    // against this function's call wrapper. A wrong guess therefore never
+    // matches and the site takes the cache's ordinary indirect dispatch — the
+    // same failure mode a mispredicted class layout has, a cost and never an
+    // answer.
+    //
+    // What it buys is everything the indirect call blocks: the argument vector
+    // is never built, the wrapper's unpack never runs, and the callee is an
+    // ordinary internal LLVM function at a call site LLVM may inline — which is
+    // how a `setValue -> arraysEqual -> copyArray` chain becomes one region.
+    static constexpr uint32_t kNoDirectTarget = 0xFFFFFFFFu;
+    uint32_t directTarget = kNoDirectTarget;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
 

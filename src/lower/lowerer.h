@@ -98,6 +98,45 @@ private:
     // keyConstants_ read the other way, filled as indices are handed out.
     std::vector<std::string> keyStrings_;
     uint32_t icSiteCounter_ = 0;
+
+    // --- the direct method-call edge (il.h `directTarget`) ----------------
+    // Naming a method-call site's callee is a two-sided fact and the two sides
+    // are lowered in the wrong order: a top-level function's body is lowered
+    // BEFORE `main`, and a class body is evaluated INSIDE `main`. So
+    // `c.multiplyMatrices(a, b)` in `run` is lowered while
+    // `Matrix4.prototype.multiplyMatrices` is not yet a function in the module
+    // at all. Both sides therefore record what they know, keyed on names, and
+    // `resolveDirectMethodTargets` matches them once the module is whole.
+    //
+    // Keyed on the site's IC INDEX rather than on a (function, block,
+    // instruction) triple: the index is already unique across the module and
+    // already on the instruction, so the resolver needs no second numbering to
+    // stay in step with.
+    struct MethodCallSite {
+        // The class lowering believes the receiver has, or empty. The nearest
+        // declaration at or above it is the callee; a subclass override below
+        // it is exactly what the backend's code-pointer compare rejects.
+        std::string receiverClass;
+        std::string method;
+    };
+    std::unordered_map<uint32_t, MethodCallSite> methodCallSites_;
+    // class name -> method name -> module function index, for the ordinary
+    // instance methods (not static, not private, not an accessor, and not a
+    // computed key: none of those is reachable as `recv.<name>`).
+    std::unordered_map<std::string, std::unordered_map<std::string, uint32_t>> classMethods_;
+    // class name -> the name it extends, so the resolver can walk to the
+    // nearest declaration without asking inference a second time.
+    std::unordered_map<std::string, std::string> classSuper_;
+    // The module function `lowerClosure` last appended. Valid only immediately
+    // after a successful call; `lowerClass` is the one reader.
+    uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
+    void recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
+                              const std::string& method);
+    void recordClassMethod(const std::string& className, const std::string& superName,
+                           const std::string& method, uint32_t fnIndex);
+    void recordClassSuper(const std::string& className, const std::string& superName);
+    void resolveDirectMethodTargets();
+
     // One per site that took the static-slot form. Separate from
     // `icSiteCounter_` so the cell array is proportional to what actually
     // proved, not to every property site in the program.
@@ -334,6 +373,9 @@ private:
     types::Type provenClosureReturn(const ast::Node& site) const;
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
+    // The `--pins` signature entries for `fn.name`, applied after every proof
+    // has spoken. Only ever moves a slot from Dynamic to F64.
+    bool applySignaturePins(const std::vector<ast::Param>& params, Span span, il::Function& fn);
     // The annotation policy. Returns false only for annotation text bronze
     // cannot read, which is a hard error; a hint that no proof backs is a
     // warning and compilation continues.

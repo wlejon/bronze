@@ -966,6 +966,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // carries a kind worth reading.
     newFn.fnFlags = functionObjectFlags(
         siteFnExpr ? siteFnExpr->kind : ast::FunctionKind::Normal, isGenerator, isAsync);
+    // The `--pins` signature entries, before the body is lowered: the parameter
+    // types are what the body's reads of them resolve against, and the return
+    // type is part of the calling convention a recursive call already reads.
+    // Nothing else can type a closure's parameters — the paragraph above says
+    // why no proof can — so this is the whole of that surface.
+    if (!applySignaturePins(params, span, newFn)) return std::nullopt;
     const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     // The name's record is visible to the BODY and to nothing else — 15.2.5
     // creates it around the closure, not in the scope that wrote the
@@ -1015,6 +1021,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // `f` of the same name, so every later call to the top-level one was
     // redirected to the inner one.
     ilModule_.functions.push_back(std::move(newFn));
+    // Valid until the next closure is lowered, and read by exactly one caller:
+    // `lowerClass`, immediately after this returns, to record which module
+    // function a method NAME denotes (lowerer.h, `classMethods_`). A return
+    // value would have been better and is not available — every caller of
+    // `lowerClosure` wants the closure VALUE, and there is one of these.
+    lastClosureFnIndex_ = createdFnIdx;
 
     // The closure captures the environment that is innermost right
     // here, at its creation site — or, for a named function expression, the

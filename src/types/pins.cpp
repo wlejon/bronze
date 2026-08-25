@@ -37,6 +37,35 @@ std::string baseName(const std::string& name) {
     return dot == std::string::npos ? name : name.substr(dot + 1);
 }
 
+// A dotted run of identifiers — `Matrix4.multiplyMatrices`, or a bare
+// `setBlending`. The owner half of the two signature forms.
+bool isDottedIdent(const std::string& s) {
+    size_t begin = 0;
+    while (true) {
+        const auto dot = s.find('.', begin);
+        const std::string part = s.substr(begin, dot == std::string::npos ? dot : dot - begin);
+        if (!isIdent(part)) return false;
+        if (dot == std::string::npos) return true;
+        begin = dot + 1;
+    }
+}
+
+// Every spelling of `ilName` a signature entry may use: the whole name, and
+// every suffix that begins just after a dot. `mod1.Matrix4.multiplyMatrices` is
+// reachable as itself, as `Matrix4.multiplyMatrices` and as
+// `multiplyMatrices` — the same last-components rule `baseName` gives the field
+// forms, widened because a method needs its class to be told from a same-named
+// method elsewhere.
+template <typename Fn>
+void forEachSpelling(const std::string& ilName, Fn&& fn) {
+    if (fn(ilName)) return;
+    size_t begin = 0;
+    while ((begin = ilName.find('.', begin)) != std::string::npos) {
+        ++begin;
+        if (fn(ilName.substr(begin))) return;
+    }
+}
+
 }  // namespace
 
 bool PinManifest::parse(const std::string& text, const std::string& path, std::string& err) {
@@ -61,6 +90,32 @@ bool PinManifest::parse(const std::string& text, const std::string& path, std::s
         }
         std::string target = trim(entry.substr(0, colon));
         const std::string kindText = trim(entry.substr(colon + 1));
+
+        // The two SIGNATURE forms, recognized before the kind is read for the
+        // reason the `function` form is: they admit `number` and nothing else.
+        // A calling convention has one unboxed slot shape, and `ilTypeOf` is
+        // what says which lattice element earns it.
+        if (target.rfind("param ", 0) == 0) {
+            if (kindText != "number") return bad("a parameter pin's only kind is 'number'");
+            const std::string rest = trim(target.substr(6));
+            const auto open = rest.find('(');
+            if (open == std::string::npos || rest.empty() || rest.back() != ')') {
+                return bad("parameter pin target needs '<owner>(<parameter>)'");
+            }
+            const std::string owner = trim(rest.substr(0, open));
+            const std::string param = trim(rest.substr(open + 1, rest.size() - open - 2));
+            if (!isDottedIdent(owner)) return bad("not a valid function name in parameter pin");
+            if (!isIdent(param)) return bad("not a valid parameter name in parameter pin");
+            paramsBySignature_[owner].insert(param);
+            continue;
+        }
+        if (target.rfind("return ", 0) == 0) {
+            if (kindText != "number") return bad("a return pin's only kind is 'number'");
+            const std::string owner = trim(target.substr(7));
+            if (!isDottedIdent(owner)) return bad("not a valid function name in return pin");
+            pinnedReturns_.insert(owner);
+            continue;
+        }
 
         // The `function` form. Recognized before the kind is read, because the
         // kinds it admits are a subset: an env slot pin is spent on a raw unbox
@@ -134,10 +189,37 @@ bool PinManifest::envSlotPinned(const std::string& functionName,
     return fn != byFunction_.end() && fn->second.count(binding) != 0;
 }
 
+bool PinManifest::paramPinned(const std::string& ilName, const std::string& param) const {
+    bool found = false;
+    forEachSpelling(ilName, [&](const std::string& spelling) {
+        const auto it = paramsBySignature_.find(spelling);
+        if (it == paramsBySignature_.end()) return false;
+        // The first spelling that names the owner AT ALL answers, hit or miss:
+        // an entry for `Matrix4.multiplyMatrices` and one for
+        // `multiplyMatrices` are two different claims, and the more specific
+        // one is the one that was written about this function.
+        found = it->second.count(param) != 0;
+        return true;
+    });
+    return found;
+}
+
+bool PinManifest::returnPinned(const std::string& ilName) const {
+    bool found = false;
+    forEachSpelling(ilName, [&](const std::string& spelling) {
+        if (pinnedReturns_.count(spelling) == 0) return false;
+        found = true;
+        return true;
+    });
+    return found;
+}
+
 size_t PinManifest::size() const {
     size_t n = 0;
     for (const auto& [cls, fields] : byClass_) n += fields.size();
     for (const auto& [fn, slots] : byFunction_) n += slots.size();
+    for (const auto& [sig, params] : paramsBySignature_) n += params.size();
+    n += pinnedReturns_.size();
     return n;
 }
 

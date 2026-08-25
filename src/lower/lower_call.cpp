@@ -382,6 +382,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 }
                 inst.op = il::Op::MethodCall;
                 inst.operands = std::move(argVals);
+                // Only the fixed-operand form can name a callee: a spread's
+                // argument count is a runtime fact and a direct edge's operand
+                // list is its parameter list.
+                recordMethodCallSite(inst, *mem->object, mem->property);
             }
             emitInst(ilFn, inst);
             return Value{callRes, il::Type::Dynamic};
