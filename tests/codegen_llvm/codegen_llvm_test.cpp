@@ -19,8 +19,14 @@ constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include <llvm/IR/PassManager.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/Passes/PassBuilder.h>
+
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_backend.h"
+#include "codegen-llvm/llvm_call.h"
+#include "codegen-llvm/llvm_partition.h"
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_env.h"
@@ -867,4 +873,234 @@ TEST_CASE("ToInt32 of a double is a range test, an fptosi to i64 and a truncatio
     CHECK(f.calleeNames() == std::vector<std::string>{"bronze_to_int32_f64"});
     CHECK(f.abi.bronze_to_int32_f64->doesNotAccessMemory() ==
           codegen_llvm::pureConversionHelpers());
+}
+
+// ---- the split's keep sets (llvm_partition.h) -------------------------------
+//
+// The bin packer is inlining-blind: it puts a direct-call callee wherever the
+// instruction counts say, and every other bin turns that callee into a bare
+// `declare` it cannot inline. Stage E4 measured that taking the inline away
+// from `Matrix4.multiplyMatrices` — 16.25 -> 18.09 ns/call with neither
+// function changed, only their bins. These check the repair on hand-built
+// modules, because what has to hold is a statement about the PLAN and about
+// LINKAGE, and both are a dozen instructions each.
+
+namespace {
+
+// A function of `insts` instructions returning its i64 argument, so its size
+// is exactly what the packer will read.
+llvm::Function* sizedFn(llvm::Module& m, llvm::StringRef name, unsigned insts) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    auto* fn = llvm::Function::Create(llvm::FunctionType::get(i64Ty, {i64Ty}, false),
+                                      llvm::GlobalValue::ExternalLinkage, name, m);
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", fn));
+    llvm::Value* v = fn->getArg(0);
+    // One `ret` is the last of the `insts`; the rest are adds.
+    for (unsigned i = 1; i < insts; ++i) v = b.CreateAdd(v, llvm::ConstantInt::get(i64Ty, 1));
+    b.CreateRet(v);
+    return fn;
+}
+
+// A direct call the way the backend emits one for a method edge: the metadata
+// markDirectMethodInlining reads, and the `alwaysinline` that pass leaves.
+void directCall(llvm::Function* caller, llvm::Function* callee) {
+    llvm::BasicBlock& entry = caller->getEntryBlock();
+    llvm::IRBuilder<> b(&entry, entry.begin());
+    auto* call = b.CreateCall(callee, {caller->getArg(0)});
+    call->setMetadata(codegen_llvm::kDirectMethodMD,
+                      llvm::MDNode::get(caller->getContext(), {}));
+    call->addFnAttr(llvm::Attribute::AlwaysInline);
+}
+
+unsigned binOfName(const codegen_llvm::PartitionPlan& plan, llvm::StringRef name) {
+    auto it = plan.binOf.find(name.str());
+    REQUIRE(it != plan.binOf.end());
+    return it->second;
+}
+
+bool keptHere(const codegen_llvm::PartitionPlan& plan, unsigned bin, llvm::StringRef name) {
+    REQUIRE(bin < plan.keepBodies.size());
+    return plan.keepBodies[bin].count(name.str()) != 0;
+}
+
+}  // namespace
+
+TEST_CASE("a direct-call callee in another bin is kept; an over-cap or uncalled one is not") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpart_plan", ctx);
+    // Sizes chosen so greedy largest-first into the least-loaded of three bins
+    // is forced: 3000 -> b0, 2002 -> b1, 100 -> b2, 80 -> b2, which puts
+    // `caller` apart from all three of its neighbours.
+    llvm::Function* big = sizedFn(m, "callee_over_cap", 3000);
+    llvm::Function* caller = sizedFn(m, "caller", 2000);
+    llvm::Function* small = sizedFn(m, "callee_small", 100);
+    sizedFn(m, "never_called", 80);
+    directCall(caller, small);
+    directCall(caller, big);
+
+    const codegen_llvm::PartitionPlan plan = codegen_llvm::planPartitions(m, 3);
+    const unsigned home = binOfName(plan, "caller");
+    REQUIRE(binOfName(plan, "callee_small") != home);
+    REQUIRE(binOfName(plan, "callee_over_cap") != home);
+    REQUIRE(binOfName(plan, "never_called") != home);
+
+    if (codegen_llvm::crossPartitionInlineCap() == 0) {  // the A/B seam column
+        CHECK(!keptHere(plan, home, "callee_small"));
+        return;
+    }
+    // The one edge the split would have broken.
+    CHECK(keptHere(plan, home, "callee_small"));
+    // 3000 instructions is past the cap: carrying it would cost every bin that
+    // calls it a body the site's own budget refuses to inline anyway.
+    CHECK(!keptHere(plan, home, "callee_over_cap"));
+    // Nothing in this bin names it, so there is nothing here to inline it into.
+    CHECK(!keptHere(plan, home, "never_called"));
+    // And the bin that OWNS a body never "keeps" it — it emits it.
+    CHECK(!keptHere(plan, binOfName(plan, "callee_small"), "callee_small"));
+}
+
+TEST_CASE("a call not marked for inlining does not drag a body across the split") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpart_plain_call", ctx);
+    llvm::Function* caller = sizedFn(m, "caller", 400);
+    llvm::Function* plain = sizedFn(m, "plain_callee", 100);
+    sizedFn(m, "filler", 300);
+    {
+        llvm::BasicBlock& entry = caller->getEntryBlock();
+        llvm::IRBuilder<> b(&entry, entry.begin());
+        b.CreateCall(plain, {caller->getArg(0)});  // no metadata, no alwaysinline
+    }
+
+    const codegen_llvm::PartitionPlan plan = codegen_llvm::planPartitions(m, 2);
+    const unsigned home = binOfName(plan, "caller");
+    REQUIRE(binOfName(plan, "plain_callee") != home);
+    if (codegen_llvm::crossPartitionInlineCap() == 0) return;  // the A/B seam column
+    // The shipped default keeps only what the compiler ASKED to have inlined.
+    CHECK(keptHere(plan, home, "plain_callee") ==
+          codegen_llvm::crossPartitionKeepsEveryDirectCall());
+}
+
+TEST_CASE("a chain of direct edges is followed to the shipped depth and no further") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpart_chain", ctx);
+    // 400 / 300 / 200 / 100 into four bins lands one per bin, in that order,
+    // so a -> b -> c -> d crosses three splits.
+    llvm::Function* a = sizedFn(m, "a", 400);
+    llvm::Function* b = sizedFn(m, "b", 300);
+    llvm::Function* c = sizedFn(m, "c", 200);
+    llvm::Function* d = sizedFn(m, "d", 100);
+    directCall(a, b);
+    directCall(b, c);
+    directCall(c, d);
+
+    const codegen_llvm::PartitionPlan plan = codegen_llvm::planPartitions(m, 4);
+    const unsigned home = binOfName(plan, "a");
+    REQUIRE(binOfName(plan, "b") != home);
+    REQUIRE(binOfName(plan, "c") != home);
+    REQUIRE(binOfName(plan, "d") != home);
+    if (codegen_llvm::crossPartitionInlineCap() == 0) return;  // the A/B seam column
+
+    const unsigned depth = codegen_llvm::crossPartitionInlineDepth();
+    CHECK(keptHere(plan, home, "b"));
+    // The second hop is the whole reason depth is not fixed at 1: b's own body
+    // would carry a `declare c` and the inline would stop one edge short.
+    CHECK(keptHere(plan, home, "c") == (depth >= 2));
+    CHECK(keptHere(plan, home, "d") == (depth >= 3));
+}
+
+TEST_CASE("a kept body is available_externally, is inlined, and is not emitted") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpart_apply", ctx);
+    llvm::Function* caller = sizedFn(m, "caller", 400);
+    llvm::Function* small = sizedFn(m, "callee_small", 100);
+    sizedFn(m, "never_called", 300);
+    directCall(caller, small);
+
+    const codegen_llvm::PartitionPlan plan = codegen_llvm::planPartitions(m, 2);
+    const unsigned home = binOfName(plan, "caller");
+    REQUIRE(binOfName(plan, "callee_small") != home);
+
+    codegen_llvm::PartitionStats stats;
+    REQUIRE(codegen_llvm::applyPartition(m, plan, home, stats).empty());
+
+    llvm::Function* keptFn = m.getFunction("callee_small");
+    REQUIRE(keptFn != nullptr);
+    // A body nothing in this bin calls is a declaration, exactly as before.
+    REQUIRE(m.getFunction("never_called") != nullptr);
+    CHECK(m.getFunction("never_called")->isDeclaration());
+
+    if (codegen_llvm::crossPartitionInlineCap() == 0) {  // the A/B seam column
+        CHECK(keptFn->isDeclaration());
+        return;
+    }
+    CHECK(keptFn->hasAvailableExternallyLinkage());
+    CHECK(!keptFn->isDeclaration());
+    // `available_externally` is a declaration to the linker, and the verifier
+    // rejects dllexport on one.
+    CHECK(keptFn->getDLLStorageClass() == llvm::GlobalValue::DefaultStorageClass);
+    CHECK(stats.keptFns == 1);
+    // 400 built plus the one call `directCall` inserted.
+    CHECK(stats.ownInsts == 401);
+    {
+        std::string err;
+        llvm::raw_string_ostream os(err);
+        REQUIRE_FALSE(llvm::verifyModule(m, &os));
+    }
+
+    // The claim that matters is not the linkage, it is what the pipeline does
+    // with it: the call goes away, and so does the body.
+    llvm::PassBuilder pb;
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+    llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+    mpm.run(m, mam);
+
+    llvm::Function* after = m.getFunction("callee_small");
+    // EliminateAvailableExternallyPass drops the body back to a declaration
+    // before the MC backend sees it, so this partition's object defines only
+    // what its bin owns — which is what keeps the link free of duplicates.
+    CHECK((after == nullptr || after->isDeclaration()));
+    llvm::Function* callerAfter = m.getFunction("caller");
+    REQUIRE(callerAfter != nullptr);
+    size_t callsToKept = 0;
+    for (const llvm::BasicBlock& bb : *callerAfter) {
+        for (const llvm::Instruction& inst : bb) {
+            if (const auto* call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+                if (call->getCalledFunction() == after) ++callsToKept;
+            }
+        }
+    }
+    CHECK(callsToKept == 0);
+}
+
+TEST_CASE("the plan is the same object twice over") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpart_determinism", ctx);
+    llvm::Function* caller = sizedFn(m, "caller", 400);
+    llvm::Function* small = sizedFn(m, "callee_small", 100);
+    // Same size, and the module walk sees `tie_b` first: only the sort's name
+    // tie-break decides which bin each lands in.
+    sizedFn(m, "tie_b", 200);
+    sizedFn(m, "tie_a", 200);
+    directCall(caller, small);
+
+    const codegen_llvm::PartitionPlan first = codegen_llvm::planPartitions(m, 3);
+    const codegen_llvm::PartitionPlan second = codegen_llvm::planPartitions(m, 3);
+    CHECK(first.binOf == second.binOf);
+    REQUIRE(first.keepBodies.size() == second.keepBodies.size());
+    for (size_t i = 0; i < first.keepBodies.size(); ++i) {
+        CHECK(first.keepBodies[i] == second.keepBodies[i]);
+    }
+    // Equal sizes are broken by NAME, not by whichever the walk saw first:
+    // `tie_a` is packed before `tie_b` although the module lists it second.
+    CHECK(binOfName(first, "tie_a") == 1);
+    CHECK(binOfName(first, "tie_b") == 2);
 }

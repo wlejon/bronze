@@ -18,7 +18,6 @@
 
 #include <filesystem>
 #include <functional>
-#include <unordered_map>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -67,7 +66,6 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
-#include <llvm/ADT/DenseMap.h>
 #include <llvm/Support/MemoryBufferRef.h>
 
 static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or higher");
@@ -78,6 +76,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 #include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_frame.h"
 #include "codegen-llvm/llvm_func.h"
+#include "codegen-llvm/llvm_partition.h"
 #include "il/print.h"
 #include "il/verifier.h"
 #include "support/timings.h"
@@ -651,51 +650,17 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
 
     promoteLocalsForSplit(llvmModule);
 
-    // Partition assignment is bronze's own rather than llvm::SplitModule's:
-    // SplitModule buckets by NAME HASH, which landed 2.4x the mean instruction
-    // count in one bucket on the three.js bundle and made that bucket the
-    // whole critical path. Greedy largest-first into the least-loaded bin is
-    // within one function of optimal here, and the sort's name tie-break keeps
-    // the assignment deterministic. The floor it cannot beat is the single
-    // biggest function — the bundle's top level — which is the next lever, in
-    // lowering, not here. Everything that is not a function goes to partition
-    // 0: data is near-free to emit and this keeps the module's tables in one
-    // object.
-    llvm::DenseMap<const llvm::GlobalValue*, unsigned> binOf;
-    {
-        struct Def {
-            llvm::Function* fn;
-            size_t insts;
-        };
-        std::vector<Def> defs;
-        for (llvm::Function& f : llvmModule) {
-            if (f.isDeclaration()) continue;
-            size_t insts = 0;
-            for (const llvm::BasicBlock& bb : f) insts += bb.size();
-            defs.push_back({&f, insts});
-        }
-        std::stable_sort(defs.begin(), defs.end(), [](const Def& a, const Def& b) {
-            if (a.insts != b.insts) return a.insts > b.insts;
-            return a.fn->getName() < b.fn->getName();
-        });
-        std::vector<size_t> load(parts, 0);
-        for (const Def& d : defs) {
-            unsigned best = 0;
-            for (unsigned i = 1; i < parts; ++i) {
-                if (load[i] < load[best]) best = i;
-            }
-            binOf[d.fn] = best;
-            load[best] += d.insts;
-        }
-    }
-
+    // The bin packing, and the out-of-bin bodies each bin keeps so a direct
+    // call across the split is still inlinable (llvm_partition.h). Everything
+    // that is not a function goes to partition 0: data is near-free to emit
+    // and this keeps the module's tables in one object.
+    //
     // The assignment travels by NAME: promotion just gave every definition a
     // unique external name, and each worker re-finds its bin in a parsed copy
     // of the module rather than in this one — a worker may not touch the
     // shared LLVMContext, so bitcode is the handoff.
-    std::unordered_map<std::string, unsigned> binOfName;
-    binOfName.reserve(binOf.size());
-    for (const auto& [gv, bin] : binOf) binOfName.emplace(gv->getName().str(), bin);
+    const codegen_llvm::PartitionPlan plan =
+        codegen_llvm::planPartitions(llvmModule, parts);
 
     // ONE serialization of the whole module is the only serial work between
     // the plan and the workers. (Its predecessor cloned and serialized a
@@ -709,7 +674,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
     }
 
     std::vector<std::string> errors(parts);
-    std::vector<size_t> partInsts(parts, 0);
+    std::vector<codegen_llvm::PartitionStats> partStats(parts);
     std::vector<double> partMillis(parts, 0.0);
     std::vector<std::thread> workers;
     workers.reserve(parts);
@@ -730,23 +695,10 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
                 return;
             }
             llvm::Module& part = **partOr;
-            for (llvm::Function& f : part) {
-                if (f.isDeclaration()) continue;
-                auto it = binOfName.find(std::string(f.getName()));
-                if (it != binOfName.end() && it->second == i) {
-                    if (llvm::Error e = f.materialize()) {
-                        errors[i] = "partition " + std::to_string(i) +
-                                    ": materialize failed: " + llvm::toString(std::move(e));
-                        return;
-                    }
-                    for (const llvm::BasicBlock& bb : f) partInsts[i] += bb.size();
-                } else {
-                    // Another bin's function: a declaration here. The export
-                    // marking goes with the body — a declaration must not
-                    // carry it.
-                    f.deleteBody();
-                    f.setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
-                }
+            if (std::string err = codegen_llvm::applyPartition(part, plan, i, partStats[i]);
+                !err.empty()) {
+                errors[i] = "partition " + std::to_string(i) + ": " + err;
+                return;
             }
             if (i != 0) {
                 // Partition 0 owns every non-function definition.
@@ -774,10 +726,13 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
     for (std::thread& w : workers) w.join();
 
     if (support::timingsEnabled()) {
-        std::fprintf(stderr, "      partitions: %u\n", parts);
+        std::fprintf(stderr, "      partitions: %u (xpart cap %u, depth %u)\n", parts,
+                     codegen_llvm::crossPartitionInlineCap(),
+                     codegen_llvm::crossPartitionInlineDepth());
         for (unsigned i = 0; i < parts; ++i) {
-            std::fprintf(stderr, "        p%-2u %9zu insts %10.1f ms\n", i, partInsts[i],
-                         partMillis[i]);
+            std::fprintf(stderr, "        p%-2u %9zu insts %10.1f ms  +%zu borrowed (%zu insts)\n",
+                         i, partStats[i].ownInsts, partMillis[i], partStats[i].keptFns,
+                         partStats[i].keptInsts);
         }
     }
     bool ok = true;
