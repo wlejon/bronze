@@ -1,0 +1,15 @@
+ReferenceError/nested
+ReferenceError/two-hops
+ReferenceError/stored
+ReferenceError/getter
+ReferenceError/class
+ReferenceError|caught/try
+ReferenceError|ReferenceError/loop
+3:0,2,4
+ReferenceError/mapped
+ok:ReferenceError/default
+ReferenceError|first|gen
+ReferenceError
+set:switched
+2:ab
+ReferenceError|ReferenceError/module

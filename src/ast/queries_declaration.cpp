@@ -176,7 +176,19 @@ bool inertInitializer(const Expr& e) {
 //
 // Built on IdentVisitor because the mention question has to be answered by THE
 // walk that finds mentions: a form this one forgot to descend into would be a
-// dropped check, which is a ReferenceError that never fires.
+// dropped check, which is a ReferenceError that never fires. `ast::Visitor`
+// declares one PURE virtual per node kind, so that walk cannot silently skip a
+// form — a new node type stops the build until someone says how to descend it.
+//
+// A nested `function` DECLARATION is deliberately NOT flagged below, and that
+// is load-bearing rather than an omission: IdentVisitor descends into its body,
+// so every name the declaration could ever read is collected here and a
+// dangerous one refuses the statement — while a declaration whose body names
+// nothing dangerous has no way to read one either, whatever is done with the
+// value afterwards. `tests/oracle/cases/dead_zone_reach_boundary.js` cases 1
+// and 2 are that argument as programs, including the two-hop form where the
+// declaration reaches the binding through one of the outer list's own hoisted
+// functions.
 class ReachScan final : public detail::IdentVisitor {
 public:
     bool buildsFunction = false;
