@@ -114,7 +114,8 @@ node bench/typed_array_loop.js
 > | E1 direct sibling-closure edges (`9a06bbc`) | 23.55 | no move here; this kernel has no sibling-closure call |
 > | E2 ToInt32 inline (`4098379`) | **16.86** | `a.elements[0] = 1.0 + (i & 7) * 0.125` stops calling out per iteration |
 > | E3 one root frame per inlined region (`fa24b1f`) | **16.13** | the direct method edge stops carrying the callee's prologue (17.01 for the same session's E2 column) |
-> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session, 14.31 in E3's) |
+> | E4 dead-zone reach widening | 18.09 | a REGRESSION, and not one of the analysis: this kernel's `run` changed PARTITION, so `Matrix4.multiplyMatrices.inl` became a `declare` and stopped inlining. Stage E4's entry has the isolation |
+> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session, 14.31 in E3's, 14.39 in E4's) |
 >
 > **12.2× against where the campaign started and 1.14× off node on this
 > kernel.** The pre-registered ≤ 20 ns target IS reached, at stage E2, and NOT
@@ -178,6 +179,275 @@ node bench/typed_array_loop.js
 > The automated runner never invokes node; the node column above is a manual
 > out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
 > first and the millisecond second.
+
+### Campaign summary — stage E, closures and environment records (E1 → E4)
+
+> [!IMPORTANT]
+> **THE CANONICAL LADDER. One idle session, ONE compiler binary, the campaign's
+> seams peeled in campaign order** (`bash bench/tools/ladder.sh <bronze.exe>
+> <dir>`, then `bench/tools/ladder_specs.py` and `interleave.py`). Every stage
+> of this campaign shipped an A/B seam and every seam is read once per
+> invocation, so `BRONZE_NO_CLOSURE_EDGE` + `BRONZE_NO_INLINE_TOINT32` +
+> `BRONZE_NO_PURE_CONVERSIONS` + `BRONZE_NO_ENV_TRIPWIRE` +
+> `BRONZE_NO_FRAME_MERGE` + `BRONZE_NO_DEFINITE_INIT` + `BRONZE_NO_PURE_PREDICATES`
+> + `BRONZE_NO_CLOSURE_PARAM_PROOF` + `BRONZE_NO_DEFINITE_REACH` all on IS the
+> stage 3.4 compiler, and dropping them a stage at a time walks forward to
+> today. This exists because stages E2 and E3 both documented cross-session
+> drift of ±50 % on the millisecond fixtures with identical IL: a five-stage
+> table assembled from five sessions is not a ladder, it is five ladders. The
+> manifest is the COMMITTED one in every row — peeling seams is a statement
+> about the compiler, and changing the manifest under it would be a statement
+> about the manifest.
+>
+> **Kernels, 101 rounds, two-count wall delta; node re-measured in the same
+> session at 41. Checksums identical in every cell of every row.**
+>
+> | | stage 3.4 | E1 | E2 | E3 | E4 | node v24.2.0 |
+> |---|---:|---:|---:|---:|---:|---:|
+> | `env_slot_kernel` ns/iter | 56.38 | 48.36 | 15.51 | 10.94 | **10.91** | 4.67 |
+> | `mat4_kernel` ns/call | 23.59 | 23.68 | 17.10 | **16.25** | 18.09 | 14.39 |
+> | `nullish_pin_kernel` ns/step | 12.99 | 12.96 | 11.43 | **11.29** | 11.31 | 5.36 |
+> | `call_chain_kernel` chained / flat | 20.25 / 18.75 | 20.25 / 18.75 | 11.50 / 12.63 | 9.50 / 9.88 | **9.50 / 8.75** | 1.88 / 2.00 |
+>
+> **Millisecond fixtures, 51 rounds, raw wall medians** (a bronze exe's process
+> floor and node's differ by ~27 ms on this box; never compare the absolutes
+> across engines, only within a row):
+>
+> | | stage 3.4 | E1 | E2 | E3 | E4 | node |
+> |---|---:|---:|---:|---:|---:|---:|
+> | `typed_array_crunch` | 53.62 | 53.41 | 48.28 | 47.97 | **36.95** | 54.73 |
+> | `three_math` | **41.21** | 41.78 | 41.90 | 42.32 | 42.70 | 48.77 |
+> | `mesh_churn_2k` | 75.81 | 76.01 | 76.43 | 73.98 | **72.21** | 89.04 |
+> | `object_graph` | 47.82 | 48.13 | 47.59 | 47.73 | **47.44** | 68.47 |
+>
+> Checksums `126000020 / 12600020`, `400000 / 940000`, `825756/700159/NaN/-563350`,
+> `296000000`, `78849652`, `405000`, `-2112298`, `-32601148` — every cell, every
+> column, and node's.
+>
+> **What the ladder shows that no single stage's entry could.** The campaign is
+> **5.2×** on `env_slot_kernel` and **2.1×** on `call_chain_kernel`'s chained
+> arm; it is **1.30×** on `mat4_kernel` and **1.45×** on `typed_array_crunch`,
+> and it is worth NOTHING on `object_graph`, which is the honest shape of a
+> campaign aimed at closures and environment records. Two cells contradict a
+> published stage number and both are written up in the Stage E4 entry: E1's
+> `env_slot` column reads 48.36 where E1 published 50.82, and E4's `mat4`
+> column is a 1.9 ns REGRESSION against E3 that has nothing to do with any
+> mechanism E4 shipped.
+
+- **Stage E4 (a parameter proof for closures, predicate attributes, and a dead zone nothing can reach through)** — 2026-08-25:
+  > [!NOTE]
+  > **The stage's most valuable output is not a speedup, it is three
+  > measurements that close questions the campaign has been carrying.** What
+  > shipped: `typed_array_crunch` **47.97 → 36.95 ms** (−23 %), `mesh_churn_2k`
+  > 73.98 → **72.21**, `env_slot_kernel` 10.94 → **10.91** (nothing), and
+  > `mat4_kernel` 16.25 → **18.09**, a regression this entry root-causes and
+  > does not smooth. Checksums identical in every column of every row.
+  >
+  > **1. A PARAMETER PROOF for closures** (`src/lower/lower_scope.cpp`,
+  > `planClosureParamNumbers` / `applyProvenClosureParams`, seam
+  > `BRONZE_NO_CLOSURE_PARAM_PROOF=1`). Stage E3 wrote down the hole: a class
+  > method's parameters are typed by joining what every call site passes, a
+  > module function's by the same join over its enumerated callers, and a nested
+  > `function f() {}` by NOTHING — it is reached through a function value, so
+  > inference has no signature that can speak for its arguments.
+  > `bench/pins/env-slot-kernel.pins` carried five `param` lines that existed
+  > only because of that hole.
+  >
+  > But a nested declaration's callers are enumerable on exactly the terms E1's
+  > static call plan already establishes for its VALUE: the declaration IS the
+  > value, it is installed before the scope's first statement runs, and the
+  > scope's whole lexical reach is one subtree this compilation holds. So walk
+  > that subtree once; if EVERY mention of the name is the callee of an ordinary
+  > call, those calls are all the calls, and the join over their arguments at
+  > position k is a fact about every value parameter k will ever hold. That is a
+  > proof, not a pin, and every clause is a refusal in the safe direction: a
+  > plain declaration only (a generator's parameters are bound by a resume edge,
+  > not by the call); no default, rest or pattern parameter (the value bound is
+  > then not the value passed — the three positions `applySignaturePins` refuses,
+  > and for the same reason: there is no `undefined` in an f64); the name rebound
+  > nowhere; no spread at any site; and every site supplies position k with a
+  > proven Number, so a single SHORT call refuses the position because it binds
+  > `undefined`.
+  >
+  > **The result is worth 0.00 ns on `env_slot_kernel`, and that is the finding.**
+  > The module it builds without the five `param` pins is **byte-identical LLVM
+  > IR** to the module built with them (`cmp`, no diff) — the proof reaches
+  > exactly the claim the manifest was making by hand, on a fixture written to
+  > need it. Without either, the wrapper carries 571 live instructions instead of
+  > 313. What it does NOT reach is the closure a factory HANDS OUT:
+  > `env_slot_kernel` ends `return render;`, so `render`'s own `iters` escapes
+  > through a door the enumeration cannot follow and stays pinned. That is the
+  > honest boundary — it types the closures a factory CALLS, not the one it
+  > returns — and it is the single most useful thing door 3 can be told.
+  >
+  > **2. `memory(read)` on the predicate helpers** (`src/codegen-llvm/llvm_abi.cpp`,
+  > seam `BRONZE_NO_PURE_PREDICATES=1`). `bronze_truthy` and `bronze_unbox_bool`
+  > become `onlyReadsMemory` + `willReturn`; `bronze_is_nullish`, which touches
+  > nothing at all, becomes `doesNotAccessMemory` + `speculatable`. Not
+  > `memory(none)` for the first two: truthy READS the heap — a string's length,
+  > a BigInt's limbs. `bronze_strict_eq` is excluded because it calls
+  > `recordHelperCall`, which is a counter WRITE; `bronze_typeof` can intern;
+  > `bronze_rel_*` can run `valueOf`. GC soundness rests on the heap being
+  > non-moving and on `memory(read)` not being sinkable past an opaque call.
+  >
+  > Stage E2 proved an attribute-only change can be worth more than the code it
+  > describes (23.4 ns from `memory(none)` on ToInt32), and this one is the
+  > counter-example: it takes the `env_slot` loop from **261 to 143 static
+  > instructions** and lets LLVM unswitch the record's brand-and-size guard chain
+  > out of the loop entirely — and moves the clock **0.03 ns**, which is nothing.
+  > A 45 % cut in static loop size buying zero is itself the evidence for the
+  > handoff verdict below.
+  >
+  > **3. The dead zone widened from a PREFIX to a REACH** (`src/ast/queries_declaration.cpp`,
+  > seam `BRONZE_NO_DEFINITE_REACH=1`). Stage E3's definite-assignment rule was
+  > the prefix of a scope's statement list that runs no user code, which is
+  > exactly why `typed_array_crunch` still gave up 4.5 ms to
+  > `BRONZE_ELIDE_ENV_GUARDS=1` after E3 shipped: `runNBody`'s FIRST statement
+  > is `const rng = makeLCG(12345)`, a call, so the prefix was empty and all 41
+  > of that scope's env reads stayed `bronze_env_get_tdz`. The rule now advances
+  > past any statement that neither BUILDS A FUNCTION nor MENTIONS a name still
+  > in the dangerous set — a call cannot observe a dead zone it has no way to
+  > name, and only a function built before the initializer can carry the name
+  > somewhere later. It takes that scope to **0** tdz reads, and it is worth
+  > **11.0 ms** on `typed_array_crunch`, which SUBSUMES the whole elision gap:
+  > `BRONZE_ELIDE_ENV_GUARDS=1` on top of it now adds 0.27 ms where it added
+  > 4.83 before. `object_graph` goes 9 → 3 tdz reads, `three_math` 120 → 92,
+  > `mesh_churn_2k` 970 → 839.
+  >
+  > **THE REGRESSION, and it is not the analysis.** `mat4_kernel` reads 18.09
+  > against E3's 16.25. A single-seam A/B over 101 rounds puts it entirely on
+  > this mechanism (`E4-noReach` 16.33, `E4-noPurePred` 18.14, `E4-noParamProof`
+  > 18.24, `E4` 18.21) — and then the IR says the mechanism did nothing to the
+  > hot function at all. `run`'s own body is unchanged either way: 3
+  > `bronze_env_get_tdz`, same calls, same shape. What changed is which
+  > PARTITION it landed in. bronze splits a large module into per-thread
+  > partitions by greedy largest-first bin packing on instruction count
+  > (`src/codegen-llvm/llvm_backend.cpp`), and the assignment is completely
+  > inlining-blind: with the widening on, `run` is defined in `p0` while
+  > `Matrix4.multiplyMatrices.inl` is defined in `p1`, so the hot callee is a
+  > `declare` in `run`'s partition and cannot be inlined (2064 instructions in
+  > `run`); with it off, both land in `p1` and it inlines (3398). The widening
+  > shrank OTHER functions enough to tip the bin packing.
+  >
+  > **That is the campaign's most important loose thread and it belongs to no
+  > stage in it.** Every stage from 3.3 on has argued about inlining across a
+  > direct edge, and a bin-packer that has never heard of the edge can silently
+  > take the inline away from any of them, in either direction, whenever IR size
+  > moves. It plausibly explains some of the cross-session drift E2 and E3
+  > blamed on machine state. The fix is small and local: the worker loop calls
+  > `f.deleteBody()` on every function outside its bin, and a body kept as
+  > `available_externally` instead — for direct-call callees under a size cap —
+  > is inlinable without being emitted twice. That is a mechanism with its own
+  > seam and its own measurement, and it is the first thing the next campaign
+  > should build.
+  >
+  > **The residual that measured zero and was dropped.** E3 reported two
+  > `bronze_dynamic_add` in the `env_slot` kernel and got it to one, leaving the
+  > last as an open item. There is nothing to remove: the survivor is not in the
+  > loop. It is `total() + hits` in the epilogue, reached from the loop's EXIT
+  > block, executed once per program. E3's census counted over the whole
+  > wrapper and read a once-per-run instruction as a per-iteration one.
+  >
+  > **What the ladder reproduced, and the two cells it did not.** Peeling the
+  > seams reproduces the published stage numbers closely enough to trust the
+  > table: stage 3.4's `env_slot` 56.38 against 56.70 published, its
+  > `call_chain` 20.25 / 18.75 against 20.00 / 18.25, E1's `call_chain`
+  > unmoved exactly as E1 reported, E2's `env_slot` 15.51 against 16.78, E3's
+  > 10.94 against 10.77 and its `mat4` 16.25 against 16.13. Two cells do not.
+  > E1's `env_slot` column reads **48.36** where stage E1 published **50.82** —
+  > the seam-off compiler is TODAY's compiler with E1's mechanism disabled, so
+  > it carries every later stage's work that E1's binary did not, and the two
+  > are not the same object; a peeled ladder is a clean set of DIFFERENCES and
+  > only approximately a set of historical absolutes. And `mat4` at E4 is the
+  > regression above. Where a peeled cell and a published cell disagree, the
+  > peeled one is the honest number for reading DELTAS down a column and the
+  > published one is the honest number for what that stage shipped.
+  >
+  > **A test-matrix correction the campaign should stop repeating.** The
+  > standing instruction to re-run the suite "with all seams on" cannot be
+  > green and never has been: the seams turn the mechanisms off and the
+  > mechanisms' own unit tests assert their IL. With only the E1–E3 seams and
+  > nothing of E4's, `bronze_lower_tests` already fails 6 cases / 12 assertions
+  > (E1's `lower_stable_closure_call_test`, E3's `lower_scope_test`); E4's two
+  > seams add its own two. The two configurations that ARE contracts, and are
+  > both **29/29** here, are the default one and `BRONZE_ELIDE_ENV_GUARDS=1`.
+  > The all-seams build is a measurement instrument, not a supported build.
+  >
+  > **The harness is now in the tree** (`bench/tools/`): `ladder.sh` builds the
+  > columns, `ladder_specs.py` writes the specs so column order and iteration
+  > counts cannot drift between rows, `interleave.py` is the protocol E3
+  > established (interleaved, medians, warmup discarded, 101 rounds),
+  > `selftimed.py` reads `call_chain_kernel`'s own printed nanoseconds, and
+  > `nodebench.py` takes the oracle column under the same protocol. Stage E3's
+  > round-count finding is enforced by documentation in `interleave.py` rather
+  > than being re-derived; the one thing worth repeating here is that
+  > `ladder.sh` iterates its columns BY TAG, because a `for col in $COLS` over
+  > `tag:seams` pairs splits on the spaces inside a seam set and silently builds
+  > a table that is not the ladder — 85 executables instead of 55 is the only
+  > tell, and this stage built that table once before noticing.
+  >
+  > **HANDOFF (a): where the remaining `env_slot` gap to node lives.** E3 left
+  > this as "~5.3 ns that is not slot access and no probe has isolated it". It
+  > is isolated now, by a probe that is in the tree —
+  > `bench/env_slot_kernel_registers.js`, the same arithmetic and the same
+  > checksums with the hot state in bindings no closure captures:
+  >
+  > | | bronze | node | ratio |
+  > |---|---:|---:|---:|
+  > | state in an environment record | 11.03 | 5.03 | 2.19× |
+  > | state in SSA registers | **4.27** | 3.59 | **1.19×** |
+  > | what the record costs | **6.76** | 1.44 | 4.7× |
+  >
+  > **The gap IS the environment record, and bronze's non-record code is within
+  > 19 % of node.** Two more probes say what the record cost is NOT. Made
+  > measure-only and unsound on purpose, applied, measured, reverted: giving no
+  > value a GC root slot at all is worth **0.24 ns**; dropping the canonicalizing
+  > NaN select from every boxed double is worth **0.00**; both together 0.25 of
+  > 6.76. E3's hypothesis — the boxing and rooting discipline — is refuted, and
+  > so is instruction count, which mechanism 2 above cut 45 % for 0.03 ns. What
+  > is left is memory traffic that nothing promotes: same 16 floating-point
+  > operations, `__wrapper_render` carries **29 loads, 47 stores and 22 calls**
+  > per iteration where the register form carries **3, 7 and 5** and keeps the
+  > state in 15 phis. The record is heap-addressable and every call in the loop
+  > might reach it, so no slot is ever promoted across the backedge. The next
+  > mechanism on this shape is a scoped escape analysis over the record — the
+  > slots of a record no call in the loop can name are registers with a
+  > write-back, which is what V8 is doing to make the same shape cost it 1.44 ns.
+  >
+  > **HANDOFF (b): what door 2 (pin enforcement) should know about the store
+  > paths.** E1 through E4 have not added a store path; they have made three
+  > existing ones narrower and one wider, and a write barrier has to sit in all
+  > four. (i) A slot write inside a merged frame region (E3) is a store into the
+  > CALLER's frame through a `bronze.frame_region` pointer — the barrier belongs
+  > on the slot, not on the frame, or a frameless callee escapes it. (ii) A
+  > parameter typed f64 by E4's proof has NO boxed store at all: the value
+  > arrives in an f64 register and is written to an f64 slot, so a violation
+  > cannot be caught at the store — it must be caught at the CALL SITE, which is
+  > fine, because the proof enumerated every call site and door 2 can enumerate
+  > exactly the same set. (iii) E4's reach widening turns `EnvSetTdz`/`EnvGetTdz`
+  > into plain `EnvSet`/`EnvGet` on a slot the analysis proved unreachable
+  > before its initializer; door 2 must not read the absence of a TDZ marker as
+  > the absence of a claim — the claim moved into the plan. (iv) The one store
+  > path that got WIDER is the definite-init/reach pair itself, and it is the
+  > only place in the campaign where a wrong static answer is silent rather than
+  > loud: a TDZ read throws today, and a wrongly-elided one reads whatever the
+  > slot holds. That is the store path worth enforcing FIRST.
+  >
+  > **HANDOFF (c): what door 3 (census-driven pin inference) should know.** The
+  > closure parameter proof measurably reduces what a manifest has to declare —
+  > by five lines of eleven on this campaign's own fixture, and to byte-identical
+  > code. A census should therefore run AFTER the proof, not before it, or it
+  > will spend its budget proposing pins the compiler already proves and its
+  > precision numbers will be inflated by exactly that overlap. What the proof
+  > cannot reach is the shape a census is uniquely good at: a closure that
+  > ESCAPES — returned from a factory, stored in a field, passed as a callback —
+  > where the call sites are real but not enumerable from the declaration's
+  > subtree. `param render(iters): number` is one line of the eleven and it is
+  > precisely that case. So the division of labour to design for is: the proof
+  > owns callee-position closures, the census owns escaped ones, and the census's
+  > first job is not "which parameters are numbers" but "which call sites of an
+  > escaped closure exist at all" — the same enumeration, gathered dynamically
+  > because it cannot be gathered statically.
 
 - **Stage E3 (one root frame per inlined region, and a dead zone nothing can reach)** — 2026-08-25:
   > [!NOTE]

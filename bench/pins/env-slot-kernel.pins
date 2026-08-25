@@ -26,6 +26,18 @@ param setBlending(dst): number
 param useProgram(program): number
 param setDepthFunc(depthFunc): number
 
+# Stage E4 makes those five REDUNDANT. `planClosureParamNumbers`
+# (src/lower/lower_scope.cpp) enumerates every call site of a nested
+# declaration whose name never leaves callee position and joins the argument
+# types, which is the same claim these lines make by hand — and it reaches the
+# same answer here: the module built without them is BYTE-IDENTICAL LLVM IR to
+# the module built with them. They stay for two reasons and neither is
+# performance. The ladder in bench/README.md peels this campaign's seams
+# backwards through one manifest, and the rows before E4 need the pins the
+# proof had not yet replaced; and a manifest that stops exercising the `param`
+# form stops testing it. See `param render(iters)` below for the case the proof
+# does NOT reach.
+
 # Stage E3 adds two declarations of the same kind, about the loop function
 # itself rather than the five bodies it calls. They are here for the IL they
 # produce, and the honest note is that on THIS fixture, today, they are worth
@@ -36,12 +48,15 @@ param setDepthFunc(depthFunc): number
 # same lesson stage 3.3 recorded above, that which way this goes is a property
 # of what else the body costs.
 #
-# `render`'s parameter is the loop bound. Nothing in the module proves it: it
-# is a CLOSURE parameter, reached through a function value, so there is no call
-# site the analysis can enumerate and no signature that speaks for it — the
-# same reason the five above are here. Unpinned, `i < iters` is a guarded
-# compare with a live `bronze_rel_lt` on its cold arm; pinned, the call is
-# gone and the compare is one `fcmp`.
+# `render`'s parameter is the loop bound, and it is the one line stage E4's
+# proof leaves standing. `WebGLState` ENDS `return render;`, so `render`'s value
+# leaves through a door the enumeration cannot follow and the plan refuses it —
+# correctly, because `WebGLState()(ITERS)` is a call site in another statement
+# entirely and nothing in the factory's body names it. That is the honest edge
+# of the mechanism: it types the closures a factory CALLS, not the closure a
+# factory HANDS OUT, and the second is what a manifest is still for. Unpinned,
+# `i < iters` is a guarded compare with a live `bronze_rel_lt` on its cold arm;
+# pinned, the call is gone and the compare is one `fcmp`.
 param render(iters): number
 
 # And `useProgram`'s RESULT, which `hits = hits + useProgram(...)` consumes.
