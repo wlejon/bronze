@@ -348,6 +348,11 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
                                                 combineNumeric, ilFn)
                           : *rhsVal;
 
+    // The `--pins` barrier for the numeric half of `numeric-elements`
+    // (lower_pin.cpp). Before the branch below, because BOTH arms of it write
+    // into the pinned array: the raw one converts a boolean, and the dynamic
+    // one stores a boxed value a later PINNED READ will bitcast to a double.
+    emitPinnedElementBarrier(elemKind, stored, ilFn);
     if (stored.type == il::Type::F64 || stored.type == il::Type::I32 ||
         stored.type == il::Type::Bool) {
         Value storedF64 = unboxValueIfNeeded(stored, il::Type::F64, ilFn);

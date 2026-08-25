@@ -105,6 +105,7 @@ const char* opName(Op op) {
         case Op::GlobalGet: return "global.get";
         case Op::ResolveName: return "name.resolve";
         case Op::ImmutableAssign: return "immutable.assign";
+        case Op::PinGuard: return "pin.guard";
         case Op::ClassExtend: return "class.extend";
         case Op::PrivateNew: return "private.new";
         case Op::PrivateHas: return "private.has";
@@ -757,6 +758,25 @@ std::string print(const Module& module) {
                                     : std::string("?")) +
                                "\"";
                         break;
+                    // The manifest LINE, because which promise this barrier is
+                    // holding the program to IS the instruction, and the dump
+                    // is what a reader bisects an unexpected throw with.
+                    case Op::PinGuard: {
+                        const char* shape = "number";
+                        switch (static_cast<PinBarrier>(inst.immI32)) {
+                            case PinBarrier::Number: shape = "number"; break;
+                            case PinBarrier::NumberOrNullish: shape = "number-or-nullish"; break;
+                            case PinBarrier::DenseArray: shape = "dense-array"; break;
+                        }
+                        out += "pin.guard %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + shape + ", \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
+                        break;
+                    }
                     case Op::GlobalGet:
                         out += "global.get \"" +
                                (inst.keyIndex < module.keyConstants.size()

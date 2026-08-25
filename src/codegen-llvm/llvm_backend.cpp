@@ -77,6 +77,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 #include "codegen-llvm/llvm_frame.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_partition.h"
+#include "codegen-llvm/llvm_pin.h"
 #include "il/print.h"
 #include "il/verifier.h"
 #include "support/timings.h"
@@ -85,6 +86,7 @@ namespace bronze {
 
 using codegen_llvm::AbiFns;
 using codegen_llvm::AbiGlobals;
+using codegen_llvm::emitPinnedParamUnbox;
 using codegen_llvm::emitToNumberInline;
 using codegen_llvm::FunctionEmitter;
 using codegen_llvm::mapILType;
@@ -235,7 +237,8 @@ llvm::Value* emitWrapperArrayCall(llvm::IRBuilder<>& builder, llvm::LLVMContext&
 }
 
 void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::LLVMContext& ctx,
-                      const AbiFns& abi, const std::string& entrySymbol,
+                      const AbiFns& abi, const codegen_llvm::ModuleTables& tables,
+                      const std::string& entrySymbol,
                       const std::vector<llvm::Function*>& entries,
                       std::vector<llvm::Function*>& out) {
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -351,6 +354,18 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
             // Loaded and rooted above, and re-read out of the root frame by
             // every array build in between, so these bits are current.
             llvm::Value* bits = loaded[sourceIndex];
+            // A PINNED parameter is checked, never coerced (llvm_pin.h). The
+            // wrapper is the door every caller the static plan could not
+            // enumerate comes through — an escaped closure, a host call, a
+            // method reached off a value — so it is where a `param` pin stops
+            // being a promise and starts being enforced. The check REPLACES
+            // the ToNumber below rather than joining it, so the enforced form
+            // is cheaper than the coercing one it succeeds.
+            if (func.params[p].type == il::Type::F64 && func.params[p].pinned) {
+                callArgs.push_back(emitPinnedParamUnbox(builder, abi, tables, bits,
+                                                        func.params[p].pinKeyIndex));
+                continue;
+            }
             switch (func.params[p].type) {
                 case il::Type::F64:
                     callArgs.push_back(emitToNumberInline(builder, abi, bits));
@@ -855,7 +870,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     if (llvm::Function* entryFn = llvmModule->getFunction(entrySymbol_)) publish(entryFn);
 
     std::vector<llvm::Function*> wrappers;
-    emitCallWrappers(module, *llvmModule, ctx, abi, entrySymbol_, entries, wrappers);
+    emitCallWrappers(module, *llvmModule, ctx, abi, tables, entrySymbol_, entries, wrappers);
 
     // One `new.target` anywhere disables the inline `new` fast path for the
     // whole module: the fast path skips the NewTargetScope push, and

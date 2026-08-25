@@ -12,6 +12,7 @@
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
+#include "codegen-llvm/llvm_pin.h"
 
 namespace bronze::codegen_llvm {
 
@@ -165,6 +166,11 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
     std::vector<llvm::Value*> callArgs;
     if (callee.needsEnv) callArgs.push_back(guard.env);
     callArgs.push_back(thisVal);
+    // The `--pins` barrier's edges into `doneBb` (llvm_pin.h). This site is
+    // one of the enumerated call sites a `param` pin is enforced at, and it is
+    // the one the lowerer cannot reach: the direct target is stamped by a
+    // post-pass over the whole module, long after this call was lowered.
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> pinIncoming;
     for (size_t p = 0; p < fixed; ++p) {
         const il::Type slot = callee.params[p + base].type;
         if (p >= argc) {
@@ -172,6 +178,12 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
             // callee's default tests for. Lowering has already refused a site
             // whose padding would land in a typed slot.
             callArgs.push_back(builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS));
+            continue;
+        }
+        if (slot == il::Type::F64 && callee.params[p + base].pinned) {
+            callArgs.push_back(emitPinnedArgUnbox(builder_, abi, shared_.tables, argBits[p],
+                                                  callee.params[p + base].pinKeyIndex, doneBb,
+                                                  pinIncoming));
             continue;
         }
         callArgs.push_back(slot == il::Type::F64 ? emitToNumberInline(builder_, abi, argBits[p])
@@ -224,9 +236,12 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
 
     builder_.SetInsertPoint(doneBb);
     if (inst.result != il::kNoValue) {
-        llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt64Ty(), 2, "mdc.result");
+        llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt64Ty(),
+                                                static_cast<unsigned>(2 + pinIncoming.size()),
+                                                "mdc.result");
         phi->addIncoming(hitRes, hitEnd);
         phi->addIncoming(missRes, missEnd);
+        for (const auto& edge : pinIncoming) phi->addIncoming(edge.first, edge.second);
         values_[inst.result] = phi;
     }
     return true;

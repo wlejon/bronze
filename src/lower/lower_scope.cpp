@@ -499,6 +499,30 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
         for (const auto& name : structural) {
             if (candidates.count(name) == 0 && pins_->envSlotPinned(functionName, name)) {
                 candidates.insert(name);
+                // The write barrier's licence, and ONLY on this arm. What the
+                // fixpoint above admitted it also audited — every write to it
+                // is a numeric expression this compilation read — so a barrier
+                // there would be a check on a proof. What arrives here is the
+                // opposite: a slot whose writes the fixpoint could not type,
+                // admitted because the manifest promised. The promise is what
+                // gets held (types/pins.h, stage B1).
+                if (types::pinBarriersEnabled()) {
+                    const uint32_t slot = info.slotOf.at(name);
+                    if (info.slotIsPinned.size() < info.slotNames.size()) {
+                        info.slotIsPinned.assign(info.slotNames.size(), false);
+                        info.slotPinText.assign(info.slotNames.size(), std::string());
+                    }
+                    // The LAST dotted component, because that is the spelling
+                    // the manifest uses (the linker's `mod1.` prefix is not in
+                    // the file), and the message exists to be grepped for in
+                    // the file.
+                    const auto dot = functionName.rfind('.');
+                    const std::string owner = dot == std::string::npos
+                                                  ? functionName
+                                                  : functionName.substr(dot + 1);
+                    info.slotIsPinned[slot] = true;
+                    info.slotPinText[slot] = "function " + owner + "." + name + ": number";
+                }
             }
         }
     }
@@ -632,6 +656,21 @@ void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function
                                 ilFn);
         }
         return;
+    }
+    // The `--pins` barrier for `function <fn>.<binding>: number`, and it is
+    // keyed on the SLOT rather than on the record: stage E3 merges a callee's
+    // frame region into its caller's, so a "frame" holds the slots of several
+    // logical scopes and a barrier that asked about the frame would let a
+    // frameless callee's write through. The depth/index pair the scope plan
+    // resolved is the logical slot, and it is what this asks about.
+    //
+    // Only the PINNED slots (lowerer_state.h, `slotIsPinned`). A slot the
+    // fixpoint typed has had every write to it audited already.
+    {
+        const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
+        if (index < scope.slotIsPinned.size() && scope.slotIsPinned[index]) {
+            emitPinGuard(val, scope.slotPinText[index], il::PinBarrier::Number, ilFn);
+        }
     }
     Value boxed = boxValueIfNeeded(val, ilFn);
     il::Instruction inst;

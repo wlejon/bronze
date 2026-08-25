@@ -545,6 +545,35 @@ private:
                                 const std::vector<const ast::Stmt*>& body,
                                 const std::string& functionName, EnvScopeInfo& info) const;
     void emitImmutableAssign(const std::string& name, il::Function& ilFn);
+
+    // --- the `--pins` write barriers (types/pins.h, stage B1) ---------------
+    //
+    // One emitter, five callers, and one rule between them: the barrier goes
+    // where a claim can be CONTRADICTED, never where it is spent. `val` is the
+    // value about to be written, BEFORE boxing, so the caller's static type is
+    // still on it — an `F64` needs no barrier at all, which is what makes the
+    // no-violation tax nothing on a program whose promises are kept.
+    void emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
+                      il::Function& ilFn);
+    // Does `val` already satisfy `kind` by the IL type it carries? An f64 IL
+    // value is a Number by construction, which covers arithmetic, a pinned
+    // read, a typed parameter and a typed call result — and is why the pinned
+    // kernels emit no barriers in their loops.
+    static bool pinSatisfiedStatically(Value val, il::PinBarrier kind);
+    // The pin declared for `receiver.<key>`, resolved the way the flow
+    // analyzer resolves it for the READ (types/flow_expr.cpp `pinnedField`),
+    // so that the barrier and the claim can never disagree about which entry
+    // is in force. Null when nothing is pinned there.
+    const types::PinKind* pinnedFieldAt(const ast::Expr& receiver, const std::string& key,
+                                        std::string* pinTextOut) const;
+    // The barrier for a store to a pinned FIELD, emitted before the `prop.set`
+    // that carries it. `key` is the property as the source spells it.
+    void emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,
+                             il::Function& ilFn);
+    // The barrier for a store to an ELEMENT of a `numeric-elements` array. A
+    // no-op for every other element kind, because every other one is a proven
+    // view whose store converts rather than reinterprets.
+    void emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn);
     // The scope innermost right now takes its lexical bindings: each slot
     // marked, filled with the uninitialized marker, and BOUND under its name.
     // `scopeIndex` is the entry in `envScopes_` that owns them.
@@ -699,6 +728,13 @@ private:
         // kind dispatch (field / method / accessor) belongs to one place, and
         // that place is `lowerPrivateWrite`.
         const ast::MemberAccess* privateTarget = nullptr;
+        // The RECEIVER as the source wrote it, kept so that a destructuring
+        // store into a pinned field can ask the same question an ordinary
+        // assignment asks (lower_pin.cpp). Null when the target is private.
+        const ast::Expr* receiverExpr = nullptr;
+        // The property as the source spells it, for the same reason. Empty
+        // where the key is computed, which no pin can name.
+        std::string keyName;
     };
     std::optional<PatternRef> evalPatternRef(const ast::Expr& target, il::Function& ilFn);
     bool storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn);

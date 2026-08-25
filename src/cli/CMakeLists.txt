@@ -23,7 +23,8 @@ endif()
 # Hand-rolled rather than through bronze_add_module (the library above is not
 # one), so the BRONZE_BUILD_TESTS guard has to be written out here too.
 if(BRONZE_BUILD_TESTS)
-    add_executable(bronze_cli_tests ../../tests/cli/cli_test.cpp)
+    add_executable(bronze_cli_tests ../../tests/cli/cli_test.cpp
+                                   ../../tests/cli/pin_barrier_test.cpp)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)

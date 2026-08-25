@@ -538,6 +538,50 @@ uint64_t bronze_immutable_assign(void) {
     return rtThrowTypeError("Assignment to constant variable.").rawBits();
 }
 
+// A `--pins` claim contradicted by a value the program produced.
+//
+// The message names the manifest LINE and not the site, because the line is
+// what has to change: a barrier fires where a promise was written down wrong,
+// and the reader's next action is to edit the manifest or the program, never
+// to look up a slot number. The value's type is named beside it for the same
+// reason — "stored a string" is the whole diagnosis on a `number` pin.
+//
+// Note the kind word is a description and not `typeof`: `typeof null` is
+// "object", which would read as if an object had been stored.
+uint64_t bronze_pin_violation(uint32_t keyIndex, uint64_t bits) {
+    const Value v(bits);
+    const char* kind = "a value of an unknown kind";
+    if (v.isNumber() || v.isInt32()) kind = "a number";
+    else if (v.isNull()) kind = "null";
+    else if (v.isUndefined() || v.isHole()) kind = "undefined";
+    else if (v.isBool()) kind = "a boolean";
+    else if (v.isString()) kind = "a string";
+    else if (v.isSymbol()) kind = "a symbol";
+    else if (v.isBigInt()) kind = "a BigInt";
+    else if (v.isObject()) kind = "an object";
+    return rtThrowTypeError("pin '" + rtKeyString(keyIndex) + "' violated: the value is " +
+                            kind)
+        .rawBits();
+}
+
+// The `numeric-elements` FIELD claim, checked and raised in one helper: the
+// slot must hold a plain JS Array, because the element form the pin licenses
+// (il::kElemKindPlainArrayF64) walks the array header with no tag test at all.
+//
+// This is the ONE barrier that is a call rather than a compare, and the pin's
+// own shape is why that is affordable: a field declared `numeric-elements` is
+// written where the array is built and read in every loop that touches it.
+//
+// What it does NOT check is the elements themselves. That is O(n) at a store
+// whose whole point is that the loop after it is O(1) per element, so the
+// numeric half of the claim is held at the ELEMENT stores instead, where each
+// write is one compare. src/types/pins.h states the residue.
+void bronze_pin_check_array(uint32_t keyIndex, uint64_t bits) {
+    const Value v(bits);
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return;
+    bronze_pin_violation(keyIndex, bits);
+}
+
 // The end of a program with an exception still pending. Reported on STDERR,
 // which is what node does and what keeps an uncaught-throw oracle case
 // pinnable: stdout holds exactly what the program printed before it died.

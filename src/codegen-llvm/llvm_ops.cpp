@@ -18,6 +18,7 @@
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
+#include "codegen-llvm/llvm_pin.h"
 #include "codegen-llvm/llvm_prop.h"
 
 namespace bronze::codegen_llvm {
@@ -573,6 +574,18 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::ImmutableAssign:
             callWith(abi.bronze_immutable_assign, {});
             return true;
+        // The `--pins` write barrier (llvm_pin.h). Void, so nothing is
+        // materialized for it; what carries the violation out is the
+        // exception check `il::canThrow` puts immediately after, which is
+        // also what makes the STORE this precedes not happen.
+        case il::Op::PinGuard: {
+            if (!needs(1, false, "Invalid operands for PinGuard")) return false;
+            llvm::Value* val = operand(inst, 0, "Undefined operand in PinGuard instruction");
+            if (!val) return false;
+            emitPinGuard(builder_, abi, shared_.tables, val, inst.keyIndex,
+                         static_cast<il::PinBarrier>(inst.immI32));
+            return true;
+        }
         case il::Op::PrivateNew:
         case il::Op::PrivateHas:
         case il::Op::PrivateGet:

@@ -90,6 +90,15 @@ struct EnvScopeInfo {
     // double IS a Value by NaN-box construction and the collector already walks
     // past one — so what this marks is that the READ may stop testing.
     std::vector<bool> slotIsF64;
+    // Which of those slots owe their `slotIsF64` to a `--pins` PROMISE rather
+    // than to the fixpoint's proof — the ones `planEnvSlotNumberTypes` re-admits
+    // in its pin arm. Only these get a write barrier: a slot the fixpoint
+    // proved has had every write to it audited already, and checking it again
+    // would tax a program that made no promise at all. The pin's manifest line
+    // is `slotPinText`, held as TEXT rather than as a key index because the
+    // planner that fills it is const and interning a key is not.
+    std::vector<bool> slotIsPinned;
+    std::vector<std::string> slotPinText;
     // The STATIC CALL PLAN for this scope's slots (lower_scope.cpp
     // `planStableFunctionSlots`, spent by lower_call.cpp).
     //

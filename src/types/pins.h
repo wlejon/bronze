@@ -37,18 +37,65 @@ enum class PinKind : uint8_t {
     NumberOrNullish,
 };
 
+// Whether this build emits WRITE BARRIERS for the claims below. On unless
+// `BRONZE_NO_PIN_BARRIERS=1`, which restores the pre-stage-B1 behaviour: a
+// violated pin is undefined behaviour again. It is the A/B seam for the
+// barriers' cost and is read once per invocation.
+bool pinBarriersEnabled();
+
 // The `--pins` manifest: per-(class, field) declarations inference is told to
 // believe.
 //
 // A pin is NOT a proof and nothing here derives one. It is a promise the
 // INVOCATION makes about the program, the same family of promise as
-// `--host-globals` and `--assume-no-bigint`: unchecked at the read, and
-// destined to be enforced on the WRITE paths once that machinery exists. Until
-// then the manifest is the whole of the enforcement, which is why it is an
-// explicit per-(class, field) list and never a heuristic — the blanket form
-// (`BRONZE_UNSOUND_PINS`, kept for measurement continuity) pins fields whose
-// writes are not numeric at all, and a program that reads one of those reads
-// a pointer's bits as a double.
+// `--host-globals` and `--assume-no-bigint`: spent UNCHECKED at the read, and
+// ENFORCED on the write paths.
+//
+// WHAT A VIOLATION DOES, since stage B1. A write that contradicts a pin throws
+// a **TypeError** naming the manifest line, at the writing site, catchable
+// like any other — it is not a process abort, and the violating value is never
+// stored. That is a change from every stage before it, where a violation was
+// undefined behaviour: a `number` pin on a field the program sometimes wrote a
+// string into compiled to a raw unbox of a string POINTER, and nothing
+// anywhere said so.
+//
+// WHERE THE BARRIER IS, AND WHERE IT IS NOT. It is on the WRITE, never on the
+// read: a pinned read spends its claim unconditionally, and that is the whole
+// performance model — a guard there would be the deoptimization the manifest
+// was written to remove. So each claim is checked where it can be
+// CONTRADICTED:
+//
+//   - a `number` / `number-or-nullish` field: at every store to that field;
+//   - a `numeric-elements` field: at every store to the FIELD (is it a plain
+//     dense array?) and at every store to an ELEMENT (is it a number?);
+//   - a `function <fn>.<binding>` env slot: at every store to that slot;
+//   - a `param` entry: at every enumerated call site and in the boxed wrapper;
+//   - a `return` entry: at the return statement, where the value the body
+//     produced is still boxed.
+//
+// A store the compiler has ALREADY PROVED emits nothing: an f64-typed IL value
+// carries its own proof, and so do the env-slot fixpoint
+// (`planEnvSlotNumberTypes`) and the closure parameter proof
+// (`planClosureParamNumbers`). The proof is the licence, and the design target
+// — met on this campaign's four pinned kernels — is that a program whose
+// promises are kept pays nothing for the barriers at all.
+//
+// WHAT IS STILL NOT CHECKED, stated because a promise is only as good as its
+// exceptions:
+//
+//   - the ELEMENTS of an array stored into a `numeric-elements` field. That is
+//     an O(n) walk at a store whose whole purpose is an O(1)-per-element loop
+//     after it; the numeric half is held at the element stores instead, which
+//     covers every element bronze itself writes and not one a host or a
+//     builtin (`Array.prototype.fill`, a `JSON.parse` result) put there.
+//   - the INDEX of a `numeric-elements` element access. In-bounds is a claim
+//     about a READ as much as a write, so there is no write to hold it at, and
+//     a bounds check on the store is the guard the pin exists to delete.
+//   - `BRONZE_UNSOUND_PINS`, the blanket measurement mode, which pins every
+//     Array receiver in the program and has never been a supported build.
+//
+// This is why the manifest is an explicit per-(class, field) list and never a
+// heuristic.
 //
 // Grammar — one entry per line, `#` starts a comment, blank lines ignored:
 //
@@ -79,7 +126,9 @@ enum class PinKind : uint8_t {
 // `planEnvSlotNumberTypes`) refuses only because a written value is unproven —
 // a parameter, typically. There is no `*` form and no kind but `number`: an env
 // slot pin is spent on a raw unbox at every read of that slot, so the promise
-// has to be exact, and one wrong name is a pointer's bits read as a double.
+// has to be exact. A wrong name used to be a pointer's bits read as a double;
+// since stage B1 it is a TypeError at the write that contradicted it, which is
+// the same wrong manifest reported instead of executed.
 // `<function>` is matched on its last dotted component, for the reason
 // `<class>` is.
 //
@@ -91,14 +140,17 @@ enum class PinKind : uint8_t {
 // IL function whose name IS it or ENDS WITH `.` + it, which is the same
 // last-components rule the forms above use and for the same reason.
 //
-// This is the WEAKEST pin in the file, and the only one whose miss is not a
-// wrong read of bits. The uniform convention still enters through the call
-// wrapper, and the wrapper converts with ToNumber (7.1.4) — inline for the
-// number case, `bronze_unbox_f64` for everything else — so a non-number that
-// reaches a pinned parameter is COERCED, never reinterpreted. What the promise
-// buys is the typed slot; what a wrong entry costs is JS semantics (`f("5")`
-// sees 5, and `x === "5"` inside the body is then false), not a pointer read as
-// a double.
+// This is the WEAKEST pin in the file, and the only one whose miss was never a
+// wrong read of bits. Before stage B1 the uniform wrapper converted with
+// ToNumber (7.1.4), so a non-number reaching a pinned parameter was COERCED —
+// `f("5")` saw 5, and `x === "5"` inside the body was then false, which is a
+// silently different program rather than a corrupt one.
+//
+// The barrier REPLACES that coercion rather than joining it: the pin says the
+// caller passes a Number, the wrapper asks, and a caller that does not is told
+// so with a TypeError instead of being quietly obliged. So the enforcement is
+// cheaper here than what it replaced, and the semantics it removes are
+// semantics no manifest ever meant to buy.
 //
 // Only `number`, and only a parameter the caller always supplies a value for: a
 // parameter with a default, a destructuring pattern, or `...rest` is refused,

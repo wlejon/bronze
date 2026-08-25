@@ -278,6 +278,16 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         auto val = lowerExpr(*retStmt->value, ilFn);
         if (!val) return false;
 
+        // The `--pins` barrier for `return <owner>: number`, and it is HERE
+        // rather than in the boxed wrapper because by the time the wrapper
+        // sees a result the violation has already happened: the conversion
+        // below is what turns a returned string into a double, and the
+        // wrapper only re-boxes what came out of it. `pinSatisfiedStatically`
+        // takes every return the body already types, so a function whose
+        // returns are arithmetic gets no barrier at all.
+        if (ilFn.returnPinned) {
+            emitPinGuard(*val, keyStrings_[ilFn.returnPinKeyIndex], il::PinBarrier::Number, ilFn);
+        }
         if (ilFn.returnType == il::Type::Void) {
             ilFn.returnType = val->type;
         } else if (ilFn.returnType == il::Type::Dynamic) {

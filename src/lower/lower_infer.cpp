@@ -383,6 +383,23 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
 // nothing" case the class forms tolerate: it is a promise about a slot that
 // cannot carry the promise, and quietly compiling the boxed version would hide
 // the fact that the manifest is wrong.
+// An IL function's name as the MANIFEST spells it: the module linker's
+// `modN.` prefix dropped, everything else kept.
+//
+// The pin's message exists to be grepped for in the manifest, so it has to
+// read back as a line of the file — `param Uniform.setValue(x): number`, not
+// `param mod1.Uniform.setValue(x): number`. Only the leading module component
+// is dropped, because a `param` entry's owner may legitimately be two
+// components deep and `Matrix4.multiplyMatrices` is not a prefix to strip.
+static std::string manifestOwnerName(const std::string& ilName) {
+    const auto dot = ilName.find('.');
+    if (dot == std::string::npos || dot < 4 || ilName.compare(0, 3, "mod") != 0) return ilName;
+    for (size_t i = 3; i < dot; ++i) {
+        if (ilName[i] < '0' || ilName[i] > '9') return ilName;
+    }
+    return ilName.substr(dot + 1);
+}
+
 bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span span,
                                  il::Function& fn) {
     if (pins_ == nullptr) return true;
@@ -405,6 +422,16 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
             return false;
         }
         fn.params[i + base].type = il::Type::F64;
+        // The BARRIER'S LICENCE, and it is set here and nowhere else: this
+        // slot is f64 because a manifest said so. A slot the convention
+        // statements or `applyProvenSignature` already typed never reaches
+        // this line, so a proven parameter carries no `pinned` mark and no
+        // caller checks it — the proof is the licence (types/pins.h, B1).
+        if (types::pinBarriersEnabled()) {
+            fn.params[i + base].pinned = true;
+            fn.params[i + base].pinKeyIndex = getKeyConstantIndex(
+                "param " + manifestOwnerName(fn.name) + "(" + p.name + "): number");
+        }
     }
 
     if (pins_->returnPinned(fn.name)) {
@@ -421,6 +448,14 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
         }
         if (fn.returnType == il::Type::Dynamic) {
             fn.returnType = il::Type::F64;
+            // Same licence, same reason: only a return the manifest typed is
+            // held to the manifest. The arm below is a return the convention
+            // ALREADY typed f64, which is a proof and needs no barrier.
+            if (types::pinBarriersEnabled()) {
+                fn.returnPinned = true;
+                fn.returnPinKeyIndex =
+                    getKeyConstantIndex("return " + manifestOwnerName(fn.name) + ": number");
+            }
         } else if (fn.returnType != il::Type::F64) {
             diags_.error(span, "pin 'return " + fn.name +
                                    ": number' cannot be honoured: the convention already types "

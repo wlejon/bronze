@@ -232,6 +232,21 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_global_get,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_resolve_name,        BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
+    /* A `--pins` claim CONTRADICTED by a value the program actually produced
+     * (src/types/pins.h). The u32 is a registered key index holding the
+     * manifest line as the manifest spells it, and the u64 is the offending
+     * value, which the message names by type. It raises a TypeError and
+     * returns `undefined` for the reason every other raise helper does: the
+     * value lands in a caller's GC root slot before the pending cell is
+     * tested. Emitted only on the COLD arm of a barrier, so a program that
+     * keeps its promises never reaches it. */ \
+    X(bronze_pin_violation,       BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    /* The same barrier for the one pin whose shape has no inline test: a
+     * `numeric-elements` FIELD must hold a plain, dense JS Array, which is an
+     * object tag plus a header read plus a class comparison. Check and raise
+     * are one helper because the site is a constructor-time store, never a
+     * loop-carried one. */ \
+    X(bronze_pin_check_array,     BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_arguments_object,    BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_arg_at,              BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_PU64, BRONZE_ABI_U32)) \
     X(bronze_class_extends,       BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

@@ -72,6 +72,19 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
         auto argVal = lowerExpr(*call->args[i], ilFn);
         if (!argVal) return std::nullopt;
         const il::Type paramType = calleeFn.params[i + base].type;
+        // The `--pins` barrier for `param <owner>(<p>): number`, at the CALL
+        // SITE, because a pinned parameter has no boxed store to put one on:
+        // the value arrives in an f64 register and is written to an f64 slot.
+        // This is the enumerated set stage E4's parameter proof joins over —
+        // the direct sites plus the boxed wrapper — and the wrapper's half is
+        // in llvm_backend.cpp. Emitted before the conversion so the check
+        // REPLACES the ToNumber it was quietly relying on rather than joining
+        // it: the pin says the caller passes a Number, not that the callee
+        // will coerce whatever arrives.
+        if (calleeFn.params[i + base].pinned) {
+            emitPinGuard(*argVal, keyStrings_[calleeFn.params[i + base].pinKeyIndex],
+                         il::PinBarrier::Number, ilFn);
+        }
         if (paramType == il::Type::Dynamic) {
             argVal = boxValueIfNeeded(*argVal, ilFn);
         } else if (argVal->type == il::Type::Dynamic) {
