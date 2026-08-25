@@ -12,6 +12,7 @@
 
 #include <llvm/IR/Constants.h>
 
+#include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_func.h"
 
 namespace bronze::codegen_llvm {
@@ -302,18 +303,24 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
     llvm::Value* lhs = operand(inst, 0, undefinedMsg.c_str());
     if (!lhs) return false;
     if (inst.op == il::Op::ToInt32) {
-        // A call, not an `fptosi`: LLVM's is poison for a double outside the
-        // int32 range, and ECMA-262 requires a wraparound modulo 2^32 there
-        // (`2147483648 | 0` is -2147483648). An operand that is ALREADY an
-        // int32 has nothing to convert, which is what makes a chain of
-        // bitwise operators cost one conversion per source operand.
+        // Never a bare `fptosi`: LLVM's is poison for a double outside the
+        // integer range, and ECMA-262 requires a wraparound modulo 2^32 there
+        // (`2147483648 | 0` is -2147483648). `emitToInt32F64` is the guarded
+        // form — the range test plus the two machine operations that ARE the
+        // conversion inside it; llvm_convert.h has why they are exact. An
+        // operand that is ALREADY an int32 has nothing to convert, which is
+        // what makes a chain of bitwise operators cost one conversion per
+        // source operand.
         if (lhs->getType()->isIntegerTy(32)) {
             values_[inst.result] = lhs;
         } else if (lhs->getType()->isIntegerTy(64)) {
+            // The boxed form, which is a different operation: ToNumber runs
+            // first, so a string is parsed and an object's valueOf is called.
+            // That can execute program text, so it stays a helper call.
             values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_to_int32, {lhs});
         } else {
             values_[inst.result] =
-                builder_.CreateCall(shared_.abi.bronze_to_int32_f64, {widenBool(builder_, lhs)});
+                emitToInt32F64(builder_, shared_.abi, widenBool(builder_, lhs));
         }
         return true;
     }

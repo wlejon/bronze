@@ -1,5 +1,6 @@
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
+#include "codegen-llvm/llvm_convert.h"
 #include "il/il.h"
 
 #include <string>
@@ -485,7 +486,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(i32Bb);
     llvm::Value* pi32 = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
     llvm::Value* valDbl32 = builder.CreateBitCast(valBits, dblTy);
-    llvm::Value* i32Val = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl32}, "es.i32.val");
+    llvm::Value* i32Val = emitToInt32F64(builder, abi, valDbl32);
     auto* si32 = builder.CreateAlignedStore(i32Val, pi32, llvm::Align(4));
     tagTypedArrayAccess(si32, ctx);
     builder.CreateBr(doneBb);
@@ -493,7 +494,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(i16Bb);
     llvm::Value* pi16 = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 2);
     llvm::Value* valDbl16 = builder.CreateBitCast(valBits, dblTy);
-    llvm::Value* i32For16 = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl16}, "es.i16.tmp");
+    llvm::Value* i32For16 = emitToInt32F64(builder, abi, valDbl16);
     llvm::Value* i16Val = builder.CreateTrunc(i32For16, i16Ty, "es.i16.val");
     auto* si16 = builder.CreateAlignedStore(i16Val, pi16, llvm::Align(2));
     tagTypedArrayAccess(si16, ctx);
@@ -502,7 +503,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     builder.SetInsertPoint(i8Bb);
     llvm::Value* pi8 = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
     llvm::Value* valDbl8 = builder.CreateBitCast(valBits, dblTy);
-    llvm::Value* i32For8 = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl8}, "es.i8.tmp");
+    llvm::Value* i32For8 = emitToInt32F64(builder, abi, valDbl8);
     llvm::Value* i8Val = builder.CreateTrunc(i32For8, i8Ty, "es.i8.val");
     auto* si8 = builder.CreateAlignedStore(i8Val, pi8, llvm::Align(1));
     tagTypedArrayAccess(si8, ctx);
@@ -756,7 +757,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         case BRONZE_ABI_TA_KIND_INT32:
         case BRONZE_ABI_TA_KIND_UINT32: {
             llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
-            llvm::Value* i32Val = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl}, "tes.i32");
+            llvm::Value* i32Val = emitToInt32F64(builder, abi, valDbl);
             auto* st = builder.CreateAlignedStore(i32Val, elemPtr, llvm::Align(4));
             tagTypedArrayAccess(st, ctx);
             break;
@@ -764,7 +765,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         case BRONZE_ABI_TA_KIND_INT16:
         case BRONZE_ABI_TA_KIND_UINT16: {
             llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 2);
-            llvm::Value* i32Tmp = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl}, "tes.i16.tmp");
+            llvm::Value* i32Tmp = emitToInt32F64(builder, abi, valDbl);
             llvm::Value* i16Val = builder.CreateTrunc(i32Tmp, i16Ty, "tes.i16");
             auto* st = builder.CreateAlignedStore(i16Val, elemPtr, llvm::Align(2));
             tagTypedArrayAccess(st, ctx);
@@ -773,7 +774,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         case BRONZE_ABI_TA_KIND_INT8:
         case BRONZE_ABI_TA_KIND_UINT8: {
             llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
-            llvm::Value* i32Tmp = builder.CreateCall(abi.bronze_to_int32_f64, {valDbl}, "tes.i8.tmp");
+            llvm::Value* i32Tmp = emitToInt32F64(builder, abi, valDbl);
             llvm::Value* i8Val = builder.CreateTrunc(i32Tmp, i8Ty, "tes.i8");
             auto* st = builder.CreateAlignedStore(i8Val, elemPtr, llvm::Align(1));
             tagTypedArrayAccess(st, ctx);

@@ -99,6 +99,23 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     fns.bronze_tls_block_addr->setDoesNotAccessMemory();
     fns.bronze_tls_block_addr->addFnAttr(llvm::Attribute::WillReturn);
 
+    // The two NUMBER-to-integer conversions are pure functions of one double —
+    // rt_operator.cpp's toInt32 and toUint8Clamp are isfinite/trunc/fmod and
+    // nothing else. Saying so matters more than the folding it buys: without
+    // it, a call on the COLD arm of an inlined fast path is still a memory
+    // clobber, so nothing loaded before the merge survives past it, and Stage
+    // E1 measured exactly that — three ToInt32 calls per iteration suppressing
+    // the optimization of a loop they are barely executed in.
+    //
+    // The boxed `bronze_to_int32` is deliberately NOT here: ToNumber runs
+    // first, so a string is parsed and an object's valueOf is CALLED, which is
+    // program text and can do anything.
+    for (llvm::Function* pure : {fns.bronze_to_int32_f64, fns.bronze_to_uint8_clamp_f64}) {
+        pure->setDoesNotAccessMemory();
+        pure->addFnAttr(llvm::Attribute::WillReturn);
+        pure->addFnAttr(llvm::Attribute::Speculatable);
+    }
+
 #undef BRONZE_ABI_UNPAREN
 #undef BRONZE_ABI_U64
 #undef BRONZE_ABI_U32
