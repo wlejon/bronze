@@ -25,3 +25,29 @@ param setBlending(src): number
 param setBlending(dst): number
 param useProgram(program): number
 param setDepthFunc(depthFunc): number
+
+# Stage E3 adds two declarations of the same kind, about the loop function
+# itself rather than the five bodies it calls. They are here for the IL they
+# produce, and the honest note is that on THIS fixture, today, they are worth
+# nothing on the clock: measured against the manifest without them, 10.75 ->
+# 10.76 ns/iter, which is inside the harness's width. They were worth 1.37
+# ns/iter earlier in the same stage, before definite-assignment analysis
+# landed, and the two removals turned out to overlap almost completely — the
+# same lesson stage 3.3 recorded above, that which way this goes is a property
+# of what else the body costs.
+#
+# `render`'s parameter is the loop bound. Nothing in the module proves it: it
+# is a CLOSURE parameter, reached through a function value, so there is no call
+# site the analysis can enumerate and no signature that speaks for it — the
+# same reason the five above are here. Unpinned, `i < iters` is a guarded
+# compare with a live `bronze_rel_lt` on its cold arm; pinned, the call is
+# gone and the compare is one `fcmp`.
+param render(iters): number
+
+# And `useProgram`'s RESULT, which `hits = hits + useProgram(...)` consumes.
+# The callee has returned it in an f64 register since stage 3.3; stage E3 is
+# what makes the caller's arithmetic hear the claim, so one of the two
+# `bronze_dynamic_add`s goes and the loop-carried `hits` stops widening at its
+# merge. This line is the only coverage the fixture suite has for `return`
+# pins reaching type inference at all, which is why it stays.
+return useProgram: number

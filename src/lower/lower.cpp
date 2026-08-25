@@ -523,9 +523,11 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // And which of them no read can catch uninitialized, settled here for the
     // same reason: the module function that reads one is lowered before `main`
     // and has to know then whether the read carries a check.
-    for (const auto& name : ast::getDefinitelyAssignedLexicalNames(topLevelStmts)) {
-        auto slot = info.slotOf.find(name);
-        if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
+    if (!definiteInitDisabled()) {
+        for (const auto& name : ast::getDefinitelyAssignedLexicalNames(topLevelStmts)) {
+            auto slot = info.slotOf.find(name);
+            if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
+        }
     }
     if (segmentTopLevel_) {
         // One body refuses a write to a top-level `const` at COMPILE time,

@@ -292,6 +292,21 @@ bool Lowerer::envSlotIsLexical(uint32_t depth, uint32_t index) const {
     return index < scope.slotIsLexical.size() && scope.slotIsLexical[index];
 }
 
+// The A/B seam, in the house style of `BRONZE_NO_CLOSURE_EDGE`: `1` refuses to
+// mark any slot definitely assigned, so every lexical binding keeps its marker
+// AND its checked read and the two columns of a measurement come out of one
+// binary. It is asked at the two places that SET the flag, never at the places
+// that read it, because the marker store and the checked read have to agree:
+// a slot with no marker whose reads are checked would answer `undefined` where
+// the language says ReferenceError.
+bool Lowerer::definiteInitDisabled() {
+    static const bool disabled = [] {
+        const char* env = std::getenv("BRONZE_NO_DEFINITE_INIT");
+        return env != nullptr && std::strcmp(env, "1") == 0;
+    }();
+    return disabled;
+}
+
 bool Lowerer::envSlotDefiniteInit(uint32_t depth, uint32_t index) const {
     if (depth >= envScopes_.size()) return false;
     const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
@@ -564,8 +579,8 @@ void Lowerer::openLexicalBindings(size_t scopeIndex,
         if (std::find(constNames.begin(), constNames.end(), name) != constNames.end()) {
             envScopes_[scopeIndex].slotImmutable[slot] = SlotImmutability::Throws;
         }
-        if (std::find(definiteNames.begin(), definiteNames.end(), name) !=
-            definiteNames.end()) {
+        if (!definiteInitDisabled() &&
+            std::find(definiteNames.begin(), definiteNames.end(), name) != definiteNames.end()) {
             envScopes_[scopeIndex].slotIsDefiniteInit[slot] = true;
         } else {
             il::Instruction inst;

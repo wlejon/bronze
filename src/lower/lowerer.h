@@ -523,6 +523,9 @@ private:
     // code can, so its dead zone is unreachable (lowerer_state.h,
     // `slotIsDefiniteInit`).
     bool envSlotDefiniteInit(uint32_t depth, uint32_t index) const;
+    // BRONZE_NO_DEFINITE_INIT=1, the A/B seam for the analysis above. Asked at
+    // the two places that MARK a slot, so the marker and the check agree.
+    static bool definiteInitDisabled();
     // The same question for 9.1.1.1.3's immutable bindings, asked by
     // `emitEnvSet` alone — see EnvScopeInfo::slotIsImmutable.
     SlotImmutability envSlotImmutability(uint32_t depth, uint32_t index) const;
