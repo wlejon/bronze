@@ -135,7 +135,9 @@ bool Lowerer::bindPatternName(const std::string& name, Value value, const Patter
     // and the assignment path once disagreed.
     auto it = activeVarMap_.find(name);
     if (it != activeVarMap_.end()) {
-        writeBinding(varBindings_[it->second], boxed, ilFn);
+        if (!refuseConstAssignment(varBindings_[it->second], ilFn)) {
+            writeBinding(varBindings_[it->second], boxed, ilFn);
+        }
         return true;
     }
     uint32_t depth = 0;

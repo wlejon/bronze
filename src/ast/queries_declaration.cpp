@@ -115,10 +115,84 @@ std::vector<std::string> getLexicalDeclarations(const std::vector<StmtPtr>& stmt
     return names;
 }
 
+std::vector<std::string> getConstDeclarations(const std::vector<StmtPtr>& stmts) {
+    std::vector<std::string> names;
+    for (const auto& s : stmts) {
+        if (s) appendConstNames(*s, names);
+    }
+    return names;
+}
+
+std::vector<std::string> getConstDeclarations(const std::vector<const Stmt*>& stmts) {
+    std::vector<std::string> names;
+    for (const auto* s : stmts) {
+        if (s) appendConstNames(*s, names);
+    }
+    return names;
+}
+
 std::vector<std::string> getLexicalDeclarations(const std::vector<const Stmt*>& stmts) {
     std::vector<std::string> names;
     for (const auto* s : stmts) {
         if (s) appendLexicalNames(*s, names);
+    }
+    return names;
+}
+
+namespace {
+
+// An initializer that runs no user code: a literal, or a function the
+// declaration only CREATES. Anything else — a call, a `new`, a property read
+// that may reach an accessor, an operator that may reach `valueOf` — is a
+// point at which a closure over a still-uninitialized binding of this scope
+// could be entered, which is the whole hazard.
+bool inertInitializer(const Expr& e) {
+    return dynamic_cast<const NumberLit*>(&e) != nullptr ||
+           dynamic_cast<const StringLit*>(&e) != nullptr ||
+           dynamic_cast<const BoolLit*>(&e) != nullptr ||
+           dynamic_cast<const NullLit*>(&e) != nullptr ||
+           dynamic_cast<const UndefinedLit*>(&e) != nullptr ||
+           dynamic_cast<const BigIntLit*>(&e) != nullptr ||
+           dynamic_cast<const RegExpLit*>(&e) != nullptr ||
+           dynamic_cast<const FunctionExpr*>(&e) != nullptr ||
+           (dynamic_cast<const TemplateLit*>(&e) != nullptr &&
+            static_cast<const TemplateLit&>(e).exprs.empty());
+}
+
+void collectDefinitelyAssigned(const Stmt& s, std::vector<std::string>& out, bool& keepGoing) {
+    if (!keepGoing) return;
+    // A hoisted function declaration is instantiated for the whole scope
+    // before the first statement runs (8.6.2), so it initializes nothing here
+    // and delays nothing after it.
+    if (dynamic_cast<const FunctionDecl*>(&s) != nullptr) return;
+    const auto* v = dynamic_cast<const VarDecl*>(&s);
+    // A `var` is not lexical and has no dead zone, so it neither qualifies nor
+    // disqualifies — but its initializer is user code like any other.
+    if (v == nullptr || v->name.empty() || v->init == nullptr ||
+        !inertInitializer(*v->init)) {
+        keepGoing = false;
+        return;
+    }
+    if (!v->isVar) out.push_back(v->name);
+}
+
+}  // namespace
+
+std::vector<std::string> getDefinitelyAssignedLexicalNames(const std::vector<StmtPtr>& stmts) {
+    std::vector<std::string> names;
+    bool keepGoing = true;
+    for (const auto& s : stmts) {
+        if (s) collectDefinitelyAssigned(*s, names, keepGoing);
+    }
+    return names;
+}
+
+std::vector<std::string> getDefinitelyAssignedLexicalNames(
+    const std::vector<const Stmt*>& stmts) {
+    std::vector<std::string> names;
+    bool keepGoing = true;
+    for (const auto* s : stmts) {
+        if (s) collectDefinitelyAssigned(*s, names, keepGoing);
     }
     return names;
 }

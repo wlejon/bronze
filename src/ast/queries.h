@@ -77,6 +77,40 @@ std::vector<std::string> getTopLevelVarDeclarations(const std::vector<const Stmt
 std::vector<std::string> getLexicalDeclarations(const std::vector<StmtPtr>& stmts);
 std::vector<std::string> getLexicalDeclarations(const std::vector<const Stmt*>& stmts);
 
+// The `const` names this statement list declares directly, in source order.
+//
+// A separate question from `getLexicalDeclarations` because 14.3.1.1 creates a
+// `const` binding with `CreateImmutableBinding(name, true)`, and that `true` is
+// the S that 9.1.1.1.5 step 7 tests: an assignment to one is a TypeError
+// whatever the strictness of the code doing the assigning. The other immutable
+// binding in the language — a named function expression's own name (15.2.5) —
+// is created with `false` and IS strictness-dependent, which is why the two
+// cannot share a flag.
+std::vector<std::string> getConstDeclarations(const std::vector<StmtPtr>& stmts);
+std::vector<std::string> getConstDeclarations(const std::vector<const Stmt*>& stmts);
+
+// The lexical names of `stmts` whose initializer runs before ANY user code can
+// run in this scope — so that no read of them, from anywhere including a
+// closure, can happen while they are still in their dead zone.
+//
+// The argument is about who can be RUNNING, not about where the read is
+// written. A closure over a `let` is entered only by someone calling it, and
+// calling it is user code; so if every statement from the top of the scope
+// down to a declaration is one that runs no user code — another such
+// declaration, or a hoisted `function` — then nothing can have called anything
+// yet, and every read of that binding in the whole program is after its
+// initializer. The dead zone is real but unreachable, and 9.1.1.1.6's check is
+// then a compare that can only answer one way.
+//
+// The scan STOPS at the first statement that is not one of those two forms,
+// and an initializer counts only when it is a literal or a function: `let x =
+// f()` calls out, and what `f` reads is exactly the question. Deliberately
+// narrow — it is a licence to drop a check, so a name it is unsure of is a
+// name it leaves alone.
+std::vector<std::string> getDefinitelyAssignedLexicalNames(const std::vector<StmtPtr>& stmts);
+std::vector<std::string> getDefinitelyAssignedLexicalNames(
+    const std::vector<const Stmt*>& stmts);
+
 // Which lexical bindings anywhere in this function (but not inside a nested
 // one, which asks the question again for itself) can be READ while they are
 // still uninitialized, so that the read has to be checked at run time rather

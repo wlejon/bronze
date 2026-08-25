@@ -415,7 +415,8 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
-    info.slotIsImmutable.assign(slots.size(), false);
+    info.slotIsDefiniteInit.assign(slots.size(), false);
+    info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
     info.slotIsF64.assign(slots.size(), false);
     // Which of the slots hold Numbers, decided once, here, because this is
     // where the layout is fixed and every reader of the record — the body and
@@ -513,10 +514,18 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // `main` exists, and a read of a module-level `const` from inside one has
     // to know it is reading a slot that can be uninitialized.
     info.slotIsLexical.assign(moduleEnvSlots_.size(), false);
-    info.slotIsImmutable.assign(moduleEnvSlots_.size(), false);
+    info.slotIsDefiniteInit.assign(moduleEnvSlots_.size(), false);
+    info.slotImmutable.assign(moduleEnvSlots_.size(), SlotImmutability::Mutable);
     for (const auto& name : ast::getLexicalDeclarations(topLevelStmts)) {
         auto slot = info.slotOf.find(name);
         if (slot != info.slotOf.end()) info.slotIsLexical[slot->second] = true;
+    }
+    // And which of them no read can catch uninitialized, settled here for the
+    // same reason: the module function that reads one is lowered before `main`
+    // and has to know then whether the read carries a check.
+    for (const auto& name : ast::getDefinitelyAssignedLexicalNames(topLevelStmts)) {
+        auto slot = info.slotOf.find(name);
+        if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
     }
     if (segmentTopLevel_) {
         // One body refuses a write to a top-level `const` at COMPILE time,
@@ -532,7 +541,9 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
             const auto* vd = dynamic_cast<const ast::VarDecl*>(s);
             if (!vd || !vd->isConst || vd->name.empty()) continue;
             auto slot = info.slotOf.find(vd->name);
-            if (slot != info.slotOf.end()) info.slotIsImmutable[slot->second] = true;
+            if (slot != info.slotOf.end()) {
+                info.slotImmutable[slot->second] = SlotImmutability::Throws;
+            }
         }
     }
     // No value yet, and that is the point: the record is created by `main`,
@@ -662,7 +673,9 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     // bindings — uninitialized — before any of its body runs, and a function
     // called during that window reading one is the ReferenceError this puts
     // there.
-    openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts), mainFn);
+    openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
+                        ast::getDefinitelyAssignedLexicalNames(topLevelStmts),
+                        ast::getConstDeclarations(topLevelStmts), mainFn);
 }
 
 // Does this module function need the module scope's record at entry? An
@@ -809,7 +822,9 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // binding when the scope is entered and the declaration only initializes
     // it.
     if (functionEnvScope_ != SIZE_MAX) {
-        openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts), ilFn);
+        openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts),
+                            ast::getDefinitelyAssignedLexicalNames(stmts),
+                            ast::getConstDeclarations(stmts), ilFn);
     }
 
     if (!lowerStmtList(stmts, ilFn)) return false;

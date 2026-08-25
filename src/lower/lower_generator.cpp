@@ -420,7 +420,11 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     // called rather than when it is first resumed, and nothing can tell: no
     // code runs in between and the record is unreachable until the object it
     // hangs off is handed out.
-    openLexicalBindings(frameScope, ast::getLexicalDeclarations(stmts), resumeFn);
+    // No definitely-assigned names: a machine body is re-entered from a
+    // resume edge, and "nothing has run yet" is a statement about entry from
+    // the top that a resume point does not make.
+    openLexicalBindings(frameScope, ast::getLexicalDeclarations(stmts), {},
+                        ast::getConstDeclarations(stmts), resumeFn);
 
     bool ok = lowerStmtList(stmts, resumeFn);
     if (ok && !currentBlockIsTerminated(resumeFn)) {

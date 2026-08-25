@@ -62,11 +62,29 @@ struct CleanupFrame {
     il::BlockId outerHandler = il::kNoBlock;
 };
 
+// The two immutable-binding forms ECMA-262 creates, told apart by the S that
+// 9.1.1.1.5 SetMutableBinding step 7 tests before it throws.
+enum class SlotImmutability : uint8_t { Mutable, Silent, Throws };
+
 struct EnvScopeInfo {
     std::unordered_map<std::string, uint32_t> slotOf;
     std::vector<std::string> slotNames;
     std::vector<bool> slotIsLexical;
-    std::vector<bool> slotIsImmutable;
+    // Which of the lexical slots are DEFINITELY ASSIGNED: their initializer
+    // runs before any user code can run in the scope, so no read of them can
+    // reach the dead zone (ast/queries.h,
+    // `getDefinitelyAssignedLexicalNames`). The binding is still lexical — it
+    // is a `let`, `const` or `class` and every diagnostic that turns on that
+    // is unchanged — but its slot carries no marker and its reads carry no
+    // check.
+    std::vector<bool> slotIsDefiniteInit;
+    // What 9.1.1.1.5 step 7 answers for the slot's binding. `Silent` is
+    // CreateImmutableBinding(n, false) — a named function expression's own name
+    // — where the S the step tests is the ASSIGNING code's strictness;
+    // `Throws` is CreateImmutableBinding(n, true), which `const` uses, where it
+    // is the binding's own and the strictness of the assigning code never
+    // enters into it.
+    std::vector<SlotImmutability> slotImmutable;
     // Which slots hold a Number at every read (lower_scope.cpp
     // `planEnvSlotNumberTypes`). The record itself is unchanged — a canonical
     // double IS a Value by NaN-box construction and the collector already walks

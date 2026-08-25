@@ -21,21 +21,29 @@ using bronze::lower_test::inferAndLower;
 
 namespace {
 
-// A slot's read is unboxed exactly when the `env.get` feeding it is followed by
+// A slot's read is unboxed exactly when an `env.get` feeding it is followed by
 // the raw form. Asked of the printed module because the two instructions are
 // what the claim IS.
-bool slotIsRaw(const std::string& il, const std::string& slotName) {
-    size_t at = il.find("\"" + slotName + "\"");
+//
+// Module-wide rather than per-name: an env read prints its record, depth and
+// index, and the binding's NAME only while the read carries a dead-zone check —
+// which the bindings here no longer do, their initializers being proven to run
+// before anything can read them. Every case below is written to make the
+// module-wide question the same one: the accepting cases capture exactly one
+// binding, and the case that captures two asserts that NEITHER is raw.
+bool anyReadIsRaw(const std::string& il) {
+    size_t at = il.find("= env.get");
     while (at != std::string::npos) {
         const size_t lineEnd = il.find('\n', at);
         if (lineEnd == std::string::npos) return false;
         const size_t next = il.find('\n', lineEnd + 1);
         const std::string following =
             il.substr(lineEnd + 1, (next == std::string::npos ? il.size() : next) - lineEnd - 1);
-        if (following.find("unbox.f64") != std::string::npos) {
-            return following.find(", raw") != std::string::npos;
+        if (following.find("unbox.f64") != std::string::npos &&
+            following.find(", raw") != std::string::npos) {
+            return true;
         }
-        at = il.find("\"" + slotName + "\"", at + 1);
+        at = il.find("= env.get", at + 1);
     }
     return false;
 }
@@ -63,7 +71,7 @@ TEST_CASE("a captured counter written only from itself and literals is proven") 
         "  return [bump, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK(slotIsRaw(il, "n"));
+    CHECK(anyReadIsRaw(il));
 }
 
 TEST_CASE("a captured binding written from a parameter is refused") {
@@ -77,7 +85,7 @@ TEST_CASE("a captured binding written from a parameter is refused") {
         "  return [set, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK_FALSE(slotIsRaw(il, "n"));
+    CHECK_FALSE(anyReadIsRaw(il));
 }
 
 TEST_CASE("one non-numeric write anywhere refuses the binding") {
@@ -90,7 +98,7 @@ TEST_CASE("one non-numeric write anywhere refuses the binding") {
         "  return [bump, wreck, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK_FALSE(slotIsRaw(il, "n"));
+    CHECK_FALSE(anyReadIsRaw(il));
 }
 
 TEST_CASE("a nested binding of the same name refuses the outer one") {
@@ -107,7 +115,7 @@ TEST_CASE("a nested binding of the same name refuses the outer one") {
         "  return [bump, other, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK_FALSE(slotIsRaw(il, "n"));
+    CHECK_FALSE(anyReadIsRaw(il));
 }
 
 TEST_CASE("a var is refused where the same code as a let is proven") {
@@ -126,8 +134,8 @@ TEST_CASE("a var is refused where the same code as a let is proven") {
     asVar.replace(asVar.find("KIND"), 4, "var");
     std::string asLet = body;
     asLet.replace(asLet.find("KIND"), 4, "let");
-    CHECK_FALSE(slotIsRaw(lowerToText(asVar), "n"));
-    CHECK(slotIsRaw(lowerToText(asLet), "n"));
+    CHECK_FALSE(anyReadIsRaw(lowerToText(asVar)));
+    CHECK(anyReadIsRaw(lowerToText(asLet)));
 }
 
 TEST_CASE("an uninitialized declaration is refused") {
@@ -139,7 +147,7 @@ TEST_CASE("an uninitialized declaration is refused") {
         "  return [bump, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK_FALSE(slotIsRaw(il, "n"));
+    CHECK_FALSE(anyReadIsRaw(il));
 }
 
 TEST_CASE("a proven binding may not vouch for one that is refused") {
@@ -156,6 +164,6 @@ TEST_CASE("a proven binding may not vouch for one that is refused") {
         "  return [set, bump, read];\n"
         "}\n"
         "console.log(make());\n");
-    CHECK_FALSE(slotIsRaw(il, "b"));
-    CHECK_FALSE(slotIsRaw(il, "a"));
+    // Neither of them, which is what the module-wide form says here.
+    CHECK_FALSE(anyReadIsRaw(il));
 }

@@ -1,0 +1,9 @@
+one
+ReferenceError/two
+ok:ReferenceError
+42
+ReferenceError/40
+inner-ok,ReferenceError
+0,1
+ReferenceError/seven
+ReferenceError/top

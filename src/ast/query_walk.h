@@ -512,6 +512,12 @@ inline void CaptureVisitor::addFunctionBody(const std::vector<StmtPtr>& body,
 // What one statement contributes to its scope's LEXICAL declarations. A
 // `function` declaration is not one of them, which is the whole difference
 // between this and `getScopeDeclarations`.
+inline void appendConstNames(const Stmt& s, std::vector<std::string>& out) {
+    if (const auto* v = dynamic_cast<const VarDecl*>(&s)) {
+        if (v->isConst) appendDeclaredNames(*v, out);
+    }
+}
+
 inline void appendLexicalNames(const Stmt& s, std::vector<std::string>& out) {
     if (const auto* v = dynamic_cast<const VarDecl*>(&s)) {
         if (!v->isVar) appendDeclaredNames(*v, out);

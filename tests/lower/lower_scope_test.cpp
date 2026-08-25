@@ -248,11 +248,18 @@ TEST_CASE("a module-level lexical binding a function reads is checked at the rea
     // about the READ's position says whether the binding has been initialized,
     // and the check has to be at the read rather than elided by lowering having
     // walked past the declaration.
+    //
+    // `later`'s initializer CALLS, which is what leaves the question open: the
+    // call is a moment at which `early` could run, so the read really can land
+    // in the dead zone. Written that way deliberately — with a literal
+    // initializer nothing could run before it and the check is provably
+    // unreachable, which is the case below this one.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
         "function early() { return later; }\n"
-        "let later = 1;\n"
+        "function one() { return early ? 1 : 1; }\n"
+        "let later = one();\n"
         "console.log(early());\n",
         diags, buf);
 
@@ -264,14 +271,68 @@ TEST_CASE("a module-level lexical binding a function reads is checked at the rea
     CHECK(text.find("\"later\"") != std::string::npos);
 }
 
+TEST_CASE("a lexical binding nothing can read before its initializer keeps no dead zone") {
+    // The definite-assignment half (ast/queries.h,
+    // `getDefinitelyAssignedLexicalNames`). Same shape as the case above and
+    // the same closure over the same slot — but the initializer is a literal
+    // and every statement above it is a hoisted function declaration, so
+    // between entering the scope and running it NO user code runs at all.
+    // Nothing can have called `early`, so no read of `later` can reach the
+    // dead zone and the check that would test for it can only answer one way.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function early() { return later; }\n"
+        "let later = 1;\n"
+        "console.log(early());\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.init.tdz") == std::string::npos);
+    CHECK(text.find("env.get.tdz") == std::string::npos);
+    // The slot is still there and still read through the record: what is gone
+    // is the marker and the compare, not the binding.
+    CHECK(text.find("env.get %") != std::string::npos);
+}
+
+TEST_CASE("a call above the declaration keeps every dead zone below it") {
+    // The scan STOPS at the first statement that can run user code, and
+    // everything after it keeps its check — including a binding whose own
+    // initializer is a literal. `side()` is a moment at which `peek` can run,
+    // and `peek` reads `flag`.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(
+        "function peek() { return flag; }\n"
+        "function side() { return 1; }\n"
+        "let started = side();\n"
+        "let flag = 2;\n"
+        "console.log(peek(), started);\n",
+        diags, buf);
+
+    REQUIRE(optMod.has_value());
+    REQUIRE_FALSE(diags.hasErrors());
+    const std::string text = il::print(*optMod);
+    CHECK(text.find("env.init.tdz") != std::string::npos);
+    CHECK(text.find("env.get.tdz") != std::string::npos);
+    CHECK(text.find("\"flag\"") != std::string::npos);
+}
+
 TEST_CASE("an assignment to a lexical slot is checked before it stores") {
     // 6.2.5.6 PutValue reaches SetMutableBinding, which refuses an
     // uninitialized binding exactly as a read does — so the store is preceded
     // by the same checked read, whose result nothing uses.
+    //
+    // `n` is seeded by a CALL, which is what leaves it checkable: with a
+    // literal initializer nothing could run before it and both the read and
+    // the write drop their check (`getDefinitelyAssignedLexicalNames`).
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     const auto optMod = parseAndLower(
-        "let n = 0;\n"
+        "function seed() { return 0; }\n"
+        "let n = seed();\n"
         "function bump() { n = n + 1; }\n"
         "bump();\n"
         "console.log(n);\n",

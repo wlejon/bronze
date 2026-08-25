@@ -519,9 +519,13 @@ private:
     // path — a local, a free variable of a closure, a compound assignment's
     // read half — gets the check without knowing it exists.
     bool envSlotIsLexical(uint32_t depth, uint32_t index) const;
+    // Whether the lexical slot's initializer is proven to run before any user
+    // code can, so its dead zone is unreachable (lowerer_state.h,
+    // `slotIsDefiniteInit`).
+    bool envSlotDefiniteInit(uint32_t depth, uint32_t index) const;
     // The same question for 9.1.1.1.3's immutable bindings, asked by
     // `emitEnvSet` alone — see EnvScopeInfo::slotIsImmutable.
-    bool envSlotIsImmutable(uint32_t depth, uint32_t index) const;
+    SlotImmutability envSlotImmutability(uint32_t depth, uint32_t index) const;
 
     // Does this slot hold a Number at every read? Asked by `emitEnvGet` alone,
     // which is what makes the answer a calling convention for the binding
@@ -537,10 +541,17 @@ private:
     // marked, filled with the uninitialized marker, and BOUND under its name.
     // `scopeIndex` is the entry in `envScopes_` that owns them.
     void openLexicalBindings(size_t scopeIndex, const std::vector<std::string>& lexicalNames,
+                             const std::vector<std::string>& definiteNames,
+                             const std::vector<std::string>& constNames,
                              il::Function& ilFn);
     uint32_t envDepthOf(size_t scopeIndex) const;
     Value readBinding(const VarBinding& b, il::Function& ilFn);
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
+    // 9.1.1.1.5 step 7 for a `const` that never became an environment slot,
+    // which is every `const` no closure reads: its value lives in SSA, so
+    // `emitEnvSet`'s arm never sees it and an assignment was a rename. True
+    // when the store must not happen, with the TypeError already emitted.
+    bool refuseConstAssignment(const VarBinding& b, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
 
     // --- the static call plan (lowerer_state.h, EnvScopeInfo::slotIsStableFn) --

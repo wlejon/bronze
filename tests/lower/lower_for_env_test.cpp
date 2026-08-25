@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <string>
+#include <vector>
 
 #include "il/print.h"
 #include "lower_fixture.h"
@@ -57,6 +58,51 @@ TEST_CASE("a counted for loop no closure reaches builds no environment at all") 
     CHECK(il::print(*optMod).find("env.create") == std::string::npos);
 }
 
+namespace {
+
+// Where the per-iteration COPIES are, told from ordinary reads: a copy is the
+// only thing that reads one record's slot and writes the SAME depth and index
+// of a DIFFERENT record, which is what 14.7.4.9
+// CreatePerIterationEnvironment is and what `lowerForStmt` emits for it.
+//
+// `env.get` alone stopped separating the two: a binding whose initializer is
+// proven to run before anything can read it now reads through the plain form,
+// exactly as a copy always has.
+std::vector<size_t> copyPositions(const std::string& text) {
+    std::vector<size_t> found;
+    size_t at = text.find("= env.get %");
+    while (at != std::string::npos) {
+        const size_t lineEnd = text.find('\n', at);
+        if (lineEnd == std::string::npos) break;
+        // `%<res>: dynamic = env.get %<rec>, <depth>, <index>`
+        const size_t resAt = text.rfind('%', text.rfind(':', at));
+        const std::string res = text.substr(resAt, text.find(':', resAt) - resAt);
+        const std::string get = text.substr(at, lineEnd - at);
+        const size_t recAt = get.find('%');
+        const size_t coordAt = get.find(',', recAt);
+        const std::string record = get.substr(recAt, coordAt - recAt);
+        const std::string coords = get.substr(coordAt);  // ", <depth>, <index>"
+
+        const size_t next = text.find('\n', lineEnd + 1);
+        std::string set = text.substr(
+            lineEnd + 1, (next == std::string::npos ? text.size() : next) - lineEnd - 1);
+        const size_t setAt = set.find("env.set %");
+        if (setAt != std::string::npos) {
+            set = set.substr(setAt + 8);
+            const size_t setCoordAt = set.find(',');
+            const std::string target = set.substr(0, setCoordAt);
+            if (target != record && set.compare(setCoordAt, coords.size(), coords) == 0 &&
+                set.find(", " + res) != std::string::npos) {
+                found.push_back(at);
+            }
+        }
+        at = text.find("= env.get %", at + 1);
+    }
+    return found;
+}
+
+}  // namespace
+
 TEST_CASE("a for binding a closure reaches is copied before every iteration") {
     // Three records for a loop with one head binding: the one the head's
     // declarations ran in, the entry copy (ForBodyEvaluation step 2, before the
@@ -73,7 +119,7 @@ TEST_CASE("a for binding a closure reaches is copied before every iteration") {
     const std::string text = il::print(*optMod);
     CHECK(countOf(text, "env.create") == 3);
     // Each copy reads the slot it is copying and writes it into the new record.
-    CHECK(countOf(text, "env.get %") == 2);
+    CHECK(copyPositions(text).size() == 2);
 }
 
 TEST_CASE("the per-iteration record is the header's block parameter, not a variable") {
@@ -127,10 +173,10 @@ TEST_CASE("a closure in the head captures the head's own record, never a copy") 
     REQUIRE_FALSE(diags.hasErrors());
     const std::string text = il::print(*optMod);
     const size_t closure = text.find("create.func");
-    const size_t firstCopy = text.find("env.get %");
+    const std::vector<size_t> copies = copyPositions(text);
     REQUIRE(closure != std::string::npos);
-    REQUIRE(firstCopy != std::string::npos);
-    CHECK(closure < firstCopy);
+    REQUIRE_FALSE(copies.empty());
+    CHECK(closure < copies.front());
 }
 
 TEST_CASE("the update block copies before it increments") {
@@ -190,7 +236,7 @@ TEST_CASE("a binding in a record only because a handler may read it is not copie
     REQUIRE_FALSE(diags.hasErrors());
     // Whatever records this function makes, none of them is a copy of another:
     // a copy is the only thing that reads a slot to write the same slot.
-    CHECK(il::print(*optMod).find("env.get %") == std::string::npos);
+    CHECK(copyPositions(il::print(*optMod)).empty());
 }
 
 TEST_CASE("a closure that binds the loop's name itself gets no copies") {
@@ -210,7 +256,7 @@ TEST_CASE("a closure that binds the loop's name itself gets no copies") {
 
     REQUIRE(optMod.has_value());
     REQUIRE_FALSE(diags.hasErrors());
-    CHECK(il::print(*optMod).find("env.get %") == std::string::npos);
+    CHECK(copyPositions(il::print(*optMod)).empty());
 }
 
 TEST_CASE("a continue hands the per-iteration record to the update block") {

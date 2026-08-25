@@ -465,7 +465,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             if (!rhsVal) return std::nullopt;
             Value rhsStored = *rhsVal;
             if (isLocal) {
-                writeBinding(varBindings_[bindingIdx], rhsStored, ilFn);
+                if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
+                    writeBinding(varBindings_[bindingIdx], rhsStored, ilFn);
+                }
             } else {
                 emitEnvSet(depth, index, rhsStored, ilFn, /*assigning=*/true);
             }
@@ -537,7 +539,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                                                       provenNumber(*bin), ilFn)
                                 : *rhsVal;
         if (isLocal) {
-            writeBinding(varBindings_[bindingIdx], stored, ilFn);
+            if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
+                writeBinding(varBindings_[bindingIdx], stored, ilFn);
+            }
         } else {
             emitEnvSet(depth, index, stored, ilFn, /*assigning=*/true);
         }

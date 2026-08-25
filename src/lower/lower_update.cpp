@@ -127,7 +127,9 @@ std::optional<Lowerer::Value> Lowerer::lowerUpdate(const ast::Unary& un, il::Fun
     Value newVal = emitUpdateStep(numOld, un.op, ilFn);
 
     if (isLocal) {
-        writeBinding(varBindings_[bindingIdx], newVal, ilFn);
+        if (!refuseConstAssignment(varBindings_[bindingIdx], ilFn)) {
+            writeBinding(varBindings_[bindingIdx], newVal, ilFn);
+        }
     } else {
         emitEnvSet(depth, index, newVal, ilFn, /*assigning=*/true);
     }

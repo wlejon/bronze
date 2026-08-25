@@ -292,10 +292,17 @@ bool Lowerer::envSlotIsLexical(uint32_t depth, uint32_t index) const {
     return index < scope.slotIsLexical.size() && scope.slotIsLexical[index];
 }
 
-bool Lowerer::envSlotIsImmutable(uint32_t depth, uint32_t index) const {
+bool Lowerer::envSlotDefiniteInit(uint32_t depth, uint32_t index) const {
     if (depth >= envScopes_.size()) return false;
     const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
-    return index < scope.slotIsImmutable.size() && scope.slotIsImmutable[index];
+    return index < scope.slotIsDefiniteInit.size() && scope.slotIsDefiniteInit[index];
+}
+
+SlotImmutability Lowerer::envSlotImmutability(uint32_t depth, uint32_t index) const {
+    if (depth >= envScopes_.size()) return SlotImmutability::Mutable;
+    const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
+    if (index >= scope.slotImmutable.size()) return SlotImmutability::Mutable;
+    return scope.slotImmutable[index];
 }
 
 bool Lowerer::envSlotIsF64(uint32_t depth, uint32_t index) const {
@@ -493,7 +500,7 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
 // run. Eliding on it is exactly the bug the case in
 // `cases/temporal_dead_zone.js` pins.
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
-    const bool lexical = envSlotIsLexical(depth, index);
+    const bool lexical = envSlotIsLexical(depth, index) && !envSlotDefiniteInit(depth, index);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
@@ -524,6 +531,8 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
 
 void Lowerer::openLexicalBindings(size_t scopeIndex,
                                   const std::vector<std::string>& lexicalNames,
+                                  const std::vector<std::string>& definiteNames,
+                                  const std::vector<std::string>& constNames,
                                   il::Function& ilFn) {
     const uint32_t depth = envDepthOf(scopeIndex);
     for (const auto& name : lexicalNames) {
@@ -544,14 +553,30 @@ void Lowerer::openLexicalBindings(size_t scopeIndex,
         const uint32_t slot = slotIt->second;
         envScopes_[scopeIndex].slotIsLexical[slot] = true;
 
-        il::Instruction inst;
-        inst.op = il::Op::EnvInitTdz;
-        inst.type = il::Type::Void;
-        inst.result = il::kNoValue;
-        inst.operands = {currentEnv(ilFn)};
-        inst.envDepth = depth;
-        inst.envIndex = slot;
-        emitInst(ilFn, inst);
+        // A definitely-assigned binding gets no marker and no check. The
+        // binding stays lexical — the slot exists, the declaration still ends
+        // a dead zone the language gives it, and every rule that turns on
+        // `let`-ness is unchanged — but the record's slot holds `undefined`
+        // until the initializer runs rather than the uninitialized singleton.
+        // That is the deliberate failure mode: if this analysis were ever
+        // wrong, a read of one answers `undefined` instead of throwing, and
+        // never reads a marker's bits as a value.
+        if (std::find(constNames.begin(), constNames.end(), name) != constNames.end()) {
+            envScopes_[scopeIndex].slotImmutable[slot] = SlotImmutability::Throws;
+        }
+        if (std::find(definiteNames.begin(), definiteNames.end(), name) !=
+            definiteNames.end()) {
+            envScopes_[scopeIndex].slotIsDefiniteInit[slot] = true;
+        } else {
+            il::Instruction inst;
+            inst.op = il::Op::EnvInitTdz;
+            inst.type = il::Type::Void;
+            inst.result = il::kNoValue;
+            inst.operands = {currentEnv(ilFn)};
+            inst.envDepth = depth;
+            inst.envIndex = slot;
+            emitInst(ilFn, inst);
+        }
 
         if (!declareVariable(name, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/true,
                              /*isVar=*/false, /*isInitialized=*/false, il::kNoValue, Span{})) {
@@ -569,16 +594,30 @@ void Lowerer::openLexicalBindings(size_t scopeIndex,
 // discarded: what is wanted from it is the throw.
 void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function& ilFn,
                          bool assigning) {
-    // 9.1.1.1.5 step 4, the immutable arm: strict code throws and sloppy code
-    // returns without storing. Both are DROPS of the store, which is why this
-    // is decided here and not at each of the three call sites that assign to a
+    // 9.1.1.1.5's two checks, in the order the step list runs them: step 5
+    // raises a ReferenceError for a binding still in its dead zone, and step 7
+    // an immutable one's TypeError. Both DROP the store, which is why this is
+    // decided here and not at each of the three call sites that assign to a
     // name (assignment, update, destructuring) — a store that reached the slot
     // from any of them would let a program rename its own function.
-    if (assigning && envSlotIsImmutable(depth, index)) {
-        if (strictCode_) emitImmutableAssign(envScopes_[envScopes_.size() - 1 - depth].slotNames[index], ilFn);
+    //
+    // What decides step 7's throw is S, and S is the BINDING's: `const` is
+    // created with CreateImmutableBinding(name, true) (14.3.1.1), so an
+    // assignment to one is a TypeError in sloppy code as much as in strict.
+    // Only the other immutable binding in the language — a named function
+    // expression's own name, created with `false` at 15.2.5 — takes S from the
+    // assigning code, and that one still stores nothing either way.
+    const SlotImmutability immutable = envSlotImmutability(depth, index);
+    if (assigning && envSlotIsLexical(depth, index) && !envSlotDefiniteInit(depth, index)) {
+        emitEnvGet(depth, index, ilFn);
+    }
+    if (assigning && immutable != SlotImmutability::Mutable) {
+        if (immutable == SlotImmutability::Throws || strictCode_) {
+            emitImmutableAssign(envScopes_[envScopes_.size() - 1 - depth].slotNames[index],
+                                ilFn);
+        }
         return;
     }
-    if (assigning && envSlotIsLexical(depth, index)) emitEnvGet(depth, index, ilFn);
     Value boxed = boxValueIfNeeded(val, ilFn);
     il::Instruction inst;
     inst.op = il::Op::EnvSet;
@@ -609,6 +648,21 @@ uint32_t Lowerer::envDepthOf(size_t scopeIndex) const {
 Lowerer::Value Lowerer::readBinding(const VarBinding& b, il::Function& ilFn) {
     if (!b.inEnv) return Value{b.valueId, b.type};
     return emitEnvGet(envDepthOf(b.envScopeIndex), b.envSlot, ilFn);
+}
+
+// 9.1.1.1.5 step 7 for the bindings `emitEnvSet` never sees. A `const` no
+// closure reads gets no environment slot at all — its value is an SSA register
+// — so the immutable arm above has nothing to fire on and an assignment to it
+// was a RENAME: the store went through and the next read saw the new value.
+//
+// The TypeError is the same instruction the captured form raises, and the
+// store is dropped the same way. Answering true is what tells the four
+// assignment paths (assignment, compound assignment, update, destructuring)
+// not to write.
+bool Lowerer::refuseConstAssignment(const VarBinding& b, il::Function& ilFn) {
+    if (!b.isConst) return false;
+    emitImmutableAssign(b.name, ilFn);
+    return true;
 }
 
 void Lowerer::writeBinding(VarBinding& b, Value val, il::Function& ilFn) {
@@ -842,7 +896,8 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
-    info.slotIsImmutable.assign(slots.size(), false);
+    info.slotIsDefiniteInit.assign(slots.size(), false);
+    info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
     // A block's own function declarations, on the same terms as a function
     // body's (lower.cpp, `enterFunctionEnv`) — and never inside a machine body,
     // for the reason stated there.
@@ -868,7 +923,12 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
 
     std::vector<std::string> lexical = extraLexicalDeclarations;
     for (auto& name : ast::getLexicalDeclarations(stmts)) lexical.push_back(std::move(name));
-    openLexicalBindings(envScopes_.size() - 1, lexical, ilFn);
+    // The EXTRA names are not candidates: they come from a head this
+    // statement list does not contain (a `for`-`of` binding, a catch
+    // parameter), so nothing here can say when they are initialized.
+    openLexicalBindings(envScopes_.size() - 1, lexical,
+                        ast::getDefinitelyAssignedLexicalNames(stmts),
+                        ast::getConstDeclarations(stmts), ilFn);
 }
 
 void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilFn) {
@@ -884,7 +944,8 @@ void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilF
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
-    info.slotIsImmutable.assign(slots.size(), false);
+    info.slotIsDefiniteInit.assign(slots.size(), false);
+    info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
     const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
     const uint32_t parentChildSlot = generator_ ? envScopes_.back().childSlot : UINT32_MAX;
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
@@ -998,9 +1059,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
             info.slotOf[declaredName] = 0;
             info.slotNames = {declaredName};
             info.slotIsLexical.assign(1, false);
+            info.slotIsDefiniteInit.assign(1, false);
             // The whole point of the record: 15.2.5 step 3 is
             // CreateImmutableBinding, so an inner `fact = x` stores nothing.
-            info.slotIsImmutable.assign(1, true);
+            info.slotImmutable.assign(1, SlotImmutability::Silent);
             info.envValue = nfeEnv;
             envScopes_.push_back(std::move(info));
             currentEnvValue_ = nfeEnv;
