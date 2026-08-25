@@ -6,6 +6,7 @@
 
 #include "ast/ast.h"
 #include "support/diagnostics.h"
+#include "types/pins.h"
 #include "types/result.h"
 
 namespace bronze::types {
@@ -22,7 +23,13 @@ namespace bronze::types {
 // host that registers its own `Math`, `globalThis`, `Float64Array` or
 // `Float32Array` replaces the builtin the builtin-identity proofs name, so
 // those proofs are withheld. Null means no manifest.
+//
+// `pins` is the `--pins` manifest, when the caller has one: per-(class, field)
+// declarations this pass spends without the proofs it would otherwise demand.
+// A promise about the program, not a proof derived from it — types/pins.h says
+// what it licenses and who is meant to enforce it. Null means no manifest.
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
-                                           const std::vector<std::string>* hostGlobals = nullptr);
+                                           const std::vector<std::string>* hostGlobals = nullptr,
+                                           const PinManifest* pins = nullptr);
 
 }  // namespace bronze::types

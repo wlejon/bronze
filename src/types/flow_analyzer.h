@@ -178,6 +178,10 @@ private:
     std::vector<Type> ctorParamTypes(uint32_t ctorIndex, size_t count) const;
     // The class a receiver type names, or null when it names none.
     const ClassLayout* receiverClass(Type receiver) const;
+    // The `--pins` declaration covering `cls.field`, walking `extends` so that
+    // a pin on a base covers every class below it. Null when there is no
+    // manifest, no class name for `cls`, or no entry. See types/pins.h.
+    const PinKind* pinnedField(ShapeClassId cls, const std::string& field) const;
     // Records why a still-dynamic identifier receiver's parameter was refused,
     // when the identifier IS a parameter of the method this body is.
     void noteIdentRefusal(const ast::Ident& id, Type resolved);

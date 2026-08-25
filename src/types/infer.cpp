@@ -124,6 +124,26 @@ bool widenSignatures(ModuleContext& mod) {
     return changed;
 }
 
+// What a parameter is left with when pin optimism declined to join a Dynamic
+// argument into it (flow_expr.cpp). The skip cannot be free: the join is what
+// makes a parameter's type a FACT about every caller, and a parameter that also
+// receives values this pass refused to look at was not watched being made. So
+// the identity survives — a shape compare checks it, and a wrong guess costs a
+// miss — and nothing else does. Spending it on a primitive is what turned the
+// blanket probe's `mesh_churn_2k` run into a NaN: `builtHere` left true is a
+// raw unbox of whatever the skipped call site passed.
+//
+// Monotone in the fixpoint's sense, which is why it belongs here and not at the
+// contribution: `Never` stays `Never`, a narrowing identity widens to `Dynamic`
+// along with the join it came from, and the mark itself only ever gets set.
+Type demoteToGuess(Type t) {
+    if (t.is(TypeKind::Never)) return Type::never();
+    if (t.is(TypeKind::Object) && t.shapeClass() != kNoShapeClass) {
+        return Type::objectIdentityOnly(t.shapeClass());
+    }
+    return Type::dynamic();
+}
+
 // The same fold for class methods, whose callers are enumerated through the
 // receiver's class rather than through the callee's name (method_ident.h).
 //
@@ -139,8 +159,11 @@ bool widenMethods(ModuleContext& mod) {
         auto& m = mod.methods.methods()[i];
         const bool speaks = m.plainParams && !mod.methodPoison.poisons(i);
         for (size_t p = 0; p < m.signature.params.size(); ++p) {
-            const Type widened =
+            Type widened =
                 speaks ? join(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
+            if (speaks && p < m.sawSkippedDynamicArg.size() && m.sawSkippedDynamicArg[p]) {
+                widened = demoteToGuess(widened);
+            }
             if (widened != m.signature.params[p]) {
                 m.signature.params[p] = widened;
                 changed = true;
@@ -321,7 +344,8 @@ private:
 }  // namespace
 
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
-                                           const std::vector<std::string>* hostGlobals) {
+                                           const std::vector<std::string>* hostGlobals,
+                                           const PinManifest* pins) {
     InferenceResult result;
     result.moduleName = module.name;
 
@@ -360,7 +384,11 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
+    // The two pin modes. `--pins` is the targeted one and needs no env var;
+    // `BRONZE_UNSOUND_PINS` stays as the degenerate "pin everything" form the
+    // ceiling probe was measured with, so that number remains reproducible.
     mod.unsoundPins = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
+    mod.pins = pins != nullptr && !pins->empty() ? pins : nullptr;
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);

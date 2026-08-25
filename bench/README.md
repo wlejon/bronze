@@ -98,6 +98,47 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **Stage 3.1 (pin manifest: the ceiling, kept, on the programs the blanket flag broke)** — 2026-08-24:
+  > [!NOTE]
+  > **`--pins <file>` replaces the blanket probe with per-(class, field)
+  > declarations** (`src/types/pins.h`; manifest at `bench/pins/threejs-math.pins`).
+  > A pinned `number` field spends its claim without the builtHere /
+  > per-class / write-audit proofs; a pinned `numeric-elements` field reads
+  > as an array whose elements compile to raw f64 loads and stores
+  > (`il::kElemKindPlainArrayF64`). The mark rides on the TYPE, so
+  > `const te = this.elements` keeps it and the method bodies that matter get
+  > the raw form. Still a PROMISE, not a proof — enforcement is meant to move
+  > to the write paths. `BRONZE_UNSOUND_PINS` remains as the degenerate
+  > "pin everything" mode; `--pins` needs no env var.
+  >
+  > Measured on one build, A/B by manifest, medians of 5 (warmup discarded),
+  > idle box:
+  > - **Kernel (`bench/mat4_kernel*.js`, ns/call by the two-count wall delta):
+  >   27.6 ns/call** — (557.97 − 60.96) ms / 18e6. Identical to the blanket
+  >   probe's 27.6, against a 196.9 default; checksums 400000 / 940000.
+  > - `three_math` 42.47 → **22.17 ms (−48%)**, checksum 405000. Better than
+  >   the blanket probe's 30.02, not worse: the demotion below costs the
+  >   blanket flag's wrong `builtHere` claims and buys back what they broke.
+  > - `mesh_churn_2k` 77.59 → **73.05 ms**, checksum **−2112298 (correct)**.
+  >   The blanket flag produced NaN at 236 ms. That was the whole point of the
+  >   chunk, and the fix was not where the probe's note guessed:
+  >
+  > **The Dynamic-argument skip in method-param joins was the miscompile, not
+  > the field pins.** Bisected: a manifest naming only `Vector2.x` — a class
+  > `mesh_churn_2k` never touches — still produced NaN, and the field pins with
+  > the skip disabled were correct but bought the kernel nothing (193 ns/call,
+  > i.e. all of the 7x is that skip). Skipping the contribution outright leaves
+  > a parameter typed `builtHere` object on the strength of the call sites the
+  > pass agreed to look at, and `builtHere` is the one question a primitive
+  > field claim may be spent on — so an ORDINARY audited field read on that
+  > parameter becomes a raw unbox of whatever the skipped site passed. The
+  > skip now marks the parameter (`MethodInfo::sawSkippedDynamicArg`, sticky)
+  > and `widenMethods` demotes it at the fold: the object IDENTITY survives,
+  > which is what a shape compare checks and what unlocks
+  > `Matrix4.multiplyMatrices`, and every primitive answer drops to `Dynamic`.
+  >
+  > Full suite green with neither flag set (29/29).
+
 - **Pin ceiling probe (`BRONZE_UNSOUND_PINS`: what pin-based compilation would buy)** — 2026-08-24:
   > [!NOTE]
   > **An UNSOUND, default-off measurement flag, not an optimization.** With

@@ -11,6 +11,7 @@
 #include "types/ctor_ident.h"
 #include "types/field_audit.h"
 #include "types/method_ident.h"
+#include "types/pins.h"
 #include "types/result.h"
 #include "types/type.h"
 
@@ -22,6 +23,9 @@ namespace bronze::types {
 // an internal impossibility and is diagnosed rather than looped on.
 inline constexpr uint32_t kMaxFlowIterations = 8;
 inline constexpr uint32_t kMaxCallGraphIterations = 32;
+// How far a pin lookup walks `extends` before giving up. A tripwire, not a
+// limit: a chain this long is a cyclic one, which is a run-time TypeError.
+inline constexpr uint32_t kMaxExtendsHops = 64;
 
 // `name -> Type` at one program point.
 using Env = std::map<std::string, Type>;
@@ -120,11 +124,19 @@ struct ModuleContext {
     bool interprocIdent = false;
     // `BRONZE_NO_METHOD_PARAM_TYPES` controls method parameter typing with primitive types.
     bool methodParamTypes = false;
-    // `BRONZE_UNSOUND_PINS` — the pin CEILING PROBE. Field-type claims are
-    // spent WITHOUT the builtHere / per-class / program-wide-audit proofs,
-    // and Array/TypedArray field kinds survive a read. Unsound by design:
-    // it measures what pin-based compilation would buy, checksum-gated.
+    // `BRONZE_UNSOUND_PINS` — the pin CEILING PROBE, kept for measurement
+    // continuity. The degenerate "pin everything" mode: field-type claims are
+    // spent WITHOUT the builtHere / per-class / program-wide-audit proofs, and
+    // Array/TypedArray field kinds survive a read, for every class and every
+    // field. Unsound by design and known to miscompile programs that hold
+    // objects in arrays; `pins` below is the targeted form that replaced it.
     bool unsoundPins = false;
+    // The `--pins` manifest, or null. Named (class, field) pairs — and only
+    // those — spend the same claims the probe spent everywhere. See
+    // types/pins.h for what a pin promises and who is meant to enforce it.
+    const PinManifest* pins = nullptr;
+    // Whether pin optimism is in force at all, in either mode.
+    bool pinOptimism() const { return unsoundPins || pins != nullptr; }
     uint32_t unboundedMethodCalls = 0;
 
     // ---- interprocedural identity for constructors (ctor_ident.h) -----------

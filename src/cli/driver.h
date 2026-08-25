@@ -30,11 +30,16 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 // of it pay for LLVM object emission — seven minutes against six seconds on a
 // library-sized graph, which is the difference between a number a chunk
 // consults and one it measures twice.
+//
+// `pinsPath` is the `--pins` manifest: per-(class, field) declarations
+// inference spends without the proofs it would otherwise demand
+// (types/pins.h). Empty means no manifest, and it travels as the PATH for the
+// same reason `hostGlobalsPath` does.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
           const std::string& importMapPath = {}, bool inferStats = false,
-          bool assumeNoBigInt = false);
+          bool assumeNoBigInt = false, const std::string& pinsPath = {});
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -73,7 +78,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
-             bool assumeNoBigInt = false);
+             bool assumeNoBigInt = false, const std::string& pinsPath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

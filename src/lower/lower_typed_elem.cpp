@@ -145,12 +145,17 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e) const {
     // which is control flow this op does not model.
     if (ia == nullptr || ia->optional) return std::nullopt;
     const types::Type recv = inferredType(*ia->object);
-    // The pin ceiling probe (BRONZE_UNSOUND_PINS): a proven plain-Array
-    // receiver with a proven-number index takes the raw dense form — no
-    // guards at all. See il::kElemKindPlainArrayF64.
+    // A PINNED dense array (`--pins ... numeric-elements`, types/pins.h) takes
+    // the raw form: no tag test, no bounds check, no hole check. The receiver
+    // earned the mark at the pinned field read it came from and carried it
+    // here on its type, so a local holding `this.elements` qualifies and an
+    // array from anywhere else does not. `BRONZE_UNSOUND_PINS` is the
+    // degenerate mode the ceiling probe measured with and pins every Array
+    // receiver in the program. See il::kElemKindPlainArrayF64.
     if (recv.is(types::TypeKind::Array)) {
-        static const bool unsoundPins = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
-        if (!unsoundPins || !provenNumber(*ia->index)) return std::nullopt;
+        static const bool pinEverything = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
+        if (!recv.arrayElementsPinned() && !pinEverything) return std::nullopt;
+        if (!provenNumber(*ia->index)) return std::nullopt;
         return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
     }
     if (!recv.is(types::TypeKind::TypedArray)) return std::nullopt;

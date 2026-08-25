@@ -1,0 +1,37 @@
+# three.js math classes: the fields whose contents the library never lets be
+# anything but numbers. Hand-written against
+# tests/oracle/threejs/three/math/*.js — every entry below is a field the class
+# body assigns and the whole library only ever assigns numbers to.
+#
+# A pin is a PROMISE, not a proof (src/types/pins.h). Nothing checks it, so an
+# entry that is wrong miscompiles rather than deoptimizes. Which is why the
+# omissions below are as deliberate as the entries:
+#
+#   - `isVector3` / `isMatrix4` / `isQuaternion` / `isEuler` are booleans.
+#   - `Euler._order` is a string ('XYZ').
+#   - `Quaternion._onChangeCallback` / `Euler._onChangeCallback` are functions.
+#   - `Quaternion.x/y/z/w` and `Euler.x/y/z/order` are ACCESSORS over the
+#     underscore fields, not slots; the underscore fields are what is pinned.
+#   - `Object3D.children`, `.position`, `.matrix` and every other object- or
+#     array-of-objects field are absent on purpose. Pinning those is exactly
+#     what broke `mesh_churn_2k` under the blanket `BRONZE_UNSOUND_PINS` flag.
+
+# --- Matrix3 / Matrix4: a dense 9- or 16-element array of doubles ------------
+Matrix3.elements: numeric-elements
+Matrix4.elements: numeric-elements
+
+# --- Vector2 / Vector3: plain number slots -----------------------------------
+Vector2.x: number
+Vector2.y: number
+Vector3.x: number
+Vector3.y: number
+Vector3.z: number
+
+# --- Quaternion / Euler: the underscore slots the accessors front ------------
+Quaternion._x: number
+Quaternion._y: number
+Quaternion._z: number
+Quaternion._w: number
+Euler._x: number
+Euler._y: number
+Euler._z: number

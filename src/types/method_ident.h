@@ -28,6 +28,12 @@ struct MethodInfo {
     // only ever widening.
     Signature signature;
     std::vector<Type> observedParams;
+    // Per parameter: a call site passed a Dynamic argument that pin optimism
+    // (flow.h `pinOptimism`) declined to join in. Sticky, so it is a fact about
+    // the program text and not about which round ran last, and read once at the
+    // fold (`widenMethods`) — which is what keeps the optimism monotone. What
+    // it costs the parameter is spelled out there.
+    std::vector<bool> sawSkippedDynamicArg;
     Type observedReturn = Type::never();
     std::vector<bool> hasDefault;
     std::vector<std::string> safeParamNames;

@@ -122,6 +122,17 @@ public:
     // an object; the native element path needs the kind and stays dynamic.
     static constexpr Type typedArray() { return Type(TypeKind::TypedArray); }
     static constexpr Type array() { return Type(TypeKind::Array); }
+    // A dense JS array whose elements are PINNED: every element a Number,
+    // every index in bounds (types/pins.h). Only a `--pins numeric-elements`
+    // field read produces one.
+    //
+    // Carried on the TYPE rather than in a per-expression side table so that it
+    // follows the value the way the value travels: `const te = this.elements`
+    // is the shape three.js writes, and the mark `this.elements` earned has to
+    // survive the local or the pin buys nothing in the method bodies that
+    // matter. The join drops it (below), so an array that is pinned on one edge
+    // and plain on another is plain.
+    static constexpr Type arrayPinnedF64() { return Type(TypeKind::Array, kPinnedElements); }
 
     constexpr TypeKind kind() const { return kind_; }
     constexpr bool is(TypeKind k) const { return kind_ == k; }
@@ -151,6 +162,11 @@ public:
     constexpr uint32_t typedArrayElemRaw() const {
         return kind_ == TypeKind::TypedArray ? payload_ : kNoTypedArrayElem;
     }
+    // See `arrayPinnedF64`. False for every non-array, so a consumer that
+    // forgets the kind check gets "not pinned" and its guards back.
+    constexpr bool arrayElementsPinned() const {
+        return kind_ == TypeKind::Array && payload_ == kPinnedElements;
+    }
 
     friend constexpr bool operator==(Type a, Type b) {
         return a.kind_ == b.kind_ && a.payload_ == b.payload_ &&
@@ -163,6 +179,9 @@ public:
 
 private:
     static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
+    // The `Array` payload marking pinned elements. Arrays carry no other
+    // payload, so one value is the whole encoding.
+    static constexpr uint32_t kPinnedElements = 1;
     constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload,
                             bool identityOnly = false, bool builtHere = true)
         : kind_(k), payload_(payload), identityOnly_(identityOnly), builtHere_(builtHere) {}

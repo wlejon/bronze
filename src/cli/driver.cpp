@@ -103,6 +103,20 @@ constexpr const char* kUsage =
     "                                      like a builtin's instead of warning and\n"
     "                                      throwing ReferenceError. A lowering-level\n"
     "                                      fact: identical with --no-infer.\n"
+    "  --pins <path>                       Pin manifest: per-(class, field)\n"
+    "                                      declarations inference is told to believe.\n"
+    "                                      `Matrix4.elements: numeric-elements` and\n"
+    "                                      `Vector3.x: number`, one per line, `#`\n"
+    "                                      comments. A pinned read spends its claim\n"
+    "                                      without the builtHere / per-class /\n"
+    "                                      write-audit proofs, and a pinned array's\n"
+    "                                      elements compile to raw f64 loads and\n"
+    "                                      stores with no guard at all. A promise about\n"
+    "                                      the program, like --assume-no-bigint:\n"
+    "                                      NOTHING checks it, and a field that holds\n"
+    "                                      anything but what the manifest says will\n"
+    "                                      miscompile. src/types/pins.h has the\n"
+    "                                      grammar.\n"
     "\n"
     "Options (il):\n"
     "  --infer-stats                       Prepend the inference statistics report to\n"
@@ -236,6 +250,18 @@ bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std
     return true;
 }
 
+// The `--pins` manifest. The grammar and what an entry promises are in
+// types/pins.h; this reads the file and reports an unreadable one through the
+// same path a bad host-globals manifest takes.
+bool loadPins(const std::string& path, types::PinManifest& out, std::string& err) {
+    std::string text;
+    if (!readFile(path, text)) {
+        err = "error: cannot read pin manifest " + path + "\n";
+        return false;
+    }
+    return out.parse(text, path, err);
+}
+
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString,
@@ -272,14 +298,23 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
           const std::string& importMapPath, bool inferStats,
-          bool assumeNoBigInt) {
-    // The manifest is read before any compilation happens: an unreadable file
+          bool assumeNoBigInt, const std::string& pinsPath) {
+    // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
     std::vector<std::string> hostGlobals;
     if (!hostGlobalsPath.empty()) {
         std::string err;
         if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) {
+            if (outString) *outString = err;
+            else std::fputs(err.c_str(), stderr);
+            return 1;
+        }
+    }
+    types::PinManifest pins;
+    if (!pinsPath.empty()) {
+        std::string err;
+        if (!loadPins(pinsPath, pins, err)) {
             if (outString) *outString = err;
             else std::fputs(err.c_str(), stderr);
             return 1;
@@ -306,7 +341,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     std::optional<types::InferenceResult> inferred;
     if (infer) {
         inferred = types::inferModule(*astModule, diags,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals);
+                                      hostGlobals.empty() ? nullptr : &hostGlobals,
+                                      pins.empty() ? nullptr : &pins);
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);
             if (outString) *outString = msg;
@@ -353,7 +389,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
-             const std::string& importMapPath, bool assumeNoBigInt) {
+             const std::string& importMapPath, bool assumeNoBigInt,
+             const std::string& pinsPath) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -368,6 +405,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)emitShared;
     (void)retainFnSource;
     (void)importMapPath;
+    (void)pinsPath;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -402,6 +440,15 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
             return 1;
         }
     }
+    types::PinManifest pins;
+    if (!pinsPath.empty()) {
+        std::string manifestErr;
+        if (!loadPins(pinsPath, pins, manifestErr)) {
+            if (errOut) *errOut = manifestErr;
+            else std::fputs(manifestErr.c_str(), stderr);
+            return 1;
+        }
+    }
 
     SourceSet sources;
     DiagnosticSink diags;
@@ -417,7 +464,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     std::optional<types::InferenceResult> inferred;
     if (infer) {
         inferred = types::inferModule(*astModule, diags,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals);
+                                      hostGlobals.empty() ? nullptr : &hostGlobals,
+                                      pins.empty() ? nullptr : &pins);
         timer.mark("infer");
         if (diags.hasErrors() || !inferred) {
             std::string msg = diags.render(sources);
@@ -636,6 +684,7 @@ int runDriver(int argc, char** argv) {
         bool infer = true;
         bool inferStats = false;
         bool assumeNoBigInt = false;
+        std::string pinsPath;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
@@ -650,6 +699,15 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--pins") {
+                if (i + 1 < argc) {
+                    pinsPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --pins\n");
+                }
+            } else if (arg.rfind("--pins=", 0) == 0) {
+                pinsPath = arg.substr(7);
+                if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -681,7 +739,7 @@ int runDriver(int argc, char** argv) {
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats, assumeNoBigInt);
+                     inferStats, assumeNoBigInt, pinsPath);
     }
 
     if (command == "build") {
@@ -699,6 +757,7 @@ int runDriver(int argc, char** argv) {
         bool inferStats = false;
         bool retainFnSource = true;
         bool assumeNoBigInt = false;
+        std::string pinsPath;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -733,6 +792,15 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--pins") {
+                if (i + 1 < argc) {
+                    pinsPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --pins\n");
+                }
+            } else if (arg.rfind("--pins=", 0) == 0) {
+                pinsPath = arg.substr(7);
+                if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -772,7 +840,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath, assumeNoBigInt);
+                        emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath);
     }
 
     return fail(kUsage);

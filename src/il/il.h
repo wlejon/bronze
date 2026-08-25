@@ -726,10 +726,12 @@ struct Module {
     std::vector<std::string> sourceTexts;
 };
 
-// The PROBE element kind (`BRONZE_UNSOUND_PINS`): a plain dense JS array
-// whose reads/writes are ASSUMED in-bounds, hole-free and numeric — no
-// guard of any kind is emitted. Measurement only; deliberately outside the
-// types::TypedArrayElem range so nothing sound can collide with it.
+// The PINNED element kind: a plain dense JS array whose reads and writes are
+// ASSUMED in-bounds, hole-free and numeric — no guard of any kind is emitted.
+// Granted by a `--pins ... numeric-elements` declaration (types/pins.h), or by
+// the blanket `BRONZE_UNSOUND_PINS` measurement mode. Nothing PROVES the
+// assumption; enforcement is meant to move to the write paths. Deliberately
+// outside the types::TypedArrayElem range so nothing sound can collide with it.
 inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 
 }  // namespace bronze::il

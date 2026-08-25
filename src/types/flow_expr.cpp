@@ -153,6 +153,22 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // audit's refusals are STICKY, so one such round refuses the name
             // for the rest of the compilation on evidence that does not exist.
             if (field.is(TypeKind::Never)) return Type::never();
+            // A PINNED field (`--pins`, types/pins.h): the manifest DECLARES
+            // what this slot holds, and the read spends that declaration where
+            // the three proofs below would stand it down. Nothing checks it
+            // here — enforcement belongs on the write paths, and until that
+            // machinery exists the manifest IS the enforcement. Which is
+            // exactly why it is a named per-(class, field) list: the blanket
+            // form pinned `Object3D.children` too, and an object read out of a
+            // pinned array is a pointer's bits read as a double.
+            if (const PinKind* pin = pinnedField(base.shapeClass(), m->property)) {
+                if (*pin == PinKind::NumericElements) return Type::arrayPinnedF64();
+                if (record_) {
+                    ++mod_.result->fieldAudit.numberFieldReads;
+                    mod_.result->provenFieldReads.insert(m);
+                }
+                return Type::number();
+            }
             // The IDENTITY travels either way, one rung weaker than the base's:
             // an object read out of a field was not watched being made, so the
             // next link is bounded the same way this one is.
@@ -453,6 +469,26 @@ const ClassLayout* FlowAnalyzer::receiverClass(Type receiver) const {
     return cl == nullptr || cl->name.empty() ? nullptr : cl;
 }
 
+const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& field) const {
+    if (mod_.pins == nullptr || cls == kNoShapeClass) return nullptr;
+    const ClassLayout* layout = mod_.result->classLayouts.byShapeClass(cls);
+    // A shape class with no class layout is still nameable: `new F()` interns
+    // the constructor's name, which is what a manifest entry spells.
+    std::string name =
+        layout != nullptr ? layout->name : mod_.result->shapes.at(cls).constructorName;
+    if (name.empty()) return nullptr;
+    // Bounded rather than trusting `extends` to be acyclic: a cyclic chain is a
+    // TypeError at run time and must not be an infinite loop here.
+    for (uint32_t hop = 0; hop < kMaxExtendsHops; ++hop) {
+        if (const PinKind* pin = mod_.pins->lookup(name, field)) return pin;
+        if (layout == nullptr || layout->superName.empty()) return nullptr;
+        layout = mod_.result->classLayouts.byName(layout->superName);
+        if (layout == nullptr) return nullptr;
+        name = layout->name;
+    }
+    return nullptr;
+}
+
 // One `recv.name(...)`.
 //
 // The contribution is the whole mechanism: every method this call can reach
@@ -504,13 +540,24 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                         args[i].is(TypeKind::Undefined)) {
                         continue;
                     }
-                    // Probe (flow.h `unsoundPins`): a Dynamic argument does not
-                    // poison the join — the optimistic stand-in for what an
-                    // offline profile would report as the site's actual class.
-                    // The commonest source is an UNCALLED forwarder (three.js
-                    // `multiply(m) { return this.multiplyMatrices(this, m) }`)
-                    // whose own dynamic parameter reaches every hot method.
-                    if (mod_.unsoundPins && args[i].is(TypeKind::Dynamic)) continue;
+                    // Under pin optimism (flow.h `pinOptimism`): a Dynamic
+                    // argument does not poison the join — the optimistic
+                    // stand-in for what an offline profile would report as the
+                    // site's actual class. The commonest source is an UNCALLED
+                    // forwarder (three.js `multiply(m) { return
+                    // this.multiplyMatrices(this, m) }`) whose own dynamic
+                    // parameter otherwise reaches every hot method, and
+                    // `Matrix4.multiplyMatrices` is exactly the method it costs.
+                    //
+                    // Deliberately NOT per-field, unlike the read path above:
+                    // a census profile is what should decide it. What the flag
+                    // buys is bounded at the fold (`widenMethods`) instead —
+                    // see there for why skipping the contribution outright is a
+                    // miscompile and what is done about it.
+                    if (mod_.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
+                        target.sawSkippedDynamicArg[i] = true;
+                        continue;
+                    }
                     target.observedParams[i] = join(target.observedParams[i], args[i]);
                 } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
                     target.observedParams[i] = join(target.observedParams[i], Type::undefined());
@@ -553,9 +600,13 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                     args[i].is(TypeKind::Undefined)) {
                     continue;
                 }
-                // Probe: as in the unbounded-receiver path above — a Dynamic
-                // argument does not poison the join. See flow.h `unsoundPins`.
-                if (mod_.unsoundPins && args[i].is(TypeKind::Dynamic)) continue;
+                // As in the unbounded-receiver path above — under pin optimism
+                // a Dynamic argument does not poison the join, and the
+                // parameter is marked so the fold can charge for it.
+                if (mod_.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
+                    target.sawSkippedDynamicArg[i] = true;
+                    continue;
+                }
                 target.observedParams[i] = join(target.observedParams[i], args[i]);
             } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
                 target.observedParams[i] = join(target.observedParams[i], Type::undefined());
