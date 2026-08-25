@@ -1,0 +1,7 @@
+# bench/nullish_pin_kernel.js — the fixture for the nullish-widened pin.
+Node.x: number
+Node.y: number
+Node.below: number
+# The slot the fixture is about: numbers in one sweep, `null` in another,
+# `undefined` in a third. `number` would miscompile two of the three.
+Node.limit: number-or-nullish

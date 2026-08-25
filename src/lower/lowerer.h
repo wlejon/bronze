@@ -16,9 +16,15 @@
 #include "lower/lowerer_state.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
+#include "types/pins.h"
 #include "types/result.h"
 
 namespace bronze::lower {
+
+// Operators whose EVERY operand goes through ToNumeric on every branch. One
+// table, two consumers: the typed-element seam (lower_typed_elem.cpp, which
+// defines it) and the env-slot number proof (lower_scope.cpp).
+bool alwaysCoercingBinary(ast::BinaryOp op);
 
 // The AST -> IL pass. One instance per module; its methods are defined
 // across the lower_*.cpp units named in the group comments below, each of
@@ -47,9 +53,10 @@ public:
             const std::vector<std::string>* hostGlobals = nullptr,
             const SourceSet* sources = nullptr,
             InferStatsCollector* stats = nullptr,
-            bool assumeNoBigInt = false)
+            bool assumeNoBigInt = false,
+            const types::PinManifest* pins = nullptr)
         : astModule_(astModule), diags_(diags), inference_(inference),
-          sources_(sources), stats_(stats) {
+          sources_(sources), stats_(stats), pins_(pins) {
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
         if (stats_ && sources_) stats_->setSourceSet(sources_);
         typedElemDisabled_ = typedElemSeamDisabled() ||
@@ -74,6 +81,12 @@ private:
     // Never dereferenced outside lower_infer.cpp: every other unit asks the
     // accessors there, which answer "unproven" when this is null.
     const types::InferenceResult* inference_ = nullptr;
+    // The `--pins` manifest, or null. Lowering reads exactly one part of it —
+    // the env-slot entries — because an env slot is a LOWERING object: it has
+    // no source name inference can key on, only a (function, binding) pair and
+    // a record layout this pass invents. The field pins are inference's and
+    // reach here as `provenFieldReads` / `nullishNumberFieldReads`.
+    const types::PinManifest* pins_ = nullptr;
     il::Module ilModule_;
     // Names a `--host-globals` manifest admitted: the open half of the
     // provided-globals set. isProvidedGlobal consults it after the builtin
@@ -292,6 +305,10 @@ private:
     // licence for the raw unbox.
     bool provenFieldRead(const ast::Expr& e) const;
     Value emitRawUnbox(Value boxed, il::Function& ilFn);
+    // A read of a `--pins number-or-nullish` field: the licence for the
+    // compare-and-two-constants form of ToNumber, and for that alone.
+    bool nullishNumberFieldRead(const ast::Expr& e) const;
+    Value emitNullishUnbox(Value boxed, il::Function& ilFn);
     // The module's class-layout table, in family preorder, filled once the
     // first family site is claimed (so a program that proves nothing emits
     // nothing). Interning the field names is what makes this a lowering step
@@ -463,6 +480,16 @@ private:
     // The same question for 9.1.1.1.3's immutable bindings, asked by
     // `emitEnvSet` alone — see EnvScopeInfo::slotIsImmutable.
     bool envSlotIsImmutable(uint32_t depth, uint32_t index) const;
+
+    // Does this slot hold a Number at every read? Asked by `emitEnvGet` alone,
+    // which is what makes the answer a calling convention for the binding
+    // rather than a per-site opinion.
+    bool envSlotIsF64(uint32_t depth, uint32_t index) const;
+    // Decides that for a function's own environment record, once, at the point
+    // the record's layout is fixed. See lower_scope.cpp for the rule.
+    void planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
+                                const std::vector<const ast::Stmt*>& body,
+                                const std::string& functionName, EnvScopeInfo& info) const;
     void emitImmutableAssign(const std::string& name, il::Function& ilFn);
     // The scope innermost right now takes its lexical bindings: each slot
     // marked, filled with the uninitialized marker, and BOUND under its name.

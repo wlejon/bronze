@@ -503,6 +503,21 @@ struct Instruction {
     // is ToNumber and correct for anything, and is what every other Number
     // claim in the lattice keeps.
     bool rawUnbox = false;
+    // Unbox: the operand is PROVEN to be a Number, `null` or `undefined` and
+    // nothing else, so ToNumber is decidable from the bits with no call. The
+    // number range is the BOTTOM of the NaN box, so one unsigned compare
+    // separates the arms, and the nullish arm is two constants — +0 for null
+    // and NaN for undefined (7.1.4 table 14). Emitted branchless: the compares
+    // and selects stay in the block, which is the point, because what this
+    // exists for is the middle of a chain of fmuls.
+    //
+    // Mutually exclusive with `rawUnbox` and strictly weaker: a raw unbox of
+    // `undefined` reads 0xFFF6000000000000 as a double. Granted by exactly one
+    // thing, `InferenceResult::nullishNumberFieldReads` — a `--pins
+    // number-or-nullish` declaration (types/pins.h) — and by no lattice type,
+    // because there is no lattice element for "number or nullish" and there is
+    // deliberately never going to be one.
+    bool nullishUnbox = false;
     // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
     // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
     // only an identity claim: this says the receiver's class was modellable end

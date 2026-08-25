@@ -7,6 +7,7 @@
 #include "ast/ast.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
+#include "types/pins.h"
 #include "types/result.h"
 
 namespace bronze::lower {
@@ -53,11 +54,18 @@ namespace bronze::lower {
 // lowering rather than a miscompile.
 class InferStatsCollector;
 
+// `pins` is the `--pins` manifest, or null. Lowering reads only its ENV-SLOT
+// entries: a captured binding has no name inference can key a side table on —
+// it has a (function, binding) pair and a record layout this pass invents — so
+// that half of the manifest is consumed here rather than there. The field
+// entries reach lowering already spent, as `provenFieldReads` and
+// `nullishNumberFieldReads` on the inference result.
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference = nullptr,
                                       const std::vector<std::string>* hostGlobals = nullptr,
                                       const SourceSet* sources = nullptr,
                                       InferStatsCollector* stats = nullptr,
-                                      bool assumeNoBigInt = false);
+                                      bool assumeNoBigInt = false,
+                                      const types::PinManifest* pins = nullptr);
 
 }  // namespace bronze::lower

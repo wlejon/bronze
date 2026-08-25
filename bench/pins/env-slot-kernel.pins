@@ -1,0 +1,11 @@
+# bench/env_slot_kernel.js — the fixture for env-slot pins.
+#
+# `stateChanges` and `frames` are absent on purpose: every write to them is
+# `<slot> + <literal>`, so the greatest fixpoint in lower_scope.cpp proves them
+# with no manifest at all. What is here is the five flags whose writes come from
+# PARAMETERS, which nothing proves — the shape three.js's WebGLState is made of.
+function WebGLState.currentBlending: number
+function WebGLState.currentSrc: number
+function WebGLState.currentDst: number
+function WebGLState.currentProgram: number
+function WebGLState.currentDepth: number

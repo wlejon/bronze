@@ -98,6 +98,82 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **Stage 3.2 (nullish-widened pins + env-slot typing)** — 2026-08-24:
+  > [!NOTE]
+  > Two new declarations, and one of them pays. `--pins ... number-or-nullish`
+  > (`src/types/pins.h`) covers the field three.js is full of and the flat
+  > lattice cannot type: a slot holding a Number, `null` or `undefined`. It
+  > never becomes a lattice element — the read stays `Dynamic` and every boxed
+  > consumer of it is the dynamic one it always was — and what it licenses is
+  > the COERCING position, where the NaN box makes ToNumber one unsigned
+  > compare against the top of the number range plus two constants
+  > (`null`→`+0`, `undefined`→`NaN`), branchless. `function <fn>.<binding>:
+  > number` pins an ENV SLOT, and beneath it a SOUND greatest-fixpoint proof
+  > (`lower_scope.cpp planEnvSlotNumberTypes`) types a captured binding f64
+  > with no manifest and no flag whenever every write to it is visible and
+  > numeric — which is what makes `n = n + 1` provable, since a single forward
+  > pass refuses every counter in the program.
+  >
+  > Commands (medians of 5, warmup discarded, idle box; the small variant of
+  > each kernel is `sed 's/const ITERS = <big>;/const ITERS = <big/10>;/'`):
+  > ```
+  > bronze build bench/nullish_pin_kernel.js -o k.exe --pins bench/pins/nullish-kernel.pins
+  > bronze build bench/env_slot_kernel.js    -o e.exe --pins bench/pins/env-slot-kernel.pins
+  > ```
+  >
+  > **Nullish kernel (`bench/nullish_pin_kernel.js`, ns per `step()` by the
+  > two-count wall delta over 4×7.2e6 calls):**
+  > - bronze default **43.48**; `--pins` **13.21** (**3.3x**); node v24.2.0
+  >   **5.41**. Checksums identical across all three, both counts:
+  >   `825756/700159/NaN/-563350` and `743742/271170/NaN/-453295`. The `NaN`
+  >   slot is the oracle that matters — the sweep whose slot is `undefined`
+  >   must answer NaN, and a read that took the `undefined` singleton's bits
+  >   as a double would answer a large finite number instead. A separate
+  >   differential run over `typeof` / `=== null` / `??` / `|0` / `String()` /
+  >   relational / `-0` / NaN matches node line for line, which is the claim
+  >   that the pin left the boxed consumers alone.
+  >
+  > **Env-slot kernel (`bench/env_slot_kernel.js`, ns per loop iteration over
+  > 5.4e6, checksum `126000020` everywhere):**
+  > - env typing off (`BRONZE_NO_UNBOXED_FIELDS=1`) **60.54**; sound proof only
+  >   (no flags) **59.13**; `--pins` **59.23**; node **4.95**.
+  >
+  > **That last row is the result, and it is a negative one worth more than the
+  > positive one.** Env-slot typing is correct, is never a loss, and buys ~2%.
+  > Three measurements say why:
+  > - the same kernel with the loop INLINED into the factory (no sibling-closure
+  >   calls at all) costs the same — 61.02 / 58.42 / 58.47 — so the call
+  >   boundary is not what this shape pays for;
+  > - the same kernel rewritten with object FIELDS and `State.*: number` costs
+  >   58.40 / 59.71, so there is no env-versus-field gap either;
+  > - a loop touching ONE slot costs 3.24 → 2.56 (−21%) with typing, but LLVM
+  >   promotes a single slot to a register there, so it is not representative.
+  >
+  > What is left is ~15 guarded slot accesses per iteration at ~4 ns each, and
+  > the guard is the ACCESS, not the value: `emitEnvSlotPtr` (llvm_env.cpp)
+  > re-derives the record, tests the object tag, loads and compares the Env
+  > brand, loads and compares the record size, and branches to a slow path — at
+  > every access — and the lexical form adds a dead-zone compare, plus a whole
+  > second guarded read per WRITE (`emitEnvSet` pre-checks the dead zone with an
+  > `emitEnvGet` it discards). Typing the slot removes the tag test on top of
+  > all that. This is the same lesson `numeric-elements` taught in the other
+  > direction: `Matrix4.elements` went 7x because the pin deleted the element
+  > ACCESS guard, not because it typed the element.
+  >
+  > One general fix landed alongside: **`box(bitcast-from-Value)` is now the
+  > identity** (`llvm_ops.cpp` `Op::Box`). Only two emitters produce a double by
+  > bitcasting a Value — the raw unbox and the pinned plain-array element read —
+  > and both carry the claim that the bits are a Number, whose NaN is canonical
+  > by construction. Without it a pinned env slot was WORSE than an untyped one
+  > wherever the value ends up boxed anyway, which is every `===` against an
+  > unproven operand.
+  >
+  > **References held** (same build, `--pins bench/pins/threejs-math.pins`):
+  > `mat4_kernel` **27.75 ns/call** against a 188.97 default (checksums
+  > 400000 / 940000); `three_math` **21.78 ms** checksum 405000;
+  > `mesh_churn_2k` **74.49 ms** checksum **-2112298**. Suite green with no
+  > flags (29/29).
+
 - **Stage 3.1 (pin manifest: the ceiling, kept, on the programs the blanket flag broke)** — 2026-08-24:
   > [!NOTE]
   > **`--pins <file>` replaces the blanket probe with per-(class, field)

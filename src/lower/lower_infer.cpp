@@ -440,12 +440,35 @@ bool Lowerer::provenFieldRead(const ast::Expr& e) const {
     return inference_->provenFieldReads.count(&inferenceExpr(e)) != 0;
 }
 
+// Is this expression a read of a field a `--pins number-or-nullish` entry
+// covers?
+//
+// Gated by the same seam the raw unbox is: `BRONZE_NO_UNBOXED_FIELDS` turns
+// both back into the boxed reads they were, so one switch bisects every
+// unboxing claim lowering makes about a field.
+bool Lowerer::nullishNumberFieldRead(const ast::Expr& e) const {
+    if (inference_ == nullptr || unboxedFieldsDisabled_) return false;
+    return inference_->nullishNumberFieldReads.count(&inferenceExpr(e)) != 0;
+}
+
 Lowerer::Value Lowerer::emitRawUnbox(Value boxed, il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::Unbox;
     inst.type = il::Type::F64;
     inst.rawUnbox = true;
+    inst.result = res;
+    inst.operands = {boxed.id};
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::F64};
+}
+
+Lowerer::Value Lowerer::emitNullishUnbox(Value boxed, il::Function& ilFn) {
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::Unbox;
+    inst.type = il::Type::F64;
+    inst.nullishUnbox = true;
     inst.result = res;
     inst.operands = {boxed.id};
     emitInst(ilFn, inst);

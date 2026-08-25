@@ -361,7 +361,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
-                                       assumeNoBigInt);
+                                       assumeNoBigInt,
+                                       pins.empty() ? nullptr : &pins);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -481,7 +482,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
-                                       assumeNoBigInt);
+                                       assumeNoBigInt,
+                                       pins.empty() ? nullptr : &pins);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);

@@ -409,6 +409,13 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
     info.slotIsImmutable.assign(slots.size(), false);
+    info.slotIsF64.assign(slots.size(), false);
+    // Which of the slots hold Numbers, decided once, here, because this is
+    // where the layout is fixed and every reader of the record — the body and
+    // every closure written in it — is lowered after it. A machine body is
+    // excluded: its frame holds the generator's own state words, and its
+    // bindings are re-entered from an edge this analysis does not model.
+    if (!machineBody) planEnvSlotNumberTypes(params, body, ilFn.name, info);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
@@ -871,9 +878,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const std::vector<std::string>* hostGlobals,
                                       const SourceSet* sources,
                                       InferStatsCollector* stats,
-                                      bool assumeNoBigInt) {
+                                      bool assumeNoBigInt,
+                                      const types::PinManifest* pins) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
-                    assumeNoBigInt);
+                    assumeNoBigInt, pins);
     return lowerer.lower();
 }
 

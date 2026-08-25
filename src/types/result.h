@@ -115,6 +115,16 @@ struct InferenceResult {
     // is not inherited by every expression that happens to type `number`.
     std::unordered_set<const ast::Expr*> provenFieldReads;
 
+    // Every property read a `--pins number-or-nullish` entry covers
+    // (types/pins.h). Deliberately NOT a type: the value is a Number or one of
+    // the two nullish singletons, the lattice has no unions, and `Dynamic` is
+    // both the honest answer and the one that keeps every boxed consumer
+    // correct. Only the COERCING positions read this set, and what it licenses
+    // there is one unsigned compare against the top of the number range plus
+    // two constants — never the raw unbox `provenFieldReads` licenses, which
+    // would take the `undefined` singleton's bits as a double.
+    std::unordered_set<const ast::Expr*> nullishNumberFieldReads;
+
     // What the write audit decided, summarized for `--infer-stats`. The audit
     // itself is a fixpoint-local table (`ModuleContext::fieldAudit`); this is
     // the part of it a report needs after inference has returned.

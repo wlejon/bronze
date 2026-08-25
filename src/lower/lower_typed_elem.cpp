@@ -39,11 +39,14 @@
 
 namespace bronze::lower {
 
-namespace {
-
 // Operators whose EVERY operand goes through ToNumeric on every branch.
 // `+` is absent (string branch), equality is absent (undefined and NaN
 // compare differently), `in`/`instanceof` are absent (no coercion at all).
+//
+// Not in this file's anonymous namespace, and declared in lowerer.h, because
+// the env-slot number proof (lower_scope.cpp) asks the same question of the
+// same operators. Two copies of the table would eventually disagree, and a
+// disagreement is a value one pass thinks is a Number and the other unboxes.
 bool alwaysCoercingBinary(ast::BinaryOp op) {
     switch (op) {
         case ast::BinaryOp::Sub:
@@ -66,6 +69,8 @@ bool alwaysCoercingBinary(ast::BinaryOp op) {
             return false;
     }
 }
+
+namespace {
 
 // The compound-assignment operators whose combine step coerces the READ half
 // on every branch. PlusAssign is handled separately (its combine has the
@@ -245,6 +250,15 @@ std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
     // registers.
     if (val && val->type == il::Type::Dynamic && provenFieldRead(e)) {
         return emitRawUnbox(*val, ilFn);
+    }
+    // The NULLISH-WIDENED pin, one rung down: the value is a Number or one of
+    // the two nullish singletons, so the conversion is a compare and two
+    // constants instead of a tag test and a ToNumber call. Here for the same
+    // reason the raw unbox is here and nowhere else — this is the position that
+    // was going to convert anyway, so the boxed uses of the field
+    // (`this.limit === null`, `typeof`) keep their exact dynamic form.
+    if (val && val->type == il::Type::Dynamic && nullishNumberFieldRead(e)) {
+        return emitNullishUnbox(*val, ilFn);
     }
     return val;
 }

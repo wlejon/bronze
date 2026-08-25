@@ -163,6 +163,16 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // pinned array is a pointer's bits read as a double.
             if (const PinKind* pin = pinnedField(base.shapeClass(), m->property)) {
                 if (*pin == PinKind::NumericElements) return Type::arrayPinnedF64();
+                // The NULLISH-WIDENED pin declares a Number-or-nullish slot,
+                // which is not a lattice element and must not be forced into
+                // one. The site is recorded and the TYPE stays `Dynamic`, so
+                // `typeof this.limit` and `this.limit === null` keep the
+                // dynamic answers that are the correct ones — only lowering's
+                // coercing positions read the set, and only they may.
+                if (*pin == PinKind::NumberOrNullish) {
+                    if (record_) mod_.result->nullishNumberFieldReads.insert(m);
+                    return Type::dynamic();
+                }
                 if (record_) {
                     ++mod_.result->fieldAudit.numberFieldReads;
                     mod_.result->provenFieldReads.insert(m);

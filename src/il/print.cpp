@@ -259,7 +259,10 @@ bool canThrow(const Instruction& inst) {
             // calls anything. The RAW form calls nothing either: its operand is
             // proven a Number, so ToNumber is the identity and the emitted code
             // is one bitcast.
-            return inst.type == Type::F64 && !inst.rawUnbox;
+            // The NULLISH-WIDENED form calls nothing either: its operand is one
+            // of a number, `null` or `undefined`, and ToNumber over those three
+            // is a compare and two constants.
+            return inst.type == Type::F64 && !inst.rawUnbox && !inst.nullishUnbox;
         case Op::ToInt32:
             // Same conversion under a different name: 7.1.6 step 1 is ToNumber,
             // so `{} | 0` and `sym | 0` reach user code and the TypeError. Only
@@ -390,6 +393,7 @@ std::string print(const Module& module) {
                         // that matters — it cannot throw and it emits one
                         // bitcast — so the canonical text names it.
                         if (inst.rawUnbox) out += ", raw";
+                        if (inst.nullishUnbox) out += ", nullish";
                         break;
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

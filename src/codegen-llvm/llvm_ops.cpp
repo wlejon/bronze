@@ -5,6 +5,7 @@
 #include <string>
 
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -116,6 +117,27 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* src = operand(inst, 0, "Undefined value in Box instruction");
             if (!src) return false;
             if (inst.boxType == il::Type::F64 || src->getType()->isDoubleTy()) {
+                // Boxing a double that was BITCAST OUT OF A VALUE is the
+                // identity, and this is the one place that can see it. Two
+                // emitters produce such a double and no third one does: the
+                // raw unbox (il.h `rawUnbox`) and the pinned plain-array
+                // element read (`kElemKindPlainArrayF64`, llvm_elem.cpp) —
+                // every other bitcast to double in this backend feeds an
+                // arithmetic instruction or a phi, never the value table. Both
+                // carry the claim that the source bits are a Number, and every
+                // Value that is a Number carries a canonical NaN by
+                // construction, so the select below can only choose the arm the
+                // bits came from.
+                //
+                // Not a saving of two instructions: it is what keeps a proven
+                // field or a typed env slot from being WORSE than an untyped
+                // one wherever the value ends up boxed anyway, which is every
+                // `===` against something unproven.
+                if (auto* cast = llvm::dyn_cast<llvm::BitCastInst>(src);
+                    cast != nullptr && cast->getSrcTy()->isIntegerTy(64)) {
+                    values_[inst.result] = cast->getOperand(0);
+                    return true;
+                }
                 llvm::Value* isNan = builder_.CreateFCmpUNO(src, src);
                 llvm::Value* bitcast = builder_.CreateBitCast(src, builder_.getInt64Ty());
                 values_[inst.result] = builder_.CreateSelect(
@@ -290,6 +312,29 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 // carrying the proof stops paying for the test.
                 values_[inst.result] = builder_.CreateBitCast(src, builder_.getDoubleTy(),
                                                               "unbox.raw");
+                return true;
+            }
+            if (inst.type == il::Type::F64 && inst.nullishUnbox) {
+                // ToNumber over a domain of three (il.h `nullishUnbox`), with
+                // no basic block of its own. A branch here would split the
+                // surrounding arithmetic into four blocks and put a phi in the
+                // middle of a chain of fmuls; two selects cost less than that
+                // even when the number arm is the only one ever taken.
+                llvm::Type* dblTy = builder_.getDoubleTy();
+                llvm::Value* isNum = builder_.CreateICmpULE(
+                    src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "unbox.nullish.isnum");
+                llvm::Value* asDouble = builder_.CreateBitCast(src, dblTy);
+                llvm::Value* isNull =
+                    builder_.CreateICmpEQ(src, builder_.getInt64(BRONZE_ABI_NULL_BITS),
+                                          "unbox.nullish.isnull");
+                // 7.1.4 table 14: null is +0, undefined is NaN. The pin says
+                // there is no third nullish value, so the undefined arm is also
+                // the default arm.
+                llvm::Value* nullishVal = builder_.CreateSelect(
+                    isNull, llvm::ConstantFP::get(dblTy, 0.0),
+                    llvm::ConstantFP::getNaN(dblTy), "unbox.nullish.other");
+                values_[inst.result] =
+                    builder_.CreateSelect(isNum, asDouble, nullishVal, "unbox.nullish.val");
                 return true;
             }
             if (inst.type == il::Type::F64) {

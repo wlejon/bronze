@@ -67,6 +67,11 @@ struct EnvScopeInfo {
     std::vector<std::string> slotNames;
     std::vector<bool> slotIsLexical;
     std::vector<bool> slotIsImmutable;
+    // Which slots hold a Number at every read (lower_scope.cpp
+    // `planEnvSlotNumberTypes`). The record itself is unchanged — a canonical
+    // double IS a Value by NaN-box construction and the collector already walks
+    // past one — so what this marks is that the READ may stop testing.
+    std::vector<bool> slotIsF64;
     il::ValueId envValue = il::kNoValue;
     uint32_t childSlot = UINT32_MAX;
 };

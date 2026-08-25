@@ -59,28 +59,58 @@ bool PinManifest::parse(const std::string& text, const std::string& path, std::s
         if (colon == std::string::npos) {
             return bad("pin entry needs '<class>.<field>: <kind>'");
         }
-        const std::string target = trim(entry.substr(0, colon));
+        std::string target = trim(entry.substr(0, colon));
         const std::string kindText = trim(entry.substr(colon + 1));
+
+        // The `function` form. Recognized before the kind is read, because the
+        // kinds it admits are a subset: an env slot pin is spent on a raw unbox
+        // at the read, so `number` is the only promise strong enough for it.
+        const bool envSlot = target.rfind("function ", 0) == 0;
+        if (envSlot) {
+            target = trim(target.substr(9));
+            if (kindText != "number") {
+                return bad("an env-slot pin's only kind is 'number'");
+            }
+        }
 
         PinKind kind{};
         if (kindText == "number") {
             kind = PinKind::Number;
         } else if (kindText == "numeric-elements") {
             kind = PinKind::NumericElements;
+        } else if (kindText == "number-or-nullish") {
+            kind = PinKind::NumberOrNullish;
         } else {
-            return bad("unknown pin kind (expected 'number' or 'numeric-elements')");
+            return bad(
+                "unknown pin kind (expected 'number', 'numeric-elements' or "
+                "'number-or-nullish')");
         }
 
         const auto dot = target.rfind('.');
         if (dot == std::string::npos || dot == 0 || dot + 1 == target.size()) {
-            return bad("pin target needs '<class>.<field>'");
+            return bad(envSlot ? "env-slot pin target needs '<function>.<binding>'"
+                               : "pin target needs '<class>.<field>'");
         }
-        const std::string className = baseName(target.substr(0, dot));
-        const std::string field = target.substr(dot + 1);
-        if (!isIdent(className)) return bad("not a valid class name in pin target");
-        if (field != "*" && !isIdent(field)) return bad("not a valid field name in pin target");
+        const std::string ownerName = baseName(target.substr(0, dot));
+        const std::string member = target.substr(dot + 1);
+        if (!isIdent(ownerName)) {
+            return bad(envSlot ? "not a valid function name in pin target"
+                               : "not a valid class name in pin target");
+        }
+        if (envSlot) {
+            // No `*`: see the header. The set of captured bindings a function
+            // has is not a list the manifest author can read off the source the
+            // way a class's fields are, and a wildcard over it would pin the
+            // receiver slot and the loop temporaries too.
+            if (!isIdent(member)) return bad("not a valid binding name in env-slot pin target");
+            byFunction_[ownerName].insert(member);
+            continue;
+        }
+        if (member != "*" && !isIdent(member)) {
+            return bad("not a valid field name in pin target");
+        }
 
-        byClass_[className][field] = kind;
+        byClass_[ownerName][member] = kind;
     }
     return true;
 }
@@ -95,9 +125,19 @@ const PinKind* PinManifest::lookup(const std::string& className, const std::stri
     return nullptr;
 }
 
+bool PinManifest::envSlotPinned(const std::string& functionName,
+                                const std::string& binding) const {
+    // No `extends` walk and no wildcard: a function's captured bindings are its
+    // own, and a same-named function elsewhere shares the entry for the reason
+    // two same-named classes do.
+    const auto fn = byFunction_.find(baseName(functionName));
+    return fn != byFunction_.end() && fn->second.count(binding) != 0;
+}
+
 size_t PinManifest::size() const {
     size_t n = 0;
     for (const auto& [cls, fields] : byClass_) n += fields.size();
+    for (const auto& [fn, slots] : byFunction_) n += slots.size();
     return n;
 }
 
