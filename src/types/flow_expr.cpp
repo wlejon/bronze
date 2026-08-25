@@ -430,6 +430,25 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         return Type::number();
     }
 
+    // A pinned RETURN, spent HERE and not only on the callee's own signature.
+    // Lowering has always turned `return <owner>: number` into an f64 result on
+    // the callee's typed entry, and that is half a promise: the value arrives
+    // in a register and the caller then boxes it, because the analysis that
+    // types the caller's arithmetic — and, decisively, a loop-carried binding
+    // at its merge — never heard the claim. `hits = hits + useProgram(i)` stayed
+    // a `bronze_dynamic_add` per iteration over an f64 the callee had already
+    // computed. A pin is a promise the invocation makes to the whole
+    // compilation, so it is answered wherever the compilation asks.
+    //
+    // A closure is exactly the case that needs it: its callers are reached
+    // through a function value, so it has no `functionIndex` and no signature
+    // below can speak for it. `?.()` is excluded — the call may not happen and
+    // the result is then `undefined`, which is not a Number.
+    if (!c.optional && mod_.pins != nullptr) {
+        const auto* ident = dynamic_cast<const ast::Ident*>(c.callee.get());
+        if (ident != nullptr && mod_.pins->returnPinned(ident->name)) return Type::number();
+    }
+
     // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
     // receiver's class rather than through the callee's name.
     if (member != nullptr) return methodCall(member->property, receiver, args, spreadArgs);
