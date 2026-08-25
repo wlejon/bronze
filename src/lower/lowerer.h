@@ -327,6 +327,11 @@ private:
     // was and its conversion is the checked unbox.
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
+    // What `planClosureParamNumbers` proved, keyed by the declaration node.
+    // Accumulated across the whole module and never cleared: a nested
+    // declaration appears in exactly one enclosing statement list, so one entry
+    // per function is all there can be.
+    std::unordered_map<const ast::FunctionDecl*, std::vector<bool>> provenClosureParams_;
     // BRONZE_NO_NUMERIC_ARITH=1, or a program in which a BigInt can reach an
     // operator (`bigIntMayReach`). Gates ONE decision in `lowerBinary`: whether
     // `*`, `-`, `/`, `%` over a boxed operand produce a boxed result or an f64
@@ -570,6 +575,23 @@ private:
     // The other half: the hoisting pass says which IL function the closure it
     // just made for `name` is, once, at the point the binding is created.
     void recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_t fnIndex);
+
+    // --- the closure PARAMETER proof (lower_scope.cpp) -----------------------
+    //
+    // For every plain `function f(...)` declared directly in `stmts`, decides
+    // which of its parameters are Numbers at every call. The rule and its
+    // refusals are in lower_scope.cpp; the result is consumed by
+    // `applyProvenClosureParams` when the declaration is lowered.
+    void planClosureParamNumbers(const std::vector<ast::Param>& params,
+                                 const std::vector<ast::StmtPtr>& stmts);
+    // Gives one nested declaration's IL skeleton the f64 parameter slots the
+    // plan above proved for it. Runs beside `applySignaturePins` and only ever
+    // moves a slot from Dynamic to F64, so a pin that says the same thing is a
+    // no-op either way round.
+    void applyProvenClosureParams(const ast::Node& site, const std::vector<ast::Param>& params,
+                                  il::Function& fn) const;
+    // BRONZE_NO_CLOSURE_PARAM_PROOF=1, the A/B seam for it.
+    static bool closureParamProofDisabled();
     // Does `name` denote a function this module lowered, in a binding nothing
     // can rebind? On yes, `envHops` is how many parent links a caller here
     // walks to reach the record that closure captured, and `fnIndex` names it.

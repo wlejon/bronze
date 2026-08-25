@@ -1,0 +1,18 @@
+string:s number:2
+string:s|number:1
+number/undefined|number/number
+other:s
+string/number|number/number
+number:1|string:s
+number:1|number:2
+number:1/number:1/1|number:2/number:2/2
+14
+1|string:s
+7/1
+ReferenceError/1
+ReferenceError/1
+ReferenceError/1
+ReferenceError/1
+ReferenceError/1
+13
+ReferenceError,ReferenceError/x

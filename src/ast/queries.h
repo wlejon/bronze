@@ -102,14 +102,41 @@ std::vector<std::string> getConstDeclarations(const std::vector<const Stmt*>& st
 // initializer. The dead zone is real but unreachable, and 9.1.1.1.6's check is
 // then a compare that can only answer one way.
 //
-// The scan STOPS at the first statement that is not one of those two forms,
-// and an initializer counts only when it is a literal or a function: `let x =
-// f()` calls out, and what `f` reads is exactly the question. Deliberately
-// narrow — it is a licence to drop a check, so a name it is unsure of is a
-// name it leaves alone.
-std::vector<std::string> getDefinitelyAssignedLexicalNames(const std::vector<StmtPtr>& stmts);
+// Stage E4 sharpened "runs no user code" into "runs no user code THAT COULD
+// READ ONE OF THESE BINDINGS", which is the question the paragraph above is
+// actually asking. `makeLCG(12345)` runs a great deal of user code and not one
+// instruction of it can see this scope's record, because a closure over that
+// record has to have been CREATED here and its value has to have got out.
+//
+// So the scan tracks two things instead of stopping at the first call:
+//
+//   - the DANGEROUS names: the hoisted `function` declarations of this list
+//     (8.6.2 instantiates all of them, closed over this record, before
+//     statement one) plus any binding the prefix has already filled with a
+//     function expression. A statement that mentions one of those is a moment
+//     at which such a closure can be entered or handed out, and the scan stops.
+//   - the names not yet declared. A statement that mentions one of those reads
+//     it in its own dead zone, which is the ReferenceError the check is for.
+//
+// A statement also stops the scan if it CREATES a function or class value
+// anywhere inside itself other than as the whole of a declaration's
+// initializer: an IIFE, a callback argument and an object literal's method are
+// each a closure over this record that the statement itself can enter.
+//
+// `params` is the enclosing function's parameter list, or null for a list that
+// has none (the module top level, a block). A parameter DEFAULT is code of this
+// scope, so a default that builds a function puts a closure over this record in
+// a parameter — a name the scan would otherwise treat as harmless — and the
+// whole widening is refused for that scope rather than modelled.
+//
+// It is still a licence to drop a check, so every clause is a refusal in the
+// safe direction and a name it is unsure of is a name it leaves alone.
+// `tests/oracle/cases/dead_zone_reachability.js` pins the boundary from the
+// other side.
 std::vector<std::string> getDefinitelyAssignedLexicalNames(
-    const std::vector<const Stmt*>& stmts);
+    const std::vector<StmtPtr>& stmts, const std::vector<Param>* params = nullptr);
+std::vector<std::string> getDefinitelyAssignedLexicalNames(
+    const std::vector<const Stmt*>& stmts, const std::vector<Param>* params = nullptr);
 
 // Which lexical bindings anywhere in this function (but not inside a nested
 // one, which asks the question again for itself) can be READ while they are

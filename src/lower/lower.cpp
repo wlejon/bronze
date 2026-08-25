@@ -524,7 +524,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // same reason: the module function that reads one is lowered before `main`
     // and has to know then whether the read carries a check.
     if (!definiteInitDisabled()) {
-        for (const auto& name : ast::getDefinitelyAssignedLexicalNames(topLevelStmts)) {
+        for (const auto& name : ast::getDefinitelyAssignedLexicalNames(astModule_.body)) {
             auto slot = info.slotOf.find(name);
             if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
         }
@@ -675,8 +675,13 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     // bindings — uninitialized — before any of its body runs, and a function
     // called during that window reading one is the ReferenceError this puts
     // there.
+    // The WHOLE module body and not `topLevelStmts`: a top-level `function` is
+    // split out of that list into a module function, and those declarations are
+    // precisely the closures over this record that 16.2.1.6.4 instantiates
+    // before any of it runs — so the scan has to see their names to refuse a
+    // statement that can call one.
     openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
-                        ast::getDefinitelyAssignedLexicalNames(topLevelStmts),
+                        ast::getDefinitelyAssignedLexicalNames(astModule_.body),
                         ast::getConstDeclarations(topLevelStmts), mainFn);
 }
 
@@ -708,6 +713,12 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // plain pointer is the whole bookkeeping the typed-element binding scan
     // needs.
     currentBodyStmts_ = &body;
+    // Which of this body's own nested declarations have parameters every call
+    // site proves to be Numbers (lower_scope.cpp). Decided BEFORE any statement
+    // of the body is lowered, because the first thing lowering does with a
+    // `function f() {}` statement is build `f`'s IL skeleton — parameter types
+    // and all — and the whole point of the plan is to be part of it.
+    planClosureParamNumbers(params, body);
     ilFn.blocks.push_back(il::Block{.id = 0});
     ilFn.isStrict = strictCode_;
     ilFn.isGenerator = isGenerator;
@@ -825,7 +836,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     // it.
     if (functionEnvScope_ != SIZE_MAX) {
         openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts),
-                            ast::getDefinitelyAssignedLexicalNames(stmts),
+                            ast::getDefinitelyAssignedLexicalNames(stmts, &params),
                             ast::getConstDeclarations(stmts), ilFn);
     }
 
