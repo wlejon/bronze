@@ -1,4 +1,5 @@
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_convert.h"
 
 #include <string>
 
@@ -99,6 +100,12 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     fns.bronze_tls_block_addr->setDoesNotAccessMemory();
     fns.bronze_tls_block_addr->addFnAttr(llvm::Attribute::WillReturn);
 
+    // The environment access-guard tripwire never returns (bronze_abi.h says
+    // why), and saying so is what turns a guard's failure edge into an
+    // `unreachable` with no merge behind it.
+    fns.bronze_env_access_failed->addFnAttr(llvm::Attribute::NoReturn);
+    fns.bronze_env_access_failed->addFnAttr(llvm::Attribute::Cold);
+
     // The two NUMBER-to-integer conversions are pure functions of one double —
     // rt_operator.cpp's toInt32 and toUint8Clamp are isfinite/trunc/fmod and
     // nothing else. Saying so matters more than the folding it buys: without
@@ -110,10 +117,16 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     // The boxed `bronze_to_int32` is deliberately NOT here: ToNumber runs
     // first, so a string is parsed and an object's valueOf is CALLED, which is
     // program text and can do anything.
-    for (llvm::Function* pure : {fns.bronze_to_int32_f64, fns.bronze_to_uint8_clamp_f64}) {
-        pure->setDoesNotAccessMemory();
-        pure->addFnAttr(llvm::Attribute::WillReturn);
-        pure->addFnAttr(llvm::Attribute::Speculatable);
+    //
+    // BRONZE_NO_PURE_CONVERSIONS=1 is the A/B seam. It is separate from
+    // BRONZE_NO_INLINE_TOINT32 on purpose: the two mechanisms are worth
+    // different things on different shapes and the 2x2 is what says so.
+    if (pureConversionHelpers()) {
+        for (llvm::Function* pure : {fns.bronze_to_int32_f64, fns.bronze_to_uint8_clamp_f64}) {
+            pure->setDoesNotAccessMemory();
+            pure->addFnAttr(llvm::Attribute::WillReturn);
+            pure->addFnAttr(llvm::Attribute::Speculatable);
+        }
     }
 
 #undef BRONZE_ABI_UNPAREN

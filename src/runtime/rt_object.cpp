@@ -825,6 +825,36 @@ uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
     return rtThrowReferenceError("Cannot access '" + shown + "' before initialization").rawBits();
 }
 
+// The inline path's access guard failed. Every question it asks is settled by
+// the scope plan before the IL exists — the depth and the index are constants
+// and a record's layout is fixed where it is created — so reaching here is a
+// backend or lowering bug and there is no program state to recover. Walking
+// the chain again is only so the diagnostic can name WHICH of the three
+// questions the generated code answered no to.
+// `fatal` is [[noreturn]], so every path out of this ends the process; the
+// attribute is not repeated on the definition because the ABI header already
+// declared the symbol without it.
+void bronze_env_access_failed(uint64_t envBits, uint32_t depth, uint32_t index) {
+    Value cur(envBits);
+    for (uint32_t step = 0;; ++step) {
+        if (!cur.isObject()) {
+            fatal("environment access on a value that is not an environment record");
+        }
+        auto* env = cur.asObject<EnvHeader>();
+        if (env->header.flags != EnvHeader::kFlags) {
+            fatal("environment access on a value that is not an environment record");
+        }
+        if (step == depth) {
+            if (index >= env->slotCount()) {
+                fatal("environment slot index out of range (lowering bug)");
+            }
+            break;
+        }
+        cur = env->parent;
+    }
+    fatal("environment access guard failed on a well-formed record (backend bug)");
+}
+
 void bronze_env_set(uint64_t envBits, uint32_t depth, uint32_t index, uint64_t valBits) {
     recordHelperCall("bronze_env_set");
     EnvHeader* env = resolveEnv(envBits, depth);

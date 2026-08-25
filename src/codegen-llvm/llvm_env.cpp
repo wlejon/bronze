@@ -8,6 +8,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -49,6 +50,35 @@ llvm::Value* emitEnvSlotPtrUnguarded(llvm::IRBuilder<>& builder, llvm::Value* en
                                               BRONZE_ABI_ENV_SLOTS_OFFSET + index * 8);
 }
 
+// The block every access guard branches to when it fails: one call to the
+// noreturn tripwire, then `unreachable`. Created without moving the builder,
+// so a caller emits it up front and hands the block to `emitEnvSlotPtr`.
+//
+// This block, and not a shared "slow path", is the whole of stage E2's second
+// item. What used to be there was a call to `bronze_env_get` / `bronze_env_set`
+// that BRANCHED BACK to a merge — and those helpers fatal on exactly the three
+// conditions the guard tests, so that edge could never actually return. LLVM
+// could not know it, so every access carried a phi whose second predecessor
+// called an opaque, memory-clobbering external function; nothing loaded before
+// one survived past it, and 23 of them per iteration meant the tag, the brand
+// and the record size were re-derived at every touch. Saying `unreachable`
+// costs nothing, keeps every tripwire armed, and makes an environment read a
+// load and an environment write a store.
+llvm::BasicBlock* emitAccessTripwire(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                     llvm::Value* envBits, uint32_t depth, uint32_t index) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "env.guard.failed", fn);
+
+    llvm::IRBuilder<> trap(bb);
+    auto* call = trap.CreateCall(abi.bronze_env_access_failed,
+                                 {envBits, trap.getInt32(depth), trap.getInt32(index)});
+    call->addFnAttr(llvm::Attribute::NoReturn);
+    call->addFnAttr(llvm::Attribute::Cold);
+    trap.CreateUnreachable();
+    return bb;
+}
+
 // Resolves the record `depth` parent links up from `envBits` and returns the
 // address of slot `index`, mirroring resolveEnv + ancestor + the slot-range
 // check in rt_object.cpp: brand-checks every link of the chain and bounds-
@@ -88,7 +118,9 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
 
         llvm::Value* ok = builder.CreateAnd(builder.CreateAnd(isObj, isEnv), inRange);
         llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, "env.ok", fn);
-        builder.CreateCondBr(ok, cont, slowBb);
+        auto* br = builder.CreateCondBr(ok, cont, slowBb);
+        br->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
         builder.SetInsertPoint(cont);
 
         return builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
@@ -97,7 +129,9 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
 
     auto guard = [&](llvm::Value* cond, const char* name) {
         llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, name, fn);
-        builder.CreateCondBr(cond, cont, slowBb);
+        auto* br = builder.CreateCondBr(cond, cont, slowBb);
+        br->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
         builder.SetInsertPoint(cont);
     };
 
@@ -138,6 +172,80 @@ llvm::Value* emitEnvSlotPtr(llvm::IRBuilder<>& builder, llvm::Value* envBits, ui
 
     return builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
                                               BRONZE_ABI_ENV_SLOTS_OFFSET + index * 8);
+}
+
+// The pre-stage-E2 shapes, kept as the A/B seam BRONZE_NO_ENV_TRIPWIRE=1 and
+// as the record of what changed: the guard's failure edge called the same
+// helper the interpreter path calls and BRANCHED BACK to a merge, so every
+// access carried a phi with an opaque memory-clobbering call behind it. The
+// helpers fatal on exactly the conditions the guard tests, so that edge could
+// never return — LLVM simply had no way to be told so.
+llvm::Value* emitEnvGetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                               const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
+                               uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "env.get.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.get.done", fn);
+
+    llvm::Value* slotPtr = elideGuards
+                               ? emitEnvSlotPtrUnguarded(builder, envBits, depth, index)
+                               : emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
+    auto* fastVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "env.val");
+    tagEnvRecordAccess(fastVal, ctx);
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    if (tdz) {
+        llvm::Value* isUninit = builder.CreateICmpEQ(
+            fastVal, builder.getInt64(BRONZE_ABI_UNINITIALIZED_BITS), "env.tdz");
+        builder.CreateCondBr(isUninit, slowBb, doneBb);
+    } else {
+        builder.CreateBr(doneBb);
+    }
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal =
+        tdz ? builder.CreateCall(abi.bronze_env_get_tdz,
+                                 {envBits, builder.getInt32(depth), builder.getInt32(index),
+                                  emitKeyId(builder, tables, keyIndex)})
+            : builder.CreateCall(abi.bronze_env_get,
+                                 {envBits, builder.getInt32(depth), builder.getInt32(index)});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "env.get.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
+void emitEnvSetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
+                       uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    if (elideGuards) {
+        auto* store = builder.CreateAlignedStore(
+            valBits, emitEnvSlotPtrUnguarded(builder, envBits, depth, index), llvm::Align(8));
+        tagEnvRecordAccess(store, ctx);
+        return;
+    }
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "env.set.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.set.done", fn);
+
+    llvm::Value* slotPtr = emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
+    auto* storeInst = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    tagEnvRecordAccess(storeInst, ctx);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    builder.CreateCall(abi.bronze_env_set, {envBits, builder.getInt32(depth),
+                                            builder.getInt32(index), valBits});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
 }
 
 }  // namespace
@@ -185,6 +293,23 @@ bool envAccessGuardsElided() {
     return elide;
 }
 
+// WHAT THE FAILURE EDGE IS FOR. `bronze_env_get` and `bronze_env_set` fatal on
+// exactly the three conditions the guard tests, so a guard failure has never
+// been able to come back — the edge was a merge only because nothing said
+// otherwise. Saying it (a noreturn tripwire and an `unreachable`) is free at
+// run time and is what lets a second access to the same record forward the
+// first one's loads instead of re-deriving them past an opaque call.
+//
+// BRONZE_NO_ENV_TRIPWIRE: `1` restores the merging shape, for A/B out of one
+// binary. Anything else (and unset) uses the tripwire.
+bool envTripwireEdges() {
+    static const bool tripwire = [] {
+        const char* env = std::getenv("BRONZE_NO_ENV_TRIPWIRE");
+        return !(env != nullptr && std::strcmp(env, "1") == 0);
+    }();
+    return tripwire;
+}
+
 llvm::Value* emitEnvAncestor(llvm::IRBuilder<>& builder, llvm::Value* envBits, uint32_t hops) {
     if (hops == 0) return envBits;
     llvm::LLVMContext& ctx = builder.getContext();
@@ -210,76 +335,71 @@ llvm::Value* emitEnvAncestor(llvm::IRBuilder<>& builder, llvm::Value* envBits, u
 llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
                         uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards) {
+    if (!envTripwireEdges()) {
+        return emitEnvGetMerging(builder, abi, tables, envBits, depth, index, tdz, keyIndex,
+                                 elideGuards);
+    }
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
 
-    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "env.get.slow", fn);
-    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.get.done", fn);
-
-    // The slow block stays emitted either way: with the access guards dropped
-    // the TDZ edge is still a predecessor when `tdz` is set, and when it is not
-    // the block is unreachable and LLVM deletes it.
-    llvm::Value* slotPtr = elideGuards
-                               ? emitEnvSlotPtrUnguarded(builder, envBits, depth, index)
-                               : emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
+    llvm::Value* slotPtr =
+        elideGuards ? emitEnvSlotPtrUnguarded(builder, envBits, depth, index)
+                    : emitEnvSlotPtr(builder, envBits, depth, index,
+                                     emitAccessTripwire(builder, abi, envBits, depth, index));
     auto* fastVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "env.val");
     tagEnvRecordAccess(fastVal, ctx);
-    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
-    if (tdz) {
-        // The one compare 9.1.1.1.6 is: the marker means the ReferenceError,
-        // and the helper owns raising it.
-        llvm::Value* isUninit = builder.CreateICmpEQ(
-            fastVal, builder.getInt64(BRONZE_ABI_UNINITIALIZED_BITS), "env.tdz");
-        builder.CreateCondBr(isUninit, slowBb, doneBb);
-    } else {
-        builder.CreateBr(doneBb);
-    }
 
-    builder.SetInsertPoint(slowBb);
-    llvm::Value* slowVal =
-        tdz ? builder.CreateCall(abi.bronze_env_get_tdz,
-                                 {envBits, builder.getInt32(depth), builder.getInt32(index),
-                                  emitKeyId(builder, tables, keyIndex)})
-            : builder.CreateCall(abi.bronze_env_get,
-                                 {envBits, builder.getInt32(depth), builder.getInt32(index)});
+    // Without the TDZ test the read IS the load: no merge, no phi, and — now
+    // that the guard's failure edge does not return — nothing on any reachable
+    // path that a later load has to be re-derived across.
+    if (!tdz) return fastVal;
+
+    // The one compare 9.1.1.1.6 is: the marker means the ReferenceError, and
+    // the helper owns raising it. This edge is the only one of the two that
+    // ever merges, because raising in this runtime is a pending cell plus a
+    // return, not an unwind.
+    llvm::BasicBlock* tdzBb = llvm::BasicBlock::Create(ctx, "env.get.tdz", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.get.done", fn);
+    llvm::Value* isUninit = builder.CreateICmpEQ(
+        fastVal, builder.getInt64(BRONZE_ABI_UNINITIALIZED_BITS), "env.tdz");
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    auto* br = builder.CreateCondBr(isUninit, tdzBb, doneBb);
+    br->setMetadata(llvm::LLVMContext::MD_prof,
+                    llvm::MDBuilder(ctx).createBranchWeights(1, 1048576));
+
+    builder.SetInsertPoint(tdzBb);
+    llvm::Value* slowVal = builder.CreateCall(
+        abi.bronze_env_get_tdz, {envBits, builder.getInt32(depth), builder.getInt32(index),
+                                 emitKeyId(builder, tables, keyIndex)});
+    llvm::BasicBlock* tdzEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
     llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "env.get.result");
     result->addIncoming(fastVal, fastEndBb);
-    result->addIncoming(slowVal, slowBb);
+    result->addIncoming(slowVal, tdzEndBb);
     return result;
 }
 
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
                 uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards) {
-    llvm::LLVMContext& ctx = builder.getContext();
-    llvm::Function* fn = builder.GetInsertBlock()->getParent();
-
-    // With the access guards dropped a write is one store, so there is no
-    // failure edge and no block to branch out of.
-    if (elideGuards) {
-        auto* store = builder.CreateAlignedStore(
-            valBits, emitEnvSlotPtrUnguarded(builder, envBits, depth, index), llvm::Align(8));
-        tagEnvRecordAccess(store, ctx);
+    if (!envTripwireEdges()) {
+        emitEnvSetMerging(builder, abi, envBits, depth, index, valBits, elideGuards);
         return;
     }
+    llvm::LLVMContext& ctx = builder.getContext();
 
-    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "env.set.slow", fn);
-    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "env.set.done", fn);
-
-    llvm::Value* slotPtr = emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
+    // A write is ONE STORE either way. With the guards kept, the failure edge
+    // is the tripwire, which does not return — so the store has no merge to
+    // branch to and no `bronze_env_set` clobber sits between it and the next
+    // reader of the same record.
+    llvm::Value* slotPtr =
+        elideGuards ? emitEnvSlotPtrUnguarded(builder, envBits, depth, index)
+                    : emitEnvSlotPtr(builder, envBits, depth, index,
+                                     emitAccessTripwire(builder, abi, envBits, depth, index));
     auto* storeInst = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
     tagEnvRecordAccess(storeInst, ctx);
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(slowBb);
-    builder.CreateCall(abi.bronze_env_set, {envBits, builder.getInt32(depth),
-                                            builder.getInt32(index), valBits});
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(doneBb);
 }
 
 }  // namespace bronze::codegen_llvm

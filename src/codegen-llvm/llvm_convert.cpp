@@ -19,6 +19,14 @@ bool toInt32InlineEnabled() {
     return enabled;
 }
 
+bool pureConversionHelpers() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BRONZE_NO_PURE_CONVERSIONS");
+        return !(env != nullptr && std::strcmp(env, "1") == 0);
+    }();
+    return enabled;
+}
+
 llvm::Value* emitToInt32F64(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* dbl) {
     if (!toInt32InlineEnabled()) {
         return builder.CreateCall(abi.bronze_to_int32_f64, {dbl}, "toi32");

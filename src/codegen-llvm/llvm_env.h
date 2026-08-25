@@ -26,6 +26,14 @@ namespace bronze::codegen_llvm {
 // tripwire.
 bool envAccessGuardsElided();
 
+// Whether an access guard's FAILURE edge is a non-returning tripwire (the
+// default) or the merging slow path it was before stage E2. Off — meaning the
+// old merging shape — only under BRONZE_NO_ENV_TRIPWIRE=1, which exists so the
+// two shapes can be timed against each other out of one binary. This is not a
+// semantics switch in either position: both keep every guard armed and both
+// end a failure in the same fatal.
+bool envTripwireEdges();
+
 // Emits an environment slot read and returns its i64 (NaN-boxed) result.
 // With `tdz` set, a slot still holding the uninitialized marker takes the
 // helper path, which raises the ReferenceError `keyIndex` names.

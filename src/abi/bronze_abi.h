@@ -256,6 +256,16 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_set,             BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    /* The environment ACCESS-GUARD tripwire: what the inline path branches to\
+     * when the object tag, the Env brand or the slot range says the resolved\
+     * (depth, index) does not describe the record it was handed. Every one of\
+     * those is a lowering bug rather than anything a program can do, so this\
+     * does not RETURN — it re-derives the same three questions to say which\
+     * one failed and fatals. Declared noreturn on the LLVM side too, which is\
+     * the point: the failure edge ends in `unreachable`, so the guard costs a\
+     * compare and a never-taken branch and puts no merge, no phi and no\
+     * clobbering call into the flow the fast path is optimized in. */ \
+    X(bronze_env_access_failed,   BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_prop_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_super_get,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_super_set,           BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64)) \

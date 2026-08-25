@@ -20,6 +20,12 @@ namespace bronze::codegen_llvm {
 // compiler alone, so both columns come out of one binary.
 bool toInt32InlineEnabled();
 
+// Whether `bronze_to_int32_f64` and `bronze_to_uint8_clamp_f64` are declared
+// `memory(none) willreturn speculatable`. On unless
+// BRONZE_NO_PURE_CONVERSIONS=1. llvm_abi.cpp has why it matters even when the
+// fast path above already keeps the call off the hot edge.
+bool pureConversionHelpers();
+
 // ToInt32 of the double `dbl`, as an i32.
 //
 // THE FAST PATH AND WHY IT IS EXACT. ToInt32 truncates toward zero, reduces

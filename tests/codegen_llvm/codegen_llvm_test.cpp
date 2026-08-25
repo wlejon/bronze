@@ -20,6 +20,8 @@ constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
 
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_backend.h"
+#include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_env.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
@@ -514,4 +516,195 @@ TEST_CASE("environment access guards are armed unless the seam disarms them") {
     CHECK(codegen_llvm::envAccessGuardsElided() ==
           (std::getenv("BRONZE_ELIDE_ENV_GUARDS") != nullptr &&
            std::string(std::getenv("BRONZE_ELIDE_ENV_GUARDS")) == "1"));
+}
+
+// ---- the shapes stage E2 emits (llvm_env.h, llvm_convert.h) -----------------
+//
+// Both are checked on a hand-built module for the same reason the alias
+// families are: what has to hold is a statement about the SHAPE of the emitted
+// control flow — how many merges an access carries, and where the failure edge
+// goes — and reading it off two dozen instructions is exact where reading it
+// off a compiled fixture is arithmetic on a count.
+
+namespace {
+
+struct EnvShapeFixture {
+    llvm::LLVMContext ctx;
+    llvm::Module m{"env_shape_test", ctx};
+    codegen_llvm::AbiFns abi{};
+    llvm::Function* fn = nullptr;
+
+    EnvShapeFixture() {
+        codegen_llvm::declareAbiSymbols(m, ctx, abi, /*sharedRuntime=*/false);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx),
+            {llvm::Type::getInt64Ty(ctx), llvm::Type::getDoubleTy(ctx)}, false);
+        fn = llvm::Function::Create(fnTy, llvm::GlobalValue::ExternalLinkage, "f", m);
+    }
+
+    // The callees of every block whose terminator is `unreachable`.
+    std::vector<std::string> unreachableCallees() const {
+        std::vector<std::string> out;
+        for (const llvm::BasicBlock& bb : *fn) {
+            if (!llvm::isa<llvm::UnreachableInst>(bb.getTerminator())) continue;
+            for (const llvm::Instruction& inst : bb) {
+                if (const auto* call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (call->getCalledFunction() != nullptr) {
+                        out.push_back(call->getCalledFunction()->getName().str());
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    size_t phiCount() const {
+        size_t n = 0;
+        for (const llvm::BasicBlock& bb : *fn) {
+            for (const llvm::Instruction& inst : bb) {
+                if (llvm::isa<llvm::PHINode>(&inst)) ++n;
+            }
+        }
+        return n;
+    }
+
+    size_t opcodeCount(unsigned opcode) const {
+        size_t n = 0;
+        for (const llvm::BasicBlock& bb : *fn) {
+            for (const llvm::Instruction& inst : bb) {
+                if (inst.getOpcode() == opcode) ++n;
+            }
+        }
+        return n;
+    }
+
+    std::vector<std::string> calleeNames() const {
+        std::vector<std::string> out;
+        for (const llvm::BasicBlock& bb : *fn) {
+            for (const llvm::Instruction& inst : bb) {
+                if (const auto* call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (call->getCalledFunction() != nullptr) {
+                        out.push_back(call->getCalledFunction()->getName().str());
+                    }
+                }
+            }
+        }
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a guarded environment read with no TDZ is a load and a tripwire, with no merge") {
+    // The seam column emits the pre-E2 merging shape on purpose.
+    if (!codegen_llvm::envTripwireEdges()) return;
+    EnvShapeFixture f;
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(f.ctx, "entry", f.fn);
+    llvm::IRBuilder<> b(entry);
+    codegen_llvm::ModuleTables tables{};
+
+    llvm::Value* got =
+        codegen_llvm::emitEnvGet(b, f.abi, tables, f.fn->getArg(0), /*depth=*/0, /*index=*/3,
+                                 /*tdz=*/false, /*keyIndex=*/0, /*elideGuards=*/false);
+    b.CreateRetVoid();
+
+    // The read IS the load: nothing merges, because the only other edge out of
+    // the guard does not come back.
+    CHECK(llvm::isa<llvm::LoadInst>(got));
+    CHECK(f.phiCount() == 0);
+    CHECK(f.unreachableCallees() == std::vector<std::string>{"bronze_env_access_failed"});
+    // And the fallback helper the merge used to call is gone from the shape.
+    const std::vector<std::string> callees = f.calleeNames();
+    CHECK(std::find(callees.begin(), callees.end(), "bronze_env_get") == callees.end());
+}
+
+TEST_CASE("a guarded environment write is one store, and its failure edge does not return") {
+    // The seam column emits the pre-E2 merging shape on purpose.
+    if (!codegen_llvm::envTripwireEdges()) return;
+    EnvShapeFixture f;
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(f.ctx, "entry", f.fn);
+    llvm::IRBuilder<> b(entry);
+
+    codegen_llvm::emitEnvSet(b, f.abi, f.fn->getArg(0), /*depth=*/2, /*index=*/1, b.getInt64(0),
+                             /*elideGuards=*/false);
+    b.CreateRetVoid();
+
+    CHECK(f.opcodeCount(llvm::Instruction::Store) == 1);
+    CHECK(f.phiCount() == 0);
+    const std::vector<std::string> callees = f.calleeNames();
+    CHECK(std::find(callees.begin(), callees.end(), "bronze_env_set") == callees.end());
+    // Depth 2 is three records to brand-check plus the slot range, and every
+    // one of those edges lands on the one tripwire.
+    const std::vector<std::string> failed = f.unreachableCallees();
+    CHECK(!failed.empty());
+    for (const std::string& name : failed) {
+        CHECK(name == "bronze_env_access_failed");
+    }
+}
+
+TEST_CASE("the TDZ edge is the one that still merges, because raising returns") {
+    // The seam column emits the pre-E2 merging shape on purpose.
+    if (!codegen_llvm::envTripwireEdges()) return;
+    EnvShapeFixture f;
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(f.ctx, "entry", f.fn);
+    llvm::IRBuilder<> b(entry);
+    codegen_llvm::ModuleTables tables{};
+
+    llvm::Value* got =
+        codegen_llvm::emitEnvGet(b, f.abi, tables, f.fn->getArg(0), /*depth=*/0, /*index=*/0,
+                                 /*tdz=*/true, /*keyIndex=*/0, /*elideGuards=*/false);
+    b.CreateRetVoid();
+
+    auto* phi = llvm::dyn_cast<llvm::PHINode>(got);
+    REQUIRE(phi != nullptr);
+    CHECK(phi->getNumIncomingValues() == 2);
+    CHECK(f.phiCount() == 1);
+    // 9.1.1.1.6 is not a tripwire: this edge raises a ReferenceError the
+    // program can catch, so it comes back to the merge. The access guard's
+    // edge, in the same emission, still does not.
+    const std::vector<std::string> callees = f.calleeNames();
+    CHECK(std::find(callees.begin(), callees.end(), "bronze_env_get_tdz") != callees.end());
+    CHECK(f.unreachableCallees() == std::vector<std::string>{"bronze_env_access_failed"});
+}
+
+TEST_CASE("ToInt32 of a double is a range test, an fptosi to i64 and a truncation") {
+    EnvShapeFixture f;
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(f.ctx, "entry", f.fn);
+    llvm::IRBuilder<> b(entry);
+
+    llvm::Value* converted = codegen_llvm::emitToInt32F64(b, f.abi, f.fn->getArg(1));
+    b.CreateRetVoid();
+
+    REQUIRE(converted->getType()->isIntegerTy(32));
+    if (!codegen_llvm::toInt32InlineEnabled()) return;  // the A/B seam column
+
+    CHECK(f.phiCount() == 1);
+    // The conversion goes through i64, not i32: that is what makes every wrap
+    // between 2^31 and 2^63 an inline answer instead of a call.
+    REQUIRE(f.opcodeCount(llvm::Instruction::FPToSI) == 1);
+    for (const llvm::BasicBlock& bb : *f.fn) {
+        for (const llvm::Instruction& inst : bb) {
+            if (inst.getOpcode() == llvm::Instruction::FPToSI) {
+                CHECK(inst.getType()->isIntegerTy(64));
+            }
+        }
+    }
+    // Both bounds tested with ORDERED predicates, which is what sends NaN out
+    // through the same edge as the infinities.
+    size_t ordered = 0;
+    for (const llvm::BasicBlock& bb : *f.fn) {
+        for (const llvm::Instruction& inst : bb) {
+            if (const auto* cmp = llvm::dyn_cast<llvm::FCmpInst>(&inst)) {
+                CHECK(llvm::FCmpInst::isOrdered(cmp->getPredicate()));
+                ++ordered;
+            }
+        }
+    }
+    CHECK(ordered == 2);
+    // The helper survives as the arm the range test refuses, and it is pure.
+    CHECK(f.calleeNames() == std::vector<std::string>{"bronze_to_int32_f64"});
+    CHECK(f.abi.bronze_to_int32_f64->doesNotAccessMemory() ==
+          codegen_llvm::pureConversionHelpers());
 }
