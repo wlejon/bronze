@@ -113,9 +113,10 @@ node bench/typed_array_loop.js
 > | 3.4 storage alias families | **23.42** | the guards LLVM was re-testing now fold |
 > | E1 direct sibling-closure edges (`9a06bbc`) | 23.55 | no move here; this kernel has no sibling-closure call |
 > | E2 ToInt32 inline (`4098379`) | **16.86** | `a.elements[0] = 1.0 + (i & 7) * 0.125` stops calling out per iteration |
-> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session) |
+> | E3 one root frame per inlined region (`fa24b1f`) | **16.13** | the direct method edge stops carrying the callee's prologue (17.01 for the same session's E2 column) |
+> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session, 14.31 in E3's) |
 >
-> **11.7× against where the campaign started and 1.19× off node on this
+> **12.2× against where the campaign started and 1.14× off node on this
 > kernel.** The pre-registered ≤ 20 ns target IS reached, at stage E2, and NOT
 > by the mechanism it was registered against: stage 3.4 was right that the
 > guards remaining on this kernel are worth about **1 ns in total** and wrong
@@ -177,6 +178,382 @@ node bench/typed_array_loop.js
 > The automated runner never invokes node; the node column above is a manual
 > out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
 > first and the millisecond second.
+
+- **Stage E3 (one root frame per inlined region, and a dead zone nothing can reach)** — 2026-08-25:
+  > [!NOTE]
+  > **Two mechanisms, and the entry's most useful fact is that they OVERLAP
+  > heavily.** `env_slot_kernel` goes **16.78 → 10.77** ns/iter (1.56×),
+  > `mat4_kernel` **17.01 → 16.13** ns/call, `call_chain_kernel` 11.38 →
+  > **9.38** ns chained with its chained/flat ratio at 0.99. Checksums
+  > identical in every column of every row (`126000020` / `12600020`,
+  > `400000` / `940000`, `296000000`, `78849652`, `405000`, `-2112298`,
+  > `-32601148`, `825756/700159/NaN/-563350`). Against node in the same
+  > session (`4.86` ns/iter) the env-slot shape goes from 3.5× to **2.2×**;
+  > against node's `14.31` the mat4 shape goes from 1.19× to **1.13×**.
+  >
+  > Separately the stage fixes a semantics defect E2 found and left: assignment
+  > to a `const` binding stored instead of throwing.
+  >
+  > **A methodology note first, because it changes how the tables below should
+  > be read.** The kernel columns here are medians of **101** rounds, not 13.
+  > At 13 the shipped configuration is stable to about 1 % but the
+  > `BRONZE_NO_FRAME_MERGE` columns are not: three repeats of one four-column
+  > spec put the merge-off/definite-off cell at 17.40, 15.23 and 14.92, and
+  > the merge-off/definite-on cell at 13.47, 11.02 and 11.13. At 101 rounds
+  > two independent repeats of the same spec agree to **0.14 ns on every
+  > cell**. The un-merged binary is bigger and its loop touches six frames, so
+  > it is the configuration that is sensitive to machine state — which means a
+  > 13-round A/B systematically over-reads the merge. Every number in this
+  > entry that decides something is a 101-round (kernels), 51-round (ms
+  > fixtures) or 41-round (`mat4`, node) median.
+  >
+  > **1. A merged callee is emitted FRAMELESS** (`fa24b1f`,
+  > `src/codegen-llvm/llvm_frame.{h,cpp}`, `llvm_func.cpp`, `llvm_alias.cpp`).
+  > E1's direct edges got the callee inlined; they did not get its PROLOGUE
+  > inlined. Six inlined bodies in `render`'s loop meant six root-frame
+  > allocas, six linkings of the per-thread frame list and six
+  > `__bronze_tls_block_cache` fetches, per iteration — all six confirmed
+  > in-loop below.
+  >
+  > A REGION is now planned over the direct-edge graph before any function is
+  > emitted: `region(f) = ownSlots(f) + max(region(callee))` over the edges
+  > that ask to be inlined. MAX and not sum, because two merged calls in one
+  > caller are sequential and never both in flight — the rule the argv region
+  > already ran on. An edge that would close a cycle is refused, because a
+  > recursive nest has no finite size. The callee's slots are a region of the
+  > caller's frame, handed over as a pointer; its view of the thread block is
+  > the caller's, handed over beside it. The entry of a merge target becomes a
+  > forwarder that allocates the whole region, links it, calls the variant and
+  > unlinks — byte for byte the prologue the body used to carry — so an
+  > ordinary caller (the uniform wrapper, a refused edge) sees exactly the
+  > function it saw before, and the merge is independent of whether the
+  > inliner then grants the ask.
+  >
+  > GC correctness: every value that had a root slot still has one at every
+  > safepoint, in a frame that is linked for the whole of the callee's
+  > execution and sized for the deepest nest under it. The whole suite is green
+  > with the merge on, including every `-gc-stress` variant and the oracle's
+  > per-case `BRONZE_GC_STRESS=1` re-run.
+  >
+  > **Two things the split had to give back, both larger than what it removed
+  > until they were.** The measured merge was a **regression** twice before it
+  > was a win, and both causes are worth writing down:
+  >
+  >   - The seam words scattered through the instruction families
+  >     (`llvm_arith.cpp`, `llvm_iter.cpp`, `llvm_elem_cache.cpp`,
+  >     `llvm_ops.cpp`) each emit a `bronze_tls_block_addr` of their own on the
+  >     standing promise that a `readnone` call CSEs with the prologue's. A
+  >     frameless variant HAS no prologue fetch, and `cacheTlsFetches` skips a
+  >     function whose entry block has none — so every one of them stayed a
+  >     real cross-module call, in the loop.
+  >   - `tagStackAndControlAccesses` classifies by pointer PROVENANCE, and a
+  >     region arriving as a parameter is not an alloca. Without saying what
+  >     the two parameters are, the body lost the `StackFrame` claim its frame
+  >     accesses used to carry, and every control word it had cached had to be
+  >     re-loaded around them. Two parameter attributes (`bronze.frame_region`,
+  >     `bronze.tls_block`) and an `Argument` case in `classify()` are the fix.
+  >
+  > The lesson is that **removing the frames is not what pays; DECLARING what
+  > the region pointer is, is.** On the development session's 13-round
+  > protocol the merge read as roughly a 1.4 ns regression before the two
+  > parameters were labelled and a 2.9 ns win after — so the alias
+  > declaration is worth several times the frame and fetch removal it makes
+  > possible. There is no seam for it (an unlabelled parameter is not a
+  > shippable configuration), so those two figures are development-session
+  > numbers on the protocol the honest negatives below discredit; the sign and
+  > the ordering are what to take from them.
+  >
+  > **2. A dead zone nothing can reach carries no marker and no check**
+  > (`58d9449`, `ast/queries_declaration.cpp
+  > getDefinitelyAssignedLexicalNames`, `lower_scope.cpp`). `let n = 0;` at the
+  > top of a scope cannot be read before its initializer: everything ahead of
+  > it is a declaration or an inert literal, so no user code can run in the
+  > window. Its slot gets no `EnvInitTdz` and its reads emit `EnvGet` instead
+  > of `EnvGetTdz`. The analysis walks the statement list and STOPS at the
+  > first statement that could call anything (function declarations are
+  > transparent); the initializers it accepts are literals and function
+  > expressions only. Module-level slots are marked in `planModuleEnv` and not
+  > only where the bindings are opened, because a module function that reads
+  > one is lowered before `main` exists.
+  >
+  > The failure mode was chosen. A slot marked definite holds `undefined`
+  > rather than the uninitialized singleton, so were the analysis ever wrong a
+  > read answers `undefined` instead of throwing — it never reads a marker's
+  > bits as a value. Bindings stay lexical in every other respect.
+  > `tests/oracle/cases/dead_zone_reachability.js` pins the boundary from the
+  > other side: nine programs that must still raise ReferenceError, byte-
+  > identical to node.
+  >
+  > **3. The decomposition, and the overlap.** One interleaved session,
+  > medians of 101, warmup discarded, one run of every column per round, every
+  > column out of ONE binary (`env_slot_kernel` ns/iter, two-count wall delta
+  > over 5.4e6 iterations, checksum `126000020` / `12600020` everywhere):
+  >
+  > | column | ns/iter | Δ |
+  > |---|---:|---:|
+  > | E2 (`BRONZE_NO_FRAME_MERGE=1 BRONZE_NO_DEFINITE_INIT=1`, E2 manifest) | 16.78 | — |
+  > | + frame merge | 13.88 | −2.90 |
+  > | + definite assignment | 11.17 | −2.71 |
+  > | + the two new pins (**E3 shipped**) | **10.77** | −0.39 |
+  > | E3 shipped, `BRONZE_ELIDE_ENV_GUARDS=1` | 10.66 | −0.12 |
+  > | E2, `BRONZE_ELIDE_ENV_GUARDS=1` | 10.29 | — |
+  > | the same slots written `var`, so no lexical binding at all | 10.15 | — |
+  >
+  > That is one path through a 2×2, and the 2×2 is the point. Same session
+  > method, the E3 manifest in all four cells, and the whole table reproduced
+  > twice to within 0.14 ns:
+  >
+  > | `env_slot_kernel` ns/iter | definite assignment off | on |
+  > |---|---:|---:|
+  > | `BRONZE_NO_FRAME_MERGE=1` | 14.99 | 11.12 |
+  > | frame merge on | 12.33 | **10.71** |
+  >
+  > **Alone, the frame merge is worth 2.65 ns and definite assignment 3.86.
+  > On top of each other they are worth 0.41 and 1.62. Together they are worth
+  > 4.28 — three quarters of what they would be worth if they were
+  > independent.** They are not two wins; they are two ways to stop paying for
+  > the same thing, a slot access whose guard chain cannot fold into the one
+  > before it. E2 named that cost correctly and mispriced its halves in
+  > opposite directions: it put the frames at "up to 7.8 ns" and the TDZ
+  > merges at 1.72, and the truth is nearer the reverse. **Had definite
+  > assignment been built first, the charter's headline item would have
+  > measured as 0.41 ns.**
+  >
+  > The `var` probe says what is left: 10.15 against the shipped 10.77, and a
+  > `var` slot differs from a definitely-assigned `let` only in the
+  > per-iteration record 14.7.4.9 gives the `for (let i …)` head. E2's
+  > "no-new-machinery floor of 9.17 ns" was the pre-registered expectation for
+  > this stage; the shipped compiler lands **10.77** against a probe floor
+  > that reads 10.15 in the same session, and the 9.17 was a 13-round figure
+  > from a session whose absolutes do not transfer.
+  >
+  > **4. A pinned RETURN is a Number where it is used** (`9cf2756`,
+  > `src/types/flow_expr.cpp`). `return <owner>: number` has reached lowering
+  > since stage 3.3 and stopped there: the callee returned an f64 and the
+  > caller boxed it, because the flow analysis that types the caller's
+  > arithmetic never asked the manifest. A closure is exactly the case that
+  > needs it — reached through a function value, no `functionIndex`, no
+  > signature that can speak for its result. `?.()` is excluded, because a
+  > short-circuited optional call produces `undefined`.
+  >
+  > **The overlap catches this one too.** With `return useProgram: number` and
+  > `param render(iters): number` added to `bench/pins/env-slot-kernel.pins`,
+  > the shipped fixture reads 10.77 against 11.17 without them — **0.39 ns**.
+  > In the un-merged, TDZ-carrying configuration the same two lines are worth
+  > **1.79** (16.78 against 14.99), and earlier in this stage, before definite
+  > assignment landed, they measured 1.37. In the IL they do exactly what they
+  > claim in every configuration: one of the two `bronze_dynamic_add`s goes
+  > and `bronze_rel_lt` goes. They stay in the manifest at 0.39 because they
+  > are the only coverage the fixture suite has for a `return` pin reaching
+  > type inference at all, and the manifest says so in a comment.
+  >
+  > **5. Assignment to `const` throws now** (`58d9449`). `emitEnvSet` gated the
+  > immutable arm on `strictCode_`. The S that 9.1.1.1.5 SetMutableBinding
+  > step 7 tests is the BINDING's, not the assigning code's: 14.3.1.1 creates a
+  > `const` with `CreateImmutableBinding(name, true)`, so `c = 1` on one is a
+  > TypeError whichever mode the assignment sits in. The only immutable binding
+  > that takes S from the assigning code is a named function expression's own
+  > name (15.2.5, `false`), and that one stores nothing either way; a slot now
+  > records which of the two it is rather than a bool. The other half: a
+  > `const` no closure reads never becomes an environment slot at all — its
+  > value is an SSA register — so `emitEnvSet` never saw it and an assignment
+  > was a RENAME. The four writing paths (assignment, compound assignment,
+  > update, destructuring) now ask before they store.
+  > `tests/oracle/cases/const_reassignment.js` is promoted out of
+  > `cases/blocked/` and matches node byte-for-byte, so the oracle suite gains
+  > a case and loses a blocked one; the ctest count is unchanged at 29.
+  >
+  > **6. The elision 2×2, re-measured, and the default does not move.**
+  > Definite assignment ON in all eight cells and `--pins` in all eight;
+  > `env_slot` medians of 101, `mat4` medians of 41:
+  >
+  > | `env_slot_kernel` ns/iter | guards on | `BRONZE_ELIDE_ENV_GUARDS=1` |
+  > |---|---:|---:|
+  > | frame merge on | **10.71** | 10.60 (−0.11) |
+  > | `BRONZE_NO_FRAME_MERGE=1` | 11.12 | 10.78 (−0.34) |
+  >
+  > | `mat4_kernel` ns/call | guards on | `BRONZE_ELIDE_ENV_GUARDS=1` |
+  > |---|---:|---:|
+  > | frame merge on | **16.13** | 16.18 (+0.04) |
+  > | `BRONZE_NO_FRAME_MERGE=1` | 17.06 | 18.44 (+1.38) |
+  >
+  > **The frame merge repaired the mat4 elision regression — and in doing so
+  > removed elision's entire payoff.** E2 measured elision at −6.80 ns on
+  > `env_slot` and +1.58 on `mat4`, and the same two cells now read **−0.11**
+  > and **+0.04**. That is one fact seen from both sides: what elision was
+  > buying was the guard re-derivation the frames forced, and the frames are
+  > gone. Note the bottom rows — with the merge refused, elision still buys
+  > 0.34 on `env_slot` and still costs 1.38 on `mat4`, exactly the shape E2
+  > reported. It is also still not uniform on the wider suite:
+  > `typed_array_crunch` −4.55 ms, `mesh_churn_2k` −0.74, `object_graph`
+  > −0.45, `three_math` **+0.58**. So the charter's condition ("uniformly ≥ 0,
+  > flip the default") is not met — and it is no longer worth meeting. The
+  > flag now trades every armed tripwire, and the lowering-bug diagnostic they
+  > are, for a tenth of a nanosecond on the kernel it was built for.
+  > **Default stays off**, the seam stays as the A/B, and the case for ever
+  > flipping it is weaker than it was at E2, not stronger. Whole suite green
+  > **29/29 with no flags, 29/29 with `BRONZE_ELIDE_ENV_GUARDS=1`, and 29/29
+  > with `BRONZE_NO_FRAME_MERGE=1 BRONZE_NO_DEFINITE_INIT=1`.**
+  >
+  > **7. IR evidence** (`BRONZE_DUMP_LLVM_IR=<prefix>`, `*.post.ll`,
+  > `__wrapper_render`, counted per basic block and split by whether the
+  > block's terminator is `unreachable`):
+  >
+  > | | E2 | + merge | + definite | **E3 ship** | ship + elide |
+  > |---|---:|---:|---:|---:|---:|
+  > | live instructions | 1387 | 1279 | 437 | **375** | 279 |
+  > | live basic blocks | 181 | 170 | 56 | **50** | 37 |
+  > | live loads | 211 | 192 | 46 | **35** | 27 |
+  > | live stores | 103 | 87 | 54 | **47** | 32 |
+  > | live phis | 76 | 74 | 19 | **17** | 15 |
+  > | **live calls** | **52** | **37** | **10** | **9** | **9** |
+  > | root-frame allocas | **6** | **1** | 1 | **1** | 1 |
+  > | `__bronze_tls_block_cache` loads | **6** | **1** | 1 | **1** | 1 |
+  > | `bronze_env_get_tdz` | 27 | 27 | **0** | **0** | 0 |
+  > | `bronze_dynamic_add` | 2 | 2 | 2 | **1** | 1 |
+  > | `bronze_rel_lt` | 1 | 1 | 1 | **0** | 0 |
+  > | `bronze_to_int32_f64` | 3 | 3 | 3 | 3 | 3 |
+  > | dead (tripwire) blocks | 37 | 37 | 14 | 14 | 0 |
+  >
+  > All six frames and all six fetches were PER ITERATION, which the loop-body
+  > census confirms exactly: of E2's 52 live calls, 50 are inside the loop and
+  > they are 27 `bronze_env_get_tdz` + 6 `bronze_tls_block_addr` + 6+6
+  > `llvm.lifetime.{start,end}` (the six frames' brackets) + 3
+  > `bronze_to_int32_f64` + 1 `bronze_rel_lt` + 1 `bronze_unbox_bool`. The
+  > shipped loop carries 7: one fetch, one frame's brackets, the three cold
+  > ToInt32 arms, and one `bronze_unbox_bool`. The two dead-block columns are
+  > the tripwires: 37 for six frames' worth of guards, 14 for one region's.
+  >
+  > **8. No regression, and node.** The ms fixtures carry no manifest and are
+  > medians of 51; the kernels are as above; node is medians of 41, run
+  > manually out of band:
+  >
+  > | fixture | E2 (both seams) | **E3** | E3 + elide | node v24.2.0 |
+  > |---|---:|---:|---:|---:|
+  > | `env_slot_kernel` ns/iter | 16.78 | **10.77** | 10.66 | 4.86 |
+  > | `mat4_kernel` ns/call | 17.01 | **16.13** | 16.18 | 14.31 |
+  > | `call_chain` chained / flat ns | 11.38 / 12.75 (0.89) | **9.38 / 9.50 (0.99)** | — | 2.00 / 1.88 (1.07) |
+  > | `nullish_pin_kernel` ns/step | 11.36 | **11.19** | — | — |
+  > | `typed_array_crunch` ms | 47.89 | **47.64** | 43.09 | 53.00 |
+  > | `three_math` ms | 42.79 | **41.65** | 42.23 | 46.70 |
+  > | `mesh_churn_2k` ms | 74.78 | **73.13** | 72.39 | — |
+  > | `object_graph` ms | 47.56 | **47.74** | 47.29 | 67.17 |
+  >
+  > The five no-regression rows are flat or better; `object_graph`'s +0.18 ms
+  > is inside its width. Three of the four ms fixtures are now FASTER than
+  > node on this box (`typed_array_crunch`, `three_math`, `object_graph`),
+  > which is worth saying because the two kernels are where the campaign's
+  > remaining gap lives and the wider fixtures are not.
+  >
+  > **Cross-session drift is again large and again in both directions**:
+  > `typed_array_crunch` reads 47.9 here against E2's session's 59.4 on the
+  > same source, and `three_math` 42.8 against 33.2. node's `env_slot` reads
+  > 4.86 here against 5.08 in E2's session. Only the within-session
+  > interleaved columns above are a comparison; the absolutes are not, and
+  > stage E4's canonical single-session ladder is still owed.
+  >
+  > **Commands.** Every column of every table comes out of one build of the
+  > compiler; only the environment and the manifest change:
+  > ```
+  > bronze build bench/env_slot_kernel.js -o env_b.exe --pins bench/pins/env-slot-kernel.pins
+  > sed 's/const ITERS = 6000000;/const ITERS = 600000;/' bench/env_slot_kernel.js > small.js
+  > bronze build small.js                 -o env_s.exe --pins bench/pins/env-slot-kernel.pins
+  > # ns/iter = (median(env_b) - median(env_s)) * 1e6 / 5400000
+  > BRONZE_NO_FRAME_MERGE=1 bronze build ...      # refuse every region merge
+  > BRONZE_NO_DEFINITE_INIT=1 bronze build ...    # every lexical slot keeps its marker AND its check
+  > BRONZE_ELIDE_ENV_GUARDS=1 bronze build ...    # stage 3.4's elision seam, still off by default
+  > BRONZE_DUMP_LLVM_IR=<prefix> bronze build ... # the IR evidence above
+  > ```
+  > The E2 column's manifest is `bench/pins/env-slot-kernel.pins` with stage
+  > E3's two additions removed; the rest of the file is unchanged since 3.3.
+  >
+  > **Semantics and tests.** Two oracle cases.
+  > `tests/oracle/cases/const_reassignment.js` (promoted out of `blocked/`)
+  > pins the `const` TypeError six ways — uncaptured `a = 2`, captured through
+  > an arrow, compound `c += 1`, destructuring `({ d } = …)`, a `for (const e
+  > of …)` head, and the same closure inside an explicitly strict function —
+  > each of which must throw AND leave the binding at 1.
+  > `tests/oracle/cases/dead_zone_reachability.js` is written as PAIRS: the
+  > same program twice, once in the shape the analysis proves and once with
+  > exactly one statement changed so that user code can run before the
+  > initializer. Seven pairs plus a module-level one, covering a closure over
+  > a literal-initialized `let`, a binding read by its own initializer's call,
+  > both `const` forms, a block's own statement list, a per-iteration `for`
+  > head, and the declaration order that makes the prefix stop. The day the
+  > analysis widens far enough to swallow the second of any pair, the file
+  > stops matching node. Both cases are byte-identical to node under
+  > inference, under `--no-infer` and under `BRONZE_GC_STRESS=1`.
+  >
+  > Five codegen tests assert the region PLAN on a hand-built module — that a
+  > chain nests, that two edges from one caller take the max and not the sum,
+  > that a cycle is refused, that a self-call is never a region, and that a
+  > frameless variant's two parameters carry the storage families they name.
+  > Three lowering test files were re-anchored and two tests added: several
+  > of their programs opened with exactly the `let x = 0;` shape the new
+  > analysis proves, so they were asserting on a check that is now correctly
+  > absent, and the anchors were changed to programs that still carry one
+  > rather than the assertions weakened.
+  >
+  > **Honest negatives.**
+  > - The headline mechanism is worth **0.41 ns** on top of the residual it
+  >   was ranked above. Chartered as "the headline, up to ~7.8 ns", delivered
+  >   as one of two heavily overlapping routes to 4.28. The frames were still
+  >   the wrong thing to leave in — a per-body prologue in an inlined region
+  >   is wrong on its own terms and it is what made `mat4` lose 1.38 ns under
+  >   elision — but the ranking that put it first was wrong.
+  > - **The 13-round protocol this campaign has used since stage 3 is not
+  >   enough for the un-merged configurations**, and it over-reads the merge.
+  >   Three 13-round repeats of one spec put a single cell at 17.40, 15.23 and
+  >   14.92. Earlier drafts of this entry carried 16.69 → 10.76 with the merge
+  >   worth 2.98 and the pins worth 0.01; the 101-round numbers are 16.78 →
+  >   10.77 with the merge worth 2.90 and the pins 0.39. The headline barely
+  >   moved and two of the attributions inverted.
+  > - **Once the guards are elided the merge is worth nothing**: 10.78 → 10.60
+  >   on `env_slot`, which is inside the reproducibility band. And E2's fully
+  >   seamed configuration plus elision reads 10.29, the lowest single number
+  >   this kernel produced all session — a curiosity, not a shipping option,
+  >   because it gives up every tripwire to get there.
+  > - The `param render(iters)` pin is an INSTANCE fix, not the class fix the
+  >   charter asked for. The class question is real and untouched: a closure
+  >   has no parameter proof surface, because its call sites are reached
+  >   through a function value and nothing enumerates them. And the charter's
+  >   premise for that item was wrong twice over — `iters` was never pinned,
+  >   and `bronze_rel_lt` already has an inline both-numbers arm, so what the
+  >   pin removes is a cold call and a phi, not a compare.
+  > - Three cold `bronze_to_int32_f64` per iteration survive, as E2 left them,
+  >   and are still fine.
+  >
+  > **What stage E4 is handed.**
+  > - **Use 101 rounds, not 13.** See the second honest negative; the protocol
+  >   the campaign inherited is the reason two of this stage's attributions
+  >   had to be rewritten.
+  > - **The shipped kernel is 10.77 against a `var`-probe floor of 10.15 and
+  >   node's 4.86.** The 0.62 between the kernel and the probe is the
+  >   per-iteration environment record `for (let i …)` requires (14.7.4.9);
+  >   the ~5.3 below that is not slot access at all and no probe in this
+  >   campaign has isolated it. The kernel's loop now carries seven calls,
+  >   four of them cold arms and one a lifetime marker — there is no call left
+  >   to remove.
+  > - **A closure has no parameter proof surface.** `param render(iters)` is
+  >   in the manifest to work around it. Every sibling-closure call site IS
+  >   enumerable once `planStableFunctionSlots` has decided a slot is a stable
+  >   function — that plan is exactly a list of the call sites — so this is
+  >   buildable and is the general form of what a pin does here by hand.
+  > - **`bronze_unbox_bool` and the relational helpers are still opaque.** E2's
+  >   lesson (a cold call in a loop is priced as a barrier, not as a call) has
+  >   not been applied to them. `bronze_truthy` reads the heap and never runs
+  >   user code, so `memory(read)` is available; `bronze_rel_*` cannot be, since
+  >   an object operand's `valueOf` is program text.
+  > - **Definite assignment stops at the first statement that could call.**
+  >   It does not follow control flow, so `let a = 0; if (x) {…} let b = 0;`
+  >   proves `a` and gives up on `b`. A dominance-based version over the
+  >   lowered CFG would prove both, and would also reach the `let` whose
+  >   initializer is a call.
+  > - The elision seam is now a 0.11 ns lever on the kernel it was built for
+  >   and a −4.55 ms one on `typed_array_crunch`. If it is ever revisited,
+  >   `typed_array_crunch` is where the remaining licence lives, not
+  >   `env_slot_kernel` — and the question to ask there is why, since that
+  >   fixture's env slots should now be as cheap as this one's.
 
 - **Stage E2 (ToInt32 inline, and an access guard that stops merging)** — 2026-08-25:
   > [!NOTE]
