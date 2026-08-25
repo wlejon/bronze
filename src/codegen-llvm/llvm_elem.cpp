@@ -1,5 +1,6 @@
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
+#include "il/il.h"
 
 #include <string>
 
@@ -571,6 +572,42 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     return {hdr, idx32, ok};
 }
 
+// The pin ceiling probe's element slot address (il::kElemKindPlainArrayF64,
+// BRONZE_UNSOUND_PINS): a plain dense array's element `idx`, computed with NO
+// guards — the receiver is ASSUMED an array, the index in-bounds, the slot a
+// number. This is the code pin-based compilation would emit after its checks
+// moved to the write paths; here nothing backs the assumption but the
+// fixture's checksum.
+llvm::Value* emitUnsoundArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                                     llvm::Value* idxDbl) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::Value* addr =
+        builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "pel.hdr");
+    llvm::Value* elemsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "pel.elems");
+    tagArrayHeaderAccess(elemsVal, ctx);
+    llvm::Value* elemsObj = builder.CreateIntToPtr(
+        builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy);
+    llvm::Value* headPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "pel.head");
+    tagArrayHeaderAccess(head, ctx);
+    llvm::Value* idx32 = builder.CreateIntrinsic(
+        llvm::Intrinsic::fptoui_sat, {i32Ty, builder.getDoubleTy()}, {idxDbl}, nullptr,
+        "pel.idx");
+    // +1: the elements block's payload begins one i64 past its header.
+    llvm::Value* slotIdx = builder.CreateAdd(
+        builder.CreateZExt(builder.CreateAdd(idx32, head), i64Ty), builder.getInt64(1));
+    return builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx, "pel.slot");
+}
+
 }  // namespace
 
 llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
@@ -583,6 +620,14 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+
+    if (elemKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+        llvm::Value* slotPtr = emitUnsoundArrayElemPtr(builder, objBits, idxDbl);
+        auto* raw = builder.CreateAlignedLoad(builder.getInt64Ty(), slotPtr, llvm::Align(8),
+                                              "pel.raw");
+        tagArrayElementsAccess(raw, ctx);
+        return builder.CreateBitCast(raw, dblTy, "pel.f64");
+    }
 
     TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
     llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "tel.load", fn);
@@ -674,6 +719,16 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
     llvm::Type* f32Ty = llvm::Type::getFloatTy(ctx);
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+
+    if (elemKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+        llvm::Value* slotPtr = emitUnsoundArrayElemPtr(builder, objBits, idxDbl);
+        // The canonicalizing select Box emits: a non-canonical NaN written
+        // raw would read back as a tagged pointer.
+        llvm::Value* bits = emitBoxDouble(builder, valDbl);
+        auto* st = builder.CreateAlignedStore(bits, slotPtr, llvm::Align(8));
+        tagArrayElementsAccess(st, ctx);
+        return;
+    }
 
     TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
     llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "tes.store", fn);

@@ -145,6 +145,14 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e) const {
     // which is control flow this op does not model.
     if (ia == nullptr || ia->optional) return std::nullopt;
     const types::Type recv = inferredType(*ia->object);
+    // The pin ceiling probe (BRONZE_UNSOUND_PINS): a proven plain-Array
+    // receiver with a proven-number index takes the raw dense form — no
+    // guards at all. See il::kElemKindPlainArrayF64.
+    if (recv.is(types::TypeKind::Array)) {
+        static const bool unsoundPins = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
+        if (!unsoundPins || !provenNumber(*ia->index)) return std::nullopt;
+        return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
+    }
     if (!recv.is(types::TypeKind::TypedArray)) return std::nullopt;
     const uint32_t raw = recv.typedArrayElemRaw();
     if (raw == types::kNoTypedArrayElem) return std::nullopt;

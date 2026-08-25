@@ -120,6 +120,11 @@ struct ModuleContext {
     bool interprocIdent = false;
     // `BRONZE_NO_METHOD_PARAM_TYPES` controls method parameter typing with primitive types.
     bool methodParamTypes = false;
+    // `BRONZE_UNSOUND_PINS` — the pin CEILING PROBE. Field-type claims are
+    // spent WITHOUT the builtHere / per-class / program-wide-audit proofs,
+    // and Array/TypedArray field kinds survive a read. Unsound by design:
+    // it measures what pin-based compilation would buy, checksum-gated.
+    bool unsoundPins = false;
     uint32_t unboundedMethodCalls = 0;
 
     // ---- interprocedural identity for constructors (ctor_ident.h) -----------

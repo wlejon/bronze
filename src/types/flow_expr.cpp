@@ -184,8 +184,20 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // IL ops behind it (`ilTypeOf`). A `string` or `bool` field type
             // would have to carry its own program-wide invariant to be a proof,
             // and would buy a calling convention nothing consumes.
+            // Probe: an Array/TypedArray field keeps its kind across the
+            // read (it is an identity-grade claim here, spent only on the
+            // element form), and the three primitive proofs below are
+            // skipped. See flow.h `unsoundPins`.
+            if (mod_.unsoundPins &&
+                (field.is(TypeKind::Array) || field.is(TypeKind::TypedArray))) {
+                return field;
+            }
             if (!field.is(TypeKind::Number)) return Type::dynamic();
             if (record_) ++mod_.result->fieldAudit.numberFieldReads;
+            if (mod_.unsoundPins) {
+                if (record_) mod_.result->provenFieldReads.insert(m);
+                return field;
+            }
             if (!mod_.methodParamTypes && !base.builtHere()) {
                 if (record_) ++mod_.result->fieldAudit.refusedNotBuiltHere;
                 return Type::dynamic();
@@ -492,6 +504,13 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                         args[i].is(TypeKind::Undefined)) {
                         continue;
                     }
+                    // Probe (flow.h `unsoundPins`): a Dynamic argument does not
+                    // poison the join — the optimistic stand-in for what an
+                    // offline profile would report as the site's actual class.
+                    // The commonest source is an UNCALLED forwarder (three.js
+                    // `multiply(m) { return this.multiplyMatrices(this, m) }`)
+                    // whose own dynamic parameter reaches every hot method.
+                    if (mod_.unsoundPins && args[i].is(TypeKind::Dynamic)) continue;
                     target.observedParams[i] = join(target.observedParams[i], args[i]);
                 } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
                     target.observedParams[i] = join(target.observedParams[i], Type::undefined());
@@ -534,6 +553,9 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                     args[i].is(TypeKind::Undefined)) {
                     continue;
                 }
+                // Probe: as in the unbounded-receiver path above — a Dynamic
+                // argument does not poison the join. See flow.h `unsoundPins`.
+                if (mod_.unsoundPins && args[i].is(TypeKind::Dynamic)) continue;
                 target.observedParams[i] = join(target.observedParams[i], args[i]);
             } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
                 target.observedParams[i] = join(target.observedParams[i], Type::undefined());

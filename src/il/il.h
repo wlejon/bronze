@@ -191,6 +191,7 @@ enum class Op : uint8_t {
     // narrowing, an invalid one is a silent no-op. Neither op can throw and
     // neither can allocate, which is what keeps a loop of them free of
     // safepoints.
+    // <immI32> is a types::TypedArrayElem number, or the PROBE kind below.
     ElemGetTyped, // a: f64 = elem.get.typed obj, idx(f64), <immI32: elem kind>
     ElemSetTyped, // elem.set.typed obj, idx(f64), val(f64), <immI32: elem kind>
     // A call INFERENCE PROVED reaches a pristine builtin `Math` method
@@ -724,5 +725,11 @@ struct Module {
     // what `--no-fn-source` does — the ranges above stay, and address nothing.
     std::vector<std::string> sourceTexts;
 };
+
+// The PROBE element kind (`BRONZE_UNSOUND_PINS`): a plain dense JS array
+// whose reads/writes are ASSUMED in-bounds, hole-free and numeric — no
+// guard of any kind is emitted. Measurement only; deliberately outside the
+// types::TypedArrayElem range so nothing sound can collide with it.
+inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 
 }  // namespace bronze::il

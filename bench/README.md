@@ -98,6 +98,38 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+- **Pin ceiling probe (`BRONZE_UNSOUND_PINS`: what pin-based compilation would buy)** — 2026-08-24:
+  > [!NOTE]
+  > **An UNSOUND, default-off measurement flag, not an optimization.** With
+  > `BRONZE_UNSOUND_PINS=1` at compile time, inference spends field-type
+  > claims without the builtHere / per-class / write-audit proofs, lets
+  > Array/TypedArray field kinds survive a read, skips Dynamic argument
+  > contributions in method-param joins (the optimistic stand-in for a
+  > census profile), and plain-Array element access on proven receivers
+  > compiles to raw dense f64 loads/stores with no guards
+  > (`il::kElemKindPlainArrayF64`). It simulates "invariants held by the
+  > object model, checks moved to write paths" before that machinery exists.
+  >
+  > **Kernel (`bench/mat4_kernel.js`, real three.js `Matrix4.multiplyMatrices`,
+  > ns/call by two-iteration-count wall delta, idle box):**
+  > - bronze default: **196.9 ns/call**; probe: **27.6 ns/call** (**7.1x**);
+  >   node v24 same method: **15.7 ns/call**; checksums identical.
+  >   Remaining probe-vs-V8 gap is call-boundary cost (boxed IC method
+  >   dispatch, boxed args/returns) — the typed-calling-convention work item,
+  >   not the body.
+  > - Fixture A/B same build (probe off → on): `three_math` 45.68 → 30.02 ms
+  >   (**-34%**), `typed_array_loop` 39.41 → 22.08 (**-44%**),
+  >   `proto_dispatch` 24.27 → 18.74, `proto_dispatch_churn` 57.27 → 49.29,
+  >   checksums matching. `mesh_churn_2k` **breaks** (checksum NaN, 80 → 236
+  >   ms): the blunt global flag also pins object-holding arrays
+  >   (`Object3D.children`) and audit-refused fields — the exact sites where
+  >   real pins need per-field/per-array granularity (census) and write-path
+  >   enforcement. That breakage is the probe doing its job: it maps where
+  >   enforcement is load-bearing.
+  >
+  > Full test suite green with the flag unset (29/29); the flag changes
+  > nothing unless exported.
+
 - **brobench Chunk 7 (scoped memory alias domains: disjoint heap metadata for LLVM codegen)** — commits `6671fa1`, `9712f58`:
   > [!NOTE]
   > **Expands LLVM scoped alias analysis across 6 disjoint memory domains (`BronzeAliasDomain` in `llvm_alias.h`), licensing LLVM to hoist, reorder, and vectorize across array, object, and header memory accesses.**

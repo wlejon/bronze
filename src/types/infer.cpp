@@ -360,6 +360,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
+    mod.unsoundPins = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
