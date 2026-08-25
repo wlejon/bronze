@@ -870,8 +870,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::InferenceResult* inference,
                                       const std::vector<std::string>* hostGlobals,
                                       const SourceSet* sources,
-                                      InferStatsCollector* stats) {
-    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats);
+                                      InferStatsCollector* stats,
+                                      bool assumeNoBigInt) {
+    Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
+                    assumeNoBigInt);
     return lowerer.lower();
 }
 

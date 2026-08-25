@@ -33,7 +33,8 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
-          const std::string& importMapPath = {}, bool inferStats = false);
+          const std::string& importMapPath = {}, bool inferStats = false,
+          bool assumeNoBigInt = false);
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -71,7 +72,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
-             const std::string& importMapPath = {});
+             const std::string& importMapPath = {},
+             bool assumeNoBigInt = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

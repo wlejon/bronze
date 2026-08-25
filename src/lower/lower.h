@@ -33,12 +33,31 @@ namespace bronze::lower {
 // unresolved-name warning and runtime ReferenceError. Nullable like
 // `inference`, and independent of it — which set of names resolves is a
 // lowering-level fact, so `--no-infer` changes nothing about it.
+// `assumeNoBigInt` is the embedder's promise, made with --assume-no-bigint,
+// that no BigInt will reach an arithmetic operator in this program — including
+// through channels the compiler cannot see: an exported function a host calls,
+// or a host global's return value. It is the same KIND of claim
+// `--host-globals` makes (the host asserts a boundary the compiler cannot
+// inspect), and like that one it is a promise, not a proof.
+//
+// What it buys: `*`, `-`, `/` and `%` over a boxed operand may produce an f64
+// instead of a boxed value, because with no BigInt in reach ToNumeric IS
+// ToNumber. An f64 result is not a GC root, and `planRootFrame` roots Dynamic
+// values and only those — so a chain of arithmetic keeps its intermediates in
+// registers instead of storing and reloading every one of them around every
+// instruction.
+//
+// The promise is checked as far as it can be: the flag only takes effect if
+// `bigIntMayReach` also finds nothing in the program's own text, so an
+// embedder that passes it over a program full of BigInts gets the safe
+// lowering rather than a miscompile.
 class InferStatsCollector;
 
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference = nullptr,
                                       const std::vector<std::string>* hostGlobals = nullptr,
                                       const SourceSet* sources = nullptr,
-                                      InferStatsCollector* stats = nullptr);
+                                      InferStatsCollector* stats = nullptr,
+                                      bool assumeNoBigInt = false);
 
 }  // namespace bronze::lower

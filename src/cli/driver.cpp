@@ -126,6 +126,17 @@ constexpr const char* kUsage =
     "                                      object exports, so distinct names here\n"
     "                                      are what let a host link more than one\n"
     "                                      compiled module into one image.\n"
+    "  --assume-no-bigint                  Promise that no BigInt will reach an\n"
+    "                                      arithmetic operator, INCLUDING through an\n"
+    "                                      exported function a host calls or a host\n"
+    "                                      global's return value. With it, `*`, `-`,\n"
+    "                                      `/` and `%` over unproven operands produce\n"
+    "                                      an f64 rather than a boxed value, so the\n"
+    "                                      result needs no GC root slot and stays in a\n"
+    "                                      register. A promise about the boundary,\n"
+    "                                      like --host-globals; the program's own text\n"
+    "                                      is still scanned, and any BigInt spelled in\n"
+    "                                      it overrides the flag.\n"
     "  --no-fn-source                      Leave the source text of each function out\n"
     "                                      of the image. It is embedded by default,\n"
     "                                      once per file, because that is what\n"
@@ -260,7 +271,8 @@ int runTypes(const std::string& sourcePath, std::string* outString,
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
-          const std::string& importMapPath, bool inferStats) {
+          const std::string& importMapPath, bool inferStats,
+          bool assumeNoBigInt) {
     // The manifest is read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -312,7 +324,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
-                                       inferStats ? &statsCollector : nullptr);
+                                       inferStats ? &statsCollector : nullptr,
+                                       assumeNoBigInt);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -340,7 +353,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool inferStats, std::string* statsOut,
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
-             const std::string& importMapPath) {
+             const std::string& importMapPath, bool assumeNoBigInt) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -419,7 +432,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
-                                       inferStats ? &statsCollector : nullptr);
+                                       inferStats ? &statsCollector : nullptr,
+                                       assumeNoBigInt);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -621,12 +635,15 @@ int runDriver(int argc, char** argv) {
         std::vector<modules::ModuleRoot> moduleRoots;
         bool infer = true;
         bool inferStats = false;
+        bool assumeNoBigInt = false;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
             } else if (arg == "--infer-stats") {
                 inferStats = true;
+            } else if (arg == "--assume-no-bigint") {
+                assumeNoBigInt = true;
             } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
@@ -664,7 +681,7 @@ int runDriver(int argc, char** argv) {
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats);
+                     inferStats, assumeNoBigInt);
     }
 
     if (command == "build") {
@@ -681,6 +698,7 @@ int runDriver(int argc, char** argv) {
         bool emitShared = false;
         bool inferStats = false;
         bool retainFnSource = true;
+        bool assumeNoBigInt = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -688,6 +706,8 @@ int runDriver(int argc, char** argv) {
                 infer = false;
             } else if (arg == "--no-fn-source") {
                 retainFnSource = false;
+            } else if (arg == "--assume-no-bigint") {
+                assumeNoBigInt = true;
             } else if (arg == "--timings") {
                 timings = true;
             } else if (arg == "--infer-stats") {
@@ -752,7 +772,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath);
+                        emitShared, retainFnSource, importMapPath, assumeNoBigInt);
     }
 
     return fail(kUsage);

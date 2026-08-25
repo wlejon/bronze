@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "lower/bigint_reach.h"
 #include "ast/clone.h"
 #include "il/il.h"
 #include "lower/infer_stats.h"
@@ -45,7 +46,8 @@ public:
             const types::InferenceResult* inference,
             const std::vector<std::string>* hostGlobals = nullptr,
             const SourceSet* sources = nullptr,
-            InferStatsCollector* stats = nullptr)
+            InferStatsCollector* stats = nullptr,
+            bool assumeNoBigInt = false)
         : astModule_(astModule), diags_(diags), inference_(inference),
           sources_(sources), stats_(stats) {
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
@@ -56,6 +58,12 @@ public:
         staticShapesDisabled_ = staticShapeSeamDisabled();
         familyGuardDisabled_ = familyGuardSeamDisabled();
         unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
+        // Both halves are required: the embedder's promise about the channels
+        // the compiler cannot see, AND the scan of the text it can.
+        numericArithDisabled_ =
+            numericArithSeamDisabled() || !assumeNoBigInt ||
+            bigIntMayReach(astModule, hostGlobals ? *hostGlobals
+                                                  : std::vector<std::string>{});
     }
 
     std::optional<il::Module> lower();
@@ -267,6 +275,19 @@ private:
     // was and its conversion is the checked unbox.
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
+    // BRONZE_NO_NUMERIC_ARITH=1, or a program in which a BigInt can reach an
+    // operator (`bigIntMayReach`). Gates ONE decision in `lowerBinary`: whether
+    // `*`, `-`, `/`, `%` over a boxed operand produce a boxed result or an f64
+    // one. The boxed result is what earns a GC root slot, and a rooted value is
+    // stored and reloaded around every instruction it survives — so this seam
+    // is the difference between three.js's matrix math keeping its
+    // intermediates in registers and spilling all of them.
+    //
+    // The refusal is the whole-program BigInt scan, not a per-site test: with
+    // one in reach, 13.15.3's BigInt algorithm is live and the result of `*`
+    // genuinely can be a heap value.
+    bool numericArithDisabled_ = false;
+    static bool numericArithSeamDisabled();
     // A read of an audited field on a receiver watched being made: the one
     // licence for the raw unbox.
     bool provenFieldRead(const ast::Expr& e) const;

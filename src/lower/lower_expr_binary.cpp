@@ -353,7 +353,23 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     // TypeError. The relational operators do NOT belong here — they left
     // through lowerRelational above, because ToNumeric is only one of their
     // two branches.
-    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+    // With no BigInt anywhere in the program, ToNumeric IS ToNumber and the
+    // BigInt arm of 13.15.3 is dead code: `a * b` is exactly
+    // `ToNumber(a) * ToNumber(b)`, which is this operand pair unboxed and a
+    // native f64 multiply. Taking that road rather than the boxed one is worth
+    // far more than the two conversions it saves, because an f64 result is not
+    // a GC root: `planRootFrame` roots Dynamic values and only those, and a
+    // rooted value is stored to its slot after its defining instruction and
+    // reloaded before every use. A chain like `a*b + c*d` over dynamic operands
+    // keeps every intermediate in a register under this arm and spills all of
+    // them under the other.
+    //
+    // `unboxValueIfNeeded` emits the two conversions in source order, which is
+    // the order 13.15.3 evaluates them in — a `valueOf` on the left runs before
+    // one on the right, as it must.
+    const bool numericArith = !numericArithDisabled_ && resType == il::Type::F64;
+    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
+        !numericArith) {
         lhs = boxValueIfNeeded(lhs, ilFn);
         rhs = boxValueIfNeeded(rhs, ilFn);
         resType = il::Type::Dynamic;

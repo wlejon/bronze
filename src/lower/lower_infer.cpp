@@ -423,6 +423,10 @@ bool Lowerer::unboxedFieldSeamDisabled() {
     return std::getenv("BRONZE_NO_UNBOXED_FIELDS") != nullptr;
 }
 
+bool Lowerer::numericArithSeamDisabled() {
+    return std::getenv("BRONZE_NO_NUMERIC_ARITH") != nullptr;
+}
+
 // Is this expression a read of a field the write audit certified, on a receiver
 // this compilation watched being made?
 //
