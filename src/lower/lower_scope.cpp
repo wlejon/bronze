@@ -1351,6 +1351,16 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     size_t outerBlockIdx = currentBlockIdx_;
     auto outerVarBindings = varBindings_;
     auto outerActiveVarMap = activeVarMap_;
+    // The `func.ref` memo is per IL FUNCTION: a `Value` in it names an
+    // instruction result, and result ids are numbered within one function.
+    // `lowerFunctionBody` clears it on the way in, which is only half of what
+    // an entry/exit pair needs — without the restore, the enclosing function
+    // came back holding the CALLEE's ids, so a later mention of a top-level
+    // `function` in the caller read whatever instruction happened to have that
+    // number. `(function () { h(g, 4); })(); h(g, 3);` called the anonymous
+    // function twice and never called `h` again. Saved with the rest of the
+    // per-function state, and restored below with it.
+    auto outerFunctionRefMap = functionRefMap_;
     auto outerScopeDepth = currentScopeDepth_;
     auto outerVarDeclCounter = varDeclCounter_;
     auto outerJumpStack = jumpStack_;
@@ -1425,6 +1435,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     strictCode_ = outerStrict;
     varBindings_ = outerVarBindings;
     activeVarMap_ = outerActiveVarMap;
+    functionRefMap_ = outerFunctionRefMap;
     currentScopeDepth_ = outerScopeDepth;
     varDeclCounter_ = outerVarDeclCounter;
     jumpStack_ = outerJumpStack;
