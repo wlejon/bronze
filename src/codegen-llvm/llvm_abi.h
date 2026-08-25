@@ -90,6 +90,13 @@ struct AbiGlobals {
 void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns& fns,
                        bool sharedRuntime);
 
+// Whether the three PREDICATE helpers that answer a question about one Value
+// and change nothing — `bronze_truthy`, `bronze_unbox_bool` (which IS truthy)
+// and `bronze_is_nullish` — are declared with the weakest memory effect each
+// one actually has. On unless BRONZE_NO_PURE_PREDICATES=1, which is the A/B
+// seam. llvm_abi.cpp has the derivation and what it buys.
+bool purePredicateHelpers();
+
 // One call to bronze_tls_block_addr at the current insert point — which must
 // be a function's entry block, so the base dominates every later use — and a
 // GEP per field. The accessor is declared readnone/nounwind/willreturn, so a

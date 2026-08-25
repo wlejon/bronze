@@ -1,6 +1,8 @@
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_convert.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <llvm/IR/Constants.h>
@@ -35,6 +37,14 @@ static_assert(BRONZE_ABI_IC_EPOCH_OFFSET == 16, "word 2 of an entry is the fill 
 
 // The fn-singleton table is i64 words for the same reason as the IC table: the
 // helper takes `uint64_t*` and the two field offsets are ABI constants.
+bool purePredicateHelpers() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BRONZE_NO_PURE_PREDICATES");
+        return !(env != nullptr && std::strcmp(env, "1") == 0);
+    }();
+    return enabled;
+}
+
 static constexpr unsigned kFnSlotWords = BRONZE_ABI_FNSLOT_SIZE / sizeof(uint64_t);
 static_assert(BRONZE_ABI_FNSLOT_SIZE % sizeof(uint64_t) == 0,
               "the fn-singleton table is emitted as i64 words, so an entry must be whole ones");
@@ -127,6 +137,50 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
             pure->addFnAttr(llvm::Attribute::WillReturn);
             pure->addFnAttr(llvm::Attribute::Speculatable);
         }
+    }
+
+    // The PREDICATES, and the same lesson one step further out. Stage E2
+    // priced `bronze_to_int32_f64`'s purity at 23.4 ns on a loop that barely
+    // executed the call: what an opaque declaration costs is not the call, it
+    // is that every value loaded before it has to be re-loaded after it.
+    // `bronze_truthy` is the surviving instance of exactly that shape — the
+    // cold arm of the inline truthiness split (llvm_ops.cpp) sits inside the
+    // hot loop of `env_slot_kernel`, and because the declaration clobbers
+    // memory the environment record's pointer, brand word and size word are
+    // re-derived at the merge behind it, per iteration, on a path that is
+    // never taken.
+    //
+    // The weakest attribute each one actually has, and no more:
+    //
+    //   - `bronze_truthy` (rt_convert.cpp) and `bronze_unbox_bool`, which IS
+    //     it, READ the heap: a string's truthiness is its length and a
+    //     BigInt's is its limbs, both behind a pointer. So `memory(read)`,
+    //     not `memory(none)`. They write nothing, call no user code (7.1.2
+    //     has no coercion row) and always return.
+    //   - `bronze_is_nullish` inspects the tag bits and dereferences nothing,
+    //     so it is `memory(none) speculatable` on the same terms as the two
+    //     conversions above.
+    //
+    // NOT here, deliberately: `bronze_strict_eq` (it calls `recordHelperCall`,
+    // which writes a counter), `bronze_typeof` (it can intern), and every
+    // `bronze_rel_*` (an object operand's `valueOf` is program text).
+    //
+    // Soundness against the collector: the heap is mark-sweep and NON-MOVING
+    // (runtime/heap.h), so a Value's raw bits stay valid for as long as the
+    // object lives, and `memory(read)` cannot be sunk past an opaque call —
+    // which is what every collection point is — because such a call may write
+    // what the read reads. Neither of the two ways a readonly call may legally
+    // move can put it after its operand has been collected.
+    //
+    // BRONZE_NO_PURE_PREDICATES=1 is the A/B seam.
+    if (purePredicateHelpers()) {
+        for (llvm::Function* ro : {fns.bronze_truthy, fns.bronze_unbox_bool}) {
+            ro->setOnlyReadsMemory();
+            ro->addFnAttr(llvm::Attribute::WillReturn);
+        }
+        fns.bronze_is_nullish->setDoesNotAccessMemory();
+        fns.bronze_is_nullish->addFnAttr(llvm::Attribute::WillReturn);
+        fns.bronze_is_nullish->addFnAttr(llvm::Attribute::Speculatable);
     }
 
 #undef BRONZE_ABI_UNPAREN
