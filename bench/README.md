@@ -110,16 +110,21 @@ node bench/typed_array_loop.js
 > | 3.1 pin manifest (`033f4f3`, `c9083b6`) | **27.6** | pinned element form, unguarded f64 arithmetic |
 > | 3.2 nullish pins + env-slot typing (`2999b39`) | 27.6 | no move here; this kernel has no nullish and no env slots |
 > | 3.3 typed calling convention (`408d13e`) | **25.05** | direct method edge + typed entry + LLVM inlining |
-> | 3.4 storage alias families (this stage) | **23.42** | the guards LLVM was re-testing now fold |
-> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box |
+> | 3.4 storage alias families | **23.42** | the guards LLVM was re-testing now fold |
+> | E1 direct sibling-closure edges (`9a06bbc`) | 23.55 | no move here; this kernel has no sibling-closure call |
+> | E2 ToInt32 inline (`4098379`) | **16.86** | `a.elements[0] = 1.0 + (i & 7) * 0.125` stops calling out per iteration |
+> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box (14.23 again in E2's session) |
 >
-> **8.4× against where the campaign started, 7.0× against a default build of
-> the same compiler today, and 1.65× off node on this kernel.**
-> The pre-registered ≤ 20 ns target was NOT reached, and stage 3.4's diagnosis
-> is why: after the alias fix the guards that remain on this kernel are worth
-> about **1 ns in total**, measured by removing them (below). The gap to node
-> is no longer guards and no longer call boundaries. Both were measured and
-> both are spent.
+> **11.7× against where the campaign started and 1.19× off node on this
+> kernel.** The pre-registered ≤ 20 ns target IS reached, at stage E2, and NOT
+> by the mechanism it was registered against: stage 3.4 was right that the
+> guards remaining on this kernel are worth about **1 ns in total** and wrong
+> to conclude from it that the target was unreachable. What stood between 23.4
+> and 16.9 was one helper call per iteration — `bronze_to_int32_f64` for the
+> `i & 7` that perturbs the input — costing 6.5 ns for an operation that is
+> two machine instructions, most of it as an optimization barrier rather than
+> as the call. The lesson the campaign should carry: an opaque external call
+> in a loop is not priced by its own cost.
 >
 > **Per fixture, default against `--pins bench/pins/threejs-math.pins`, one
 > interleaved session, raw wall medians of 9 (a bronze exe's process floor on
@@ -172,6 +177,271 @@ node bench/typed_array_loop.js
 > The automated runner never invokes node; the node column above is a manual
 > out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
 > first and the millisecond second.
+
+- **Stage E2 (ToInt32 inline, and an access guard that stops merging)** — 2026-08-25:
+  > [!NOTE]
+  > **Two mechanisms, both of them the removal of a CALL that never needed to
+  > be one, and the biggest single stage of the campaign so far.**
+  > `env_slot_kernel` goes **48.67 → 16.97** ns/iter (2.87×), `mat4_kernel`
+  > **23.55 → 16.86** ns/call (1.40×) — which puts the ladder under the
+  > pre-registered ≤ 20 ns target that stage 3.4 concluded was out of reach —
+  > `call_chain_kernel` **20.00 → 12.25** ns chained with its chained/flat
+  > ratio at **1.01**, and `typed_array_crunch` 64.6 → 58.9 ms. Checksums
+  > identical in every column of every row.
+  >
+  > **1. ToInt32 is emitted inline** (`4098379`,
+  > `src/codegen-llvm/llvm_convert.{h,cpp}`). Every bitwise operator, every
+  > shift and every integer typed-array store is an ECMA-262 7.1.6 ToInt32,
+  > and each was a call to `bronze_to_int32_f64`. The inline form is
+  > `dbl >= -2^63 && dbl < 2^63` as a pair of ORDERED compares, then `fptosi`
+  > to **i64** and `trunc` to i32.
+  >
+  > The i64 is the whole design. `fptosi ... to i64` IS the mathematical
+  > truncation for every double the range test admits, and truncating that to
+  > i32 IS the modulo-2^32 reduction with the signed reinterpretation — so the
+  > conversion is two machine operations, and every wrap between 2^31 and 2^63
+  > (`4294967296 | 0`, `(2^52+1) | 0`) is an inline answer instead of a call.
+  > Bounding at the INT32 edge instead would have been the same two compares
+  > for a fraction of the coverage. NaN answers false to both ordered compares
+  > and leaves through the same edge as the infinities and anything past
+  > int64, all of which keep the helper's fmod reduction; `fptosi` of -0.0 is
+  > 0, which is ToInt32(-0) exactly, so negative zero needs no case.
+  >
+  > **The second half of that commit is the one that was not obvious**:
+  > `bronze_to_int32_f64` and `bronze_to_uint8_clamp_f64` are now declared
+  > `memory(none) willreturn speculatable`. They are pure functions of one
+  > double and always were. Without it the surviving call on the COLD arm is
+  > still a memory clobber. Priced on its own (below) it is worth about half
+  > of what the whole item is worth, and it is three lines.
+  >
+  > **2. An access guard's failure edge stops returning** (`3115c75`,
+  > `llvm_env.cpp`, `bronze_env_access_failed`). The guard tests three things
+  > — object tag, Env brand, slot range — and branched on failure to
+  > `bronze_env_get` / `bronze_env_set`, which then branched BACK to a merge.
+  > Those helpers `fatal()` on exactly those three conditions, so **that edge
+  > has never been able to return**; LLVM simply had no way to be told. So
+  > every one of the ~23 slot touches per iteration carried a phi whose second
+  > predecessor called an opaque, memory-clobbering external function, and the
+  > tag, the brand and the record size were re-derived at every access.
+  >
+  > The new tripwire is declared noreturn and cold, re-walks the chain only so
+  > the diagnostic can name which question failed, and the edge ends in
+  > `unreachable`. A non-TDZ environment read is now the LOAD, a write is the
+  > STORE, and the TDZ edge is the only one that still merges — correctly,
+  > because 9.1.1.1.6 raises a ReferenceError the program can catch and
+  > raising in this runtime is a pending cell plus a return, not an unwind.
+  >
+  > **This is strictly better than eliding the guards**, which is what this
+  > stage was chartered to do per-site. Every tripwire stays armed, so the
+  > lowering-bug diagnostic `BRONZE_ELIDE_ENV_GUARDS` gives up is kept — and
+  > `unreachable` is also what lets a repeated guard on the same record fold
+  > into the one before it, because assuming the condition on the way out is
+  > exactly the fact a later identical guard needed.
+  >
+  > **What was NOT built, and why the charter was wrong about it.** Per-site
+  > guard elision "driven by the scope plan" has nothing to drive it: the
+  > licence is UNIFORM. Depth and index are compile-time constants for every
+  > access in the language, and a record's layout is fixed where it is created,
+  > so the static plan covers all of them equally — a per-site rule would elide
+  > every site, which is the global flag. What varies between fixtures is the
+  > PAYOFF, not the licence, and a performance decision is what a flag is for.
+  > The tripwire is the version of the same idea that has a static distinction
+  > behind it: the claim is not "this guard cannot fail", it is "if it fails,
+  > control does not come back", and that one is true at every site.
+  >
+  > Seams, all three read once per invocation and all leaving the rest of the
+  > compiler alone, so every column below comes out of ONE binary:
+  > `BRONZE_NO_INLINE_TOINT32=1`, `BRONZE_NO_PURE_CONVERSIONS=1`,
+  > `BRONZE_NO_ENV_TRIPWIRE=1` (plus stage 3.4's `BRONZE_ELIDE_ENV_GUARDS=1`).
+  >
+  > Commands (medians of 13 rounds, one run of every column per round, warmup
+  > round discarded, idle box, two-count wall delta for the kernels):
+  > ```
+  > bronze build bench/env_slot_kernel.js -o env_b.exe --pins bench/pins/env-slot-kernel.pins
+  > sed 's/const ITERS = 6000000;/const ITERS = 600000;/' bench/env_slot_kernel.js > small.js
+  > bronze build small.js                 -o env_s.exe --pins bench/pins/env-slot-kernel.pins
+  > # ns/iter = (median(env_b) - median(env_s)) * 1e6 / 5400000
+  > BRONZE_NO_INLINE_TOINT32=1 BRONZE_NO_PURE_CONVERSIONS=1 BRONZE_NO_ENV_TRIPWIRE=1 \
+  >     bronze build ...                              # the "E1" column
+  > BRONZE_NO_ENV_TRIPWIRE=1 bronze build ...         # the "+ToInt32" column
+  > BRONZE_ELIDE_ENV_GUARDS=1 bronze build ...        # the elision seam, still off by default
+  > BRONZE_DUMP_LLVM_IR=<prefix> bronze build ...     # the IR evidence below
+  > ```
+  >
+  > | fixture | E1 (all E2 seams off) | + ToInt32 | **E2 shipped** | E2 + elide seam | checksums |
+  > |---|---:|---:|---:|---:|---|
+  > | `env_slot_kernel` ns/iter | 48.67 | 20.62 | **16.97** | 10.17 | `126000020` / `12600020` |
+  > | `mat4_kernel` ns/call | 23.55 | 17.09 | **16.86** | 18.44 | `400000` / `940000` |
+  > | `call_chain` chained / flat ns | 20.00 / 18.25 (1.10) | 12.38 / 12.88 (0.96) | **12.25 / 12.13 (1.01)** | 11.25 / 12.38 (0.91) | `296000000 / 296000000` |
+  > | `nullish_pin_kernel` ns/step | 12.92 | 11.33 | **11.35** | 11.33 | `825756/700159/NaN/-563350` |
+  > | `typed_array_crunch` ms | 64.07 | 64.48 | **59.39** | 56.30 | `78849652` |
+  > | `three_math` ms | 33.44 | 35.18 | **33.19** | 34.10 | `405000` |
+  > | `mesh_churn_2k` ms | 83.34 | 83.83 | **80.77** | 80.98 | `-2112298` |
+  > | `object_graph` ms | 58.34 | 59.64 | **58.29** | 58.76 | `-32601148` |
+  >
+  > The E1 column reproduces stage E1's shipped compiler to the digit where
+  > E1 published a number for it — `call_chain` 20.00 / 18.25 and `mat4` 23.55
+  > against 23.60 — which is what licenses reading the rest of the table
+  > against that entry. node v24.2.0, same session, same method: `env_slot`
+  > **5.08**, `mat4` **14.23** (against its own 14.20 in the campaign summary),
+  > `call_chain` 2.00 / 1.88. So `env_slot_kernel` goes from 9.6× node to
+  > **3.3×**, and `mat4_kernel` from 1.66× to **1.19×**.
+  >
+  > The last five rows are the no-regression column and they are all flat or
+  > better. Their E1/E2 figures come from a second interleaved session of 25
+  > rounds run on the same binaries, because at 13 rounds `three_math` read
+  > +0.9 ms and at 25 it reads −0.25: that fixture's width in this harness is
+  > about ±1 ms and neither figure is an effect. The `+ToInt32` and elide
+  > columns for those five are the 13-round session and carry the same width.
+  >
+  > **The 2×2 that prices item 1's two halves** (`env_slot_kernel` ns/iter,
+  > medians of 13, interleaved, one session; every cell checksum `126000020`):
+  >
+  > | | helper opaque | helper `memory(none)` |
+  > |---|---:|---:|
+  > | call | 50.02 | 26.58 |
+  > | inline fast path | 21.02 | 20.94 |
+  >
+  > Read it as **the two overlap almost completely**. Declaring the helper pure
+  > is worth 23.4 ns on its own — the call was barely executed and cost half
+  > the loop purely as an optimization barrier, which is E1's fourth honest
+  > negative confirmed in the other direction. Once the fast path is inline the
+  > attribute is worth nothing more (21.02 vs 20.94, inside the width). It
+  > ships anyway: it is correct, it is free, it still covers
+  > `bronze_to_uint8_clamp_f64`, which has no inline form.
+  >
+  > **IR evidence** (`BRONZE_DUMP_LLVM_IR`, `env.post.ll`, `__wrapper_render`,
+  > counted per basic block and split by whether the block's terminator is
+  > `unreachable`, i.e. whether any execution can be in it):
+  >
+  > | | E1 | + ToInt32 | E2 | E2 + elide |
+  > |---|---:|---:|---:|---:|
+  > | live instructions | 1281 | 1297 | 1207 | 832 |
+  > | live basic blocks | 183 | 192 | 181 | 143 |
+  > | live loads | 227 | 227 | 211 | 147 |
+  > | live phis | 80 | 83 | 76 | 70 |
+  > | **live calls** | **55** | **50** | **40** | **40** |
+  > | `bronze_to_int32_f64` | 8 | 3 | 3 | 3 |
+  > | `fptosi` | 0 | 3 | 3 | 3 |
+  > | `bronze_env_set` | 10 | 10 | **0** | 0 |
+  > | `bronze_env_get_tdz` | 27 | 27 | 27 | 27 |
+  > | `bronze_tls_block_addr` | 6 | 6 | 6 | 6 |
+  > | `bronze_dynamic_add` | 2 | 2 | 2 | 2 |
+  > | dead (tripwire) blocks | 0 | 0 | 37 | 0 |
+  >
+  > The three `fptosi` are the loop's three bitwise ops; the three surviving
+  > `bronze_to_int32_f64` are their cold arms. The ten `bronze_env_set` are
+  > gone from anywhere control can reach and 37 tripwire blocks appeared in
+  > their place, which cost 74 instructions of never-executed code.
+  >
+  > **Where the remaining 16.97 ns is, measured rather than guessed.** Three
+  > probes, all on the E2 compiler, all producing checksum `126000020`, one
+  > interleaved session of 13 rounds:
+  >
+  > | | guards on | guards elided |
+  > |---|---:|---:|
+  > | the kernel | **16.78** | 10.35 |
+  > | the five bodies hand-inlined into the loop in JS | 12.33 | 9.17 |
+  > | the same slots written `var`, so no TDZ | 15.06 | 10.38 |
+  >
+  > 1. **E1's ceiling probe is now wrong, and this is the most important fact
+  >    for E3.** E1 concluded "at most ~1.7 ns of what remains is the boundary
+  >    … the gap is not the call". Measured today the hand-inlined probe is
+  >    **4.45 ns** faster than the kernel. Nothing about the call changed —
+  >    what changed is that E1 measured it under the ToInt32 barrier, which was
+  >    hiding it. And the 4.45 collapses to **1.18** once the guards are
+  >    elided, which says what it actually is: not the call, but the fact that
+  >    each of the six inlined bodies keeps ITS OWN GC root frame and reloads
+  >    `__env` out of it, so the guard on every access is derived from a
+  >    different SSA value and cannot fold into the one before it. The
+  >    hand-inlined probe has one frame and one TLS fetch and its guards CSE.
+  >    **The root frames are the guard cost.**
+  > 2. **TDZ is worth 1.72 ns with the guards on and NOTHING (−0.03) with them
+  >    elided.** Definite-assignment analysis over the scope plan was on this
+  >    stage's list; it was priced first and not built. The 27
+  >    `bronze_env_get_tdz` calls are cold merges, and what they cost is the
+  >    guard re-derivation they force — the same cost item 1 above names, paid
+  >    twice.
+  > 3. **The floor this shape can reach without new machinery is 9.17 ns**
+  >    (hand-inlined and guards elided) against node's 5.08. So of the 16.97
+  >    the campaign now stands at, roughly 7.8 ns is root frames + guard
+  >    re-derivation and roughly 4 ns is something neither probe removes.
+  >
+  > **Guard elision moved, and is still off by default.** Read strictly within
+  > the 13-round session, where its column and the E2 column interleave:
+  > `BRONZE_ELIDE_ENV_GUARDS=1` is worth **−6.80** ns/iter on
+  > `env_slot_kernel` and **−2.63 ms** on `typed_array_crunch`, and reads
+  > −0.44 / −1.04 / −1.79 on `three_math` / `mesh_churn_2k` / `object_graph`,
+  > where stage 3.4 measured those three as REGRESSIONS of +0.8 / +1.4 / +1.3.
+  > Those three deltas are inside the width the 25-round re-run exposed, so
+  > the defensible claim is that elision has **stopped costing** them, not
+  > that it now pays on them. The one fixture where it is unambiguously a
+  > regression is the campaign's ladder: `mat4_kernel` **16.86 → 18.44
+  > (+1.58)**, reproduced in three separate sessions on three separate builds.
+  > So the balance has shifted and the conclusion has not: it gives up the
+  > tripwires to buy a win it does not deliver uniformly, and the fixture it
+  > loses on is the one the campaign is measured by. Whole suite green
+  > **29/29 with no flags AND 29/29 with `BRONZE_ELIDE_ENV_GUARDS=1`**.
+  >
+  > **A defect found and deliberately not fixed.** Assignment to a `const`
+  > binding STORES instead of throwing — in sloppy code because
+  > `lower_scope.cpp emitEnvSet` gates the immutable arm on `strictCode_`
+  > (ECMA-262 14.3.1.1 creates the binding with
+  > `CreateImmutableBinding(name, true)`, and that `true` is the S that
+  > 9.1.1.1.5 step 4 tests, so the strictness of the assigning code never
+  > enters into it), and for an uncaptured `const` because it never becomes an
+  > environment slot at all. It is pinned against node in
+  > `tests/oracle/cases/blocked/const_reassignment.js`, where the harness fails
+  > the day it starts passing. It is not this stage's to fix: a semantics
+  > change belongs with its own measurement.
+  >
+  > Semantics: two new oracle cases.
+  > `tests/oracle/cases/int32_conversion_edges.js` pins the boundaries the
+  > inline conversion introduces, which `dynamic_int32_wrap.js` never reaches —
+  > 2^63 and the largest double below it, -2^63 (inside the fast path), 2^64,
+  > 2^52/2^53, the int32 edges, both signs of truncation toward zero,
+  > NaN/±Inf/-0, shift counts, and the Int8/Int16/Int32/Uint8Clamped store
+  > conversions. `tests/oracle/cases/env_slot_access_edges.js` pins what the
+  > guard shape must keep: a closure reading a captured `let` before its
+  > initializer runs, the same across a real closure boundary, depth-3 chains,
+  > per-iteration records, a `const` dead zone, interleaved reads and writes
+  > through two closures over one slot, and a slot whose object value the
+  > collector moves under it. Both byte-identical to node under inference,
+  > under `--no-infer`, under `BRONZE_GC_STRESS=1` and with every seam flipped.
+  > A deterministic 64,000-value differential sweep across sixteen magnitudes
+  > agreed between node, the inline path and the helper. Four codegen tests
+  > assert the emitted SHAPE on a hand-built module — how many phis an access
+  > carries, that every unreachable block's callee is the tripwire, that
+  > `bronze_env_get` / `bronze_env_set` are gone from it, and that ToInt32
+  > converts through i64 behind two ORDERED compares. Full suite green
+  > **29/29**, hot-swap and shared-load included.
+  >
+  > **What stage E3 is handed.**
+  > - **The six GC root frames and six TLS fetches per iteration are now the
+  >    top item by a wide margin, and they are bigger than E1 thought.** They
+  >    do not merely cost their own stores: they are why 23 accesses to ONE
+  >    record derive 23 unrelated header pointers, which is why the guards cost
+  >    6.8 ns and the TDZ compares cost 1.7. One frame per inlined region
+  >    instead of one per inlined body is worth up to about 7.8 ns of the 16.97
+  >    on this kernel, by the two probes above.
+  > - Alias scopes per (record, slot) — this stage's charter — would not have
+  >    helped and were not built. The env slot loads already carry the
+  >    `EnvRecordSlots` family and the record's `flags`/`size` loads are already
+  >    `!invariant.load`; what stops them forwarding is that each access starts
+  >    from a DIFFERENT `load i64, ptr %gcframe.slot`, which is a value the
+  >    collector is genuinely allowed to have changed. Fix the frames and the
+  >    aliasing question does not arise.
+  > - `bronze_dynamic_add` × 2 per iteration survives (`hits = hits +
+  >    useProgram(...)`, and the pinned `return … : number` is still not spent
+  >    across a direct edge). Both have an inline both-numbers arm already, so
+  >    what is left is the number test and the re-box, not a call.
+  > - 27 `bronze_env_get_tdz` cold merges remain. Priced at 1.72 ns today and
+  >    at zero once the guards fold, so definite-assignment analysis is worth
+  >    doing for its own sake and not for this.
+  > - `bronze_to_int32` — the BOXED form, where ToNumber runs first — is
+  >    untouched and still a call, correctly: it can run a `valueOf`.
+  >    `bronze_to_uint8_clamp_f64` has no inline form either; it is pure now
+  >    but still a call, and `Uint8ClampedArray` stores pay for it.
 
 - **Stage E1 (direct call edges to sibling closures, and LLVM inlining across them)** — 2026-08-25:
   > [!NOTE]
