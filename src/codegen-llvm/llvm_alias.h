@@ -4,9 +4,15 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Metadata.h>
 
+namespace llvm {
+class Function;
+class Module;
+}  // namespace llvm
+
 namespace bronze::codegen_llvm {
 
-// Six scoped-alias families under one domain ("BronzeAliasDomain").
+// Six scoped-alias families under one domain ("BronzeAliasDomain"), named at
+// the emission site that knows which one it is reading.
 // The claims are about DISJOINT BYTES, which makes each of them true unconditionally:
 //
 //  - TypedArrayData: the element bytes of a typed-array view — everything at
@@ -16,6 +22,11 @@ namespace bronze::codegen_llvm {
 //  - EnvRecordSlots: the Value slots of an environment record.
 //  - TypedArrayViewLength: a view header's `length` word and buffer's `extbits`.
 //  - ArrayHeaderFields: an Array header's `length`, `capacity`, `head`, `props`, `elems`.
+//
+// A SECOND set — the storage families below, one per stack frame and one per
+// word of runtime bookkeeping — is assigned afterwards, by pointer provenance,
+// in tagStackAndControlAccesses. That set also EXTENDS the six lists here,
+// which is why nothing about them changes when it is added.
 struct ScopedAliasInfo {
     llvm::MDNode* taScopeList;
     llvm::MDNode* arrElemScopeList;
@@ -100,5 +111,34 @@ inline void tagArrayHeaderAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx
     inst->setMetadata(llvm::LLVMContext::MD_alias_scope, alias.arrHdrScopeList);
     inst->setMetadata(llvm::LLVMContext::MD_noalias, alias.arrHdrNoaliasList);
 }
+
+// The STORAGE families, assigned by POINTER PROVENANCE over the whole emitted
+// module, after emission and before optimization. An access is claimed only
+// when its underlying object is positively one of:
+//
+//   - an `alloca` in the compiled function                      → StackFrame
+//   - a word of the per-thread ABI block, reached through a
+//     `bronze_tls_block_addr` call or the module-local cache
+//     `cacheTlsFetches` rewrote it into                         → TlsWord.<n>
+//   - one of the module's own tables (an internal GlobalVariable
+//     off the known list)                                       → ModuleTables
+//
+// Anything else — every pointer that came out of an `inttoptr` of a Value
+// payload, which is the whole JS heap — is left exactly as its emitter tagged
+// it, and an access that already carries a scope is never retagged.
+//
+// WHY THIS PASS EXISTS. A Dynamic def STORES its GC root slot, and that store
+// carried no metadata: escaped stack memory may-aliases everything, so every
+// cached control word after it had to be re-loaded and every guard over one
+// re-tested. That is what made the same `pending` compare survive eight times
+// in one inlined `Matrix4.multiplyMatrices`. The claims are the strongest kind
+// — bytes of one thread's stack, bytes of one TLS word, bytes of one module
+// table, and the JS heap are four disjoint regions, unconditionally — and the
+// TLS block is split PER WORD because the frame link and the exception cell
+// are adjacent, and after inlining two copies of a body reach them through
+// two unrelated phis that BasicAA cannot relate.
+//
+// `tlsFn` is the ABI accessor; pass the same one `cacheTlsFetches` was given.
+void tagStackAndControlAccesses(llvm::Module& llvmModule, llvm::Function* tlsFn);
 
 }  // namespace bronze::codegen_llvm

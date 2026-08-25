@@ -74,6 +74,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_func.h"
 #include "il/print.h"
@@ -400,11 +401,33 @@ std::unique_ptr<llvm::TargetMachine> makeTargetMachine(const TargetDesc& desc,
     return tm;
 }
 
+// BRONZE_DUMP_LLVM_IR=<prefix>: write `<prefix>.pre.ll` and `<prefix>.post.ll`
+// around the O3 pipeline. This is the seam for reading what LLVM did with a
+// guard — whether a shape load was hoisted, whether two compares merged — and
+// the only honest way to answer that is the IR, not the disassembly, because
+// the disassembly no longer knows which compare came from which site. A
+// partitioned module suffixes the partition index, so the files stay distinct.
+void dumpModuleIfAsked(llvm::Module& m, const char* phase, int part) {
+    static const char* prefix = std::getenv("BRONZE_DUMP_LLVM_IR");
+    if (prefix == nullptr || prefix[0] == '\0') return;
+    std::string path = std::string(prefix);
+    if (part >= 0) path += ".p" + std::to_string(part);
+    path += std::string(".") + phase + ".ll";
+    std::error_code ec;
+    llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+    if (ec) {
+        std::fprintf(stderr, "BRONZE_DUMP_LLVM_IR: cannot open %s: %s\n", path.c_str(),
+                     ec.message().c_str());
+        return;
+    }
+    m.print(os, nullptr);
+}
+
 // O3 middle-end + MC backend for one module: the whole pipeline for a small
 // module, one partition's pipeline for a large one. `timing` may be true only
 // on the single-module path — parallel workers would interleave the laps.
 bool optimizeAndEmitOne(llvm::Module& m, llvm::TargetMachine& tm, const std::string& path,
-                        bool timing, std::string& errOut) {
+                        bool timing, std::string& errOut, int dumpPart = -1) {
     auto t0 = std::chrono::steady_clock::now();
     auto lap = [&t0, timing](const char* what) {
         if (!timing) return;
@@ -425,8 +448,10 @@ bool optimizeAndEmitOne(llvm::Module& m, llvm::TargetMachine& tm, const std::str
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
     llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+    dumpModuleIfAsked(m, "pre", dumpPart);
     mpm.run(m, mam);
     lap("opt-O3");
+    dumpModuleIfAsked(m, "post", dumpPart);
 
     std::error_code ec;
     llvm::raw_fd_ostream dest(path, ec, llvm::sys::fs::OF_None);
@@ -701,7 +726,8 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
                 errors[i] = "partition " + std::to_string(i) + ": " + err;
                 return;
             }
-            if (!optimizeAndEmitOne(part, *tm, paths[i], /*timing=*/false, err)) {
+            if (!optimizeAndEmitOne(part, *tm, paths[i], /*timing=*/false, err,
+                                    static_cast<int>(i))) {
                 errors[i] = "partition " + std::to_string(i) + ": " + err;
             }
             partMillis[i] = std::chrono::duration<double, std::milli>(
@@ -870,6 +896,18 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         const char* env = std::getenv("BRONZE_NO_TLS_CACHE");
         if (!(env && std::strcmp(env, "1") == 0)) {
             codegen_llvm::cacheTlsFetches(*llvmModule, abi.bronze_tls_block_addr);
+        }
+    }
+    // The two storage-class alias families, assigned by pointer provenance
+    // (llvm_alias.h, tagStackAndControlAccesses). After the TLS rewrite,
+    // because the shape a TLS field is read through afterwards is the phi that
+    // rewrite leaves. CLI-time seam: BRONZE_NO_STORAGE_ALIAS=1 emits the
+    // module without them, which is the A/B for every guard this licenses LLVM
+    // to fold.
+    {
+        const char* env = std::getenv("BRONZE_NO_STORAGE_ALIAS");
+        if (!(env && std::strcmp(env, "1") == 0)) {
+            codegen_llvm::tagStackAndControlAccesses(*llvmModule, abi.bronze_tls_block_addr);
         }
     }
     // Every direct method-call edge whose callee fits the budget asks to be

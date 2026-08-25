@@ -13,11 +13,14 @@ constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_backend.h"
+#include "codegen-llvm/llvm_env.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
 
@@ -410,4 +413,92 @@ TEST_CASE("a named entry symbol renames all of the object's exports") {
     CHECK(exports == std::vector<std::string>{"bronze_module_a",
                                               "bronze_module_a_abi_fingerprint",
                                               "bronze_module_a_host_globals"});
+}
+
+// ---- the storage alias families (llvm_alias.h) ------------------------------
+//
+// The pass is what licenses LLVM to keep a cached control word across a store
+// to a GC root slot. It is checked on a hand-built module rather than through
+// the compiler, because what has to hold is a statement about POINTER
+// PROVENANCE and the two shapes that matter — a stack slot and a module table
+// — are three instructions each.
+
+namespace {
+
+// The scope name an access was claimed by, or "" for an untagged one.
+std::string scopeNameOf(const llvm::Instruction& inst) {
+    auto* list = inst.getMetadata(llvm::LLVMContext::MD_alias_scope);
+    if (list == nullptr || list->getNumOperands() != 1) return {};
+    auto* scope = llvm::dyn_cast<llvm::MDNode>(list->getOperand(0));
+    if (scope == nullptr || scope->getNumOperands() == 0) return {};
+    auto* name = llvm::dyn_cast<llvm::MDString>(scope->getOperand(0));
+    return name ? name->getString().str() : std::string{};
+}
+
+// Does `inst`'s noalias list name a scope spelled `want`? This is the half of
+// the claim GVN actually spends: a store's noalias list has to name the load's
+// scope for the two to be provably disjoint.
+bool noaliasNames(const llvm::Instruction& inst, llvm::StringRef want) {
+    auto* list = inst.getMetadata(llvm::LLVMContext::MD_noalias);
+    if (list == nullptr) return false;
+    for (const llvm::MDOperand& op : list->operands()) {
+        auto* scope = llvm::dyn_cast<llvm::MDNode>(op.get());
+        if (scope == nullptr || scope->getNumOperands() == 0) continue;
+        if (auto* name = llvm::dyn_cast<llvm::MDString>(scope->getOperand(0));
+            name != nullptr && name->getString() == want) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("storage alias families are assigned by pointer provenance") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("alias_test", ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    auto* table = new llvm::GlobalVariable(m, i64Ty, /*isConstant=*/false,
+                                           llvm::GlobalValue::InternalLinkage,
+                                           llvm::ConstantInt::get(i64Ty, 0),
+                                           "__bronze_ic_table");
+    // A global that is NOT one of the module's tables: nothing is claimed
+    // about it, because "every internal global" is exactly the rule this pass
+    // refuses to use.
+    auto* stranger = new llvm::GlobalVariable(m, i64Ty, /*isConstant=*/false,
+                                              llvm::GlobalValue::InternalLinkage,
+                                              llvm::ConstantInt::get(i64Ty, 0), "not_a_table");
+
+    auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {ptrTy}, false);
+    auto* fn = llvm::Function::Create(fnTy, llvm::GlobalValue::ExternalLinkage, "f", m);
+    llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", fn);
+    llvm::IRBuilder<> b(bb);
+
+    llvm::Value* frame = b.CreateAlloca(llvm::ArrayType::get(i64Ty, 4), nullptr, "gcframe");
+    llvm::Value* slot = b.CreateConstInBoundsGEP2_32(llvm::ArrayType::get(i64Ty, 4), frame, 0, 2);
+    auto* rootStore = b.CreateAlignedStore(b.getInt64(7), slot, llvm::Align(8));
+    auto* tableLoad = b.CreateAlignedLoad(i64Ty, table, llvm::Align(8));
+    auto* strangerLoad = b.CreateAlignedLoad(i64Ty, stranger, llvm::Align(8));
+    // A heap access, tagged by its emitter: the pass must leave the family
+    // alone and only widen what it claims not to alias.
+    auto* heapLoad = b.CreateAlignedLoad(i64Ty, fn->getArg(0), llvm::Align(8));
+    codegen_llvm::tagObjectSlotAccess(heapLoad, ctx);
+    b.CreateRetVoid();
+
+    codegen_llvm::tagStackAndControlAccesses(m, /*tlsFn=*/nullptr);
+
+    CHECK(scopeNameOf(*rootStore) == "StackFrame");
+    CHECK(scopeNameOf(*tableLoad) == "ModuleTables");
+    CHECK(scopeNameOf(*strangerLoad).empty());
+    CHECK(scopeNameOf(*heapLoad) == "ObjectPropertySlots");
+
+    // The claims that pay: the root-slot store does not alias a module table,
+    // and a heap slot does not alias either storage family.
+    CHECK(noaliasNames(*rootStore, "ModuleTables"));
+    CHECK(noaliasNames(*rootStore, "ObjectPropertySlots"));
+    CHECK(noaliasNames(*tableLoad, "StackFrame"));
+    CHECK(noaliasNames(*heapLoad, "StackFrame"));
+    CHECK(noaliasNames(*heapLoad, "ModuleTables"));
 }
