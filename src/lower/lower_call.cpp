@@ -31,6 +31,104 @@ bool directCallShapeFits(const il::Function& callee, size_t argCount) {
 
 }  // namespace
 
+std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, uint32_t calleeIdx,
+                                                       il::ValueId envBase, uint32_t envHops,
+                                                       il::Function& ilFn) {
+    const auto& calleeFn = ilModule_.functions[calleeIdx];
+
+    // Synthetic parameters are not source arguments; the arity the program has
+    // to match is the source one. The operand list is fixed, because the
+    // padding and the leftover array are both built HERE, where the argument
+    // count is a compile-time fact — and `directCallShapeFits` has already
+    // established that this call's count can be spelled that way.
+    const size_t base = calleeFn.firstSourceParam();
+    const size_t fixed = calleeFn.callerParamCount();
+
+    std::vector<il::ValueId> argVals;
+    // `__env` is the record the callee closed over. A call site cannot read it
+    // off the closure value without loading the closure, so it does not: it
+    // hands over its OWN record and the number of parent links to that one,
+    // which the scope plan counted.
+    if (calleeFn.needsEnv) {
+        if (envBase == il::kNoValue) {
+            diags_.error(call->span, "internal: direct call to a closure with no environment");
+            return std::nullopt;
+        }
+        argVals.push_back(envBase);
+    }
+    // A plain `f()` has no receiver, so a direct call supplies undefined for
+    // `__this`.
+    if (calleeFn.needsThis) {
+        argVals.push_back(emitConstUndefined(ilFn));
+    }
+    for (size_t i = 0; i < fixed; ++i) {
+        // An omitted optional argument IS `undefined` — that is the value the
+        // callee's default tests for, so a short direct call and a short
+        // uniform one reach the same prologue with the same bits.
+        if (i >= call->args.size()) {
+            argVals.push_back(emitConstUndefined(ilFn));
+            continue;
+        }
+        auto argVal = lowerExpr(*call->args[i], ilFn);
+        if (!argVal) return std::nullopt;
+        const il::Type paramType = calleeFn.params[i + base].type;
+        if (paramType == il::Type::Dynamic) {
+            argVal = boxValueIfNeeded(*argVal, ilFn);
+        } else if (argVal->type == il::Type::Dynamic) {
+            argVal = unboxValueIfNeeded(*argVal, paramType, ilFn);
+        }
+        argVals.push_back(argVal->id);
+    }
+    if (calleeFn.hasRestParam) {
+        // Everything past the fixed parameters, as one fresh array — the value
+        // the rest parameter is bound to.
+        il::ValueId restArr = ilFn.valueCount++;
+        il::Instruction createInst;
+        createInst.op = il::Op::CreateArray;
+        createInst.type = il::Type::Dynamic;
+        createInst.result = restArr;
+        // Zero LENGTH, not zero capacity: `create.array n` makes an array of n
+        // undefined elements, so anything built by appending has to start empty.
+        createInst.immI32 = 0;
+        emitInst(ilFn, createInst);
+        for (size_t i = fixed; i < call->args.size(); ++i) {
+            auto elemVal = lowerExpr(*call->args[i], ilFn);
+            if (!elemVal) return std::nullopt;
+            emitContainerOp(il::Op::ArrayAppend, Value{restArr, il::Type::Dynamic}, *elemVal,
+                            ilFn);
+        }
+        argVals.push_back(restArr);
+    }
+
+    il::Instruction inst;
+    inst.op = il::Op::Call;
+    inst.calleeIndex = calleeIdx;
+    inst.operands = std::move(argVals);
+    inst.type = calleeFn.returnType;
+    if (calleeFn.needsEnv) inst.callEnvHops = envHops;
+
+    il::ValueId res = il::kNoValue;
+    if (calleeFn.returnType != il::Type::Void) {
+        res = ilFn.valueCount++;
+        inst.result = res;
+    } else {
+        inst.result = il::kNoValue;
+    }
+
+    emitInst(ilFn, inst);
+    if (calleeFn.returnType == il::Type::Void) {
+        // A function that returns no value still EVALUATES to one: `undefined`.
+        // The IL return type stays void so the call itself costs nothing, and
+        // the undefined is materialized here, where the only thing that can see
+        // it is the expression the call sits in. Handing back the void call's
+        // absent result instead let it escape into arbitrary expression
+        // contexts — `console.log(f())` reached the verifier as a box of value
+        // %kNoValue and failed to compile at all.
+        return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+    }
+    return Value{res, calleeFn.returnType};
+}
+
 std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
                                                  bool onSpine) {
     // Which console method this is, if any. The parser folded the whole
@@ -203,100 +301,29 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             auto it = functionIndices_.find(calleeIdent->name);
             // A callee that needs an `arguments` object is not a direct-call
             // target: the object is built from the caller's REAL argument list,
-            // which only the uniform path's wrapper can see. The same exclusion
-            // `needsEnv` carries.
+            // which only the uniform path's wrapper can see.
             if (it != functionIndices_.end() && !ilModule_.functions[it->second].needsArguments &&
+                !ilModule_.functions[it->second].needsEnv &&
                 directCallShapeFits(ilModule_.functions[it->second], call->args.size())) {
                 recordCall(call->span.file, true, "");
-                uint32_t calleeIdx = it->second;
-                const auto& calleeFn = ilModule_.functions[calleeIdx];
-
-                // Synthetic parameters are not source arguments; the arity the
-                // program has to match is the source one. The operand list is
-                // fixed, because the padding and the leftover array are both
-                // built HERE, where the argument count is a compile-time fact —
-                // and `directCallShapeFits` above has already established that
-                // this call's count can be spelled that way.
-                const size_t base = calleeFn.firstSourceParam();
-                const size_t fixed = calleeFn.callerParamCount();
-
-                std::vector<il::ValueId> argVals;
-                // A plain `f()` has no receiver, so a direct call supplies
-                // undefined for `__this`. `__env` cannot be supplied this way,
-                // which is why the verifier forbids direct calls to closures
-                // outright.
-                if (calleeFn.needsThis) {
-                    argVals.push_back(emitConstUndefined(ilFn));
-                }
-                for (size_t i = 0; i < fixed; ++i) {
-                    // An omitted optional argument IS `undefined` — that is
-                    // the value the callee's default tests for, so a short
-                    // direct call and a short uniform one reach the same
-                    // prologue with the same bits.
-                    if (i >= call->args.size()) {
-                        argVals.push_back(emitConstUndefined(ilFn));
-                        continue;
-                    }
-                    auto argVal = lowerExpr(*call->args[i], ilFn);
-                    if (!argVal) return std::nullopt;
-                    const il::Type paramType = calleeFn.params[i + base].type;
-                    if (paramType == il::Type::Dynamic) {
-                        argVal = boxValueIfNeeded(*argVal, ilFn);
-                    } else if (argVal->type == il::Type::Dynamic) {
-                        argVal = unboxValueIfNeeded(*argVal, paramType, ilFn);
-                    }
-                    argVals.push_back(argVal->id);
-                }
-                if (calleeFn.hasRestParam) {
-                    // Everything past the fixed parameters, as one fresh
-                    // array — the value the rest parameter is bound to.
-                    il::ValueId restArr = ilFn.valueCount++;
-                    il::Instruction createInst;
-                    createInst.op = il::Op::CreateArray;
-                    createInst.type = il::Type::Dynamic;
-                    createInst.result = restArr;
-                    // Zero LENGTH, not zero capacity: `create.array n` makes
-                    // an array of n undefined elements, so anything built by
-                    // appending has to start empty.
-                    createInst.immI32 = 0;
-                    emitInst(ilFn, createInst);
-                    for (size_t i = fixed; i < call->args.size(); ++i) {
-                        auto elemVal = lowerExpr(*call->args[i], ilFn);
-                        if (!elemVal) return std::nullopt;
-                        emitContainerOp(il::Op::ArrayAppend, Value{restArr, il::Type::Dynamic},
-                                        *elemVal, ilFn);
-                    }
-                    argVals.push_back(restArr);
-                }
-
-                il::Instruction inst;
-                inst.op = il::Op::Call;
-                inst.calleeIndex = calleeIdx;
-                inst.operands = std::move(argVals);
-                inst.type = calleeFn.returnType;
-
-                il::ValueId res = il::kNoValue;
-                if (calleeFn.returnType != il::Type::Void) {
-                    res = ilFn.valueCount++;
-                    inst.result = res;
-                } else {
-                    inst.result = il::kNoValue;
-                }
-
-                emitInst(ilFn, inst);
-                if (calleeFn.returnType == il::Type::Void) {
-                    // A function that returns no value still EVALUATES to
-                    // one: `undefined`. The IL return type stays void so the
-                    // call itself costs nothing, and the undefined is
-                    // materialized here, where the only thing that can see it
-                    // is the expression the call sits in. Handing back the
-                    // void call's absent result instead let it escape into
-                    // arbitrary expression contexts — `console.log(f())`
-                    // reached the verifier as a box of value %kNoValue and
-                    // failed to compile at all.
-                    return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
-                }
-                return Value{res, calleeFn.returnType};
+                return lowerDirectCall(call, it->second, il::kNoValue, 0, ilFn);
+            }
+        } else {
+            // A SIBLING CLOSURE, reached through the environment chain. The
+            // scope plan may already know exactly which function is in that
+            // slot and that nothing can ever put another one there
+            // (lower_scope.cpp, `planStableFunctionSlots`) — and then the
+            // environment the callee captured is the record holding the slot,
+            // which is this caller's own record `envHops` parent links up. So
+            // the call needs neither the closure value nor a guard over it.
+            uint32_t envHops = 0;
+            uint32_t stableFn = 0;
+            if (currentEnvValue_ != il::kNoValue &&
+                findStableFunctionCallee(calleeIdent->name, envHops, stableFn) &&
+                !ilModule_.functions[stableFn].needsArguments &&
+                directCallShapeFits(ilModule_.functions[stableFn], call->args.size())) {
+                recordCall(call->span.file, true, "");
+                return lowerDirectCall(call, stableFn, currentEnv(ilFn), envHops, ilFn);
             }
         }
     }

@@ -72,9 +72,28 @@ struct EnvScopeInfo {
     // double IS a Value by NaN-box construction and the collector already walks
     // past one — so what this marks is that the READ may stop testing.
     std::vector<bool> slotIsF64;
+    // The STATIC CALL PLAN for this scope's slots (lower_scope.cpp
+    // `planStableFunctionSlots`, spent by lower_call.cpp).
+    //
+    // `slotIsStableFn` marks a slot whose binding is a FUNCTION DECLARATION of
+    // this scope that nothing in the scope's whole lexical reach can reassign —
+    // decided from the AST before a single instruction is emitted, which is what
+    // makes it a plan and not a guess. `slotFnIndex` is the IL function that
+    // declaration lowered to, filled in by the hoisting pass that creates the
+    // closure, and `kNoStableFn` until then (a call written above a declaration
+    // in a body lowered before it simply does not get the edge).
+    //
+    // Together they license a call to that name to be a DIRECT call: the target
+    // is known, and the environment it captured is this scope's own record,
+    // which every caller can reach by counting parent links.
+    std::vector<bool> slotIsStableFn;
+    std::vector<uint32_t> slotFnIndex;
     il::ValueId envValue = il::kNoValue;
     uint32_t childSlot = UINT32_MAX;
 };
+
+// "No function is known for this slot" — see EnvScopeInfo::slotFnIndex.
+inline constexpr uint32_t kNoStableFn = 0xFFFFFFFFu;
 
 struct VarState {
     il::ValueId valueId = il::kNoValue;

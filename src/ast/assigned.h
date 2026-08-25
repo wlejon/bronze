@@ -34,4 +34,21 @@ std::unordered_set<std::string> getAssignedNames(const std::vector<StmtPtr>& stm
 std::unordered_set<std::string> getTryAssignedNames(const std::vector<StmtPtr>& stmts);
 std::unordered_set<std::string> getTryAssignedNames(const std::vector<const Stmt*>& stmts);
 
+// The same question asked of a WHOLE LEXICAL SUBTREE — nested functions, class
+// bodies and their methods included. `getAssignedNames` stops at a function
+// boundary because it sizes an SSA join, which is a fact about one scope's own
+// code; this one answers "can anything, anywhere, rebind this name?", which is
+// a fact about the scope's whole reach, because a sibling closure written three
+// levels down can assign a binding of this scope.
+//
+// It is deliberately NAME-based and over-approximates in the safe direction: a
+// nested scope that declares or assigns its OWN binding of the same name is
+// counted too. Every consumer reads a hit as "no claim may be made about this
+// name", so a false hit costs an optimisation and can never license a wrong
+// one. (Function declarations do not record their own names — being declared
+// is not being rebound, and it is the declaration itself that is the claim.)
+std::unordered_set<std::string> getDeeplyAssignedNames(const Node& node);
+std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<StmtPtr>& stmts);
+std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<const Stmt*>& stmts);
+
 }  // namespace bronze::ast

@@ -11,7 +11,8 @@ namespace {
 // disagreement is a missing join parameter.
 class AssignedVisitor final : public Visitor {
 public:
-    explicit AssignedVisitor(bool onlyInsideTry = false) : onlyInsideTry_(onlyInsideTry) {}
+    explicit AssignedVisitor(bool onlyInsideTry = false, bool deep = false)
+        : onlyInsideTry_(onlyInsideTry), deep_(deep) {}
 
     std::unordered_set<std::string> assigned;
 
@@ -95,8 +96,9 @@ public:
         }
     }
 
-    void visit(const FunctionExpr&) override {
+    void visit(const FunctionExpr& f) override {
         // Nested function scope assignments do not affect outer local variable SSA join
+        if (deep_) descendIntoFunction(f.name, f.params, f.body);
     }
 
     void visit(const SuperCall& c) override {
@@ -118,13 +120,19 @@ public:
         d.value->accept(*this);
     }
 
-    void visit(const ClassDecl&) override {
+    void visit(const ClassDecl& c) override {
         // A class body is nothing but methods, and a method's assignments
         // are its own scope's, exactly like a nested function's above. The
         // binding the class introduces is handled where declarations are.
+        if (!deep_) return;
+        record(c.name);
+        descendIntoClass(c.superClass, c.methods);
     }
 
-    void visit(const ClassExpr&) override {}
+    void visit(const ClassExpr& c) override {
+        if (!deep_) return;
+        descendIntoClass(c.superClass, c.methods);
+    }
 
     void visit(const BlockStmt& b) override {
         for (const auto& s : b.stmts) s->accept(*this);
@@ -231,12 +239,51 @@ public:
     void visit(const ThrowStmt& t) override {
         if (t.value) t.value->accept(*this);
     }
-    void visit(const FunctionDecl&) override {}
+    // A declaration's own name is NOT recorded even in deep mode: being
+    // declared is not being rebound, and the declaration is the very fact a
+    // deep consumer is trying to make a claim about.
+    void visit(const FunctionDecl& f) override {
+        if (deep_) descendIntoFunction(/*ownName=*/"", f.params, f.body);
+    }
     void visit(const Module&) override {}
 
 private:
     const bool onlyInsideTry_;
+    const bool deep_ = false;
     int tryDepth_ = 0;
+
+    // A nested function's parameters and body, walked in the same set. The
+    // parameter names are recorded because a parameter is a binding written on
+    // entry — a nested `function g(setBlending)` cannot rebind the outer slot,
+    // but counting it costs one refused claim and keeps this walk from having
+    // to model shadowing at all. A named function expression's own name is
+    // recorded for the same reason.
+    void descendIntoFunction(const std::string& ownName, const std::vector<Param>& params,
+                             const std::vector<StmtPtr>& body) {
+        if (!ownName.empty()) record(ownName);
+        for (const auto& p : params) {
+            if (!p.name.empty()) record(p.name);
+            if (p.pattern) {
+                for (const auto& name : patternBoundNames(*p.pattern)) record(name);
+                visitPatternExprs(*p.pattern);
+            }
+            if (p.defaultValue) p.defaultValue->accept(*this);
+        }
+        // A nested body's `try` depth is its own; `onlyInsideTry` and `deep`
+        // are never both set, so nothing here reads tryDepth_.
+        for (const auto& s : body) {
+            if (s) s->accept(*this);
+        }
+    }
+
+    void descendIntoClass(const ExprPtr& superClass, const std::vector<ClassMethod>& methods) {
+        if (superClass) superClass->accept(*this);
+        for (const auto& m : methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+            if (m.init) m.init->accept(*this);
+            if (m.fn) descendIntoFunction(/*ownName=*/"", m.fn->params, m.fn->body);
+        }
+    }
 
     // A pattern's own expressions — computed keys and defaults — can assign
     // too, and they run in this scope.
@@ -276,6 +323,28 @@ std::unordered_set<std::string> getTryAssignedNames(const std::vector<StmtPtr>& 
 
 std::unordered_set<std::string> getTryAssignedNames(const std::vector<const Stmt*>& stmts) {
     AssignedVisitor v{/*onlyInsideTry=*/true};
+    for (const auto* s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyAssignedNames(const Node& node) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true};
+    node.accept(v);
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<StmtPtr>& stmts) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true};
+    for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<const Stmt*>& stmts) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true};
     for (const auto* s : stmts) {
         if (s) s->accept(v);
     }

@@ -37,4 +37,23 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
                 uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards);
 
+// The record `hops` parent links up from `envBits`, as a Value. `hops == 0` is
+// `envBits` itself and emits nothing.
+//
+// This is the chain walk `emitEnvSlotPtr` performs, without the slot read at
+// the end and without the access guards — deliberately, and on the narrowest of
+// the three licences. The guards are TRIPWIRES for a lowering bug (llvm_env.cpp
+// says so at length), and the one caller of this is a DIRECT CALL to a closure,
+// where a wrong record is not a wrong load but a wrong function's environment.
+// The only thing that could make it wrong is the hop count, which no guard here
+// could check: an Env record's brand does not say which scope it is. So the
+// count is verified where it is made — the scope plan (lower_scope.cpp
+// `planStableFunctionSlots` and `recordStableFunctionSlot`, which refuses any
+// binding not held by the record the closure was created over) — and the walk
+// itself is the loads.
+//
+// Each parent load is `!invariant.load`: a record's parent link is written once,
+// at creation, and there is no operation in the language that rewrites one.
+llvm::Value* emitEnvAncestor(llvm::IRBuilder<>& builder, llvm::Value* envBits, uint32_t hops);
+
 }  // namespace bronze::codegen_llvm

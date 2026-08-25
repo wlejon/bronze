@@ -423,6 +423,14 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // excluded: its frame holds the generator's own state words, and its
     // bindings are re-entered from an edge this analysis does not model.
     if (!machineBody) planEnvSlotNumberTypes(params, body, ilFn.name, info);
+    // And which of them hold a function declaration nothing can rebind — the
+    // static call plan, lower_scope.cpp. A machine body is excluded for a
+    // reason of its own: a resume edge defines no SSA value, so a record there
+    // is reached by walking DOWN the child links from the frame, and the plan's
+    // claim is about counting parent links UP from the record a closure was
+    // created over. The two agree, but nothing here proves that they do, and a
+    // generator is not what this exists for.
+    if (!machineBody) planStableFunctionSlots(body, &params, info);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);

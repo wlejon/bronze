@@ -270,9 +270,31 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                 }
                 if (inst.op != Op::Call) continue;
                 const Function& callee = module.functions[inst.calleeIndex];
-                if (callee.needsEnv) {
+                if (callee.needsEnv && inst.callEnvHops == Instruction::kNoEnvHops) {
                     diags.error(Span{}, "Function " + fn.name + ": direct call to closure @" +
                                             callee.name + ", which needs an environment");
+                    return false;
+                }
+                // The converse, which is the same bug the other way round: a
+                // site claiming to supply an environment to a function that
+                // takes none would hand the record to its first SOURCE
+                // parameter.
+                if (!callee.needsEnv && inst.callEnvHops != Instruction::kNoEnvHops) {
+                    diags.error(Span{}, "Function " + fn.name + ": direct call supplies an "
+                                        "environment to @" + callee.name + ", which takes none");
+                    return false;
+                }
+                // A direct call's operand list IS the callee's parameter list —
+                // that is the whole of the convention — so a length mismatch is
+                // a wrong value in every slot after the first missing one, and
+                // it is worth naming here rather than meeting it as a type
+                // error in the backend.
+                if (inst.operands.size() != callee.params.size()) {
+                    diags.error(Span{}, "Function " + fn.name + ": direct call to @" +
+                                            callee.name + " passes " +
+                                            std::to_string(inst.operands.size()) +
+                                            " operands for " +
+                                            std::to_string(callee.params.size()) + " parameters");
                     return false;
                 }
             }

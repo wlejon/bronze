@@ -27,6 +27,11 @@ bool Lowerer::lowerStmtList(const std::vector<const ast::Stmt*>& stmts, il::Func
         VarBinding& b = varBindings_[activeVarMap_[fnDecl->name]];
         if (b.inEnv) {
             emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot, *closure, ilFn);
+            // The other half of the static call plan (lower_scope.cpp): the
+            // scope plan already decided this slot can hold nothing else, and
+            // this is where the IL function it holds becomes known. Every call
+            // of the name lowered AFTER this point may be a direct one.
+            recordStableFunctionSlot(b.envScopeIndex, b.envSlot, lastClosureFnIndex_);
         }
     }
     for (const auto* stmt : stmts) {

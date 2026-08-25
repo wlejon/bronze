@@ -185,6 +185,28 @@ bool envAccessGuardsElided() {
     return elide;
 }
 
+llvm::Value* emitEnvAncestor(llvm::IRBuilder<>& builder, llvm::Value* envBits, uint32_t hops) {
+    if (hops == 0) return envBits;
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::Value* bits = envBits;
+    for (uint32_t step = 0; step < hops; ++step) {
+        llvm::Value* hdr = builder.CreateIntToPtr(
+            builder.CreateAnd(bits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy,
+            "envanc.hdr");
+        auto* parent = builder.CreateAlignedLoad(
+            i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ENV_PARENT_OFFSET),
+            llvm::Align(8), "envanc.parent");
+        markInvariant(parent, ctx);
+        tagEnvRecordAccess(parent, ctx);
+        bits = parent;
+    }
+    return bits;
+}
+
 llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
                         uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards) {

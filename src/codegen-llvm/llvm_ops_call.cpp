@@ -9,6 +9,7 @@
 #include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_method_call.h"
 #include "codegen-llvm/llvm_construct.h"
+#include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
 
@@ -330,7 +331,34 @@ bool FunctionEmitter::emitCall(const il::Instruction& inst) {
         if (!arg) return false;
         args.push_back(arg);
     }
-    llvm::Value* res = builder_.CreateCall(callee, args);
+    // A direct call to a CLOSURE (il.h, `callEnvHops`): operand 0 is the
+    // CALLER's environment record, and the callee's `__env` is that record's
+    // `callEnvHops`-th ancestor. Deriving it here rather than at the call site
+    // is what keeps the fast path free of the closure value entirely — no slot
+    // read, no object-tag test, no code-pointer compare — because the identity
+    // of the function being called was settled by the scope plan and owes the
+    // running program nothing.
+    if (inst.callEnvHops != il::Instruction::kNoEnvHops) {
+        if (!require(!args.empty(), "Direct closure call with no environment operand")) {
+            return false;
+        }
+        args[0] = emitEnvAncestor(builder_, args[0], inst.callEnvHops);
+    }
+    llvm::CallInst* call = builder_.CreateCall(callee, args);
+    if (inst.callEnvHops != il::Instruction::kNoEnvHops) {
+        // The same ask a direct METHOD edge makes, and spent by the same pass:
+        // deleting the boundary is worth little next to deleting the callee's
+        // prologue, and only inlining does that. `markDirectMethodInlining`
+        // decides it once the module is whole and the callee's size is known.
+        //
+        // Asked for the closure edges ONLY. A direct call to a top-level
+        // function has been an ordinary LLVM call since the compiler had one,
+        // and the inliner's own cost model has been deciding those all along;
+        // widening the ask to them is a separate change with its own
+        // measurement, not a side effect of this one.
+        call->setMetadata(kDirectMethodMD, llvm::MDNode::get(shared_.ctx, {}));
+    }
+    llvm::Value* res = call;
     if (inst.result != il::kNoValue && !callee->getReturnType()->isVoidTy()) {
         values_[inst.result] = res;
     }

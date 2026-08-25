@@ -542,6 +542,35 @@ private:
     Value readBinding(const VarBinding& b, il::Function& ilFn);
     void writeBinding(VarBinding& b, Value val, il::Function& ilFn);
     bool findEnclosingEnvVar(const std::string& name, uint32_t& depth, uint32_t& index) const;
+
+    // --- the static call plan (lowerer_state.h, EnvScopeInfo::slotIsStableFn) --
+    //
+    // Marks every slot of `info` whose binding is a function declaration of
+    // this scope that nothing in the scope's whole lexical reach can reassign.
+    // `params` is the parameter list whose defaults are code of this scope too,
+    // or null for a scope that has none (a block, a switch's CaseBlock).
+    void planStableFunctionSlots(const std::vector<const ast::Stmt*>& stmts,
+                                 const std::vector<ast::Param>* params, EnvScopeInfo& info) const;
+    void planStableFunctionSlots(const std::vector<ast::StmtPtr>& stmts,
+                                 const std::vector<ast::Param>* params, EnvScopeInfo& info) const;
+    // The other half: the hoisting pass says which IL function the closure it
+    // just made for `name` is, once, at the point the binding is created.
+    void recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_t fnIndex);
+    // Does `name` denote a function this module lowered, in a binding nothing
+    // can rebind? On yes, `envHops` is how many parent links a caller here
+    // walks to reach the record that closure captured, and `fnIndex` names it.
+    bool findStableFunctionCallee(const std::string& name, uint32_t& envHops,
+                                  uint32_t& fnIndex) const;
+    // The one place a `call @F(...)` is built. `envBase` is the caller's own
+    // environment record and `envHops` the number of parent links from it to
+    // the record the callee captured — both `kNoValue`/0 for a callee that
+    // needs no environment at all. Answers nullopt only on a lowering failure;
+    // whether the call CAN take this shape is `directCallShapeFits`, asked by
+    // the caller before this is reached.
+    std::optional<Value> lowerDirectCall(const ast::Call* call, uint32_t calleeIdx,
+                                         il::ValueId envBase, uint32_t envHops,
+                                         il::Function& ilFn);
+
     void enterScope();
     // A scope whose slots no declaration spells: the class-evaluation record
     // that holds a class body's private names. Everything `enterScope` does to

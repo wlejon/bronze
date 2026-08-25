@@ -831,9 +831,17 @@ std::string print(const Module& module) {
                             default: break;
                         }
                         if (inst.op == Op::Call) {
+                            // `env+N` before the arguments marks a direct call
+                            // to a CLOSURE: operand 0 is the caller's record and
+                            // N is the hop count to the callee's (il.h,
+                            // `callEnvHops`). It is what distinguishes this
+                            // instruction from one the verifier would reject.
                             out += "(";
                             for (size_t i = 0; i < inst.operands.size(); ++i) {
                                 if (i > 0) out += ", ";
+                                if (i == 0 && inst.callEnvHops != Instruction::kNoEnvHops) {
+                                    out += "env+" + std::to_string(inst.callEnvHops) + " ";
+                                }
                                 out += "%" + std::to_string(inst.operands[i]);
                             }
                             out += ")";

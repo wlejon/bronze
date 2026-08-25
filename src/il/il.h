@@ -580,6 +580,23 @@ struct Instruction {
     uint32_t directTarget = kNoDirectTarget;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
+    // A direct `call` to a CLOSURE, and the number of parent links from the
+    // record in operand 0 to the one the closure captured.
+    //
+    // A direct call normally cannot reach a closure at all: `__env` arrives
+    // through the dynamic calling convention, and a call site that named the
+    // function without supplying one would enter it with garbage. This says the
+    // site supplies it — not by loading the closure value, which would put the
+    // whole guarded environment read back on the fast path, but by handing over
+    // the CALLER's own record and a hop count the scope plan established
+    // (lower_scope.cpp, `planStableFunctionSlots`). Operand 0 is that record,
+    // and it occupies the callee's `__env` parameter.
+    //
+    // `kNoEnvHops` — the default — means the site supplies no environment, and
+    // the verifier then holds the original rule: a direct call names a function
+    // that needs none.
+    static constexpr uint32_t kNoEnvHops = 0xFFFFFFFFu;
+    uint32_t callEnvHops = kNoEnvHops;
 
     BlockTarget target;              // Jump target / Branch then-target
     BlockTarget elseTarget;          // Branch else-target
