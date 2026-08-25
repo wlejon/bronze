@@ -17,6 +17,7 @@ TAGS = [
     ("e3", "E3"),
     ("e4", "E4 shipped"),
     ("e5", "E5"),
+    ("b1", "B1 shipped"),
 ]
 
 # fixture -> (big source, small source, iterations the delta covers)

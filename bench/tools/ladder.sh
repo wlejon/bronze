@@ -20,7 +20,13 @@ mkdir -p "$OUT"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 
 # Every seam this campaign added, all on: stage 3.4's compiler.
-S5="BRONZE_NO_XPART_INLINE=1"
+#
+# B1's seam is the INNERMOST one, and it is in every earlier column: none of
+# the compilers those columns reproduce emitted a pin barrier, so a row that
+# left the barriers on would not be the compiler it is labelled with. `b1` —
+# no seams at all — is the one that has them.
+S6="BRONZE_NO_PIN_BARRIERS=1"
+S5="BRONZE_NO_XPART_INLINE=1 $S6"
 S4="BRONZE_NO_PURE_PREDICATES=1 BRONZE_NO_CLOSURE_PARAM_PROOF=1 BRONZE_NO_DEFINITE_REACH=1 $S5"
 S3="BRONZE_NO_FRAME_MERGE=1 BRONZE_NO_DEFINITE_INIT=1 $S4"
 S2="BRONZE_NO_INLINE_TOINT32=1 BRONZE_NO_PURE_CONVERSIONS=1 BRONZE_NO_ENV_TRIPWIRE=1 $S3"
@@ -30,7 +36,7 @@ S1="BRONZE_NO_CLOSURE_EDGE=1 $S2"
 # pairs splits every seam into a column of its own and silently builds a table
 # that is not the ladder. It looks like it worked — 85 executables instead of
 # 55 is the only tell.
-TAGS="s34 e1 e2 e3 e4 e5"
+TAGS="s34 e1 e2 e3 e4 e5 b1"
 seams_for() {
   case $1 in
     s34) echo "$S1" ;;
@@ -38,7 +44,8 @@ seams_for() {
     e2) echo "$S3" ;;
     e3) echo "$S4" ;;
     e4) echo "$S5" ;;
-    e5) echo "" ;;
+    e5) echo "$S6" ;;
+    b1) echo "" ;;
   esac
 }
 
