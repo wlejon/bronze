@@ -76,6 +76,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_call.h"
+#include "codegen-llvm/llvm_frame.h"
 #include "codegen-llvm/llvm_func.h"
 #include "il/print.h"
 #include "il/verifier.h"
@@ -131,6 +132,41 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
                                              symbol, &llvmModule));
     }
     return true;
+}
+
+// The frameless twin of every merge target: the typed entry's signature plus
+// the two things a region needs — the base of the caller's frame region this
+// call's slots live in, and the caller's view of the thread's ABI block. Both
+// are pointers the caller already has, and handing them over is what leaves the
+// callee's body without a prologue of its own to inline along with it.
+void declareInlineVariants(const il::Module& module, llvm::Module& llvmModule,
+                           const codegen_llvm::RegionPlan& regions,
+                           const std::vector<llvm::Function*>& entries,
+                           std::vector<llvm::Function*>& out) {
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(llvmModule.getContext());
+    out.assign(module.functions.size(), nullptr);
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (!regions.isMergeTarget[i]) continue;
+        llvm::FunctionType* entryTy = entries[i]->getFunctionType();
+        std::vector<llvm::Type*> params(entryTy->param_begin(), entryTy->param_end());
+        params.push_back(ptrTy);
+        params.push_back(ptrTy);
+        llvm::Function* variant = llvm::Function::Create(
+            llvm::FunctionType::get(entryTy->getReturnType(), params, false),
+            llvm::Function::InternalLinkage, entries[i]->getName() + ".inl", &llvmModule);
+        // What the two of them ARE, said where the storage-alias families can
+        // read it (llvm_alias.h): without this the body's every frame access
+        // loses the StackFrame claim it carried when the frame was its own,
+        // and every control word it caches has to be re-loaded around it.
+        const unsigned regionArg = static_cast<unsigned>(params.size()) - 2;
+        variant->addParamAttr(regionArg,
+                              llvm::Attribute::get(llvmModule.getContext(),
+                                                   codegen_llvm::kRegionParamAttr));
+        variant->addParamAttr(regionArg + 1,
+                              llvm::Attribute::get(llvmModule.getContext(),
+                                                   codegen_llvm::kTlsParamAttr));
+        out[i] = variant;
+    }
 }
 
 // A function held as a VALUE is called through the uniform convention —
@@ -880,11 +916,30 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
         }
     }
 
+    // Frames before bodies: a caller sizes its frame for the regions of the
+    // callees it merges (llvm_frame.h), and a callee is commonly emitted after
+    // its caller, so the layouts are all planned first.
+    std::vector<codegen_llvm::FramePlan> plans;
+    plans.reserve(module.functions.size());
+    for (const il::Function& ilFunc : module.functions) {
+        plans.push_back(codegen_llvm::planFrame(ilFunc, moduleHasNewTarget));
+    }
+    const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
+    std::vector<llvm::Function*> inlineVariants;
+    declareInlineVariants(module, *llvmModule, regions, entries, inlineVariants);
+
     const FunctionEmitter::Context shared{ctx,     module,   abi,   tables,
-                                          entries, wrappers, diags, moduleHasNewTarget};
+                                          entries, wrappers, diags, plans,
+                                          regions, inlineVariants, moduleHasNewTarget};
     for (size_t i = 0; i < module.functions.size(); ++i) {
-        FunctionEmitter emitter(shared, module.functions[i], entries[i]);
+        const bool frameless = regions.isMergeTarget[i];
+        FunctionEmitter emitter(shared, static_cast<uint32_t>(i),
+                                frameless ? inlineVariants[i] : entries[i], frameless);
         if (!emitter.emit()) return false;
+        if (frameless) {
+            codegen_llvm::emitFrameForwarder(shared, static_cast<uint32_t>(i), entries[i],
+                                             inlineVariants[i]);
+        }
     }
 
     // Every used TLS-block fetch becomes a load of a module-local

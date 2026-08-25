@@ -90,6 +90,20 @@ Provenance classify(const llvm::Value* ptr, const llvm::DataLayout& dl,
     };
 
     if (llvm::isa<llvm::AllocaInst>(base)) return {Provenance::Kind::Stack, 0};
+    // The two trailing parameters of a frameless inline variant (llvm_frame.h):
+    // a region of some caller's GC root frame, and that caller's view of the
+    // thread's ABI block. Both are the same storage the alloca and accessor
+    // cases above name — the variant was split out of a function that reached
+    // them exactly that way — and saying so here is what keeps the split from
+    // costing the body every claim its frame accesses used to carry.
+    if (const auto* arg = llvm::dyn_cast<llvm::Argument>(base)) {
+        const llvm::AttributeList attrs = arg->getParent()->getAttributes();
+        if (attrs.hasParamAttr(arg->getArgNo(), kRegionParamAttr)) {
+            return {Provenance::Kind::Stack, 0};
+        }
+        if (attrs.hasParamAttr(arg->getArgNo(), kTlsParamAttr)) return tlsWord();
+        return {};
+    }
     if (const auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(base)) {
         return isControlTable(gv) ? Provenance{Provenance::Kind::Tables, 0} : Provenance{};
     }

@@ -48,6 +48,11 @@ struct AbiFns {
 // a thunk for an imported call. (Windows cannot dllimport a thread_local at
 // all, which is why the block sits behind a call in the first place.)
 struct AbiGlobals {
+    // The block's own address, which every member below is an offset from.
+    // A merged inline region hands this to the callee instead of letting it
+    // fetch one of its own (llvm_frame_merge.h), so it is kept rather than
+    // dropped once the GEPs are built.
+    llvm::Value* block_base = nullptr;
     llvm::Value* bronze_gc_frame_top = nullptr;
     llvm::Value* bronze_exception_cell = nullptr;
     llvm::Value* bronze_proto_epoch = nullptr;
@@ -91,6 +96,10 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 // function that ends up touching no field sees the call and its GEPs folded
 // away entirely rather than paying for the fetch.
 AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns);
+
+// The same field GEPs off a base the caller already has. A frameless inline
+// variant takes its region's base as a parameter, so it fetches nothing.
+AbiGlobals bindTlsBlockAt(llvm::IRBuilder<>& builder, llvm::Value* base);
 
 // Rewrites every USED bronze_tls_block_addr call in the module into a load of
 // a module-local `thread_local bronze_tls_block*` cache, with a once-per-

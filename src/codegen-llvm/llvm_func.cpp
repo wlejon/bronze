@@ -25,19 +25,30 @@ llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx) {
     }
 }
 
-FunctionEmitter::FunctionEmitter(const Context& shared, const il::Function& func,
-                                 llvm::Function* llvmFunc)
+FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
+                                 llvm::Function* llvmFunc, bool frameless)
     : shared_(shared),
-      func_(func),
+      func_(shared.module.functions[funcIndex]),
       llvmFunc_(llvmFunc),
       builder_(shared.ctx),
       i64Ty_(llvm::Type::getInt64Ty(shared.ctx)),
       ptrTy_(llvm::PointerType::getUnqual(shared.ctx)),
-      values_(func.valueCount, nullptr),
-      propGetKey_(func.valueCount, UINT32_MAX),
-      funcRefIndex_(func.valueCount, UINT32_MAX),
-      slotOf_(func.valueCount, kNoSlot),
-      envGuardsElided_(envAccessGuardsElided()) {}
+      values_(shared.module.functions[funcIndex].valueCount, nullptr),
+      propGetKey_(shared.module.functions[funcIndex].valueCount, UINT32_MAX),
+      funcRefIndex_(shared.module.functions[funcIndex].valueCount, UINT32_MAX),
+      slotOf_(shared.plans[funcIndex].slotOf),
+      ownSlots_(shared.plans[funcIndex].ownSlots),
+      // A frameless variant fills a region the CALLER already sized and
+      // linked, so it allocates nothing of its own and its slot count is its
+      // own. Anything else allocates the whole region under it.
+      frameSlots_(frameless ? shared.plans[funcIndex].ownSlots
+                            : shared.regions.totalSlots[funcIndex]),
+      frameless_(frameless),
+      funcIndex_(funcIndex),
+      envGuardsElided_(envAccessGuardsElided()) {
+    argvBase_ = shared.plans[funcIndex].argvBase;
+    constructSelfSlot_ = shared.plans[funcIndex].constructSelfSlot;
+}
 
 bool FunctionEmitter::require(bool condition, const char* message) {
     if (condition) return true;
@@ -72,186 +83,38 @@ void FunctionEmitter::reload(il::ValueId id) {
     values_[id] = builder_.CreateLoad(i64Ty_, slotAddr(slot));
 }
 
-// ---- GC root frame ---------------------------------------------
-//
-// Every Dynamic-typed value gets a slot in one contiguous array the collector
-// walks: defs store into it, uses load out of it. The load is the point — a
-// collection inside any helper call moves the object and updates the slot,
-// while an SSA register would keep pointing into dead from-space. A function
-// with no Dynamic values (proven-f64 code) gets no frame and pays nothing.
-//
-// Slots are REUSED once the value in them is dead, which is what keeps the
-// frame proportional to how many values are live at once rather than to how
-// many the function ever computes. Without it a 2000-statement function got
-// 6002 slots — a 48 KB alloca, 6002 unrolled initialising stores, and 6002
-// stack locations for the register allocator to colour — and that, not anything
-// bronze does, was 93% of a three.js compile.
-//
-// A slot may be reused only where nothing can read the old value again, so
-// the eligibility rule is deliberately narrow:
-//
-//  - A value used OUTSIDE its defining block keeps a slot to itself. So does
-//    a block parameter and a function parameter. Deciding those needs real
-//    liveness over the CFG — a loop header's parameter is live across the
-//    back edge — and a wrong answer here is a use-after-move that only shows
-//    up under GC stress, which is the most expensive bug this project has.
-//  - Everything else is a temporary whose whole life is inside one block, and
-//    a linear scan over that block is exact: the range is [def, last use] in
-//    textual order, because within a block a def precedes every use of it.
-//
-// A freed slot is not cleared. It holds a dead-but-valid Value until the next
-// def overwrites it, so a collection in between forwards one object that is
-// no longer reachable from the program — the same one cycle of float the
-// frame already had, not a new hazard.
-
-void FunctionEmitter::planRootFrame() {
-    const uint32_t n = func_.valueCount;
-    constexpr uint32_t kNoBlockIdx = UINT32_MAX;
-
-    auto isRooted = [&](il::ValueId id, il::Type ty) {
-        return id != il::kNoValue && id < n && ty == il::Type::Dynamic;
-    };
-
-    // Where each rooted value is defined, and whether any use is somewhere
-    // its defining block's linear scan cannot see.
-    std::vector<uint32_t> defBlock(n, kNoBlockIdx);
-    std::vector<uint32_t> lastUse(n, 0);
-    std::vector<bool> pinned(n, false);
-
-    for (size_t p = 0; p < func_.params.size(); ++p) {
-        const auto id = static_cast<il::ValueId>(p);
-        if (isRooted(id, func_.params[p].type)) pinned[id] = true;
-    }
-
-    uint32_t maxArgc = 0;
-    bool hasConstruct = false;
-    for (uint32_t b = 0; b < func_.blocks.size(); ++b) {
-        const auto& block = func_.blocks[b];
-        for (const auto& param : block.params) {
-            if (isRooted(param.id, param.type)) pinned[param.id] = true;
-        }
-        for (uint32_t i = 0; i < block.instructions.size(); ++i) {
-            const auto& inst = block.instructions[i];
-            if (isRooted(inst.result, inst.type)) {
-                defBlock[inst.result] = b;
-                lastUse[inst.result] = i;
-            }
-            // Every field on an instruction that names a value: `operands`,
-            // and the two block-argument lists a terminator carries. The
-            // argument lists are read HERE, at the branch, so they are
-            // ordinary uses at index `i` rather than something wider — but
-            // they are read out of `inst.target`, not `inst.operands`, and a
-            // scan that forgot them would pool a value the branch still needs
-            // and hand its slot to the next def.
-            auto noteUse = [&](il::ValueId use) {
-                if (use == il::kNoValue || use >= n) return;
-                if (defBlock[use] != b) {
-                    // Defined in another block, or not yet seen here at all
-                    // (a value this block only reads). Either way its life is
-                    // wider than this scan.
-                    pinned[use] = true;
-                } else {
-                    lastUse[use] = i;
-                }
-            };
-            for (il::ValueId use : inst.operands) noteUse(use);
-            for (il::ValueId use : inst.target.args) noteUse(use);
-            for (il::ValueId use : inst.elseTarget.args) noteUse(use);
-            if (inst.op == il::Op::DynamicCall && inst.operands.size() >= 2) {
-                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 2));
-            }
-            if (inst.op == il::Op::MethodCall && !inst.operands.empty()) {
-                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 1));
-            }
-            if (inst.op == il::Op::SuperCall && inst.operands.size() >= 2) {
-                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 2));
-            }
-            if (inst.op == il::Op::Construct && !inst.operands.empty()) {
-                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size() - 1));
-                hasConstruct = true;
-            }
-            // console.log with more than one argument builds an argv too,
-            // and console.warn/error take the same path to the other stream.
-            if ((inst.op == il::Op::Print || inst.op == il::Op::PrintErr) &&
-                inst.operands.size() > 1) {
-                maxArgc = std::max(maxArgc, static_cast<uint32_t>(inst.operands.size()));
-            }
-        }
-    }
-
-    // The pinned values first, in the order they appear, so a frame's layout
-    // stays a function of the IL and nothing else.
-    uint32_t pinnedCount = 0;
-    auto pin = [&](il::ValueId id, il::Type ty) {
-        if (!isRooted(id, ty) || !pinned[id]) return;
-        if (slotOf_[id] == kNoSlot) slotOf_[id] = pinnedCount++;
-    };
-    for (size_t p = 0; p < func_.params.size(); ++p) {
-        pin(static_cast<il::ValueId>(p), func_.params[p].type);
-    }
-    for (const auto& block : func_.blocks) {
-        for (const auto& param : block.params) pin(param.id, param.type);
-        for (const auto& inst : block.instructions) pin(inst.result, inst.type);
-    }
-
-    // Then the block-local temporaries, out of a pool every block reuses:
-    // two values in different blocks can never both be live, so the pool only
-    // has to be as deep as the worst single block.
-    uint32_t poolHighWater = 0;
-    std::vector<uint32_t> freeSlots;
-    std::vector<std::vector<il::ValueId>> expiringAt;
-    for (const auto& block : func_.blocks) {
-        uint32_t poolSize = 0;
-        freeSlots.clear();
-        expiringAt.assign(block.instructions.size(), {});
-        for (uint32_t i = 0; i < block.instructions.size(); ++i) {
-            const auto& inst = block.instructions[i];
-            // Release what died at the PREVIOUS instruction, never at this
-            // one: this instruction's operands are loaded out of their slots
-            // before its result is stored, and a slot handed to the result
-            // here would be read after it had been overwritten.
-            if (i > 0) {
-                for (il::ValueId dead : expiringAt[i - 1]) freeSlots.push_back(slotOf_[dead]);
-                expiringAt[i - 1].clear();
-            }
-            const il::ValueId res = inst.result;
-            if (!isRooted(res, inst.type) || pinned[res]) continue;
-            // Absolute from the start — the pool sits immediately above the
-            // pinned block, and `pinnedCount` is already final here.
-            if (freeSlots.empty()) {
-                slotOf_[res] = pinnedCount + poolSize++;
-            } else {
-                slotOf_[res] = freeSlots.back();
-                freeSlots.pop_back();
-            }
-            expiringAt[lastUse[res]].push_back(res);
-        }
-        poolHighWater = std::max(poolHighWater, poolSize);
-    }
-
-    // Call arguments live in the frame too: they are live across the callee,
-    // and the widest call site's worth of slots is enough because IL is flat
-    // SSA — an argument list is built immediately before its call and dead
-    // immediately after, never nested.
-    argvBase_ = pinnedCount + poolHighWater;
-    frameSlots_ = argvBase_ + maxArgc;
-
-    // One slot above the argv region for the inline `new` fast path's fresh
-    // instance. Shared by every construct site — a site's use of it ends at
-    // its own merge, and IL construct sites never nest mid-flight for the
-    // same reason argument lists never do.
-    if (hasConstruct && !shared_.moduleHasNewTarget) {
-        constructSelfSlot_ = frameSlots_++;
-    }
+llvm::Value* FunctionEmitter::calleeRegionBase() {
+    // No frame at all means every merged callee under this one has an empty
+    // region too — `planRegions` sizes a caller for the deepest region beneath
+    // it, so a caller with nothing to allocate has nothing to hand over. The
+    // pointer is then never dereferenced and null says so.
+    if (!slotsBase_) return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy_));
+    return slotAddr(ownSlots_);
 }
 
 void FunctionEmitter::emitPrologue() {
-    if (frameSlots_ == 0 || blocks_.empty()) return;
+    if (blocks_.empty()) return;
+    builder_.SetInsertPoint(blocks_[0]);
+
+    // The frameless case: the region base arrived as a parameter and the
+    // caller's prologue already wrote a valid Value into every slot of it, so
+    // all that is left is rooting the parameters. Re-initialising the region
+    // would be wrong in no way and useless in every way — a slot holding a
+    // dead-but-valid Value from an earlier call through the same region is
+    // exactly the float the pool already has.
+    if (frameless_) {
+        slotsBase_ = parentSlots_;
+        for (size_t p = 0; p < func_.params.size(); ++p) {
+            if (slotOf_[p] == kNoSlot) continue;
+            builder_.CreateStore(values_[p], slotAddr(slotOf_[p]));
+        }
+        return;
+    }
+    if (frameSlots_ == 0) return;
 
     // The frame mirrors `bronze_gc_frame` from the ABI registry:
     // { prev, count, slots[frameSlots] }, allocated in this function's own
     // stack frame and linked onto the list head inline.
-    builder_.SetInsertPoint(blocks_[0]);
     frameTy_ = llvm::StructType::get(
         shared_.ctx, {ptrTy_, i64Ty_, llvm::ArrayType::get(i64Ty_, frameSlots_)});
     framePtr_ = builder_.CreateAlloca(frameTy_, nullptr, "gcframe");
@@ -442,6 +305,60 @@ void FunctionEmitter::emitModuleInit() {
     }
 }
 
+// ---- the framed entry of a merge target -------------------------------
+
+void emitFrameForwarder(const FunctionEmitter::Context& shared, uint32_t funcIndex,
+                        llvm::Function* entry, llvm::Function* variant) {
+    llvm::LLVMContext& ctx = shared.ctx;
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    const uint32_t slots = shared.regions.totalSlots[funcIndex];
+
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", entry));
+    AbiGlobals globals = bindTlsBlock(b, shared.abi);
+
+    std::vector<llvm::Value*> args;
+    for (llvm::Argument& a : entry->args()) args.push_back(&a);
+
+    llvm::Value* slotsBase = llvm::ConstantPointerNull::get(ptrTy);
+    llvm::StructType* frameTy = nullptr;
+    llvm::Value* frame = nullptr;
+    if (slots > 0) {
+        frameTy = llvm::StructType::get(ctx, {ptrTy, i64Ty, llvm::ArrayType::get(i64Ty, slots)});
+        frame = b.CreateAlloca(frameTy, nullptr, "gcframe");
+        slotsBase = b.CreateStructGEP(frameTy, frame, 2);
+        // The whole region, this function's slots and every merged callee's
+        // alike, holds a valid Value before the frame is linked. Once, here,
+        // rather than once per call into the region: a slot still holding an
+        // earlier call's value is the same dead-but-valid float the slot pool
+        // already has, and it is never garbage.
+        llvm::Value* undefBits = b.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+        for (uint32_t s = 0; s < slots; ++s) {
+            b.CreateStore(undefBits, b.CreateGEP(i64Ty, slotsBase, b.getInt32(s)));
+        }
+        b.CreateStore(b.getInt64(slots), b.CreateStructGEP(frameTy, frame, 1));
+        b.CreateStore(b.CreateLoad(ptrTy, globals.bronze_gc_frame_top),
+                      b.CreateStructGEP(frameTy, frame, 0));
+        b.CreateStore(frame, globals.bronze_gc_frame_top);
+    }
+    args.push_back(slotsBase);
+    args.push_back(globals.block_base);
+    llvm::CallInst* call = b.CreateCall(variant, args);
+    // Unconditional, and not the budgeted ask a direct edge makes: this call
+    // exists only because the body was split out of the function it belongs
+    // to, and leaving it out of line would be a boundary the source never had.
+    call->addFnAttr(llvm::Attribute::AlwaysInline);
+    if (slots > 0) {
+        b.CreateStore(b.CreateLoad(ptrTy, b.CreateStructGEP(frameTy, frame, 0)),
+                      globals.bronze_gc_frame_top);
+    }
+    if (entry->getReturnType()->isVoidTy()) {
+        b.CreateRetVoid();
+    } else {
+        b.CreateRet(call);
+    }
+}
+
 bool FunctionEmitter::emit() {
     blocks_.reserve(func_.blocks.size());
     for (const auto& block : func_.blocks) {
@@ -451,15 +368,27 @@ bool FunctionEmitter::emit() {
 
     size_t argIdx = 0;
     for (auto& arg : llvmFunc_->args()) {
-        arg.setName(func_.params[argIdx].name);
-        values_[argIdx] = &arg;
+        if (argIdx < func_.params.size()) {
+            arg.setName(func_.params[argIdx].name);
+            values_[argIdx] = &arg;
+        } else if (argIdx == func_.params.size()) {
+            arg.setName("__region");
+            parentSlots_ = &arg;
+        } else {
+            arg.setName("__tls");
+            tlsBase_ = &arg;
+        }
         ++argIdx;
     }
 
-    planRootFrame();
     if (!blocks_.empty()) {
         builder_.SetInsertPoint(blocks_[0]);
-        globals_ = bindTlsBlock(builder_, shared_.abi);
+        if (frameless_) {
+            globals_ = bindTlsBlockAt(builder_, tlsBase_);
+        } else {
+            globals_ = bindTlsBlock(builder_, shared_.abi);
+            tlsBase_ = globals_.block_base;
+        }
     }
     emitPrologue();
     createBlockPhis();
@@ -467,6 +396,33 @@ bool FunctionEmitter::emit() {
 
     for (size_t bIdx = 0; bIdx < func_.blocks.size(); ++bIdx) {
         if (!emitBlock(bIdx)) return false;
+    }
+
+    // A frameless variant fetches nothing — its view of the thread block is
+    // the caller's, and it arrives as a parameter. But the seam words the
+    // instruction families emit (llvm_iter.cpp, llvm_arith.cpp,
+    // llvm_elem_cache.cpp, llvm_ops.cpp) still ASK for a fetch of their own,
+    // on the standing promise that a `readnone` call CSEs with the prologue's.
+    // There is no prologue fetch here for them to CSE with, and
+    // `cacheTlsFetches` skips a function whose entry block has none — so every
+    // one of them would stay a real cross-module call, in the loop. They are
+    // answered from the parameter instead, which is the same answer the
+    // prologue's fetch would have given.
+    if (frameless_ && tlsBase_ != nullptr) {
+        llvm::SmallVector<llvm::CallInst*, 8> fetches;
+        for (llvm::BasicBlock& bb : *llvmFunc_) {
+            for (llvm::Instruction& inst : bb) {
+                auto* call = llvm::dyn_cast<llvm::CallInst>(&inst);
+                if (call != nullptr &&
+                    call->getCalledFunction() == shared_.abi.bronze_tls_block_addr) {
+                    fetches.push_back(call);
+                }
+            }
+        }
+        for (llvm::CallInst* call : fetches) {
+            call->replaceAllUsesWith(tlsBase_);
+            call->eraseFromParent();
+        }
     }
     return true;
 }
@@ -479,7 +435,9 @@ bool FunctionEmitter::emit() {
 // program that never throws.
 
 void FunctionEmitter::popRootFrame() {
-    if (!framePtr_) return;
+    // A frameless variant links nothing, so it unlinks nothing: the frame its
+    // slots live in belongs to a caller that is still running.
+    if (frameless_ || !framePtr_) return;
     builder_.CreateStore(
         builder_.CreateLoad(ptrTy_, builder_.CreateStructGEP(frameTy_, framePtr_, 0)),
         globals_.bronze_gc_frame_top);

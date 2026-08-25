@@ -43,7 +43,7 @@ namespace bronze::lower {
 //
 // What it buys: `*`, `-`, `/` and `%` over a boxed operand may produce an f64
 // instead of a boxed value, because with no BigInt in reach ToNumeric IS
-// ToNumber. An f64 result is not a GC root, and `planRootFrame` roots Dynamic
+// ToNumber. An f64 result is not a GC root, and `planFrame` roots Dynamic
 // values and only those — so a chain of arithmetic keeps its intermediates in
 // registers instead of storing and reloading every one of them around every
 // instruction.

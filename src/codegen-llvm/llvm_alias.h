@@ -11,6 +11,11 @@ class Module;
 
 namespace bronze::codegen_llvm {
 
+// The parameter attributes a frameless inline variant carries, so the storage
+// families below can classify what arrives through them (llvm_frame.h).
+inline constexpr const char* kRegionParamAttr = "bronze.frame_region";
+inline constexpr const char* kTlsParamAttr = "bronze.tls_block";
+
 // Six scoped-alias families under one domain ("BronzeAliasDomain"), named at
 // the emission site that knows which one it is reading.
 // The claims are about DISJOINT BYTES, which makes each of them true unconditionally:
@@ -116,7 +121,8 @@ inline void tagArrayHeaderAccess(llvm::Instruction* inst, llvm::LLVMContext& ctx
 // module, after emission and before optimization. An access is claimed only
 // when its underlying object is positively one of:
 //
-//   - an `alloca` in the compiled function                      → StackFrame
+//   - an `alloca` in the compiled function, or the region parameter of a
+//     frameless inline variant, which points into a caller's           → StackFrame
 //   - a word of the per-thread ABI block, reached through a
 //     `bronze_tls_block_addr` call or the module-local cache
 //     `cacheTlsFetches` rewrote it into                         → TlsWord.<n>

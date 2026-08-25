@@ -184,7 +184,17 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
         require(false, "internal: direct method-call arity does not match the typed entry");
         return false;
     }
-    llvm::CallInst* hitCall = builder_.CreateCall(entry, callArgs);
+    // A merged edge enters the callee's FRAMELESS variant, handing it a region
+    // of this function's frame and this function's view of the thread block
+    // (llvm_frame.h). Everything else about the site is unchanged, including
+    // the miss path, which still reaches the framed entry through the cache.
+    llvm::Function* target = entry;
+    if (shared_.regions.isMerged(funcIndex_, inst.directTarget)) {
+        target = shared_.inlineVariants[inst.directTarget];
+        callArgs.push_back(calleeRegionBase());
+        callArgs.push_back(tlsBase_);
+    }
+    llvm::CallInst* hitCall = builder_.CreateCall(target, callArgs);
     // The ask for inlining, spent by `markDirectMethodInlining` once the
     // module is whole and the callee's size is known (llvm_call.h says why the
     // ask is here and the decision is not).
@@ -344,7 +354,16 @@ bool FunctionEmitter::emitCall(const il::Instruction& inst) {
         }
         args[0] = emitEnvAncestor(builder_, args[0], inst.callEnvHops);
     }
-    llvm::CallInst* call = builder_.CreateCall(callee, args);
+    // As for a direct method edge: a merged edge calls the frameless variant
+    // with a region of this frame and this function's ABI block, so the
+    // callee's body arrives without a prologue to inline along with it.
+    llvm::Function* target = callee;
+    if (shared_.regions.isMerged(funcIndex_, inst.calleeIndex)) {
+        target = shared_.inlineVariants[inst.calleeIndex];
+        args.push_back(calleeRegionBase());
+        args.push_back(tlsBase_);
+    }
+    llvm::CallInst* call = builder_.CreateCall(target, args);
     if (inst.callEnvHops != il::Instruction::kNoEnvHops) {
         // The same ask a direct METHOD edge makes, and spent by the same pass:
         // deleting the boundary is worth little next to deleting the callee's

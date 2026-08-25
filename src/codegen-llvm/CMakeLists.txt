@@ -22,6 +22,7 @@ bronze_add_module(codegen_llvm
         llvm_elem_cache.cpp
         llvm_iter.cpp
         llvm_env.cpp
+        llvm_frame.cpp
         llvm_func.cpp
         llvm_math.cpp
         llvm_ops.cpp

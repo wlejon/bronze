@@ -16,6 +16,7 @@
 #include <llvm/IR/LLVMContext.h>
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_frame.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
 
@@ -39,6 +40,14 @@ public:
         const std::vector<llvm::Function*>& entries;
         const std::vector<llvm::Function*>& wrappers;
         DiagnosticSink& diags;
+        // Every function's frame layout and the region plan over the
+        // module's inline-asking direct edges (llvm_frame.h). Both are
+        // computed before any body is emitted, because a caller has to size
+        // its frame for a callee it may not have emitted yet.
+        const std::vector<FramePlan>& plans;
+        const RegionPlan& regions;
+        // The frameless variant of each merge target, null elsewhere.
+        const std::vector<llvm::Function*>& inlineVariants;
         // Whether ANY function in the module reads `new.target`. The inline
         // `new` fast path skips the helper's NewTargetScope push, which is
         // observable through bronze_get_new_target and nothing else — so one
@@ -46,13 +55,16 @@ public:
         bool moduleHasNewTarget;
     };
 
-    FunctionEmitter(const Context& shared, const il::Function& func, llvm::Function* llvmFunc);
+    // `frameless` emits the body against a region of the CALLER's frame,
+    // handed over as the two trailing parameters `llvmFunc` then carries: the
+    // region base and the thread's ABI block. Anything else owns its frame.
+    FunctionEmitter(const Context& shared, uint32_t funcIndex, llvm::Function* llvmFunc,
+                    bool frameless);
 
     // Emits every block of the function. False on a diagnosed error.
     bool emit();
 
 private:
-    void planRootFrame();
     void emitPrologue();
     void createBlockPhis();
     void emitModuleInit();
@@ -80,6 +92,9 @@ private:
     // register was not.
     void reload(il::ValueId id);
     llvm::Value* slotAddr(uint32_t slot);
+    // The base of the region a merged callee's slots live in — this function's
+    // own slots end exactly there. Null when it has no frame at all.
+    llvm::Value* calleeRegionBase();
     // The ADDRESS of an operand's root slot, for code that has to re-read the
     // value after a call rather than before it. Null when the value has no slot
     // (it is not Dynamic, so nothing can move it, and there is nothing to
@@ -131,9 +146,19 @@ private:
     // what lets DynamicCall and Construct invoke the known wrapper directly.
     std::vector<uint32_t> funcRefIndex_;
 
-    std::vector<uint32_t> slotOf_;
+    const std::vector<uint32_t>& slotOf_;
     uint32_t argvBase_ = 0;
+    // What this function needs for itself, and what its frame holds in total —
+    // the same number unless it merges a callee's region in beneath its own
+    // slots (llvm_frame.h).
+    uint32_t ownSlots_ = 0;
     uint32_t frameSlots_ = 0;
+    // Set while emitting a frameless variant: the region base and the ABI
+    // block, both parameters rather than things this function makes.
+    bool frameless_ = false;
+    uint32_t funcIndex_ = 0;
+    llvm::Value* parentSlots_ = nullptr;
+    llvm::Value* tlsBase_ = nullptr;
     // A dedicated root slot for the inline `new` fast path's fresh instance,
     // live only across each site's constructor call — every site shares it,
     // exactly as the argv region is shared. kNoSlot when the function has no
@@ -157,5 +182,12 @@ private:
     // it is read once rather than per env instruction.
     bool envGuardsElided_ = false;
 };
+
+// The framed entry of a merge target: it allocates the whole region, links it,
+// calls the frameless variant, and unlinks. Byte for byte the prologue and
+// epilogue the body used to carry, which is what makes an ordinary caller —
+// the uniform wrapper, a refused edge — see exactly the function it saw before.
+void emitFrameForwarder(const FunctionEmitter::Context& shared, uint32_t funcIndex,
+                        llvm::Function* entry, llvm::Function* variant);
 
 }  // namespace bronze::codegen_llvm

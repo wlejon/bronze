@@ -146,13 +146,17 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 }
 
 AbiGlobals bindTlsBlock(llvm::IRBuilder<>& builder, const AbiFns& fns) {
-    llvm::Value* base = builder.CreateCall(fns.bronze_tls_block_addr, {}, "tls");
+    return bindTlsBlockAt(builder, builder.CreateCall(fns.bronze_tls_block_addr, {}, "tls"));
+}
+
+AbiGlobals bindTlsBlockAt(llvm::IRBuilder<>& builder, llvm::Value* base) {
     llvm::Type* i8Ty = builder.getInt8Ty();
     auto field = [&](uint64_t off, const char* name) -> llvm::Value* {
         if (off == 0) return base;
         return builder.CreateConstInBoundsGEP1_64(i8Ty, base, off, name);
     };
     AbiGlobals g;
+    g.block_base = base;
     g.bronze_gc_frame_top = field(BRONZE_TLS_FRAME_TOP_OFF, "tls.frame_top");
     g.bronze_exception_cell = field(BRONZE_TLS_EXCEPTION_CELL_OFF, "tls.exc");
     g.bronze_proto_epoch = field(BRONZE_TLS_PROTO_EPOCH_OFF, "tls.epoch");

@@ -18,11 +18,13 @@ constexpr uint32_t kCoffComdatFlag = llvm::COFF::IMAGE_SCN_LNK_COMDAT;
 #include <string>
 #include <vector>
 
+#include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_backend.h"
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_env.h"
+#include "codegen-llvm/llvm_frame.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
 
@@ -503,6 +505,164 @@ TEST_CASE("storage alias families are assigned by pointer provenance") {
     CHECK(noaliasNames(*tableLoad, "StackFrame"));
     CHECK(noaliasNames(*heapLoad, "StackFrame"));
     CHECK(noaliasNames(*heapLoad, "ModuleTables"));
+}
+
+TEST_CASE("a frameless variant's region and block parameters carry the storage they name") {
+    llvm::LLVMContext ctx;
+    llvm::Module m("region_alias_test", ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    // (region, tls, an ordinary pointer). The third is the control: a pointer
+    // parameter says nothing about its storage unless the variant's convention
+    // says what it is.
+    auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {ptrTy, ptrTy, ptrTy}, false);
+    auto* fn = llvm::Function::Create(fnTy, llvm::GlobalValue::InternalLinkage, "f.inl", m);
+    fn->addParamAttr(0, llvm::Attribute::get(ctx, codegen_llvm::kRegionParamAttr));
+    fn->addParamAttr(1, llvm::Attribute::get(ctx, codegen_llvm::kTlsParamAttr));
+
+    llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", fn);
+    llvm::IRBuilder<> b(bb);
+    auto* slotStore = b.CreateAlignedStore(
+        b.getInt64(7), b.CreateConstInBoundsGEP1_32(i64Ty, fn->getArg(0), 2), llvm::Align(8));
+    auto* cellLoad = b.CreateAlignedLoad(
+        i64Ty,
+        b.CreateConstInBoundsGEP1_64(b.getInt8Ty(), fn->getArg(1), BRONZE_TLS_EXCEPTION_CELL_OFF),
+        llvm::Align(8));
+    auto* strangerLoad = b.CreateAlignedLoad(i64Ty, fn->getArg(2), llvm::Align(8));
+    b.CreateRetVoid();
+
+    codegen_llvm::tagStackAndControlAccesses(m, /*tlsFn=*/nullptr);
+
+    // The claim the split has to keep: a slot reached through the region is the
+    // same stack storage it was when the frame was the function's own, so it
+    // still does not alias the control word beside it.
+    CHECK(scopeNameOf(*slotStore) == "StackFrame");
+    CHECK(scopeNameOf(*cellLoad) ==
+          "TlsWord." + std::to_string(BRONZE_TLS_EXCEPTION_CELL_OFF / 8));
+    CHECK(scopeNameOf(*strangerLoad).empty());
+    CHECK(noaliasNames(*slotStore, scopeNameOf(*cellLoad)));
+}
+
+// ---- the region plan (llvm_frame.h) ----------------------------------------
+
+namespace {
+
+// One IL function that needs a root slot: a Dynamic parameter is pinned, so
+// `planFrame` gives it a slot and the function has a frame to merge.
+il::Function envTakingFunction(const std::string& name) {
+    il::Function fn;
+    fn.name = name;
+    fn.params = {{"__env", il::Type::Dynamic}};
+    fn.needsEnv = true;
+    fn.returnType = il::Type::Dynamic;
+    fn.valueCount = 2;
+    il::Instruction ret;
+    ret.op = il::Op::Ret;
+    ret.type = il::Type::Dynamic;
+    ret.result = il::kNoValue;
+    ret.operands = {0};
+    fn.blocks = {{0, {}, {ret}}};
+    return fn;
+}
+
+// A sibling-closure edge from `fn` to function index `callee`, prepended to the
+// body so the `Ret` stays last.
+void addClosureEdge(il::Function& fn, uint32_t callee) {
+    il::Instruction call;
+    call.op = il::Op::Call;
+    call.type = il::Type::Dynamic;
+    call.result = fn.valueCount++;
+    call.operands = {0};
+    call.calleeIndex = callee;
+    call.callEnvHops = 0;
+    fn.blocks[0].instructions.insert(fn.blocks[0].instructions.begin(), call);
+}
+
+std::vector<codegen_llvm::FramePlan> planAll(const il::Module& module) {
+    std::vector<codegen_llvm::FramePlan> plans;
+    for (const il::Function& fn : module.functions) {
+        plans.push_back(codegen_llvm::planFrame(fn, /*moduleHasNewTarget=*/false));
+    }
+    return plans;
+}
+
+}  // namespace
+
+TEST_CASE("a chain of inline edges nests into one frame, sized by the deepest region") {
+    if (codegen_llvm::frameMergeDisabled()) return;
+    il::Module module;
+    module.functions.push_back(envTakingFunction("leaf"));
+    module.functions.push_back(envTakingFunction("mid"));
+    module.functions.push_back(envTakingFunction("top"));
+    addClosureEdge(module.functions[1], 0);
+    addClosureEdge(module.functions[2], 1);
+
+    const std::vector<codegen_llvm::FramePlan> plans = planAll(module);
+    const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
+
+    CHECK(regions.isMerged(2, 1));
+    CHECK(regions.isMerged(1, 0));
+    CHECK(regions.isMergeTarget[0]);
+    CHECK(regions.isMergeTarget[1]);
+    // Nothing calls `top`, so nothing ever enters it frameless.
+    CHECK_FALSE(regions.isMergeTarget[2]);
+    // The chain is three frames deep and becomes one, sized for all three.
+    CHECK(regions.totalSlots[0] == plans[0].ownSlots);
+    CHECK(regions.totalSlots[1] == plans[1].ownSlots + plans[0].ownSlots);
+    CHECK(regions.totalSlots[2] == plans[2].ownSlots + plans[1].ownSlots + plans[0].ownSlots);
+}
+
+TEST_CASE("two inline edges out of one caller share a region rather than stacking") {
+    if (codegen_llvm::frameMergeDisabled()) return;
+    il::Module module;
+    module.functions.push_back(envTakingFunction("a"));
+    module.functions.push_back(envTakingFunction("b"));
+    module.functions.push_back(envTakingFunction("caller"));
+    addClosureEdge(module.functions[2], 0);
+    addClosureEdge(module.functions[2], 1);
+
+    const std::vector<codegen_llvm::FramePlan> plans = planAll(module);
+    const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
+
+    // Two calls in one caller are sequential and never both in flight, which
+    // is why the region is the MAX of the two and not their sum — the rule the
+    // argv region already runs on.
+    CHECK(regions.totalSlots[2] ==
+          plans[2].ownSlots + std::max(plans[0].ownSlots, plans[1].ownSlots));
+}
+
+TEST_CASE("an inline edge that would close a cycle is refused") {
+    if (codegen_llvm::frameMergeDisabled()) return;
+    il::Module module;
+    module.functions.push_back(envTakingFunction("ping"));
+    module.functions.push_back(envTakingFunction("pong"));
+    addClosureEdge(module.functions[0], 1);
+    addClosureEdge(module.functions[1], 0);
+
+    const std::vector<codegen_llvm::FramePlan> plans = planAll(module);
+    const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
+
+    // A region contains what nests inside it, and a recursive nest has no
+    // finite size — so exactly one of the two edges survives and the other
+    // site keeps the shape it had before regions existed.
+    CHECK((regions.isMerged(0, 1) != regions.isMerged(1, 0)));
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        CHECK(regions.totalSlots[i] <= plans[0].ownSlots + plans[1].ownSlots);
+    }
+}
+
+TEST_CASE("a direct self-call is never a region") {
+    if (codegen_llvm::frameMergeDisabled()) return;
+    il::Module module;
+    module.functions.push_back(envTakingFunction("rec"));
+    addClosureEdge(module.functions[0], 0);
+
+    const std::vector<codegen_llvm::FramePlan> plans = planAll(module);
+    const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
+    CHECK_FALSE(regions.isMerged(0, 0));
+    CHECK_FALSE(regions.isMergeTarget[0]);
+    CHECK(regions.totalSlots[0] == plans[0].ownSlots);
 }
 
 // ---- the environment access-guard elision (llvm_env.h) ----------------------
