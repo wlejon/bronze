@@ -152,6 +152,10 @@ private:
     // inlined guard or a cell test split off, and a continuation is not an
     // IL block at all.
     size_t currentILBlock_ = 0;
+    // Whether this module drops the environment-record ACCESS guards
+    // (llvm_env.h, `envAccessGuardsElided`). A property of the invocation, so
+    // it is read once rather than per env instruction.
+    bool envGuardsElided_ = false;
 };
 
 }  // namespace bronze::codegen_llvm

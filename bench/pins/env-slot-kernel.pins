@@ -9,3 +9,19 @@ function WebGLState.currentSrc: number
 function WebGLState.currentDst: number
 function WebGLState.currentProgram: number
 function WebGLState.currentDepth: number
+
+# The signatures. Stage 3.3 measured these as a small REGRESSION here (59.16 ->
+# 60.78) and left them out: they turn each compare into one fcmp on two
+# doubles, but a sibling CLOSURE call has no method site to make direct, so
+# each parameter also bought an inlined ToNumber in the wrapper for a win the
+# guarded body could not collect. Stage 3.4's storage alias families changed
+# that arithmetic — the wrapper's ToNumber is now hoisted out of the loop with
+# the rest of the control words — and the same declarations pay: 58.38 -> 56.38
+# ns/iter, reproduced with the columns swapped (58.54 -> 56.38), checksum
+# 126000020 in every row. Which way this goes is a property of what else the
+# body costs, so it is re-measured whenever the body changes, never assumed.
+param setBlending(blending): number
+param setBlending(src): number
+param setBlending(dst): number
+param useProgram(program): number
+param setDepthFunc(depthFunc): number

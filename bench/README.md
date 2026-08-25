@@ -98,6 +98,188 @@ node bench/typed_array_loop.js
 
 ## The Benchmark Log
 
+### Campaign summary — stage 3, codegen consumes pins (3.1 → 3.4)
+
+> [!IMPORTANT]
+> **The ladder, `bench/mat4_kernel*.js`, ns/call by two-count wall delta over
+> 18e6 calls, checksums `400000 / 940000` in every row including node's:**
+>
+> | | ns/call | what moved |
+> |---|---|---|
+> | before the campaign | **196.9** | boxed everything |
+> | 3.1 pin manifest (`033f4f3`, `c9083b6`) | **27.6** | pinned element form, unguarded f64 arithmetic |
+> | 3.2 nullish pins + env-slot typing (`2999b39`) | 27.6 | no move here; this kernel has no nullish and no env slots |
+> | 3.3 typed calling convention (`408d13e`) | **25.05** | direct method edge + typed entry + LLVM inlining |
+> | 3.4 storage alias families (this stage) | **23.42** | the guards LLVM was re-testing now fold |
+> | node v24.2.0, same method | **14.20** | re-measured; Stage 3.3 quoted 15.7 on a busier box |
+>
+> **8.4× against where the campaign started, 7.0× against a default build of
+> the same compiler today, and 1.65× off node on this kernel.**
+> The pre-registered ≤ 20 ns target was NOT reached, and stage 3.4's diagnosis
+> is why: after the alias fix the guards that remain on this kernel are worth
+> about **1 ns in total**, measured by removing them (below). The gap to node
+> is no longer guards and no longer call boundaries. Both were measured and
+> both are spent.
+>
+> **Per fixture, default against `--pins bench/pins/threejs-math.pins`, one
+> interleaved session, raw wall medians of 9 (a bronze exe's process floor on
+> this box is 5.62 ms, node's is 32.34 ms — subtract the right one before
+> comparing across engines; never compare these absolutes to an earlier
+> entry's, which carry a different floor):**
+>
+> | fixture | default | `--pins` | delta | node |
+> |---|---:|---:|---:|---:|
+> | `three_math` | 41.65 | **21.86** | −19.80 | 50.07 |
+> | `object_graph` | 46.71 | 47.42 | +0.72 | 69.88 |
+> | `typed_array_crunch` | 53.13 | 51.99 | −1.14 | 56.04 |
+> | `mesh_churn_2k` | 74.42 | 72.37 | −2.05 | 89.27 |
+> | `instanced_mesh_churn` | 110.73 | 104.62 | −6.10 | 95.82 |
+> | `fib` | 10.97 | 10.12 | −0.86 | 41.35 |
+> | `numeric_loop` | 35.14 | 34.56 | −0.58 | 65.03 |
+> | `property_access` | 11.43 | 10.41 | −1.01 | 37.49 |
+> | `proto_dispatch` | 21.84 | 20.83 | −1.00 | 37.07 |
+> | `proto_dispatch_churn` | 53.19 | 54.33 | +1.14 | 40.18 |
+> | `typed_array_loop` | 29.61 | 28.57 | −1.05 | 42.47 |
+>
+> All eleven produce output **byte-identical** under default, under `--pins`,
+> and under node (`cmp` on 33 captured stdouts, 22 comparisons, no diff). A manifest that
+> names nothing a fixture uses still costs it nothing measurable; `object_graph`
+> and `proto_dispatch_churn` are the two that read +1 ms, which is the run-to-run
+> width on those two, not a regression the IL shows.
+>
+> **Kernels, three columns, same session:**
+>
+> | kernel | default | `--pins` | node v24.2.0 | checksums |
+> |---|---:|---:|---:|---|
+> | `mat4_kernel` | 164.43 | **23.42** | 14.20 | `400000 / 940000` |
+> | `env_slot_kernel` | 58.47 | **56.70** | 5.05 | `126000020` |
+> | `nullish_pin_kernel` | 37.72 | **12.77** | 5.32 | `825756/700159/NaN/-563350` |
+> | `call_chain_kernel` chained/flat | 23.75 / 20.50 (ratio 1.16) | **20.00 / 18.25 (ratio 1.08)** | 1.88 / 1.88 (1.00) | `296000000 / 296000000` |
+>
+> Reproduce. Every kernel number above is a two-count wall delta — the big
+> fixture minus its small twin, which cancels process startup exactly — taken
+> INTERLEAVED, one run of every column per round, medians across 13 rounds, so
+> a drift in machine state lands on every column equally:
+> ```
+> bronze build bench/mat4_kernel.js        -o mat4_pin_b.exe --pins bench/pins/threejs-math.pins
+> bronze build bench/mat4_kernel_small.js  -o mat4_pin_s.exe --pins bench/pins/threejs-math.pins
+> # ns/call = (median(mat4_pin_b) - median(mat4_pin_s)) * 1e6 / 18000000
+> ```
+> `env_slot_kernel` and `nullish_pin_kernel` have no committed small twin; the
+> second count is the same file with `ITERS` divided by ten (6000000 → 600000
+> and 8000000 → 800000), so the deltas are 5.4e6 iterations and 4 × 7.2e6
+> steps. `call_chain_kernel` times its two loops IN PROCESS and is quoted raw.
+> The automated runner never invokes node; the node column above is a manual
+> out-of-band run, `node bench/<fixture>.js`, and is here for the checksum
+> first and the millisecond second.
+
+- **Stage 3.4 (guard elision + integration)** — 2026-08-25:
+  > [!NOTE]
+  > **The stage was chartered to elide guards and instead found that LLVM was
+  > already willing to.** The step-1 diagnosis, read off the IR through the new
+  > `BRONZE_DUMP_LLVM_IR=<prefix>` seam (`llvm_backend.cpp`, writes
+  > `<prefix>.pre.ll` and `<prefix>.post.ll` around the O3 pipeline), found the
+  > inlined `Matrix4.multiplyMatrices` loop in `mat4_kernel` at **808 hot-path
+  > instructions for 116 flops** — 65 `fmul` + 51 `fadd`, against 142 loads,
+  > 167 GEPs and 28 guard branches over 40 blocks. The 28: eight `pending`
+  > exception checks, ~5 direct-method guards, ~10 static-slot receiver
+  > guards, 3 element guards, 1 dynamic-add, 1 loop condition.
+  >
+  > Every one of those eight `pending` loads sat immediately after a store of
+  > the form `store i64 %prop.i, ptr %197` — **a GC root slot store into an
+  > escaped alloca carrying no alias metadata at all**. The frame is published
+  > to the TLS chain, so the alloca escapes, so that store may-aliases every
+  > cached control word behind it, so nothing loaded once survived to the next
+  > site and no guard over one could be folded into the guard before it. None
+  > of the four hypotheses this stage was handed was the cause: the element
+  > `head`/`elems` loads were already CSE'd correctly (one `pel.head` and one
+  > `pel.elems` feeding sixteen raw loads), and the shape loads' problem was
+  > the same clobber, not a missing `!invariant.load`.
+  >
+  > **The fix is metadata, not elision** (`src/codegen-llvm/llvm_alias.cpp`,
+  > new): two storage alias families assigned by POINTER PROVENANCE after the
+  > TLS-fetch rewrite — `StackFrame` for allocas, `ModuleTables` for the twelve
+  > named `__bronze_*` globals, and the TLS block split **per eight-byte word**,
+  > because the frame link and the exception cell are adjacent and after
+  > inlining two copies of a body reach them through two phis BasicAA cannot
+  > relate. Provenance never walks through an `inttoptr`, which is what keeps
+  > the JS heap out of these families; heap accesses keep the emitter's six
+  > scopes and merely gain the storage families in their `!noalias`.
+  > `BRONZE_NO_STORAGE_ALIAS=1` is the A/B seam.
+  >
+  > **Kernel (two-count wall delta, 18e6 calls, checksums 400000 / 940000; the
+  > four `--pins` rows are the full 2×2 of the stage's two seams, taken
+  > interleaved so they are comparable to each other):**
+  > - default, no manifest **164.43**
+  > - `--pins`, alias off, elision off **25.05** — Stage 3.3's configuration,
+  >   reproducing that entry's 25.05 to the digit, which is what licenses
+  >   reading the rest of this table against it
+  > - `--pins`, alias off, elision on **27.23**
+  > - `--pins`, alias on, elision on **25.40**
+  > - **`--pins`, shipped (alias on, elision off) 23.52** (23.42 in the
+  >   three-column sweep above); node v24.2.0 **14.20**
+  >
+  > Read the 2×2 as two independent effects, because that is what it is: the
+  > alias families are worth **−1.53 ns** with elision off and **−1.83 ns**
+  > with it on, and env elision **COSTS +2.18 ns** with the alias families off
+  > and **+1.88 ns** with them on. On this kernel the environment guards are
+  > not a tax at all — they are loads LLVM has already hoisted out of the loop,
+  > and deleting them takes their anchored values with them. That is the reason
+  > elision ships as a seam rather than a default.
+  >
+  > **The measured negatives are worth more than the positive, and they close
+  > the ≤ 20 ns question.** Each was a throwaway seam, built to be measured and
+  > then deleted; they were taken on the stage's intermediate build, so read the
+  > deltas and not the absolutes:
+  > - every exception check removed: 23.5 → **22.9** (0.6 ns of 23.5)
+  > - NaN canonicalization on stores removed: **no win** (23.9)
+  > - GC root frame stores and reloads removed entirely: **no win** (23.7)
+  > - environment access guards elided on this kernel: **costs 1.9 ns**
+  >
+  > So the guards on `mat4_kernel` are worth about 1 ns in total once they stop
+  > clobbering each other, and **the pre-registered ≤ 20 ns target is not
+  > reachable by guard elision at all**. The third row is the one to carry
+  > forward: it prices the GC door that Stage 3.3 left open ("receivers stay
+  > boxed because `planRootFrame` only roots `Dynamic`") at approximately zero
+  > on this shape. Rooting non-Dynamic slots may still be worth doing for
+  > reasons of its own; buying speed is no longer one of them.
+  >
+  > **Entry-guard-licensed interior elision was NOT built, deliberately.** The
+  > two interior guards it would have removed from this kernel are worth
+  > ~0.2–0.3 ns by the same measurement. The machinery is a dual-body scheme;
+  > the payoff does not exist.
+  >
+  > **Environment access-guard elision shipped as a seam, OFF by default**
+  > (`BRONZE_ELIDE_ENV_GUARDS=1`, `llvm_env.cpp envAccessGuardsElided()`,
+  > `emitEnvSlotPtrUnguarded`). It is real — `env_slot_kernel` **56.41 → 51.45**
+  > ns/iter (−8.8%, checksum `126000020` both), `typed_array_crunch` 51.67 →
+  > **45.42** ms, `three_math` −0.76, `instanced_mesh_churn` −0.76 — but it is
+  > not uniformly real: `object_graph` +0.86, `proto_dispatch_churn` +0.47,
+  > `mesh_churn_2k` +0.26, and `mat4_kernel` **+1.9**. The guards it removes are
+  > lowering-bug TRIPWIRES, not semantics (the rationale block in
+  > `llvm_env.cpp` is updated, not deleted), so a default build keeps them and
+  > the fixtures that would pay for them are the minority. Output stays
+  > byte-identical to the default build on all six fixtures A/B'd above. Full
+  > suite green **29/29 with no flags AND 29/29 with
+  > `BRONZE_ELIDE_ENV_GUARDS=1`**.
+  >
+  > **`bench/pins/env-slot-kernel.pins` gains the five signature pins Stage 3.3
+  > correctly left out.** That entry measured them as a regression
+  > (59.16 → 60.78) because the wrapper's per-argument `ToNumber` bought a win
+  > the guarded body could not collect. The alias families changed that
+  > arithmetic — the `ToNumber` hoists out of the loop with the rest of the
+  > control words — and the same declarations now pay **58.38 → 56.38**
+  > ns/iter, reproduced with the columns swapped (58.54 → 56.38), checksum
+  > `126000020` in every row. Which way this goes is a property of what else
+  > the body costs; it is re-measured, never assumed.
+  >
+  > **References held**: `nullish_pin_kernel` **12.77** ns/step (was 12.93);
+  > `call_chain_kernel` **20.00 / 18.25**, ratio **1.08** (was 21.38 / 18.75,
+  > ratio 1.14) against node's 1.00; every pure fixture byte-identical under
+  > default, `--pins`, and node. Absolute millisecond figures in this entry
+  > come from this box in one session and carry a 5.62 ms process floor; they
+  > are not comparable to earlier entries' absolutes, only to each other.
+
 - **Stage 3.3 (typed calling convention)** — 2026-08-24:
   > [!NOTE]
   > **Two declarations and one edge.** `param <owner>(<parameter>): number` and

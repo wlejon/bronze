@@ -813,7 +813,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGet");
             if (!env) return false;
             values_[inst.result] = emitEnvGet(builder_, abi, shared_.tables, env, inst.envDepth,
-                                              inst.envIndex, /*tdz=*/false, inst.keyIndex);
+                                              inst.envIndex, /*tdz=*/false, inst.keyIndex,
+                                              envGuardsElided_);
             return true;
         }
         case il::Op::EnvGetTdz: {
@@ -821,7 +822,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* env = operand(inst, 0, "Undefined environment in EnvGetTdz");
             if (!env) return false;
             values_[inst.result] = emitEnvGet(builder_, abi, shared_.tables, env, inst.envDepth,
-                                              inst.envIndex, /*tdz=*/true, inst.keyIndex);
+                                              inst.envIndex, /*tdz=*/true, inst.keyIndex,
+                                              envGuardsElided_);
             return true;
         }
         // The marker goes in as a plain constant: it has no helper of its own,
@@ -841,7 +843,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* env = operand(inst, 0, "Undefined operand in EnvSet");
             llvm::Value* val = operand(inst, 1, "Undefined operand in EnvSet");
             if (!env || !val) return false;
-            emitEnvSet(builder_, abi, env, inst.envDepth, inst.envIndex, val);
+            emitEnvSet(builder_, abi, env, inst.envDepth, inst.envIndex, val, envGuardsElided_);
             return true;
         }
 

@@ -502,3 +502,16 @@ TEST_CASE("storage alias families are assigned by pointer provenance") {
     CHECK(noaliasNames(*heapLoad, "StackFrame"));
     CHECK(noaliasNames(*heapLoad, "ModuleTables"));
 }
+
+// ---- the environment access-guard elision (llvm_env.h) ----------------------
+
+TEST_CASE("environment access guards are armed unless the seam disarms them") {
+    // The tripwires are on in every build this suite runs, which is the
+    // property that matters: a lowering bug meets them here. The elided shape
+    // is covered by running the correctness suites under
+    // BRONZE_ELIDE_ENV_GUARDS=1, not by flipping a process-wide seam inside
+    // one test and deciding the answer for every other test in this binary.
+    CHECK(codegen_llvm::envAccessGuardsElided() ==
+          (std::getenv("BRONZE_ELIDE_ENV_GUARDS") != nullptr &&
+           std::string(std::getenv("BRONZE_ELIDE_ENV_GUARDS")) == "1"));
+}

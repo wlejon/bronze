@@ -8,6 +8,7 @@
 #include <llvm/IR/Type.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_prop.h"
 
 namespace bronze::codegen_llvm {
@@ -35,7 +36,8 @@ FunctionEmitter::FunctionEmitter(const Context& shared, const il::Function& func
       values_(func.valueCount, nullptr),
       propGetKey_(func.valueCount, UINT32_MAX),
       funcRefIndex_(func.valueCount, UINT32_MAX),
-      slotOf_(func.valueCount, kNoSlot) {}
+      slotOf_(func.valueCount, kNoSlot),
+      envGuardsElided_(envAccessGuardsElided()) {}
 
 bool FunctionEmitter::require(bool condition, const char* message) {
     if (condition) return true;

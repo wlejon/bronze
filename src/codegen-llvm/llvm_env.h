@@ -18,15 +18,23 @@
 
 namespace bronze::codegen_llvm {
 
+// Whether this build drops the ACCESS guards — the object tag, the Env brand
+// and the slot-range test that `emitEnvSlotPtr` re-derives at every access.
+// Off unless BRONZE_ELIDE_ENV_GUARDS=1; llvm_env.cpp has what they are, what
+// licenses dropping them, and the measurement that kept it a flag. The TDZ
+// test is NOT one of them and is never dropped: it is 9.1.1.1.6, not a
+// tripwire.
+bool envAccessGuardsElided();
+
 // Emits an environment slot read and returns its i64 (NaN-boxed) result.
 // With `tdz` set, a slot still holding the uninitialized marker takes the
 // helper path, which raises the ReferenceError `keyIndex` names.
 llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
-                        uint32_t index, bool tdz, uint32_t keyIndex);
+                        uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards);
 
 // Emits an environment slot write.
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                uint32_t depth, uint32_t index, llvm::Value* valBits);
+                uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards);
 
 }  // namespace bronze::codegen_llvm
