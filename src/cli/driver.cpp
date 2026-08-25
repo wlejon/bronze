@@ -406,6 +406,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)emitShared;
     (void)retainFnSource;
     (void)importMapPath;
+    (void)assumeNoBigInt;
     (void)pinsPath;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;

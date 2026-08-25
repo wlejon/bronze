@@ -56,7 +56,7 @@ public:
             bool assumeNoBigInt = false,
             const types::PinManifest* pins = nullptr)
         : astModule_(astModule), diags_(diags), inference_(inference),
-          sources_(sources), stats_(stats), pins_(pins) {
+          pins_(pins), sources_(sources), stats_(stats) {
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
         if (stats_ && sources_) stats_->setSourceSet(sources_);
         typedElemDisabled_ = typedElemSeamDisabled() ||
