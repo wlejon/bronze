@@ -119,6 +119,8 @@ fails at launch with both versions named.
 - [docs/internals.md](docs/internals.md) the pipeline, repository layout,
   inference and `--no-infer` in depth, embedding details, and the iteration
   workflow.
+- [docs/pin-census.md](docs/pin-census.md) `--census`: how a `--pins` manifest
+  gets written by a run of the program instead of by hand.
 - [tests/oracle/README.md](tests/oracle/README.md) how the differential
   suite works and how to add a case.
 
