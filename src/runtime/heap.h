@@ -110,6 +110,28 @@ enum : uint16_t {
     WeakRef,
     FinalizationRegistry,
 
+    // An object's OUT-OF-LINE PROPERTY SLOTS — the block `ObjectHeader::
+    // overflow` names, holding slot `kInlineSlots` and up. Not a JS value and
+    // not reachable as one: exactly one word in the program points at it, and
+    // that word is a field of the object that owns it.
+    //
+    // It nevertheless needs a kind of its own, and the reason is the
+    // collector. A `Tag::Object` header allocated with `flags = 0` is
+    // indistinguishable from a plain object, so a scan that dispatched on
+    // `flags == Plain` to read an object's SHAPE would read a slot block's
+    // first slot as a `Shape*` and chase it. That was harmless while the scan
+    // was uniform over every payload word; it stopped being harmless the
+    // moment the shape decides which words are Values (slot_repr.h).
+    SlotBlock,
+
+    // A flat run of Values that is not an object at all and has no header
+    // fields of its own: an array's ELEMENTS, a Map's entry table. Every word
+    // of one is a Value and the collector traces all of them, which is what it
+    // did when these blocks carried no kind — the kind exists so that they
+    // stop reading as `HeapKind::Plain`, which is now a claim that a `Shape*`
+    // is at offset 8 and that the shape decides which words are Values.
+    ValueBlock,
+
     // Not a kind: how many there are. It exists so that a dispatch which must
     // be TOTAL over the registry can pin the registry's size and break the
     // build when a kind is added. `flags` is a `uint16_t` and this enum is
@@ -295,6 +317,12 @@ private:
     bool ensure_commit(Semispace& space, size_t required_bytes);
     void* allocate_in_space(Semispace& space, size_t bytes);
     void forward_value(Value& val);
+    // The copy phase's scan of ONE plain object: its payload, minus the slots
+    // its shape says hold raw doubles, plus its out-of-line slot block — which
+    // no other pass over to-space touches, because only this object knows
+    // which of that block's words are Values. `ObjectHeader` is forward-
+    // declared here; heap.h cannot see its definition and does not need to.
+    void scan_plain_object(struct ObjectHeader* obj, size_t obj_size);
     void verify_space(const Semispace& space) const;
 
     void* reserved_base_{nullptr};

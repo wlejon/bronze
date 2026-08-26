@@ -136,6 +136,7 @@ by the automated bench runner).
 |---|---|
 | `BRONZE_SHAPE_CENSUS=1` | enable census mode (latch suppression + recording + dump at exit) |
 | `BRONZE_SHAPE_CENSUS_OUT=path` | artifact path, default `bronze_shape_census.json` in the CWD |
+| `BRONZE_SLOT_REPR_CENSUS=1` | the sibling mode: per-(shape, slot) representation stability, printed to stderr at exit. It turns the suppression above on for its own reasons — an inline-cache hit is traffic it has to see — so a run with it set is a census run in every other respect. [docs/slot-representation.md](slot-representation.md) has its report and the R2 number it feeds. |
 
 A human summary (poly-degree histogram, monomorphic-coverage line, top
 functions) is printed to stderr at exit alongside the artifact.

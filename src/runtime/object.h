@@ -9,6 +9,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/profile.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -418,7 +419,42 @@ struct ObjectHeader {
     static ObjectHeader* ensureOverflow(Heap& heap, Rooted<Value>& self, uint32_t needed);
     static ObjectHeader* ensureSlots(Heap& heap, Rooted<Value>& self, uint32_t count);
 
+    // A property slot's value.
+    //
+    // Unchanged by stage R1, and that is the point rather than an oversight. A
+    // double slot holds the double's bits NaN-canonicalized (slot_repr.h), and
+    // bronze boxes a Number as its own bits — so the word in a double slot IS
+    // the boxed Value for that number, and every reader of a slot keeps working
+    // with no test added to the hottest read in the runtime. Stage R2 is where
+    // a reader that KNOWS the representation stops boxing on the way out.
     inline Value getSlot(uint32_t index) const {
+        return rawSlot(index);
+    }
+
+    // A property slot's value, honouring the slot's representation.
+    //
+    // THE CHOKE POINT. Every way a property can be written ends here — the
+    // runtime's own paths by calling it, and generated code's raw stores by
+    // being refused a cache entry that names a double slot (object.cpp's fill
+    // gates, static_shape.cpp, class_family.cpp). That is what makes the
+    // representation a fact about the slot rather than a hope about the writer,
+    // and it is why the check is HERE and not repeated at seventeen call sites.
+    //
+    // Costs a shape with no double slot one load of a word the caller has
+    // usually already touched and one not-taken branch.
+    inline void setSlot(uint32_t index, Value val) {
+        if (BRONZE_UNLIKELY(shape != nullptr && shape->double_slots != 0)) {
+            setSlotWithRepr(index, val);
+            return;
+        }
+        rawSetSlot(index, val);
+    }
+
+    // The bits, with no representation in the question. For the collector, the
+    // slot-block copy in `ensureOverflow`, and the two accessor halves — none
+    // of which is a property write and all of which would be wrong to route
+    // through the generalization above.
+    inline Value rawSlot(uint32_t index) const {
         if (index < kInlineSlots) {
             return slotsData()[index];
         }
@@ -429,7 +465,7 @@ struct ObjectHeader {
         return overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi];
     }
 
-    inline void setSlot(uint32_t index, Value val) {
+    inline void rawSetSlot(uint32_t index, Value val) {
         if (index < kInlineSlots) {
             slotsData()[index] = val;
             return;
@@ -440,6 +476,13 @@ struct ObjectHeader {
         }
         overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi] = val;
     }
+
+    // Out of line, and reached only from a receiver whose shape has at least
+    // one double slot: unbox into the slot, or GENERALIZE it and store the
+    // value as it came. Allocates in the ARENA only (a shape rebuild), never on
+    // the heap — so nothing here can move `this`, which is what lets the
+    // choke point sit inside a raw-pointer store.
+    void setSlotWithRepr(uint32_t index, Value val);
 
     uint32_t overflowCapacity() const noexcept {
         if (!overflow.isPointer()) return 0;

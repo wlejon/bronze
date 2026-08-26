@@ -438,6 +438,29 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * loads. Registration-only, like the two above. */ \
     X(bronze_register_class_family, BRONZE_ABI_VOID, \
       (BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_PU32, BRONZE_ABI_PU32, BRONZE_ABI_MU64)) \
+    /* THE SLOT-REPRESENTATION ELIGIBILITY LIST (stage R1,
+     * src/runtime/slot_repr.h). `fields` is `count` of the module's own key
+     * indices — the property NAMES a `--pins` manifest declared `number` on
+     * some class whose layout this compilation proved — turned into
+     * process-wide ids through `keyMap`, exactly as the family table's names
+     * are, and for the same reason: this call follows the
+     * `bronze_register_key_string` loop.
+     *
+     * It is an ELIGIBILITY list and not a layout claim. What it licenses is
+     * narrow: a shape transition that FIRST installs one of these names, with
+     * a Number in hand, may give that slot the double representation. Nothing
+     * here says a slot IS a double — the shape says that, and the runtime's
+     * generalization takes it back the moment a store contradicts it. So a
+     * name that is pinned on one class and dynamic on another costs at most a
+     * shape split, never a wrong read.
+     *
+     * By NAME rather than by (class, slot) deliberately. The runtime meets a
+     * transition, not a class: `bronze_family_stamp` recognises a class only
+     * after its shape already exists, which is far too late to decide how the
+     * slot is stored. A name list is the fact that is available at the one
+     * moment the decision has to be made. Registration-only. */ \
+    X(bronze_register_slot_repr,  BRONZE_ABI_VOID, \
+      (BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_PU32)) \
     /* One source FILE and the functions written in it, handed over at module
      * init so that 20.2.3.5 Function.prototype.toString can return the source
      * text the spec says it returns rather than "[native code]".
@@ -978,6 +1001,32 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_FAMILY_UNSTAMPED        0
 #define BRONZE_ABI_FAMILY_NONE             1
 #define BRONZE_ABI_FAMILY_FIRST_ID         2
+
+/* Shape::double_slots — the per-slot REPRESENTATION word (stage R1,
+ * runtime/slot_repr.h). Bit N is set when slot N of an object at this shape
+ * holds a double rather than a boxed Value: reading those eight bytes as an
+ * f64 is correct without a tag test, and writing one requires a number.
+ *
+ * A BITMAP on the shape rather than a byte on each node, because both
+ * consumers want the whole answer at once and neither wants a chain walk. The
+ * collector asks "which of this object's slots must I NOT trace" once per
+ * object; a future codegen (stage R2) asks "is the slot this site loads a
+ * double" once per guard, against a word it has already loaded the shape for.
+ * Slots at or above BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT are never given the
+ * representation, so a clear bit is always a truthful "boxed".
+ *
+ * Zero on every shape when BRONZE_NO_SLOT_REPR=1, which is the seam: with it
+ * set no shape node is ever created double and this word is dead. */
+#define BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET 64
+#define BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT  64
+/* Shape::repr — the representation of the ONE slot this node owns, as the
+ * SlotRepr enum spells it (0 boxed, 1 double). Redundant with the bitmap
+ * above and kept anyway: the bitmap is a summary of the whole chain and
+ * cannot say which node introduced a bit, which is what the generalization
+ * rebuild and the census both need. */
+#define BRONZE_ABI_SHAPE_REPR_OFFSET        72
+#define BRONZE_ABI_SLOT_REPR_BOXED           0
+#define BRONZE_ABI_SLOT_REPR_DOUBLE          1
 
 /* FunctionHeader::code — the identity the Math direct-dispatch guard compares
  * (see the bronze_math_* registry entries). Pinned in runtime/fn.cpp. */

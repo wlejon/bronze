@@ -12,6 +12,7 @@
 
 #include <cstdlib>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -583,6 +584,39 @@ void Lowerer::buildClassFamilyTable() {
             }
         }
         ilModule_.classFamilies.push_back(std::move(entry));
+    }
+}
+
+// The property NAMES whose slots the runtime may store as raw doubles.
+//
+// One entry per distinct name, not per (class, field): the runtime's decision
+// point is a shape transition, which knows a key and not a class. What that
+// coarseness can cost is a shape split on an unrelated class that happens to
+// use the same name and store something else there — which the runtime's
+// generalization handles, at the price of one extra shape node. What it must
+// never cost is a wrong read, and it cannot: the shape, not this list, is what
+// says a slot IS a double.
+//
+// The manifest is asked through the same `lookup` a pin barrier and a pinned
+// read use, so a name is eligible exactly when a read of it already spends the
+// pin unchecked. `numeric-elements` and `number-or-nullish` are NOT eligible:
+// the first is a claim about an array the slot points AT, and the second
+// admits `null` and `undefined`, neither of which is a double.
+void Lowerer::buildSlotReprTable() {
+    // Not gated on the runtime seam: BRONZE_NO_SLOT_REPR is read by the
+    // PROGRAM, not by the compiler, so one object file has to A/B both ways.
+    // The runtime declines the registration when the seam is down.
+    if (pins_ == nullptr || inference_ == nullptr) return;
+    std::set<std::string> names;
+    for (const types::ClassLayout& cl : inference_->classLayouts.all()) {
+        if (!cl.layoutProven) continue;
+        for (const std::string& field : cl.fields) {
+            const types::PinKind* kind = pins_->lookup(cl.name, field);
+            if (kind != nullptr && *kind == types::PinKind::Number) names.insert(field);
+        }
+    }
+    for (const std::string& name : names) {
+        ilModule_.slotReprFields.push_back(getKeyConstantIndex(name));
     }
 }
 

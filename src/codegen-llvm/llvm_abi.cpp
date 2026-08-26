@@ -294,6 +294,14 @@ ModuleTables createModuleTables(llvm::Module& llvmModule, llvm::LLVMContext& ctx
                                          "__bronze_static_shapes", 8);
     }
 
+    tables.slotReprFieldCount = static_cast<uint32_t>(module.slotReprFields.size());
+    if (tables.slotReprFieldCount > 0) {
+        tables.slotReprFields = createTable(
+            llvmModule, llvm::ArrayType::get(i32Ty, module.slotReprFields.size()),
+            llvm::ConstantDataArray::get(ctx, module.slotReprFields), "__bronze_repr_fields", 4);
+        tables.slotReprFields->setConstant(true);
+    }
+
     tables.familyClassCount = static_cast<uint32_t>(module.classFamilies.size());
     if (tables.familyClassCount > 0) {
         std::vector<uint32_t> classRows;

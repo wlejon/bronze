@@ -106,12 +106,12 @@ Value aRegExp() {
 // compiler checks can prove that switch total — and `hasOwnProperty` is now
 // reachable from EVERY receiver, so a kind with no arm there is a receiver
 // those clauses cannot answer about.
-static_assert(HeapKind::Count == 18,
+static_assert(HeapKind::Count == 20,
               "a HeapKind was added or removed: give it an arm in the own-property switch in "
               "builtin_object_proto.cpp, and a receiver in the subcases below — unless it is "
               "a kind no program can hold (an environment record, an iteration record, a "
-              "private-element table), which the switch refuses by name and which therefore "
-              "has no receiver to test.");
+              "private-element table, an object's slot block), which the switch refuses by "
+              "name and which therefore has no receiver to test.");
 
 TEST_CASE("a receiver with no shape still reaches Object.prototype") {
     ShadowStackFrame frame;

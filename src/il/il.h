@@ -852,6 +852,21 @@ struct Module {
         std::vector<ClassFamilyField> fields;
     };
     std::vector<ClassFamilyEntry> classFamilies;
+    // THE SLOT-REPRESENTATION ELIGIBILITY LIST (stage R1,
+    // src/runtime/slot_repr.h): indices into `keyConstants` naming the property
+    // names a `--pins` manifest declared `number` on some class this
+    // compilation proved a layout for. The runtime is told them at module init
+    // and uses them for one decision — whether a shape transition that FIRST
+    // installs such a name, with a Number in hand, may store the slot as a raw
+    // double instead of a boxed Value.
+    //
+    // NAMES and not (class, slot) pairs: the runtime meets a transition long
+    // before it can recognise a class, and the name is the only fact available
+    // at the moment the storage decision has to be made. Over-application is
+    // sound — the runtime generalizes a slot whose promise a store breaks — so
+    // a name shared with an unpinned class costs a shape split at worst.
+    // Empty without a manifest, and empty under BRONZE_NO_SLOT_REPR=1.
+    std::vector<uint32_t> slotReprFields;
     // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
     // entry per site lowering created, handed to the runtime at module init so
     // that a site the run never reaches is still known — "never observed" and

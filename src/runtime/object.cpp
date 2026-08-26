@@ -5,8 +5,68 @@
 #include "runtime/accessor.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/rt_state.h"
+#include "runtime/slot_repr.h"
 
 namespace bronze {
+
+// The out-of-line half of `setSlot`, and the whole of what stage R1 does to a
+// store. Two outcomes, and the second is the one the design turns on:
+//
+//   the value is a Number  -> it goes in as a canonical double. Same eight
+//                             bytes a box would have written, so nothing that
+//                             reads the slot without asking about the
+//                             representation is disturbed.
+//
+//   anything else          -> the claim was wrong for THIS object, so the
+//                             object leaves the shape that made it. Shape
+//                             nodes are immutable, so every other object at the
+//                             old shape still holds a double there and is not
+//                             touched; compiled guards keyed on the old shape
+//                             simply stop matching for this one. That is
+//                             invalidation without deopt, which is the only
+//                             kind bronze has.
+//
+// The rebuild allocates in the arena and never on the heap, so `this` cannot
+// move under it and the caller's raw pointer stays good.
+void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
+    if (!shape->slotIsDouble(index)) {
+        rawSetSlot(index, val);
+        return;
+    }
+    if (BRONZE_LIKELY(slotReprAcceptsValue(val))) {
+        ++runtime::slotReprMutableCounters().double_stores;
+        rawSetSlot(index, slotReprCanonicalize(val));
+        return;
+    }
+    shape = Shape::withSlotBoxed(runtime::rtArena(), shape, index);
+    rawSetSlot(index, val);
+}
+
+// What representation a store that CREATES a property should ask the transition
+// tree for. Everything here is a condition the double edge would otherwise have
+// to be sound without:
+//
+//   - the seam is on, and the key is one the pins manifest made eligible
+//     (slot_repr.h). An unpinned name has no promise behind it, so its slot
+//     stays boxed unless BRONZE_SLOT_REPR_OBSERVED says otherwise.
+//   - the value in hand is a Number. A double slot born from an `undefined`
+//     initialization would generalize on its very first real store.
+//   - a plain, enumerable, writable, configurable DATA property. The other
+//     shapes of property are rare, their slots are not what this stage is
+//     about, and each of them is a case the generalization rebuild would have
+//     to be re-argued for.
+static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, bool accessor,
+                                bool writable, bool configurable) {
+    if (accessor || !enumerable || !writable || !configurable) return SlotRepr::Boxed;
+    if (!runtime::slotReprEnabled()) return SlotRepr::Boxed;
+    if (!slotReprAcceptsValue(val)) return SlotRepr::Boxed;
+    if (!runtime::slotReprEligible(key)) {
+        ++runtime::slotReprMutableCounters().refused_ineligible;
+        return SlotRepr::Boxed;
+    }
+    return SlotRepr::Double;
+}
 
 // Starts at 1 so that a zero-initialized IC entry — which is what the table
 // in a freshly loaded object file is — can never read as "filled at the
@@ -102,11 +162,20 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
         new_cap *= 2;
     }
     HeapObjectHeader* block = heap.allocate(new_cap * sizeof(Value), Tag::Object);
+    // A kind of its own, and not the zero `Heap::allocate` leaves behind: the
+    // collector dispatches on this word to decide whether a header's payload is
+    // an object's (whose shape says which slots are doubles) — and a block that
+    // read back as `HeapKind::Plain` would have its first SLOT read as a
+    // `Shape*`. See HeapKind::SlotBlock.
+    block->flags = HeapKind::SlotBlock;
     obj = self.get().asObject<ObjectHeader>();
 
     Value* slots = block->payload<Value>();
     uint32_t i = 0;
     if (obj->overflow.isPointer()) {
+        // A raw copy, deliberately not a slot-by-slot `setSlot`: the bits in
+        // the old block are already in the representation the shape names, and
+        // growing storage changes no property's representation.
         Value* old_slots = obj->overflow.asObject<HeapObjectHeader>()->payload<Value>();
         for (; i < cap; ++i) {
             slots[i] = old_slots[i];
@@ -380,8 +449,11 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         live->shape = next;
         // Refill rather than leave alone: the bump above (or an epoch the
         // entry outlived) would otherwise expire an entry that has just
-        // proven itself.
-        if (!runtime::censusFillsSuppressed()) ic->fill(next, slot, /*depth=*/0);
+        // proven itself. Not for a double slot, for the reason the slow
+        // path's fill below states.
+        if (!runtime::censusFillsSuppressed() && !next->slotIsDouble(slot)) {
+            ic->fill(next, slot, /*depth=*/0);
+        }
         live->setSlot(slot, val.get());
         return live;
     }
@@ -418,7 +490,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (refused) *refused = SetRefusal::NotWritable;
             return this;
         }
-        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
+            !shape->slotIsDouble(own.slot)) {
             ic->fill(shape, own.slot, /*depth=*/0);
         }
         setSlot(own.slot, val.get());
@@ -504,12 +577,22 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // `new Point(x, y)` in a loop from invalidating the whole program's
         // proto caches.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
-        Shape* next_shape =
-            shape->addProperty(arena, heap, key, new_slot, enumerable, /*is_accessor=*/false,
-                               writable, configurable);
+        Shape* next_shape = shape->addProperty(
+            arena, heap, key, new_slot, enumerable, /*is_accessor=*/false, writable, configurable,
+            desiredSlotRepr(prop_name, val.get(), enumerable, /*accessor=*/false, writable,
+                            configurable));
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
-        if (ic && !runtime::censusFillsSuppressed()) ic->fill(next_shape, new_slot, /*depth=*/0);
+        // A set-site entry is what generated code's inline store paths consume,
+        // and those store the value's bits with no question asked about the
+        // slot. Refusing the fill for a double slot is therefore not an
+        // optimization decision but the other half of the choke point: with no
+        // entry to hit, every write to this slot arrives at `setSlot` and the
+        // representation stays true. Stage R2 teaches the store path the
+        // representation and this refusal lifts.
+        if (ic && !runtime::censusFillsSuppressed() && !next_shape->slotIsDouble(new_slot)) {
+            ic->fill(next_shape, new_slot, /*depth=*/0);
+        }
     }
     live->setSlot(new_slot, val.get());
     return live;

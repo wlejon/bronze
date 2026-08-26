@@ -10,6 +10,13 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
                                        uint32_t arity, uint32_t function_flags) {
     size_t payload_bytes = sizeof(FunctionHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
+    // HERE, and not at the four call sites that used to do it after this
+    // returns. `Heap::allocate` leaves `flags` zero, which reads as
+    // `HeapKind::Plain` — and the collector now takes a plain header at its
+    // word: it reads a `Shape*` at offset 8, which for this layout is the
+    // `code` pointer. The window was only ever as wide as the caller's next
+    // few lines; it is now not a window at all.
+    raw_hdr->flags = HeapKind::Function;
     auto* fn = reinterpret_cast<FunctionHeader*>(raw_hdr);
     fn->code = code;
     fn->env_record = env_record;

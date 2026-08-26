@@ -33,7 +33,13 @@ TEST_CASE("heap virtual allocation and low memory address reservation") {
     CHECK(heap.committed_size() >= 64 * 1024);
     CHECK(heap.used_size() == 0);
 
+    // Every hand-built Tag::Object block in this file is a flat run of Values
+    // and not an `ObjectHeader`, so it says `ValueBlock` rather than leaving
+    // `flags` at the zero that reads as `HeapKind::Plain` — which the collector
+    // now takes at its word, reading a `Shape*` out of the first payload word
+    // (heap.cpp, scan_plain_object).
     auto* obj1 = heap.allocate(16, Tag::Object);
+    obj1->flags = HeapKind::ValueBlock;
     CHECK(obj1 != nullptr);
     CHECK(obj1->tag == static_cast<uint16_t>(Tag::Object));
     CHECK(obj1->size >= 24);
@@ -62,7 +68,7 @@ TEST_CASE("bump allocator auto commits pages and triggers collection hook") {
     size_t initial_committed = heap.committed_size();
 
     for (int i = 0; i < 2000; ++i) {
-        heap.allocate(64, Tag::Object);
+        heap.allocate(64, Tag::Object)->flags = HeapKind::ValueBlock;
     }
 
     CHECK(heap.committed_size() > initial_committed);
@@ -138,6 +144,7 @@ TEST_CASE("rooted handle slot modification and garbage collector mutation simula
     ShadowStackFrame frame;
 
     auto* raw_obj = heap.allocate(16, Tag::Object);
+    raw_obj->flags = HeapKind::ValueBlock;
     Value initial_val = Value::fromObject(raw_obj->payload());
 
     Rooted<Value> root(heap, initial_val);
@@ -155,6 +162,7 @@ TEST_CASE("rooted handle slot modification and garbage collector mutation simula
     CHECK(*frame.roots()[0] == Value::fromBool(true));
 
     auto* new_raw_obj = heap.allocate(32, Tag::Object);
+    new_raw_obj->flags = HeapKind::ValueBlock;
     Value relocated_val = Value::fromObject(new_raw_obj->payload());
     *root.slot_ptr() = relocated_val;
 
@@ -216,6 +224,7 @@ TEST_CASE("semispace copying collection reclaims unrooted memory and relocates r
     CHECK(rootS2.get().isString());
 
     auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    raw_obj->flags = HeapKind::ValueBlock;
     Value* slots = raw_obj->payload<Value>();
     slots[0] = rootS2.get();
     slots[1] = Value::fromDouble(999.888);
@@ -255,6 +264,7 @@ TEST_CASE("heap verify passes a clean heap and keeps it live across collections"
     Rooted<Value> str(heap, Value::fromString(StringHeader::createFromUTF8(heap, "verify_me")));
 
     auto* raw_obj = heap.allocate(sizeof(Value) * 4, Tag::Object);
+    raw_obj->flags = HeapKind::ValueBlock;
     Value* slots = raw_obj->payload<Value>();
     slots[0] = str.get();
     slots[1] = Value::fromDouble(2.5);
@@ -292,6 +302,7 @@ TEST_CASE("heap verify names a scanned word holding a stale semispace pointer") 
     std::memset(decoy->payload(), 0, 64);
 
     auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    raw_obj->flags = HeapKind::ValueBlock;
     Value* slots = raw_obj->payload<Value>();
     slots[0] = Value::fromTagAndPayload(static_cast<uint16_t>(Tag::Object),
                                         reinterpret_cast<uint64_t>(decoy->payload()) + 8);
@@ -309,6 +320,7 @@ TEST_CASE("heap verify rejects a word carrying an undefined tag") {
     FatalGuard guard;
 
     auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
+    raw_obj->flags = HeapKind::ValueBlock;
     Value* slots = raw_obj->payload<Value>();
     slots[0] = Value::fromRawBits((0xFFFCULL << 48) | 0x1234);
     slots[1] = Value::fromDouble(1.0);
@@ -361,7 +373,7 @@ TEST_CASE("heap dynamically scales for deep hierarchy without bad_alloc") {
 
     std::function<Value(int, int)> build = [&](int branching, int depth) -> Value {
         auto* raw = heap.allocate(sizeof(Value) * 5, Tag::Object);
-        raw->flags = HeapKind::Plain;
+        raw->flags = HeapKind::ValueBlock;
         Value* payload = raw->payload<Value>();
         payload[0] = Value::fromDouble(static_cast<double>(nodeCount++));
         payload[1] = Value::fromDouble(static_cast<double>(depth));
@@ -379,7 +391,7 @@ TEST_CASE("heap dynamically scales for deep hierarchy without bad_alloc") {
     };
 
     auto* sceneRaw = heap.allocate(sizeof(Value) * 5, Tag::Object);
-    sceneRaw->flags = HeapKind::Plain;
+    sceneRaw->flags = HeapKind::ValueBlock;
     rootNode.set(Value::fromObject(sceneRaw));
     for (int i = 0; i < 4; ++i) {
         Value branch = build(4, 7);

@@ -5,6 +5,7 @@ bronze_add_module(runtime
         symbolize.cpp
         sampler.cpp
         shape_census.cpp
+        slot_repr.cpp
         pin_census.cpp
         fatal.cpp
         abi_guard.cpp
@@ -131,6 +132,7 @@ bronze_add_module(runtime
         ../../tests/runtime/unicode_case_test.cpp
         ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/shape_test.cpp
+        ../../tests/runtime/slot_repr_test.cpp
         ../../tests/runtime/object_test.cpp
         ../../tests/runtime/object_proto_chain_test.cpp
         ../../tests/runtime/primitive_prototype_test.cpp

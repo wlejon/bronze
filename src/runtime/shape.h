@@ -9,6 +9,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/property_key.h"
+#include "runtime/slot_repr.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -29,6 +30,10 @@ struct PropertyInfo {
     // either of them false is in dictionary mode.
     bool writable{true};
     bool configurable{true};
+    // How the slot's eight bytes are to be read (runtime/slot_repr.h). Always
+    // `Boxed` for a dictionary entry: dictionary mode does not participate in
+    // stage R1, and its slots are not shape-indexed anyway.
+    SlotRepr repr{SlotRepr::Boxed};
 };
 
 struct ShapeTransition {
@@ -46,6 +51,14 @@ struct ShapeTransition {
     bool accessor{false};
     bool writable{true};
     bool configurable{true};
+    // Also part of the KEY. Two objects that added the same name at the same
+    // attributes but stored a number in one and a string in the other have
+    // different STORAGE for that slot, and storage is layout — so they must not
+    // share a node, for the reason an accessor and a data property must not.
+    // A parent therefore carries at most two edges per (key, attributes): the
+    // boxed one and the double one, and `addProperty` picks between them from
+    // what the store has in hand.
+    SlotRepr repr{SlotRepr::Boxed};
 };
 
 // A hidden class: one node of a transition tree, immortal and non-moving, so
@@ -113,6 +126,27 @@ public:
     // (`delete`, `Object.freeze`, a writable:true->false redefinition,
     // `setPrototypeOf`). A dictionary shape is never stamped.
     uint64_t family_stamp{BRONZE_ABI_FAMILY_UNSTAMPED};
+    // WHICH SLOTS OF AN OBJECT AT THIS SHAPE HOLD A DOUBLE (slot_repr.h), bit
+    // N for slot N. A summary of the whole chain, computed once when the node
+    // is created (`parent->double_slots | this node's bit`) and never changed —
+    // shape nodes are immutable, and this word is the reason the collector can
+    // answer "which of your slots must I not trace" with one load instead of a
+    // walk. Always zero on a dictionary shape and under BRONZE_NO_SLOT_REPR=1.
+    uint64_t double_slots{0};
+    // The representation of the ONE slot this node owns. `double_slots` cannot
+    // say which node introduced a bit, and both the generalization rebuild and
+    // the census need exactly that.
+    SlotRepr repr{SlotRepr::Boxed};
+    // Set on a DOUBLE node whose slot has generalized at least once. It makes
+    // the demotion sticky: the next object to install this key on this parent
+    // takes the boxed edge even with a number in hand, so a field that turns
+    // over splits the shape tree once rather than once per object.
+    //
+    // The only mutable word on a shape besides `family_stamp` and
+    // `used_as_prototype`, and like those two it is monotone and affects only
+    // what FUTURE nodes are chosen — never the layout of a node that exists, on
+    // which some object's storage already depends.
+    bool repr_generalized{false};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build
@@ -121,7 +155,8 @@ public:
 
     Shape() : root(this), prototype(Value::fromUndefined()) {}
     Shape(Shape* parent_shape, PropertyKey prop_key, uint32_t slot, Shape* root_shape,
-          bool is_enumerable, bool is_accessor, bool is_writable = true, bool is_configurable = true)
+          bool is_enumerable, bool is_accessor, bool is_writable = true,
+          bool is_configurable = true, SlotRepr slot_repr = SlotRepr::Boxed)
         : parent(parent_shape),
           key(prop_key),
           slot_index(slot),
@@ -130,7 +165,14 @@ public:
           writable(is_writable),
           configurable(is_configurable),
           root(root_shape),
-          prototype(Value::fromUndefined()) {}
+          prototype(Value::fromUndefined()),
+          double_slots(parent_shape == nullptr
+                           ? 0u
+                           : parent_shape->double_slots |
+                                 ((slot_repr == SlotRepr::Double && slot < kSlotReprLimit)
+                                      ? (uint64_t{1} << slot)
+                                      : 0u)),
+          repr(slot_repr) {}
 
     // Creates a root shape whose instances have `proto` as their
     // prototype. A root carrying a non-undefined prototype also has to be
@@ -149,9 +191,44 @@ public:
         return !key.valid() ? 0u : slot_index + slotWidth();
     }
 
+    // Does slot `index` of an object at this shape hold a raw double? One AND
+    // against a word the caller has usually already loaded.
+    bool slotIsDouble(uint32_t index) const noexcept {
+        return index < kSlotReprLimit && (double_slots & (uint64_t{1} << index)) != 0;
+    }
+    bool hasDoubleSlots() const noexcept { return double_slots != 0; }
+
     Shape* addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name, uint32_t& out_slot,
                        bool is_enumerable = true, bool is_accessor = false,
-                       bool is_writable = true, bool is_configurable = true);
+                       bool is_writable = true, bool is_configurable = true,
+                       SlotRepr desired = SlotRepr::Boxed);
+
+    // The same transition, taken from an ALREADY-INTERNED key. `addProperty`
+    // above is the entry a property write reaches, where the name arrives as a
+    // heap Value that has to be rooted and copied into the arena; this one is
+    // for callers whose key already lives in the arena because it came off a
+    // shape node — the generalization rebuild below, and nothing else so far.
+    // Nothing here touches the heap, so no rooting is needed and none is taken.
+    Shape* addPropertyKey(NonMovingArena& arena, PropertyKey stored_key, uint32_t& out_slot,
+                          bool is_enumerable, bool is_accessor, bool is_writable,
+                          bool is_configurable, SlotRepr desired);
+
+    // The shape this one would have been if slot `index` had been created
+    // BOXED — the generalization step (slot_repr.h). Every other node keeps the
+    // representation it has, so an object that moves here keeps every other
+    // double slot it had.
+    //
+    // It is a REBUILD from the root rather than an edit, because a shape node
+    // is shared: editing this chain would silently re-type the slot of every
+    // object that reached the same layout, including the ones still holding a
+    // double there. The rebuild reuses the transition tree's own deduplication,
+    // so the second object to generalize the same shape lands on the same node
+    // the first one made.
+    //
+    // Arena-only: no heap allocation, so the caller's object cannot move and
+    // this is safe to call with a raw `ObjectHeader*` in hand. Returns `this`
+    // unchanged when the slot is not a double one.
+    static Shape* withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index);
 
     // Existence and location of an own property. The `out_slot` overload is
     // for callers that only ask "is it there, and where" — `in`, and the
@@ -206,5 +283,13 @@ static_assert(offsetof(Shape, prototype) == BRONZE_ABI_SHAPE_PROTO_OFFSET);
 static_assert(offsetof(Shape, dict) == BRONZE_ABI_SHAPE_DICT_OFFSET);
 static_assert(offsetof(Shape, used_as_prototype) == BRONZE_ABI_SHAPE_USEDPROTO_OFFSET);
 static_assert(offsetof(Shape, family_stamp) == BRONZE_ABI_SHAPE_FAMILY_OFFSET);
+// Stage R2's raw-f64 loads test this word against the slot they are about to
+// read, so it is ABI the moment it exists rather than the moment it is first
+// read — pinning it now is what keeps a later reorder a build break.
+static_assert(offsetof(Shape, double_slots) == BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
+static_assert(offsetof(Shape, repr) == BRONZE_ABI_SHAPE_REPR_OFFSET);
+static_assert(sizeof(Shape::repr) == 1);
+static_assert(static_cast<uint8_t>(SlotRepr::Boxed) == BRONZE_ABI_SLOT_REPR_BOXED &&
+              static_cast<uint8_t>(SlotRepr::Double) == BRONZE_ABI_SLOT_REPR_DOUBLE);
 
 }  // namespace bronze

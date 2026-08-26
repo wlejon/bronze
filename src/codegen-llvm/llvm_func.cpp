@@ -303,6 +303,18 @@ void FunctionEmitter::emitModuleInit() {
                                                  0),
              tables.familyBase});
     }
+    // The slot-representation eligibility list, here for the family table's
+    // reason: it names fields by the module's own key index, and the runtime
+    // resolves those through `keyMap`, which the loop above has just filled.
+    if (tables.slotReprFields != nullptr) {
+        builder_.CreateCall(
+            shared_.abi.bronze_register_slot_repr,
+            {builder_.CreateConstInBoundsGEP2_32(tables.slotReprFields->getValueType(),
+                                                 tables.slotReprFields, 0, 0),
+             builder_.getInt32(tables.slotReprFieldCount),
+             builder_.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(), tables.keyMap, 0,
+                                                 0)});
+    }
     // The PIN CENSUS site table, and it is here for exactly the reason the
     // family table is: it names sites by the module's own key index and the
     // runtime turns those into process-wide ids through `keyMap`, which is not

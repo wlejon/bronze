@@ -121,6 +121,9 @@ fails at launch with both versions named.
   workflow.
 - [docs/pin-census.md](docs/pin-census.md) `--census`: how a `--pins` manifest
   gets written by a run of the program instead of by hand.
+- [docs/slot-representation.md](docs/slot-representation.md) per-slot
+  representation: what lets a shape say a slot holds a raw double, and what
+  keeps that true.
 - [tests/oracle/README.md](tests/oracle/README.md) how the differential
   suite works and how to add a case.
 

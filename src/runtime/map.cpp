@@ -140,6 +140,9 @@ void growEntries(Heap& heap, Rooted<Value>& self) {
     while (newCap < (live + 1) * 2) newCap *= 2;
 
     HeapObjectHeader* block = heap.allocate(newCap * 2 * sizeof(Value), Tag::Object);
+    // See setCapacity in array.cpp: a Value run must not read as a plain
+    // object, out of which the collector reads a shape.
+    block->flags = HeapKind::ValueBlock;
     Value* dst = block->payload<Value>();
     for (uint32_t i = 0; i < newCap * 2; ++i) dst[i] = Value::fromUndefined();
 

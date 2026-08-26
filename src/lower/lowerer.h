@@ -365,6 +365,13 @@ private:
     // rather than a codegen one: the names have to become key-pool indices.
     void buildClassFamilyTable();
     bool classFamilyTableBuilt_ = false;
+
+    // The `--pins number` field NAMES this program declares, interned into the
+    // module's key pool and handed to the runtime at init (il.h,
+    // `slotReprFields`). Built once, at the end of lowering, from the same
+    // (class, field) lookup a pin barrier resolves — so a name reaches the list
+    // exactly when a read of it would have spent the pin unchecked.
+    void buildSlotReprTable();
     // The instance slot a proven class layout puts `key` at on `receiver`, and
     // the module-global cell index the site gets, or nullopt. Allocates the
     // cell, so it is called exactly once per site.

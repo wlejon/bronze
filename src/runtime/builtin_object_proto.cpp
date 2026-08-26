@@ -90,7 +90,7 @@ bool requireNonNullish(Value self, const char* method) {
 // name rather than reported absent. There is exactly one: a String exotic
 // OBJECT, whose 10.4.3.4 index properties are synthesised on the property path
 // and live in no shape (rt_object.cpp carries the reasoning).
-static_assert(HeapKind::Count == 18,
+static_assert(HeapKind::Count == 20,
               "a HeapKind was added or removed: give the own-property switch below an arm for "
               "it. `hasOwnProperty` and `propertyIsEnumerable` are reachable from EVERY "
               "receiver now that the chain runs past the member tables, so a kind with no arm "
@@ -340,10 +340,14 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
         case HeapKind::Iterator:
         case HeapKind::Env:
         case HeapKind::PrivateTable:
+        case HeapKind::SlotBlock:
+        case HeapKind::ValueBlock:
             // Not JS values: nothing hands a program one, so reaching this is a
-            // lowering bug rather than something a program did.
-            fatal("internal: an own-property test on an environment, iteration or "
-                  "private-element record");
+            // lowering bug rather than something a program did. A slot block is
+            // the strongest case of that — the only word naming one is a field
+            // of the object whose properties it holds.
+            fatal("internal: an own-property test on an environment, iteration, "
+                  "private-element, slot-block or value-block record");
         default:
             fatal((std::string("internal: an own-property test on ") +
                    rtObjectKindName(self.get()) + ", a heap kind this switch has no arm for")

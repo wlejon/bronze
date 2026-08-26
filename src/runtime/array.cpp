@@ -14,6 +14,11 @@ namespace {
 // the allocation.
 void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     HeapObjectHeader* block = heap.allocate(new_capacity * sizeof(Value), Tag::Object);
+    // Not the zero `Heap::allocate` leaves behind, which reads as
+    // `HeapKind::Plain` — and a plain object is a thing the collector reads a
+    // `Shape*` out of. Elements are Values and nothing else, which is what
+    // `ValueBlock` says.
+    block->flags = HeapKind::ValueBlock;
     auto* arr = self.get().asObject<ArrayHeader>();
 
     Value* slots = block->payload<Value>();

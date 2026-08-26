@@ -51,7 +51,7 @@ using namespace bronze::runtime;
 // about the kind you happened to run. Pinning the registry's SIZE in both
 // places is what makes adding a kind a build failure at the dispatch AND at the
 // test that covers it, rather than a segfault a year later.
-static_assert(HeapKind::Count == 18,
+static_assert(HeapKind::Count == 20,
               "a HeapKind was added or removed: give `in` an arm for it in rt_operator.cpp, "
               "and give it a receiver in `everyKind` below — a kind with no arm is exactly "
               "what used to read its payload's first word as a Shape*. A kind no program can "

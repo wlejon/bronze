@@ -142,7 +142,7 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
 // fails the BUILD when a kind is added, at the one place that has to have an
 // opinion about it, which is the property a runtime `default:` alone cannot
 // give.
-static_assert(HeapKind::Count == 18,
+static_assert(HeapKind::Count == 20,
               "a HeapKind was added or removed: give `in` an arm for it in the two switches "
               "below, or refuse it there by name. A kind with no arm used to fall through to "
               "a cast that read its payload's first word as a Shape*.");
@@ -151,6 +151,8 @@ static_assert(HeapKind::Count == 18,
 // and not something a program did — the same answer the property read path
 // gives them (rt_prop.cpp).
 [[noreturn]] void refuseInternalKind(uint16_t kind) {
+    if (kind == HeapKind::SlotBlock) fatal("internal: 'in' on an object's slot block");
+    if (kind == HeapKind::ValueBlock) fatal("internal: 'in' on an element or entry block");
     if (kind == EnvHeader::kFlags) fatal("internal: 'in' on an environment record");
     if (kind == MapHeader::kPrivateFlags) {
         fatal("internal: 'in' on a private-element table");
@@ -260,6 +262,8 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::Iterator:
         case HeapKind::Env:
         case HeapKind::PrivateTable:
+        case HeapKind::SlotBlock:
+        case HeapKind::ValueBlock:
             refuseInternalKind(kind);
         default:
             fatal((std::string("internal: 'in' with a symbol key on ") +
@@ -426,6 +430,8 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         case HeapKind::Iterator:
         case HeapKind::Env:
         case HeapKind::PrivateTable:
+        case HeapKind::SlotBlock:
+        case HeapKind::ValueBlock:
             refuseInternalKind(hdr->flags);
         default:
             fatal((std::string("internal: 'in' on ") + rtObjectKindName(objRoot.get()) +

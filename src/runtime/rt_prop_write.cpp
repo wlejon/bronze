@@ -159,11 +159,12 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     if (hdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
-            if (ic->cached_slot < ObjectHeader::kInlineSlots) {
-                fastObj->slotsData()[ic->cached_slot] = valVal;
-            } else {
-                fastObj->setSlot(ic->cached_slot, valVal);
-            }
+            // `setSlot` for both halves now, where the inline arm used to write
+            // the slot array directly. It is the same store — the inline arm of
+            // `setSlot` is exactly this line — and routing through it is what
+            // keeps the representation choke point total: no write path may
+            // reach a slot without the shape having been asked (slot_repr.h).
+            fastObj->setSlot(ic->cached_slot, valVal);
             return;
         }
         if (ic->isRealShape() && ic->describes(fastObj->shape) && ic->isAccessor()) {

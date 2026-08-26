@@ -1,0 +1,25 @@
+a: x=1.5 y=not a number z=3.5
+b: x=4.5 y=5.5 z=6.5
+shape-mates independent: true string number
+a-again: x=1.5 y=99.25 z=3.5 typeof number
+kind 0 object null mate 0.25
+kind 1 undefined undefined mate 1.25
+kind 2 boolean true mate 2.25
+kind 3 boolean false mate 3.25
+kind 4 string str mate 4.25
+kind 5 object [object Object] mate 5.25
+kind 6 object 1,2 mate 6.25
+kind 7 symbol symbol mate 7.25
+w: a=10 b=11 c=12 d=13 e=14 f=15 g=16
+w-mixed: a=10 b=null c=12 d=13 e=14 f=six g=16
+w2: a=10 b=11 c=12 d=13 e=14 f=15 g=16
+alias: x=5e-324 y=1.5e-323 z=2.5e-323
+sink 224996250
+d: x=defined y=8.5 z=9.5 x,y,z
+after delete: undefined d: x=defined y=undefined z=9.5 x,z
+fr: x=1.25 y=2.25 z=3.25 true false
+spread {"x":1.5,"y":2.5,"z":"z-string"}
+assigned {"x":1.5,"y":2.5,"z":"z-string"}
+json {"x":1.5,"y":2.5,"z":"z-string"} {"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7}
+special NaN true Infinity -Infinity true
+special2 -Infinity true

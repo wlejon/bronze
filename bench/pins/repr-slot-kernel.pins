@@ -1,0 +1,19 @@
+# bench/repr_slot_kernel.js — every field of both classes is a number, always.
+#
+# Written by hand rather than by `--census` because the kernel exists to make
+# the stage R1 storage path fire, and a hand manifest says which fields that is
+# without a run in between. `Vec` fills the four inline slots; `Bag` spills past
+# them into the out-of-line block, which is the half of the storage the inline
+# slots do not reach.
+Vec.x: number
+Vec.y: number
+Vec.z: number
+Vec.w: number
+
+Bag.a: number
+Bag.b: number
+Bag.c: number
+Bag.d: number
+Bag.e: number
+Bag.f: number
+Bag.g: number

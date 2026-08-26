@@ -180,6 +180,12 @@ struct ModuleTables {
     llvm::GlobalVariable* familyClasses = nullptr;
     llvm::GlobalVariable* familyFields = nullptr;
     uint32_t familyClassCount = 0;
+    // The SLOT-REPRESENTATION eligibility list (il.h `slotReprFields`): one
+    // i32 per name, the module's own key index, constant for the same reason
+    // the family tables are. Null when the program has no `--pins number`
+    // field, which is every program compiled without a manifest.
+    llvm::GlobalVariable* slotReprFields = nullptr;
+    uint32_t slotReprFieldCount = 0;
     // The module scope's environment record, as one Value cell. The top level
     // runs exactly once, so that scope has exactly one activation and its
     // record is a singleton — which is what lets a top-level function

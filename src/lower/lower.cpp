@@ -265,6 +265,8 @@ std::optional<il::Module> Lowerer::lower() {
     // until every body is lowered.
     ilModule_.censusOutPath = censusOutPath_;
     refuseAmbiguousCensusOwners();
+    // BEFORE the key pool is snapshotted: it interns the field names it emits.
+    buildSlotReprTable();
     ilModule_.keyConstants.resize(keyConstants_.size());
     for (const auto& entry : keyConstants_) {
         ilModule_.keyConstants[entry.second] = entry.first;

@@ -14,6 +14,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/slot_repr.h"
 #include "runtime/string.h"
 #include "runtime/symbolize.h"
 #include "runtime/value.h"
@@ -212,6 +213,18 @@ CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIn
                 PropertyInfo info;
                 transitioned = !sh->lookupProperty(PropertyKey::forString(keyHdr), info);
             }
+        }
+    }
+
+    // Per-(shape, slot) REPRESENTATION stability, under BRONZE_SLOT_REPR_CENSUS
+    // (runtime/slot_repr.h). It rides this recording point rather than owning
+    // one of its own because the two want the same thing at the same instant —
+    // the receiver's shape before the store runs — and because the latch
+    // suppression that makes inline-cache hit traffic visible is already here.
+    if (isPlainShape && keyIndex != 0xFFFFFFFFu && slotReprCensusEnabled()) {
+        if (StringHeader* keyHdr = rtKeyHeader(keyIndex)) {
+            slotReprCensusNote(static_cast<const Shape*>(identity), PropertyKey::forString(keyHdr),
+                               hasValue, Value(valBits));
         }
     }
 
