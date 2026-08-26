@@ -946,6 +946,10 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     // TLS rewrite, so a callee's fetch is already the cached form when its body
     // is copied into a caller that has one of its own.
     codegen_llvm::markDirectMethodInlining(*llvmModule);
+    // Every stage R2 site the module got, once the last one is emitted
+    // (BRONZE_REPR_CODEGEN_STATS=1; llvm_repr.h says why the count and not the
+    // test suite is what shows the stage fired).
+    codegen_llvm::reprStatsReport();
     lap("ir-build");
 
     std::string errStr;

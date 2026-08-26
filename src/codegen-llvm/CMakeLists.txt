@@ -40,6 +40,7 @@ bronze_add_module(codegen_llvm
         support
     TEST_SOURCES
         ../../tests/codegen_llvm/codegen_llvm_test.cpp
+        ../../tests/codegen_llvm/repr_test.cpp
 )
 
 target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})

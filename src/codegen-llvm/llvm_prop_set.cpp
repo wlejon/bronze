@@ -248,8 +248,10 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* reprOk = nullptr;
     llvm::Value* storeBits = valBits;
     if (valRepr == ValueRepr::Number) {
+        ++reprStats().rawStores;
         reprOk = builder.getTrue();
     } else if (valRepr == ValueRepr::Int32Boxed) {
+        ++reprStats().sitofpStores;
         reprOk = builder.getTrue();
         storeBits = builder.CreateSelect(isDoubleSlot, emitInt32BoxAsDouble(builder, valBits),
                                          valBits, "ic.set.i32store");

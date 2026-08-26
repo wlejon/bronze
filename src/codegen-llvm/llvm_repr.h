@@ -82,11 +82,6 @@ struct ReprPlan {
     // Values that are `dynamic` in the IL and NeverPointer here — the roots
     // this plan removes.
     uint32_t unrootedValues = 0;
-    // Store sites whose value is proven Number (no representation test at all),
-    // and those whose value is an Int32 box (converted inline instead of
-    // missing to the helper once per store).
-    uint32_t numberStores = 0;
-    uint32_t int32Stores = 0;
 
     ValueRepr at(il::ValueId id) const {
         return id < reprOf.size() ? reprOf[id] : ValueRepr::Unknown;
@@ -95,6 +90,38 @@ struct ReprPlan {
 
 // Computes the plan for one function. Same IL in, same plan out.
 ReprPlan planRepr(const il::Function& func);
+
+// WHAT THE STAGE ACTUALLY BOUGHT, counted while the module is emitted.
+//
+// A representation stage is easy to believe in and hard to check: the arms are
+// all conditional on a proof, so a stage that proves nothing emits exactly the
+// code it replaced and every test still passes. These counters are the only
+// thing that distinguishes "the fast arm is correct" from "the fast arm is
+// ever taken", which is why they count EMITTED SITES rather than plan entries —
+// an inlined callee's sites are emitted once per region and count once per
+// region, because that is how many of them the binary has.
+//
+// Process-global on purpose: one `bronze build` is one module, and threading a
+// counter through six emitters to report a number nothing else reads would cost
+// more in signatures than the number is worth.
+struct ReprStats {
+    uint32_t functions = 0;
+    // Plan entries: `dynamic` values proven to be a Number, and the subset of
+    // NeverPointer values that therefore need no GC root.
+    uint32_t provenNumber = 0;
+    uint32_t rootsElided = 0;
+    // Store sites emitted with no representation test, and those emitted with
+    // an inline `sitofp` in place of R1's miss to the helper.
+    uint32_t rawStores = 0;
+    uint32_t sitofpStores = 0;
+};
+
+// The one instance. Mutable so emitters can bump it in place.
+ReprStats& reprStats();
+
+// Prints the counters to stderr when `BRONZE_REPR_CODEGEN_STATS=1`, and does
+// nothing otherwise. Called once, after the module is emitted.
+void reprStatsReport();
 
 // The store-site question, asked about a PropSet/ElemSet's VALUE operand.
 //

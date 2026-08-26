@@ -176,6 +176,8 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     llvm::Value* storeBits = store;
     const bool reprTested = store != nullptr && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
                             storeRepr != ValueRepr::Number;
+    if (store != nullptr && reprIsNumber(storeRepr)) ++reprStats().rawStores;
+    if (reprTested && storeRepr == ValueRepr::Int32Boxed) ++reprStats().sitofpStores;
     if (reprTested) {
         llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, p + ".static.store", fn);
         llvm::Value* shapeObj = builder.CreateIntToPtr(shape, ptrTy, p + ".static.shapep");
