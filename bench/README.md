@@ -296,6 +296,13 @@ node bench/typed_array_loop.js
   > | `property_access` (no pins) | 10.7 | 10.6 | 10.7 | `3000000` |
   > | `object_graph` (no pins) | 48.8 | 49.0 | 48.3 | `-32601148` |
   >
+  > Measured at `613105b`; the three commits after it change comments, this
+  > entry, and a census-only path. A re-run on the final tree landed on a
+  > noisier box (sd 5–8 ms against 0.2–0.4 above) and reproduces the table by
+  > MEDIAN in every cell — 23.2 / 23.3 / 23.5, 16.1 / 16.7 / 16.3, 11.3 / 11.3
+  > / 11.3, 47.7 / 48.7 / 48.7 — which is the reading to trust when a session
+  > carries outliers.
+  >
   > **Every checksum is bit-identical in every cell**, which is the acceptance
   > condition this stage was given: a speedup with a changed checksum would be
   > a miscompile. The largest movement is `three_math`'s +0.5 ms, and it is the
