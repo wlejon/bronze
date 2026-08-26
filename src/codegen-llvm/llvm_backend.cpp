@@ -68,6 +68,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_call.h"
+#include "codegen-llvm/llvm_env_promote.h"
 #include "codegen-llvm/llvm_frame.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_partition.h"
@@ -491,6 +492,18 @@ bool optimizeAndEmitOne(llvm::Module& m, llvm::TargetMachine& tm, const std::str
     pb.registerFunctionAnalyses(fam);
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
+    // Stage R3, at the one extension point where the question it asks has an
+    // answer: after the module SIMPLIFICATION pipeline — which is where the
+    // inliner, EarlyCSE, GVN and LoopSimplify live — and before the function
+    // optimization pipeline, so the phis it creates are there for everything
+    // downstream to read. Asked any earlier, every sibling-closure call in a
+    // loop is still a call and no region survives one iteration
+    // (llvm_env_promote.h says why that is the whole stage).
+    pb.registerOptimizerEarlyEPCallback([](llvm::ModulePassManager& early,
+                                           llvm::OptimizationLevel,
+                                           llvm::ThinOrFullLTOPhase) {
+        early.addPass(codegen_llvm::EnvPromotionPass());
+    });
     llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
     dumpModuleIfAsked(m, "pre", dumpPart);
     mpm.run(m, mam);
@@ -966,6 +979,9 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 
     bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_,
                               emittedPathsOut_, diags);
+    // Every stage R3 region the module got, once every partition's pipeline has
+    // joined (BRONZE_ENV_PROMOTION_STATS=1).
+    codegen_llvm::envPromotionStatsReport();
     lap("obj-emit");
     return ok;
 }

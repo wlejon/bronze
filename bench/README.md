@@ -251,6 +251,66 @@ node bench/typed_array_loop.js
 > because mixing two sessions in one table is the thing this block exists to
 > prevent.
 
+- **Stage R3 (scoped escape analysis over environment records) — SOUND BUT INERT ON THE TARGET KERNELS** — 2026-08-26:
+  > [!NOTE]
+  > **What landed is a correct, moving-GC-safe pass that promotes an
+  > environment-record slot to an SSA value over a region no reachable operation
+  > can observe it through — and the honest headline is that on the kernels this
+  > stage exists for it forms almost no regions and moves no time.** The
+  > machinery is real and tested; the connection to the workload is not there
+  > yet. The value of committing it is the mechanism plus the region-end
+  > histogram that says exactly why it does not fire. Design:
+  > [docs/env-promotion.md](../docs/env-promotion.md).
+  >
+  > **Mechanism.** The observability question (`llvm_env_reach`) is asked of
+  > OPTIMIZED IR at the `OptimizerEarly` extension point — after the module
+  > simplification pipeline (inliner, EarlyCSE, GVN, LoopSimplify), before
+  > function optimization. A slot is promoted only over a region in which
+  > nothing can read or write it: any call the analysis cannot see through ends
+  > the region (a greatest-fixpoint env-blindness set over the call graph plus a
+  > six-name ABI allowlist), as does a same-offset access through a different
+  > record value, an aliasing memory op, a loop-defined record, or an unshaped
+  > loop. Write-backs are emitted at every exit that survives (`unreachable`
+  > tripwires take none). **Collector safety is the load-bearing rule: bronze's
+  > GC is a moving semispace, so a region that both may collect and stores a
+  > possibly-pointer value is refused** — the heap slot is the collector's only
+  > view of that pointer, and a register shadow would go stale across the flip.
+  > Seam `BRONZE_NO_ENV_PROMOTION=1` (compiler-time, default on);
+  > `BRONZE_ENV_PROMOTION_STATS=1` prints the counters and the region-end
+  > histogram.
+  >
+  > **The measurement, and it is a null result.** Kernels compiled with this
+  > compiler, interleaved seam-on / seam-off (`BRONZE_NO_ENV_PROMOTION=1`),
+  > batch-of-20 process wall:
+  >
+  > | kernel | regions formed | slots promoted | on vs off | checksum |
+  > |---|---:|---:|---|---|
+  > | `env_slot_kernel` | 1 (function) | 1 | flat (~1860 ms/20, within noise) | `126000020` identical |
+  > | `call_chain_kernel` | 0 | 0 | flat | `chained/flat` identical |
+  > | `three_math` (`--pins pins/threejs-math.pins`) | 0 | 0 | flat | `405000` identical |
+  >
+  > **Why zero.** The region-end histogram, on the kernels themselves:
+  > `env_slot_kernel` — `unknown-call=20 record-not-invariant=7`;
+  > `three_math` — `unknown-call=164 env-helper=36`;
+  > `call_chain_kernel` — `unknown-call=1 env-helper=2`. The stage's premise is
+  > that E1's direct edges are inlined away before the pass, leaving their
+  > record accesses as ordinary loads and stores in the caller's loop. On these
+  > kernels the calls are still there when the pass runs — the relevant sibling
+  > closures were emitted as direct edges but not marked `alwaysinline`, so the
+  > LLVM inliner left them, and each surviving call ends the candidate region.
+  > `record-not-invariant` on `env_slot_kernel` is the second face of the same
+  > thing: the promoted closure's record is created inside the loop.
+  >
+  > **What this stage is really for, then, is the next one.** The follow-up is
+  > to make the hot-loop closures reach the pass inlined (extend E5's
+  > `alwaysinline` marking to the env-carrying sibling edges), or to give the
+  > pass callee env-effect summaries so a non-inlined blind-on-this-slot call
+  > stops ending the region. The histogram is the instrument that will say which
+  > buys more. Correctness verified on a fresh build: codegen unit 350/350, all
+  > six oracle cases byte-correct (incl. the moving-GC `heap_slot` case under
+  > `BRONZE_GC_STRESS`+`BRONZE_HEAP_VERIFY`), MSVC `/W4 /WX` clean, every
+  > checksum bit-identical seam-on/off.
+
 - **Stage R2 (the compiler spends the representation: raw stores, and numbers stop being rooted)** — 2026-08-26:
   > [!NOTE]
   > **R1 gave a shape the ability to say a slot's eight bytes are a double and

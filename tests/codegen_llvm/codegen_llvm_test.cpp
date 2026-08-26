@@ -795,7 +795,7 @@ TEST_CASE("a guarded environment write is one store, and its failure edge does n
     llvm::IRBuilder<> b(entry);
 
     codegen_llvm::emitEnvSet(b, f.abi, f.fn->getArg(0), /*depth=*/2, /*index=*/1, b.getInt64(0),
-                             /*elideGuards=*/false);
+                             /*elideGuards=*/false, /*valueNeverPointer=*/false);
     b.CreateRetVoid();
 
     CHECK(f.opcodeCount(llvm::Instruction::Store) == 1);

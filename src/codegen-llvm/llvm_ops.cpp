@@ -871,7 +871,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             llvm::Value* env = operand(inst, 0, "Undefined operand in EnvSet");
             llvm::Value* val = operand(inst, 1, "Undefined operand in EnvSet");
             if (!env || !val) return false;
-            emitEnvSet(builder_, abi, env, inst.envDepth, inst.envIndex, val, envGuardsElided_);
+            emitEnvSet(builder_, abi, env, inst.envDepth, inst.envIndex, val, envGuardsElided_,
+                       reprNeverPointer(repr_.at(inst.operands[1])));
             return true;
         }
 

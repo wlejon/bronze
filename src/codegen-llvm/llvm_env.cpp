@@ -1,5 +1,6 @@
 #include "codegen-llvm/llvm_env.h"
 #include "codegen-llvm/llvm_alias.h"
+#include "codegen-llvm/llvm_env_reach.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +18,16 @@ namespace {
 
 static void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
     load->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
+}
+
+// Stage R2's answer about the value, carried onto the store for stage R3 to
+// read (llvm_env_reach.h `storedValueNeverPointer`). Absent means "not proven",
+// never "proven false", which is what makes losing the metadata to an
+// optimization a lost region rather than a wrong one.
+static void markEnvStoreNeverPointer(llvm::StoreInst* store, llvm::LLVMContext& ctx,
+                                     bool neverPointer) {
+    if (!neverPointer) return;
+    store->setMetadata(kEnvNonPointerMD, llvm::MDNode::get(ctx, {}));
 }
 
 // The chain walk with the ACCESS GUARDS DROPPED: `depth` parent loads and the
@@ -221,7 +232,8 @@ llvm::Value* emitEnvGetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi,
 }
 
 void emitEnvSetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                       uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards) {
+                       uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards,
+                       bool valueNeverPointer) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
 
@@ -229,6 +241,7 @@ void emitEnvSetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Valu
         auto* store = builder.CreateAlignedStore(
             valBits, emitEnvSlotPtrUnguarded(builder, envBits, depth, index), llvm::Align(8));
         tagEnvRecordAccess(store, ctx);
+        markEnvStoreNeverPointer(store, ctx, valueNeverPointer);
         return;
     }
 
@@ -238,6 +251,7 @@ void emitEnvSetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Valu
     llvm::Value* slotPtr = emitEnvSlotPtr(builder, envBits, depth, index, slowBb);
     auto* storeInst = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
     tagEnvRecordAccess(storeInst, ctx);
+    markEnvStoreNeverPointer(storeInst, ctx, valueNeverPointer);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);
@@ -383,9 +397,11 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 }
 
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards) {
+                uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards,
+                bool valueNeverPointer) {
     if (!envTripwireEdges()) {
-        emitEnvSetMerging(builder, abi, envBits, depth, index, valBits, elideGuards);
+        emitEnvSetMerging(builder, abi, envBits, depth, index, valBits, elideGuards,
+                          valueNeverPointer);
         return;
     }
     llvm::LLVMContext& ctx = builder.getContext();
@@ -400,6 +416,7 @@ void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envB
                                      emitAccessTripwire(builder, abi, envBits, depth, index));
     auto* storeInst = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
     tagEnvRecordAccess(storeInst, ctx);
+    markEnvStoreNeverPointer(storeInst, ctx, valueNeverPointer);
 }
 
 }  // namespace bronze::codegen_llvm

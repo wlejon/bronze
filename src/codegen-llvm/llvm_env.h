@@ -42,8 +42,18 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards);
 
 // Emits an environment slot write.
+//
+// `valueNeverPointer` is stage R2's answer for the value being stored
+// (`reprNeverPointer`, llvm_repr.h), carried onto the store as
+// `!bronze.env.nonptr`. Stage R3 reads it to decide whether the slot may be
+// promoted to a register across code that can collect: the heap slot is the
+// collector's only view of what a record holds, and a register that shadows it
+// is safe exactly when what the register holds is not an address. It is a claim
+// R2 already spends on giving that value no GC root at all, so nothing new is
+// being believed here.
 void emitEnvSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* envBits,
-                uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards);
+                uint32_t depth, uint32_t index, llvm::Value* valBits, bool elideGuards,
+                bool valueNeverPointer);
 
 // The record `hops` parent links up from `envBits`, as a Value. `hops == 0` is
 // `envBits` itself and emits nothing.

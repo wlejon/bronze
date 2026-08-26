@@ -22,6 +22,8 @@ bronze_add_module(codegen_llvm
         llvm_elem_cache.cpp
         llvm_iter.cpp
         llvm_env.cpp
+    llvm_env_reach.cpp
+    llvm_env_promote.cpp
         llvm_frame.cpp
         llvm_func.cpp
         llvm_math.cpp
@@ -41,6 +43,7 @@ bronze_add_module(codegen_llvm
     TEST_SOURCES
         ../../tests/codegen_llvm/codegen_llvm_test.cpp
         ../../tests/codegen_llvm/repr_test.cpp
+        ../../tests/codegen_llvm/env_promotion_test.cpp
 )
 
 target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
