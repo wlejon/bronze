@@ -48,6 +48,7 @@ bench/run_benchmarks.sh --json         # Machine-readable JSON-lines only
 | `numeric_loop.js` | 10M-iteration float arithmetic loop | Proven-f64 arithmetic in tight loop |
 | `property_access.js` | 1M iterations of `o.a + o.b` | Own-property IC fast path dispatch |
 | `repr_slot_kernel.js` | 400k iterations over pinned number fields, inline and out-of-line, with never-written shape-mates beside them | Stage R1 double slots: the store arms' Number test, the collector over a mixed heap. Needs `--pins bench/pins/repr-slot-kernel.pins` to make any slot a double one |
+| `repr_flow_kernel.js` | 400k iterations chaining load-arithmetic-store across two objects whose every field is pinned, plus a computed-NaN score in the checksum | Stage R2 dataflow: the raw store and the elided GC root between links, and the NaN frontier a raw store could alias a tag at. Needs `--pins bench/pins/repr-flow-kernel.pins` |
 | `proto_dispatch.js` | Depth-3 inherited property read (stable epoch) | Prototype chain IC caching at depth > 0 |
 | `proto_dispatch_churn.js` | Depth-3 inherited read with interleaved `new Pt(i)` | Ordinary object property adds vs prototype cache invalidation |
 | `typed_array_loop.js` | Float32Array element access vs plain Array | TypedArray buffer access vs JS array indexing |
@@ -249,6 +250,108 @@ node bench/typed_array_loop.js
 > seven-column ladder from B1's own session is in the Stage B1 entry below,
 > because mixing two sessions in one table is the thing this block exists to
 > prevent.
+
+- **Stage R2 (the compiler spends the representation: raw stores, and numbers stop being rooted)** — 2026-08-26:
+  > [!NOTE]
+  > **R1 gave a shape the ability to say a slot's eight bytes are a double and
+  > deliberately spent none of it. R2 is the compile-time half: a fact about an
+  > IL VALUE (`src/codegen-llvm/llvm_repr.{h,cpp}`), spent at the places R1 had
+  > to leave a test.** Two things land, and the second is the larger: a store
+  > whose value is a proven Number emits **no representation test at all**, and
+  > a `dynamic` value proven never to be a heap pointer gets **no GC root** —
+  > which removes its root store and the reload at every use. Full design:
+  > [docs/slot-representation.md](../docs/slot-representation.md).
+  >
+  > **Why the raw store needs no guard of its own.** A Number's box IS the
+  > canonical double a double slot promises, so the same eight bytes are correct
+  > for a double slot and for a boxed one alike. The store is right whichever
+  > way `double_slots` reads, which makes it sound across a **generalization
+  > between two visits to the same site** — stronger than a guard, not weaker.
+  > What is still required is the dominating shape guard R1 already required;
+  > R2 widened no site's guard coverage.
+  >
+  > **Seam: `BRONZE_NO_REPR_CODEGEN=1`, read by the COMPILER** — every value
+  > comes back `Unknown`, every site emits the stage R1 sequence, every value
+  > keeps its root. Build-time and not run-time on purpose: what it isolates is
+  > the emitted code. It is measured below against the R1 TREE itself, and the
+  > two agree to 0.3%. `BRONZE_REPR_CODEGEN_STATS=1` prints the static site
+  > counts.
+  >
+  > **The headline, three-way, one interleaved session** (61 rounds after a
+  > discarded warmup, order alternated per round so no arm holds first position,
+  > raw wall of the whole process in ms). `R1 tree` is `6734cd1` rebuilt:
+  >
+  > | kernel | R1 tree | R2 seam-off | R2 | checksum |
+  > |---|---:|---:|---:|---|
+  > | `three_math` (`--pins bench/pins/threejs-math.pins`) | 22.92 | 22.99 | **21.36** | `405000` |
+  > | `repr_slot_kernel` (`--pins bench/pins/repr-slot-kernel.pins`) | 16.36 | 16.34 | **15.36** | `180008650039037` |
+  >
+  > Means: 22.97 / 23.07 / 21.71 and 17.33 / 17.56 / 15.46. **`three_math`'s R1
+  > column reproduces stage R1's published 22.9 ms exactly**, which is what
+  > licenses reading the rest of the row. R2 is **6.8%** and **6.1%** under it.
+  > Net of the ~6.3 ms every one of these processes spends starting up (an empty
+  > compiled program, measured the same way), the compute halves move **9.4%**
+  > and **9.9%**.
+  >
+  > **The seam-off column is the R1 column.** 22.99 against 22.92, and 16.34
+  > against 16.36 — and `tm_seam.exe` and `tm_r1.exe` are byte-for-byte the same
+  > SIZE (4,733,952), differing only in the link timestamp. That is the property
+  > a compile-time seam is for, checked rather than asserted.
+  >
+  > **The five-kernel sweep** (same harness, 61 rounds, kernels run two and four
+  > at a time so the medians are not competing with six other processes):
+  >
+  > | kernel | R2 | seam-off | Δ | checksum |
+  > |---|---:|---:|---:|---|
+  > | `three_math` | 20.36 | 21.91 | **-7.1%** | `405000` |
+  > | `repr_slot_kernel` | 14.49 | 15.22 | **-4.8%** | `180008650039037` |
+  > | `repr_flow_kernel` (`--pins bench/pins/repr-flow-kernel.pins`) | 11.09 | 11.39 | -2.6% | `131610905018/127` |
+  > | `property_access` (no pins) | 10.18 | 10.71 | -4.9% | `3000000` |
+  > | `object_graph` (no pins) | 47.96 | 48.15 | -0.4% | `-32601148` |
+  >
+  > **Every checksum is bit-identical in every cell of both tables**, which is
+  > the acceptance condition: a speedup with a changed checksum is a miscompile.
+  > The two kernels with no pinned field are flat, which is the zero-tax
+  > condition read directly — `object_graph` at -0.4% is inside its own noise
+  > either way.
+  >
+  > **`bench/repr_flow_kernel.js` is new**, and it is the kernel R1 did not
+  > need: every line of its loop is a load out of a pinned slot, arithmetic, and
+  > a store into another one, with two objects alternating so a real store site
+  > sits between every pair of links. Its checksum's second field is a
+  > seven-reader score over a COMPUTED NaN pushed through the same slots, which
+  > is the frontier a raw store could silently alias a tag at.
+  >
+  > **Static counts, from `BRONZE_REPR_CODEGEN_STATS=1`.** `three_math`: 252
+  > functions planned, 1,042 values proven Number, **1,264 roots elided**, **604
+  > raw store sites**, 0 `sitofp` stores. `repr_slot_kernel`: 4 / 58 / 63 / 44 /
+  > 0. `object_graph`, with no manifest at all: 11 / 75 / 106 / 24 / 0. The
+  > counter exists because every R2 arm is conditional on a proof — a stage that
+  > proves nothing emits the code it replaced and the whole suite still passes,
+  > so the site count is the only thing separating "the fast arm is correct"
+  > from "the fast arm is ever taken".
+  >
+  > **Two things were built, measured, and then removed or not built.** (a) The
+  > raw LOAD: because R1 canonicalizes, a double slot's eight bytes ARE the
+  > boxed Number, so a raw load is bit-identical to the load already emitted —
+  > and `three_math` has **zero** checked `unbox.f64` whose operand is a
+  > static-slot `prop.get`, so a get-side representation flag would have had
+  > nothing to say. R3 input. (b) An emitter arm for `dynamic` arithmetic over
+  > two proven Numbers, which the counter said has **zero sites** in every
+  > kernel and in a probe built to provoke it — `lower_infer` already types
+  > those chains `f64`, so the unboxed dataflow R2 was to add is the typing that
+  > was already there. Removed rather than shipped.
+  >
+  > **Caveats.** (a) `sitofpStores=0` everywhere: `emitToInt32`'s I32 result is
+  > converted straight back to F64 by every bitwise operator, so `box.i32`
+  > reaches a property store nowhere in the corpus and the R1 gap this arm was
+  > written for does not exist in today's lowering. The arm is kept and pinned
+  > by unit tests against hand-built IL, and it is dead. (b) The box this was
+  > measured on carries occasional multi-millisecond outliers; every table above
+  > is a MEDIAN with the mean beside it, and the two agree wherever the sd is
+  > under 1 ms. (c) `property_access`'s -4.9% is a 0.5 ms move on a kernel with
+  > 2 raw stores and 4 elided roots, and it read +3-6% the other way in a
+  > six-variant session — treat it as flat, not as a win.
 
 - **Stage R1 (per-slot representation: a shape can say a slot is an f64)** — 2026-08-26:
   > [!NOTE]
