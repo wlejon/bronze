@@ -60,6 +60,12 @@ census "$HERE/mat4_kernel.js"       m4
 census "$HERE/nullish_pin_kernel.js" nl
 census "$HERE/call_chain_kernel.js" cc
 census "$HERE/three_math.js"        tm
+# The vendored library end to end. Not a benchmark — the whole program is about
+# 28 ms of wall and nearly all of it is process start — but it is the biggest
+# real program the census has, and the column exists to say so with a number
+# rather than by assertion. What it IS good for is the manifest: 101 entries
+# over 1718 candidate sites, 20 of them `@observed`.
+census "$HERE/../tests/oracle/threejs/main.js" tj
 
 build() { # src out pins extra
   if [ -n "$3" ]; then
@@ -94,6 +100,22 @@ build "$HERE/three_math.js" "tm_none.exe" ""
 build "$HERE/three_math.js" "tm_hand.exe" "$HERE/pins/threejs-math.pins"
 build "$HERE/three_math.js" "tm_inf.exe"  "$OUT/tm_safe.pins"
 build "$HERE/three_math.js" "tm_infobs.exe" "$OUT/tm.pins" --pins-allow-observed
+
+TJ="$HERE/../tests/oracle/threejs/main.js"
+build "$TJ" "tj_none.exe" ""
+build "$TJ" "tj_inf.exe"  "$OUT/tj_safe.pins"
+build "$TJ" "tj_infobs.exe" "$OUT/tj.pins" --pins-allow-observed
+# The oracle's own expectation, checked here rather than trusted: a manifest
+# that changes what three.js PRINTS is a miscompile, and this is the one
+# fixture in the set whose correct output is committed.
+for t in none inf infobs; do
+  (cd "$OUT" && "./tj_$t.exe" > "tj_$t.out" 2>&1)
+  if ! cmp -s "$OUT/tj_$t.out" "$HERE/../tests/oracle/threejs/main.expected"; then
+    echo "MISCOMPILE: tj_$t.exe output differs from main.expected" >&2
+    exit 1
+  fi
+done
+echo "tj: byte-identical to main.expected in all three columns"
 echo "built"
 
 # --- 3. THE SPECS ------------------------------------------------------------
@@ -111,6 +133,8 @@ for key, iters in two.items():
     json.dump(spec, open(os.path.join(out, f"cspec_{key}.json"), "w"), indent=1)
 json.dump([{"name": t, "exe": f"./tm_{t}.exe"} for t in ["none", "hand", "inf", "infobs"]],
           open(os.path.join(out, "cspec_tm.json"), "w"), indent=1)
+json.dump([{"name": t, "exe": f"./tj_{t}.exe"} for t in ["none", "inf", "infobs"]],
+          open(os.path.join(out, "cspec_tj.json"), "w"), indent=1)
 json.dump([{"name": t, "exe": f"./cc_{t}.exe"} for t in ["hand", "inf"]],
           open(os.path.join(out, "cspec_cc.json"), "w"), indent=1)
 PY

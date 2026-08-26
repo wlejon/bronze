@@ -249,6 +249,304 @@ node bench/typed_array_loop.js
 > because mixing two sessions in one table is the thing this block exists to
 > prevent.
 
+- **Stage C1 (census: the manifest writes itself)** — 2026-08-25:
+  > [!NOTE]
+  > **A `--pins` manifest was hand-written. `bronze build --census <out.pins>`
+  > now writes one from a run of the program.** On the four pinned kernels the
+  > file it writes reproduces what the hand-written file bought
+  > (`env_slot_kernel` **10.60** vs 10.62 ns/iter, `nullish_pin_kernel` 11.24 vs
+  > 11.12 ns/step, `call_chain_kernel` 9.63/8.75 vs 9.50/8.75 ns, `mat4_kernel`
+  > 16.53 vs 15.98 — the one gap is isolated and explained below). On
+  > `three_math`, the fixture nobody ever wrote a manifest for, it **BEATS the
+  > hand-written one**: 40.41 ms unpinned, 21.40 with `bench/pins/threejs-math.pins`,
+  > **18.47 with the census's file**, and the whole of that last 2.9 ms is 23
+  > `param` entries no hand author bothered to write. Checksums identical in
+  > every cell of every table below. The loop is OFFLINE and there is no JIT
+  > anywhere in it: two compiles, one artefact, and the artefact is an ordinary
+  > text file a person can read, diff and commit.
+  >
+  > ```sh
+  > bronze build app.js -o census.exe --census app.pins   # 1. instrument
+  > ./census.exe                                          # 2. a representative run
+  > bronze build app.js -o app.exe --pins app.pins        # 3. the real build
+  > ```
+  >
+  > **The mechanism, and its one structural commitment.** A census SITE exists
+  > only where lowering ran out of static answers. That is E4's HANDOFF (c)
+  > written as code rather than as a filter: `planClosureParamNumbers`, the
+  > env-slot fixpoint and the signature join all run BEFORE any site is created,
+  > and every one of them removes sites. A parameter the proof typed `f64` has
+  > no manifest line to write, so it gets none — the overlap HANDOFF (c) warned
+  > would inflate a census's precision cannot be double-counted here because it
+  > never enters the count.
+  >
+  > | site | recorded at | the entry it supports |
+  > |---|---|---|
+  > | env slot | every store to a captured binding the fixpoint could not type | `function <fn>.<binding>: number` |
+  > | parameter | **the callee's entry** | `param <owner>(<p>): number` |
+  > | return | the `return` statement | `return <owner>: number` |
+  > | field | the same six store paths B1's barrier sits on | `<Class>.<field>: <kind>` |
+  > | opaque store | a store through a receiver inference types `dynamic` | *nothing* — it marks `@observed` |
+  >
+  > **Parameters at the CALLEE'S ENTRY, and that is the whole reason the
+  > instrument exists.** E4's proof enumerates the call sites of a nested
+  > declaration whose name never leaves callee position; the closure a factory
+  > HANDS OUT has call sites that enumeration provably cannot reach. The entry
+  > sees every call there is. On `env_slot_kernel` the census recovers
+  > `param render(iters): number` — the one line of the eleven E4 named as the
+  > case a manifest is still for — with no manifest and no annotation, and it
+  > proposes NOTHING for `stateChanges`/`frames` (fixpoint-proved) or for
+  > `setBlending`/`useProgram`/`setDepthFunc`'s parameters (E4-proved).
+  >
+  > The site table is handed over WHOLE at module init
+  > (`bronze_census_register`), not accumulated as sites are hit, so "never
+  > observed on this run" is a fact the file can state and a STATIC refusal
+  > works on a run that never reaches the code. Aggregation is a JOIN and never
+  > a vote: all sites Number is a pin, one site anything else is no pin, and no
+  > threshold changes that — a pin is spent *unchecked* at the read, so "almost
+  > always a number" is not a weaker version of the claim, it is a different and
+  > false one.
+  >
+  > **Two strengths, because B1's enforcement is not total.** A store through a
+  > receiver inference types `dynamic` gets no barrier while a class-known read
+  > elsewhere still spends the claim (B1's negative 1). The census reports that
+  > gap per FIELD NAME, which is the granularity the manifest itself has:
+  >
+  > ```
+  > Vector3.z: number              # every store to it is from a site the compiler can type
+  > Vector3.x: number @observed    # some store to a field named 'x' is not
+  > ```
+  >
+  > `@observed` is a **hard error in a default build**, by name, with the line
+  > quoted; `--pins-allow-observed` accepts it, and accepting it is the
+  > deliberate act of taking back B1's guarantee for one entry named in a file.
+  > The `infobs` columns below are the A/B for what refusing them costs, and on
+  > these fixtures it is nothing.
+  >
+  > **Four refusals, each a real shape the census met.** A return whose body can
+  > fall off its end (statically refused — reachability is a property of the
+  > program and no run can be asked about it). An owner spelling that would
+  > govern two IL functions (a `--pins` entry matches by suffix, and the second
+  > owner may have a defaulted parameter, which is a BUILD FAILURE rather than a
+  > wrong number). A field observed only ever nullish (widening it to
+  > `number-or-nullish` buys nothing — the pin licenses the coercing position on
+  > the *number* arm — and risks everything, because "not assigned yet" is what
+  > an optional field looks like on a short run and an object is what it holds
+  > on a long one; `Material.clippingPlanes` is exactly that). And a target no
+  > manifest line can spell, which is the second defect below.
+  >
+  > **EMITTED vs HAND, every fixture, every divergence explained.** The `inf`
+  > column is the census file with `@observed` stripped — what a DEFAULT build
+  > accepts.
+  >
+  > | fixture | hand | emitted | `@observed` | sites | divergence |
+  > |---|---:|---:|---:|---:|---|
+  > | `env_slot_kernel` | 12 | 9 | 0 | 13 | −5 `param`, +2 `return` |
+  > | `mat4_kernel` | 14 | 25 | 3 | 476 | −6 fields, +20 `param`, +1 `return` |
+  > | `nullish_pin_kernel` | 4 | 7 | 0 | 11 | **exact superset**: +1 `param`, +2 `return` |
+  > | `call_chain_kernel` | 25 | 27 | 0 | 28 | **exact superset**: +2 `return` |
+  > | `three_math` | 14 (borrowed) | 34 | 3 | 519 | −3 fields, +23 `param` |
+  > | `tests/oracle/threejs/main.js` | none | 101 | 20 | 1718 | — |
+  >
+  > Every divergence is one of three things and none of them is a miss:
+  >
+  > * **The five missing `param` lines on `env_slot_kernel` are the five E4's
+  >   proof made redundant.** The committed manifest says so itself — the module
+  >   built without them is byte-identical LLVM IR — and they stay there only
+  >   because the campaign ladder's pre-E4 rows need them. The census cannot
+  >   propose them because there is no site. HANDOFF (c)'s overlap, visible as
+  >   an absence rather than as a correction.
+  > * **The missing FIELD entries are classes the run never touched.**
+  >   `mat4_kernel` never constructs a `Vector2` or a `Matrix3` and never sets an
+  >   `Euler`; `three_math` is missing exactly `Matrix3.elements` and
+  >   `Vector2.x/y` for the same reason. The hand manifest is written against
+  >   the LIBRARY, the census against the RUN. It costs nothing here — code that
+  >   never runs is on no hot path, and `fieldsonly` below is 20.44 ms against
+  >   the hand manifest's 21.40 — but it is the sharpest single statement of
+  >   what a census is and is not.
+  > * **The extra entries are `param` and `return` lines a hand author never
+  >   bothered with.** They are what wins `three_math` and they are what found
+  >   the first defect below.
+  >
+  > `mat4_kernel`'s `Vector3.x/y/z` is the cell worth staring at: the census
+  > emits them `@observed` and the hand manifest makes the same claim unmarked.
+  > **The census is right and the hand manifest is optimistic.**
+  > `Matrix4.decompose` writes `position.x = te[12]` and `scale.x = sx` through
+  > receivers inference types `dynamic`, so those stores carry no barrier while
+  > every `Vector3`-typed read still spends the claim. That is B1's negative 1
+  > alive in real three.js, found by an instrument rather than by a reader.
+  >
+  > **TWO COMPILER DEFECTS THE CENSUS FOUND**, and finding them is the argument
+  > for the instrument. Neither is a census bug; both are shapes a hand author
+  > had never written down and so had never tripped.
+  >
+  > 1. **A pinned RETURN cost the same function its parameter proof**
+  >    (`0da1529`). `flow_expr.cpp`'s call rule answers a pinned
+  >    `return <owner>: number` early, and answering it by RETURNING skipped the
+  >    loop just below that joins the site's argument types into the callee's
+  >    `observedParams`. So `return run: number` — an entry no hand manifest in
+  >    the tree contains, which the census proposes because lowering left `run`'s
+  >    return `Dynamic` — silently un-typed `run`'s own parameter:
+  >    `func run(%0: f64) -> dynamic` became `func run(%0: dynamic) -> f64` and
+  >    the hot loop's `i < iters` went from an `fcmp` to a `box.f64` plus
+  >    `rel.lt`. **1.82 ns/call on `mat4_kernel`**, isolated by bisecting the
+  >    manifest one line at a time after partition placement was checked first
+  >    and cleared. The pin is noted instead of returned and still wins over the
+  >    join for the RESULT. A pin adds a promise; it must never subtract a
+  >    proof. With the fix the inferred manifest gives `func run(%0: f64) -> f64`,
+  >    strictly better than the hand manifest's `f64 -> dynamic`.
+  > 2. **A target no manifest line can spell was emitted anyway** (`d2d1650`).
+  >    A class accessor lowers to an IL function named `Euler.set x` — a space in
+  >    the middle — so a census of the three.js oracle proposed
+  >    `param Euler.set x(value): number` and the build handed that file refused
+  >    to parse it. Getters, computed method names and quoted field keys arrive
+  >    the same way. This is the census's worst failure mode and the only one it
+  >    has: not a wrong claim, which B1 turns into a `TypeError`, but a file the
+  >    next build cannot read. The manifest's identifier grammar is now applied
+  >    where a site is created; **nine of the oracle's 110 proposals** were of
+  >    this kind, and both defects have a regression test.
+  >
+  > **THE ROUND TRIP, one idle session, ONE compiler binary**
+  > (`bash bench/tools/census_ab.sh <bronze.exe> <dir>`, then `interleave.py`;
+  > `selftimed.py` for `call_chain`). Every `inf` column was censused minutes
+  > before the build that consumed it. Kernels at 101 rounds by two-count wall
+  > delta, millisecond fixtures at 51 rounds raw.
+  >
+  > | | hand | **inferred** | inferred, `@observed` accepted |
+  > |---|---:|---:|---:|
+  > | `env_slot_kernel` ns/iter | 10.62 | **10.60** | — |
+  > | `mat4_kernel` ns/call | **15.98** | 16.53 | 16.53 |
+  > | `nullish_pin_kernel` ns/step | **11.12** | 11.24 | — |
+  > | `call_chain_kernel` chained / flat | **9.50 / 8.75** | 9.63 / 8.75 | — |
+  >
+  > Checksums `126000020 / 12600020`, `400000 / 940000`,
+  > `825756/700159/NaN/-563350`, `296000000 / 296000000` — every cell.
+  >
+  > **`mat4_kernel` is the one cell that does not reproduce, and it bisects
+  > cleanly** (same session, 101 rounds, same checksums):
+  >
+  > | manifest | ns/call |
+  > |---|---:|
+  > | hand | **15.96** |
+  > | inferred | 16.58 |
+  > | inferred − `return run: number` | 16.43 |
+  > | inferred − the 20 `param Matrix4.set(nXX)` | 16.10 |
+  >
+  > So 0.48 of the 0.62 ns is the twenty `Matrix4.set` parameter pins, and the
+  > cause is not the analysis. `a.set(...)` is called TWICE, outside the loop.
+  > Pinning its sixteen parameters gives it a typed entry, and LLVM then inlines
+  > `Matrix4.set.inl` into `run` — the post-optimization body of `run` goes from
+  > 3827 lines with two `call ...Matrix4.set.inl` to 4609 lines with none, +94
+  > loads and +24 stores, with `fmul` and `fadd` unchanged at 65 and 51.
+  > Partition placement was checked FIRST, as E4/E5 require, and cleared: two
+  > partitions in every column and E5's `available_externally`
+  > `multiplyMatrices.inl` present in the partition holding `run` in all of
+  > them. **A sound pin made a cold sixteen-argument setter cheap enough to
+  > inline into the hot function.** That is the inliner's cost model, not the
+  > manifest's soundness, and the census's own output is what makes it legible:
+  > the entry reads `# 2 obs / 1 site` on a twenty-million-iteration run, which
+  > is a line a reader can delete.
+  >
+  > **`three_math`, the fixture with no hand manifest, and the stage's real
+  > result** (51 rounds, raw ms, checksum `405000` in every cell, reproduced
+  > three times to within 0.13 ms):
+  >
+  > | manifest | ms | vs unpinned |
+  > |---|---:|---:|
+  > | none | 40.41 | — |
+  > | hand `bench/pins/threejs-math.pins` | 21.40 | 1.89× |
+  > | census, fields only | 20.44 | 1.98× |
+  > | hand fields + census `param` entries | 18.40 | 2.20× |
+  > | **census (`inf`, default-safe)** | **18.47** | **2.19×** |
+  > | census, `@observed` accepted | 18.46 | 2.19× |
+  >
+  > The campaign ladder builds `three_math` with NO manifest, which is why its
+  > published column has read ~41-45 ms for five stages: **the fixture was
+  > leaving 2.2× on the table and nobody had written the file.** The census
+  > wrote it in one run. The attribution row is the point — hand fields plus the
+  > census's `param` entries is 18.40 and the census's own file is 18.47, so
+  > essentially all of the 2.9 ms over the hand manifest is twenty-three
+  > `param <Class>.<method>(<p>): number` lines, and the census's smaller field
+  > set costs nothing.
+  >
+  > **THE ENFORCEMENT INTERLOCK, end to end.** Census a program that only ever
+  > passes numbers; then run a program that passes a string:
+  >
+  > ```
+  > $ ./base_census.exe && grep param lock.pins
+  > checksum 7
+  > param render(n): number  # 1 obs / 1 site
+  > $ ./violate.exe                      # built with --pins lock.pins
+  > slot true pin 'param render(n): number' violated: the value is a string
+  > alive 3
+  > ```
+  >
+  > `true` is `e instanceof TypeError`, the message names a LINE OF THE FILE THE
+  > CENSUS WROTE, and `alive 3` is the same program continuing afterwards. That
+  > is the precision/recall argument made concrete: the census may be wrong
+  > about a path it did not see, and being wrong is a diagnostic that points at
+  > the line to delete.
+  >
+  > **HONEST NEGATIVES.**
+  >
+  > * `tests/oracle/threejs/main.js` — the biggest real program in the tree —
+  >   censuses to 101 entries over 1718 sites and builds and runs
+  >   **byte-identical to `main.expected`** in all three columns, but it is not
+  >   a benchmark: the whole program is ~9 ms of wall, essentially all process
+  >   start. Measured anyway and quoted as the noise it is: none **9.02**, inf
+  >   **9.02**, infobs **8.99** ms. `three_math` is the real answer to "a
+  >   fixture nobody wrote a manifest for".
+  > * Refusing `@observed` costs nothing measurable anywhere here (`inf` and
+  >   `infobs` agree within the harness's width on both `mat4` and `three_math`).
+  >   That is a statement about these fixtures, not about the mechanism: the
+  >   entries refused on `mat4` are `Vector3.x/y/z` and this kernel's hot loop
+  >   is `Matrix4` arithmetic.
+  > * `mat4_kernel` and `nullish_pin_kernel` are both slightly SLOWER on the
+  >   inferred manifest (+0.55 ns/call, +0.12 ns/step). The first is explained
+  >   above; the second is at the edge of the harness's width and is not
+  >   explained further, because chasing 0.12 ns would mean quoting a number
+  >   this protocol cannot defend.
+  > * The census reports the dynamic-receiver gap; it cannot close it. That
+  >   still needs a runtime-visible pin table keyed by shape.
+  >
+  > **A census build is an INSTRUMENT** — one plain call per site, a string per
+  > target, no fast path — and it is never benchmarked, never shipped and never
+  > linked into anything that is. `bronze il --census <out>` prints the site
+  > table without running anything, which is the cheap way to see what a program
+  > would be asked about.
+  >
+  > **CAMPAIGN CLOSE: what inference cannot see, and the next lever.** Three
+  > things, in order of what they cost:
+  >
+  > 1. **A path the run did not take.** Everything but the four static refusals
+  >    is an observation, and a manifest from a thin run is a promise about a
+  >    thin run. B1 is what makes that survivable rather than reckless, and it is
+  >    why every entry carries `# <n> obs / <m> sites`: forty sites with seven
+  >    observations each is a library the run barely touched, and a reader
+  >    deciding whether a run was representative wants to know which.
+  > 2. **The dynamic-receiver gap**, marked and not closed.
+  > 3. **Anything that is not a Number.** Every form in the manifest is about
+  >    numbers, so the census's whole vocabulary is numbers. Its refusal comments
+  >    are full of shapes it can SEE and cannot SAY — `Material`'s two dozen
+  >    monomorphic booleans, `BufferGeometry.attributes`' single object shape,
+  >    `Euler._order`'s one string, `Object3D.quaternion`'s one object. Those are
+  >    the entries a wider `--pins` grammar would license, and the evidence for
+  >    them is already in the file, commented out.
+  >
+  > **The next lever is unchanged from E4's HANDOFF (a): a scoped escape
+  > analysis over environment records.** `env_slot_kernel` is 2.1× off node and
+  > the whole of that gap is the record — `bench/env_slot_kernel_registers.js`,
+  > same arithmetic and same checksums with the state in bindings no closure
+  > captures, puts bronze within 19 % of node. What C1 adds to that case is an
+  > input nothing else in the compiler produces: a **per-binding site count**.
+  > The manifest says how many distinct stores stand behind each captured
+  > binding and how many times each one ran — `function WebGLState.currentSrc:
+  > number  # 6000001 obs / 2 sites`. A binding with two sites and six million
+  > observations is a record slot that wants to be a register with a write-back;
+  > a binding with forty sites and four observations never will be. The census
+  > was built to write promises and turns out to also be the profiler the next
+  > mechanism needs.
+
 - **Stage B1 (pin enforcement: write barriers)** — 2026-08-25:
   > [!NOTE]
   > **A `--pins` entry was a promise nothing checked: a program that broke one
