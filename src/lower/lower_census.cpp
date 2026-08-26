@@ -243,21 +243,25 @@ void Lowerer::refuseAmbiguousCensusOwners() {
 
     // Every spelling of every IL function name, and how many distinct functions
     // each reaches. `mod1.Matrix4.multiplyMatrices` is reachable as itself, as
-    // `Matrix4.multiplyMatrices` and as `multiplyMatrices`.
-    std::map<std::string, std::set<std::string>> spellingOwners;
+    // `Matrix4.multiplyMatrices` and as `multiplyMatrices`. Keyed on function
+    // IDENTITY, not name: two factories each declaring a nested `get` produce
+    // two distinct IL functions with the SAME name (three.js does exactly this,
+    // one of them with a defaulted parameter), and a set of names would
+    // collapse them into an owner that looks unambiguous.
+    std::map<std::string, std::set<const il::Function*>> spellingOwners;
     // The env-slot form matches on the LAST component alone
     // (`PinManifest::envSlotPinned`), which is a narrower rule and needs its
     // own table.
-    std::map<std::string, std::set<std::string>> lastComponentOwners;
+    std::map<std::string, std::set<const il::Function*>> lastComponentOwners;
     for (const il::Function& fn : ilModule_.functions) {
         if (fn.name.empty()) continue;
-        spellingOwners[fn.name].insert(fn.name);
+        spellingOwners[fn.name].insert(&fn);
         size_t begin = 0;
         while ((begin = fn.name.find('.', begin)) != std::string::npos) {
             ++begin;
-            spellingOwners[fn.name.substr(begin)].insert(fn.name);
+            spellingOwners[fn.name.substr(begin)].insert(&fn);
         }
-        lastComponentOwners[lastComponent(fn.name)].insert(fn.name);
+        lastComponentOwners[lastComponent(fn.name)].insert(&fn);
     }
 
     std::vector<std::pair<std::string, il::CensusSite>> refusals;

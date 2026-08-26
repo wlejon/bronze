@@ -321,6 +321,39 @@ TEST_CASE("a name no manifest line can spell is refused, so the file still parse
     CHECK(pinned == run.output);
 }
 
+TEST_CASE("two same-named functions make an owner ambiguous even as duplicates") {
+    // Two factories each declare a nested `get` — two DISTINCT IL functions
+    // with the SAME name (three.js's WebGLRenderLists/WebGLRenderStates pair,
+    // one of them with a defaulted parameter). A `param get(x)` entry matches
+    // both by spelling, and applied to the defaulted one it is a hard build
+    // error. The ambiguity table must count functions, not names: a set of
+    // names collapses the duplicates into an owner that looks unique.
+    const std::string src =
+        "function A() {\n"
+        "  function get(x) { return x + 1; }\n"
+        "  return get;\n"
+        "}\n"
+        "function B() {\n"
+        "  function get(x = 5) { return x + 2; }\n"
+        "  return get;\n"
+        "}\n"
+        "const a = A(), b = B();\n"
+        "let s = a(1) + a(2);\n"
+        "s += b();\n"
+        "console.log(s);\n";
+    const CensusRun run = census("dupname", src);
+    REQUIRE(run.output == "12\n");
+    for (const auto& e : entriesOf(run.manifest)) CHECK(e.find("param get") == std::string::npos);
+    CHECK(run.manifest.find("# refused param get(x)") != std::string::npos);
+
+    int status = 1;
+    std::string err;
+    const std::string pinned = buildWithPins("dupname", src, run.manifestPath,
+                                             /*allowObserved=*/false, &status, &err);
+    REQUIRE_MESSAGE(status == 0, err);
+    CHECK(pinned == run.output);
+}
+
 TEST_CASE("a field only ever seen nullish is refused, not widened") {
     const std::string src =
         "class Mat { constructor() { this.planes = null; } }\n"
