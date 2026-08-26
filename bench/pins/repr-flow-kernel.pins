@@ -1,0 +1,9 @@
+# bench/repr_flow_kernel.js — one class, three number fields, both instances.
+#
+# The pins are what make the six loads and six stores in the loop body face
+# DOUBLE slots; without them the same program is stage R0 and the kernel
+# measures nothing. The `nanScore` cell shares the class, so the NaN it computes
+# lands in the same double slots the loop uses.
+Cell.p: number
+Cell.q: number
+Cell.r: number

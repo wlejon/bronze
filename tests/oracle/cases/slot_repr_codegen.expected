@@ -1,0 +1,29 @@
+nan self-inequal: true true true
+nan isNaN: true true true
+nan typeof: number number number
+nan Object.is: true true
+nan String: NaN NaN NaN
+nan JSON: {"p":null,"q":null,"r":null}
+nan arith: true true
+nan relay: true true true
+nan relay typeof: number number number
+zero: true -Infinity true
+inf: Infinity -Infinity 0 true
+zero json: {"p":0,"q":null,"r":null}
+before: 3.75 1 1.5 1.25
+generalized: 1 a string 1.25 string
+after: 6.75 2 2.5 2.25 number
+mate untouched: 9.5 8.5 7.5
+pre-generalized: 9.75 3 3.5 3.25
+int32: 4 12 number true Infinity
+int32 neg: -1 true -0.5
+int32 then double: 0.5 true
+accessor: 5 10 number
+accessor swap: 42.5 8 8.5 8.25
+dict: 1.5 4.5 3.5 1.25 2.25
+dict keys: p,r,a,b,q
+dict nan: true number
+live: 40009
+alias survived: true true true
+nan survived: true 2.5 3.5
+alias typeof: number number number
