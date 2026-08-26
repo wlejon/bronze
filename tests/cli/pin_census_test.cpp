@@ -292,6 +292,35 @@ TEST_CASE("a polymorphic site is not emitted, and the file says why") {
     CHECK(run.manifest.find("# refused Box.v (field): polymorphic:") != std::string::npos);
 }
 
+TEST_CASE("a name no manifest line can spell is refused, so the file still parses") {
+    // An ACCESSOR lowers to an IL function named `Euler.set x` — a space in the
+    // middle — and `param Euler.set x(value): number` is not a line the parser
+    // accepts. This is the census's worst failure mode and the only one it can
+    // have: not a wrong claim, which stage B1 catches, but a file the build
+    // handed it REFUSES TO READ. It cost the three.js oracle nine entries.
+    const std::string src =
+        "class Euler {\n"
+        "  constructor() { this._x = 0; }\n"
+        "  set x(value) { this._x = value; }\n"
+        "  get x() { return this._x; }\n"
+        "}\n"
+        "const e = new Euler();\n"
+        "e.x = 4;\n"
+        "console.log(e.x);\n";
+    const CensusRun run = census("accessor", src);
+    REQUIRE(run.output == "4\n");
+    for (const auto& e : entriesOf(run.manifest)) CHECK(e.find("set x") == std::string::npos);
+    CHECK(run.manifest.find("# refused param Euler.set x(value)") != std::string::npos);
+
+    // The point of the refusal: what IS in the file is a file that builds.
+    int status = 1;
+    std::string err;
+    const std::string pinned = buildWithPins("accessor", src, run.manifestPath,
+                                             /*allowObserved=*/false, &status, &err);
+    REQUIRE_MESSAGE(status == 0, err);
+    CHECK(pinned == run.output);
+}
+
 TEST_CASE("a field only ever seen nullish is refused, not widened") {
     const std::string src =
         "class Mat { constructor() { this.planes = null; } }\n"

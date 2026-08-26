@@ -39,6 +39,70 @@ std::string lastComponent(const std::string& name) {
     return dot == std::string::npos ? name : name.substr(dot + 1);
 }
 
+// The manifest's identifier grammar, which is types/pins.cpp's `isIdent` and
+// `isDottedIdent` and has to stay them: a target this predicate accepts and the
+// parser then rejects is a manifest that FAILS THE BUILD, which is the one
+// outcome the census exists to prevent.
+//
+// It is not a hypothetical. A class accessor lowers to an IL function named
+// `Euler.set x` — a space in the middle — so a run of the three.js oracle
+// proposed `param Euler.set x(value): number` and the build handed that file
+// refused to parse it. A getter, a computed method name, a quoted field key
+// (`o["a b"] = 1`) and a `Symbol`-keyed member all reach here the same way.
+bool isIdentStart(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
+}
+bool isIdent(const std::string& s) {
+    if (s.empty() || !isIdentStart(s[0])) return false;
+    for (size_t i = 1; i < s.size(); ++i) {
+        if (!isIdentStart(s[i]) && (s[i] < '0' || s[i] > '9')) return false;
+    }
+    return true;
+}
+bool isDottedIdent(const std::string& s) {
+    size_t begin = 0;
+    while (true) {
+        const auto dot = s.find('.', begin);
+        if (!isIdent(s.substr(begin, dot == std::string::npos ? dot : dot - begin))) return false;
+        if (dot == std::string::npos) return true;
+        begin = dot + 1;
+    }
+}
+
+// Can a manifest LINE be written for this target at all? The target is already
+// in the file's own spelling, so the test is the parser's, applied to the parts
+// the parser will split out.
+bool emittableTarget(const std::string& target, il::CensusSite kind) {
+    switch (kind) {
+        case il::CensusSite::Param: {
+            const auto open = target.find('(');
+            if (target.rfind("param ", 0) != 0 || open == std::string::npos ||
+                target.back() != ')') {
+                return false;
+            }
+            return isDottedIdent(target.substr(6, open - 6)) &&
+                   isIdent(target.substr(open + 1, target.size() - open - 2));
+        }
+        case il::CensusSite::Return:
+            return target.rfind("return ", 0) == 0 && isDottedIdent(target.substr(7));
+        case il::CensusSite::EnvSlot: {
+            if (target.rfind("function ", 0) != 0) return false;
+            const std::string rest = target.substr(9);
+            const auto dot = rest.rfind('.');
+            if (dot == std::string::npos) return false;
+            return isDottedIdent(rest.substr(0, dot)) && isIdent(rest.substr(dot + 1));
+        }
+        case il::CensusSite::Field: {
+            const auto dot = target.rfind('.');
+            if (dot == std::string::npos) return false;
+            return isIdent(target.substr(0, dot)) && isIdent(target.substr(dot + 1));
+        }
+        case il::CensusSite::OpaqueFieldStore:
+            return isIdent(target);
+    }
+    return false;
+}
+
 }  // namespace
 
 // The pin's message exists to be grepped for in the manifest, so it has to read
@@ -57,6 +121,15 @@ std::string Lowerer::manifestOwnerName(const std::string& ilName) {
 
 void Lowerer::addCensusSite(const std::string& target, il::CensusSite kind, bool refuses) {
     if (!censusEnabled() || target.empty()) return;
+    if (!emittableTarget(target, kind)) {
+        // A name no manifest line can spell. An OPAQUE row is dropped outright
+        // — it names no entry, so it can mark none `@observed`, and a row for it
+        // could only ever be noise. Everything else becomes a REFUSAL, because
+        // the shape is real and a reader of the file should see that the census
+        // met it and could not write it down.
+        if (kind == il::CensusSite::OpaqueFieldStore) return;
+        refuses = true;
+    }
     il::Module::CensusSiteEntry entry;
     entry.keyIndex = getKeyConstantIndex(target);
     entry.info = static_cast<uint32_t>(kind) | (refuses ? BRONZE_ABI_CENSUS_REFUSES : 0u);
@@ -71,6 +144,10 @@ void Lowerer::emitCensusRecord(Value val, const std::string& target, il::CensusS
                                il::Function& ilFn) {
     if (!censusEnabled() || target.empty()) return;
     addCensusSite(target, kind, /*refuses=*/false);
+    // The row above is a refusal now, and a refusal outranks every observation
+    // in the writer (`refusalOf`), so the instruction would only cost the run
+    // time it takes to be ignored.
+    if (!emittableTarget(target, kind)) return;
     // The BOXED form, for the reason the barrier tests the boxed form: it is
     // the one word every shape question is asked of, and it is the word the
     // store about to follow will write.
