@@ -594,9 +594,11 @@ void Heap::forward_value(Value& val) {
 // be: shapes are arena-allocated and immortal, so the word this object carries
 // is as good after the copy as before it.
 //
-// WHY IT IS SAFE NOT TO. In stage R1 every double slot is written through
-// `ObjectHeader::setSlot`, which canonicalizes — so the word is also a legal
-// number-tagged Value and `forward_value` would have returned from it anyway.
+// WHY IT IS SAFE NOT TO. In stage R1 a double slot only ever receives a
+// Number: through `ObjectHeader::setSlot`, which canonicalizes, or from a
+// generated arm that tested for one first — and bronze boxes a Number as its
+// own bits. So the word is also a legal number-tagged Value and
+// `forward_value` would have returned from it anyway.
 // The precision is therefore a no-op TODAY and load-bearing the moment stage
 // R2's codegen writes a slot without going through the runtime. Landing it now
 // is what makes that a codegen change rather than a collector change.
@@ -760,8 +762,9 @@ void Heap::verify_space(const Semispace& space) const {
         // other structural invariants are checked: every slot a shape calls a
         // double must hold a Number. It is the tripwire for a write that
         // reached a double slot WITHOUT going through `ObjectHeader::setSlot` —
-        // a generated raw store whose cache entry should have been refused, or
-        // a runtime path that learned to write a slot and not to ask. Such a
+        // a generated raw store whose arm should have tested the value for
+        // Number, or a runtime path that learned to write a slot and not to
+        // ask (llvm_prop_set.cpp, llvm_static_slot.cpp). Such a
         // store is invisible in ordinary running (the bits are still a legal
         // Value) and a type confusion the moment stage R2 loads them as an f64.
         if (hdr->tag == static_cast<uint16_t>(Tag::Object) && hdr->flags == HeapKind::Plain) {

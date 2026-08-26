@@ -332,7 +332,12 @@ node bench/typed_array_loop.js
   > under it a field that alternates re-splits the shape tree on every
   > constructor, because the transition arm's cached node outlives the sticky
   > demotion mark. Pinned fields do not alternate, which is the whole
-  > difference between a promise and an observation.
+  > difference between a promise and an observation. (d) An `Int32`-tagged
+  > store — what an `il::Type::I32` boxes into — misses the arms every time,
+  > because its bits are a tag and a payload rather than an f64; a pinned field
+  > written as `this.n = i | 0` therefore pays a helper call per store. None of
+  > the four kernels writes one (`three_math` reaches the helper 40 times in
+  > ~660,000 stores), so nothing above measures it.
 
 - **Stage C1 (census: the manifest writes itself)** — 2026-08-25:
   > [!NOTE]

@@ -50,6 +50,16 @@ A miss costs one helper call per *field*, not per store: `setSlot` generalizes
 the slot, and the cache entry refilled against the new shape has no flag left to
 test.
 
+**The one store that misses repeatedly** is an `Int32`-tagged value — what
+lowering boxes an `il::Type::I32` into, so `this.n = i | 0` and friends. Its
+bits are a tag and a payload, not an f64, so the arms refuse it and `setSlot`
+converts; the slot stays a double one, so the *next* such store misses too. It
+is correct, and it is a helper call per store for a field written that way. The
+arms could convert inline (a `sitofp` and a select), at the price of those
+instructions on every property store in the program whether or not a double slot
+is anywhere near it — which is a trade stage R2 should make, since its arms have
+to convert on the way in anyway.
+
 `Heap::verify_space` (under `BRONZE_HEAP_VERIFY=1`) is the tripwire for a write
 that got past all of them: every slot a shape calls a double must hold a Number,
 and a violation names the object and the slot.
