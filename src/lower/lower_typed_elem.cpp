@@ -28,7 +28,6 @@
 // back to the ordinary `elem.set` rather than being coerced here (ToNumber of
 // an object can run user code; the helper owns that).
 
-#define _CRT_SECURE_NO_WARNINGS
 #include <cstdlib>
 #include <optional>
 #include <string>

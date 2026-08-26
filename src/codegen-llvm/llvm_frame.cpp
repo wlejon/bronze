@@ -1,10 +1,5 @@
 #include "codegen-llvm/llvm_frame.h"
 
-// getenv (BRONZE_NO_FRAME_MERGE), as the rest of the backend's seams: the
-// CRT-deprecation opt-out, not a blanket C4996 disable.
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS
-#endif
 
 #include <algorithm>
 #include <cstdlib>

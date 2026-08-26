@@ -1,8 +1,3 @@
-// For `getenv`, which MSVC deprecates and every other toolchain does not. The
-// compile-time seam below is read exactly once, from a single-threaded driver —
-// the thread-safety the _s variants buy has nothing to hold onto here. Same
-// reasoning, and same one-line define, as lower_infer.cpp.
-#define _CRT_SECURE_NO_WARNINGS
 
 #include "types/infer.h"
 

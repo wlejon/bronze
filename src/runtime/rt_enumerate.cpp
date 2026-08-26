@@ -12,8 +12,6 @@
 // where several levels define it. Per level the order is own-enumerable order:
 // integer -like keys ascending, then the rest in insertion order.
 
-#define _CRT_SECURE_NO_WARNINGS
-
 #include <charconv>
 #include <cstdlib>
 #include <cstring>

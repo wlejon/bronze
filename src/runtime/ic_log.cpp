@@ -1,5 +1,3 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include "runtime/ic_log.h"
 
 #include <algorithm>

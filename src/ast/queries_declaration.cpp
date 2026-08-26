@@ -6,9 +6,6 @@
 // to the enclosing FUNCTION however deeply it is written (ECMA-262 8.6.2), and
 // nothing at all crosses a nested function boundary. Three depths, one walk.
 
-// For `getenv`, which MSVC deprecates and every other toolchain does not. The
-// one seam here is read exactly once, from a single-threaded driver.
-#define _CRT_SECURE_NO_WARNINGS
 
 #include <cstdlib>
 #include <cstring>

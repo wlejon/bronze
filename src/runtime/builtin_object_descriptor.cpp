@@ -1,5 +1,3 @@
-// getenv, as heap.cpp: the CRT-deprecation opt-out, not a blanket C4996
-#define _CRT_SECURE_NO_WARNINGS
 
 // The property descriptor as a reified object: the four `Object` members that
 // convert between it and bronze's internal form.

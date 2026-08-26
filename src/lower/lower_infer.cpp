@@ -10,13 +10,6 @@
 // is the uniform dynamic convention, which is always sound. A proven answer
 // only ever removes boxing. There is no speculation and no deoptimization.
 
-// For `getenv`, which MSVC deprecates and every other toolchain does not. The
-// compile-time seams are read exactly once each, at construction, from a
-// single-threaded driver — the thread-safety the _s variants buy has nothing to
-// hold onto here. Same reasoning, and same one-line define, as
-// lower_typed_elem.cpp.
-#define _CRT_SECURE_NO_WARNINGS
-
 #include <cstdlib>
 #include <optional>
 #include <string>

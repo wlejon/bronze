@@ -1,6 +1,3 @@
-// getenv-free, but the CRT-deprecation opt-out matches the house pattern for
-// files that touch platform APIs directly.
-#define _CRT_SECURE_NO_WARNINGS
 
 #include "runtime/symbolize.h"
 

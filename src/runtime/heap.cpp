@@ -1,5 +1,3 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include "runtime/heap.h"
 
 #include "abi/bronze_abi.h"

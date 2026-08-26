@@ -1,7 +1,3 @@
-// For `getenv`, which MSVC deprecates and every other toolchain does not. Same
-// reasoning and same one-line define as lower_scope.cpp: the one seam here is
-// read exactly once, at first use, from a single-threaded driver.
-#define _CRT_SECURE_NO_WARNINGS
 
 #include "types/pins.h"
 

@@ -2,10 +2,6 @@
 // captured one is read and written, and how a closure value is produced over
 // the environment innermost at its creation site.
 
-// For `getenv`, which MSVC deprecates and every other toolchain does not. Same
-// reasoning and same one-line define as lower_infer.cpp: the one seam here is
-// read exactly once, at construction, from a single-threaded driver.
-#define _CRT_SECURE_NO_WARNINGS
 
 #include <algorithm>
 #include <cstdlib>
