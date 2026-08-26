@@ -586,6 +586,20 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                          static_cast<il::PinBarrier>(inst.immI32));
             return true;
         }
+        // The PIN CENSUS observation (src/runtime/pin_census.h). One plain call
+        // per site, with no inline form and no fast path: a census build is an
+        // instrument and is never a build anything is measured on, so the
+        // cheapest thing to get right is the one that has the fewest ways to be
+        // wrong.
+        case il::Op::CensusRecord: {
+            if (!needs(1, false, "Invalid operands for CensusRecord")) return false;
+            llvm::Value* val = operand(inst, 0, "Undefined operand in CensusRecord instruction");
+            if (!val) return false;
+            builder_.CreateCall(abi.bronze_census_record,
+                                {emitKeyId(builder_, shared_.tables, inst.keyIndex),
+                                 builder_.getInt32(static_cast<uint32_t>(inst.immI32)), val});
+            return true;
+        }
         case il::Op::PrivateNew:
         case il::Op::PrivateHas:
         case il::Op::PrivateGet:

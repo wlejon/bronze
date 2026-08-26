@@ -66,6 +66,7 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const SourceSet* sources = nullptr,
                                       InferStatsCollector* stats = nullptr,
                                       bool assumeNoBigInt = false,
-                                      const types::PinManifest* pins = nullptr);
+                                      const types::PinManifest* pins = nullptr,
+                                      const std::string& censusOutPath = {});
 
 }  // namespace bronze::lower

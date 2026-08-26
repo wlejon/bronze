@@ -54,9 +54,15 @@ public:
             const SourceSet* sources = nullptr,
             InferStatsCollector* stats = nullptr,
             bool assumeNoBigInt = false,
-            const types::PinManifest* pins = nullptr)
+            const types::PinManifest* pins = nullptr,
+            const std::string& censusOutPath = {})
         : astModule_(astModule), diags_(diags), inference_(inference),
           pins_(pins), sources_(sources), stats_(stats) {
+        // Assigned rather than initialized: the member sits with the rest of
+        // the census machinery, far below the four the list already names, and
+        // an initializer list out of declaration order is a warning this build
+        // treats as an error.
+        censusOutPath_ = censusOutPath;
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
         if (stats_ && sources_) stats_->setSourceSet(sources_);
         typedElemDisabled_ = typedElemSeamDisabled() ||
@@ -574,6 +580,55 @@ private:
     // no-op for every other element kind, because every other one is a proven
     // view whose store converts rather than reinterprets.
     void emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn);
+
+    // --- the PIN CENSUS (`--census`, src/runtime/pin_census.h, stage C1) -----
+    //
+    // The mirror image of the barriers above. A barrier is emitted where a
+    // manifest HAS made a claim; a census record is emitted where a manifest
+    // COULD make one and nothing in the compiler can — an env slot the fixpoint
+    // refused, a parameter no proof typed, a return the convention left
+    // Dynamic, a store to a field whose contents are unknown. Everything the
+    // proofs own is silently absent, which is what stage E4's HANDOFF (c) asked
+    // for: the census must not spend its budget on what is proved for free.
+    bool censusEnabled() const { return !censusOutPath_.empty(); }
+    // An IL function's name as a MANIFEST spells it: the module linker's
+    // `modN.` prefix dropped, everything else kept. Shared by the barriers
+    // (which name the line a violation broke) and by the census (which writes
+    // that line), because two spellings would be two different entries and the
+    // loop from a thrown TypeError back to the file that caused it would not
+    // close (stage B1's HANDOFF (d), item 2).
+    static std::string manifestOwnerName(const std::string& ilName);
+    std::string censusOutPath_;
+    // One census site: an instruction observing `val`, and a row in the
+    // module's site table so that the site is known even if it never runs.
+    void emitCensusRecord(Value val, const std::string& target, il::CensusSite kind,
+                          il::Function& ilFn);
+    // A row with NO instruction: the site table alone. Used for the refusals
+    // that need no observation — an owner spelling that would govern two
+    // different IL functions.
+    void addCensusSite(const std::string& target, il::CensusSite kind, bool refuses);
+    // A store to `receiver.<key>` under `--census`: one `Field` site naming the
+    // receiver's class when inference can name it, one `OpaqueFieldStore` site
+    // naming the bare field when it cannot. The second is B1's negative 1
+    // turned into data — it is what marks an entry `@observed`.
+    void emitCensusFieldRecord(const ast::Expr& receiver, const std::string& key, Value val,
+                               il::Function& ilFn);
+    // The class name a field entry would be written against, or empty. Resolved
+    // the way `pinnedFieldAt` resolves it and for the same reason. `opaque` is
+    // set when the receiver is one B1's barrier could not hold — inference
+    // types it `dynamic`, or as an object of no known shape class.
+    std::string censusFieldOwner(const ast::Expr& receiver, bool* opaque) const;
+    // A `param` / `return` entry's owner as the manifest spells it, and whether
+    // that spelling is UNAMBIGUOUS across the module's IL functions. An entry
+    // matches an IL name by suffix (types/pins.cpp `forEachSpelling`), so a
+    // bare `clamp` written for a module function would also govern a
+    // `Bar.clamp` elsewhere — and that one may be a shape the pin cannot be
+    // honoured on at all, which is a hard error rather than a wrong number. The
+    // ambiguous spellings are refused by a table row.
+    void refuseAmbiguousCensusOwners();
+    // Sites created for `param`/`return`/`function` entries, by owner spelling,
+    // so the pass above can find the ambiguous ones. Filled as sites are made.
+    std::vector<std::pair<std::string, il::CensusSite>> censusSignatureOwners_;
     // The scope innermost right now takes its lexical bindings: each slot
     // marked, filled with the uninitialized marker, and BOUND under its name.
     // `scopeIndex` is the entry in `envScopes_` that owns them.

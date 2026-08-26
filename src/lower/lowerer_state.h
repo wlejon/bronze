@@ -99,6 +99,17 @@ struct EnvScopeInfo {
     // planner that fills it is const and interning a key is not.
     std::vector<bool> slotIsPinned;
     std::vector<std::string> slotPinText;
+    // The PIN CENSUS candidates (`--census`, src/runtime/pin_census.h): slots
+    // with the binding STRUCTURE an env-slot pin needs that the fixpoint could
+    // not type. Exactly the set the five `function WebGLState.<slot>: number`
+    // lines of bench/pins/env-slot-kernel.pins were written by hand for — and
+    // exactly the complement of `slotIsF64`, so a census can never propose a
+    // slot the proof already owns (stage E4's HANDOFF (c)).
+    //
+    // `slotCensusText` is the entry the site would support, kind and all
+    // decided at exit, held as text for the reason `slotPinText` is.
+    std::vector<bool> slotIsCensus;
+    std::vector<std::string> slotCensusText;
     // The STATIC CALL PLAN for this scope's slots (lower_scope.cpp
     // `planStableFunctionSlots`, spent by lower_call.cpp).
     //

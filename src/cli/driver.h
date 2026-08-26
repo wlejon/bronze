@@ -35,11 +35,22 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 // inference spends without the proofs it would otherwise demand
 // (types/pins.h). Empty means no manifest, and it travels as the PATH for the
 // same reason `hostGlobalsPath` does.
+//
+// `censusOutPath` is `--census`: it INSTRUMENTS the program at exactly the
+// sites where a manifest could make a claim and no proof does, so that a
+// representative run writes the manifest to that path
+// (src/runtime/pin_census.h). Two compiles and one artefact — a census build
+// is never a build anything is measured on.
+//
+// `pinsAllowObserved` accepts a census entry marked `@observed`: one whose
+// stores are not all from sites the compiler can type, so a violation of it
+// would be silent rather than a TypeError. Off by default, on purpose.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
           const std::string& importMapPath = {}, bool inferStats = false,
-          bool assumeNoBigInt = false, const std::string& pinsPath = {});
+          bool assumeNoBigInt = false, const std::string& pinsPath = {},
+          const std::string& censusOutPath = {}, bool pinsAllowObserved = false);
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -78,7 +89,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              const std::string& entrySymbol = {}, bool emitShared = false,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
-             bool assumeNoBigInt = false, const std::string& pinsPath = {});
+             bool assumeNoBigInt = false, const std::string& pinsPath = {},
+             const std::string& censusOutPath = {}, bool pinsAllowObserved = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

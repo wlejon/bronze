@@ -123,6 +123,24 @@ constexpr const char* kUsage =
     "                                      undefined behaviour. src/types/pins.h has\n"
     "                                      the grammar and the residual unchecked\n"
     "                                      positions.\n"
+    "  --pins-allow-observed               Accept a `--pins` entry marked `@observed`.\n"
+    "                                      A census writes that marker on an entry\n"
+    "                                      whose stores are not all from sites the\n"
+    "                                      compiler can type, so a violation of it\n"
+    "                                      would be SILENT rather than a TypeError.\n"
+    "                                      Refused without this flag, by name.\n"
+    "  --census <path>                     Instrument the program and write a `--pins`\n"
+    "                                      manifest to <path> when it exits. The\n"
+    "                                      manifest writes itself: the build records\n"
+    "                                      what reaches every slot, parameter, return\n"
+    "                                      and field the compiler could NOT type, a\n"
+    "                                      representative run joins the observations,\n"
+    "                                      and what was monomorphic becomes an entry.\n"
+    "                                      An offline step in two compiles and one\n"
+    "                                      artefact — a census build is an instrument\n"
+    "                                      and is never a build anything is measured\n"
+    "                                      on. BRONZE_PIN_CENSUS_OUT overrides <path>\n"
+    "                                      at run time. src/runtime/pin_census.h.\n"
     "\n"
     "Options (il):\n"
     "  --infer-stats                       Prepend the inference statistics report to\n"
@@ -259,13 +277,14 @@ bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std
 // The `--pins` manifest. The grammar and what an entry promises are in
 // types/pins.h; this reads the file and reports an unreadable one through the
 // same path a bad host-globals manifest takes.
-bool loadPins(const std::string& path, types::PinManifest& out, std::string& err) {
+bool loadPins(const std::string& path, types::PinManifest& out, std::string& err,
+              bool allowObserved) {
     std::string text;
     if (!readFile(path, text)) {
         err = "error: cannot read pin manifest " + path + "\n";
         return false;
     }
-    return out.parse(text, path, err);
+    return out.parse(text, path, err, allowObserved);
 }
 
 }  // namespace
@@ -304,7 +323,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::string& hostGlobalsPath,
           const std::vector<modules::ModuleRoot>& moduleRoots,
           const std::string& importMapPath, bool inferStats,
-          bool assumeNoBigInt, const std::string& pinsPath) {
+          bool assumeNoBigInt, const std::string& pinsPath, const std::string& censusOutPath,
+          bool pinsAllowObserved) {
     // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -320,7 +340,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     types::PinManifest pins;
     if (!pinsPath.empty()) {
         std::string err;
-        if (!loadPins(pinsPath, pins, err)) {
+        if (!loadPins(pinsPath, pins, err, pinsAllowObserved)) {
             if (outString) *outString = err;
             else std::fputs(err.c_str(), stderr);
             return 1;
@@ -368,7 +388,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
                                        assumeNoBigInt,
-                                       pins.empty() ? nullptr : &pins);
+                                       pins.empty() ? nullptr : &pins,
+                                       censusOutPath);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -397,7 +418,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::vector<modules::ModuleRoot>& moduleRoots,
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
              const std::string& importMapPath, bool assumeNoBigInt,
-             const std::string& pinsPath) {
+             const std::string& pinsPath, const std::string& censusOutPath,
+             bool pinsAllowObserved) {
 #if !BRONZE_WITH_LLVM
     (void)sourcePath;
     (void)outputPath;
@@ -414,6 +436,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     (void)importMapPath;
     (void)assumeNoBigInt;
     (void)pinsPath;
+    (void)censusOutPath;
+    (void)pinsAllowObserved;
     std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
     if (errOut) *errOut = msg;
     else std::fputs(msg.c_str(), stderr);
@@ -451,7 +475,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     types::PinManifest pins;
     if (!pinsPath.empty()) {
         std::string manifestErr;
-        if (!loadPins(pinsPath, pins, manifestErr)) {
+        if (!loadPins(pinsPath, pins, manifestErr, pinsAllowObserved)) {
             if (errOut) *errOut = manifestErr;
             else std::fputs(manifestErr.c_str(), stderr);
             return 1;
@@ -490,7 +514,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
                                        assumeNoBigInt,
-                                       pins.empty() ? nullptr : &pins);
+                                       pins.empty() ? nullptr : &pins,
+                                       censusOutPath);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -694,6 +719,8 @@ int runDriver(int argc, char** argv) {
         bool inferStats = false;
         bool assumeNoBigInt = false;
         std::string pinsPath;
+        std::string censusOutPath;
+        bool pinsAllowObserved = false;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
@@ -717,6 +744,17 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--pins=", 0) == 0) {
                 pinsPath = arg.substr(7);
                 if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
+            } else if (arg == "--census") {
+                if (i + 1 < argc) {
+                    censusOutPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --census\n");
+                }
+            } else if (arg.rfind("--census=", 0) == 0) {
+                censusOutPath = arg.substr(9);
+                if (censusOutPath.empty()) return fail("error: missing argument for --census\n");
+            } else if (arg == "--pins-allow-observed") {
+                pinsAllowObserved = true;
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -748,7 +786,7 @@ int runDriver(int argc, char** argv) {
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats, assumeNoBigInt, pinsPath);
+                     inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved);
     }
 
     if (command == "build") {
@@ -767,6 +805,8 @@ int runDriver(int argc, char** argv) {
         bool retainFnSource = true;
         bool assumeNoBigInt = false;
         std::string pinsPath;
+        std::string censusOutPath;
+        bool pinsAllowObserved = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -810,6 +850,17 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--pins=", 0) == 0) {
                 pinsPath = arg.substr(7);
                 if (pinsPath.empty()) return fail("error: missing argument for --pins\n");
+            } else if (arg == "--census") {
+                if (i + 1 < argc) {
+                    censusOutPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --census\n");
+                }
+            } else if (arg.rfind("--census=", 0) == 0) {
+                censusOutPath = arg.substr(9);
+                if (censusOutPath.empty()) return fail("error: missing argument for --census\n");
+            } else if (arg == "--pins-allow-observed") {
+                pinsAllowObserved = true;
             } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
@@ -849,7 +900,8 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath);
+                        emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
+                        censusOutPath, pinsAllowObserved);
     }
 
     return fail(kUsage);

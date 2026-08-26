@@ -208,7 +208,7 @@ std::optional<Lowerer::PatternRef> Lowerer::evalPatternRef(const ast::Expr& targ
 }
 
 bool Lowerer::storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn) {
-    // Before the box, so the value's static type is still readable � a
+    // Before the box, so the value's static type is still readable � a
     // destructuring store into a pinned field is a store like any other
     // (lower_pin.cpp).
     if (ref.receiverExpr != nullptr && !ref.keyName.empty()) {
@@ -532,6 +532,31 @@ bool Lowerer::lowerParamBindings(const std::vector<ast::Param>& params, uint32_t
         const auto& param = params[i];
         const il::ValueId argId = i + paramBase;
         Value value{argId, ilFn.params[argId].type};
+
+        // THE CENSUS'S PRIMARY JOB (`--census`, src/runtime/pin_census.h).
+        //
+        // Recorded at the CALLEE'S ENTRY and not at the call sites, and that is
+        // the whole reason this instrument exists. Stage E4's proof enumerates
+        // the call sites of a nested declaration whose name never leaves callee
+        // position — and the closure a factory HANDS OUT has call sites that
+        // enumeration provably cannot reach (`env_slot_kernel` ends
+        // `return render;`). The entry sees every call there is, escaped or
+        // not, which is the join a `param` entry claims and the one thing no
+        // static pass can gather.
+        //
+        // Only a parameter still typed Dynamic: one the proof or the signature
+        // join already made f64 has no manifest line to write. And only the
+        // three positions `applySignaturePins` can honour — a default, a
+        // pattern or a rest is refused there as a hard error, so proposing one
+        // would be proposing a build that does not compile.
+        if (censusEnabled() && value.type == il::Type::Dynamic && !param.name.empty() &&
+            !param.defaultValue && !param.pattern && !param.isRest && !ilFn.name.empty() &&
+            !ilFn.isGenerator &&
+            (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
+            emitCensusRecord(
+                value, "param " + manifestOwnerName(ilFn.name) + "(" + param.name + ")",
+                il::CensusSite::Param, ilFn);
+        }
 
         // A rest parameter never takes a default and never omits: it arrives as
         // an array the calling convention built.

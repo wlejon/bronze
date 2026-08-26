@@ -128,6 +128,12 @@ void Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Functio
 
 void Lowerer::emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,
                                   il::Function& ilFn) {
+    // The census sees the same six store paths the barrier does, and it sees
+    // them FIRST, because they are the same question asked in the two
+    // directions: "is this store held to a promise?" and "what promise would
+    // this store support?". One call here rather than six beside the barrier's
+    // callers, so a store path added later cannot get one and not the other.
+    emitCensusFieldRecord(receiver, key, val, ilFn);
     if (!types::pinBarriersEnabled()) return;
     std::string pinText;
     const types::PinKind* pin = pinnedFieldAt(receiver, key, &pinText);

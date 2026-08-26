@@ -288,6 +288,17 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         if (ilFn.returnPinned) {
             emitPinGuard(*val, keyStrings_[ilFn.returnPinKeyIndex], il::PinBarrier::Number, ilFn);
         }
+        // The census's `return` observation, in the same place and for the same
+        // reason: this is where the value the body produced is still what the
+        // body produced. Only a return the convention left Dynamic — one it
+        // already typed needs no entry and `applySignaturePins` would refuse
+        // the line anyway.
+        if (censusEnabled() && ilFn.returnType == il::Type::Dynamic && !ilFn.name.empty() &&
+            !ilFn.isGenerator &&
+            (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
+            emitCensusRecord(*val, "return " + manifestOwnerName(ilFn.name),
+                             il::CensusSite::Return, ilFn);
+        }
         if (ilFn.returnType == il::Type::Void) {
             ilFn.returnType = val->type;
         } else if (ilFn.returnType == il::Type::Dynamic) {
@@ -311,6 +322,18 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.operands = {val->id};
         emitInst(ilFn, inst);
     } else {
+        // A bare `return;` yields `undefined`, and there is no `undefined` in
+        // an f64: this function can never carry a `return <owner>: number`
+        // entry, whatever every other return of it produces. Refused by the
+        // SITE TABLE rather than by an observation, because a `return;` on a
+        // branch this run does not take is compiled all the same and the
+        // manifest has to be true of the program, not of the run.
+        if (censusEnabled() && ilFn.returnType == il::Type::Dynamic && !ilFn.name.empty() &&
+            !ilFn.isGenerator &&
+            (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
+            addCensusSite("return " + manifestOwnerName(ilFn.name), il::CensusSite::Return,
+                          /*refuses=*/true);
+        }
         if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
         il::Instruction inst;

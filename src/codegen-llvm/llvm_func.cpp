@@ -303,6 +303,37 @@ void FunctionEmitter::emitModuleInit() {
                                                  0),
              tables.familyBase});
     }
+    // The PIN CENSUS site table, and it is here for exactly the reason the
+    // family table is: it names sites by the module's own key index and the
+    // runtime turns those into process-wide ids through `keyMap`, which is not
+    // filled until the loop above has run.
+    //
+    // The WHOLE table goes over, not only the sites that execute. A site the
+    // run never reaches is a fact — "never observed" is a different answer from
+    // "not a site" — and a statically refused entry has to be refused on a run
+    // that never touches it.
+    if (!shared_.module.censusSites.empty() && tables.keyMap != nullptr) {
+        std::vector<uint32_t> flat;
+        flat.reserve(shared_.module.censusSites.size() * 2);
+        for (const auto& site : shared_.module.censusSites) {
+            flat.push_back(site.keyIndex);
+            flat.push_back(site.info);
+        }
+        llvm::Module& llvmModule = *llvmFunc_->getParent();
+        auto* arrTy = llvm::ArrayType::get(builder_.getInt32Ty(), flat.size());
+        auto* table = new llvm::GlobalVariable(
+            llvmModule, arrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantDataArray::get(shared_.ctx, llvm::ArrayRef<uint32_t>(flat)),
+            "__bronze_census_sites");
+        table->setAlignment(llvm::Align(4));
+        builder_.CreateCall(
+            shared_.abi.bronze_census_register,
+            {builder_.CreateGlobalString(shared_.module.censusOutPath),
+             builder_.CreateConstInBoundsGEP2_32(arrTy, table, 0, 0),
+             builder_.getInt32(static_cast<uint32_t>(shared_.module.censusSites.size())),
+             builder_.CreateConstInBoundsGEP2_32(tables.keyMap->getValueType(), tables.keyMap, 0,
+                                                 0)});
+    }
 }
 
 // ---- the framed entry of a merge target -------------------------------

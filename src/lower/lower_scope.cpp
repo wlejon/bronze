@@ -527,6 +527,31 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
         }
     }
 
+    // THE CENSUS ARM (`--census`, src/runtime/pin_census.h), and it is the
+    // complement of everything above: a name with the binding STRUCTURE an
+    // env-slot pin needs that neither the fixpoint proved nor a manifest
+    // promised. That is precisely the set the five
+    // `function WebGLState.<slot>: number` lines of
+    // bench/pins/env-slot-kernel.pins were written by hand for, and the fact
+    // that the proof runs first is what keeps the census from proposing
+    // `stateChanges` and `frames`, which it proves for free.
+    if (censusEnabled() && !functionName.empty()) {
+        const std::string owner = [&] {
+            const auto dot = functionName.rfind('.');
+            return dot == std::string::npos ? functionName : functionName.substr(dot + 1);
+        }();
+        for (const auto& name : structural) {
+            if (candidates.count(name) != 0) continue;
+            const uint32_t slot = info.slotOf.at(name);
+            if (info.slotIsCensus.size() < info.slotNames.size()) {
+                info.slotIsCensus.assign(info.slotNames.size(), false);
+                info.slotCensusText.assign(info.slotNames.size(), std::string());
+            }
+            info.slotIsCensus[slot] = true;
+            info.slotCensusText[slot] = "function " + owner + "." + name;
+        }
+    }
+
     for (const auto& name : candidates) info.slotIsF64[info.slotOf.at(name)] = true;
 }
 
@@ -670,6 +695,12 @@ void Lowerer::emitEnvSet(uint32_t depth, uint32_t index, Value val, il::Function
         const EnvScopeInfo& scope = envScopes_[envScopes_.size() - 1 - depth];
         if (index < scope.slotIsPinned.size() && scope.slotIsPinned[index]) {
             emitPinGuard(val, scope.slotPinText[index], il::PinBarrier::Number, ilFn);
+        }
+        // The census's env-slot observation, on the same slot key and for the
+        // same reason: the record is not the unit, the logical slot is.
+        if (index < scope.slotIsCensus.size() && scope.slotIsCensus[index]) {
+            const std::string target = scope.slotCensusText[index];
+            emitCensusRecord(val, target, il::CensusSite::EnvSlot, ilFn);
         }
     }
     Value boxed = boxValueIfNeeded(val, ilFn);

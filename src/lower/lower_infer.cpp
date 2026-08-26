@@ -391,14 +391,8 @@ bool Lowerer::applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t mod
 // `param mod1.Uniform.setValue(x): number`. Only the leading module component
 // is dropped, because a `param` entry's owner may legitimately be two
 // components deep and `Matrix4.multiplyMatrices` is not a prefix to strip.
-static std::string manifestOwnerName(const std::string& ilName) {
-    const auto dot = ilName.find('.');
-    if (dot == std::string::npos || dot < 4 || ilName.compare(0, 3, "mod") != 0) return ilName;
-    for (size_t i = 3; i < dot; ++i) {
-        if (ilName[i] < '0' || ilName[i] > '9') return ilName;
-    }
-    return ilName.substr(dot + 1);
-}
+// Defined in lower_census.cpp: the census writes the very lines these barriers
+// name, so the two must not have two ideas of how a name is spelled.
 
 bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span span,
                                  il::Function& fn) {
@@ -430,7 +424,7 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
         if (types::pinBarriersEnabled()) {
             fn.params[i + base].pinned = true;
             fn.params[i + base].pinKeyIndex = getKeyConstantIndex(
-                "param " + manifestOwnerName(fn.name) + "(" + p.name + "): number");
+                "param " + Lowerer::manifestOwnerName(fn.name) + "(" + p.name + "): number");
         }
     }
 
@@ -454,7 +448,7 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
             if (types::pinBarriersEnabled()) {
                 fn.returnPinned = true;
                 fn.returnPinKeyIndex =
-                    getKeyConstantIndex("return " + manifestOwnerName(fn.name) + ": number");
+                    getKeyConstantIndex("return " + Lowerer::manifestOwnerName(fn.name) + ": number");
             }
         } else if (fn.returnType != il::Type::F64) {
             diags_.error(span, "pin 'return " + fn.name +

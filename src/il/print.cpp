@@ -1,6 +1,7 @@
 #include "il/print.h"
 
 #include <charconv>
+#include <map>
 
 namespace bronze::il {
 
@@ -106,6 +107,7 @@ const char* opName(Op op) {
         case Op::ResolveName: return "name.resolve";
         case Op::ImmutableAssign: return "immutable.assign";
         case Op::PinGuard: return "pin.guard";
+        case Op::CensusRecord: return "census.record";
         case Op::ClassExtend: return "class.extend";
         case Op::PrivateNew: return "private.new";
         case Op::PrivateHas: return "private.has";
@@ -186,6 +188,11 @@ bool canThrow(const Instruction& inst) {
         case Op::IsNullish:
         case Op::TypeOf:
         case Op::Box:
+        // The pin census is an INSTRUMENT (src/runtime/pin_census.h): it
+        // records a tag and returns. An instrument that could change control
+        // flow would be one whose readings are about itself, so it never
+        // raises and the backend emits no exception test after it.
+        case Op::CensusRecord:
         // Allocation and the environment: they can collect, and a failure to
         // allocate is fatal rather than catchable (there is no `RangeError:
         // out of memory` in bronze, and inventing one would let a program
@@ -298,6 +305,43 @@ static std::string formatBlockTarget(const BlockTarget& target) {
 
 std::string print(const Module& module) {
     std::string out = "module " + module.name + "\n";
+    // The PIN CENSUS site table, when there is one. Printed because some of its
+    // rows have NO instruction to read them off: a store through a receiver the
+    // compiler cannot type registers a row and emits nothing (there is no class
+    // to name and so no observation to make), and a static refusal is a row and
+    // nothing else. Without this the two facts that decide whether an entry
+    // ships — is it refused, is it `@observed` — would be invisible until a run
+    // produced them. Only when the module has one, so every IL dump of a build
+    // without `--census` is byte-identical to what it always was.
+    if (!module.censusSites.empty()) {
+        out += "\ncensus " + module.censusOutPath + " {\n";
+        // Deduplicated and sorted: the table has one row per SITE and a reader
+        // of the dump wants one line per target. The count is what says how
+        // many stores or call positions stand behind it.
+        std::map<std::string, std::pair<uint32_t, uint32_t>> rows;  // -> (count, info)
+        for (const auto& site : module.censusSites) {
+            const std::string& name = site.keyIndex < module.keyConstants.size()
+                                          ? module.keyConstants[site.keyIndex]
+                                          : std::string();
+            auto& row = rows[name];
+            row.first += 1;
+            row.second |= site.info;
+        }
+        for (const auto& [name, row] : rows) {
+            const char* kind = "field";
+            switch (static_cast<CensusSite>(row.second & BRONZE_ABI_CENSUS_KIND_MASK)) {
+                case CensusSite::EnvSlot: kind = "env-slot"; break;
+                case CensusSite::Field: kind = "field"; break;
+                case CensusSite::Param: kind = "param"; break;
+                case CensusSite::Return: kind = "return"; break;
+                case CensusSite::OpaqueFieldStore: kind = "opaque-store"; break;
+            }
+            out += "  " + std::string(kind) + " \"" + name + "\" x" +
+                   std::to_string(row.first) +
+                   ((row.second & BRONZE_ABI_CENSUS_REFUSES) != 0 ? " refused" : "") + "\n";
+        }
+        out += "}\n";
+    }
     for (const auto& fn : module.functions) {
         out += "\nfunc " + fn.name + "(";
         for (size_t i = 0; i < fn.params.size(); ++i) {
@@ -771,6 +815,31 @@ std::string print(const Module& module) {
                         out += "pin.guard %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + shape + ", \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
+                        break;
+                    }
+                    // The census site's TARGET — the manifest entry this
+                    // observation would support, minus the kind, which the run
+                    // decides. Printed for the same reason `pin.guard` prints
+                    // its line: what a census build is asserted against is
+                    // WHICH sites it created, and the IL is where that is
+                    // readable without running anything.
+                    case Op::CensusRecord: {
+                        const char* site = "field";
+                        switch (static_cast<CensusSite>(inst.immI32 &
+                                                        BRONZE_ABI_CENSUS_KIND_MASK)) {
+                            case CensusSite::EnvSlot: site = "env-slot"; break;
+                            case CensusSite::Field: site = "field"; break;
+                            case CensusSite::Param: site = "param"; break;
+                            case CensusSite::Return: site = "return"; break;
+                            case CensusSite::OpaqueFieldStore: site = "opaque-store"; break;
+                        }
+                        out += "census.record %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + site + ", \"" +
                                (inst.keyIndex < module.keyConstants.size()
                                     ? module.keyConstants[inst.keyIndex]
                                     : std::string("?")) +

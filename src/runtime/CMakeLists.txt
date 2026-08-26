@@ -5,6 +5,7 @@ bronze_add_module(runtime
         symbolize.cpp
         sampler.cpp
         shape_census.cpp
+        pin_census.cpp
         fatal.cpp
         abi_guard.cpp
         number_format.cpp

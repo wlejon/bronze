@@ -52,6 +52,28 @@ enum class PinBarrier : uint8_t {
     DenseArray,
 };
 
+// What one `Op::CensusRecord` observes, carried in the instruction's `immI32`
+// and in the module's census site table (src/runtime/pin_census.h, stage C1).
+//
+// The low byte says which MANIFEST FORM the site's key names, because the
+// forms admit different kinds and the kind is decided at exit from the tags. A
+// census site exists only where lowering ran out of static answers: an env
+// slot the fixpoint refused, a parameter no proof typed, a return the
+// convention left Dynamic, a store to a field whose type is unknown. That is
+// what makes the census complementary to the proofs rather than a duplicate of
+// them (stage E4's HANDOFF (c)).
+enum class CensusSite : uint8_t {
+    EnvSlot = BRONZE_ABI_CENSUS_ENV_SLOT,
+    Field = BRONZE_ABI_CENSUS_FIELD,
+    Param = BRONZE_ABI_CENSUS_PARAM,
+    Return = BRONZE_ABI_CENSUS_RETURN,
+    // Not a form: a store to a field NAME through a receiver inference could
+    // not type. It can never become an entry — it names no class — and what it
+    // does is mark every entry for a field of that name `@observed`, because
+    // B1's barrier cannot reach this store (src/types/pins.h).
+    OpaqueFieldStore = BRONZE_ABI_CENSUS_OPAQUE,
+};
+
 enum class Op : uint8_t {
     ConstF64,   // a = const.f64 <imm>
     ConstI32,   // a = const.i32 <imm>
@@ -325,6 +347,18 @@ enum class Op : uint8_t {
     // fixpoint) emits none: the proof is the licence, and re-checking it
     // would tax the programs that need no barrier at all.
     PinGuard,
+    // `census.record <value>, <site kind>, <key_const_index>`: hands one
+    // observation to the pin census (src/runtime/pin_census.h, stage C1). Void,
+    // and it NEVER THROWS — it is an instrument, and an instrument that can
+    // change control flow is one whose readings are about itself.
+    //
+    // Emitted only under `--census`, and only where lowering has no static
+    // answer for the claim a manifest would make: the mirror image of
+    // `PinGuard`, which is emitted only where a manifest HAS made one. A build
+    // carrying census records is never a build anything is measured on; the
+    // artefact is the manifest, and the manifest is then fed to an ordinary
+    // `--pins` build.
+    CensusRecord,
     // `class D extends B`: links D.prototype's proto to B.prototype and
     // D's static properties to B's. One op because both links have to
  // be made together, before any method is stored.
@@ -818,6 +852,23 @@ struct Module {
         std::vector<ClassFamilyField> fields;
     };
     std::vector<ClassFamilyEntry> classFamilies;
+    // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
+    // entry per site lowering created, handed to the runtime at module init so
+    // that a site the run never reaches is still known — "never observed" and
+    // "not a site" are different answers, and a STATIC refusal has to
+    // disqualify its entry on a run that never touches it.
+    //
+    // Built here rather than scanned back out of the instructions, because
+    // some entries have no instruction at all: an owner spelling that would
+    // govern two different IL functions is refused by a table row and nothing
+    // else.
+    struct CensusSiteEntry {
+        uint32_t keyIndex = 0;  // into `keyConstants`
+        uint32_t info = 0;      // BRONZE_ABI_CENSUS_* kind | flags
+    };
+    std::vector<CensusSiteEntry> censusSites;
+    // Where the census run writes its manifest. Empty unless `--census`.
+    std::string censusOutPath;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

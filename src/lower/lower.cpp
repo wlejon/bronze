@@ -258,6 +258,13 @@ std::optional<il::Module> Lowerer::lower() {
     }
 
     if (diags_.hasErrors()) return std::nullopt;
+    // The census's one WHOLE-MODULE pass, and it must run before the key
+    // constants are frozen because it can add rows (lower_census.cpp): a
+    // `param`/`return` owner spelling that would govern two different IL
+    // functions is refused, and the set of IL function names is not complete
+    // until every body is lowered.
+    ilModule_.censusOutPath = censusOutPath_;
+    refuseAmbiguousCensusOwners();
     ilModule_.keyConstants.resize(keyConstants_.size());
     for (const auto& entry : keyConstants_) {
         ilModule_.keyConstants[entry.second] = entry.first;
@@ -860,6 +867,19 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                 }
             }
 
+            // A body that can REACH its end returns `undefined` there, and a
+            // pinned return is refused by the arm below when it does — so a
+            // census entry for this function would be a manifest that does not
+            // compile. Refused by the site table, which is the only way a
+            // static fact reaches a dynamic instrument: reachability is a
+            // property of the program, and no run can be asked about it.
+            if (censusEnabled() && reachable && ilFn.returnType == il::Type::Dynamic &&
+                !ilFn.name.empty() && !ilFn.isGenerator &&
+                (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
+                addCensusSite("return " + manifestOwnerName(ilFn.name), il::CensusSite::Return,
+                              /*refuses=*/true);
+            }
+
             il::Instruction retInst;
             retInst.op = il::Op::Ret;
             if (ilFn.returnType == il::Type::Void) {
@@ -922,9 +942,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const SourceSet* sources,
                                       InferStatsCollector* stats,
                                       bool assumeNoBigInt,
-                                      const types::PinManifest* pins) {
+                                      const types::PinManifest* pins,
+                                      const std::string& censusOutPath) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
-                    assumeNoBigInt, pins);
+                    assumeNoBigInt, pins, censusOutPath);
     return lowerer.lower();
 }
 
