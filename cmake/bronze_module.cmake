@@ -21,6 +21,10 @@ function(bronze_add_module name)
     target_include_directories(bronze_${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
     if(MSVC)
         target_compile_options(bronze_${name} PRIVATE /W4 /WX /permissive-)
+        # The CRT-deprecation opt-out (getenv and friends are standard C++),
+        # not a blanket C4996 disable. Target-wide because a per-file #define
+        # placed after the first include is silently too late.
+        target_compile_definitions(bronze_${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
         target_compile_options(bronze_${name} PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -42,6 +46,7 @@ function(bronze_add_module name)
         endforeach()
         if(MSVC)
             target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive-)
+            target_compile_definitions(bronze_${name}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
         else()
             target_compile_options(bronze_${name}_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)
             if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

@@ -12,12 +12,14 @@ endif()
 
 if(MSVC)
     target_compile_options(bronze_cli PRIVATE /W4 /WX /permissive-)
+    target_compile_definitions(bronze_cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 add_executable(bronze main.cpp)
 target_link_libraries(bronze PRIVATE bronze::cli)
 if(MSVC)
     target_compile_options(bronze PRIVATE /W4 /WX /permissive-)
+    target_compile_definitions(bronze PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # Hand-rolled rather than through bronze_add_module (the library above is not
@@ -29,6 +31,7 @@ if(BRONZE_BUILD_TESTS)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)
+        target_compile_definitions(bronze_cli_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     add_test(NAME cli COMMAND bronze_cli_tests)
     set_tests_properties(cli PROPERTIES LABELS cli)

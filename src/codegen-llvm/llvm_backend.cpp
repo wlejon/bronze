@@ -356,8 +356,8 @@ void emitCallWrappers(const il::Module& module, llvm::Module& llvmModule, llvm::
             llvm::Value* bits = loaded[sourceIndex];
             // A PINNED parameter is checked, never coerced (llvm_pin.h). The
             // wrapper is the door every caller the static plan could not
-            // enumerate comes through — an escaped closure, a host call, a
-            // method reached off a value — so it is where a `param` pin stops
+            // enumerate comes through â€” an escaped closure, a host call, a
+            // method reached off a value â€” so it is where a `param` pin stops
             // being a promise and starts being enforced. The check REPLACES
             // the ToNumber below rather than joining it, so the enforced form
             // is cheaper than the coercing one it succeeds.

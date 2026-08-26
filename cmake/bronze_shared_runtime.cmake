@@ -96,6 +96,7 @@ set_target_properties(bronze_runtime_shared PROPERTIES
 
 if(MSVC)
     target_compile_options(bronze_runtime_shared PRIVATE /W4 /WX /permissive-)
+    target_compile_definitions(bronze_runtime_shared PRIVATE _CRT_SECURE_NO_WARNINGS)
     # A .def source is how CMake spells /DEF: for the MSVC-family linkers.
     target_sources(bronze_runtime_shared PRIVATE ${_bronze_abi_def})
     set_source_files_properties(${_bronze_abi_def} PROPERTIES GENERATED TRUE)
