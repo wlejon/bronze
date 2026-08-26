@@ -166,21 +166,13 @@ uint64_t classFamilyIdFor(Shape* shape) {
     if (shape == nullptr || shape->isDictionary() || classes().empty()) {
         return BRONZE_ABI_FAMILY_NONE;
     }
-    // A shape with a DOUBLE SLOT is refused outright (slot_repr.h). A family
-    // guard is one range compare on this stamp and then a bare load or store at
-    // a compile-time offset, with no per-site hook the runtime could use to
-    // distinguish the two directions — unlike `bronze_static_shape_publish`,
-    // which is told `forWrite` and can refuse just the stores. So the whole
-    // stamp goes, because half of what it licenses is a raw store into a slot
-    // whose representation the store knows nothing about.
-    //
-    // What it costs is family-guarded sites on classes whose pinned fields
-    // became doubles — `this.<field>` inside methods of an EXTENDED class.
-    // three.js's math classes extend nothing, so its Vector3/Matrix4/Quaternion
-    // sites are the identity form and keep their reads. Stage R2 teaches
-    // codegen the representation and this refusal lifts with the others.
-    if (shape->double_slots != 0) return BRONZE_ABI_FAMILY_NONE;
-
+    // A shape with a DOUBLE SLOT (slot_repr.h) is stamped like any other. The
+    // family guard licenses a bare load and a bare store at a compile-time
+    // offset; the load is right as it stands, because a double slot holds the
+    // number's box, and the store tests the shape's `double_slots` word for its
+    // own slot before it writes (llvm_static_slot.cpp). A family guard has no
+    // per-site direction hook the way `bronze_static_shape_publish` does, which
+    // is exactly why the test lives in the emitted site rather than here.
     std::vector<const Shape*> nodes;
     ownNodesBySlot(shape, longestFieldCount(), nodes);
 

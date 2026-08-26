@@ -181,7 +181,7 @@ void slotReprReport() {
                  "  shape nodes     : %llu double, %llu boxed\n"
                  "  refused         : %llu (number store, name not eligible)\n"
                  "  generalizations : %llu store%s over %llu node%s\n"
-                 "  double stores   : %llu\n",
+                 "  helper stores   : %llu into a double slot\n",
                  slotReprEnabled() ? "on" : "off (BRONZE_NO_SLOT_REPR=1)",
                  slotReprObservesUnpinned() ? " + observed-unpinned" : "",
                  slotReprEligibleCount(),

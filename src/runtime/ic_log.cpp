@@ -221,7 +221,13 @@ const char* classifyPropSet(Value objVal, uint32_t keyIndex, Value valVal, Inlin
     if (!ic->cached_shape) return "ic_uninitialized";
     if (ic->isArrayMethod()) return "array_method_sentinel_at_set_site";
     if (ic->cached_shape == obj->shape) {
-        if (ic->cached_depth > 0) return "inherited_prop_set";
+        // The entry names an f64 slot and the arm tested the value: this store
+        // is not a Number, so it missed on purpose and the slot is about to
+        // generalize (slot_repr.h). Named apart from an inherited set because
+        // the two are opposite facts — one is a site that will never hit, the
+        // other a site that just stopped being able to.
+        if (ic->isDoubleSlot()) return "double_slot_non_number_set";
+        if (ic->realDepth() > 0) return "inherited_prop_set";
         if (obj->shape && obj->shape->dict) return "receiver_dict_mode";
         if (keyHdr) {
             PropertyKey pk = PropertyKey::forString(keyHdr);

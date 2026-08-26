@@ -136,6 +136,37 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     //    whose objects were grown to hold slot N before the shape word was
     //    stored (`setProp`'s ensureSlots ordering).
     builder.SetInsertPoint(hitBb);
+
+    //    A STORE additionally asks what the shape says the slot's eight bytes
+    //    ARE. A slot the shape calls an f64 (slot_repr.h) may still be stored
+    //    to from here — a boxed Number's bits are the double's bits — but only
+    //    when the value is a Number, because this store is a bare one and
+    //    nothing downstream of it would notice a pointer landing in a double
+    //    slot. The miss path is the one this guard already has: it reaches
+    //    `bronze_prop_set`, where `setSlot` generalizes the slot back to boxed,
+    //    and the shape the object then carries no longer matches this site.
+    //
+    //    `site.slot` is a compile-time constant, so the mask is one; a slot at
+    //    or past the width of the shape's word can never be a double one and
+    //    the whole test folds away.
+    if (store != nullptr && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
+        llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, p + ".static.store", fn);
+        llvm::Value* shapeObj = builder.CreateIntToPtr(shape, ptrTy, p + ".static.shapep");
+        llvm::Value* dsPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, shapeObj, BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET);
+        llvm::Value* ds =
+            builder.CreateAlignedLoad(i64Ty, dsPtr, llvm::Align(8), p + ".static.doubles");
+        llvm::Value* isDouble = builder.CreateICmpNE(
+            builder.CreateAnd(ds, builder.getInt64(uint64_t{1} << site.slot)), builder.getInt64(0),
+            p + ".static.isdouble");
+        llvm::Value* isNum = builder.CreateICmpULE(
+            store, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), p + ".static.valisnum");
+        builder.CreateCondBr(builder.CreateOr(builder.CreateNot(isDouble), isNum,
+                                              p + ".static.reprok"),
+                             storeBb, missBb);
+        builder.SetInsertPoint(storeBb);
+    }
+
     llvm::Value* slotPtr = nullptr;
     if (site.slot < BRONZE_ABI_OBJ_INLINE_SLOTS) {
         slotPtr = builder.CreateConstInBoundsGEP1_32(

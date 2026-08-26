@@ -449,10 +449,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         live->shape = next;
         // Refill rather than leave alone: the bump above (or an epoch the
         // entry outlived) would otherwise expire an entry that has just
-        // proven itself. Not for a double slot, for the reason the slow
-        // path's fill below states.
-        if (!runtime::censusFillsSuppressed() && !next->slotIsDouble(slot)) {
-            ic->fill(next, slot, /*depth=*/0);
+        // proven itself.
+        if (!runtime::censusFillsSuppressed()) {
+            ic->fillForSet(next, slot, next->slotIsDouble(slot));
         }
         live->setSlot(slot, val.get());
         return live;
@@ -490,9 +489,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (refused) *refused = SetRefusal::NotWritable;
             return this;
         }
-        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
-            !shape->slotIsDouble(own.slot)) {
-            ic->fill(shape, own.slot, /*depth=*/0);
+        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+            ic->fillForSet(shape, own.slot, shape->slotIsDouble(own.slot));
         }
         setSlot(own.slot, val.get());
         return this;
@@ -585,13 +583,12 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         live->shape = next_shape;
         // A set-site entry is what generated code's inline store paths consume,
         // and those store the value's bits with no question asked about the
-        // slot. Refusing the fill for a double slot is therefore not an
-        // optimization decision but the other half of the choke point: with no
-        // entry to hit, every write to this slot arrives at `setSlot` and the
-        // representation stays true. Stage R2 teaches the store path the
-        // representation and this refusal lifts.
-        if (ic && !runtime::censusFillsSuppressed() && !next_shape->slotIsDouble(new_slot)) {
-            ic->fill(next_shape, new_slot, /*depth=*/0);
+        // slot — unless the entry SAYS the slot is an f64 one, which is what
+        // the flag is for: the arm then tests the value for Number and misses
+        // to here when it is not, where `setSlot` below generalizes the slot
+        // and the next fill hands back an ordinary entry.
+        if (ic && !runtime::censusFillsSuppressed()) {
+            ic->fillForSet(next_shape, new_slot, next_shape->slotIsDouble(new_slot));
         }
     }
     live->setSlot(new_slot, val.get());

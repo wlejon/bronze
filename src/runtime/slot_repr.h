@@ -37,6 +37,25 @@
 // The one thing it costs is the non-canonical NaN a raw double slot could
 // otherwise carry, which nothing wants.
 //
+// HOW EVERY STORE IS HELD TO IT. The runtime's every write goes through
+// `ObjectHeader::setSlot`, which either canonicalizes a number into the slot or
+// generalizes the slot away — one choke point, so a store path added later
+// inherits the discipline instead of escaping it. Generated code's three bare
+// stores cannot route through a function, so each of them makes the same test
+// inline before it writes, and misses to the helper when it fails:
+//
+//   - the set-site inline cache: a set entry naming a double slot carries
+//     BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG, and the arm takes it only for a Number
+//     (llvm_prop_set.cpp). Both the own-property arm and the transition arm a
+//     constructor's `this.x = x` runs on.
+//   - the static-slot site, identity form and family form alike: the shape word
+//     the guard already loaded carries `double_slots`, so the store tests its
+//     own compile-time slot against it (llvm_static_slot.cpp).
+//
+// The miss is taken once per field, not once per store: the helper generalizes
+// the slot, and the entry refilled against the new shape has no flag left to
+// test. Reads are untouched, by the bit-compatibility above.
+//
 // WHERE A DOUBLE SLOT COMES FROM. Only from an ELIGIBLE key whose first store
 // is a number. Eligibility is the compiler's `--pins` manifest, handed over at
 // module init as a list of names (`bronze_register_slot_repr`): a field pinned
@@ -142,7 +161,13 @@ struct SlotReprCounters {
     uint64_t refused_ineligible = 0;  // a number store whose key was not eligible
     uint64_t generalizations = 0;   // double slots taken back by a non-number store
     uint64_t generalized_nodes = 0;  // distinct double nodes marked sticky-boxed
-    uint64_t double_stores = 0;     // stores that landed in a double slot
+    // Stores that landed in a double slot THROUGH `setSlot` — the runtime's
+    // paths and generated code's misses. Generated code's inline arms test the
+    // value and store it themselves, so they are not counted here and a hot
+    // pinned field's count is near zero once its sites have latched. That is
+    // the number reading small, not the mechanism being idle: `double_nodes`
+    // is what says the slots exist.
+    uint64_t double_stores = 0;
 };
 const SlotReprCounters& slotReprCounters() noexcept;
 SlotReprCounters& slotReprMutableCounters() noexcept;

@@ -598,6 +598,24 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * collide with the accessor flag in the same field. Real depths are bounded
  * by ObjectHeader::kMaxPrototypeDepth, far below either bit.
  *
+ * ---- the DOUBLE-SLOT entry (set sites only) -------------------------------
+ *
+ * `cached_depth & BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG` means: the slot this entry
+ * names is one the shape calls an f64 (runtime/slot_repr.h). The store arm may
+ * still take it — the bits of a boxed Number ARE the double's bits — but ONLY
+ * after testing that the value being stored is a Number, because a raw store
+ * of anything else would put a pointer in a slot whose representation says
+ * there is a double there. A non-Number at such a site misses to
+ * `bronze_prop_set`, where `ObjectHeader::setSlot` generalizes the slot back
+ * to boxed and the entry is refilled without the flag.
+ *
+ * The flag rides in the depth field because the set arm's guard already loads
+ * that word and compares it to zero: the test costs the arm one `and` and one
+ * compare, and an arm that has not learned about representations refuses the
+ * entry outright (a nonzero depth is not an own-property hit) rather than
+ * taking it wrongly. GET sites never carry it — a read of a double slot is a
+ * read of the number's box and needs no test at all.
+ *
  * Non-shape sentinel discipline:
  * When an entry caches an Array built-in method (or the Array constructor),
  * `cached_shape` holds BRONZE_ABI_IC_SHAPE_ARRAY_METHOD ((uintptr_t)1).
@@ -619,6 +637,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_IC_SHAPE_ARRAY_METHOD 1ull
 #define BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG 0x80000000u
 #define BRONZE_ABI_IC_DEPTH_ABSENT_FLAG   0x40000000u
+#define BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG   0x20000000u
 /* How many (shape -> answer) entries one property site holds, and the stride
  * the IC table is therefore indexed by. Four, from the marker-probe evidence
  * in brobench/analysis/chunk1_bill.md: three.js's polymorphic sites mix an

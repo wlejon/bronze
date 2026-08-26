@@ -220,7 +220,30 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.getInt64(0), "ic.set.isaccessor");
     llvm::Value* realDepth = builder.CreateAnd(
         depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG)), "ic.set.realdepth");
-    llvm::Value* depthOk = builder.CreateICmpEQ(depth, builder.getInt64(0));
+
+    // The f64-slot arm. An entry may name a slot whose shape says the eight
+    // bytes there ARE a double (slot_repr.h), and this store may still take it
+    // — the bits of a boxed Number are the double's bits — but only for a
+    // Number. Anything else misses to bronze_prop_set, which generalizes the
+    // slot back to boxed and refills the entry without the flag, so the miss
+    // is taken once per field rather than once per store.
+    //
+    // Both halves are free of the entry's other states: DOUBLE is only ever
+    // set with the rest of the word zero, so masking it out and comparing to
+    // zero is the same "own property, depth 0" test the arm already made.
+    llvm::Value* isDoubleSlot = builder.CreateICmpNE(
+        builder.CreateAnd(depth,
+                          builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG))),
+        builder.getInt64(0), "ic.set.isdouble");
+    llvm::Value* valIsNumber = builder.CreateICmpULE(
+        valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "ic.set.valisnum");
+    llvm::Value* reprOk =
+        builder.CreateOr(builder.CreateNot(isDoubleSlot), valIsNumber, "ic.set.reprok");
+    llvm::Value* depthBase = builder.CreateAnd(
+        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG)),
+        "ic.set.depthbase");
+    llvm::Value* depthOk = builder.CreateAnd(
+        builder.CreateICmpEQ(depthBase, builder.getInt64(0)), reprOk, "ic.set.depthok");
 
     llvm::Value* hit = builder.CreateAnd(builder.CreateAnd(isPlain, shapeOk), depthOk, "ic.set.hit.cond");
     llvm::Value* shapeHit = builder.CreateAnd(isPlain, shapeOk);
@@ -342,8 +365,17 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* parent =
             builder.CreateAlignedLoad(ptrTy, parentPtr, llvm::Align(8), "trans.parent");
         llvm::Value* parentOk = builder.CreateICmpEQ(parent, shape);
+        // Same f64-slot test as the own-property arm above, for the same
+        // reason: the transition arm's store is a bare one too, and the node
+        // this entry caches is the node that decides the slot's
+        // representation. A constructor's `this.x = x` is this arm, so this is
+        // where a pinned field is BORN a double one.
         llvm::Value* transDepth = builder.CreateLShr(slotWord, 32);
-        llvm::Value* transDepthOk = builder.CreateICmpEQ(transDepth, builder.getInt64(0), "trans.depthok");
+        llvm::Value* transDepthBase = builder.CreateAnd(
+            transDepth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG)),
+            "trans.depthbase");
+        llvm::Value* transDepthOk = builder.CreateAnd(
+            builder.CreateICmpEQ(transDepthBase, builder.getInt64(0)), reprOk, "trans.depthok");
         builder.CreateCondBr(builder.CreateAnd(parentOk, transDepthOk), transNodeBb, slowBb);
 
         builder.SetInsertPoint(transNodeBb);

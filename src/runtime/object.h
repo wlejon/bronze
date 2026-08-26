@@ -102,8 +102,19 @@ struct InlineCache {
     }
 
     uint32_t realDepth() const noexcept {
-        return cached_depth &
-               ~(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG | BRONZE_ABI_IC_DEPTH_ABSENT_FLAG);
+        return cached_depth & ~(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG |
+                                BRONZE_ABI_IC_DEPTH_ABSENT_FLAG |
+                                BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG);
+    }
+
+    // Does this entry name a slot the shape calls an f64 (slot_repr.h)? Only a
+    // SET-site entry ever says yes, and what it means to the two consumers is
+    // the same sentence read twice: generated code's store arm must test the
+    // value for Number before it takes the entry, and the runtime's store path
+    // routes through `ObjectHeader::setSlot` in every case anyway, so it may
+    // ignore the flag entirely.
+    bool isDoubleSlot() const noexcept {
+        return (cached_depth & BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG) != 0;
     }
 
     // Is this entry still about the chain it was filled against? Both runtime
@@ -135,13 +146,25 @@ struct InlineCache {
     // been filled at depth > 0 — this asks anyway, because that is a fact
     // about the compiler's site numbering and this is the runtime.
     bool describesOwn(const Shape* receiverShape) const noexcept {
-        return isRealShape() && !isAccessor() && cached_depth == 0 && cached_shape == receiverShape;
+        return isRealShape() && !isAccessor() && !isAbsent() && realDepth() == 0 &&
+               cached_shape == receiverShape;
     }
 
     void fill(Shape* receiverShape, uint32_t slot, uint32_t depth) noexcept {
         cached_shape = receiverShape;
         cached_slot = slot;
         cached_depth = depth;
+        cached_epoch = protoMutationEpoch();
+    }
+
+    // The same fill for a SET site, which additionally has to say whether the
+    // slot is an f64 one. Separate from `fill` rather than a defaulted
+    // parameter on it, so that every caller that can name a double slot is a
+    // caller that named one on purpose.
+    void fillForSet(Shape* receiverShape, uint32_t slot, bool doubleSlot) noexcept {
+        cached_shape = receiverShape;
+        cached_slot = slot;
+        cached_depth = doubleSlot ? BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG : 0u;
         cached_epoch = protoMutationEpoch();
     }
 
@@ -434,11 +457,12 @@ struct ObjectHeader {
     // A property slot's value, honouring the slot's representation.
     //
     // THE CHOKE POINT. Every way a property can be written ends here — the
-    // runtime's own paths by calling it, and generated code's raw stores by
-    // being refused a cache entry that names a double slot (object.cpp's fill
-    // gates, static_shape.cpp, class_family.cpp). That is what makes the
-    // representation a fact about the slot rather than a hope about the writer,
-    // and it is why the check is HERE and not repeated at seventeen call sites.
+    // runtime's own paths by calling it, and generated code's bare stores by
+    // testing the value for Number before they write and missing to here when
+    // it is not one (llvm_prop_set.cpp's DOUBLE-flag arm, llvm_static_slot.cpp's
+    // `double_slots` test). That is what makes the representation a fact about
+    // the slot rather than a hope about the writer, and it is why the check is
+    // HERE and not repeated at seventeen call sites.
     //
     // Costs a shape with no double slot one load of a word the caller has
     // usually already touched and one not-taken branch.

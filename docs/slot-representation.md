@@ -34,18 +34,24 @@ double node is marked, so the next object to install that key on that parent
 takes the boxed edge, and a field that turns over splits the shape tree once
 rather than once per object.
 
-**Every write goes through one place.** `ObjectHeader::setSlot` is the choke
-point; the runtime's paths call it, and generated code's raw stores are kept
-away from double slots by three refusals:
+**Every write goes through one place, or tests before it writes.**
+`ObjectHeader::setSlot` is the choke point, and the runtime's every store path
+calls it — `bronze_prop_set`, `defineProperty`, `Object.assign`, spread, the
+dictionary conversion, `delete`. Generated code's bare stores cannot route
+through a function, so each one makes the same test inline:
 
-| path | refusal |
+| path | test |
 |---|---|
-| set-site inline cache | `ObjectHeader::setProp` does not fill an entry naming a double slot, so generated code's four inline store arms cannot fire |
-| static-slot site | `bronze_static_shape_publish` refuses a `forWrite` publish at a double slot (a READ publish still happens — see below) |
-| family-guarded site | `classFamilyIdFor` refuses to stamp a shape with any double slot, because a family guard has no per-site hook to refuse only its stores |
+| set-site inline cache | an entry naming a double slot carries `BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG`, and the arm takes it only when the value is a Number. Both arms: the own-property store and the transition store a constructor's `this.x = x` runs on |
+| static-slot site, identity form | the shape word the guard already loaded carries `double_slots`; the store ands it with its compile-time slot's bit and requires a Number when it is set |
+| static-slot site, family form | the same test, and the reason it lives in the site rather than in `classFamilyIdFor`: a family guard has no per-site hook that could refuse only the stores |
 
-`Heap::verify_space` (under `BRONZE_GC_VERIFY=1`) is the tripwire for a write
-that got past all three: every slot a shape calls a double must hold a Number,
+A miss costs one helper call per *field*, not per store: `setSlot` generalizes
+the slot, and the cache entry refilled against the new shape has no flag left to
+test.
+
+`Heap::verify_space` (under `BRONZE_HEAP_VERIFY=1`) is the tripwire for a write
+that got past all of them: every slot a shape calls a double must hold a Number,
 and a violation names the object and the slot.
 
 ## Why reads still hit in stage R1
@@ -55,13 +61,14 @@ double slot is written NaN-canonicalized, so the word it holds is also the boxed
 `Value` for that number. Every reader that has not yet learned about
 representations — an inline cache's slot load, a static-slot site's
 constant-offset load, the collector's generic payload scan — keeps giving the
-right answer. That is what lets the storage model land with the codegen
-untouched, and it is why the read half of a pinned field keeps its fast path
-while the write half deopts to a helper.
+right answer. That is what lets the storage model land without teaching the
+codegen anything about representations: the read half of a pinned field is
+untouched, and the write half needs a test rather than a conversion.
 
 The compatibility is deliberate and temporary. Stage R2 stops canonicalizing and
 starts loading slots as raw `f64`, at which point the collector's precision
-below becomes load-bearing and the three refusals above lift.
+below becomes load-bearing and the store-side tests above become a conversion
+rather than a guard.
 
 ## What the collector does
 
@@ -88,7 +95,7 @@ and is not an object is a named fatal, not a fault somewhere else.
 |---|---|
 | `BRONZE_NO_SLOT_REPR=1` | **the seam.** No shape node is ever created double, every `double_slots` word stays zero, and storage is exactly what it was before the stage. |
 | `BRONZE_SLOT_REPR_OBSERVED=1` | every key becomes eligible, not only the pinned ones — the unpinned "first store was a double" policy. Implemented, **off by default**: an unpinned program has no promise to hold its store paths to, and a name that alternates costs a shape split each time it turns over. |
-| `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double vs boxed, number stores refused for an ineligible name, generalizations, stores that landed in a double slot. Costs a normal run nothing — every counter is incremented on a cold path. |
+| `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double vs boxed, number stores refused for an ineligible name, generalizations, and the stores that reached a double slot through the helper. Costs a normal run nothing — every counter is incremented on a cold path. |
 | `BRONZE_SLOT_REPR_CENSUS=1` | adds **per-(shape, slot) representation stability**: for every slot of every shape the run touched, how many stores were Numbers, how many were not, and how many reads. Turns on the shape census's latch suppression (`docs/shape-census.md`) so that inline-cache hit traffic is visible, so a census run is **counts, never times**. |
 
 `BRONZE_SLOT_REPR_STATS=1` on `bench/three_math.js`, compiled with
@@ -101,13 +108,19 @@ and is not an object is a named fatal, not a fault somewhere else.
   shape nodes     : 10 double, 328 boxed
   refused         : 20 (number store, name not eligible)
   generalizations : 0 stores over 0 nodes
-  double stores   : 660049
+  helper stores   : 40 into a double slot
 ```
 
 Ten double slots: `Vector3.x/y/z`, `Quaternion._x/_y/_z/_w`, `Euler._x/_y/_z`.
 Zero generalizations — the manifest's promises hold, which is what the entries
 in `bench/pins/threejs-math.pins` claim and what a census run checks rather than
 assumes.
+
+Forty helper stores out of the run's ~660,000 stores into those slots, and the
+small number is the good news: the other 659,960 took an inline arm, tested the
+value and stored it there. `helper stores` counts what reached `setSlot`, so it
+reads near zero exactly when the sites have latched. What says the slots are
+being made is `shape nodes`.
 
 ## The R2 planning number
 

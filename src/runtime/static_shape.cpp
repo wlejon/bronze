@@ -114,22 +114,18 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
         *cell = kRefused;
         return;
     }
-    // A WRITE site at a slot the shape calls a double. The site's fast path is
-    // a bare store of whatever bits it holds, and the slot's representation
-    // says those bits are an f64 — so publishing here would licence a store
-    // that can put a pointer in a double slot, which is the one thing the
-    // representation must never be able to be wrong about (slot_repr.h).
-    // Refusing costs this site its inline store and nothing else: the miss
-    // reaches `bronze_prop_set`, whose `ObjectHeader::setSlot` handles the slot
-    // correctly and generalizes it if the value is not a number.
+    // Nothing is asked here about the slot's REPRESENTATION, and that is
+    // deliberate. A write site at a slot the shape calls an f64 (slot_repr.h)
+    // is published like any other, because the site's own guard tests the
+    // value for Number before its bare store — the shape word it already
+    // loaded carries `double_slots` (llvm_static_slot.cpp). Refusing here
+    // instead would be sound too, and was what this stage did first; it cost
+    // three.js's pinned math classes their constant-offset stores for a test
+    // the site can make in three instructions.
     //
-    // A READ site is published as before. Reading a double slot as a Value is
-    // right in stage R1 — the stored word is the number's box (slot_repr.h) —
-    // so the hottest half of a pinned field keeps its constant-offset load.
-    if (forWrite && shape->slotIsDouble(slot)) {
-        *cell = kRefused;
-        return;
-    }
+    // A READ site never asks either, for a different reason: reading a double
+    // slot as a Value is right in stage R1, because the stored word IS the
+    // number's box.
     *cell = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
 }
 

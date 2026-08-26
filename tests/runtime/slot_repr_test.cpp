@@ -438,7 +438,7 @@ TEST_CASE("the observed-unpinned policy makes every key eligible") {
     CHECK(obj.get().asObject<ObjectHeader>()->shape->slotIsDouble(0));
 }
 
-TEST_CASE("a set-site cache is never filled with a double slot") {
+TEST_CASE("a set-site cache filled with a double slot says so") {
     ReprScope scope;
     ShadowStackFrame frame;
     Heap& heap = runtime::rtHeap();
@@ -459,17 +459,27 @@ TEST_CASE("a set-site cache is never filled with a double slot") {
     obj.set(Value::fromObject(live));
 
     // Generated code's inline store paths consume a set-site entry and store
-    // the value's bits unasked, so an entry naming a double slot would be a
-    // licence to put a pointer in one.
-    CHECK(icX.cached_shape == nullptr);
+    // the value's bits unasked, so an entry naming a double slot has to carry
+    // the flag that makes the arm test the value for Number first.
+    CHECK(icX.cached_shape != nullptr);
+    CHECK(icX.cached_slot == 0);
+    CHECK(icX.isDoubleSlot());
+    CHECK(icX.realDepth() == 0);
+    // The flag rides in the depth field, so the runtime's own "is this an own
+    // property of that shape" question has to keep answering yes through it.
+    CHECK(icX.describesOwn(icX.cached_shape));
     CHECK(icY.cached_shape != nullptr);
     CHECK(icY.cached_slot == 1);
+    CHECK(!icY.isDoubleSlot());
 
-    // The write still lands, through the helper.
+    // And once the slot generalizes, the entry that replaces it does not.
     CHECK(getProp(heap, obj, "x").asNumber() == 1.5);
+    Rooted<Value> str{Value::fromString(StringHeader::createFromUTF8(heap, "no"))};
+    live = obj.get().asObject<ObjectHeader>()->setProp(heap, runtime::rtArena(), keyX, str, &icX);
+    obj.set(Value::fromObject(live));
     Rooted<Value> v2{Value::fromDouble(7.5)};
     live = obj.get().asObject<ObjectHeader>()->setProp(heap, runtime::rtArena(), keyX, v2, &icX);
     obj.set(Value::fromObject(live));
     CHECK(getProp(heap, obj, "x").asNumber() == 7.5);
-    CHECK(icX.cached_shape == nullptr);
+    CHECK(!icX.isDoubleSlot());
 }
