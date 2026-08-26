@@ -134,7 +134,25 @@ being made is `shape nodes`.
 
 ## The R2 planning number
 
-The census report's last line is the one stage R2 reads:
+`BRONZE_SLOT_REPR_CENSUS=1` on the same run prints a row per (shape, slot) and
+one summary line. On `three_math` the rows are the manifest, checked:
+
+```
+  shape                        slot key                 num    other    reads  repr
+  plain{z,y,x}                 0    x                150000        0   150000  double
+  plain{z,y,x}                 1    y                150000        0   150000  double
+  plain{z,y,x}                 2    z                150000        0   150000  double
+  plain{elements}              0    elements              0        0   300000  boxed
+  plain{_order,_z,_y}          3    _z                30000        0    30001  double
+  plain{_order,_z,_y}          4    _order                0    30000    30001  boxed
+```
+
+Ten slots with a six-figure number-store count and a zero beside it, and
+`_order` — a string, correctly not pinned and correctly boxed — as the control.
+A **double** slot with any non-number store would be flagged `<-- VIOLATED` on
+its row: that is a manifest entry the run disproved.
+
+The last line is the one stage R2 reads:
 
 ```
   boxed slots whose every store was a number: N (M accesses) — stage R2's candidate set
@@ -142,6 +160,9 @@ The census report's last line is the one stage R2 reads:
 
 A boxed slot whose every observed store was a Number is a slot the next stage
 could claim, either by widening the manifest or by turning
-`BRONZE_SLOT_REPR_OBSERVED` into a policy with a proof behind it. A **double**
-slot with any non-number store is flagged `<-- VIOLATED` on its row: that is a
-manifest entry the run disproved.
+`BRONZE_SLOT_REPR_OBSERVED` into a policy with a proof behind it. `three_math`
+under its full manifest answers **0** — there is nothing left to claim, which is
+what a complete manifest looks like from here. `bench/object_graph.js`, which has
+no manifest at all, answers **11 slots over 5,098,196 accesses**: `x/y/z`,
+`worldX/worldY/worldZ`, `visited`, `sumX/sumY/sumZ`. That is the shape of the
+question R2 opens with.

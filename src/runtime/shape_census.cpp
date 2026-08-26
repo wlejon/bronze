@@ -195,12 +195,30 @@ void classifyValue(SiteRec& r, uint64_t bits) {
 CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIndex,
                                uint64_t keyBits, const void* siteId, const void* retaddr,
                                bool hasValue, uint64_t valBits) {
-    if (!g_shapeCensusEnabled || g_sites == nullptr) return nullptr;
+    if (!g_shapeCensusEnabled) return nullptr;
     if (t_nestedDepth > 0) return nullptr;
 
     const Value obj(objBits);
     bool isPlainShape = false;
     const void* identity = receiverIdentity(obj, isPlainShape);
+
+    // Per-(shape, slot) REPRESENTATION stability, under BRONZE_SLOT_REPR_CENSUS
+    // (runtime/slot_repr.h). It rides this recording point rather than owning
+    // one of its own because the two want the same thing at the same instant —
+    // the receiver's shape before the store runs — and because the latch
+    // suppression that makes inline-cache hit traffic visible is already here.
+    //
+    // ABOVE the `g_sites` check, and that is the whole of what makes
+    // BRONZE_SLOT_REPR_CENSUS work on its own: it borrows this file's ENABLE
+    // flag (for the latch suppression) without asking for this file's site
+    // table, which only BRONZE_SHAPE_CENSUS=1 allocates.
+    if (isPlainShape && keyIndex != 0xFFFFFFFFu && slotReprCensusEnabled()) {
+        if (StringHeader* keyHdr = rtKeyHeader(keyIndex)) {
+            slotReprCensusNote(static_cast<const Shape*>(identity), PropertyKey::forString(keyHdr),
+                               hasValue, Value(valBits));
+        }
+    }
+    if (g_sites == nullptr) return nullptr;
 
     // Transition detection for writes, BEFORE the store runs: is the key
     // already on the receiver's shape? Reads only arena memory.
@@ -213,18 +231,6 @@ CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIn
                 PropertyInfo info;
                 transitioned = !sh->lookupProperty(PropertyKey::forString(keyHdr), info);
             }
-        }
-    }
-
-    // Per-(shape, slot) REPRESENTATION stability, under BRONZE_SLOT_REPR_CENSUS
-    // (runtime/slot_repr.h). It rides this recording point rather than owning
-    // one of its own because the two want the same thing at the same instant —
-    // the receiver's shape before the store runs — and because the latch
-    // suppression that makes inline-cache hit traffic visible is already here.
-    if (isPlainShape && keyIndex != 0xFFFFFFFFu && slotReprCensusEnabled()) {
-        if (StringHeader* keyHdr = rtKeyHeader(keyIndex)) {
-            slotReprCensusNote(static_cast<const Shape*>(identity), PropertyKey::forString(keyHdr),
-                               hasValue, Value(valBits));
         }
     }
 
