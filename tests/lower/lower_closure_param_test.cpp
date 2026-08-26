@@ -18,6 +18,7 @@
 
 #include "il/print.h"
 #include "lower_fixture.h"
+#include "types/pins.h"
 
 using namespace bronze;
 using bronze::lower_test::inferAndLower;
@@ -174,4 +175,47 @@ TEST_CASE("BRONZE_NO_CLOSURE_PARAM_PROOF is the A/B seam and it is read once") {
         "}\n"
         "console.log(make());\n");
     CHECK(header(il, "g").find("dynamic") != std::string::npos);
+}
+
+// ---- a pin must add a promise, never subtract a proof ------------------------
+
+TEST_CASE("a pinned RETURN does not cost the same function its parameter's f64 slot") {
+    // `flow_expr.cpp`'s call rule answers a pinned return early, and it used to
+    // answer it by RETURNING — which skipped the loop just below that joins this
+    // site's argument types into the callee's `observedParams`. So
+    // `return run: number` silently un-typed `run`'s own parameter: the loop
+    // bound `i < iters` in bench/mat4_kernel.js went from an `fcmp` to a boxed
+    // `rel.lt`, and the manifest the stage C1 census wrote measured 1.8 ns/call
+    // SLOWER than the hand-written one it otherwise reproduced.
+    //
+    // The two headers below are the whole regression: the parameter must stay
+    // `f64` with the return pinned, and pinning the return must still be worth
+    // something (`-> f64`).
+    const char* kSrc =
+        "function run(iters) {\n"
+        "  let acc = 0;\n"
+        "  for (let i = 0; i < iters; i++) acc = acc + i;\n"
+        "  return acc;\n"
+        "}\n"
+        "console.log(run(10));\n";
+
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto astMod = bronze::lower_test::parseOnly(kSrc, diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(astMod != nullptr);
+
+    types::PinManifest pins;
+    std::string err;
+    REQUIRE_MESSAGE(pins.parse("return run: number\n", "test.pins", err), err);
+
+    auto inferred = types::inferModule(*astMod, diags, /*hostGlobals=*/nullptr, &pins);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(inferred.has_value());
+    const auto mod = lower::lowerModule(*astMod, diags, &*inferred, /*hostGlobals=*/nullptr,
+                                        /*sources=*/nullptr, /*stats=*/nullptr,
+                                        /*assumeNoBigInt=*/false, &pins);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod.has_value());
+    CHECK(header(il::print(*mod), "run") == "func run(%0: f64) -> f64 {");
 }

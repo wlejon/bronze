@@ -444,9 +444,17 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // through a function value, so it has no `functionIndex` and no signature
     // below can speak for it. `?.()` is excluded — the call may not happen and
     // the result is then `undefined`, which is not a Number.
+    //
+    // NOTED, not returned. A pin about the RESULT says nothing about the
+    // ARGUMENTS, and answering here used to skip the contribution loop at the
+    // bottom of this function — so `return run: number` on a direct call
+    // `run(iters)` silently un-typed `run`'s own parameter, and the census
+    // emitting that entry cost 1.8 ns/call on mat4_kernel (stage C1). A pin adds
+    // a promise; it must never subtract a proof.
+    bool pinnedReturn = false;
     if (!c.optional && mod_.pins != nullptr) {
         const auto* ident = dynamic_cast<const ast::Ident*>(c.callee.get());
-        if (ident != nullptr && mod_.pins->returnPinned(ident->name)) return Type::number();
+        if (ident != nullptr && mod_.pins->returnPinned(ident->name)) pinnedReturn = true;
     }
 
     // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
@@ -478,10 +486,10 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     }
 
     const uint32_t index = calleeType.functionIndex();
-    if (index == kNoFunctionIndex) return Type::dynamic();
+    if (index == kNoFunctionIndex) return pinnedReturn ? Type::number() : Type::dynamic();
 
     FunctionInfo& callee = mod_.functions[index];
-    if (!callee.directCallable) return Type::dynamic();
+    if (!callee.directCallable) return pinnedReturn ? Type::number() : Type::dynamic();
 
     // This site's contribution to the callee's parameters. A missing
     // argument is `undefined`, exactly as the call would deliver it.
@@ -489,6 +497,11 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         const Type at = i < args.size() ? args[i] : Type::undefined();
         callee.observedParams[i] = join(callee.observedParams[i], at);
     }
+    // The pin wins over the join for the RESULT — the invocation's promise is
+    // the stronger statement, and it is the one the callee's typed entry was
+    // built from (`applySignaturePins`). The contribution above happened either
+    // way.
+    if (pinnedReturn) return Type::number();
     return callee.signature.returnType;
 }
 
