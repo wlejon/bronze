@@ -240,6 +240,331 @@ node bench/typed_array_loop.js
 > where E3 stood. This session runs ~1 % slower than E4's throughout (E3's
 > `mat4` reads 17.00 here against 16.25 published), so read DOWN a column, not
 > across sessions.
+>
+> **`ladder.sh` now peels a seventh column, `b1`** (stage B1's write barriers,
+> `BRONZE_NO_PIN_BARRIERS=1`), which is the INNERMOST seam and is therefore on
+> in all six columns above — none of the compilers they reproduce emitted a
+> barrier. The table above is E5's session and is left as it was measured; the
+> seven-column ladder from B1's own session is in the Stage B1 entry below,
+> because mixing two sessions in one table is the thing this block exists to
+> prevent.
+
+- **Stage B1 (pin enforcement: write barriers)** — 2026-08-25:
+  > [!NOTE]
+  > **A `--pins` entry was a promise nothing checked: a program that broke one
+  > read a pointer's bits as a double and kept going. It now throws a catchable
+  > `TypeError` naming the manifest line, at the violating write.** The READ
+  > side is untouched — unconditional consumption of the claim is the whole
+  > performance model, and a guard there would be the deoptimization the
+  > manifest exists to remove — so every line of this stage sits where a claim
+  > can be VIOLATED. **The measured tax is ≈ 0**: under 0.05 ns on all three
+  > two-count kernels, sign-inconsistent across two independent 101-round
+  > sessions, and inside a millisecond harness whose own width on BYTE-IDENTICAL
+  > IL is 1.2 ms. Checksums identical in every cell of every table below.
+  >
+  > **The TDZ elision first, because it is the one place in the compiler where a
+  > wrong static answer is SILENT** (E4's HANDOFF (b), item iv). Stage E4's
+  > `getDefinitelyAssignedLexicalNames` decides a lexical slot carries no
+  > dead-zone marker and its reads carry no check; a wrong "definitely assigned"
+  > does not fail loudly, it lets a read of the dead zone through. Absence of a
+  > marker is not absence of a claim — the elision IS a claim. The disposition is
+  > **PROVEN, not checked**, on two clauses:
+  >
+  > 1. **Code in a statement list can only read a binding of that list's record
+  >    by NAMING it.** The mention scan is `detail::IdentVisitor`, and
+  >    `ast::Visitor` declares one PURE virtual per node kind — a form the walk
+  >    forgot to descend into stops the build, it does not drop a check. The two
+  >    ways JavaScript has of naming a binding without writing its name are both
+  >    absent from bronze: `with` is a parse error (`parse/parser_stmt.cpp:197`),
+  >    and direct `eval` runs with INDIRECT (global-environment) semantics with a
+  >    compile-time warning saying exactly that (`lower/lower_call.cpp:165`).
+  > 2. **Any other reader is a closure over this record**, and there are two ways
+  >    to get one. A node in the list that BUILDS a function or class — `ReachScan`
+  >    stops on sight of `FunctionExpr`, `ClassExpr` or `ClassDecl`, and
+  >    `paramDefaultsBuildFunctions` refuses the whole scope if a parameter
+  >    default could hold one. Or one of the list's own hoisted `function`
+  >    declarations, whose names are in the `stop` set for the WHOLE scan. A
+  >    nested `FunctionDecl` is deliberately not flagged as function-building:
+  >    `IdentVisitor` walks its body, so every name it could read is collected
+  >    here, and a body naming nothing dangerous cannot reach a dangerous binding
+  >    however its value is passed around afterwards.
+  >
+  > The boundary was tested, not asserted.
+  > `tests/oracle/cases/dead_zone_reach_boundary.js` is fourteen numbered
+  > adversarial cases plus a module-level one, differential against node v24.2.0:
+  > a nested declaration reading a later `let`; the same through two hops of
+  > hoisted declarations; a closure stored on an object and called later; an
+  > object-literal getter; a class expression; try/catch reordering the control
+  > flow; a loop whose first iteration reads what a later statement initializes;
+  > a mention inside a computed member; a parameter default that builds a
+  > closure; a generator suspended across the initializer; a `switch` whose
+  > `case` reads a later `let` — and, deliberately, two harmless shapes that must
+  > NOT throw, because a scan answering "checked" to everything is sound and
+  > worthless. The file is byte-identical to node, and byte-identical again under
+  > `BRONZE_NO_DEFINITE_REACH=1` and under `BRONZE_NO_DEFINITE_INIT=1`. Those two
+  > seams ARE the checked fallback the charter allowed: a whole-program build
+  > with every elided check restored, one flag away, in the shipped binary. Two
+  > structural facts fell out of writing the argument down and are worth
+  > carrying: `lower/lower_switch.cpp:77` passes an EMPTY statement list, so a
+  > switch clause is never definite-init at all, and the module linker flattens
+  > every module body into one list whose top-level `function` declarations stay
+  > hoisted, so the `stop` set covers them.
+  >
+  > **Where a barrier goes.** On the STORE and on the ENTRY, and — this is
+  > HANDOFF (b) item i — on the logical SLOT, never on the frame region, because
+  > E3 merges many logical slots into one GC frame and a frameless callee's write
+  > would walk straight past a frame-keyed barrier.
+  >
+  > | pin | where the barrier is | why there |
+  > |---|---|---|
+  > | `function <fn>.<slot>: number` | `emitEnvSet`, keyed on the (depth, index) the scope plan resolved | the read is a raw unbox, so the SLOT is what must be true |
+  > | `<Class>.<field>: number` / `number-or-nullish` | every store path that reaches a pinned field: plain and compound member assign, the logical/nullish forms, the literal-key index forms, `++`/`--`, destructuring | a boxed store exists, so the store is the cheapest true place |
+  > | `<Class>.<field>: numeric-elements` | the field store checks the ARRAY (`bronze_pin_check_array`); every typed element store checks the ELEMENT | the field half is a constructor-time write; the numeric half is one compare per element instead of an O(n) sweep |
+  > | `param <owner>(<p>): number`, `return <owner>: number` | the enumerated call sites of the static plan, plus the boxed wrapper; the return at the `return` STATEMENT | HANDOFF (b) item ii: an f64-proof'd parameter has no boxed store at all, so the call site is the only place. The return is checked at the statement because that is where the value is still boxed — the wrapper only ever sees the converted f64 |
+  >
+  > **And where it does NOT go, which is the load-bearing half.** A barrier is
+  > emitted only where lowering has no static answer: `pinSatisfiedStatically`
+  > answers yes for any `il::Type::F64` or `I32` value, because an f64 IL value
+  > IS a Number by construction. That one test removes the barrier from every
+  > arithmetic store, every pinned read fed back into a pinned slot, every typed
+  > parameter and every typed call result — the proof is the licence. What it is
+  > worth is not an argument, it is a count:
+  >
+  > | fixture | manifest entries | `pin.guard` emitted | where |
+  > |---|---:|---:|---|
+  > | `env_slot_kernel` | 12 | **0** | the env-slot fixpoint and E4's parameter proof cover every write in the file |
+  > | `call_chain_kernel` | 25 | **1** | `Uniform.setValue`'s `return this.store(...)`, whose result is Dynamic because `flow_expr.cpp` consumes a return pin only for a plain `Ident` callee |
+  > | `nullish_pin_kernel` | 4 | **1** | the `Node` constructor's `this.limit = limit` |
+  > | `mat4_kernel` | 14 | 332 | **zero** in `Matrix4.multiplyMatrices` and zero in `run` — the entire hot loop, `a.elements[0] = 1.0 + (i & 7) * 0.125` included. All 332 are in cold library methods across 70 functions (`Quaternion.setFromEuler` 24, `Matrix4.set` / `copy` / `multiplyScalar` 16 each), and the single `dense-array` check is in the `Matrix4` constructor |
+  > | `tests/oracle/threejs/main.js` | 14 | 473 | the whole vendored library, for scale |
+  >
+  > **The shape of the check.** A Number's Value bits ARE its double's bits and
+  > every other tag sits above the number range, so `number` is one unsigned
+  > compare against `BRONZE_ABI_NUMBER_MAX_BITS` and `number-or-nullish` is that
+  > plus two constant equalities. Nothing reads the heap, which is what lets the
+  > barrier fold away wherever LLVM can already see the value's provenance. The
+  > violating edge is a cold block carrying a 1 048 576 : 1 branch weight, so
+  > block layout puts it out of line. `numeric-elements`' array test has no
+  > inline form — object tag, header read, class compare — so it is one helper
+  > call, affordable precisely because that pin's field store is a
+  > constructor-time write.
+  >
+  > **Semantics.** A violation raises through the ordinary convention: the
+  > pending exception cell is set and `undefined` is returned, so it is a
+  > catchable `TypeError` (`ReferenceError` for TDZ, unchanged), never a process
+  > abort. `il::Op::PinGuard` is deliberately OUTSIDE `il::canThrow`'s
+  > non-throwing whitelist, so the backend emits the exception check after it
+  > like any other raising op. Two consequences the tests pin: the violating
+  > store is **dropped**, not performed and then complained about — the assertion
+  > is that the slot still reads its old value, because a barrier that let the
+  > value through would leave the next raw read of that slot reading a pointer as
+  > a double, which is the whole failure this stage closes — and the program
+  > keeps running. The message names the manifest LINE as the file spells it
+  > (`pin 'Vec.x: number' violated: the value is a string`), with the module
+  > linker's `modN.` prefix stripped, because the message exists to be grepped
+  > for in the file that caused it. One further semantic change: a pinned
+  > PARAMETER's boxed wrapper used to run ToNumber, so `scale("4")` quietly saw
+  > 4; it now tag-tests and throws. `src/types/pins.h` called the signature forms
+  > the weakest pin in the file for exactly that reason, and no longer does.
+  >
+  > **The seam.** `BRONZE_NO_PIN_BARRIERS=1` removes every barrier and restores
+  > the older undefined behaviour, so the tax peels out of ONE binary. With it
+  > set, the IL of all four pinned kernels differs from today's only by the
+  > absent `pin.guard` instructions and the key-constant indices they intern
+  > (checked by diff; a `param`/`return` entry interns its manifest line even
+  > where the proof then deletes the barrier, which leaves a few dead key
+  > constants and no code). It is the INNERMOST seam of the campaign ladder and
+  > is on in every earlier column, because none of the compilers those columns
+  > reproduce emitted a barrier: `e5` with it set is E5's shipped compiler, and
+  > the new `b1` column is the one with no seams at all.
+  >
+  > **THE LADDER, SEVEN COLUMNS, one idle session, one compiler binary**
+  > (`bash bench/tools/ladder.sh <bronze.exe> <dir>`, then `ladder_specs.py` and
+  > `interleave.py`; `selftimed.py` for `call_chain`, `nodebench.py` for the node
+  > column, all in the same session). Kernels at 101 rounds by two-count wall
+  > delta, millisecond fixtures at 51 rounds raw.
+  >
+  > | | stage 3.4 | E1 | E2 | E3 | E4 | E5 | **B1** | node v24.2.0 |
+  > |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  > | `env_slot_kernel` ns/iter | 56.12 | 47.60 | 14.82 | **10.51** | 10.64 | 10.58 | **10.60** | 5.08 |
+  > | `mat4_kernel` ns/call | 23.42 | 23.35 | 17.07 | 16.09 | 17.91 | **16.02** | **16.07** | 14.59 |
+  > | `nullish_pin_kernel` ns/step | 12.80 | 12.78 | 11.29 | **11.13** | 11.13 | 11.17 | **11.16** | 5.51 |
+  > | `call_chain_kernel` chained / flat | 19.88 / 18.38 | 19.88 / 18.50 | 11.25 / 12.50 | 9.25 / 9.75 | 9.38 / 8.50 | **9.25 / 8.50** | **9.50 / 8.75** | 2.00 / 1.88 |
+  > | `typed_array_crunch` ms | 52.28 | 52.11 | 46.59 | 46.60 | **35.17** | 35.23 | **35.42** | 55.96 |
+  > | `three_math` ms | 41.32 | **41.13** | 42.90 | 42.01 | 41.76 | 42.79 | **41.77** | 50.82 |
+  > | `mesh_churn_2k` ms | 73.94 | 73.83 | 74.16 | 72.08 | **70.66** | 71.10 | **71.04** | 93.12 |
+  > | `object_graph` ms | 47.10 | 46.66 | 46.45 | 46.88 | **46.25** | 46.44 | **46.40** | 71.30 |
+  >
+  > Checksums `126000020 / 12600020`, `400000 / 940000`,
+  > `825756/700159/NaN/-563350`, `296000000 / 296000000`, `78849652`, `405000`,
+  > `-2112298`, `-32601148` — every cell of every column, node's included. Read
+  > DOWN a column: this session runs ~1 % faster than E5's (its E3 `mat4` column
+  > reads 16.09 here against 17.00 there), which is why nothing across sessions
+  > is claimed.
+  >
+  > **THE TAX, measured on its own.** The ladder's B1 column already carries it,
+  > but a seven-column table is a bad instrument for a difference this small, so
+  > the A/B was also run alone — two columns, same binary, `E5` = barriers off,
+  > `B1` = barriers on, interleaved, and repeated in a second independent
+  > session:
+  >
+  > | fixture | guards | barriers off | barriers on | delta | repeat delta |
+  > |---|---:|---:|---:|---:|---:|
+  > | `env_slot_kernel` ns/iter | 0 | 10.808 | 10.763 | **−0.045** | +0.028 |
+  > | `mat4_kernel` ns/call | 332 | 16.069 | 16.086 | **+0.017** | +0.041 |
+  > | `nullish_pin_kernel` ns/step | 1 | 11.196 | 11.154 | **−0.042** | −0.020 |
+  > | `call_chain_kernel` chained ns | 1 | 9.25 | 9.50 | **+0.25** | +0.12, +0.13 |
+  > | `call_chain_kernel` flat ns | **0** | 8.50 | 8.75 | **+0.25** | +0.12, +0.13 |
+  > | `typed_array_crunch` ms | 0 (no manifest) | 36.665 | 36.590 | −0.075 | — |
+  > | `three_math` ms | 0 (no manifest) | 44.323 | 43.169 | −1.154 | — |
+  > | `mesh_churn_2k` ms | 0 (no manifest) | 72.618 | 73.099 | +0.481 | — |
+  > | `object_graph` ms | 0 (no manifest) | 47.315 | 47.290 | −0.025 | — |
+  >
+  > **The bottom four rows are a NULL CONTROL and they are the most useful rows
+  > in the table.** Those four fixtures are built with no manifest, so no barrier
+  > can exist in either column and their IL is byte-identical across the seam
+  > (verified by diff on all four). The spread they show — **−1.15 to +0.48 ms**
+  > — is therefore the millisecond harness's own width in this session, and it is
+  > larger than anything the barriers do. `three_math` moving −1.15 ms on
+  > byte-identical IL is the single clearest statement of that.
+  >
+  > `call_chain_kernel` is the one fixture with a barrier on a hot path — the
+  > return guard runs on all 8 M iterations, because `i & 15` misses the cache
+  > every time — and it reads +0.12 to +0.25 ns three sessions running. But the
+  > **`flat` arm, which contains no barrier at all**, moves by exactly the same
+  > amount in the same direction in all three. So the shift is the binary, not
+  > the check: at the fixture's 0.125 ns timer granularity the guard itself is
+  > not resolvable. It is reported as a real (if tiny) cost of shipping the
+  > barriers on this fixture, and NOT as the cost of the guard.
+  >
+  > **COMPILE TIME.** Medians of five interleaved `--timings` wall builds (four
+  > for the largest):
+  >
+  > | build | LLVM insts | partitions | guards | barriers off | barriers on | delta |
+  > |---|---:|---:|---:|---:|---:|---:|
+  > | `three_math` (no manifest — IDENTICAL IL) | 582 002 | 2 | 0 | 22.64 s | 22.85 s | +0.9 % |
+  > | `mat4_kernel --pins` | 455 018 | 2 | 332 | 13.02 s | 13.21 s | +1.5 % |
+  > | `tests/oracle/threejs/main.js --pins` | 1 698 990 | 8 | 473 | 31.89 s | 32.13 s | +0.8 % |
+  >
+  > The first row is again the null control, and at +0.9 % on identical work it
+  > says the compile-time harness cannot resolve what the other two rows are
+  > measuring. Barrier emission is not a measurable compile-time cost.
+  >
+  > **Partition placement was checked FIRST**, per E5's handoff, and it DID move:
+  > the barriers add 3 335 LLVM instructions to `mat4_kernel` (451 683 → 455 018,
+  > +0.74 %) and the cross-partition keep sets change with them (p0/p1 borrow
+  > 13 / 7 bodies without barriers and 9 / 9 with). Both builds stay at two
+  > partitions and both keep the multiply inlined — the `mat4` column reads 16.07
+  > against E5's 16.02, nowhere near E4's un-inlined 17.91 — so the shift is
+  > visible and harmless. It is exactly the failure mode E5 warned door 2 about,
+  > and it is why that check is in this entry rather than in a footnote.
+  >
+  > **Honest negatives.**
+  >
+  > 1. **Enforcement is not TOTAL, and the hole has a name.** A field pin is
+  >    resolved for the barrier exactly the way the READ resolves it — receiver's
+  >    shape class, fallback to the interned constructor name, walk up `extends`
+  >    — deliberately, because two different answers would be a promise spent
+  >    with no barrier. The price is that a store through a receiver inference
+  >    types `dynamic` gets NO barrier, while a class-known read elsewhere still
+  >    spends the claim. In one program with `Vec.x: number` pinned,
+  >    `function putKnown(v, y) { v.x = y; }` emits
+  >    `pin.guard %1, number, "Vec.x: number"` and
+  >    `function putBlind(o, y) { o.x = y; }` emits nothing. Closing it needs a
+  >    RUNTIME-visible pin table keyed by shape, so an unknown-receiver store can
+  >    ask; that is a door-3 design item. `src/types/pins.h` states it where a
+  >    manifest author will read it.
+  > 2. **Two claims are unchecked by construction rather than by omission.** The
+  >    ELEMENTS of an array assigned wholesale into a `numeric-elements` field
+  >    are not swept — that is an O(n) walk at a store whose entire purpose is an
+  >    O(1)-per-element loop after it — so the numeric half is held one element
+  >    at a time, which covers every element bronze itself writes and not one an
+  >    `Array.prototype.fill`, a host, or a `JSON.parse` result put there. And
+  >    the IN-BOUNDS half of the element claim has no write to be held at, since
+  >    in-bounds is a claim about a read; a bounds check on the store is the
+  >    guard the pin exists to delete.
+  > 3. **`mat4_kernel` ships 332 barriers.** The ≈0 target is met on the hot
+  >    path and is NOT a statement about a fixture-wide count. It happens to cost
+  >    nothing measurable here because those 332 are in library methods called a
+  >    handful of times each, but a program whose cold code is its hot code would
+  >    pay, and this entry does not claim otherwise.
+  > 4. **The one guard on a hot path is pure tax today, and need not stay so.**
+  >    `Uniform.setValue`'s `return this.store(...)` is guarded and then unboxed
+  >    with a CHECKED `unbox.f64` — the return pin's claim is not spent at that
+  >    site, because `flow_expr.cpp` consumes a return pin only for a plain
+  >    `Ident` callee. Teaching it the method-call form would turn this barrier
+  >    into a net saving rather than a net cost. Out of scope here (it is a read-
+  >    side change), recorded because it is the one place the stage adds a check
+  >    without deleting one.
+  > 5. **A pre-existing MISCOMPILE, found while writing the tests and unrelated
+  >    to pins**, fixed in its own commit. `functionRefMap_` memoizes the
+  >    `func.ref` a mention of a top-level function lowers to, holding an
+  >    INSTRUCTION RESULT ID; `lowerFunctionBody` cleared it on the way into a
+  >    nested body and `lowerClosure` never restored it, so the enclosing
+  >    function came back holding the callee's ids.
+  >    `(function () { h(g, 4); })(); h(g, 3);` called the anonymous function
+  >    twice and never called `h` again — silently, because the id is always in
+  >    range and the verifier sees nothing wrong. It was found because the pin
+  >    tests' own `report(label, fn)` harness is that exact shape. No fixture and
+  >    no file of the three.js oracle changes a byte of IL under the fix, which
+  >    is why no published number moves; the shape is ordinary JavaScript all the
+  >    same.
+  >
+  > **Tests.** `tests/cli/pin_barrier_test.cpp`, nine cases against the driver,
+  > asserting the SHAPE off `runIl` (which stores carry a `pin.guard` and — as
+  > hard — which do not) and the BEHAVIOUR off `runBuild` and the produced
+  > executable (the throw is a TypeError, it is catchable, it names the manifest
+  > line, the program keeps running, the violating value was not stored): a
+  > violating env-slot write, a fixpoint-proved slot that carries no barrier, a
+  > violating field write, a `number-or-nullish` field that admits `null` and
+  > `undefined` and refuses a string, a `numeric-elements` field and element, a
+  > field store already typed f64 that carries no barrier, a violating argument
+  > through the boxed wrapper, a violating return, and the message reading back
+  > as a line of the manifest. The seven barrier-expecting cases skip under
+  > `BRONZE_NO_PIN_BARRIERS=1` — the seam is a measurement instrument, not a
+  > contract configuration, and it is read once per process so one run cannot
+  > have both — while the ABSENCE cases stay on, because "no barrier here" had
+  > better not depend on the seam. **ctest 29/29 in BOTH contract configurations
+  > (default and `BRONZE_ELIDE_ENV_GUARDS=1`)**, and the codegen, IL, lower,
+  > types, cli and both oracle suites green again under
+  > `BRONZE_NO_PIN_BARRIERS=1`.
+  >
+  > **HANDOFF (d): what door 3 (census-driven manifest inference) should know now
+  > that pins are enforced.**
+  >
+  > 1. **An inferred pin CAN ship enforced-by-default, and that is the main thing
+  >    this stage changes for the census.** Before B1 a wrong inferred entry
+  >    compiled to a raw unbox of a pointer, so a census would have had to be
+  >    right in the "no false positives, ever" sense before anything it emitted
+  >    could ship. It now only has to be right about the HOT path: a wrong entry
+  >    on a cold path is a TypeError at the violating write, catchable, naming
+  >    the line it came from. That turns a proof obligation into a
+  >    precision/recall problem with a bounded downside, and it is what makes a
+  >    census worth building. The caveat is negative 1 — "enforced by default"
+  >    means "enforced wherever the compiler knows the receiver's shape".
+  > 2. **Emit the manifest LINE, not just the fact.** Every barrier names its
+  >    entry as the manifest spells it, prefix stripped, so a violation in the
+  >    field is a one-line diff back to the manifest it came from. A census
+  >    should emit entries in exactly that spelling — `Vector3.x: number`,
+  >    `param Uniform.setValue(x): number` — or the loop does not close.
+  > 3. **A SECOND enumeration for the census, of the same kind as the first.**
+  >    HANDOFF (c) said the census's real job is enumerating call sites of
+  >    ESCAPED closures, and that stands. B1 adds: the stores that reach a pinned
+  >    field through a receiver the compiler cannot type. A dynamic census sees
+  >    the shape at those sites for free — same instrumentation — and it is the
+  >    only way to close the last silent hole short of a runtime pin table. So
+  >    the census's output should distinguish "this field is always a number"
+  >    from "this field is always a number AND every store to it is from a site
+  >    the compiler can type", because only the second is fully enforced today.
+  > 4. **The proof still runs first**, unchanged from HANDOFF (c). What B1 adds
+  >    is a cheap way to MEASURE the overlap it warned about: a proposed entry
+  >    that produces zero `pin.guard` instructions is one the proof already
+  >    covers, and `bronze il --pins <file>` reports that without running
+  >    anything.
+  > 5. **The seam is the census's A/B too.** `BRONZE_NO_PIN_BARRIERS=1` gives a
+  >    binary with the same IL minus the barriers, so a census can price its own
+  >    proposals — build with the inferred manifest, count guards, peel — without
+  >    a second compiler.
 
 - **Stage E5 (the split stops eating the inline plan)** — 2026-08-25:
   > [!NOTE]

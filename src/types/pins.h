@@ -83,6 +83,16 @@ bool pinBarriersEnabled();
 // WHAT IS STILL NOT CHECKED, stated because a promise is only as good as its
 // exceptions:
 //
+//   - a store through a receiver whose SHAPE CLASS inference does not know.
+//     The barrier resolves the pin exactly the way the read resolves it — the
+//     receiver's class, the fallback to the interned constructor name, the walk
+//     up `extends` — so `function put(v, y) { v.x = y; }` is guarded when `v`
+//     is a known `Vec` and unguarded when the same function is reached with a
+//     receiver inference typed `dynamic`. A read elsewhere still spends the
+//     claim, so this is the one place a violation can still be silent. Closing
+//     it needs a RUNTIME-visible pin table keyed by shape, so that a store
+//     through an unknown receiver can ask; that is a design note for the
+//     census, not a corner of this list.
 //   - the ELEMENTS of an array stored into a `numeric-elements` field. That is
 //     an O(n) walk at a store whose whole purpose is an O(1)-per-element loop
 //     after it; the numeric half is held at the element stores instead, which
