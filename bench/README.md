@@ -47,6 +47,7 @@ bench/run_benchmarks.sh --json         # Machine-readable JSON-lines only
 | `fib.js` | Recursive `fib(30)` | Call overhead on tiny all-`dynamic` vs inferred-f64 function |
 | `numeric_loop.js` | 10M-iteration float arithmetic loop | Proven-f64 arithmetic in tight loop |
 | `property_access.js` | 1M iterations of `o.a + o.b` | Own-property IC fast path dispatch |
+| `repr_slot_kernel.js` | 400k iterations over pinned number fields, inline and out-of-line, with never-written shape-mates beside them | Stage R1 double slots: the store arms' Number test, the collector over a mixed heap. Needs `--pins bench/pins/repr-slot-kernel.pins` to make any slot a double one |
 | `proto_dispatch.js` | Depth-3 inherited property read (stable epoch) | Prototype chain IC caching at depth > 0 |
 | `proto_dispatch_churn.js` | Depth-3 inherited read with interleaved `new Pt(i)` | Ordinary object property adds vs prototype cache invalidation |
 | `typed_array_loop.js` | Float32Array element access vs plain Array | TypedArray buffer access vs JS array indexing |
@@ -248,6 +249,90 @@ node bench/typed_array_loop.js
 > seven-column ladder from B1's own session is in the Stage B1 entry below,
 > because mixing two sessions in one table is the thing this block exists to
 > prevent.
+
+- **Stage R1 (per-slot representation: a shape can say a slot is an f64)** — 2026-08-26:
+  > [!NOTE]
+  > **A property slot held one thing — a NaN-boxed `Value` — and that
+  > uniformity is what makes three.js's `Vector3`/`Matrix4`/`Quaternion` pay a
+  > tag at every property boundary. A `Shape` can now say, per slot, that the
+  > slot's eight bytes ARE a double.** What R1 lands is the STORAGE MODEL, the
+  > machinery that keeps the claim true against every store path, and the
+  > census that says which other slots are worth claiming. Generated code does
+  > not spend the promise yet — no raw `f64` load, no elided tag test; that is
+  > stage R2. **So this entry publishes no speedup, and the number that matters
+  > is the absence of one in either direction.** Full design:
+  > [docs/slot-representation.md](../docs/slot-representation.md).
+  >
+  > **Mechanism.** A node is born `SlotRepr::Double` when the store that
+  > creates the property is a Number *and* the name is on the eligibility list
+  > the module registers at init (`bronze_register_slot_repr`), which the
+  > lowerer builds from the `--pins` manifest's `number` fields on classes
+  > whose layout inference proved. bronze has no deopt, so the claim is taken
+  > back by a SHAPE CHANGE: a non-Number reaching a double slot moves that
+  > object to a shape rebuilt with the slot boxed, leaving every shape-mate
+  > untouched. Every runtime write goes through `ObjectHeader::setSlot`;
+  > generated code's three bare stores (the set-site IC's own arm, its
+  > transition arm, and the static-slot site in both its identity and family
+  > forms) test the value for Number inline and miss to the helper when it
+  > fails — once per field, not once per store, because the miss generalizes
+  > the slot and the refilled entry has nothing left to test.
+  >
+  > **Seam: `BRONZE_NO_SLOT_REPR=1`** — no node is ever created double, every
+  > `double_slots` word stays zero, storage is exactly what it was.
+  > `BRONZE_SLOT_REPR_STATS=1` prints the creation counters,
+  > `BRONZE_SLOT_REPR_CENSUS=1` adds per-(shape, slot) stability and the
+  > boxed-slot candidate set R2 reads, `BRONZE_SLOT_REPR_OBSERVED=1` makes
+  > every key eligible (implemented, off by default).
+  >
+  > **Four kernels, one interleaved A/B/A/B session** (each variant's exe built
+  > by the bronze of its own commit; 9 rounds after a discarded warmup, raw
+  > wall of the whole process, means in ms). `baseline` is `abde46b`, the
+  > commit before the stage:
+  >
+  > | kernel | baseline | R1 seam-on | R1 seam-off | checksum |
+  > |---|---:|---:|---:|---|
+  > | `three_math` (`--pins bench/pins/threejs-math.pins`) | 22.4 | 22.9 | 22.9 | `405000` |
+  > | `repr_slot_kernel` (`--pins bench/pins/repr-slot-kernel.pins`) | 15.9 | 16.1 | 16.0 | `180008650039037` |
+  > | `property_access` (no pins) | 10.7 | 10.6 | 10.7 | `3000000` |
+  > | `object_graph` (no pins) | 48.8 | 49.0 | 48.3 | `-32601148` |
+  >
+  > **Every checksum is bit-identical in every cell**, which is the acceptance
+  > condition this stage was given: a speedup with a changed checksum would be
+  > a miscompile. The largest movement is `three_math`'s +0.5 ms, and it is the
+  > same seam-on and seam-off — it is the store-side guard instructions, which
+  > are emitted whether or not any slot is ever a double, not the cost of the
+  > representation. The two kernels with no pinned field are flat, which is the
+  > stage's zero-tax condition read directly.
+  >
+  > **The mechanism is demonstrably live.** `three_math` with the manifest
+  > creates **10 double slots** — `Vector3.x/y/z`, `Quaternion._x/_y/_z/_w`,
+  > `Euler._x/_y/_z` — over 338 shape nodes, with **zero generalizations**: the
+  > manifest's promises hold, which a census run CHECKS rather than assumes.
+  > `repr_slot_kernel` creates 11 over 89. Both run clean under
+  > `BRONZE_HEAP_VERIFY=1`, whose `verify_space` now asserts the R1 invariant
+  > itself — every slot a shape calls a double holds a Number — at every
+  > collection.
+  >
+  > **`helper stores` reads near zero and that is the good news.** The counter
+  > counts stores that reached `setSlot`; `three_math` reports 40 of its
+  > ~660,000, because the other 659,960 took an inline arm, tested the value
+  > and stored it themselves. An earlier cut of this stage refused those arms
+  > outright rather than teaching them the test, and the same two kernels read
+  > **51.6 ms and 183.9 ms** — 2.3× and 11.7× against their own seam-off runs.
+  > That number is kept here because it is the measurement that chose the
+  > design: a representation the store paths can only respect by giving up
+  > their fast paths is not one worth having.
+  >
+  > **Caveats.** (a) Nothing here is a win and nothing here should be read as
+  > one; the win is R2's to publish or fail to. (b) The collector's precision —
+  > skipping double slots, scanning the out-of-line block from the owner — is a
+  > provable no-op today, because a canonicalized double slot's word is also
+  > the number's box; it is landed now so R2 is a codegen change rather than a
+  > collector change. (c) `BRONZE_SLOT_REPR_OBSERVED=1` is shipped but off:
+  > under it a field that alternates re-splits the shape tree on every
+  > constructor, because the transition arm's cached node outlives the sticky
+  > demotion mark. Pinned fields do not alternate, which is the whole
+  > difference between a promise and an observation.
 
 - **Stage C1 (census: the manifest writes itself)** — 2026-08-25:
   > [!NOTE]
