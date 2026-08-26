@@ -54,10 +54,25 @@ llvm::Value* familyInRange(llvm::IRBuilder<>& builder, const ModuleTables& table
 
 }  // namespace
 
+// The double form of an `Int32`-tagged Value, as a Value again: sign-extend the
+// payload, convert, and take the bits.
+//
+// No NaN canonicalization, and none is possible: every int32 converts to a
+// finite double. The conversion itself is the one `slotReprCanonicalize` (
+// runtime/slot_repr.h) performs when such a store reaches the helper, so a slot
+// written from here holds the same word it would have held from there.
+llvm::Value* emitInt32BoxAsDouble(llvm::IRBuilder<>& builder, llvm::Value* bits) {
+    llvm::Type* i32Ty = builder.getInt32Ty();
+    llvm::Type* i64Ty = builder.getInt64Ty();
+    llvm::Value* payload = builder.CreateTrunc(bits, i32Ty, "repr.i32.payload");
+    llvm::Value* asDouble = builder.CreateSIToFP(payload, builder.getDoubleTy(), "repr.i32.dbl");
+    return builder.CreateBitCast(asDouble, i64Ty, "repr.i32.bits");
+}
+
 StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTables& tables,
                                     llvm::Value* objBits, const StaticSite& site,
                                     llvm::BasicBlock* doneBb, llvm::Value* store,
-                                    const char* prefix) {
+                                    ValueRepr storeRepr, const char* prefix) {
     StaticSlotGuard out;
     out.missBb = builder.GetInsertBlock();
     if (site.none()) return out;
@@ -149,7 +164,19 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     //    `site.slot` is a compile-time constant, so the mask is one; a slot at
     //    or past the width of the shape's word can never be a double one and
     //    the whole test folds away.
-    if (store != nullptr && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT) {
+    //
+    //    Stage R2 spends what the compiler already knows about the VALUE
+    //    (llvm_repr.h). A store whose value is a proven Number emits none of
+    //    this: a Number's box is exactly the canonical double the slot's
+    //    representation promises, so the store is right whichever way the bit
+    //    reads, and the load, the mask, the compare and the branch all go. An
+    //    `Int32`-tagged value is the one R1 named as its cost, and it keeps the
+    //    test - but the double arm now CONVERTS inline rather than missing, so
+    //    a field written `this.n = i | 0` stops paying a helper call per store.
+    llvm::Value* storeBits = store;
+    const bool reprTested = store != nullptr && site.slot < BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT &&
+                            storeRepr != ValueRepr::Number;
+    if (reprTested) {
         llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, p + ".static.store", fn);
         llvm::Value* shapeObj = builder.CreateIntToPtr(shape, ptrTy, p + ".static.shapep");
         llvm::Value* dsPtr = builder.CreateConstInBoundsGEP1_32(
@@ -159,12 +186,24 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
         llvm::Value* isDouble = builder.CreateICmpNE(
             builder.CreateAnd(ds, builder.getInt64(uint64_t{1} << site.slot)), builder.getInt64(0),
             p + ".static.isdouble");
-        llvm::Value* isNum = builder.CreateICmpULE(
-            store, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), p + ".static.valisnum");
-        builder.CreateCondBr(builder.CreateOr(builder.CreateNot(isDouble), isNum,
-                                              p + ".static.reprok"),
-                             storeBb, missBb);
-        builder.SetInsertPoint(storeBb);
+        if (storeRepr == ValueRepr::Int32Boxed) {
+            // No refusal to make: an Int32 is a Number by 6.1.6.1 and the
+            // helper would have stored its double form, so the site does the
+            // same thing and stays on the fast path. A `select` rather than a
+            // branch, because both arms are two instructions and neither can
+            // fault.
+            builder.CreateBr(storeBb);
+            builder.SetInsertPoint(storeBb);
+            storeBits = builder.CreateSelect(isDouble, emitInt32BoxAsDouble(builder, store), store,
+                                             p + ".static.i32store");
+        } else {
+            llvm::Value* isNum = builder.CreateICmpULE(
+                store, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), p + ".static.valisnum");
+            builder.CreateCondBr(builder.CreateOr(builder.CreateNot(isDouble), isNum,
+                                                  p + ".static.reprok"),
+                                 storeBb, missBb);
+            builder.SetInsertPoint(storeBb);
+        }
     }
 
     llvm::Value* slotPtr = nullptr;
@@ -187,7 +226,7 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     }
 
     if (store != nullptr) {
-        auto* st = builder.CreateAlignedStore(store, slotPtr, llvm::Align(8));
+        auto* st = builder.CreateAlignedStore(storeBits, slotPtr, llvm::Align(8));
         tagObjectSlotAccess(st, ctx);
     } else {
         auto* ld = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), p + ".static.val");

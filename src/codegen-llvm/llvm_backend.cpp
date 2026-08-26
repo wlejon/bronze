@@ -883,10 +883,21 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     // Frames before bodies: a caller sizes its frame for the regions of the
     // callees it merges (llvm_frame.h), and a callee is commonly emitted after
     // its caller, so the layouts are all planned first.
+    //
+    // The REPRESENTATION plan comes first of all (llvm_repr.h, stage R2): the
+    // frame layout reads it, because a `dynamic` value proven never to hold a
+    // heap address needs no root slot, and the property emitters read it to
+    // decide which of stage R1's store-side tests are statically satisfied.
+    std::vector<codegen_llvm::ReprPlan> reprPlans;
+    reprPlans.reserve(module.functions.size());
+    for (const il::Function& ilFunc : module.functions) {
+        reprPlans.push_back(codegen_llvm::planRepr(ilFunc));
+    }
     std::vector<codegen_llvm::FramePlan> plans;
     plans.reserve(module.functions.size());
-    for (const il::Function& ilFunc : module.functions) {
-        plans.push_back(codegen_llvm::planFrame(ilFunc, moduleHasNewTarget));
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        plans.push_back(codegen_llvm::planFrame(module.functions[i], moduleHasNewTarget,
+                                                reprPlans[i]));
     }
     const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
     std::vector<llvm::Function*> inlineVariants;
@@ -894,7 +905,8 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
 
     const FunctionEmitter::Context shared{ctx,     module,   abi,   tables,
                                           entries, wrappers, diags, plans,
-                                          regions, inlineVariants, moduleHasNewTarget};
+                                          regions, inlineVariants, moduleHasNewTarget,
+                                          reprPlans};
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const bool frameless = regions.isMergeTarget[i];
         FunctionEmitter emitter(shared, static_cast<uint32_t>(i),

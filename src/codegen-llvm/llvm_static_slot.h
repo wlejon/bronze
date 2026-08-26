@@ -1,6 +1,7 @@
 #pragma once
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_repr.h"
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
@@ -60,11 +61,36 @@ struct StaticSlotGuard {
     llvm::Value* value = nullptr;
 };
 
+// The double form of an `Int32`-tagged Value, as a Value again: sign-extend the
+// payload, convert, take the bits. No NaN canonicalization, because every int32
+// converts to a finite double.
+//
+// Shared with the set-site inline cache, which faces the same store: an
+// `il::Type::I32` boxes to `Tag::Int32`, whose bits are a tag and a payload
+// rather than an f64, and stage R1's arms could only refuse it. This is
+// `slotReprCanonicalize`'s Int32 case (runtime/slot_repr.h) written as two
+// instructions at the site, so the slot ends up holding the same word the
+// helper would have put there.
+llvm::Value* emitInt32BoxAsDouble(llvm::IRBuilder<>& builder, llvm::Value* bits);
+
 // Emits the guard at the current insert point and leaves the builder in
 // `missBb`. A site with no claim emits nothing.
 //
 // `store` is null for a read; non-null makes the hit block store it into the
 // slot instead of loading from it.
+//
+// `storeRepr` is what the value being stored is made of (llvm_repr.h), and it
+// decides which of stage R1's representation tests the site emits:
+//
+//   Number     nothing. A Number's box IS the canonical double a double slot
+//              must hold, so the store is correct whichever way the shape's
+//              `double_slots` bit reads and the whole test folds away. THIS IS
+//              THE RAW STORE: the eight bytes written are the f64.
+//   Int32Boxed the test, and on the double arm a `sitofp` of the payload
+//              instead of a miss - which is exactly the conversion
+//              `slotReprCanonicalize` performs in the helper, moved inline so
+//              that `this.n = i | 0` stops paying a call per store.
+//   otherwise  stage R1's test-and-store arm, unchanged.
 //
 // The FAMILY form differs from the identity form in exactly one place: what the
 // second compare asks. Instead of `shape == the one shape this site pinned` it
@@ -75,7 +101,7 @@ struct StaticSlotGuard {
 StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTables& tables,
                                     llvm::Value* objBits, const StaticSite& site,
                                     llvm::BasicBlock* doneBb, llvm::Value* store,
-                                    const char* prefix);
+                                    ValueRepr storeRepr, const char* prefix);
 
 // Emits the one-shot fill reached from the ordinary sequence's slow block.
 //

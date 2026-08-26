@@ -53,6 +53,10 @@ public:
         // observable through bronze_get_new_target and nothing else — so one
         // mention anywhere keeps every construct site on the helper.
         bool moduleHasNewTarget;
+        // What each function's `dynamic` values are made of (llvm_repr.h,
+        // stage R2). Indexed like `plans`, and planned beside them for the same
+        // reason: the frame layout is derived from it.
+        const std::vector<ReprPlan>& reprPlans;
     };
 
     // `frameless` emits the body against a region of the CALLER's frame,
@@ -177,6 +181,13 @@ private:
     // inlined guard or a cell test split off, and a continuation is not an
     // IL block at all.
     size_t currentILBlock_ = 0;
+    // The index of the instruction being emitted inside that block: what
+    // `storeValueRepr` needs to see the `pin.guard` in front of a store.
+    size_t currentILInst_ = 0;
+    // What this function's `dynamic` values are made of (llvm_repr.h). The
+    // frame layout above was derived from it; the property emitters spend it
+    // at the store-side representation tests.
+    const ReprPlan& repr_;
     // Whether this module drops the environment-record ACCESS guards
     // (llvm_env.h, `envAccessGuardsElided`). A property of the invocation, so
     // it is read once rather than per env instruction.

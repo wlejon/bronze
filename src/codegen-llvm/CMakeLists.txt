@@ -31,6 +31,7 @@ bronze_add_module(codegen_llvm
         llvm_arith.cpp
         llvm_partition.cpp
         llvm_pin.cpp
+        llvm_repr.cpp
         llvm_backend.cpp
     DEPS
         abi

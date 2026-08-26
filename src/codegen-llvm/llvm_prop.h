@@ -45,6 +45,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                  const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
                  uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
-                 bool monomorphic, const StaticSite& site, std::string_view keyStr = {});
+                 bool monomorphic, const StaticSite& site, ValueRepr valRepr,
+                 std::string_view keyStr = {});
 
 }  // namespace bronze::codegen_llvm

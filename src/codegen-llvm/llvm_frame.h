@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "codegen-llvm/llvm_repr.h"
 #include "il/il.h"
 
 namespace bronze::codegen_llvm {
@@ -61,7 +62,15 @@ struct FramePlan {
 };
 
 // Lays out one IL function's frame. Pure: same IL in, same layout out.
-FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget);
+//
+// `repr` is what stage R2 adds: a `dynamic` value the representation plan
+// proves is never a heap POINTER needs no slot at all (llvm_repr.h). The slot
+// exists so the collector can forward what moved, and a boxed double, a boxed
+// Int32 and `undefined` do not move — so the value's root store and the reload
+// every use of it performs both go, and the frame shrinks by one slot for each.
+// Under `BRONZE_NO_REPR_CODEGEN=1` the plan is empty and the layout is exactly
+// what it was before the stage.
+FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr);
 
 // Which direct edges become one frame, and how big each function's frame has
 // to be as a result.

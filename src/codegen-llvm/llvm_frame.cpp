@@ -39,14 +39,19 @@ namespace bronze::codegen_llvm {
 // no longer reachable from the program — the same one cycle of float the
 // frame already had, not a new hazard.
 
-FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget) {
+FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr) {
     FramePlan plan;
     plan.slotOf.assign(func.valueCount, kNoFrameSlot);
     const uint32_t n = func.valueCount;
     constexpr uint32_t kNoBlockIdx = UINT32_MAX;
 
+    // A `dynamic` value the representation plan proves can never hold a heap
+    // address is not rooted (llvm_repr.h). It is the same rule the `Dynamic`
+    // test already was, refined by the one thing the collector actually asks:
+    // a slot exists to be FORWARDED, and a boxed double has nothing to forward.
     auto isRooted = [&](il::ValueId id, il::Type ty) {
-        return id != il::kNoValue && id < n && ty == il::Type::Dynamic;
+        return id != il::kNoValue && id < n && ty == il::Type::Dynamic &&
+               !reprNeverPointer(repr.at(id));
     };
 
     // Where each rooted value is defined, and whether any use is somewhere

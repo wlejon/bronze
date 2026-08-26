@@ -20,6 +20,7 @@
 #include "codegen-llvm/llvm_math.h"
 #include "codegen-llvm/llvm_pin.h"
 #include "codegen-llvm/llvm_prop.h"
+#include "codegen-llvm/llvm_repr.h"
 
 namespace bronze::codegen_llvm {
 
@@ -950,9 +951,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
+            // What the VALUE is made of decides which of stage R1's
+            // representation tests this site emits (llvm_repr.h). Asked with
+            // the store's POSITION, because a `pin.guard` standing immediately
+            // in front of it proves the value on the path that reaches the
+            // store and on no other.
+            const ValueRepr valRepr = storeValueRepr(func_, repr_, currentILBlock_,
+                                                     currentILInst_, inst.operands[1]);
             emitPropSet(builder_, abi, globals_, shared_.tables, obj, rootSlotAddrOf(inst, 0),
                         inst.keyIndex, val, inst.icIndex, inst.immI32 != 0, inst.icMonomorphic,
-                        staticSiteOf(inst), keyStr);
+                        staticSiteOf(inst), valRepr, keyStr);
             return true;
         }
         case il::Op::ElemGet: {

@@ -29,7 +29,8 @@ namespace bronze::codegen_llvm {
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                  const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
                  uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
-                 bool monomorphic, const StaticSite& site, std::string_view keyStr) {
+                 bool monomorphic, const StaticSite& site, ValueRepr valRepr,
+                 std::string_view keyStr) {
     // See the read twin: an identity proof does not change what is emitted; the
     // LAYOUT proof beside it does.
     (void)monomorphic;
@@ -61,7 +62,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     //    a constructor's repeated `this.x = ...` IS the transition path, and it
     //    is not a case a static slot could serve.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
-        builder, tables, objBits, site, doneBb, valBits, "set");
+        builder, tables, objBits, site, doneBb, valBits, valRepr, "set");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -231,14 +232,32 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     // Both halves are free of the entry's other states: DOUBLE is only ever
     // set with the rest of the word zero, so masking it out and comparing to
     // zero is the same "own property, depth 0" test the arm already made.
+    //
+    // Stage R2 (llvm_repr.h) settles the value's half of that at COMPILE time
+    // wherever it can. A proven Number needs no test — its box IS the canonical
+    // double a double slot promises — so `reprOk` is the constant true and
+    // LLVM folds the `and`, the `or` and the compare away, leaving the arm the
+    // shape of the one that existed before representations. An `Int32`-tagged
+    // value is the store R1 documented as always missing: it keeps the flag
+    // test, and takes the arm anyway with the payload converted, which is
+    // exactly what `slotReprCanonicalize` would have stored from the helper.
     llvm::Value* isDoubleSlot = builder.CreateICmpNE(
         builder.CreateAnd(depth,
                           builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG))),
         builder.getInt64(0), "ic.set.isdouble");
-    llvm::Value* valIsNumber = builder.CreateICmpULE(
-        valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "ic.set.valisnum");
-    llvm::Value* reprOk =
-        builder.CreateOr(builder.CreateNot(isDoubleSlot), valIsNumber, "ic.set.reprok");
+    llvm::Value* reprOk = nullptr;
+    llvm::Value* storeBits = valBits;
+    if (valRepr == ValueRepr::Number) {
+        reprOk = builder.getTrue();
+    } else if (valRepr == ValueRepr::Int32Boxed) {
+        reprOk = builder.getTrue();
+        storeBits = builder.CreateSelect(isDoubleSlot, emitInt32BoxAsDouble(builder, valBits),
+                                         valBits, "ic.set.i32store");
+    } else {
+        llvm::Value* valIsNumber = builder.CreateICmpULE(
+            valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "ic.set.valisnum");
+        reprOk = builder.CreateOr(builder.CreateNot(isDoubleSlot), valIsNumber, "ic.set.reprok");
+    }
     llvm::Value* depthBase = builder.CreateAnd(
         depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG)),
         "ic.set.depthbase");
@@ -423,7 +442,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
             builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
         llvm::Value* transSlotPtr =
             builder.CreateInBoundsGEP(i64Ty, transSlotsBase, transSlot32);
-        auto* sTrans = builder.CreateAlignedStore(valBits, transSlotPtr, llvm::Align(8));
+        auto* sTrans = builder.CreateAlignedStore(storeBits, transSlotPtr, llvm::Align(8));
         tagObjectSlotAccess(sTrans, ctx);
         builder.CreateBr(doneBb);
 
@@ -471,7 +490,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateAlignedStore(cachedShape, overflowShapeSlotPtr, llvm::Align(8));
         llvm::Value* overflowSlotPtr =
             builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
-        auto* sTransOv = builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
+        auto* sTransOv = builder.CreateAlignedStore(storeBits, overflowSlotPtr, llvm::Align(8));
         tagObjectSlotAccess(sTransOv, ctx);
         builder.CreateBr(doneBb);
     } else {
@@ -489,7 +508,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* slotsBase =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
     llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
-    auto* sInline = builder.CreateAlignedStore(valBits, inlineSlotPtr, llvm::Align(8));
+    auto* sInline = builder.CreateAlignedStore(storeBits, inlineSlotPtr, llvm::Align(8));
     tagObjectSlotAccess(sInline, ctx);
     builder.CreateBr(doneBb);
 
@@ -526,7 +545,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
 
     builder.SetInsertPoint(overflowAccessBb);
     llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
-    auto* sOv = builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
+    auto* sOv = builder.CreateAlignedStore(storeBits, overflowSlotPtr, llvm::Align(8));
     tagObjectSlotAccess(sOv, ctx);
     builder.CreateBr(doneBb);
 

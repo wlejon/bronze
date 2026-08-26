@@ -68,7 +68,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
-        builder, tables, objBits, site, doneBb, /*store=*/nullptr, "get");
+        builder, tables, objBits, site, doneBb, /*store=*/nullptr, ValueRepr::Unknown, "get");
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);

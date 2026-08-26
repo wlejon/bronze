@@ -588,7 +588,8 @@ void addClosureEdge(il::Function& fn, uint32_t callee) {
 std::vector<codegen_llvm::FramePlan> planAll(const il::Module& module) {
     std::vector<codegen_llvm::FramePlan> plans;
     for (const il::Function& fn : module.functions) {
-        plans.push_back(codegen_llvm::planFrame(fn, /*moduleHasNewTarget=*/false));
+        plans.push_back(
+            codegen_llvm::planFrame(fn, /*moduleHasNewTarget=*/false, codegen_llvm::planRepr(fn)));
     }
     return plans;
 }

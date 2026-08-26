@@ -45,6 +45,7 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
                             : shared.regions.totalSlots[funcIndex]),
       frameless_(frameless),
       funcIndex_(funcIndex),
+      repr_(shared.reprPlans[funcIndex]),
       envGuardsElided_(envAccessGuardsElided()) {
     argvBase_ = shared.plans[funcIndex].argvBase;
     constructSelfSlot_ = shared.plans[funcIndex].constructSelfSlot;
@@ -546,7 +547,12 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         builder_.CreateStore(blockPhis_[blockIndex][pi], slotAddr(slot));
     }
 
-    for (const auto& inst : block.instructions) {
+    for (size_t instIndex = 0; instIndex < block.instructions.size(); ++instIndex) {
+        const auto& inst = block.instructions[instIndex];
+        // Where this instruction sits, for the one emitter that needs its
+        // POSITION and not only its fields: a store spends a `pin.guard`
+        // standing immediately in front of it (llvm_repr.h, `storeValueRepr`).
+        currentILInst_ = instIndex;
         for (il::ValueId id : inst.operands) reload(id);
         for (il::ValueId id : inst.target.args) reload(id);
         for (il::ValueId id : inst.elseTarget.args) reload(id);
