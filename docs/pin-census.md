@@ -59,7 +59,7 @@ anything else is no pin, and no threshold or weighting changes that: a pin is
 spent *unchecked* at the read, so "almost always a number" is not a weaker
 version of the claim, it is a different and false one.
 
-Three further refusals, each of which is a real shape the census met:
+Four further refusals, each of which is a real shape the census met:
 
 * A return whose body can **fall off its end** is refused by the site table,
   with no observation needed. Every return it executes may be a Number and the
@@ -76,6 +76,14 @@ Three further refusals, each of which is a real shape the census met:
   position on the *number* arm) and risks everything: "not assigned yet" is what
   an optional field looks like on a short run and an object is what it holds on
   a long one. three.js's `Material.clippingPlanes` is exactly that shape.
+* A target **no manifest line can spell** is refused before it is ever observed.
+  An accessor lowers to an IL function named `Euler.set x` — a space in the
+  middle — and `param Euler.set x(value): number` is not a line the parser
+  accepts. Getters, computed method names and quoted field keys (`o["a b"] = 1`)
+  arrive the same way. This is the census's worst failure mode and the only one
+  it can have: not a wrong claim, which B1 turns into a `TypeError`, but a file
+  the next build refuses to read. Nine of the three.js oracle's proposals were
+  of this kind.
 
 The manifest carries the refusals as comments, with their tallies, because a
 census whose output is only its hits tells a reader nothing about the claims it
@@ -113,7 +121,7 @@ spell `<Class>.0`, so a row for one could only ever mark real entries
 ## Reading the file
 
 ```
-# 110 entries, 20 marked @observed, 1718 candidate sites.
+# 101 entries, 20 marked @observed, 1718 candidate sites.
 
 # --- fields (`<Class>.<field>`) ---------------------------------------------
 Matrix4.elements: numeric-elements  # 21 obs / 1 site
@@ -121,6 +129,7 @@ Quaternion._x: number  # 131 obs / 28 sites
 Vector3.x: number @observed  # 112 obs / 44 sites; a store to 'x' goes through a receiver the compiler cannot type
 # refused Euler._order (field): polymorphic: 30001 string
 # refused Quaternion.isQuaternion (field): polymorphic: 3 boolean
+# refused param Euler.set x(value) (param): the compiler refuses this form here
 ```
 
 `obs` is observations, `sites` is how many distinct stores or call positions
