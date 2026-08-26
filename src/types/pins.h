@@ -107,6 +107,17 @@ bool pinBarriersEnabled();
 // This is why the manifest is an explicit per-(class, field) list and never a
 // heuristic.
 //
+// WHERE THE LIST COMES FROM, since stage C1. It need not be hand-written:
+// `bronze build --census <out.pins>` instruments a program at exactly the sites
+// where an entry below could be made and no proof makes one, and a
+// representative run writes the file (src/runtime/pin_census.h,
+// docs/pin-census.md). An offline step in two compiles and one artefact — there
+// is no JIT anywhere in it, and the manifest a census writes is an ordinary
+// file a person can read, edit and commit. What makes its output shippable is
+// the paragraph above: a wrong entry is a TypeError naming the line, so an
+// inference has to be right about the hot path rather than right about
+// everything.
+//
 // Grammar — one entry per line, `#` starts a comment, blank lines ignored:
 //
 //     <class>.<field>: <kind>
@@ -114,6 +125,14 @@ bool pinBarriersEnabled();
 //     function <function>.<binding>: number
 //     param <owner>(<parameter>): number
 //     return <owner>: number
+//
+// A field entry may carry the trailing marker `@observed`, which the PIN
+// CENSUS writes (src/runtime/pin_census.h) and which a default build REFUSES.
+// It means: this field's values were observed to hold, but at least one store
+// to a field of that name is through a receiver inference types `dynamic`, so
+// the barrier below cannot hold that store to the promise. `--pins-allow-observed`
+// accepts them, and accepting them is the deliberate act of taking back the
+// undefined behaviour stage B1 removed — for one entry, named in the file.
 //
 // `<kind>` is `number`, `numeric-elements` or `number-or-nullish`. `<class>` is
 // matched on its LAST
@@ -173,7 +192,14 @@ public:
     // false on a malformed line with `err` naming the line, never a silent
     // skip: a typo in a manifest that licenses unguarded loads must not read
     // as "that field is not pinned".
-    bool parse(const std::string& text, const std::string& path, std::string& err);
+    //
+    // `allowObserved` accepts the `@observed` marker a census writes on an
+    // entry whose stores are NOT all from sites the compiler can type — the one
+    // hole B1's barriers do not close. Default false, so such an entry is a
+    // hard error naming the line: the whole point of the marker is that
+    // accepting it is a decision somebody makes, once, on the command line.
+    bool parse(const std::string& text, const std::string& path, std::string& err,
+               bool allowObserved = false);
 
     // The pin declared for `className.field`, or null. `className` may carry
     // the module linker's prefix.

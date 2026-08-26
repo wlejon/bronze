@@ -95,7 +95,8 @@ void forEachSpelling(const std::string& ilName, Fn&& fn) {
 
 }  // namespace
 
-bool PinManifest::parse(const std::string& text, const std::string& path, std::string& err) {
+bool PinManifest::parse(const std::string& text, const std::string& path, std::string& err,
+                        bool allowObserved) {
     std::istringstream lines(text);
     std::string line;
     int lineNo = 0;
@@ -116,7 +117,28 @@ bool PinManifest::parse(const std::string& text, const std::string& path, std::s
             return bad("pin entry needs '<class>.<field>: <kind>'");
         }
         std::string target = trim(entry.substr(0, colon));
-        const std::string kindText = trim(entry.substr(colon + 1));
+        std::string kindText = trim(entry.substr(colon + 1));
+
+        // The census's `@observed` marker (src/runtime/pin_census.h): this
+        // entry's stores are not all from sites the compiler can type, so the
+        // barrier cannot hold them all — B1's one remaining silent hole, named
+        // in the file that would fall into it. Refused unless the invocation
+        // opted in, and refused BY NAME rather than ignored, because an entry
+        // whose marker was dropped would be exactly the promise nothing checks
+        // that this whole family of diagnostics exists to end.
+        if (const auto at = kindText.rfind("@observed");
+            at != std::string::npos && at + 9 == kindText.size()) {
+            kindText = trim(kindText.substr(0, at));
+            if (!allowObserved) {
+                err = "error: " + path + ":" + std::to_string(lineNo) +
+                      ": this entry is marked '@observed': at least one store to it is "
+                      "through a receiver the compiler cannot type, so a violation would "
+                      "be silent rather than a TypeError. Pass --pins-allow-observed to "
+                      "accept it: '" +
+                      entry + "'\n";
+                return false;
+            }
+        }
 
         // The two SIGNATURE forms, recognized before the kind is read for the
         // reason the `function` form is: they admit `number` and nothing else.
