@@ -178,3 +178,47 @@ TEST_CASE("reading field on `this` inside method is proven when clean") {
     CHECK(r.fieldAudit.refusedNotBuiltHere == 0);
     CHECK(r.provenFieldReads.size() >= 2);
 }
+
+TEST_CASE("a module-scope temporary is a known receiver on the FIRST round") {
+    // The three.js idiom: a scratch instance declared at module scope, reached
+    // from inside a method, and a method name more than one class declares.
+    //
+    // `moduleBindings` is filled at the END of the top level's walk and every
+    // round walks the bodies first, so before `seedModuleBindings` the receiver
+    // `_ta` answered `Dynamic` on round one. A call whose receiver has no class
+    // contributes its argument to EVERY method of that name — so `A` reached
+    // `B.copy`'s parameter, the two joined to an object with no class at all,
+    // and because the signature fold only WIDENS, the later rounds that DO
+    // resolve `_ta` could never take it back. `o.x` in `B.copy` was then a
+    // dynamic read of a field the whole program only ever writes numbers to.
+    //
+    // The argument has to be `this` rather than a parameter: a parameter is
+    // still `Never` on round one, so it poisons nothing and the window closes
+    // before it has a type. three.js writes `_m1.copy( this )`, which is the
+    // shape that lands inside the window.
+    const auto inferred = infer(
+        "class A {\n"
+        "  constructor() { this.x = 1; }\n"
+        "  copy(o) { this.x = o.x; return this; }\n"
+        "  scratch() { _ta.copy(this); return _ta.x; }\n"
+        "}\n"
+        "class B {\n"
+        "  constructor() { this.x = 2; }\n"
+        "  copy(o) { this.x = o.x; return this; }\n"
+        "}\n"
+        "const _ta = new A();\n"
+        "const a = new A();\n"
+        "const b = new B();\n"
+        "const b2 = new B();\n"
+        "b.copy(b2);\n"
+        "console.log(a.scratch() + b.x);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.namesClean == 1);
+    // Every read of `.x` in the program, and the count is exact because the
+    // round-one collapse costs exactly one of them: `o.x` in `B.copy`. `A.copy`
+    // survives it — the argument the by-name contribution carried was an `A`,
+    // and joining `A` with `A` loses nothing. Which is why the reproduction
+    // needs TWO classes declaring the name and only one of them reached
+    // through the module-scope temporary.
+    CHECK(r.provenFieldReads.size() == 8);
+}

@@ -43,6 +43,56 @@ ModuleSplit splitModule(const ast::Module& module) {
     return split;
 }
 
+// The module top level, walked on its own. Split out because the fixpoint has
+// to walk it BEFORE its first round as well as inside every round — see
+// `seedModuleBindings`.
+bool runTopLevel(ModuleContext& mod, const ModuleSplit& split, bool record) {
+    if (split.topLevel.empty()) return true;
+    Span span{};
+    span.begin = split.topLevel.front()->span.begin;
+    span.end = split.topLevel.back()->span.end;
+
+    FunctionAnalysisArgs args;
+    args.parent = nullptr;
+    args.qualifiedName = kTopLevelName;
+    args.moduleIndex = kNoFunctionIndex;
+    args.site = nullptr;
+    args.directCallable = false;
+    args.body = split.topLevel;
+    args.span = span;
+    args.record = record;
+    args.moduleTopLevel = true;
+
+    return analyzeFunction(mod, args).ok;
+}
+
+// What `const _m1 = new Matrix4()` holds, decided before the first round reads
+// it (flow.h `moduleBindings`).
+//
+// The table is filled at the END of the top level's walk, and every round walks
+// the bodies first — so on round one every module-scope receiver in every
+// method body answers `Dynamic`, and `_m1.copy( this )` is a call whose class
+// the pass cannot name. Such a call contributes its arguments to EVERY method
+// of that name (flow_expr.cpp), which is how a `Vector3` reaches
+// `Matrix4.copy`'s parameter; and because the signature fold only ever WIDENS,
+// the two classes join to an object with no class and the later rounds — which
+// do resolve `_m1` — can never take it back. three.js is made of module-scope
+// temporaries and of method names four classes share, so this was most of the
+// library's shared vocabulary giving up its parameters on round one.
+//
+// One extra walk of the top level, not recording and with its observations
+// discarded by the `resetObservations` at the head of the loop. The table is
+// joined into and never rebuilt, so seeding it early can only make round one
+// answer what a later round would have answered anyway.
+void seedModuleBindings(ModuleContext& mod, const ModuleSplit& split) {
+    if (!mod.valueFlow) return;
+    // The outcome is deliberately not consulted: a walk that fails has set
+    // `mod.failed`, and round one walks the same statements and reports it —
+    // this one is an extra look at a body the loop reads anyway, and a second
+    // road out of the function here would be a second place to keep right.
+    runTopLevel(mod, split, /*record=*/false);
+}
+
 // One walk of every function in the module, plus the top level. Call sites
 // discovered here widen the callee's `observedParams`, which is what the
 // outer fixpoint folds back into the signatures.
@@ -74,26 +124,7 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         if (fn.directCallable) fn.observedReturn = join(fn.observedReturn, outcome.returnType);
     }
 
-    if (!split.topLevel.empty()) {
-        Span span{};
-        span.begin = split.topLevel.front()->span.begin;
-        span.end = split.topLevel.back()->span.end;
-
-        FunctionAnalysisArgs args;
-        args.parent = nullptr;
-        args.qualifiedName = kTopLevelName;
-        args.moduleIndex = kNoFunctionIndex;
-        args.site = nullptr;
-        args.directCallable = false;
-        args.body = split.topLevel;
-        args.span = span;
-        args.record = record;
-        args.moduleTopLevel = true;
-
-        const auto outcome = analyzeFunction(mod, args);
-        if (!outcome.ok) return false;
-    }
-    return true;
+    return runTopLevel(mod, split, record);
 }
 
 // Folds the pass's observations into the signatures. Returns whether anything
@@ -451,6 +482,8 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // so inference never invents a second diagnostic for it.
         mod.indexByName.emplace(decl->name, i);
     }
+
+    seedModuleBindings(mod, split);
 
     bool converged = false;
     bool finalized = false;
