@@ -680,6 +680,22 @@ struct Instruction {
 // because both are one-line facts about the op table.
 bool canThrow(const Instruction& inst);
 
+// Whether running this instruction can move a heap object: it allocates, or it
+// reaches user code that might. STRICTLY WIDER than `canThrow` — an allocation
+// that fails is fatal rather than catchable, so `create.object` throws nothing
+// and collects anyway — and the two are not interchangeable at a use site.
+//
+// It exists for the backend's receiver proof (llvm_recv_proof.h), which holds a
+// pointer DERIVED from a heap object across several instructions. A derived
+// pointer is not a GC root: nothing forwards it, so it is valid exactly as far
+// as the next collection, and this predicate is where that distance is
+// measured.
+//
+// The default is TRUE. Only ops enumerated as neither allocating nor reaching
+// user code answer false, so an op added later is a missed optimisation rather
+// than a dangling pointer.
+bool canCollect(const Instruction& inst);
+
 struct Block {
     BlockId id = 0;
     std::vector<BlockParam> params;

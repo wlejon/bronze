@@ -10,6 +10,7 @@
 #include <llvm/IR/Value.h>
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_recv_proof.h"
 #include "codegen-llvm/llvm_static_slot.h"
 
 #include <string_view>
@@ -33,11 +34,15 @@ namespace bronze::codegen_llvm {
 // `keyStr` (when non-empty) enables compile-time index or length fast paths.
 // `globals` carries the prototype-mutation epoch, which the depth > 0
 // proto-hit path re-checks exactly as InlineCache::describes does.
+// `proof`, when live, is a receiver already proven a dense array long enough
+// for this index (llvm_recv_proof.h): the cache then emits a four-instruction
+// arm in front of the whole ladder below, and updates the proof in place with
+// the version that reaches its foot. Null, or not live, changes nothing.
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          const AbiGlobals& globals, const ModuleTables& tables,
                          llvm::Value* objBits, llvm::Value* objSlot, uint32_t keyIndex,
                          uint32_t icIndex, bool monomorphic, const StaticSite& site,
-                         std::string_view keyStr = {});
+                         std::string_view keyStr = {}, ReceiverProof* proof = nullptr);
 
 // Property writes. The inline paths are the own-slot hit and the
 // shape-transition hit (a constructor body's repeated property add); every

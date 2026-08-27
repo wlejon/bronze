@@ -17,6 +17,7 @@
 
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_frame.h"
+#include "codegen-llvm/llvm_recv_proof.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
 
@@ -188,6 +189,12 @@ private:
     // frame layout above was derived from it; the property emitters spend it
     // at the store-side representation tests.
     const ReprPlan& repr_;
+    // The receiver runs of the block being emitted, and the proof currently
+    // alive inside one (llvm_recv_proof.h). Planned per block rather than per
+    // function because a run cannot cross a block: the proof is an LLVM value,
+    // and a value has to dominate every use.
+    ReceiverRunPlan runPlan_;
+    ReceiverProof recvProof_;
     // Whether this module drops the environment-record ACCESS guards
     // (llvm_env.h, `envAccessGuardsElided`). A property of the invocation, so
     // it is read once rather than per env instruction.

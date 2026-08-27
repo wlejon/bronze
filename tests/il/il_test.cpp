@@ -391,3 +391,53 @@ TEST_CASE("the numeric coercions can throw exactly when they call ToNumber") {
     Instruction numericAdd{Op::Add, Type::F64};
     CHECK_FALSE(canThrow(numericAdd));
 }
+
+TEST_CASE("canCollect is wider than canThrow, and the gap is allocation") {
+    // The receiver proof (llvm_recv_proof.h) holds a pointer DERIVED from a
+    // heap object across a run of instructions. A derived pointer is not a GC
+    // root, so what bounds the run is this predicate and nothing else. The two
+    // properties below are the ones that make it safe to bound a run with.
+
+    // 1. Anything that can throw reached the runtime or user code to do it, so
+    //    it can collect. A canCollect that ever answered false where canThrow
+    //    answers true would be a dangling base pointer, which is why this is
+    //    asserted over the whole op table rather than for a few ops by hand.
+    for (int raw = 0; raw <= static_cast<int>(Op::PrintSpreadErr); ++raw) {
+        const Op op = static_cast<Op>(raw);
+        for (Type type : {Type::Void, Type::Bool, Type::I32, Type::F64, Type::Dynamic}) {
+            Instruction inst{op, type};
+            if (canThrow(inst)) {
+                INFO("op index ", raw);
+                CHECK(canCollect(inst));
+            }
+        }
+    }
+
+    // 2. The gap: allocation. `create.object` and friends cannot throw — a heap
+    //    that will not grow is fatal rather than catchable — and they move
+    //    everything, so they must end a run.
+    CHECK_FALSE(canThrow(Instruction{Op::CreateObject, Type::Dynamic}));
+    CHECK(canCollect(Instruction{Op::CreateObject, Type::Dynamic}));
+    CHECK_FALSE(canThrow(Instruction{Op::CreateArray, Type::Dynamic}));
+    CHECK(canCollect(Instruction{Op::CreateArray, Type::Dynamic}));
+    CHECK_FALSE(canThrow(Instruction{Op::EnvCreate, Type::Dynamic}));
+    CHECK(canCollect(Instruction{Op::EnvCreate, Type::Dynamic}));
+
+    // The arithmetic split carries over unchanged: on machine numbers it is one
+    // instruction, and one instruction allocates nothing.
+    CHECK_FALSE(canCollect(Instruction{Op::Add, Type::F64}));
+    CHECK(canCollect(Instruction{Op::Add, Type::Dynamic}));
+
+    // Boxing a number is a bitcast and a select; boxing a STRING key mints a
+    // Value through the runtime, so only the second is a barrier.
+    Instruction boxNum{Op::Box, Type::Dynamic};
+    boxNum.boxType = Type::F64;
+    CHECK_FALSE(canCollect(boxNum));
+    Instruction boxStr{Op::Box, Type::Dynamic};
+    boxStr.boxType = Type::Str;
+    CHECK(canCollect(boxStr));
+
+    // A property read is the reason the predicate is conservative by default:
+    // it can reach a getter, and a getter is user code.
+    CHECK(canCollect(Instruction{Op::PropGet, Type::Dynamic}));
+}

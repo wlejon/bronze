@@ -937,10 +937,26 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
                                             ? shared_.module.keyConstants[inst.keyIndex]
                                             : "";
+            // Where this site sits in its block's receiver runs
+            // (llvm_recv_proof.h). The run's FIRST member pays for the proof
+            // in front of its own cache; the rest spend what it left, and a
+            // site in no run passes nothing and emits exactly what it always
+            // did.
+            const ReceiverRunPlan::Site runSite = runPlan_.at(currentILInst_);
+            ReceiverProof* proofArg = nullptr;
+            if (runSite.run == ReceiverRunPlan::kNoRun) {
+                recvProof_ = ReceiverProof{};
+            } else {
+                if (runSite.establishes) {
+                    recvProof_ = emitReceiverProof(builder_, obj, inst.operands[0], runSite.run,
+                                                   runSite.runMaxIndex);
+                }
+                if (recvProof_.live() && recvProof_.run == runSite.run) proofArg = &recvProof_;
+            }
             values_[inst.result] =
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj,
                             rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
-                            inst.icMonomorphic, staticSiteOf(inst), keyStr);
+                            inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }

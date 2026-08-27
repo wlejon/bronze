@@ -38,7 +38,8 @@ static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& ab
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                          const ModuleTables& tables, llvm::Value* objBits,
                          llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
-                         bool monomorphic, const StaticSite& site, std::string_view keyStr) {
+                         bool monomorphic, const StaticSite& site, std::string_view keyStr,
+                         ReceiverProof* proof) {
     // Not branched on here: `monomorphic` is an identity proof, and the
     // sequence below is an inline cache, which is what an unproven site wants
     // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
@@ -65,10 +66,22 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
 
+    const std::optional<uint32_t> optIdx = parseIndexKey(keyStr);
+
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
         builder, tables, objBits, site, doneBb, /*store=*/nullptr, ValueRepr::Unknown, "get");
+
+    // 0b. The RECEIVER PROOF's arm (llvm_recv_proof.h). A run of adjacent reads
+    //     off one array proves the receiver once; this site then spends that
+    //     proof on a GEP, a load and the hole test, and everything below it is
+    //     the arm taken when the proof was refused or lost. Nothing is emitted
+    //     when there is no live proof, which is every site outside a run.
+    ProvenRead proven;
+    if (proof != nullptr && proof->live() && optIdx.has_value()) {
+        proven = emitProvenElementRead(builder, *proof, *optIdx, doneBb);
+    }
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -114,7 +127,6 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* fnProtoHitBb = nullptr;
     llvm::Value* fnProtoVal = nullptr;
 
-    auto optIdx = parseIndexKey(keyStr);
     if (keyStr == "length") {
         arrLenBb = llvm::BasicBlock::Create(ctx, "ic.arr.len", fn);
         taLenBb = llvm::BasicBlock::Create(ctx, "ic.ta.len", fn);
@@ -603,6 +615,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb,
     // getUndefBb, absentHitBb
     unsigned phiCount = 7;
+    if (proven.fastBb) phiCount++;
     if (staticGuard.hitBb) phiCount++;
     if (arrLenBb) phiCount++;
     if (taLenBb) phiCount++;
@@ -624,6 +637,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     result->addIncoming(inlineVal, inlineHitBb);
     result->addIncoming(overflowValLoaded, overflowAccessBb);
     result->addIncoming(slowVal, slowDoneBb);
+    if (proven.fastBb) result->addIncoming(proven.value, proven.fastBb);
     if (staticGuard.hitBb) result->addIncoming(staticGuard.value, staticGuard.hitBb);
     result->addIncoming(protoHitVal, protoLoadSuccessBb);
     result->addIncoming(getterRes, getCallBb);
@@ -644,6 +658,22 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (taU16Bb) result->addIncoming(taU16Val, taU16Bb);
     if (taI8Bb) result->addIncoming(taI8Val, taI8Bb);
     if (taU8Bb) result->addIncoming(taU8Val, taU8Bb);
+
+    // The proof that reaches the NEXT member of the run: carried forward by the
+    // fast arm, and false down every other edge into this block — a member that
+    // missed may have run a getter, and a getter can collect, which is exactly
+    // what the derived base pointer cannot survive.
+    if (proof != nullptr && proof->live()) {
+        if (proven.fastBb != nullptr) {
+            rejoinReceiverProof(builder, *proof, proven.fastBb, doneBb);
+        } else {
+            // A live proof that this site did not carry: the site is still a
+            // property read, so it can still collect, and there is no fast arm
+            // to thread the base pointer through. Drop it rather than let a
+            // later member branch on a pointer a getter may have moved.
+            *proof = ReceiverProof{};
+        }
+    }
     return result;
 }
 

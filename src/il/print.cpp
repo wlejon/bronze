@@ -283,6 +283,76 @@ bool canThrow(const Instruction& inst) {
     }
 }
 
+bool canCollect(const Instruction& inst) {
+    switch (inst.op) {
+        // Machine constants: a bit pattern, materialised inline. `const.bigint`
+        // is NOT here — it parses and allocates.
+        case Op::ConstF64:
+        case Op::ConstI32:
+        case Op::ConstBool:
+        case Op::ConstUndefined:
+        case Op::ConstNull:
+        // The number compares and the two total predicates: register work on
+        // operands already in hand. Their boxed siblings (`rel.lt` and friends,
+        // `loose.eq`) reach ToPrimitive and are absent for that reason.
+        case Op::CmpLt:
+        case Op::CmpGt:
+        case Op::CmpLe:
+        case Op::CmpGe:
+        case Op::CmpEq:
+        case Op::CmpNe:
+        case Op::NumTruthy:
+        case Op::StrictEq:
+        case Op::IsNullish:
+        // Reads a tag and names it from a table of immortal strings.
+        case Op::TypeOf:
+        // One aligned load from the module's own template-slot table.
+        case Op::TemplateCached:
+        // Bounds-checked load and store on a view the compiler proved: the
+        // whole point of the pair is that they call nothing, and `canThrow`
+        // says the same about them for the same reason.
+        case Op::ElemGetTyped:
+        case Op::ElemSetTyped:
+        // A machine-number kernel. `Math.sin` reaches libm, which allocates
+        // nothing and cannot see a JS heap to move.
+        case Op::MathUnary:
+            return false;
+        // Boxing a number, a bool or an int is a bitcast and a select
+        // (llvm_ops.cpp). A STRING box is not boxing at all — it mints the
+        // key's Value through bronze_box_str_key — so it stays a barrier.
+        case Op::Box:
+            return inst.boxType == Type::Str;
+        // Two operations under one name, exactly as `canThrow` reads them: on
+        // machine numbers one instruction, on boxed operands 13.15.3 and the
+        // whole ToPrimitive ladder behind it. The type is what says which.
+        case Op::Add:
+        case Op::Neg:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Mod:
+        case Op::Pow:
+        case Op::BitAnd:
+        case Op::BitOr:
+        case Op::BitXor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::UShr:
+            return inst.type == Type::Dynamic;
+        // ToNumber over a proven Number is the identity and emits a bitcast;
+        // over anything else it is 7.1.4 and calls. Same split `canThrow`
+        // makes, and for the same operand.
+        case Op::Unbox:
+            return inst.type == Type::F64 && !inst.rawUnbox && !inst.nullishUnbox;
+        case Op::ToInt32:
+            return inst.boxType == Type::Dynamic;
+        // Everything else — every call, every property access, every
+        // allocation, and anything added after this was written.
+        default:
+            return true;
+    }
+}
+
 // Shortest round-trippable float formatting (std::to_chars is locale-free).
 static std::string formatF64(double v) {
     char buf[32];

@@ -539,6 +539,11 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
     currentILBlock_ = blockIndex;
     builder_.SetInsertPoint(blocks_[blockIndex]);
 
+    // A receiver proof is an LLVM value defined inside this block, so both the
+    // plan and anything left over from the last one start again here.
+    runPlan_ = planReceiverRuns(shared_.module, func_, blockIndex);
+    recvProof_ = ReceiverProof{};
+
     // A block parameter is a def like any other: the phi's value has to reach
     // its root slot before anything can collect.
     for (size_t pi = 0; pi < block.params.size(); ++pi) {
