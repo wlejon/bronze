@@ -130,7 +130,12 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            // (`const e = eval; e(src)`) a call on the same object; both
            // spellings get the indirect (global-environment) semantics, which
            // is why lowerCall warns on a syntactically direct use.
-           name == "eval";
+           name == "eval" ||
+           // W3C hr-time-3. Not ECMA-262, but normative for a browser and
+           // therefore for browser code: three.js picks its clock with
+           // `typeof performance === 'undefined' ? Date : performance`, and
+           // pixi calls `performance.now()` with no fallback at all.
+           name == "performance";
 }
 
 // The `file:` URL of one module of the graph, for `import.meta.url`

@@ -10,6 +10,7 @@ import {
   Object3D,
   Color
 } from 'three';
+import { measure } from './harness.js';
 
 function makeLCG(seed) {
   let s = seed % 2147483647;
@@ -100,7 +101,8 @@ function runInstancedMeshChurn(instanceCount, frames) {
   }
 
   const checksum = Math.round((matrixSum + colorSum) * 100);
-  console.log('instanced_mesh_churn checksum=' + checksum);
+  return checksum;
 }
 
-runInstancedMeshChurn(5000, 30);
+console.log('instanced_mesh_churn checksum=' +
+  measure('instanced_mesh_churn', () => runInstancedMeshChurn(5000, 30)));

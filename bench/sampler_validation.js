@@ -3,7 +3,7 @@
 // 90/10 by construction. The sampler's report must land within a few points
 // of that split for its attribution to be trusted.
 //
-// Compile and run (see bench/README.md chunk 5):
+// Compile and run:
 //   bronze build bench/sampler_validation.js -o sampler_validation.exe
 //   BRONZE_SAMPLE=1 ./sampler_validation.exe
 //

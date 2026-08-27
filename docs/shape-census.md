@@ -27,7 +27,8 @@ run are **counts, never times**. Pair them with `BRONZE_SAMPLE` timings from
 an uninstrumented run.
 
 With the env var unset, every hook is one predicted branch on a global; the
-disabled-mode cost is bench-checked at ≤ noise (see bench/README.md chunk 5).
+disabled-mode cost is bench-checked at ≤ noise (`bench/tools/interleave.py`
+over the pure-compute fixtures, census on against off).
 
 ## What a "site" is
 

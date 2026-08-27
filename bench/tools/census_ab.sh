@@ -27,7 +27,9 @@
 #
 # The protocol is bench/tools/interleave.py's and is not negotiable: one run of
 # every column per round, medians, warmup discarded, 101 rounds for a kernel and
-# 51 for a millisecond fixture.
+# 51 for a millisecond fixture. Every fixture times its own compute region
+# (bench/harness.js), so no column here carries a process startup and no column
+# needs a small twin to cancel one.
 set -e
 B=${1:?bronze exe}
 OUT=${2:-.}
@@ -35,15 +37,8 @@ mkdir -p "$OUT"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(cd "$OUT" && pwd)
 
-# The small twins the two-count deltas need, exactly as ladder.sh makes them.
-sed 's/const ITERS = 6000000;/const ITERS = 600000;/' "$HERE/env_slot_kernel.js" > "$OUT/es_small.js"
-sed 's/8000000/800000/' "$HERE/nullish_pin_kernel.js" > "$OUT/nl_small.js"
-
 # --- 1. THE CENSUS RUNS ------------------------------------------------------
-# One instrumented build per fixture, one run each, one manifest each. The BIG
-# count is censused, not the twin: the twin is the same program and its
-# manifest would be the same file, and a census of a 600k-iteration run is a
-# thinner run than the one the manifest is for.
+# One instrumented build per fixture, one run each, one manifest each.
 census() { # src outname
   "$B" build "$1" -o "$OUT/$2_census.exe" --census "$OUT/$2.pins" >/dev/null 2>&1
   (cd "$OUT" && "./$2_census.exe" >/dev/null 2>&1)
@@ -60,11 +55,11 @@ census "$HERE/mat4_kernel.js"       m4
 census "$HERE/nullish_pin_kernel.js" nl
 census "$HERE/call_chain_kernel.js" cc
 census "$HERE/three_math.js"        tm
-# The vendored library end to end. Not a benchmark — the whole program is about
-# 28 ms of wall and nearly all of it is process start — but it is the biggest
-# real program the census has, and the column exists to say so with a number
-# rather than by assertion. What it IS good for is the manifest: 101 entries
-# over 1718 candidate sites, 20 of them `@observed`.
+# The vendored library end to end. Not a benchmark and not timed — it is an
+# ORACLE program, so it prints a committed expectation rather than a checksum
+# and a `[bench]` line, and the check it earns its place with is the `cmp`
+# below. What it is good for is the manifest: 101 entries over 1718 candidate
+# sites, 20 of them `@observed`.
 census "$HERE/../tests/oracle/threejs/main.js" tj
 
 build() { # src out pins extra
@@ -76,22 +71,15 @@ build() { # src out pins extra
 }
 
 # --- 2. THE COLUMNS ----------------------------------------------------------
-build "$HERE/env_slot_kernel.js" "es_hand_b.exe" "$HERE/pins/env-slot-kernel.pins"
-build "$OUT/es_small.js"         "es_hand_s.exe" "$HERE/pins/env-slot-kernel.pins"
-build "$HERE/env_slot_kernel.js" "es_inf_b.exe"  "$OUT/es_safe.pins"
-build "$OUT/es_small.js"         "es_inf_s.exe"  "$OUT/es_safe.pins"
+build "$HERE/env_slot_kernel.js" "es_hand.exe" "$HERE/pins/env-slot-kernel.pins"
+build "$HERE/env_slot_kernel.js" "es_inf.exe"  "$OUT/es_safe.pins"
 
-build "$HERE/mat4_kernel.js"       "m4_hand_b.exe" "$HERE/pins/threejs-math.pins"
-build "$HERE/mat4_kernel_small.js" "m4_hand_s.exe" "$HERE/pins/threejs-math.pins"
-build "$HERE/mat4_kernel.js"       "m4_inf_b.exe"  "$OUT/m4_safe.pins"
-build "$HERE/mat4_kernel_small.js" "m4_inf_s.exe"  "$OUT/m4_safe.pins"
-build "$HERE/mat4_kernel.js"       "m4_infobs_b.exe" "$OUT/m4.pins" --pins-allow-observed
-build "$HERE/mat4_kernel_small.js" "m4_infobs_s.exe" "$OUT/m4.pins" --pins-allow-observed
+build "$HERE/mat4_kernel.js"       "m4_hand.exe" "$HERE/pins/threejs-math.pins"
+build "$HERE/mat4_kernel.js"       "m4_inf.exe"  "$OUT/m4_safe.pins"
+build "$HERE/mat4_kernel.js"       "m4_infobs.exe" "$OUT/m4.pins" --pins-allow-observed
 
-build "$HERE/nullish_pin_kernel.js" "nl_hand_b.exe" "$HERE/pins/nullish-kernel.pins"
-build "$OUT/nl_small.js"            "nl_hand_s.exe" "$HERE/pins/nullish-kernel.pins"
-build "$HERE/nullish_pin_kernel.js" "nl_inf_b.exe"  "$OUT/nl_safe.pins"
-build "$OUT/nl_small.js"            "nl_inf_s.exe"  "$OUT/nl_safe.pins"
+build "$HERE/nullish_pin_kernel.js" "nl_hand.exe" "$HERE/pins/nullish-kernel.pins"
+build "$HERE/nullish_pin_kernel.js" "nl_inf.exe"  "$OUT/nl_safe.pins"
 
 build "$HERE/call_chain_kernel.js" "cc_hand.exe" "$HERE/pins/call-chain-kernel.pins"
 build "$HERE/call_chain_kernel.js" "cc_inf.exe"  "$OUT/cc_safe.pins"
@@ -116,26 +104,21 @@ for t in none inf infobs; do
   fi
 done
 echo "tj: byte-identical to main.expected in all three columns"
+# and no cspec_tj.json: `main.js` does not time itself, so it has no column
+# interleave.py could read. Its three builds exist for the cmp above.
 echo "built"
 
 # --- 3. THE SPECS ------------------------------------------------------------
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" <<'SPEC'
 import json, os, sys
 out = sys.argv[1]
-two = {"es": 5_400_000, "m4": 18_000_000, "nl": 7_200_000}
 cols = {"es": ["hand", "inf"], "m4": ["hand", "inf", "infobs"], "nl": ["hand", "inf"]}
-for key, iters in two.items():
-    spec = []
-    for tag in cols[key]:
-        spec.append({"name": tag, "exe": f"./{key}_{tag}_b.exe", "small": f"{tag} twin",
-                     "iters": iters})
-        spec.append({"name": f"{tag} twin", "exe": f"./{key}_{tag}_s.exe"})
-    json.dump(spec, open(os.path.join(out, f"cspec_{key}.json"), "w"), indent=1)
+for key, tags in cols.items():
+    json.dump([{"name": t, "exe": f"./{key}_{t}.exe"} for t in tags],
+              open(os.path.join(out, f"cspec_{key}.json"), "w"), indent=1)
 json.dump([{"name": t, "exe": f"./tm_{t}.exe"} for t in ["none", "hand", "inf", "infobs"]],
           open(os.path.join(out, "cspec_tm.json"), "w"), indent=1)
-json.dump([{"name": t, "exe": f"./tj_{t}.exe"} for t in ["none", "inf", "infobs"]],
-          open(os.path.join(out, "cspec_tj.json"), "w"), indent=1)
 json.dump([{"name": t, "exe": f"./cc_{t}.exe"} for t in ["hand", "inf"]],
           open(os.path.join(out, "cspec_cc.json"), "w"), indent=1)
-PY
+SPEC
 echo "specs written to $OUT"

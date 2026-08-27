@@ -230,14 +230,44 @@ if [[ -n "$BRO_PATH" ]]; then
 fi
 
 # --- Python timing and statistics helper ---
+# --- Timing helper ---
+#
+# WHAT IS MEASURED IS WHAT THE FIXTURE PRINTED. Every pure-compute fixture times
+# its own compute region through bench/harness.js and writes
+# `[bench] <region> ms=<f>` to stderr; this reads that line and never looks at a
+# process wall clock. Process startup is not a fact about the compiler — an
+# empty bronze program costs ~5.9 ms on this box and an empty node program ~31 —
+# and including it made a fixture's number depend mostly on which engine ran it.
+#
+# MODE is `self` (the default, and the only mode any fixture in bench/ uses) or
+# `wall`. `wall` measures the whole process and is for the Bro render scenes
+# only: those are host applications from another tree, they cannot be taught to
+# self-report from here, and their rows are labelled as including startup.
 time_command_json() {
     local cmd_json="$1"
     local runs="$2"
+    local mode="${3:-self}"
     python3 -c '
-import sys, subprocess, time, statistics, json
+import sys, subprocess, time, statistics, json, re
 
 cmd = json.loads(sys.argv[1])
 runs = int(sys.argv[2])
+mode = sys.argv[3]
+
+LINE = re.compile(r"^\[bench\] (\S+) ms=([0-9.]+)", re.M)
+
+def elapsed(p, wall_ms):
+    """The number this run contributes, in ms."""
+    if mode == "wall":
+        return wall_ms
+    found = LINE.findall(p.stderr or "")
+    if not found:
+        return None
+    # A fixture with several timed regions (typed_array_loop, call_chain_kernel)
+    # contributes their SUM: the report has one row per fixture, and the row is
+    # the compute the fixture did. interleave.py is the tool that keeps regions
+    # apart when the difference between them is the question.
+    return sum(float(v) for _, v in found)
 
 # Warmup run (discarded)
 try:
@@ -259,7 +289,12 @@ for _ in range(runs):
     if p.returncode != 0:
         print(json.dumps({"error": f"Run exit code {p.returncode}: {p.stderr.strip()}"}))
         sys.exit(0)
-    timings.append((t1 - t0) * 1000.0) # ms
+    ms = elapsed(p, (t1 - t0) * 1000.0)
+    if ms is None:
+        print(json.dumps({"error": "no [bench] line on stderr: the fixture does not "
+                                   "time itself through bench/harness.js"}))
+        sys.exit(0)
+    timings.append(ms)
     last_out = p.stdout or ""
     last_err = p.stderr or ""
 
@@ -270,7 +305,12 @@ mx = max(timings)
 mean_val = statistics.mean(timings)
 stdev_val = statistics.stdev(timings) if len(timings) > 1 else 0.0
 
-combined_lines = [line.strip() for line in (last_out + "\n" + last_err).splitlines() if line.strip()]
+# The checksum comes off STDOUT. The `[bench]` lines are on stderr and are the
+# one deliberately nondeterministic thing a fixture prints, so they must never
+# be mistaken for the output a run is identified by.
+combined_lines = [line.strip()
+                  for line in last_out.splitlines() + last_err.splitlines()
+                  if line.strip() and not line.strip().startswith("[bench]")]
 checksum_line = ""
 for line in reversed(combined_lines):
     if "[console]" in line:
@@ -287,10 +327,11 @@ print(json.dumps({
     "max_ms": round(mx, 2),
     "mean_ms": round(mean_val, 2),
     "stdev_ms": round(stdev_val, 2),
+    "measured": mode,
     "timings": [round(t, 2) for t in timings],
     "output": checksum_line
 }))
-' "$cmd_json" "$runs"
+' "$cmd_json" "$runs" "$mode"
 }
 
 # --- Profile run helper ---
@@ -548,7 +589,7 @@ if [[ $PURE_ONLY -eq 0 && -n "$BRO_PATH" ]]; then
         appdir="$BRO_PATH/src/bronze_host/app/appdir"
         win_appdir="$(to_win_path "$appdir")"
         cmd_host_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_SCENEGRAPH" "$win_appdir")"
-        stats_render="$(time_command_json "$cmd_host_json" "$RUNS")"
+        stats_render="$(time_command_json "$cmd_host_json" "$RUNS" wall)"
 
         record_json="$(python3 -c '
 import sys, json
@@ -580,7 +621,7 @@ print(json.dumps(record))
         appdir="$BRO_PATH/tests/bronze_host/appdir_wild"
         win_appdir="$(to_win_path "$appdir")"
         cmd_wild_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_WILD" "$win_appdir")"
-        stats_wild="$(time_command_json "$cmd_wild_json" "$RUNS")"
+        stats_wild="$(time_command_json "$cmd_wild_json" "$RUNS" wall)"
 
         record_json="$(python3 -c '
 import sys, json
@@ -612,7 +653,7 @@ print(json.dumps(record))
         appdir="$BRO_PATH/tests/bronze_host/appdir_instanced"
         win_appdir="$(to_win_path "$appdir")"
         cmd_inst_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], '--headless', '--frames', '30']))" "$BRO_HOST_INSTANCED" "$win_appdir")"
-        stats_inst="$(time_command_json "$cmd_inst_json" "$RUNS")"
+        stats_inst="$(time_command_json "$cmd_inst_json" "$RUNS" wall)"
 
         record_json="$(python3 -c '
 import sys, json
@@ -646,7 +687,7 @@ print(json.dumps(record))
         win_smoke="$(to_win_path "$smoke_dir")"
         win_script="$(to_win_path "$script_file")"
         cmd_interp_json="$(python3 -c "import json, sys; print(json.dumps([sys.argv[1], sys.argv[2], sys.argv[3]]))" "$BRO_HEADLESS" "$win_smoke" "$win_script")"
-        stats_interp="$(time_command_json "$cmd_interp_json" "$RUNS")"
+        stats_interp="$(time_command_json "$cmd_interp_json" "$RUNS" wall)"
 
         record_json="$(python3 -c '
 import sys, json

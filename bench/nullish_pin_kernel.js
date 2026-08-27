@@ -18,8 +18,10 @@
 //              finite number, not NaN.
 //   mixed    — both arms in one loop, so the compare is not predicted away.
 //
-// Run twice with different iteration counts and difference the wall times to
-// cancel process startup exactly.
+// It times its own loop through bench/harness.js and reports ns_per_iter over
+// the four sweeps the region covers.
+
+import { measure } from './harness.js';
 
 const ITERS = 8000000;
 
@@ -66,7 +68,8 @@ function run(iters) {
   return [numbers, nulls, undefs, mixedAcc + a.below + b.below];
 }
 
-const [numbers, nulls, undefs, mixed] = run(ITERS);
+const [numbers, nulls, undefs, mixed] =
+  measure('nullish_pin_kernel', () => run(ITERS), ITERS * 4);
 console.log(
   `nullish_pin iters=${ITERS} checksum=${Math.round(numbers % 1000000)}/` +
   `${Math.round(nulls % 1000000)}/${Math.round(undefs)}/${Math.round(mixed % 1000000)}`);

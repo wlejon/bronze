@@ -89,6 +89,11 @@ inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
 
 Value rtMathObject();
 
+// The `performance` namespace (W3C hr-time-3), built once on first use like
+// `Math`. Only `now()` is real; the User Timing surface around it is a named
+// refusal, because a mark buffer needs a host bronze does not have.
+Value rtPerformanceNamespace();
+
 // The `Atomics` namespace object (ECMA-262 25.4), built once on first use like
 // `Math`, and the named refusal for the three operations on it that need an
 // agent cluster bronze does not have.
@@ -103,6 +108,7 @@ Value rtMathObject();
 Value rtAtomicsObject();
 bool rtAtomicsCheckMissingMember(Value obj, const std::string& key);
 bool rtMathCheckMissingMember(Value obj, const std::string& key);
+bool rtPerformanceCheckMissingMember(Value obj, const std::string& key);
 
 Value rtObjectNamespace();
 bool rtObjectCheckMissingMember(Value obj, const std::string& key);

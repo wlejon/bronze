@@ -27,10 +27,13 @@ same either way: the entry's path with the extension replaced.
 Requirements the harness enforces:
 
 - **Deterministic.** No clock read and no `Math.random` — checked by the
-  harness, not by convention. A clock read is `Date.now()`, `new Date()` or
-  `Date()`: the no-argument forms. The rest of `Date` is a pure function of its
-  arguments and IS pinned here — `Date.UTC`, `Date.parse`, the field
-  constructor, and every member of ECMA-262 21.4.4.
+  harness, not by convention. A clock read is `performance.now()`, `Date.now()`,
+  `new Date()` or `Date()`: the no-argument forms. The rest of `Date` is a pure
+  function of its arguments and IS pinned here — `Date.UTC`, `Date.parse`, the
+  field constructor, and every member of ECMA-262 21.4.4.
+  `performance.now()` has no pure half at all, so it is banned outright and
+  tested in `tests/cli/performance_now_test.cpp` instead, where the assertions
+  are relations (monotonic, sub-millisecond, finite) rather than pinned bytes.
 - **Timezone-independent.** A pinned expectation must hold on a machine in any
   zone, and no grep can check that. So a case pins UTC getters, ISO strings,
   epoch arithmetic and parses of strings carrying an explicit offset; it may

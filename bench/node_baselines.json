@@ -1,59 +1,69 @@
 {
   "version": "Node v24.2.0",
-  "description": "Pinned reference baseline measurements on Node.js v24.2.0 (median ms, out-of-band manual reference)",
+  "protocol": "self-timed compute region only (bench/harness.js); process startup is NOT included",
+  "measured": "2026-08-27, idle box, bench/tools/interleave.py, 51 rounds interleaved, warmup discarded, medians",
+  "description": "Reference node medians for the compute region each fixture times itself around. Out-of-band and manual: the automated runner never invokes node (CLAUDE.md). Compare these only against bronze numbers taken the same way — a whole-process number is not comparable to one of these, because node's process floor on this box is ~31 ms and a bronze exe's is ~5.9 ms.",
+  "caveat": "V8 is a speculative JIT. On a long monomorphic loop it will hoist, unroll and specialize, so the rows with sub-nanosecond ns_per_iter (proto_dispatch at 0.55, property_access at 1.06) are as much a measurement of what V8 proved loop-invariant as of what a property read costs. Read those as an upper bound on the gap, not as a dispatch-cost comparison.",
   "benchmarks": {
     "fib.js": {
-      "median_ms": 41.06,
+      "median_ms": 6.08,
       "checksum": "832040",
       "description": "Recursive fib(30) call overhead on dynamic function"
     },
     "numeric_loop.js": {
-      "median_ms": 65.62,
+      "median_ms": 28.96,
+      "ns_per_iter": 2.896,
       "checksum": "60644102826883.61",
       "description": "10M-iteration float loop (proven-f64 arithmetic)"
     },
     "property_access.js": {
-      "median_ms": 37.09,
+      "median_ms": 1.06,
+      "ns_per_iter": 1.063,
       "checksum": "3000000",
       "description": "1M iterations shape lookup & own-property IC dispatch"
     },
     "proto_dispatch.js": {
-      "median_ms": 36.13,
+      "median_ms": 1.64,
+      "ns_per_iter": 0.546,
       "checksum": "3000000",
       "description": "3M iterations depth-3 inherited property read"
     },
     "proto_dispatch_churn.js": {
-      "median_ms": 38.14,
+      "median_ms": 3.13,
+      "ns_per_iter": 1.043,
       "checksum": "3000000",
       "description": "3M iterations depth-3 read with object creation churn"
     },
     "typed_array_loop.js": {
-      "median_ms": 40.75,
-      "checksum": "523828354.8980187",
-      "description": "TypedArray element access vs plain array view"
+      "regions": {
+        "typed_array_loop.typed": { "median_ms": 2.67, "ns_per_iter": 1.305 },
+        "typed_array_loop.plain": { "median_ms": 2.39, "ns_per_iter": 1.166 }
+      },
+      "checksum": "523826421.8828082 / 523828354.8980187",
+      "description": "TypedArray element access vs plain array view; two regions, timed apart, because the difference between them is the benchmark"
     },
     "typed_array_crunch.js": {
-      "median_ms": 56.27,
+      "median_ms": 19.06,
       "checksum": "typed_array_crunch checksum=78849652",
       "description": "Float64Array/Float32Array N-body physics & FFT crunch"
     },
     "object_graph.js": {
-      "median_ms": 69.38,
+      "median_ms": 32.28,
       "checksum": "object_graph checksum=-32601148",
       "description": "Object-graph traversal, search, mutation, and cloning"
     },
     "three_math.js": {
-      "median_ms": 48.40,
+      "median_ms": 8.80,
       "checksum": "three_math checksum=405000",
       "description": "Three.js Vector3/Matrix4 math loop against vendored three.js"
     },
     "mesh_churn_2k.js": {
-      "median_ms": 92.70,
+      "median_ms": 32.33,
       "checksum": "mesh_churn_2k checksum=-2112298",
       "description": "2k animated meshes scene graph updates & geometry churn"
     },
     "instanced_mesh_churn.js": {
-      "median_ms": 95.28,
+      "median_ms": 33.61,
       "checksum": "instanced_mesh_churn checksum=1260786",
       "description": "Three.js InstancedMesh 5,000 instances churn and color updates"
     }

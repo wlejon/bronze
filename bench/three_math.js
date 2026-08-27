@@ -7,6 +7,7 @@ import { Vector3 } from '../tests/oracle/threejs/three/math/Vector3.js';
 import { Matrix4 } from '../tests/oracle/threejs/three/math/Matrix4.js';
 import { Euler } from '../tests/oracle/threejs/three/math/Euler.js';
 import { Quaternion } from '../tests/oracle/threejs/three/math/Quaternion.js';
+import { measure } from './harness.js';
 
 function runThreeMathBench(iterations) {
   const vPos = new Vector3(1.5, 2.5, 3.5);
@@ -55,7 +56,8 @@ function runThreeMathBench(iterations) {
   }
 
   const checksum = Math.round(accX + accY + accZ);
-  console.log('three_math checksum=' + checksum);
+  return checksum;
 }
 
-runThreeMathBench(30000);
+console.log('three_math checksum=' +
+  measure('three_math', () => runThreeMathBench(30000)));

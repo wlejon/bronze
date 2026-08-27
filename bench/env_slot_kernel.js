@@ -16,8 +16,11 @@
 // The loop lives inside the factory so the calls are sibling-closure calls and
 // what is measured is slot access rather than the boxed call boundary.
 //
-// Run twice with different iteration counts and difference the wall times to
-// cancel process startup exactly.
+// It times its own loop through bench/harness.js and reports ns_per_iter, so
+// the figure is directly comparable with `env_slot_kernel_registers.js` — the
+// same arithmetic with nothing captured — from the same session.
+
+import { measure } from './harness.js';
 
 const ITERS = 6000000;
 
@@ -82,5 +85,6 @@ function WebGLState() {
   return render;
 }
 
-const checksum = WebGLState()(ITERS);
+const render = WebGLState();
+const checksum = measure('env_slot_kernel', () => render(ITERS), ITERS);
 console.log(`env_slot iters=${ITERS} checksum=${checksum}`);

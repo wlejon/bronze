@@ -1,9 +1,9 @@
 // Kernel isolation: Matrix4.multiplyMatrices ns/call, via the real vendored
-// three.js class. Run twice with different iteration counts (argv-free: the
-// count is the checksum input below) and difference the wall times to cancel
-// process startup exactly. Used by the BRONZE_UNSOUND_PINS ceiling probe.
+// three.js class. It times its own loop through bench/harness.js and reports
+// ns_per_iter over 20M calls. Used by the BRONZE_UNSOUND_PINS ceiling probe.
 
 import { Matrix4 } from '../tests/oracle/threejs/three/math/Matrix4.js';
+import { measure } from './harness.js';
 
 const ITERS = 20000000;
 
@@ -23,5 +23,5 @@ function run(iters) {
   return acc;
 }
 
-const acc = run(ITERS);
+const acc = measure('mat4_kernel', () => run(ITERS), ITERS);
 console.log(`mat4_kernel iters=${ITERS} checksum=${Math.round(acc % 1000000)}`);

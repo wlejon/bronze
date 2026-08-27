@@ -9,6 +9,7 @@ import { Mesh } from '../tests/oracle/threejs/three/objects/Mesh.js';
 import { BoxGeometry } from '../tests/oracle/threejs/three/geometries/BoxGeometry.js';
 import { MeshBasicMaterial } from '../tests/oracle/threejs/three/materials/MeshBasicMaterial.js';
 import { Vector3 } from '../tests/oracle/threejs/three/math/Vector3.js';
+import { measure } from './harness.js';
 
 function makeLCG(seed) {
   let s = seed % 2147483647;
@@ -127,7 +128,8 @@ function runMeshChurn2k(meshCount, frames) {
   }
 
   const checksum = Math.round(matrixSum * 100);
-  console.log('mesh_churn_2k checksum=' + checksum);
+  return checksum;
 }
 
-runMeshChurn2k(2000, 30);
+console.log('mesh_churn_2k checksum=' +
+  measure('mesh_churn_2k', () => runMeshChurn2k(2000, 30)));

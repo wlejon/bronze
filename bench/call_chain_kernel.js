@@ -23,6 +23,8 @@
 // Node-oracled: the two loops answer the same checksums under node, and node's
 // own ratio (~1.0) is the floor the ratio is read against.
 
+import { measure } from './harness.js';
+
 const ITERS = 8000000;
 
 class Uniform {
@@ -92,22 +94,10 @@ function flat(iters) {
   return acc + u.writes;
 }
 
-// Both loops are timed IN PROCESS, which the other kernels in this directory
-// deliberately do not do. They measure one number against its own history, so a
-// two-count wall delta is the honest instrument; this one measures a RATIO
-// between two loops in the same binary, and subtracting a process startup from
-// each of them to compare them with each other would add noise to answer a
-// question neither startup is part of. The two-count delta still works on the
-// total, and `call_chain_kernel_small.js` is the second count.
-const t0 = Date.now();
-const a = chained(ITERS);
-const t1 = Date.now();
-const b = flat(ITERS);
-const t2 = Date.now();
-const chainedNs = ((t1 - t0) * 1e6) / ITERS;
-const flatNs = ((t2 - t1) * 1e6) / ITERS;
+// Two regions, timed and reported apart, because what this kernel measures is
+// the RATIO between them: `chained` pays a typed call edge per link and `flat`
+// does the same arithmetic inline, so one combined number would destroy the
+// comparison. `bench/tools/interleave.py` divides the two ns_per_iter figures.
+const a = measure('call_chain_kernel.chained', () => chained(ITERS), ITERS);
+const b = measure('call_chain_kernel.flat', () => flat(ITERS), ITERS);
 console.log(`call_chain iters=${ITERS} chained=${a} flat=${b}`);
-console.log(
-  `call_chain chained_ns=${chainedNs.toFixed(2)} flat_ns=${flatNs.toFixed(2)} ` +
-    `ratio=${(chainedNs / flatNs).toFixed(2)}`
-);

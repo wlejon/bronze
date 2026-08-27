@@ -2,6 +2,8 @@
 // Measures graph/tree traversal (DFS & BFS), property access,
 // dynamic object allocation, subtree cloning, and node mutations.
 
+import { measure } from './harness.js';
+
 function makeLCG(seed) {
   let s = seed % 2147483647;
   if (s <= 0) s += 2147483646;
@@ -151,7 +153,8 @@ function runObjectGraphBench(passes) {
   }
 
   const checksum = Math.round(totalVisited + totalMatches + finalSum);
-  console.log('object_graph checksum=' + checksum);
+  return checksum;
 }
 
-runObjectGraphBench(100);
+console.log('object_graph checksum=' +
+  measure('object_graph', () => runObjectGraphBench(100)));

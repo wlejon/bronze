@@ -243,9 +243,15 @@ unsigned int getWorkerJobCount() {
 // their arguments, and pinning them is exactly how the Date implementation is
 // held to ECMA-262.
 //
-// The three clock reads are `Date.now`, `new Date()` and `Date()` — the two
-// no-argument constructor forms. A whitespace-tolerant match on the empty
+// The three `Date` clock reads are `Date.now`, `new Date()` and `Date()` — the
+// two no-argument constructor forms. A whitespace-tolerant match on the empty
 // argument list is what separates them from `new Date(0)`.
+//
+// `performance.now` is the fourth, and it is a clock this suite cannot pin for
+// exactly the same reason: it is monotonic and sub-millisecond, so it is a
+// BETTER clock and therefore a worse thing to have in a byte-pinned
+// expectation. Its own tests live in tests/cli/performance_now_test.cpp, where
+// what is asserted is a relation rather than a string.
 //
 // The occurrence must be the IDENTIFIER `Date` and not a name that merely ends
 // in it: `d.getUTCDate()` is four characters of "Date" followed by an empty
@@ -265,6 +271,11 @@ bool standsAlone(const std::string& code, size_t at) {
 }
 
 bool readsTheClock(const std::string& code) {
+    size_t perf = 0;
+    while ((perf = code.find("performance.now", perf)) != std::string::npos) {
+        if (standsAlone(code, perf)) return true;
+        perf += 11;
+    }
     size_t now = 0;
     while ((now = code.find("Date.now", now)) != std::string::npos) {
         if (standsAlone(code, now)) return true;

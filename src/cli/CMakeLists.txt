@@ -26,6 +26,7 @@ endif()
 # one), so the BRONZE_BUILD_TESTS guard has to be written out here too.
 if(BRONZE_BUILD_TESTS)
     add_executable(bronze_cli_tests ../../tests/cli/cli_test.cpp
+                                   ../../tests/cli/performance_now_test.cpp
                                    ../../tests/cli/pin_barrier_test.cpp
                                    ../../tests/cli/pin_census_test.cpp)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)

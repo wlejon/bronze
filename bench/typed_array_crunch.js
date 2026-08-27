@@ -3,6 +3,8 @@
 // Combines an N-body gravitational physics kernel (Velocity Verlet) with a
 // Cooley-Tukey Radix-2 FFT kernel on typed array views.
 
+import { measure } from './harness.js';
+
 function makeLCG(seed) {
   let s = seed % 2147483647;
   if (s <= 0) s += 2147483646;
@@ -188,7 +190,8 @@ function runTypedArrayCrunch() {
   const power = runFFTBench(1024, 150);
 
   const checksum = Math.round(energy + power);
-  console.log('typed_array_crunch checksum=' + checksum);
+  return checksum;
 }
 
-runTypedArrayCrunch();
+console.log('typed_array_crunch checksum=' +
+  measure('typed_array_crunch', () => runTypedArrayCrunch()));

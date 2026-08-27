@@ -1,7 +1,7 @@
-// Stage R2: the DATAFLOW between double slots, not the slots themselves.
+// The DATAFLOW between double slots, not the slots themselves.
 //
-// repr_slot_kernel.js measures the storage; this one measures what stage R2
-// added on top of it. Every line of the loop body is a load out of a pinned
+// repr_slot_kernel.js measures the storage; this one measures what the compiler
+// spends it on -- the raw store and the elided GC root between links. Every line of the loop body is a load out of a pinned
 // slot, some arithmetic on what came out, and a store back into another pinned
 // slot -- so a compiler that boxes between each link pays a canonicalizing
 // select, a tag test and a GC root store per link, and one that keeps the
@@ -10,6 +10,8 @@
 // The two objects alternate on purpose: a chain that stays inside one receiver
 // could be held in registers by any compiler, but crossing between `a` and `b`
 // puts a real store site between every pair of links.
+
+import { measure } from './harness.js';
 
 class Cell {
   constructor(p, q, r) {
@@ -59,7 +61,8 @@ function run(iterations) {
     a.r = a.q * 0.5 - a.p * 0.25 + t;
     acc += a.r - b.r;
   }
-  console.log('repr_flow checksum=' + Math.round(acc * 1e6) + '/' + nanScore());
+  return Math.round(acc * 1e6) + '/' + nanScore();
 }
 
-run(400000);
+console.log('repr_flow checksum=' +
+  measure('repr_flow_kernel', () => run(400000), 400000));

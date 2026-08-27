@@ -521,6 +521,8 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = rtJsonNamespace();
     } else if (keyStr == "globalThis") {
         out = rtGlobalThisObject();
+    } else if (keyStr == "performance") {
+        out = rtPerformanceNamespace();
     } else if (keyStr == "Reflect") {
         out = rtReflectNamespace();
     } else if (keyStr == "Date") {

@@ -287,7 +287,7 @@ void emitEnvSetMerging(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Valu
 //   - A tripwire's value is that it is armed in the builds where a lowering
 //     bug would first be met.
 //   - It is NOT A UNIFORM WIN. Measured on this box (medians of 13,
-//     interleaved, two-count wall delta), it is worth what the guards cost
+//     interleaved), it is worth what the guards cost
 //     where environment slots are hot — `env_slot_kernel` 56.8 -> 48.9
 //     ns/iter, `typed_array_crunch` 78.3 -> 71.1 ms — and it COSTS about as
 //     much where they are not, purely by moving code: `mat4_kernel` 23.6 ->

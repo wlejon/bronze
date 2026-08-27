@@ -1,5 +1,7 @@
 // Dynamic property access in a real loop: shape lookups + inline caches
 // are the whole cost.
+import { measure } from './harness.js';
+
 const obj = { a: 1, b: 2 };
 
 function sumProps(o, n) {
@@ -10,4 +12,4 @@ function sumProps(o, n) {
   return total;
 }
 
-console.log(sumProps(obj, 1000000));
+console.log(measure('property_access', () => sumProps(obj, 1000000), 1000000));

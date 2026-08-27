@@ -110,13 +110,20 @@ if (-not $Json) {
     Write-Host ""
 }
 
-# Helper to run timing in Python
+# Helper to run timing in Python.
+#
+# WHAT IS MEASURED IS WHAT THE FIXTURE PRINTED — every fixture times its own
+# compute region through bench/harness.js and writes `[bench] <region> ms=<f>`
+# to stderr. The process wall clock is not consulted: startup is not a fact
+# about the compiler, and an empty bronze program already costs ~5.9 ms of it.
 function Measure-CommandStats($exePath, $numRuns) {
     $code = @'
-import sys, subprocess, time, statistics, json
+import sys, subprocess, statistics, json, re
 
 cmd = [sys.argv[1]]
 runs = int(sys.argv[2])
+
+LINE = re.compile(r"^\[bench\] (\S+) ms=([0-9.]+)", re.M)
 
 try:
     p_warm = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -131,13 +138,18 @@ timings = []
 last_out = p_warm.stdout or ""
 last_err = p_warm.stderr or ""
 for _ in range(runs):
-    t0 = time.perf_counter()
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    t1 = time.perf_counter()
     if p.returncode != 0:
         print(json.dumps({"error": f"Run exit code {p.returncode}: {p.stderr.strip()}"}))
         sys.exit(0)
-    timings.append((t1 - t0) * 1000.0)
+    # A fixture with several timed regions contributes their SUM: this report
+    # has one row per fixture, and the row is the compute the fixture did.
+    found = LINE.findall(p.stderr or "")
+    if not found:
+        print(json.dumps({"error": "no [bench] line on stderr: the fixture does not "
+                                   "time itself through bench/harness.js"}))
+        sys.exit(0)
+    timings.append(sum(float(v) for _, v in found))
     last_out = p.stdout or ""
     last_err = p.stderr or ""
 
@@ -148,7 +160,8 @@ mx = max(timings)
 mean_val = statistics.mean(timings)
 stdev_val = statistics.stdev(timings) if len(timings) > 1 else 0.0
 
-combined_lines = [line.strip() for line in (last_out + "\n" + last_err).splitlines() if line.strip()]
+combined_lines = [line.strip() for line in (last_out + "\n" + last_err).splitlines()
+                  if line.strip() and not line.strip().startswith("[bench]")]
 checksum_line = ""
 for line in reversed(combined_lines):
     if "[console]" in line:

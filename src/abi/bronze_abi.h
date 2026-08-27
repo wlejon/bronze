@@ -568,7 +568,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * the helpers pass around.
  *
  * READ sites use every way; a WRITE site uses way 0 only (a write's bill is
- * transitions, not shape variety — bench/README.md's chunk 14 measured it).
+ * transitions, not shape variety — measured on the pure-compute fixtures).
  * The unused ways of a write site cost BSS and nothing else.
  *
  * Generated code compares the receiver's shape against way 0, then — only on

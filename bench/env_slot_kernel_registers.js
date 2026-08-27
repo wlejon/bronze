@@ -12,9 +12,11 @@
 // under node too, because node is compiling the same two shapes and the
 // question is what node does with the first that bronze does not.
 //
-// Stage E4's answer is in bench/README.md; run it the way every kernel here
-// is run, as a two-count wall delta against the same file with ITERS divided
-// by ten.
+// Run it the way every kernel here is run: it times its own loop through
+// bench/harness.js and prints ns_per_iter, so it is directly comparable with
+// `env_slot_kernel`'s figure from the same session.
+import { measure } from './harness.js';
+
 const ITERS = 6000000;
 
 function render(iters) {
@@ -59,5 +61,5 @@ function render(iters) {
          currentProgram + currentDepth + hits;
 }
 
-const checksum = render(ITERS);
+const checksum = measure('env_slot_kernel_registers', () => render(ITERS), ITERS);
 console.log(`env_slot iters=${ITERS} checksum=${checksum}`);

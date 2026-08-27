@@ -1,4 +1,4 @@
-// Stage R1: the per-slot representation, hammered.
+// The per-slot representation, hammered.
 //
 // Every field below is pinned `number` (bench/pins/repr-slot-kernel.pins), so
 // under BRONZE_NO_SLOT_REPR unset every one of them is born a DOUBLE slot and
@@ -10,6 +10,8 @@
 // inline slots, one whose fields spill into the out-of-line block, so both
 // halves of `ObjectHeader::setSlot` and both halves of the collector's
 // double-slot skip are exercised.
+
+import { measure } from './harness.js';
 
 class Vec {
   constructor(x, y, z, w) {
@@ -66,7 +68,8 @@ function run(iterations) {
     }
   }
   const checksum = Math.round(acc * 1000);
-  console.log('repr_slot checksum=' + checksum);
+  return checksum;
 }
 
-run(400000);
+console.log('repr_slot checksum=' +
+  measure('repr_slot_kernel', () => run(400000), 400000));

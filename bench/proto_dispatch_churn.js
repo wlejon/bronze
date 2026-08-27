@@ -8,15 +8,25 @@
 // against 1960ms, while leaving proto_dispatch.js untouched. A regression
 // shows up in the gap between this file and churn-free construction, never in
 // either number alone.
+import { measure } from './harness.js';
+
 class A {}
 A.prototype.k = 1;
 class B extends A {}
 class C extends B {}
 function Pt(x) { this.x = x; }
 const o = new C();
-let sum = 0;
-for (let i = 0; i < 3000000; i = i + 1) {
-  const p = new Pt(i);
-  sum = sum + o.k + p.x - p.x;
+
+// A function rather than a top-level loop, for the clock and for the sampler:
+// see the note in proto_dispatch.js.
+function readInheritedWithChurn(n) {
+  let sum = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    const p = new Pt(i);
+    sum = sum + o.k + p.x - p.x;
+  }
+  return sum;
 }
-console.log(sum);
+
+console.log(measure('proto_dispatch_churn',
+                    () => readInheritedWithChurn(3000000), 3000000));

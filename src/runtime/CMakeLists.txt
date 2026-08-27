@@ -36,6 +36,7 @@ bronze_add_module(runtime
         fn.cpp
         fn_source.cpp
         builtin_math.cpp
+        builtin_performance.cpp
         builtin_generator.cpp
         builtin_async_generator.cpp
         microtask.cpp
