@@ -184,7 +184,7 @@ TEST_CASE("a module-scope temporary is a known receiver on the FIRST round") {
     // from inside a method, and a method name more than one class declares.
     //
     // `moduleBindings` is filled at the END of the top level's walk and every
-    // round walks the bodies first, so before `seedModuleBindings` the receiver
+    // round walks the bodies first, so before the priming rounds the receiver
     // `_ta` answered `Dynamic` on round one. A call whose receiver has no class
     // contributes its argument to EVERY method of that name — so `A` reached
     // `B.copy`'s parameter, the two joined to an object with no class at all,
@@ -221,4 +221,55 @@ TEST_CASE("a module-scope temporary is a known receiver on the FIRST round") {
     // needs TWO classes declaring the name and only one of them reached
     // through the module-scope temporary.
     CHECK(r.provenFieldReads.size() == 8);
+}
+
+TEST_CASE("an optimistic field audit does not decide a parameter on round one") {
+    // Two lattices move through the fixpoint in opposite directions. Signatures
+    // WIDEN from `Never`; field cleanliness NARROWS from "every written name
+    // holds only numbers", as the rounds find the writes that refute it. Both
+    // are monotone, which is all the loop needs to terminate — but the two do
+    // not mix. A read taken while its name is still presumed clean answers
+    // `Number`, the fold joins that in, and `join(Number, Object)` is an object
+    // with no class that no later round can take back.
+    //
+    // `Holder.p` is defined through a descriptor, which the audit has to reason
+    // its way to rather than see, so it stays presumed clean for round after
+    // round while `update` hands `Mat.compose` a Number. `fromScratch` is the
+    // site that would otherwise settle the question — `_scratch` is a
+    // module-scope `Vec` and says so from the first round — and the join of the
+    // two is what is lost.
+    //
+    // Under a manifest, because pin optimism is what leaves the Number alone to
+    // do the damage: a Dynamic argument is set aside instead of joined, so the
+    // spurious Number is the only contribution that can still poison the join.
+    // three.js is this shape at scale — `Object3D` defines `position`,
+    // `quaternion` and `scale` with `Object.defineProperties`, so
+    // `Matrix4.compose` observed `Vector3, Quaternion, Vector3` on every round
+    // but the first and still shipped with three dynamic parameters.
+    const auto inferred = inferPinned(
+        "class Vec {\n"
+        "  constructor() { this.x = 1.5; }\n"
+        "}\n"
+        "class Mat {\n"
+        "  constructor() { this.e = 0; }\n"
+        "  compose(v) { this.e = v.x; return this; }\n"
+        "  fromScratch() { return this.compose(_scratch); }\n"
+        "}\n"
+        "class Holder {\n"
+        "  constructor() {\n"
+        "    this.m = new Mat();\n"
+        "    Object.defineProperty(this, 'p', { value: new Vec() });\n"
+        "  }\n"
+        "  update() { this.m.compose(this.p); return this.m.e; }\n"
+        "}\n"
+        "const _scratch = new Vec();\n"
+        "const h = new Holder();\n"
+        "console.log(h.update() + new Mat().fromScratch().e);\n",
+        "Vec.x: number\n");
+    const auto& r = *inferred.result;
+    // The one parameter in the program, and it keeps its class. Without the
+    // priming rounds it is `dynamic` — the exact counts, because a signature
+    // that merely widened would leave `paramsObject` at zero either way.
+    CHECK(r.methodParams.paramsObject == 1);
+    CHECK(r.methodParams.paramsDynamic == 0);
 }

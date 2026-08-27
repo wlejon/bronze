@@ -45,7 +45,7 @@ ModuleSplit splitModule(const ast::Module& module) {
 
 // The module top level, walked on its own. Split out because the fixpoint has
 // to walk it BEFORE its first round as well as inside every round — see
-// `seedModuleBindings`.
+// `primeFixpoint`.
 bool runTopLevel(ModuleContext& mod, const ModuleSplit& split, bool record) {
     if (split.topLevel.empty()) return true;
     Span span{};
@@ -64,33 +64,6 @@ bool runTopLevel(ModuleContext& mod, const ModuleSplit& split, bool record) {
     args.moduleTopLevel = true;
 
     return analyzeFunction(mod, args).ok;
-}
-
-// What `const _m1 = new Matrix4()` holds, decided before the first round reads
-// it (flow.h `moduleBindings`).
-//
-// The table is filled at the END of the top level's walk, and every round walks
-// the bodies first — so on round one every module-scope receiver in every
-// method body answers `Dynamic`, and `_m1.copy( this )` is a call whose class
-// the pass cannot name. Such a call contributes its arguments to EVERY method
-// of that name (flow_expr.cpp), which is how a `Vector3` reaches
-// `Matrix4.copy`'s parameter; and because the signature fold only ever WIDENS,
-// the two classes join to an object with no class and the later rounds — which
-// do resolve `_m1` — can never take it back. three.js is made of module-scope
-// temporaries and of method names four classes share, so this was most of the
-// library's shared vocabulary giving up its parameters on round one.
-//
-// One extra walk of the top level, not recording and with its observations
-// discarded by the `resetObservations` at the head of the loop. The table is
-// joined into and never rebuilt, so seeding it early can only make round one
-// answer what a later round would have answered anyway.
-void seedModuleBindings(ModuleContext& mod, const ModuleSplit& split) {
-    if (!mod.valueFlow) return;
-    // The outcome is deliberately not consulted: a walk that fails has set
-    // `mod.failed`, and round one walks the same statements and reports it —
-    // this one is an extra look at a body the loop reads anyway, and a second
-    // road out of the function here would be a second place to keep right.
-    runTopLevel(mod, split, /*record=*/false);
 }
 
 // One walk of every function in the module, plus the top level. Call sites
@@ -367,6 +340,65 @@ private:
     }
 };
 
+// The rounds that settle what NARROWS, run before anything that WIDENS starts
+// accumulating.
+//
+// Two lattices move through this fixpoint in opposite directions. Signatures
+// start at `Never` and only widen; field cleanliness starts with every written
+// name presumed to hold only numbers and only narrows, as the rounds find the
+// writes that refute it. Both are monotone and the combination terminates,
+// which is all the loop below ever needed from them. Precision is a separate
+// question, and there the two directions do not mix: a name's opening verdict
+// is an optimistic GUESS, and the fold has no way to tell a guess it is handed
+// from evidence.
+//
+// `Object3D.updateMatrix` is the shape it costs. `this.position` is read while
+// `position` is still presumed clean, so the argument to `this.matrix.compose(
+// ... )` is a Number; the fold joins that in; the rounds that follow read the
+// same expression as a `Vector3` and join THAT in; and `join(Number, Object)`
+// is an object with no class, which a fold that only widens can never take
+// back. Nor is the window one round wide: three.js defines `position`,
+// `quaternion` and `scale` through `Object.defineProperties`, a write the audit
+// reasons its way to rather than sees, and measured on the bundle the name was
+// still answering clean on twelve rounds out of thirteen. `Matrix4.compose` —
+// the method every transform in the library goes through — shipped with three
+// dynamic parameters because of it, which costs each of those reads its pin and
+// the f64 arithmetic underneath.
+//
+// So the narrowing runs to its own fixpoint first, with the widening folds held
+// back. Nothing is lost by discarding what these rounds observed: every round
+// walks the whole program and `resetObservations` clears the table in front of
+// it, so the loop's own first round re-contributes every call site these rounds
+// saw, from a state where the audit has stopped being optimistic. What survives
+// is what should — the poison sets, the settled audit, the harvest and the
+// module bindings, all facts about the program text that only ever accumulate.
+//
+// This subsumes the top-level-only seed it replaces. `_m1.copy( this )` needed
+// the module bindings decided before a method body read them; walking the
+// bodies too also finds the bindings that are assigned inside a function rather
+// than at the top level, which a top-level-only seed could not see.
+void primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceResult& result) {
+    if (!mod.valueFlow) return;
+    for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
+        resetObservations(mod);
+        const size_t poisonBefore = mod.methodPoison.version();
+        const size_t ctorPoisonBefore = mod.ctorPoison.version();
+        const std::map<std::string, Type> bindingsBefore = mod.moduleBindings;
+        // The outcome is deliberately not consulted: a walk that fails has set
+        // `mod.failed`, and the loop below walks the same statements and
+        // reports it — these are extra looks at bodies that loop reads anyway,
+        // and a second road out of the function here would be a second place to
+        // keep right.
+        if (!runPass(mod, split, /*record=*/false)) return;
+        bool changed = refineFieldHarvest(mod, result);
+        changed = mod.methodPoison.version() != poisonBefore || changed;
+        changed = mod.ctorPoison.version() != ctorPoisonBefore || changed;
+        changed = mod.moduleBindings != bindingsBefore || changed;
+        changed = mod.fieldAudit.settle() || changed;
+        if (!changed) return;
+    }
+}
+
 }  // namespace
 
 std::optional<InferenceResult> inferModule(const ast::Module& module, DiagnosticSink& diags,
@@ -483,7 +515,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         mod.indexByName.emplace(decl->name, i);
     }
 
-    seedModuleBindings(mod, split);
+    primeFixpoint(mod, split, result);
 
     bool converged = false;
     bool finalized = false;
