@@ -570,10 +570,19 @@ extern "C" {
 uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     recordPropCall("bronze_global_get", keyIndex, nullptr);
     const std::string& keyStr = rtKeyString(keyIndex);
+    // Host-registered globals take precedence for platform/host APIs (e.g. `performance`,
+    // where a host provides its own clock bound to the engine's virtual / rAF frame seam
+    // rather than the standalone runtime's default steady_clock namespace). Returned
+    // directly rather than through `resolved`, which the cache below would pin.
+    if (keyStr == "performance") {
+        if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
+            return host.rawBits();
+        }
+    }
     Value resolved = Value::fromUndefined();
     if (!rtResolveBuiltinGlobal(keyStr, resolved)) {
-        // AFTER every builtin, so a host cannot swap out `Math` under code
-        // that was compiled against it — and BEFORE the fatal, because a
+        // AFTER every language builtin, so a host cannot swap out `Math` under
+        // code that was compiled against it — and BEFORE the fatal, because a
         // host-registered name is a legitimate answer. Returned directly
         // rather than through `resolved`, which the cache below would pin:
         // rtRegisterHostGlobal replaces on re-registration, and a cached

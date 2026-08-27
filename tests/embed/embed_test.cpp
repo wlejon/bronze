@@ -114,6 +114,28 @@ TEST_CASE("a registered host global answers bronze_global_get") {
     CHECK(replaced.asNumber() == 2.0);
 }
 
+TEST_CASE("a registered host global overrides a runtime builtin") {
+    ShadowStackFrame frame;
+
+    // Before registering a host override, globalValue and bronze_global_get see the builtin.
+    embed::GlobalValue builtinPerf = embed::globalValue("performance");
+    CHECK(builtinPerf.found);
+    CHECK(builtinPerf.value.isObject());
+
+    // A host registers its own performance global (e.g. host virtual clock).
+    embed::registerGlobal("performance", embed::fromDouble(12345.0));
+    const uint32_t key = bronze_register_key_string("performance");
+
+    Value v{bronze_global_get(key, nullptr)};
+    CHECK(v.isNumber());
+    CHECK(v.asNumber() == 12345.0);
+
+    embed::GlobalValue hostPerf = embed::globalValue("performance");
+    CHECK(hostPerf.found);
+    CHECK(hostPerf.value.isNumber());
+    CHECK(hostPerf.value.asNumber() == 12345.0);
+}
+
 TEST_CASE("Persistent keeps a heap value alive and current across a collection") {
     embed::Persistent p{embed::fromUtf8("persistent_payload")};
     const uint64_t before = p.get().rawBits();

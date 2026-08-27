@@ -47,6 +47,9 @@ GlobalValue globalValue(std::string_view name) {
     Value out = Value::fromUndefined();
     // The same order bronze_global_get resolves in, so this probe and a
     // compiled read cannot answer differently for a name both can see.
+    if (key == "performance") {
+        if (runtime::rtHostGlobalLookup(key, out)) return {out, true};
+    }
     if (runtime::rtResolveBuiltinGlobal(key, out)) return {out, true};
     if (runtime::rtHostGlobalLookup(key, out)) return {out, true};
     if (runtime::rtGlobalThisOwnLookup(key, out)) return {out, true};
