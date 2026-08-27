@@ -324,6 +324,76 @@ TEST_CASE("a violating return throws and names the return pin") {
 #endif
 }
 
+// ---- what a pinned array's stores are made of -------------------------------
+
+TEST_CASE("a pinned element read on the right of a store reads raw") {
+    // `te[ i ] = me[ i ]` is the whole body of a matrix copy, and the RAW form
+    // is reached from the COERCING positions — the value side of an assignment
+    // is not one, so this read took the property cache while the identical
+    // expression one line above it took the load.
+    const std::string src =
+        "class M { constructor() { this.a = [1, 2, 3]; this.b = [4, 5, 6]; } }\n"
+        "function move(m) { const x = m.a; const y = m.b; y[0] = x[0]; y[1] = x[1]; }\n"
+        "const m = new M();\n"
+        "move(m);\n"
+        "console.log(m.b[0] + ' ' + m.b[1]);\n";
+    const std::string manifest = "M.a: numeric-elements\nM.b: numeric-elements\n";
+
+    const std::string il = ilWithPins("elem_rhs_raw", src, manifest);
+    // Two reads, both raw — and nothing left for a barrier to ask about, which
+    // is the half that says the proof was really spent rather than re-checked.
+    size_t reads = 0;
+    for (size_t at = il.find("elem.get.typed"); at != std::string::npos;
+         at = il.find("elem.get.typed", at + 1)) {
+        ++reads;
+    }
+    CHECK(reads == 2);
+    // The constructor's `this.a = [...]` still carries the FIELD half of the
+    // pin. What must be gone is the ELEMENT half: an f64 value satisfies the
+    // claim by its IL type, so the four accesses in `move` ask nothing.
+    CHECK(il.find("<numeric-elements element>: number") == std::string::npos);
+
+#if BRONZE_WITH_LLVM
+    CHECK(buildAndRun("elem_rhs_raw", src, manifest).find("1 2") != std::string::npos);
+#endif
+}
+
+TEST_CASE("a guarded element store spends its guard on the raw store") {
+    if (barriersOff()) return;
+    // The value here IS dynamic — it arrives through a parameter two call sites
+    // disagree about — so the barrier is emitted. What it leaves behind is a
+    // proof: `pin.guard` throws on anything but a Number, so the store on its
+    // other side may take the raw form instead of the dynamic element ladder it
+    // used to take after asking the very same question.
+    const std::string src =
+        std::string(kReport) +
+        "class M { constructor() { this.a = [1, 2, 3]; } }\n"
+        "function put(m, y) { const te = m.a; te[0] = y; }\n"
+        "const m = new M();\n"
+        "put(m, 7);\n"
+        "console.log('before ' + m.a[0]);\n"
+        "report('elem', function () { put(m, 'boom'); });\n"
+        "console.log('after ' + m.a[0]);\n";
+    const std::string manifest = "M.a: numeric-elements\n";
+
+    const std::string il = ilWithPins("elem_guard_raw", src, manifest);
+    CHECK(il.find("<numeric-elements element>: number") != std::string::npos);
+    CHECK(il.find("elem.set.typed") != std::string::npos);
+    // A plain `elem.set` here would mean the barrier asked and then threw the
+    // answer away.
+    CHECK(il.find("elem.set %") == std::string::npos);
+
+#if BRONZE_WITH_LLVM
+    const std::string out = buildAndRun("elem_guard_raw", src, manifest);
+    CHECK(out.find("before 7") != std::string::npos);
+    CHECK(out.find("elem true pin '<numeric-elements element>: number' violated") !=
+          std::string::npos);
+    CHECK(out.find("NOTHROW") == std::string::npos);
+    // The violating value was not stored: the guard runs BEFORE the unbox.
+    CHECK(out.find("after 7") != std::string::npos);
+#endif
+}
+
 // ---- the seam ---------------------------------------------------------------
 
 TEST_CASE("the pin text a barrier names reads back as a line of the manifest") {

@@ -38,10 +38,10 @@ bool Lowerer::pinSatisfiedStatically(Value val, il::PinBarrier kind) {
     return false;
 }
 
-void Lowerer::emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
+bool Lowerer::emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
                            il::Function& ilFn) {
-    if (!types::pinBarriersEnabled()) return;
-    if (pinSatisfiedStatically(val, kind)) return;
+    if (!types::pinBarriersEnabled()) return false;
+    if (pinSatisfiedStatically(val, kind)) return false;
     // The barrier tests the BOXED form, because that is the one word the
     // shape questions are asked of — and because it is the word the store
     // about to follow will write, so the two cannot disagree about which value
@@ -55,6 +55,7 @@ void Lowerer::emitPinGuard(Value val, const std::string& pinText, il::PinBarrier
     inst.keyIndex = getKeyConstantIndex(pinText);
     inst.immI32 = static_cast<int32_t>(kind);
     emitInst(ilFn, inst);
+    return true;
 }
 
 namespace {
@@ -114,8 +115,8 @@ const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const st
     return nullptr;
 }
 
-void Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn) {
-    if (elemKind != static_cast<uint32_t>(il::kElemKindPlainArrayF64)) return;
+bool Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn) {
+    if (elemKind != static_cast<uint32_t>(il::kElemKindPlainArrayF64)) return false;
     // The NUMERIC half of `numeric-elements`, held one element at a time.
     //
     // The pin text names the kind rather than a (class, field) pair, and that
@@ -123,7 +124,8 @@ void Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Functio
     // this.elements; te[0] = x` is a store through a local that no longer
     // remembers which field it came from. The kind is what a reader greps the
     // manifest for, and every entry of that kind is a candidate.
-    emitPinGuard(val, "<numeric-elements element>: number", il::PinBarrier::Number, ilFn);
+    return emitPinGuard(val, "<numeric-elements element>: number", il::PinBarrier::Number,
+                        ilFn);
 }
 
 void Lowerer::emitPinFieldBarrier(const ast::Expr& receiver, const std::string& key, Value val,

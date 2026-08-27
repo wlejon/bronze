@@ -334,7 +334,28 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
         curVal = Value{cur, il::Type::F64};
     }
 
-    auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+    // A PINNED element read on the right of a store reads RAW, the same way
+    // the identical expression reads everywhere else. It needs saying because
+    // `lowerExpr` alone does not do it: the typed form is reached from the
+    // COERCING positions (`lowerCoercingOperand`, and a binding whose every use
+    // coerces), and the value side of an assignment is not one — so
+    // `te[ i ] = me[ i ]`, which is the whole body of a matrix copy, took the
+    // property cache for its read while `const x = me[ i ]` a line above took
+    // the raw load.
+    //
+    // The PINNED ARRAY kind and no other. A view's typed read answers NaN where
+    // the property read answers `undefined` (an index past the end), and only a
+    // position that was going to coerce may spend that difference; a pinned
+    // array's read has no such substitution to spend, which is why this needs
+    // no proof about what the value is used for.
+    std::optional<Value> rhsVal;
+    if (const auto rhsKind = typedElemAccessKind(*bin->rhs);
+        rhsKind && *rhsKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+        rhsVal = lowerTypedElemRead(static_cast<const ast::IndexAccess&>(*bin->rhs),
+                                    *rhsKind, ilFn);
+    } else {
+        rhsVal = lowerExpr(*bin->rhs, ilFn);
+    }
     if (!rhsVal) return std::nullopt;
     // `+=` reaches this function only when its RHS is definitely numeric
     // (the caller's admissibility gate), which is exactly the proof that lets
@@ -351,10 +372,27 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     // (lower_pin.cpp). Before the branch below, because BOTH arms of it write
     // into the pinned array: the raw one converts a boolean, and the dynamic
     // one stores a boxed value a later PINNED READ will bitcast to a double.
-    emitPinnedElementBarrier(elemKind, stored, ilFn);
+    const bool guarded = emitPinnedElementBarrier(elemKind, stored, ilFn);
     if (stored.type == il::Type::F64 || stored.type == il::Type::I32 ||
         stored.type == il::Type::Bool) {
         Value storedF64 = unboxValueIfNeeded(stored, il::Type::F64, ilFn);
+        recordElementOp(idxAccess.span.file, true, "");
+        emitTypedElemSet(objBoxed, idxF64, storedF64, elemKind, ilFn);
+        return stored;
+    }
+
+    // The barrier above is a PROOF and not merely a check: it throws on
+    // anything but a Number, so the value reaching here is one, and a Number's
+    // box IS the double's bits. Spending that on a raw unbox is what keeps a
+    // pinned array's stores in the same raw form its reads already take.
+    //
+    // `Matrix4.copy` is the shape this exists for: `te[ i ] = me[ i ]` reads
+    // through a receiver whose class the pass could not name, so the value
+    // arrives boxed and the sixteen stores went down the dynamic element ladder
+    // one guard at a time — the array they were writing into was pinned, and
+    // each store checked the fact it had just established and then dropped it.
+    if (guarded && stored.type == il::Type::Dynamic) {
+        Value storedF64 = emitRawUnbox(stored, ilFn);
         recordElementOp(idxAccess.span.file, true, "");
         emitTypedElemSet(objBoxed, idxF64, storedF64, elemKind, ilFn);
         return stored;

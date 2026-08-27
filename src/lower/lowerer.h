@@ -566,7 +566,12 @@ private:
     // value about to be written, BEFORE boxing, so the caller's static type is
     // still on it — an `F64` needs no barrier at all, which is what makes the
     // no-violation tax nothing on a program whose promises are kept.
-    void emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
+    //
+    // Answers whether a guard was actually EMITTED, which is the caller's
+    // licence to treat the value as the pinned shape from here on: the guard
+    // throws on a violation, so the code after it is the non-violating path
+    // and nothing else can reach it.
+    bool emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
                       il::Function& ilFn);
     // Does `val` already satisfy `kind` by the IL type it carries? An f64 IL
     // value is a Number by construction, which covers arithmetic, a pinned
@@ -586,7 +591,10 @@ private:
     // The barrier for a store to an ELEMENT of a `numeric-elements` array. A
     // no-op for every other element kind, because every other one is a proven
     // view whose store converts rather than reinterprets.
-    void emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn);
+    // Answers whether a guard was emitted, for the same reason `emitPinGuard`
+    // does: a store whose value the barrier just proved a Number may take the
+    // array's RAW element form instead of the dynamic ladder.
+    bool emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn);
 
     // --- the PIN CENSUS (`--census`, src/runtime/pin_census.h, stage C1) -----
     //
