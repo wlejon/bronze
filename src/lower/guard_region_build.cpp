@@ -94,7 +94,12 @@ bool dominanceHolds(const il::Function& fn) {
     auto ok = [&](il::ValueId v, il::BlockId useBlock, size_t useIndex) {
         if (v >= defs.size()) return false;
         const DefSite& def = defs[v];
-        if (def.block == il::kNoBlock) return true;  // a function parameter
+        // `kNoBlock` means one of two things and they are not the same: a
+        // function parameter, which every block may read, and a value with NO
+        // DEFINITION AT ALL — which is what a use left behind by a pruned block
+        // looks like. The parameter ids are the low ones, so the id itself
+        // settles which this is.
+        if (def.block == il::kNoBlock) return v < fn.params.size();
         if (def.block == useBlock) return def.index == UINT32_MAX || def.index < useIndex;
         return def.block < useBlock && cfg.dominates(def.block, useBlock);
     };
@@ -112,6 +117,48 @@ bool dominanceHolds(const il::Function& fn) {
         }
     }
     return true;
+}
+
+// Blocks nothing reaches, dropped and the rest renumbered compactly.
+//
+// The ENTRY region is what makes these: its fast copy IS the function's entry,
+// so the head of the slow copy — everything before the first guard point, which
+// on a straight-line kernel is every property read in it — has no predecessor
+// left. Keeping it would be dead code the backend still emits, and worse, it
+// would fail the dominance check below for the honest reason that dominance is
+// not defined over a block the entry cannot reach.
+//
+// Ascending order is preserved, so "a definition's block precedes its uses'"
+// survives the renumbering.
+uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
+    const Cfg cfg = buildCfg(fn);
+    std::vector<il::BlockId> remap(fn.blocks.size(), il::kNoBlock);
+    il::BlockId next = 0;
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (cfg.rpoIndex[b] != UINT32_MAX) remap[b] = next++;
+    }
+    if (next == fn.blocks.size()) return 0;
+
+    std::vector<il::Block> kept;
+    std::vector<uint8_t> keptBuilt;
+    kept.reserve(next);
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (remap[b] == il::kNoBlock) continue;
+        il::Block block = std::move(fn.blocks[b]);
+        block.id = remap[b];
+        if (block.handler != il::kNoBlock) block.handler = remap[block.handler];
+        for (auto& inst : block.instructions) {
+            for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                if (t->block != il::kNoBlock && t->block < remap.size()) t->block = remap[t->block];
+            }
+        }
+        kept.push_back(std::move(block));
+        keptBuilt.push_back(b < alreadyBuilt.size() ? alreadyBuilt[b] : 1);
+    }
+    const auto dropped = static_cast<uint32_t>(fn.blocks.size() - kept.size());
+    fn.blocks = std::move(kept);
+    alreadyBuilt = std::move(keptBuilt);
+    return dropped;
 }
 
 // A `box.f64` whose result nothing reads. The entry edge is where these appear:
@@ -185,17 +232,30 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // Counted locally: a rewrite the dominance check discards must leave the
     // statistics saying nothing happened, because nothing did.
     uint32_t emittedGuards = 0;
+    uint32_t foldedCount = 0;
 
     // ---- value identity in the copies ------------------------------------
     // Every value the region defines gets a second name for the fast copy, and
     // every value that needs a test gets a name for the double the test
     // licenses. Assigned before anything is emitted, so a forward reference
     // inside the fast copy is just a lookup.
+    //
+    // A checked `unbox.f64` of a guarded candidate gets NO name of its own: its
+    // result becomes the ONE raw unbox the guard already emitted, so the same
+    // `%v` read three times costs one bitcast and not three. That is the whole
+    // trade an entry region is taken for — the hundred and twenty-eight
+    // coercions of `multiplyMatrices` collapse onto thirty-two.
+    std::vector<uint8_t> foldedUnbox(src.valueCount, 0);
     std::vector<il::ValueId> fastOf(src.valueCount, il::kNoValue);
     for (il::BlockId b : plan.blocks) {
         for (const auto& param : src.blocks[b].params) fastOf[param.id] = newValue();
         for (const auto& inst : src.blocks[b].instructions) {
-            if (inst.result != il::kNoValue) fastOf[inst.result] = newValue();
+            if (inst.result == il::kNoValue) continue;
+            if (isCheckedUnboxOf(inst, types) && candidateOf[inst.operands[0]] != nullptr) {
+                foldedUnbox[inst.result] = 1;
+                continue;
+            }
+            fastOf[inst.result] = newValue();
         }
     }
     std::vector<il::ValueId> rawOf(src.valueCount, il::kNoValue);
@@ -546,6 +606,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                         part.instructions.push_back(makeRawUnbox(rawOf[value], fastOf[value]));
                     }
                 }
+                // The coercion the guard paid for, deleted rather than copied.
+                // Its result IS the f64 form of its operand from here on, which
+                // every later reader finds through `fastOf` exactly as it would
+                // have found a copied instruction's result.
+                if (source.instructions[i].result != il::kNoValue &&
+                    foldedUnbox[source.instructions[i].result]) {
+                    fastOf[source.instructions[i].result] =
+                        fastF64(source.instructions[i].operands[0]);
+                    ++foldedCount;
+                    continue;
+                }
                 il::Instruction inst = source.instructions[i];
                 // A candidate whose def is an INSTRUCTION and whose kind is
                 // `Promoted` is promotable arithmetic and nothing else: a box
@@ -632,15 +703,6 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     rewritten.blocks = std::move(out);
     rewritten.valueCount = nextValue;
     dropDeadF64Boxes(rewritten);
-    if (!dominanceHolds(rewritten)) {
-        ++stats.refusedSsa;
-        return false;
-    }
-
-    for (const Candidate& c : plan.candidates) {
-        if (c.kind == CandidateKind::BoxElide) ++stats.elidedBox;
-        if (c.kind == CandidateKind::PinElided) ++stats.elidedPin;
-    }
     // Everything this rewrite made, and everything it was made from, in the new
     // numbering: the next look at this function must not find the slow copy —
     // which a trampoline edge has turned into a natural loop with a single
@@ -650,10 +712,28 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         const bool wasBuilt = b < alreadyBuilt.size() && alreadyBuilt[b];
         built[slowHeadId[b]] = (wasBuilt || plan.inRegion[b] || b == plan.entryPred) ? 1 : 0;
     }
+    // Pruned BEFORE the dominance check, because the check is what the pruning
+    // makes answerable: dominance is not defined over a block the entry cannot
+    // reach, and an entry region always orphans the head of its slow copy.
+    const uint32_t pruned = pruneUnreachable(rewritten, built);
+    if (!dominanceHolds(rewritten)) {
+        ++stats.refusedSsa;
+        return false;
+    }
+
+    for (const Candidate& c : plan.candidates) {
+        if (c.kind == CandidateKind::BoxElide) ++stats.elidedBox;
+        if (c.kind == CandidateKind::PinElided) ++stats.elidedPin;
+    }
     alreadyBuilt = std::move(built);
 
     stats.promoted += static_cast<uint32_t>(plan.candidates.size());
     stats.guards += emittedGuards;
+    stats.unboxFolded += foldedCount;
+    stats.blocksPruned += pruned;
+    for (il::BlockId b : plan.blocks) {
+        stats.guardPoints += static_cast<uint32_t>(plan.splitsOf[b].size());
+    }
     ++stats.duplicated;
     fn = std::move(rewritten);
     return true;

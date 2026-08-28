@@ -11,7 +11,8 @@ namespace bronze::lower {
 
 namespace {
 
-// The floor, on the arithmetic a region has to hold to be worth duplicating.
+// The floor, on the arithmetic a LOOP region has to hold to be worth
+// duplicating.
 //
 // ONE, and not the two the design study proposed. `sum = sum + o.k` in a
 // counted loop is a single boxed add — the loop counter's `i + 1` is already an
@@ -21,8 +22,43 @@ namespace {
 // property read, per iteration. A floor of two would have refused it. What
 // keeps the floor meaningful is the RATIO below, not the count.
 constexpr uint32_t kMinArith = 1;
+// The floor for an ENTRY region, which is a different bargain. A loop region
+// duplicates a body whose arithmetic runs once per ITERATION and whose guards
+// run once per entry, so one operation is enough to pay for the copy. A
+// straight-line region runs both exactly once, so what it buys is bounded by
+// the ratio alone — and it duplicates the WHOLE FUNCTION rather than a loop
+// body. Two says: a copy has to answer at least two coercions.
+constexpr uint32_t kMinEntryUses = 2;
+// AN ENTRY REGION HAS NO SPLIT BUDGET, and that is a measured decision rather
+// than an omission.
+//
+// Each split is a join in the slow copy that takes a parameter for every value
+// the region defines and is live there, plus a trampoline that fills them in.
+// On the kernel this pass is for that costs nothing: `multiplyMatrices` reads
+// thirty-two elements up front, so ONE point covers all thirty-two and the
+// trampoline carries what the reads produced and nothing else. A function
+// shaped `te[0] *= s; te[4] *= s; ...` is the opposite — each read is consumed
+// immediately, so coalescing has nothing to coalesce and there is one point per
+// read. `Matrix4.multiplyScalar` is sixteen points: fifty instructions become
+// two hundred and fifty-five and five GC root slots become fifty-three.
+//
+// Bounding that was tried (2026-08-28) two ways, a flat cap of two points and a
+// ratio of four coercions per point. Both refuse `multiplyScalar` and both also
+// refuse `Vector3.applyMatrix4`, `Vector3.project` and `Matrix4.extractRotation`,
+// which have the same shape and are hot: over twelve interleaved rounds of
+// `bench/three_math.js` the bounded builds measured 26.28 ms against 26.34 for
+// no pass at all, while the unbounded one measured 25.18. The whole benefit on
+// that benchmark lives in the functions a split budget refuses. So the size
+// bound is the REGION CAP alone (`kMaxRegionInsts` / `kMaxRegionBlocks`), and
+// what it costs — +41% GC root slots and +894 blocks on the three.js graph — is
+// reported rather than traded away. The named follow-up is `planFrame`: the
+// fast and slow copies are mutually exclusive, so their pinned values could
+// share slots, which is where most of that 41% is.
 // The caps. A region past either of these is one whose duplication is a
-// compile-time cost proportional to a body nobody proved is a loop kernel.
+// compile-time cost proportional to a body nobody proved is a loop kernel. For
+// an entry region they are the only size bound there is — the per-function
+// growth budget below cannot apply to a whole-function copy, which exceeds it
+// by construction.
 constexpr size_t kMaxRegionBlocks = 64;
 constexpr size_t kMaxRegionInsts = 400;
 // The per-function growth budget is "no more than the function's own size", and
@@ -38,9 +74,9 @@ constexpr size_t kGrowthFloor = 64;
 // is a belt on a loop that already terminates.
 constexpr int kMaxRegionsPerFunction = 8;
 
-bool isArithOp(il::Op op) {
+bool isBinaryArithOp(il::Op op) {
     return op == il::Op::Add || op == il::Op::Sub || op == il::Op::Mul || op == il::Op::Div ||
-           op == il::Op::Mod;
+           op == il::Op::Mod || op == il::Op::Pow;
 }
 
 // The type of every value in the function, by id.
@@ -62,13 +98,17 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
     return types;
 }
 
-// PROMOTABLE ARITHMETIC: one of the five operators, boxed result, boxed
-// operands. `Neg` and `Pow` are deliberately absent (a later chunk), and so are
-// the relational operators, whose promotion is a different rewrite — `rel.lt`
-// becomes `cmp.lt`, not an `f64` version of itself.
+// PROMOTABLE ARITHMETIC: boxed result, boxed operands. `Pow` is here because
+// its promoted form is `bronze_pow` over two doubles rather than the dynamic
+// helper that has to run 13.15.3 first, and `Neg` because it is the one UNARY
+// member of the family — one operand, and `fneg` on the true edge. The
+// relational operators are still absent: their promotion is a different
+// rewrite, `rel.lt` becoming `cmp.lt` rather than an `f64` version of itself.
 bool isPromotableArith(const il::Instruction& inst, const std::vector<il::Type>& types) {
-    if (!isArithOp(inst.op) || inst.type != il::Type::Dynamic) return false;
-    if (inst.operands.size() != 2) return false;
+    const bool unary = inst.op == il::Op::Neg;
+    if (!unary && !isBinaryArithOp(inst.op)) return false;
+    if (inst.type != il::Type::Dynamic) return false;
+    if (inst.operands.size() != (unary ? 1u : 2u)) return false;
     for (il::ValueId id : inst.operands) {
         if (id >= types.size() || types[id] != il::Type::Dynamic) return false;
     }
@@ -107,7 +147,348 @@ bool pinProvesNumberAt(const il::Block& block, uint32_t index, il::ValueId value
            prev.immI32 == static_cast<int32_t>(il::PinBarrier::Number);
 }
 
+// A candidate waiting to be assigned to a coalesced guard point in its own
+// block. `definedAt` is the first instruction index at which the value EXISTS
+// — one past its def — so "already defined at point p" is `definedAt <= p`.
+struct Pending {
+    il::ValueId value = il::kNoValue;
+    uint32_t definedAt = 0;
+    uint32_t firstUse = 0;
+};
+
+// ---------------------------------------------------------------------------
+// The analysis both region kinds share. `plan` arrives with `header`, `blocks`,
+// `inRegion` and `entryRegion` filled in; everything else is decided here.
+// False means refused, with the reason counted.
+// ---------------------------------------------------------------------------
+bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il::Type>& types,
+                   const std::vector<DefSite>& defs, RegionPlan& plan, GuardRegionStats& stats) {
+    // 1. A handler inside the region, or a region block that IS a handler.
+    // Refused both ways: a handler takes no parameters, so there is nowhere for
+    // a trampoline's values to arrive, and an edge into the middle of the
+    // region from a `throw` is an entry the duplication has no copy for.
+    bool handlerSeen = false;
+    for (il::BlockId b : plan.blocks) {
+        if (fn.blocks[b].handler != il::kNoBlock) handlerSeen = true;
+    }
+    for (const auto& block : fn.blocks) {
+        if (block.handler != il::kNoBlock && plan.inRegion[block.handler]) handlerSeen = true;
+    }
+    if (handlerSeen) {
+        ++stats.refusedHandler;
+        return false;
+    }
+
+    // 2. SINGLE ENTRY, and exactly one outside predecessor of the header. Two
+    // of them is the `for` whose initialiser is itself conditional, and it is
+    // REFUSED rather than mis-duplicated: with two entry edges there are two
+    // places the promoted values would have to be converted, and one of them is
+    // not on a path the pass can reason about without a synthesised preheader.
+    // An entry region always passes this — its preheader IS the synthesis.
+    bool singleEntry = true;
+    il::BlockId entryPred = il::kNoBlock;
+    uint32_t outsidePreds = 0;
+    for (il::BlockId b : plan.blocks) {
+        for (il::BlockId p : cfg.preds[b]) {
+            if (plan.inRegion[p]) continue;
+            if (b != plan.header) {
+                singleEntry = false;
+            } else {
+                ++outsidePreds;
+                entryPred = p;
+            }
+        }
+    }
+    if (!singleEntry || outsidePreds != 1) {
+        ++stats.refusedSingleEntry;
+        return false;
+    }
+    plan.entryPred = entryPred;
+
+    // 3. The caps.
+    size_t regionInsts = 0;
+    for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
+    if (plan.blocks.size() > kMaxRegionBlocks || regionInsts > kMaxRegionInsts) {
+        ++stats.refusedGrowth;
+        return false;
+    }
+
+    // 4. The candidate closure. Two kinds of seed: a value that IS boxed
+    // arithmetic, and a value a checked coercion reads.
+    DisjointSet ds(fn.valueCount);
+    std::vector<uint8_t> seed(fn.valueCount, 0);
+    for (il::BlockId b : plan.blocks) {
+        for (const auto& inst : fn.blocks[b].instructions) {
+            if (isPromotableArith(inst, types)) {
+                seed[inst.result] = 1;
+                for (il::ValueId id : inst.operands) {
+                    seed[id] = 1;
+                    ds.unite(inst.result, id);
+                }
+            } else if (isCheckedUnboxOf(inst, types)) {
+                // Not united with the result: an `f64` is not a candidate for
+                // anything, so the operand is a component of its own unless
+                // arithmetic joins it to something.
+                seed[inst.operands[0]] = 1;
+            }
+        }
+    }
+    // Closed BOTH WAYS over the block-parameter/argument pairs of every edge
+    // into a region block, the entry edge included. That is what makes a
+    // loop-carried accumulator one value rather than two, and what lets the
+    // entry edge hand over a double.
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
+                if (target->block == il::kNoBlock || target->block >= fn.blocks.size()) {
+                    continue;
+                }
+                if (!plan.inRegion[target->block]) continue;
+                const auto& params = fn.blocks[target->block].params;
+                for (size_t i = 0; i < target->args.size() && i < params.size(); ++i) {
+                    if (params[i].type != il::Type::Dynamic) continue;
+                    const il::ValueId arg = target->args[i];
+                    if (arg >= types.size() || types[arg] != il::Type::Dynamic) continue;
+                    ds.unite(params[i].id, arg);
+                }
+            }
+        }
+    }
+
+    // Which components hold a seed, and which of those hold something that is
+    // not a number by construction. A `box.str`, a `to.string` and a BigInt
+    // literal are each a STATIC proof that the guard would fail, so the whole
+    // component is dropped before a block is copied.
+    std::vector<uint8_t> componentSeeded(fn.valueCount, 0);
+    std::vector<uint8_t> componentPoisoned(fn.valueCount, 0);
+    for (il::ValueId v = 0; v < fn.valueCount; ++v) {
+        if (seed[v]) componentSeeded[ds.find(v)] = 1;
+    }
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.result == il::kNoValue || inst.result >= fn.valueCount) continue;
+            const bool poison = (inst.op == il::Op::Box && inst.boxType == il::Type::Str) ||
+                                inst.op == il::Op::ToStr || inst.op == il::Op::ConstBigInt;
+            if (poison) componentPoisoned[ds.find(inst.result)] = 1;
+        }
+    }
+
+    plan.isCandidate.assign(fn.valueCount, 0);
+    for (il::ValueId v = 0; v < fn.valueCount; ++v) {
+        if (types[v] != il::Type::Dynamic) continue;
+        const il::ValueId root = ds.find(v);
+        if (!componentSeeded[root] || componentPoisoned[root]) continue;
+        plan.isCandidate[v] = 1;
+    }
+
+    // 5. Everything a guard would license, counted after the poison pass
+    // because that is the number the profitability floor is about — and
+    // collected as USE SITES, because the promoted uses are also where the
+    // guards have to have taken effect by.
+    std::vector<std::vector<std::pair<il::BlockId, uint32_t>>> promotedUses(fn.valueCount);
+    uint32_t useCount = 0;
+    for (il::BlockId b : plan.blocks) {
+        const auto& block = fn.blocks[b];
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const auto& inst = block.instructions[i];
+            const auto here = std::pair<il::BlockId, uint32_t>{b, static_cast<uint32_t>(i)};
+            if (isPromotableArith(inst, types) && plan.isCandidate[inst.result]) {
+                ++useCount;
+                for (il::ValueId id : inst.operands) promotedUses[id].push_back(here);
+            } else if (isCheckedUnboxOf(inst, types) && plan.isCandidate[inst.operands[0]]) {
+                ++useCount;
+                promotedUses[inst.operands[0]].push_back(here);
+            }
+            for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
+                if (target->block == il::kNoBlock || target->block >= fn.blocks.size()) continue;
+                if (!plan.inRegion[target->block]) continue;
+                const auto& params = fn.blocks[target->block].params;
+                for (size_t k = 0; k < target->args.size() && k < params.size(); ++k) {
+                    if (!plan.isCandidate[params[k].id]) continue;
+                    promotedUses[target->args[k]].push_back(here);
+                }
+            }
+        }
+    }
+    if (useCount == 0) {
+        ++stats.refusedNonNumeric;
+        return false;
+    }
+    if (useCount < (plan.entryRegion ? kMinEntryUses : kMinArith)) {
+        ++stats.refusedTooFew;
+        return false;
+    }
+    plan.promotedUseCount = useCount;
+
+    // 6. Classify every candidate, and collect the ones that need a test.
+    plan.splitsOf.assign(fn.blocks.size(), {});
+    std::vector<std::vector<Pending>> pendingOf(fn.blocks.size());
+    for (il::ValueId v = 0; v < fn.valueCount; ++v) {
+        if (!plan.isCandidate[v]) continue;
+        Candidate cand;
+        cand.value = v;
+        const DefSite& def = defs[v];
+        const bool insideRegion = def.block != il::kNoBlock && plan.inRegion[def.block];
+        const il::Instruction* defInst = (def.block != il::kNoBlock && def.index != UINT32_MAX)
+                                             ? &fn.blocks[def.block].instructions[def.index]
+                                             : nullptr;
+
+        if (defInst != nullptr && defInst->op == il::Op::Box &&
+            defInst->boxType == il::Type::F64 && !defInst->operands.empty()) {
+            cand.kind = CandidateKind::BoxElide;
+            cand.boxSource = defInst->operands[0];
+            plan.candidates.push_back(cand);
+            continue;
+        }
+        if (insideRegion &&
+            (def.index == UINT32_MAX || (defInst != nullptr && isPromotableArith(*defInst, types)))) {
+            cand.kind = CandidateKind::Promoted;
+            plan.candidates.push_back(cand);
+            continue;
+        }
+
+        if (!insideRegion) {
+            // Defined outside, so it dominates both copies: one test on the
+            // entry edge covers every iteration. For an entry region "outside"
+            // is a function parameter and the entry edge is the preheader.
+            cand.kind = CandidateKind::EntryGuard;
+            cand.guardBlock = plan.entryPred;
+            cand.guardIndex =
+                static_cast<uint32_t>(fn.blocks[plan.entryPred].instructions.size()) - 1;
+            if (pinProvesNumberAt(fn.blocks[plan.entryPred], cand.guardIndex, v)) {
+                cand.kind = CandidateKind::PinElided;
+            }
+            plan.candidates.push_back(cand);
+            continue;
+        }
+
+        uint32_t first = UINT32_MAX;
+        bool reachable = true;
+        for (const auto& [useBlock, useIndex] : promotedUses[v]) {
+            if (useBlock == def.block) {
+                first = std::min(first, useIndex);
+            } else if (!cfg.dominates(def.block, useBlock)) {
+                reachable = false;
+            }
+        }
+        if (first == UINT32_MAX || !reachable) {
+            // A guard that has to dominate uses in several blocks needs a
+            // placement search this chunk does not have, and one that would sit
+            // in a block it is not used in is a split paid for nothing.
+            ++stats.refusedPlacement;
+            return false;
+        }
+        // The PIN question is asked at the candidate's own first use and not at
+        // whatever coalesced point it lands on: a barrier reaches one
+        // instruction, and a point another candidate chose is not that one.
+        if (pinProvesNumberAt(fn.blocks[def.block], first, v)) {
+            cand.kind = CandidateKind::PinElided;
+            cand.guardBlock = def.block;
+            cand.guardIndex = first;
+            plan.candidates.push_back(cand);
+            continue;
+        }
+        pendingOf[def.block].push_back(Pending{v, def.index + 1, first});
+    }
+
+    // 7. COALESCING. Within a block the guard point is the first promoted use
+    // of ANY unassigned candidate, and every candidate already defined by then
+    // is guarded there — one chain of tests, one trampoline. See the header for
+    // why guarding a value earlier than its own first use is free and why
+    // guarding each at its own use is not.
+    for (il::BlockId b : plan.blocks) {
+        auto& pending = pendingOf[b];
+        std::sort(pending.begin(), pending.end(), [](const Pending& a, const Pending& c) {
+            return a.firstUse != c.firstUse ? a.firstUse < c.firstUse : a.value < c.value;
+        });
+        size_t done = 0;
+        std::vector<uint8_t> taken(pending.size(), 0);
+        while (done < pending.size()) {
+            uint32_t point = UINT32_MAX;
+            for (size_t i = 0; i < pending.size(); ++i) {
+                if (!taken[i]) {
+                    point = pending[i].firstUse;
+                    break;
+                }
+            }
+            plan.splitsOf[b].push_back(point);
+            for (size_t i = 0; i < pending.size(); ++i) {
+                if (taken[i] || pending[i].definedAt > point) continue;
+                taken[i] = 1;
+                ++done;
+                Candidate cand;
+                cand.value = pending[i].value;
+                cand.kind = CandidateKind::UseGuard;
+                cand.guardBlock = b;
+                cand.guardIndex = point;
+                plan.candidates.push_back(cand);
+                ++plan.guardCount;
+            }
+        }
+    }
+    // An entry region's slow copy has NO ENTRY of its own — the fast copy is
+    // the function's — so the only way into it is a trampoline, and the only
+    // block a trampoline lands in is the tail of a split. Everything the slow
+    // copy defines before the first split is therefore orphaned, and the values
+    // it defined are re-supplied to its own tail as parameters and renamed in
+    // everything the SPLIT BLOCK dominates. That covers the whole region
+    // exactly when the split block is the HEADER, which dominates every block
+    // in the region by the region's own definition. A guard point anywhere else
+    // leaves the header's definitions unreachable and unrenamed in a block that
+    // still reads them, so it is refused rather than mis-built.
+    //
+    // A loop region is not exposed to this: its slow copy keeps its own back
+    // edge, so its header stays reachable and nothing is orphaned.
+    if (plan.entryRegion) {
+        for (il::BlockId b : plan.blocks) {
+            if (b != plan.header && !plan.splitsOf[b].empty()) {
+                ++stats.refusedPlacement;
+                return false;
+            }
+        }
+    }
+
+    // The rewrite reads candidates in value order for the raw-unbox names and
+    // in guard-point order for the chains; sorting once here is what keeps both
+    // deterministic after the coalescing pass appended out of order.
+    std::sort(plan.candidates.begin(), plan.candidates.end(),
+              [](const Candidate& a, const Candidate& b) { return a.value < b.value; });
+
+    // The RATIO is over the guards inside the region only. An entry guard is
+    // paid once per region ENTRY and an in-region one once per iteration, so
+    // counting the first against per-iteration work compares two different
+    // things — and it is what would refuse the inner loop of every nest, whose
+    // accumulator arrives boxed from the outer one.
+    const uint32_t inRegionGuards = plan.guardCount;
+    for (const Candidate& cand : plan.candidates) {
+        if (cand.kind == CandidateKind::EntryGuard) ++plan.guardCount;
+    }
+    // A region with nothing to test proves nothing: every candidate was already
+    // an f64 behind a box, and the values are unrooted today. Guards
+    // outnumbering the work they license is the other side of the same floor —
+    // a test per operation is what the backend already emits inline, so
+    // hoisting it has bought nothing.
+    if (plan.guardCount == 0 || inRegionGuards > plan.promotedUseCount) {
+        ++stats.refusedTooFew;
+        return false;
+    }
+
+    for (auto& splits : plan.splitsOf) {
+        std::sort(splits.begin(), splits.end());
+        splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
+    }
+    return true;
+}
+
 }  // namespace
+
+bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& types) {
+    if (inst.op != il::Op::Unbox || inst.type != il::Type::F64) return false;
+    if (inst.rawUnbox || inst.nullishUnbox) return false;
+    if (inst.operands.size() != 1 || inst.result == il::kNoValue) return false;
+    const il::ValueId src = inst.operands[0];
+    return src < types.size() && types[src] == il::Type::Dynamic;
+}
 
 bool guardedRegionsDisabled() {
     static const bool off = [] {
@@ -121,15 +502,18 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
     const char* env = std::getenv("BRONZE_GUARDED_REGION_STATS");
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
     const uint32_t refused = s.refusedHandler + s.refusedSingleEntry + s.refusedNonNumeric +
-                             s.refusedTooFew + s.refusedGrowth + s.refusedPlacement + s.refusedSsa;
+                             s.refusedTooFew + s.refusedGrowth + s.refusedPlacement +
+                             s.refusedSsa + s.refusedMachine;
     std::fprintf(stderr,
-                 "[guard] fns=%u regions=%u dup=%u guards=%u elidedBox=%u elidedPin=%u "
-                 "promoted=%u blocks=+%u refused=%u(handler %u, singleEntry %u, nonNumeric %u, "
-                 "tooFew %u, growth %u, placement %u, ssa %u)\n",
-                 s.functions, s.regions, s.duplicated, s.guards, s.elidedBox, s.elidedPin,
-                 s.promoted, s.blocksAdded, refused, s.refusedHandler, s.refusedSingleEntry,
+                 "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u elidedBox=%u "
+                 "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
+                 "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
+                 "placement %u, ssa %u, machine %u)\n",
+                 s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
+                 s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
+                 s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
-                 s.refusedSsa);
+                 s.refusedSsa, s.refusedMachine);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,270 +582,78 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, GuardRegionStats& 
         if (overlapsBuilt) continue;
         ++stats.regions;
 
-        // 3. A handler inside the region, or a region block that IS a handler.
-        // Chunk 1 refuses both: a handler takes no parameters, so there is
-        // nowhere for a trampoline's values to arrive, and an edge into the
-        // middle of the region from a `throw` is an entry the duplication has
-        // no copy for.
-        bool handlerSeen = false;
-        for (il::BlockId b : plan.blocks) {
-            if (fn.blocks[b].handler != il::kNoBlock) handlerSeen = true;
-        }
-        for (const auto& block : fn.blocks) {
-            if (block.handler != il::kNoBlock && plan.inRegion[block.handler]) handlerSeen = true;
-        }
-        if (handlerSeen) {
-            ++stats.refusedHandler;
-            continue;
-        }
-
-        // 4. SINGLE ENTRY, and exactly one outside predecessor of the header.
-        // Two of them is the `for` whose initialiser is itself conditional, and
-        // it is REFUSED rather than mis-duplicated: with two entry edges there
-        // are two places the promoted values would have to be converted, and
-        // one of them is not on a path the pass can reason about without a
-        // synthesised preheader.
-        bool singleEntry = true;
-        il::BlockId entryPred = il::kNoBlock;
-        uint32_t outsidePreds = 0;
-        for (il::BlockId b : plan.blocks) {
-            for (il::BlockId p : cfg.preds[b]) {
-                if (plan.inRegion[p]) continue;
-                if (b != plan.header) {
-                    singleEntry = false;
-                } else {
-                    ++outsidePreds;
-                    entryPred = p;
-                }
-            }
-        }
-        if (!singleEntry || outsidePreds != 1) {
-            ++stats.refusedSingleEntry;
-            continue;
-        }
-        plan.entryPred = entryPred;
-
-        // 5. The caps.
-        size_t regionInsts = 0;
-        for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
-        if (plan.blocks.size() > kMaxRegionBlocks || regionInsts > kMaxRegionInsts) {
-            ++stats.refusedGrowth;
-            continue;
-        }
-
-        // 6. The candidate closure.
-        DisjointSet ds(fn.valueCount);
-        std::vector<uint8_t> seed(fn.valueCount, 0);
-        uint32_t arithCount = 0;
-        for (il::BlockId b : plan.blocks) {
-            for (const auto& inst : fn.blocks[b].instructions) {
-                if (!isPromotableArith(inst, types)) continue;
-                ++arithCount;
-                seed[inst.result] = 1;
-                for (il::ValueId id : inst.operands) {
-                    seed[id] = 1;
-                    ds.unite(inst.result, id);
-                }
-            }
-        }
-        // Closed BOTH WAYS over the block-parameter/argument pairs of every
-        // edge into a region block, the entry edge included. That is what makes
-        // a loop-carried accumulator one value rather than two, and what lets
-        // the entry edge hand over a double.
-        for (const auto& block : fn.blocks) {
-            for (const auto& inst : block.instructions) {
-                for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
-                    if (target->block == il::kNoBlock || target->block >= fn.blocks.size()) {
-                        continue;
-                    }
-                    if (!plan.inRegion[target->block]) continue;
-                    const auto& params = fn.blocks[target->block].params;
-                    for (size_t i = 0; i < target->args.size() && i < params.size(); ++i) {
-                        if (params[i].type != il::Type::Dynamic) continue;
-                        const il::ValueId arg = target->args[i];
-                        if (arg >= types.size() || types[arg] != il::Type::Dynamic) continue;
-                        ds.unite(params[i].id, arg);
-                    }
-                }
-            }
-        }
-
-        // Which components hold arithmetic, and which of those hold something
-        // that is not a number by construction. A `box.str`, a `to.string` and
-        // a BigInt literal are each a STATIC proof that the guard would fail,
-        // so the whole component is dropped before a block is copied.
-        std::vector<uint8_t> componentSeeded(fn.valueCount, 0);
-        std::vector<uint8_t> componentPoisoned(fn.valueCount, 0);
-        for (il::ValueId v = 0; v < fn.valueCount; ++v) {
-            if (seed[v]) componentSeeded[ds.find(v)] = 1;
-        }
-        for (const auto& block : fn.blocks) {
-            for (const auto& inst : block.instructions) {
-                if (inst.result == il::kNoValue || inst.result >= fn.valueCount) continue;
-                const bool poison = (inst.op == il::Op::Box && inst.boxType == il::Type::Str) ||
-                                    inst.op == il::Op::ToStr || inst.op == il::Op::ConstBigInt;
-                if (poison) componentPoisoned[ds.find(inst.result)] = 1;
-            }
-        }
-
-        plan.isCandidate.assign(fn.valueCount, 0);
-        for (il::ValueId v = 0; v < fn.valueCount; ++v) {
-            if (types[v] != il::Type::Dynamic) continue;
-            const il::ValueId root = ds.find(v);
-            if (!componentSeeded[root] || componentPoisoned[root]) continue;
-            plan.isCandidate[v] = 1;
-        }
-        // Arithmetic whose component survived. Counted after the poison pass,
-        // because that is the number the profitability floor is about.
-        uint32_t liveArith = 0;
-        for (il::BlockId b : plan.blocks) {
-            for (const auto& inst : fn.blocks[b].instructions) {
-                if (isPromotableArith(inst, types) && plan.isCandidate[inst.result]) ++liveArith;
-            }
-        }
-        if (liveArith == 0) {
-            ++stats.refusedNonNumeric;
-            continue;
-        }
-        if (liveArith < kMinArith) {
-            ++stats.refusedTooFew;
-            continue;
-        }
-        plan.promotedArithCount = liveArith;
-
-        // 7. The promoted uses of each candidate: where a guard would have to
-        // have taken effect by.
-        std::vector<std::vector<std::pair<il::BlockId, uint32_t>>> promotedUses(fn.valueCount);
-        for (il::BlockId b : plan.blocks) {
-            const auto& block = fn.blocks[b];
-            for (size_t i = 0; i < block.instructions.size(); ++i) {
-                const auto& inst = block.instructions[i];
-                if (isPromotableArith(inst, types) && plan.isCandidate[inst.result]) {
-                    for (il::ValueId id : inst.operands) {
-                        promotedUses[id].push_back({b, static_cast<uint32_t>(i)});
-                    }
-                }
-                for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
-                    if (target->block == il::kNoBlock || target->block >= fn.blocks.size()) {
-                        continue;
-                    }
-                    if (!plan.inRegion[target->block]) continue;
-                    const auto& params = fn.blocks[target->block].params;
-                    for (size_t k = 0; k < target->args.size() && k < params.size(); ++k) {
-                        if (!plan.isCandidate[params[k].id]) continue;
-                        promotedUses[target->args[k]].push_back({b, static_cast<uint32_t>(i)});
-                    }
-                }
-            }
-        }
-
-        // 8. Classify every candidate, and place its guard.
-        plan.splitsOf.assign(fn.blocks.size(), {});
-        bool placementRefused = false;
-        for (il::ValueId v = 0; v < fn.valueCount && !placementRefused; ++v) {
-            if (!plan.isCandidate[v]) continue;
-            Candidate cand;
-            cand.value = v;
-            const DefSite& def = defs[v];
-            const bool insideRegion = def.block != il::kNoBlock && plan.inRegion[def.block];
-            const il::Instruction* defInst =
-                (def.block != il::kNoBlock && def.index != UINT32_MAX)
-                    ? &fn.blocks[def.block].instructions[def.index]
-                    : nullptr;
-
-            if (defInst != nullptr && defInst->op == il::Op::Box &&
-                defInst->boxType == il::Type::F64 && !defInst->operands.empty()) {
-                cand.kind = CandidateKind::BoxElide;
-                cand.boxSource = defInst->operands[0];
-                plan.candidates.push_back(cand);
-                continue;
-            }
-            if (insideRegion &&
-                (def.index == UINT32_MAX ||
-                 (defInst != nullptr && isPromotableArith(*defInst, types)))) {
-                cand.kind = CandidateKind::Promoted;
-                plan.candidates.push_back(cand);
-                continue;
-            }
-
-            // Everything left needs a test. Where it goes is the only question,
-            // and §2.7's answer is: at the FIRST PROMOTED USE and never at the
-            // def. A guard right after the def would cut a block after every
-            // read, and `Matrix4.multiplyMatrices` is thirty-two adjacent reads
-            // feeding arithmetic — the receiver proof (llvm_recv_proof.h) stops
-            // at a block end, so splitting there would trade the whole
-            // 146 ns -> 15 ns proof for the promotion.
-            if (!insideRegion) {
-                cand.kind = CandidateKind::EntryGuard;
-                cand.guardBlock = plan.entryPred;
-                cand.guardIndex =
-                    static_cast<uint32_t>(fn.blocks[plan.entryPred].instructions.size()) - 1;
-                if (pinProvesNumberAt(fn.blocks[plan.entryPred], cand.guardIndex, v)) {
-                    cand.kind = CandidateKind::PinElided;
-                }
-                plan.candidates.push_back(cand);
-                continue;
-            }
-
-            uint32_t first = UINT32_MAX;
-            bool reachable = true;
-            for (const auto& [useBlock, useIndex] : promotedUses[v]) {
-                if (useBlock == def.block) {
-                    first = std::min(first, useIndex);
-                } else if (!cfg.dominates(def.block, useBlock)) {
-                    reachable = false;
-                }
-            }
-            if (first == UINT32_MAX || !reachable) {
-                // Chunk 1 places a guard only in the block that defines the
-                // value: a guard that has to dominate uses in several blocks
-                // needs a placement search this chunk does not have.
-                placementRefused = true;
-                break;
-            }
-            cand.guardBlock = def.block;
-            cand.guardIndex = first;
-            cand.kind = pinProvesNumberAt(fn.blocks[def.block], first, v) ? CandidateKind::PinElided
-                                                                         : CandidateKind::UseGuard;
-            if (cand.kind == CandidateKind::UseGuard) {
-                plan.splitsOf[def.block].push_back(first);
-                ++plan.guardCount;
-            }
-            plan.candidates.push_back(cand);
-        }
-        if (placementRefused) {
-            ++stats.refusedPlacement;
-            continue;
-        }
-
-        // The RATIO is over the guards inside the region only. An entry guard
-        // is paid once per region ENTRY and an in-region one once per
-        // iteration, so counting the first against per-iteration arithmetic
-        // compares two different things — and it is what would refuse the inner
-        // loop of every nest, whose accumulator arrives boxed from the outer
-        // one.
-        const uint32_t inRegionGuards = plan.guardCount;
-        for (const Candidate& cand : plan.candidates) {
-            if (cand.kind == CandidateKind::EntryGuard) ++plan.guardCount;
-        }
-        // A region with nothing to test proves nothing: every candidate was
-        // already an f64 behind a box, and the values are unrooted today.
-        // Guards outnumbering the arithmetic they license is the other side of
-        // the same floor — a test per operation is what the backend already
-        // emits inline, so hoisting it has bought nothing.
-        if (plan.guardCount == 0 || inRegionGuards > plan.promotedArithCount) {
-            ++stats.refusedTooFew;
-            continue;
-        }
-
-        for (auto& splits : plan.splitsOf) {
-            std::sort(splits.begin(), splits.end());
-            splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
-        }
+        if (!analyzeRegion(fn, cfg, types, defs, plan, stats)) continue;
         plans.push_back(std::move(plan));
     }
 
     return plans;
+}
+
+// ---------------------------------------------------------------------------
+// The entry region.
+// ---------------------------------------------------------------------------
+
+il::Function withPreheader(const il::Function& fn) {
+    il::Function out = fn;
+    for (auto& block : out.blocks) {
+        block.id += 1;
+        if (block.handler != il::kNoBlock) block.handler += 1;
+        for (auto& inst : block.instructions) {
+            for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                if (t->block != il::kNoBlock) t->block += 1;
+            }
+        }
+    }
+    il::Block pre;
+    pre.id = 0;
+    il::Instruction jump;
+    jump.op = il::Op::Jump;
+    jump.type = il::Type::Void;
+    jump.target.block = 1;
+    pre.instructions.push_back(std::move(jump));
+    out.blocks.insert(out.blocks.begin(), std::move(pre));
+    return out;
+}
+
+bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, RegionPlan& plan) {
+    if (prepped.blocks.size() < 2) return false;
+    // Refused by NAME and not by shape: a resume machine's entry dispatches on
+    // an index held in the frame, so every one of its blocks is reachable from
+    // `b0` and the region definition is satisfied. What is wrong with copying
+    // it is that its live values cross suspensions in the frame rather than in
+    // SSA, so the promotion has nothing to carry.
+    if (prepped.isResumeBody) {
+        ++stats.refusedMachine;
+        return false;
+    }
+
+    const Cfg cfg = buildCfg(prepped);
+    // A function with a loop is a loop function. Not "a loop region was built":
+    // a loop that was refused was refused for a reason, and a whole-function
+    // copy would contain that same loop and duplicate the shape the refusal was
+    // about. Silent, because a loop function is not an entry-region opportunity
+    // the pass declined — it is a different question entirely.
+    for (size_t t = 0; t < prepped.blocks.size(); ++t) {
+        const auto tail = static_cast<il::BlockId>(t);
+        if (cfg.rpoIndex[tail] == UINT32_MAX) continue;
+        for (il::BlockId h : cfg.succs[tail]) {
+            if (cfg.dominates(h, tail)) return false;
+        }
+    }
+
+    plan = RegionPlan{};
+    plan.entryRegion = true;
+    plan.header = 1;
+    plan.inRegion.assign(prepped.blocks.size(), true);
+    plan.inRegion[0] = false;
+    for (size_t b = 1; b < prepped.blocks.size(); ++b) {
+        plan.blocks.push_back(static_cast<il::BlockId>(b));
+    }
+    ++stats.entryRegions;
+
+    const std::vector<il::Type> types = valueTypes(prepped);
+    const std::vector<DefSite> defs = computeDefSites(prepped);
+    return analyzeRegion(prepped, cfg, types, defs, plan, stats);
 }
 
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
@@ -481,6 +673,7 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
         for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
         size_t added = 0;
         std::vector<uint8_t> alreadyBuilt(fn.blocks.size(), 0);
+        bool builtHere = false;
 
         for (int attempt = 0; attempt < kMaxRegionsPerFunction; ++attempt) {
             // Counted on the FIRST look at a function only. Every later look
@@ -506,9 +699,29 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
             const size_t blocksBefore = fn.blocks.size();
             if (!buildGuardedRegion(fn, plan, stats, alreadyBuilt)) break;
             added += estimate;
-            stats.blocksAdded += static_cast<uint32_t>(fn.blocks.size() - blocksBefore);
+            if (fn.blocks.size() > blocksBefore) {
+                stats.blocksAdded += static_cast<uint32_t>(fn.blocks.size() - blocksBefore);
+            }
             changed = true;
+            builtHere = true;
         }
+
+        if (builtHere) continue;
+        // The entry region, on a copy with a preheader in front of it. There is
+        // no growth budget to meet here and there cannot be: a whole-function
+        // copy exceeds "adds no more than the function had" by construction.
+        // The region caps in `analyzeRegion` are the size bound instead.
+        il::Function prepped = withPreheader(fn);
+        RegionPlan plan;
+        if (!selectEntryRegion(prepped, stats, plan)) continue;
+        std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
+        const size_t blocksBefore = prepped.blocks.size();
+        if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) continue;
+        if (prepped.blocks.size() > blocksBefore) {
+            stats.blocksAdded += static_cast<uint32_t>(prepped.blocks.size() - blocksBefore);
+        }
+        fn = std::move(prepped);
+        changed = true;
     }
     return changed;
 }

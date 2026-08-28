@@ -466,6 +466,7 @@ bool Lowerer::lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts,
     il::Function resumeFn;
     resumeFn.name = ilFn.name + ".resume";
     resumeFn.returnType = il::Type::Dynamic;
+    resumeFn.isResumeBody = true;
     resumeFn.needsEnv = true;
     resumeFn.params.push_back({"__env", il::Type::Dynamic});
     // `__mode` and `__sent` are the two halves of a resumption: which of

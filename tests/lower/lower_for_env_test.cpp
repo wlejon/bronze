@@ -150,9 +150,23 @@ TEST_CASE("the per-iteration record is the header's block parameter, not a varia
     CHECK(header->params.back().type == il::Type::Dynamic);
     // The exit block is NOT among them: the loop's scope is over by then, so it
     // carries the variables and nothing else.
+    //
+    // Asked OF THE EXIT BLOCK, which is where the `print` is, rather than as a
+    // bound on the parameter count of every block in the function. The bound
+    // said the same thing while the loop's blocks were the only ones with
+    // parameters; the guarded-region pass (src/lower/guard_region.h) runs after
+    // lowering and joins its slow copy on every value live at a guard, which is
+    // more than a loop header ever carries and has nothing to do with the
+    // record.
+    const il::Block* exit = nullptr;
     for (const auto& block : main->blocks) {
-        CHECK(block.params.size() <= 2);
+        for (const auto& inst : block.instructions) {
+            if (inst.op == il::Op::Print) exit = &block;
+        }
     }
+    REQUIRE(exit != nullptr);
+    CHECK(exit->params.size() == 1);
+    CHECK(exit->params[0].type == il::Type::F64);
 }
 
 TEST_CASE("a closure in the head captures the head's own record, never a copy") {

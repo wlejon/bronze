@@ -20,6 +20,7 @@ bronze_add_module(lower
                  ../../tests/lower/lower_stable_closure_call_test.cpp
                  ../../tests/lower/lower_closure_param_test.cpp
                  ../../tests/lower/guard_region_test.cpp
+                 ../../tests/lower/guard_region_entry_test.cpp
     # Test-only: the fixtures need a lexer and parser to produce an AST.
     # `bronze::lower` itself consumes an AST it is handed and includes
     # neither (see the note on TEST_DEPS in cmake/bronze_module.cmake).

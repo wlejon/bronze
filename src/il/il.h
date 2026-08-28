@@ -777,6 +777,19 @@ struct Function {
     bool needsArguments = false;
     bool isStrict = false;
     bool isGenerator = false;
+    // The BODY of a generator or async function, lowered as a resume machine:
+    // `<name>.resume(__env, __mode, __sent)`, whose entry block dispatches on a
+    // resume index held in the frame (src/lower/lower_generator.cpp).
+    //
+    // It is a fact lowering knows and nothing downstream can read off the
+    // shape: the dispatch is an ordinary compare-and-branch chain, its targets
+    // are ordinary blocks, and a function that happens to start with a switch
+    // over a number is indistinguishable from it. The guarded-region pass is
+    // what asks — a whole-function duplication of a resume machine copies a
+    // state machine whose live values cross suspensions in the FRAME rather
+    // than in SSA, so the promotion has nothing to carry and the copy is pure
+    // growth.
+    bool isResumeBody = false;
     // The BRONZE_ABI_FN_FLAG_* byte the created function object carries: what
     // its syntax decided about [[Construct]] and about the `prototype`
     // property (src/abi/bronze_abi.h says why neither is derivable here).

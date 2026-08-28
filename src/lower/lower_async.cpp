@@ -185,6 +185,7 @@ bool Lowerer::lowerAsyncTail(const std::vector<const ast::Stmt*>& stmts, il::Fun
     il::Function resumeFn;
     resumeFn.name = ilFn.name + ".resume";
     resumeFn.returnType = il::Type::Dynamic;
+    resumeFn.isResumeBody = true;
     resumeFn.needsEnv = true;
     resumeFn.params.push_back({"__env", il::Type::Dynamic});
     // The same (__mode, __sent) pair a generator's resume function takes,
@@ -257,6 +258,7 @@ bool Lowerer::lowerAsyncGeneratorTail(const std::vector<const ast::Stmt*>& stmts
     il::Function resumeFn;
     resumeFn.name = ilFn.name + ".resume";
     resumeFn.returnType = il::Type::Dynamic;
+    resumeFn.isResumeBody = true;
     resumeFn.needsEnv = true;
     resumeFn.params.push_back({"__env", il::Type::Dynamic});
     resumeFn.params.push_back({"__mode", il::Type::Dynamic});
