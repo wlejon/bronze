@@ -1057,6 +1057,20 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return true;
         }
 
+        // The same single compare `pin.guard` and `emitDynamicAdd`'s fast arm
+        // make (llvm_pin.cpp, llvm_arith.cpp): a Number's bits are its double's
+        // bits and every other tag is above the number range, so "is this a
+        // Number" is `bits <=u NUMBER_MAX` and touches no memory. No helper, no
+        // branch of its own — the branch is the terminator this feeds.
+        case il::Op::IsNumber: {
+            if (!needs(1, true, "Invalid operands for IsNumber")) return false;
+            llvm::Value* src = operand(inst, 0, "Undefined operand in IsNumber instruction");
+            if (!src) return false;
+            values_[inst.result] = builder_.CreateICmpULE(
+                src, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "isnum");
+            return true;
+        }
+
         case il::Op::TypeOf: {
             if (!needs(1, true, "Invalid operands for TypeOf")) return false;
             llvm::Value* v = operand(inst, 0, "Undefined operand in TypeOf instruction");

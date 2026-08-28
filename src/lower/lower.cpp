@@ -7,6 +7,7 @@
 
 #include "ast/assigned.h"
 #include "ast/queries.h"
+#include "lower/guard_region.h"
 #include "lower/lowerer.h"
 #include "support/timings.h"
 
@@ -291,6 +292,17 @@ std::optional<il::Module> Lowerer::lower() {
         for (size_t i = 0; i < sources_->size(); ++i) {
             ilModule_.sourceTexts.emplace_back(sources_->at(static_cast<uint16_t>(i)).text());
         }
+    }
+    // The one IL -> IL pass, and it runs LAST: it reads the finished module and
+    // hands out no module-global identity of its own, so everything above —
+    // inline-cache indices, static-slot cells, template sites, the census table
+    // — is already frozen and a copied instruction shares the site the original
+    // named. It is also why `bronze il` shows the transformed IL: `lowerModule`
+    // is the single funnel both `runIl` and `runBuild` come through.
+    {
+        GuardRegionStats stats;
+        applyGuardedRegions(ilModule_, &stats);
+        guardRegionStatsReport(stats);
     }
     return ilModule_;
 }

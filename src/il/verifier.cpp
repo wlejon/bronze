@@ -217,6 +217,34 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 }
             }
 
+            // `is.number` is the guarded-region pass's barrier, and both halves
+            // of its shape are load-bearing: the operand must be BOXED, because
+            // the test is a compare against the NaN-box's number range and an
+            // f64 operand would be comparing a double's bits to a tag bound,
+            // and the result must be `bool`, because the only thing that may
+            // consume it is a `br`.
+            if (inst.op == Op::IsNumber) {
+                if (inst.operands.size() != 1 || inst.result == kNoValue) {
+                    diags.error(Span{}, "Function " + fn.name +
+                                            ": is.number takes exactly one operand and has a "
+                                            "result");
+                    return false;
+                }
+                if (definedTypes[inst.operands[0]] != Type::Dynamic) {
+                    diags.error(Span{}, "Function " + fn.name + ": is.number operand %" +
+                                            std::to_string(inst.operands[0]) + " is " +
+                                            typeName(definedTypes[inst.operands[0]]) +
+                                            ", not dynamic");
+                    return false;
+                }
+                if (inst.type != Type::Bool) {
+                    diags.error(Span{}, "Function " + fn.name + ": is.number result %" +
+                                            std::to_string(inst.result) + " is " +
+                                            typeName(inst.type) + ", not bool");
+                    return false;
+                }
+            }
+
             if (inst.op == Op::Jump) {
                 if (!checkTarget(inst.target, bIdx, iIdx)) return false;
             } else if (inst.op == Op::Branch) {

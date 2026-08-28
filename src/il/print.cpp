@@ -60,6 +60,7 @@ const char* opName(Op op) {
         case Op::InstanceOf: return "instanceof";
         case Op::In: return "in";
         case Op::IsNullish: return "is.nullish";
+        case Op::IsNumber: return "is.number";
         case Op::Ret: return "ret";
         case Op::Throw: return "throw";
         case Op::ExcTake: return "exc.take";
@@ -186,6 +187,10 @@ bool canThrow(const Instruction& inst) {
         case Op::NumTruthy:
         case Op::StrictEq:
         case Op::IsNullish:
+        // One unsigned compare against a constant. It is the guarded-region
+        // pass's whole barrier, and a barrier that could raise would need the
+        // slow copy to be reachable from two places rather than one.
+        case Op::IsNumber:
         case Op::TypeOf:
         case Op::Box:
         // The pin census is an INSTRUMENT (src/runtime/pin_census.h): it
@@ -304,6 +309,10 @@ bool canCollect(const Instruction& inst) {
         case Op::NumTruthy:
         case Op::StrictEq:
         case Op::IsNullish:
+        // Reads bits already in a register and compares them against a
+        // constant: no allocation, no user code, nothing for a receiver proof
+        // to have to give up its derived pointer for.
+        case Op::IsNumber:
         // Reads a tag and names it from a table of immortal strings.
         case Op::TypeOf:
         // One aligned load from the module's own template-slot table.

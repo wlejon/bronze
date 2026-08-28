@@ -177,6 +177,19 @@ enum class Op : uint8_t {
     InstanceOf, // a: bool = instanceof b, c
     In,         // a: bool = in b, c          (b: key, c: object)
     IsNullish,  // a: bool = is.nullish b
+    // The NUMBER TEST, as a value rather than as a throw. `bits <= NUMBER_MAX`
+    // — a Number's bits are its double's bits and every other tag sits above
+    // the number range (`bronze_abi.h`) — so this is one unsigned compare that
+    // reads no memory, calls nothing and cannot raise.
+    //
+    // It is the same compare `pin.guard` makes, and the difference is the whole
+    // point of it. `pin.guard` holds a program to a promise and THROWS when the
+    // promise is broken; this one is a BRANCH, and what its false edge leads to
+    // is ordinary IL that would have existed anyway. The guarded-region pass
+    // (src/lower/guard_region.h) emits it as the condition of a block's
+    // terminator, and the block on the true edge is where the `unbox.f64 raw`
+    // it licenses lives.
+    IsNumber,   // a: bool = is.number b     (b: dynamic)
     Ret,        // ret [a]
     // `throw v`: stores v into the pending-exception cell and goes to this
     // block's handler. A terminator, because it is a way OUT of the block like
@@ -572,9 +585,13 @@ struct Instruction {
     // Granted by exactly one thing, `InferenceResult::provenFieldReads`: a read
     // of a field whose class installs it on every construction path, whose
     // receiver this compilation watched being made, and whose name the
-    // whole-program write audit certified. `false` is the checked form, which
-    // is ToNumber and correct for anything, and is what every other Number
-    // claim in the lattice keeps.
+    // whole-program write audit certified — or by a DOMINATING `is.number` on
+    // this same SSA value, which is what the guarded-region pass emits: the
+    // test is the condition of a block's terminator and the raw unbox sits in
+    // the block on its true edge. On an SSA VALUE and never on a location — a
+    // property re-read after a call is a different value and gets its own
+    // guard. `false` is the checked form, which is ToNumber and correct for
+    // anything, and is what every other Number claim in the lattice keeps.
     bool rawUnbox = false;
     // Unbox: the operand is PROVEN to be a Number, `null` or `undefined` and
     // nothing else, so ToNumber is decidable from the bits with no call. The
