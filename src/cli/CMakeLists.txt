@@ -28,7 +28,8 @@ if(BRONZE_BUILD_TESTS)
     add_executable(bronze_cli_tests ../../tests/cli/cli_test.cpp
                                    ../../tests/cli/performance_now_test.cpp
                                    ../../tests/cli/pin_barrier_test.cpp
-                                   ../../tests/cli/pin_census_test.cpp)
+                                   ../../tests/cli/pin_census_test.cpp
+                                   ../../tests/cli/numeric_arith_boundary_test.cpp)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)

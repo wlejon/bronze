@@ -71,8 +71,8 @@ public:
         staticShapesDisabled_ = staticShapeSeamDisabled();
         familyGuardDisabled_ = familyGuardSeamDisabled();
         unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
-        // Both halves are required: the embedder's promise about the channels
-        // the compiler cannot see, AND the scan of the text it can.
+        // Both halves: the claim about channels the compiler cannot see (a
+        // promise only where there ARE any — driver.cpp), AND the text's scan.
         numericArithDisabled_ =
             numericArithSeamDisabled() || !assumeNoBigInt ||
             bigIntMayReach(astModule, hostGlobals ? *hostGlobals
@@ -338,8 +338,8 @@ private:
     // declaration appears in exactly one enclosing statement list, so one entry
     // per function is all there can be.
     std::unordered_map<const ast::FunctionDecl*, std::vector<bool>> provenClosureParams_;
-    // BRONZE_NO_NUMERIC_ARITH=1, or a program in which a BigInt can reach an
-    // operator (`bigIntMayReach`). Gates ONE decision in `lowerBinary`: whether
+    // BRONZE_NO_NUMERIC_ARITH=1, a BigInt in reach, or a host boundary no
+    // `assumeNoBigInt` covers. Gates ONE decision in `lowerBinary`: whether
     // `*`, `-`, `/`, `%` over a boxed operand produce a boxed result or an f64
     // one. The boxed result is what earns a GC root slot, and a rooted value is
     // stored and reloaded around every instruction it survives — so this seam

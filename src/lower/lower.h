@@ -34,12 +34,17 @@ namespace bronze::lower {
 // unresolved-name warning and runtime ReferenceError. Nullable like
 // `inference`, and independent of it — which set of names resolves is a
 // lowering-level fact, so `--no-infer` changes nothing about it.
-// `assumeNoBigInt` is the embedder's promise, made with --assume-no-bigint,
-// that no BigInt will reach an arithmetic operator in this program — including
-// through channels the compiler cannot see: an exported function a host calls,
-// or a host global's return value. It is the same KIND of claim
-// `--host-globals` makes (the host asserts a boundary the compiler cannot
-// inspect), and like that one it is a promise, not a proof.
+// `assumeNoBigInt` says that no BigInt reaches an arithmetic operator through
+// a channel the compiler cannot see: an exported function a host calls, or a
+// host global's value. It is the same KIND of claim `--host-globals` makes —
+// an assertion about a boundary the compiler cannot inspect — so who is
+// entitled to make it depends on whether the build HAS one. An embedding build
+// (`--emit-obj`, `--emit-shared`, or any `--host-globals` manifest) has one,
+// and there the claim is a promise the embedder makes with
+// `--assume-no-bigint`. A standalone executable has no such channel at all, so
+// the CLI passes true without a flag and the scan below is the whole of the
+// argument. `hasHostBoundary` in src/cli/driver.cpp is the one place that
+// decides which build this is.
 //
 // What it buys: `*`, `-`, `/` and `%` over a boxed operand may produce an f64
 // instead of a boxed value, because with no BigInt in reach ToNumeric IS
@@ -48,10 +53,11 @@ namespace bronze::lower {
 // registers instead of storing and reloading every one of them around every
 // instruction.
 //
-// The promise is checked as far as it can be: the flag only takes effect if
+// The claim is checked as far as it can be: it only takes effect if
 // `bigIntMayReach` also finds nothing in the program's own text, so an
-// embedder that passes it over a program full of BigInts gets the safe
-// lowering rather than a miscompile.
+// embedder that passes the flag over a program full of BigInts gets the safe
+// lowering rather than a miscompile — and so does the standalone build that
+// never passed a flag.
 class InferStatsCollector;
 
 // `pins` is the `--pins` manifest, or null. Lowering reads only its ENV-SLOT

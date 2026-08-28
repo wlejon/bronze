@@ -165,12 +165,19 @@ constexpr const char* kUsage =
     "                                      are what let a host link more than one\n"
     "                                      compiled module into one image.\n"
     "  --assume-no-bigint                  Promise that no BigInt will reach an\n"
-    "                                      arithmetic operator, INCLUDING through an\n"
-    "                                      exported function a host calls or a host\n"
-    "                                      global's return value. With it, `*`, `-`,\n"
-    "                                      `/` and `%` over unproven operands produce\n"
-    "                                      an f64 rather than a boxed value, so the\n"
-    "                                      result needs no GC root slot and stays in a\n"
+    "                                      arithmetic operator ACROSS THE HOST\n"
+    "                                      BOUNDARY — through an exported function a\n"
+    "                                      host calls, or a host global's value. Only\n"
+    "                                      a build that has such a boundary needs it:\n"
+    "                                      --host-globals, --emit-obj or\n"
+    "                                      --emit-shared. A standalone executable has\n"
+    "                                      no boundary, so the whole-program scan is a\n"
+    "                                      proof on its own and this flag changes\n"
+    "                                      nothing there.\n"
+    "                                      What the promise buys: `*`, `-`, `/` and\n"
+    "                                      `%` over unproven operands produce an f64\n"
+    "                                      rather than a boxed value, so the result\n"
+    "                                      needs no GC root slot and stays in a\n"
     "                                      register. A promise about the boundary,\n"
     "                                      like --host-globals; the program's own text\n"
     "                                      is still scanned, and any BigInt spelled in\n"
@@ -287,6 +294,27 @@ bool loadPins(const std::string& path, types::PinManifest& out, std::string& err
     return out.parse(text, path, err, allowObserved);
 }
 
+// Does this invocation have a HOST BOUNDARY — a channel through which a value
+// no part of the compiled text ever built can reach the compiled code?
+//
+// There are exactly three, and each is named on the command line: a
+// `--host-globals` manifest (the host registers whatever those names hold),
+// `--emit-obj` (the host's own link step puts the object beside its own code
+// and calls the exported entry with whatever it likes), and `--emit-shared`
+// (the same, resolved at run time). Any of them and the compiled program is
+// half a program. None of them and `bronze build` linked the WHOLE of it: the
+// only values that can reach an operator are the ones the module graph's own
+// text builds, and a whole-program scan of that text is a proof rather than a
+// guess.
+//
+// One predicate rather than three tests spelled out at each use, because the
+// answer is what a promise flag is FOR: `--assume-no-bigint` asserts something
+// about exactly the part of the program this predicate says the compiler
+// cannot see, so a build for which it answers false needs no promise at all.
+bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emitShared) {
+    return !hostGlobalsPath.empty() || emitObj || emitShared;
+}
+
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString,
@@ -381,13 +409,21 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
     // IL: `import.meta` resolves its module's URL out of the source set at
     // lowering time, so a null one would make `bronze il` dump a different
     // program from the one `bronze build` compiles.
+    // `bronze il` names no output kind, so its only boundary is a manifest.
+    // Deciding it the same way `runBuild` does is the point of the command:
+    // the dump has to be the IL the executable would compile, and a `mul` that
+    // read `dynamic` here and `f64` there would make it a different program.
+    const bool noBigIntPromised =
+        assumeNoBigInt ||
+        !hasHostBoundary(hostGlobalsPath, /*emitObj=*/false, /*emitShared=*/false);
+
     lower::InferStatsCollector statsCollector;
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
-                                       assumeNoBigInt,
+                                       noBigIntPromised,
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath);
     if (diags.hasErrors() || !ilModule) {
@@ -507,13 +543,20 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
+    // A standalone executable has no host boundary, so the promise is already
+    // true of it and the whole-program scan inside `Lowerer` is the only thing
+    // left to satisfy. A build that HAS a boundary keeps needing the flag: the
+    // values crossing it are the ones no scan can see.
+    const bool noBigIntPromised =
+        assumeNoBigInt || !hasHostBoundary(hostGlobalsPath, emitObj, emitShared);
+
     lower::InferStatsCollector statsCollector;
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        &sources,
                                        inferStats ? &statsCollector : nullptr,
-                                       assumeNoBigInt,
+                                       noBigIntPromised,
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath);
     timer.mark("lower");

@@ -153,6 +153,12 @@ checksum is identical across all three columns of every row, which is the
 acceptance condition: a difference in a checksum is a miscompile, and a
 comparison that does not check them is not a measurement.
 
+The **bronze default** column predates the change that made `*`, `-`, `/` and
+`%` over unproven operands produce an f64 in a standalone build rather than a
+boxed value. Every row built out of real library code moved with it, so those
+cells are a record of that session and not of today's default; re-take the
+whole table with `interleave.py` before quoting a number from it.
+
 | fixture | bronze default | bronze `--pins` | node | best vs node |
 |---|---:|---:|---:|---:|
 | `fib` | **3.64** | 3.66 | 6.08 | **1.67×** |

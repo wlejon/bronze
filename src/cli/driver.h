@@ -45,6 +45,15 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 // `pinsAllowObserved` accepts a census entry marked `@observed`: one whose
 // stores are not all from sites the compiler can type, so a violation of it
 // would be silent rather than a TypeError. Off by default, on purpose.
+//
+// `assumeNoBigInt` is `--assume-no-bigint`: the promise that no BigInt reaches
+// an arithmetic operator through a channel the compiler cannot see. It is a
+// claim about the HOST BOUNDARY, so both commands ask `hasHostBoundary` first
+// and pass the promise on as already given when there is no boundary to make
+// it about — a standalone `bronze build`, or a `bronze il` with no manifest.
+// What the promise unlocks and what still checks it is in lower/lower.h; the
+// whole-program scan runs either way, and a BigInt spelled in the program
+// refuses the lowering no matter which side said yes.
 int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool infer = true,
           const std::string& hostGlobalsPath = {},
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
