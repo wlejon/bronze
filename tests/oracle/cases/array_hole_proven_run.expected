@@ -1,0 +1,16 @@
+dense sum 120
+dense read 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+length 16
+hole read undefined undefined
+hole in 3 false in 2 true
+hole own false
+hole sum NaN
+hole read run 0,1,2,,4,5,6,7,8,9,,11,12,13,14,15
+refilled sum 237
+refilled read 0,1,2,30,4,5,6,7,8,9,100,11,12,13,14,15
+minus zero 0 -Infinity true
+nan NaN true
+string two string
+mixed sum NaNtwo304567891001112131415
+frozen true sum 136
+frozen read 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16

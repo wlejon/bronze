@@ -136,11 +136,22 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 }
                 if (recvProof_.live() && recvProof_.run == runSite.run) proofArg = &recvProof_;
             }
+            // The root slot may hold this read's own bits rather than the
+            // `undefined` a hole reads as, provided there IS a slot: the
+            // correction then rides every reload (llvm_func.h, `holeRawSlot_`),
+            // and a value carried in SSA has no reload to ride.
+            const bool holeRawSlot = holeRawSlotEnabled() && proofArg != nullptr &&
+                                     inst.result != il::kNoValue &&
+                                     inst.result < func_.valueCount &&
+                                     slotOf_[inst.result] != kNoSlot &&
+                                     holeRawPays_[inst.result] != 0;
             ProofJoin join;
             values_[inst.result] =
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj,
                             rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
-                            inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg, &join);
+                            inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg, &join,
+                            holeRawSlot);
+            if (holeRawSlot) holeRawSlot_[inst.result] = 1;
             carryOtherProofs(join, /*ownsRead=*/proofArg != nullptr, /*ownsStore=*/false,
                              /*ownsArrayStore=*/false);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;

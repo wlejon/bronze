@@ -39,7 +39,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
                          const ModuleTables& tables, llvm::Value* objBits,
                          llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
                          bool monomorphic, const StaticSite& site, std::string_view keyStr,
-                         ReceiverProof* proof, ProofJoin* join) {
+                         ReceiverProof* proof, ProofJoin* join, bool holeRawSlot) {
     // Not branched on here: `monomorphic` is an identity proof, and the
     // sequence below is an inline cache, which is what an unproven site wants
     // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
@@ -80,7 +80,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     //     when there is no live proof, which is every site outside a run.
     ProvenRead proven;
     if (proof != nullptr && proof->live() && optIdx.has_value()) {
-        proven = emitProvenElementRead(builder, *proof, *optIdx, doneBb);
+        proven = emitProvenElementRead(builder, *proof, *optIdx, doneBb, holeRawSlot);
     }
 
     // 1. Is the receiver an object?

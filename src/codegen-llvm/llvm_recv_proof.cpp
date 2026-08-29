@@ -620,8 +620,51 @@ ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits
     return proof;
 }
 
+bool holeRawSlotEnabled() {
+    static const bool enabled = std::getenv("BRONZE_HOLE_RAW") != nullptr;
+    return enabled;
+}
+
+bool holeInsensitiveUse(const il::Instruction& inst, il::ValueId v) {
+    if (inst.operands.empty() || inst.operands[0] != v) return false;
+    if (inst.op == il::Op::IsNumber) return true;
+    return inst.op == il::Op::Unbox && inst.type == il::Type::F64 && inst.rawUnbox;
+}
+
+std::vector<uint8_t> planHoleRawSlots(const il::Function& fn) {
+    std::vector<uint32_t> insensitive(fn.valueCount, 0);
+    std::vector<uint32_t> sensitive(fn.valueCount, 0);
+    auto note = [&](il::ValueId v, bool insens) {
+        if (v == il::kNoValue || v >= fn.valueCount) return;
+        ++(insens ? insensitive : sensitive)[v];
+    };
+    for (const il::Block& block : fn.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            for (size_t i = 0; i < inst.operands.size(); ++i) {
+                note(inst.operands[i], i == 0 && holeInsensitiveUse(inst, inst.operands[0]));
+            }
+            // A block argument carries the boxed value across an edge, so it
+            // is a use that needs the correction wherever it lands.
+            for (il::ValueId v : inst.target.args) note(v, false);
+            for (il::ValueId v : inst.elseTarget.args) note(v, false);
+        }
+    }
+    std::vector<uint8_t> pays(fn.valueCount, 0);
+    for (uint32_t v = 0; v < fn.valueCount; ++v) {
+        pays[v] = insensitive[v] > 0 && insensitive[v] >= sensitive[v] ? 1 : 0;
+    }
+    return pays;
+}
+
+llvm::Value* emitHoleCorrection(llvm::IRBuilder<>& builder, llvm::Value* raw,
+                                const std::string& name) {
+    llvm::Value* rawTag = builder.CreateLShr(raw, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isHole = builder.CreateICmpEQ(rawTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
+    return builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), raw, name);
+}
+
 ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof& proof,
-                                 uint32_t index, llvm::BasicBlock* doneBb) {
+                                 uint32_t index, llvm::BasicBlock* doneBb, bool holeRawSlot) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
@@ -639,10 +682,14 @@ ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof
     // cannot give for itself. The ladder's other answers — absent, an accessor,
     // a hit up the prototype chain — cannot arise here: the length test put the
     // index inside the dense part, and a dense element is a Value or a hole.
-    llvm::Value* rawTag = builder.CreateLShr(raw, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isHole = builder.CreateICmpEQ(rawTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
-    llvm::Value* value =
-        builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), raw, tag + "val");
+    //
+    // Under `holeRawSlot` the correction is not spent here. Sixteen reads in a
+    // row each paid a shift, a compare and a select for an answer that every
+    // one of their consumers either discards (a numberness guard is false for
+    // the hole and for `undefined` alike) or reads through a root slot, where
+    // the same three instructions cost nothing because they sit on the edge
+    // that leaves the fast copy.
+    llvm::Value* value = holeRawSlot ? raw : emitHoleCorrection(builder, raw, tag + "val");
     llvm::BasicBlock* fastExit = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

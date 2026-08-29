@@ -51,6 +51,7 @@ bronze_add_module(codegen_llvm
         ../../tests/codegen_llvm/store_proof_test.cpp
         ../../tests/codegen_llvm/array_store_proof_test.cpp
         ../../tests/codegen_llvm/run_chain_test.cpp
+        ../../tests/codegen_llvm/hole_raw_test.cpp
         ../../tests/codegen_llvm/env_promotion_test.cpp
 )
 

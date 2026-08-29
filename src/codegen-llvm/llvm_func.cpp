@@ -36,6 +36,12 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
       values_(shared.module.functions[funcIndex].valueCount, nullptr),
       propGetKey_(shared.module.functions[funcIndex].valueCount, UINT32_MAX),
       funcRefIndex_(shared.module.functions[funcIndex].valueCount, UINT32_MAX),
+      holeRawSlot_(shared.module.functions[funcIndex].valueCount, 0),
+      // Only when the seam asks for it: the scan is linear in the function and
+      // the answer is unread otherwise (llvm_recv_proof.h, `holeRawSlotEnabled`).
+      holeRawPays_(holeRawSlotEnabled()
+                       ? planHoleRawSlots(shared.module.functions[funcIndex])
+                       : std::vector<uint8_t>(shared.module.functions[funcIndex].valueCount, 0)),
       slotOf_(shared.plans[funcIndex].slotOf),
       ownSlots_(shared.plans[funcIndex].ownSlots),
       // A frameless variant fills a region the CALLER already sized and
@@ -77,11 +83,20 @@ llvm::Value* FunctionEmitter::rootSlotAddrOf(const il::Instruction& inst, size_t
     return slotAddr(slot);
 }
 
-void FunctionEmitter::reload(il::ValueId id) {
+void FunctionEmitter::reload(il::ValueId id, bool holeInsensitive) {
     if (id == il::kNoValue || id >= func_.valueCount) return;
     uint32_t slot = slotOf_[id];
     if (slot == kNoSlot) return;
-    values_[id] = builder_.CreateLoad(i64Ty_, slotAddr(slot));
+    llvm::Value* loaded = builder_.CreateLoad(i64Ty_, slotAddr(slot));
+    // A hole-raw slot holds the element's own bits, so the correction the read
+    // arm did not spend is spent here — once per USE rather than once per read,
+    // which is what puts it on the edge that leaves a fast copy and off the
+    // straight line that reads sixteen elements in a row. The use that cannot
+    // tell the two apart pays nothing at all, which is the case a guarded
+    // element run is made of.
+    values_[id] = holeRawSlot_[id] != 0 && !holeInsensitive
+                      ? emitHoleCorrection(builder_, loaded, "hole.raw")
+                      : loaded;
 }
 
 llvm::Value* FunctionEmitter::calleeRegionBase() {
@@ -575,7 +590,10 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         // POSITION and not only its fields: a store spends a `pin.guard`
         // standing immediately in front of it (llvm_repr.h, `storeValueRepr`).
         currentILInst_ = instIndex;
-        for (il::ValueId id : inst.operands) reload(id);
+        for (size_t i = 0; i < inst.operands.size(); ++i) {
+            reload(inst.operands[i],
+                   i == 0 && holeInsensitiveUse(inst, inst.operands[0]));
+        }
         for (il::ValueId id : inst.target.args) reload(id);
         for (il::ValueId id : inst.elseTarget.args) reload(id);
 

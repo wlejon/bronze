@@ -191,8 +191,58 @@ struct ProvenRead {
 // The proof's fast arm for one read, emitted in front of the property cache.
 // On return the builder sits in a fresh block — the one the cache's own ladder
 // should be emitted into — so the caller carries on as if nothing happened.
+//
+// `holeRawSlot` says the CALLER will spend the hole correction where the boxed
+// value is read rather than where it is produced (llvm_func.h, `holeRawSlot_`),
+// so this arm hands back the element's own bits and emits no select at all.
+// False is the original arm: the correction stands here, in the read's block.
 ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof& proof,
-                                 uint32_t index, llvm::BasicBlock* doneBb);
+                                 uint32_t index, llvm::BasicBlock* doneBb,
+                                 bool holeRawSlot = false);
+
+// The hole correction itself, as one place both the read arm and the reload
+// spend: a dense element that is a hole reads as `undefined` (10.4.2.1's
+// ordinary [[Get]] over an absent index, with Array.prototype's own index
+// properties refused by name elsewhere), and no other answer a raw load gives
+// needs changing.
+llvm::Value* emitHoleCorrection(llvm::IRBuilder<>& builder, llvm::Value* raw,
+                                const std::string& name);
+
+// THE SEAM, and it is OPT-IN: `BRONZE_HOLE_RAW=1` moves the correction, and
+// the default build pays it at the read exactly as it always did.
+//
+// Off by default because the saving is real on the kernel alone
+// (`bench/mat4_kernel.js`: the ninety-six instructions it takes off
+// `multiplyMatrices`'s read block, about a tenth of the call) and does not
+// surface in the programs the kernel sits inside — `bench/three_math.js` reads
+// neutral within this box's drift — and that gap is not diagnosed. A default
+// is spent on an understood win; until then this is a thing to A/B.
+bool holeRawSlotEnabled();
+
+// A use that cannot tell an element's own bits from the `undefined` a hole
+// reads as. There are exactly two, and they are the whole soundness argument
+// for a hole-raw slot, so they are named here rather than at their emitters
+// (llvm_ops.cpp), which must not change what they read without changing this:
+//
+//   `is.number`      — `bits <=u kNumberMaxBits`, and the hole tag and
+//                      `undefined` are both above the number range, so the
+//                      answer is false for either.
+//   RAW `unbox.f64`  — stands only where something already proved the bits
+//                      are a Number, which a hole is not, so the correction
+//                      could not have chosen its other arm on any path that
+//                      reaches one.
+//
+// `v` must be the instruction's first operand, the only position either reads.
+bool holeInsensitiveUse(const il::Instruction& inst, il::ValueId v);
+
+// Per value of `fn`: would a hole-raw slot emit fewer selects than it removes?
+// Moving the correction off the read and onto the reload trades ONE select for
+// one per use that still needs it, so the answer is yes exactly where the uses
+// that need none are at least as many — thirty-two `multiplyMatrices` reads
+// consumed by a guard and a raw unbox each against one edge into a slow copy,
+// and no for `Matrix4.copy`, whose reads go straight into a store and would pay
+// the same select one block later.
+std::vector<uint8_t> planHoleRawSlots(const il::Function& fn);
 
 // Re-establishes `ok` and `base` at a member's join: the fast arm carries them
 // forward, every other predecessor of `doneBb` carries a proof that is not

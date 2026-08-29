@@ -47,7 +47,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          llvm::Value* objBits, llvm::Value* objSlot, uint32_t keyIndex,
                          uint32_t icIndex, bool monomorphic, const StaticSite& site,
                          std::string_view keyStr = {}, ReceiverProof* proof = nullptr,
-                         ProofJoin* join = nullptr);
+                         ProofJoin* join = nullptr, bool holeRawSlot = false);
 
 // Property writes. The inline paths are the own-slot hit and the
 // shape-transition hit (a constructor body's repeated property add); every

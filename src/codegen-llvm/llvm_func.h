@@ -100,7 +100,10 @@ private:
     // Reloads a Dynamic value from its root slot at the point of use: if
     // anything collected since the def, the slot was forwarded and the SSA
     // register was not.
-    void reload(il::ValueId id);
+    // `holeInsensitive` says the one use this reload is for cannot tell an
+    // element's own bits from the `undefined` a hole reads as, so a hole-raw
+    // slot hands its bits over uncorrected (llvm_func.h, `holeRawSlot_`).
+    void reload(il::ValueId id, bool holeInsensitive = false);
     llvm::Value* slotAddr(uint32_t slot);
     // The base of the region a merged callee's slots live in — this function's
     // own slots end exactly there. Null when it has no frame at all.
@@ -155,6 +158,27 @@ private:
     // The IL function index a FunctionRef result was read by (UINT32_MAX otherwise):
     // what lets DynamicCall and Construct invoke the known wrapper directly.
     std::vector<uint32_t> funcRefIndex_;
+    // HOLE-RAW ROOT SLOTS. A value read through a receiver proof
+    // (llvm_recv_proof.h) whose root slot holds the ELEMENT'S OWN BITS, hole
+    // tag included, instead of the `undefined` a hole reads as. Every reload
+    // corrects it, so what a consumer sees is unchanged; what moves is where
+    // the correction is paid. In `Matrix4.multiplyMatrices` the thirty-two
+    // reads are consumed by a numberness guard — which answers false for the
+    // hole and for `undefined` alike — and by the edge into the guarded
+    // region's slow copy, so the correction lands on a cold edge and leaves
+    // the fast copy's read block at one load per element.
+    //
+    // Set only for a value that HAS a root slot: a slotless value is carried
+    // in SSA with no reload to correct it, so the read arm keeps the select.
+    std::vector<uint8_t> holeRawSlot_;
+    // Whether a hole-raw slot would pay for itself, by value id. Moving the
+    // correction from the read to the reload trades ONE select for one per
+    // USE, so it is only a saving where the uses that need no correction
+    // outnumber the ones that do — thirty-two reads consumed by a guard and a
+    // raw unbox each against one cold edge into a slow copy, and not
+    // `Matrix4.copy`, whose reads go straight into a store and would pay the
+    // same select one block later.
+    std::vector<uint8_t> holeRawPays_;
 
     const std::vector<uint32_t>& slotOf_;
     uint32_t argvBase_ = 0;
