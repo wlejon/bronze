@@ -453,6 +453,15 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
     // wrote — so that arm SPILLS them on its way in (llvm_run_arms.cpp) instead
     // of making the fast path write sixteen words for a path it does not take.
     if (!plan.arms.empty()) {
+        // Which group's span DEFINES each value, so that a use inside that same
+        // span can be excused below: the group's own slow arm is the only thing
+        // that reads such a slot, and the slow arm keeps it current itself.
+        std::vector<uint32_t> defGroup(n, RunArmPlan::kNoGroup);
+        for (size_t g = 0; g < plan.arms.groups.size(); ++g) {
+            for (il::ValueId r : plan.arms.groups[g].result) {
+                if (r != il::kNoValue && r < n) defGroup[r] = static_cast<uint32_t>(g);
+            }
+        }
         std::vector<uint8_t> slotRead(n, 0);
         for (size_t b = 0; b < blockCount; ++b) {
             if (handlerOf[b] != il::kNoBlock) {
@@ -465,9 +474,13 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                     !inst.operands.empty() && inst.operands[0] < n) {
                     slotRead[inst.operands[0]] = 1;
                 }
+                const uint32_t inGroup = plan.arms.memberAt(b, i);
                 uint32_t at = plan.useBase[plan.blockBase[b] + i];
                 forEachUse(inst, [&](il::ValueId u) {
-                    if (u != il::kNoValue && u < n && plan.useAnchor[at] == kNone) slotRead[u] = 1;
+                    if (u != il::kNoValue && u < n && plan.useAnchor[at] == kNone &&
+                        (inGroup == RunArmPlan::kNoGroup || defGroup[u] != inGroup)) {
+                        slotRead[u] = 1;
+                    }
                     ++at;
                 });
             }

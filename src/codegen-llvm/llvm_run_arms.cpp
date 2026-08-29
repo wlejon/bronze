@@ -20,13 +20,26 @@ namespace bronze::codegen_llvm {
 
 namespace {
 
-// The element index a member reads, or nothing for an instruction that is not
-// a constant-index property read at all. Read from the KEY, exactly as the run
-// planner reads it, so the two agree about what a member is.
-std::optional<uint32_t> memberIndexOf(const il::Module& module, const il::Instruction& inst) {
+// The element index a read member reads, or nothing for an instruction that is
+// not a constant-index property read at all. Read from the KEY, exactly as the
+// run planner reads it, so the two agree about what a member is.
+std::optional<uint32_t> readIndexOf(const il::Module& module, const il::Instruction& inst) {
     if (inst.op != il::Op::PropGet) return std::nullopt;
     if (inst.result == il::kNoValue) return std::nullopt;
     if (inst.operands.empty()) return std::nullopt;
+    if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
+    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+}
+
+// The element index an Array store member writes. Only the `prop.set` spelling:
+// the PINNED `elem.set.typed` form is a member of the same run (llvm_recv_proof.cpp,
+// `arrayStoreIndexOf`) but its unproven arm is a raw double store rather than a
+// cache, so duplicating it would mean two spellings of one store inside one
+// arm. It ends the span instead, and a pinned build keeps exactly the
+// per-member shape it had.
+std::optional<uint32_t> arrayStoreIndexOf(const il::Module& module, const il::Instruction& inst) {
+    if (inst.op != il::Op::PropSet) return std::nullopt;
+    if (inst.operands.size() < 2) return std::nullopt;
     if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
     return parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
@@ -39,6 +52,70 @@ bool runArmsDisabled() {
         return env != nullptr && std::strcmp(env, "1") == 0;
     }();
     return off;
+}
+
+bool interleavedRunArmsEnabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BRONZE_NO_RUN_ARMS_INTERLEAVED");
+        return env == nullptr || std::strcmp(env, "1") != 0;
+    }();
+    return on;
+}
+
+bool runArmDuplicable(const il::Instruction& inst) {
+    if (il::isTerminator(inst.op)) return false;
+    // The two effect predicates first, because both are written the safe way
+    // round: an op added tomorrow answers yes to them and is refused here
+    // without anybody having to remember this list.
+    if (il::canCollect(inst) || il::canThrow(inst)) return false;
+    switch (inst.op) {
+        // Machine constants: a bit pattern materialised inline.
+        case il::Op::ConstF64:
+        case il::Op::ConstI32:
+        case il::Op::ConstBool:
+        case il::Op::ConstUndefined:
+        case il::Op::ConstNull:
+        // Arithmetic and the bitwise family. The predicates above have already
+        // refused the BOXED spelling of each, which reaches ToPrimitive; what
+        // is left is machine instructions on operands already in hand.
+        case il::Op::Add:
+        case il::Op::Sub:
+        case il::Op::Neg:
+        case il::Op::Mul:
+        case il::Op::Div:
+        case il::Op::Mod:
+        case il::Op::Pow:
+        case il::Op::BitAnd:
+        case il::Op::BitOr:
+        case il::Op::BitXor:
+        case il::Op::Shl:
+        case il::Op::Shr:
+        case il::Op::UShr:
+        case il::Op::ToInt32:
+        // The number compares and the total predicates: register work, no
+        // branch out of the arm.
+        case il::Op::CmpLt:
+        case il::Op::CmpGt:
+        case il::Op::CmpLe:
+        case il::Op::CmpGe:
+        case il::Op::CmpEq:
+        case il::Op::CmpNe:
+        case il::Op::NumTruthy:
+        case il::Op::StrictEq:
+        case il::Op::IsNullish:
+        case il::Op::IsNumber:
+        // A non-string box is a bitcast and a select; a raw or nullish-widened
+        // unbox is a bitcast and a compare. `canCollect` has refused the string
+        // box and the checked unbox, which are the two that call.
+        case il::Op::Box:
+        case il::Op::Unbox:
+            return true;
+        // Everything else, including the pin barrier: its branching form
+        // neither collects nor throws, but its violating arm LEAVES for the
+        // handler, and a handler reads root slots the fast arm has not written.
+        default:
+            return false;
+    }
 }
 
 RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
@@ -54,66 +131,170 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
     plan.startOf.assign(total, RunArmPlan::kNoGroup);
     plan.memberOf.assign(total, RunArmPlan::kNoGroup);
     if (runArmsDisabled() || !receiverProofEnabled()) return plan;
+    const bool spans = interleavedRunArmsEnabled();
 
     for (size_t b = 0; b < blockCount; ++b) {
         const il::Block& block = func.blocks[b];
+        // A group buys a branch with code size, and a guarded region's SLOW
+        // copy is the arm the region exists not to take: whatever is spent
+        // there sits in the same function as the fast copy and is paid for out
+        // of the same instruction cache. So the fast copy and the unguarded
+        // code get groups and the slow copy gets the per-member shape. Measured
+        // on `instanced_mesh_churn`, whose `Matrix4.compose` carries both
+        // copies of one region.
+        if (spans && block.copyClass == il::CopyClass::Slow) continue;
+        const size_t n = block.instructions.size();
         const BlockRunPlan runs = planBlockRuns(module, func, b);
         if (runs.reads.empty()) continue;
 
-        // One pass over the block, opening a candidate at every member that
-        // establishes a run and closing it at the first instruction that is not
-        // the next member of that same run. A run whose members are not
-        // consecutive therefore closes at the gap and is refused below, which is
-        // the rule the header states.
+        // What kind of member instruction `i` is, and which run it belongs to.
+        // A site is a read member and an Array-store member never at once: one
+        // is a `prop.get` and the other a `prop.set`.
+        // `index` is filled here rather than re-derived at the use, so the
+        // element the group records is the element this answer was about.
+        auto memberAt = [&](size_t i, RunArmProof& out, uint32_t& index) -> bool {
+            const il::Instruction& inst = block.instructions[i];
+            const ReceiverRunPlan::Site read = runs.reads.at(i);
+            if (read.run != ReceiverRunPlan::kNoRun) {
+                if (const std::optional<uint32_t> idx = readIndexOf(module, inst)) {
+                    out.kind = RunArmProof::Kind::Read;
+                    out.run = read.run;
+                    out.maxIndex = read.runMaxIndex;
+                    out.receiver = inst.operands[0];
+                    index = *idx;
+                    return true;
+                }
+            }
+            // A store member is a member only where spans are on: the shape
+            // that stood before them is a run of READS and nothing else, and
+            // the seam has to give that back exactly.
+            const ArrayStoreRunPlan::Site store =
+                spans ? runs.arrayStores.at(i) : ArrayStoreRunPlan::Site{};
+            if (store.run != ArrayStoreRunPlan::kNoRun &&
+                arrayStoreIndexOf(module, inst).has_value()) {
+                out.kind = RunArmProof::Kind::ArrayStore;
+                out.run = store.run;
+                out.maxIndex = store.runMaxIndex;
+                out.receiver = inst.operands[0];
+                index = store.index;
+                return true;
+            }
+            return false;
+        };
+        auto startsSpan = [&](size_t i) {
+            RunArmProof pf;
+            uint32_t index = 0;
+            return memberAt(i, pf, index);
+        };
+
         size_t i = 0;
-        while (i < block.instructions.size()) {
-            const ReceiverRunPlan::Site head = runs.reads.at(i);
-            if (head.run == ReceiverRunPlan::kNoRun || !head.establishes) {
+        while (i < n) {
+            if (!startsSpan(i)) {
                 ++i;
                 continue;
             }
             RunArmGroup group;
             group.block = static_cast<uint32_t>(b);
             group.first = static_cast<uint32_t>(i);
-            group.run = head.run;
-            group.maxIndex = head.runMaxIndex;
-            group.receiver = block.instructions[i].operands[0];
 
+            // The scan. A member of a run this group has already opened, or one
+            // that opens its own; a duplicable instruction the fast arm may
+            // copy; anything else stops the span where it stands.
             size_t j = i;
+            size_t last = i;
             bool refused = false;
-            for (; j < block.instructions.size(); ++j) {
+            for (; j < n && !refused; ++j) {
                 const il::Instruction& inst = block.instructions[j];
-                if (runs.reads.at(j).run != head.run) break;
-                const std::optional<uint32_t> idx = memberIndexOf(module, inst);
-                // A member the emitter could not turn into a load, or one whose
-                // site claims a static slot: the group is refused outright
-                // rather than cut short, because the run's proof is established
-                // at its first member and a cut group would leave the rest of
-                // the run spending a proof this planner never described.
-                if (!idx.has_value() || inst.operands[0] != group.receiver ||
-                    inst.staticSlot != il::Instruction::kNoStaticSlot) {
-                    refused = true;
-                    break;
+                RunArmProof pf;
+                uint32_t index = 0;
+                if (memberAt(j, pf, index)) {
+                    // A member the emitter could not turn into a bare access,
+                    // or one whose site claims a static slot: the span stops in
+                    // front of it and the check below decides whether what has
+                    // been collected so far is still a whole run.
+                    if (inst.staticSlot != il::Instruction::kNoStaticSlot) break;
+                    uint32_t at = RunArmStep::kNoProof;
+                    for (size_t p = 0; p < group.proofs.size(); ++p) {
+                        if (group.proofs[p].kind == pf.kind && group.proofs[p].run == pf.run) {
+                            at = static_cast<uint32_t>(p);
+                        }
+                    }
+                    if (at == RunArmStep::kNoProof) {
+                        const bool establishes =
+                            pf.kind == RunArmProof::Kind::Read
+                                ? runs.reads.at(j).establishes
+                                : runs.arrayStores.at(j).establishes;
+                        // A run chained in from an earlier block, or a second
+                        // run under the pre-span rule: either way the span
+                        // stops here rather than testing a proof it did not
+                        // emit.
+                        if (!establishes) break;
+                        if (!spans && !group.proofs.empty()) break;
+                        at = static_cast<uint32_t>(group.proofs.size());
+                        group.proofs.push_back(pf);
+                    }
+                    RunArmStep step;
+                    step.inst = static_cast<uint32_t>(j);
+                    step.proof = at;
+                    step.index = index;
+                    if (pf.kind == RunArmProof::Kind::Read) {
+                        group.result.push_back(inst.result);
+                    } else {
+                        step.value = inst.operands[1];
+                    }
+                    group.steps.push_back(step);
+                    last = j;
+                    continue;
                 }
-                group.index.push_back(*idx);
-                group.result.push_back(inst.result);
+                if (!spans || !runArmDuplicable(inst)) break;
+                RunArmStep step;
+                step.inst = static_cast<uint32_t>(j);
+                group.steps.push_back(step);
+                if (inst.result != il::kNoValue) group.result.push_back(inst.result);
             }
-            group.last = static_cast<uint32_t>(j == i ? i : j - 1);
+            group.last = static_cast<uint32_t>(last);
+            // Trailing duplicables buy nothing and would only widen the join.
+            while (!group.steps.empty() && group.steps.back().inst > group.last) {
+                if (block.instructions[group.steps.back().inst].result != il::kNoValue) {
+                    group.result.pop_back();
+                }
+                group.steps.pop_back();
+            }
 
-            // Everything the run holds IN THIS BLOCK has to be inside the span
-            // just walked. A member after the gap means the run is interleaved
-            // with something else, and interleaved is the case the per-member
-            // shape already handles.
-            for (size_t k = j; !refused && k < block.instructions.size(); ++k) {
-                if (runs.reads.at(k).run == head.run) refused = true;
+            // Everything each covered run holds IN THIS BLOCK has to be inside
+            // the span just walked. A member after the end means the run is cut,
+            // and a cut run would leave the rest of it spending a proof this
+            // planner never described.
+            for (size_t k = group.last + 1; !refused && k < n; ++k) {
+                for (const RunArmProof& pf : group.proofs) {
+                    // The two run numberings are separate namespaces, so the
+                    // comparison is inside one kind and never across them.
+                    const uint32_t run = pf.kind == RunArmProof::Kind::Read
+                                             ? runs.reads.at(k).run
+                                             : runs.arrayStores.at(k).run;
+                    if (run == pf.run) refused = true;
+                }
             }
-            if (!refused && group.size() >= 2) {
+            // A proof's ladder stands at the group's head, so its receiver has
+            // to be a value the head already has. A receiver the span itself
+            // defines would be one the ladder reads before it exists.
+            for (uint32_t k = group.first; !refused && k <= group.last; ++k) {
+                const il::ValueId def = block.instructions[k].result;
+                if (def == il::kNoValue) continue;
+                for (const RunArmProof& pf : group.proofs) {
+                    if (pf.receiver == def) refused = true;
+                }
+            }
+
+            if (!refused && group.memberCount() >= 2) {
                 const uint32_t id = static_cast<uint32_t>(plan.groups.size());
                 plan.startOf[plan.blockBase[b] + group.first] = id;
                 for (uint32_t k = group.first; k <= group.last; ++k) {
                     plan.memberOf[plan.blockBase[b] + k] = id;
                 }
                 plan.groups.push_back(std::move(group));
+                i = static_cast<size_t>(plan.groups.back().last) + 1;
+                continue;
             }
             i = j > i ? j : i + 1;
         }
@@ -122,16 +303,36 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
 }
 
 bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
-    const std::string tag = "run" + std::to_string(group.run) + ".";
+    const il::Block& block = func_.blocks[group.block];
+    const std::string tag =
+        "arm" + std::to_string(group.block) + "_" + std::to_string(group.first) + ".";
 
-    // The receiver out of its slot. The proof derives a pointer FROM it, and a
-    // pointer derived from a register the collector has moved out from under
-    // points into the place the object used to be — so this is the one reload
-    // the group does not try to skip.
+    // ---- every covered run's ladder, at the head, and one test --------------
+    //
+    // The receivers come out of their slots. A proof derives a pointer FROM one,
+    // and a pointer derived from a register the collector has moved out from
+    // under points into the place the object used to be — so this is the one
+    // reload the group does not try to skip.
     currentILInst_ = group.first;
-    reload(group.receiver, false, LiveRootPlan::kReload);
-    llvm::Value* obj = values_[group.receiver];
-    if (!require(obj != nullptr, "Undefined receiver for a proven element run")) return false;
+    std::vector<ReceiverProof> reads(group.proofs.size());
+    std::vector<ArrayStoreProof> arrayStores(group.proofs.size());
+    llvm::Value* ok = nullptr;
+    for (size_t p = 0; p < group.proofs.size(); ++p) {
+        const RunArmProof& pf = group.proofs[p];
+        reload(pf.receiver, false, LiveRootPlan::kReload);
+        llvm::Value* obj = values_[pf.receiver];
+        if (!require(obj != nullptr, "Undefined receiver for a proven element run")) return false;
+        llvm::Value* mine = nullptr;
+        if (pf.kind == RunArmProof::Kind::Read) {
+            reads[p] = emitReceiverProof(builder_, obj, pf.receiver, pf.run, pf.maxIndex);
+            mine = reads[p].ok;
+        } else {
+            arrayStores[p] = emitArrayStoreProof(builder_, obj, pf.receiver, pf.run, pf.maxIndex);
+            mine = arrayStores[p].ok;
+        }
+        ok = ok == nullptr ? mine : builder_.CreateAnd(ok, mine, tag + "ok");
+    }
+    if (!require(ok != nullptr, "A run-arm group with no proof")) return false;
 
     // Every restored value into a register that dominates both arms, BEFORE the
     // proof branches. The plan names the block whose emission wrote each one and
@@ -156,60 +357,93 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
         reload(v, /*holeInsensitive=*/false, LiveRootPlan::kReload);
     }
 
-    ReceiverProof proof =
-        emitReceiverProof(builder_, obj, group.receiver, group.run, group.maxIndex);
     const StoreProof enteringStore = storeProof_;
     const ArrayStoreProof enteringArrayStore = arrayStoreProof_;
+    const ReceiverProof enteringRead = recvProof_;
 
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(shared_.ctx, tag + "fast", llvmFunc_);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(shared_.ctx, tag + "slow", llvmFunc_);
     llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(shared_.ctx, tag + "join", llvmFunc_);
-    builder_.CreateCondBr(proof.ok, fastBb, slowBb);
+    builder_.CreateCondBr(ok, fastBb, slowBb);
 
-    // ---- the fast arm: loads, and not one other thing ----------------------
+    // ---- the fast arm: the span, and not one other thing --------------------
     //
-    // No call, no allocation, no exception test — so nothing here is a
-    // safepoint, no result needs its slot written, and every register that was
-    // live coming in is still live and still correct going out.
+    // Nothing `il::canCollect` admits and no exception test — a helper that
+    // allocates nothing is still allowed, and `bronze_strict_eq` is one — so
+    // nothing here is a safepoint, no result needs its slot written, and every
+    // register that was live coming in is still live and still correct going
+    // out.
     builder_.SetInsertPoint(fastBb);
-    std::vector<llvm::Value*> fastResult;
-    fastResult.reserve(group.size());
-    for (size_t m = 0; m < group.size(); ++m) {
-        const il::ValueId res = group.result[m];
-        const bool raw = holeRawSlotEnabled() && res < holeRawSafe_.size() &&
-                         holeRawSafe_[res] != 0;
-        fastResult.push_back(emitElementLoad(builder_, proof, group.index[m], raw));
-        // The slot the join may write below then holds the element's own bits,
-        // and every reload corrects them — which is sound here for the reason
-        // `holeRawSafe_` names and for no weaker one.
-        if (raw && slotOf_[res] != kNoSlot) holeRawSlot_[res] = 1;
+    std::vector<llvm::Value*> savedValues = values_;
+    std::vector<uint32_t> savedRegBlock = regBlock_;
+    // Values the arm has already defined. An operand in this set is read out of
+    // the register the arm just produced; anything else comes out of its slot,
+    // which is current because nothing between the def and here could collect.
+    std::vector<uint8_t> armDefined(func_.valueCount, 0);
+    auto armReload = [&](il::ValueId v, bool holeInsensitive) {
+        if (v == il::kNoValue || v >= func_.valueCount) return;
+        if (armDefined[v] != 0) return;
+        reload(v, holeInsensitive, LiveRootPlan::kReload);
+    };
+    for (const RunArmStep& step : group.steps) {
+        const il::Instruction& inst = block.instructions[step.inst];
+        currentILInst_ = step.inst;
+        if (step.proof == RunArmStep::kNoProof) {
+            for (size_t k = 0; k < inst.operands.size(); ++k) {
+                armReload(inst.operands[k], k == 0 && holeInsensitiveUse(inst, inst.operands[k]));
+            }
+            proofsCarried_ = false;
+            if (!emitInstruction(inst)) return false;
+        } else if (group.proofs[step.proof].kind == RunArmProof::Kind::Read) {
+            const il::ValueId res = inst.result;
+            const bool raw =
+                holeRawSlotEnabled() && res < holeRawSafe_.size() && holeRawSafe_[res] != 0;
+            values_[res] = emitElementLoad(builder_, reads[step.proof], step.index, raw);
+            // The slot the join may write below then holds the element's own
+            // bits, and every reload corrects them — which is sound here for the
+            // reason `holeRawSafe_` names and for no weaker one.
+            if (raw && slotOf_[res] != kNoSlot) holeRawSlot_[res] = 1;
+        } else {
+            armReload(step.value, false);
+            llvm::Value* val = values_[step.value];
+            if (!require(val != nullptr, "Undefined value in a proven element store")) return false;
+            emitElementStore(builder_, arrayStores[step.proof], step.index, val);
+        }
+        if (inst.result != il::kNoValue && inst.result < func_.valueCount &&
+            values_[inst.result] != nullptr) {
+            regBlock_[inst.result] = group.block;
+            armDefined[inst.result] = 1;
+        }
     }
+    std::vector<llvm::Value*> fastResult;
+    fastResult.reserve(group.result.size());
+    for (il::ValueId v : group.result) fastResult.push_back(values_[v]);
     std::vector<llvm::Value*> fastRestore;
     fastRestore.reserve(group.restore.size());
     for (il::ValueId v : group.restore) fastRestore.push_back(values_[v]);
     llvm::BasicBlock* fastExit = builder_.GetInsertBlock();
     builder_.CreateBr(joinBb);
+    values_ = savedValues;
+    regBlock_ = savedRegBlock;
 
     // ---- the slow arm: exactly the per-member emission, in one block -------
     //
-    // The proofs are dead in here: this arm was selected because the receiver
-    // failed the ladder, and the store proofs cannot survive the ladders that
-    // follow. `values_` and `regBlock_` are put back afterwards because the
-    // registers this arm writes live in blocks that reach the join and nothing
-    // past it — the join's phis are what the rest of the function reads.
+    // The proofs are dead in here: this arm was selected because one of the
+    // ladders failed, and no proof can survive the ladders that follow.
+    // `values_` and `regBlock_` are put back afterwards because the registers
+    // this arm writes live in blocks that reach the join and nothing past it —
+    // the join's phis are what the rest of the function reads.
     builder_.SetInsertPoint(slowBb);
     // What the arm is about to put at risk, into the slots that will forward it.
     // A value the rest of the function keeps in its slot is already there — this
-    // is the price for the ones that are NOT, the run results of an earlier
-    // group whose fast arm wrote nothing at all, and it is paid on the arm that
+    // is the price for the ones that are NOT, the results of an earlier group
+    // whose fast arm wrote nothing at all, and it is paid on the arm that
     // collects rather than on the arm that does not.
     for (il::ValueId v : group.restore) {
         if (slotOf_[v] != kNoSlot && values_[v] != nullptr) {
             builder_.CreateStore(values_[v], slotAddr(slotOf_[v]));
         }
     }
-    std::vector<llvm::Value*> savedValues = values_;
-    std::vector<uint32_t> savedRegBlock = regBlock_;
     recvProof_ = ReceiverProof{};
     storeProof_ = StoreProof{};
     arrayStoreProof_ = ArrayStoreProof{};
@@ -230,8 +464,8 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
         return builder_.CreateLoad(i64Ty_, slotAddr(slotOf_[v]));
     };
     std::vector<llvm::Value*> slowResult;
-    slowResult.reserve(group.size());
-    for (il::ValueId r : group.result) slowResult.push_back(currentValue(r));
+    slowResult.reserve(group.result.size());
+    for (il::ValueId v : group.result) slowResult.push_back(currentValue(v));
     std::vector<llvm::Value*> slowRestore;
     slowRestore.reserve(group.restore.size());
     for (il::ValueId v : group.restore) slowRestore.push_back(currentValue(v));
@@ -242,23 +476,35 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
 
     // ---- the join ----------------------------------------------------------
     builder_.SetInsertPoint(joinBb);
-    auto join = [&](llvm::Value* fast, llvm::Value* slow, il::ValueId v, const std::string& name) {
+    auto join = [&](llvm::Value* fast, llvm::Value* slow, il::ValueId v, const std::string& name,
+                    bool defined) {
         if (fast == nullptr || slow == nullptr) return;
         // A value both arms hand over unchanged is a value neither arm could
         // have moved — it has no root slot, so no collection forwards it and no
-        // reload rewrites it. The phi would be its own operand twice.
-        if (fast == slow) return;
+        // reload rewrites it, and the phi would be its own operand twice. A
+        // value that entered the group keeps the register it entered with; one
+        // the SPAN defined has no such register, and the two arms agreeing about
+        // it is exactly what makes either answer legal after the join. That is
+        // the `const.f64` a duplicated instruction reads, which LLVM hands both
+        // arms as one Constant.
+        if (fast == slow) {
+            if (defined) {
+                values_[v] = fast;
+                regBlock_[v] = group.block;
+            }
+            return;
+        }
         llvm::PHINode* phi = builder_.CreatePHI(fast->getType(), 2, name + std::to_string(v));
         phi->addIncoming(fast, fastExit);
         phi->addIncoming(slow, slowExit);
         values_[v] = phi;
         regBlock_[v] = group.block;
     };
-    for (size_t m = 0; m < group.size(); ++m) {
-        join(fastResult[m], slowResult[m], group.result[m], tag + "e");
+    for (size_t m = 0; m < group.result.size(); ++m) {
+        join(fastResult[m], slowResult[m], group.result[m], tag + "v", /*defined=*/true);
     }
     for (size_t k = 0; k < group.restore.size(); ++k) {
-        join(fastRestore[k], slowRestore[k], group.restore[k], tag + "live");
+        join(fastRestore[k], slowRestore[k], group.restore[k], tag + "live", /*defined=*/false);
     }
     // The root stores only once every phi is in place: a phi has to be at the
     // top of its block, and a store between two of them is not.
@@ -275,12 +521,22 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
     }
 
     // Every proof the group carried across its own join, on the fast edge only.
-    // The receiver proof is the group's own and dies here unless a later block
-    // continues its run; the store proofs belong to somebody else's run and are
-    // carried exactly as a single member would have carried them.
-    recvProof_ = proof;
+    // A proof the group ESTABLISHED is the group's own and lives on for a later
+    // block that continues its run; one the group did not establish belongs to
+    // somebody else's run and is carried exactly as a single member would have
+    // carried it. Where the group established several of a kind the last one
+    // stands, because a proof is a single live value and the run the block
+    // continues into can only be the one that ended last.
+    recvProof_ = enteringRead;
     storeProof_ = enteringStore;
     arrayStoreProof_ = enteringArrayStore;
+    for (size_t p = 0; p < group.proofs.size(); ++p) {
+        if (group.proofs[p].kind == RunArmProof::Kind::Read) {
+            recvProof_ = reads[p];
+        } else {
+            arrayStoreProof_ = arrayStores[p];
+        }
+    }
     rejoinReceiverProof(builder_, recvProof_, fastExit, joinBb);
     rejoinStoreProof(storeProof_, fastExit, joinBb);
     rejoinArrayStoreProof(arrayStoreProof_, fastExit, joinBb);

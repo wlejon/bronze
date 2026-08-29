@@ -150,6 +150,13 @@ struct ProvenArrayStore {
     llvm::BasicBlock* fastBb = nullptr;
 };
 
+// One member of a run, as a straight line: the GEP and the eight-byte store. No
+// branch of its own, which is what makes it a step of a run-arm group's fast arm
+// (llvm_run_arms.h) as well as the arm `emitProvenArrayElementStore` builds
+// under a test.
+void emitElementStore(llvm::IRBuilder<>& builder, const ArrayStoreProof& proof, uint32_t index,
+                      llvm::Value* valBits);
+
 // The proof's fast arm for one store, emitted in front of the property cache.
 // On return the builder sits in a fresh block — the one the cache's own ladder
 // should be emitted into — so the caller carries on as if nothing happened.

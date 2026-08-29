@@ -1,12 +1,13 @@
-// A RUN OF READS AS TWO ARMS (src/codegen-llvm/llvm_run_arms.h), read off
-// hand-built IL.
+// A SPAN OF ELEMENT ACCESSES AS TWO ARMS (src/codegen-llvm/llvm_run_arms.h),
+// read off hand-built IL.
 //
-// The plan is where every decision is taken — which runs become groups, what
-// the join owes the block after it, whose root slot the fast arm may leave
-// alone — and every one of those is exact on eight instructions and arithmetic
-// on counts anywhere else. What the ARMS then emit is pinned against bytes in
-// tests/oracle/cases/recv_proof_run_arms.js, which is where a wrong answer here
-// shows up as a use-after-move under GC stress.
+// The plan is where every decision is taken — which spans become groups, which
+// runs one test covers, what the join owes the block after it, whose root slot
+// the fast arm may leave alone — and every one of those is exact on eight
+// instructions and arithmetic on counts anywhere else. What the ARMS then emit
+// is pinned against bytes in tests/oracle/cases/recv_proof_run_arms.js and
+// recv_proof_run_arms_interleaved.js, which is where a wrong answer here shows
+// up as a use-after-move under GC stress.
 
 #include <doctest/doctest.h>
 
@@ -62,7 +63,7 @@ struct FuncBuilder {
         return func.blocks[b].instructions.size() - 1;
     }
 
-    // A constant-index read: the shape a run is made of.
+    // A constant-index read: the shape a read run is made of.
     il::ValueId read(size_t b, il::ValueId recv, uint32_t index) {
         il::Instruction i;
         i.op = il::Op::PropGet;
@@ -72,6 +73,15 @@ struct FuncBuilder {
         i.keyIndex = index;
         push(b, std::move(i));
         return next - 1;
+    }
+
+    // A constant-index write: the shape an Array store run is made of.
+    void store(size_t b, il::ValueId recv, uint32_t index, il::ValueId value) {
+        il::Instruction i;
+        i.op = il::Op::PropSet;
+        i.operands = {recv, value};
+        i.keyIndex = index;
+        push(b, std::move(i));
     }
 
     // A NAMED read, which is no run member and which collects.
@@ -99,6 +109,28 @@ struct FuncBuilder {
         il::Instruction i;
         i.op = il::Op::IsNumber;
         i.type = il::Type::Bool;
+        i.result = next++;
+        i.operands = {of};
+        push(b, std::move(i));
+        return next - 1;
+    }
+
+    // A machine-number multiply: duplicable, so a span spans it.
+    il::ValueId mulF64(size_t b, il::ValueId x, il::ValueId y) {
+        il::Instruction i;
+        i.op = il::Op::Mul;
+        i.type = il::Type::F64;
+        i.result = next++;
+        i.operands = {x, y};
+        push(b, std::move(i));
+        return next - 1;
+    }
+
+    il::ValueId boxF64(size_t b, il::ValueId of) {
+        il::Instruction i;
+        i.op = il::Op::Box;
+        i.type = il::Type::Dynamic;
+        i.boxType = il::Type::F64;
         i.result = next++;
         i.operands = {of};
         push(b, std::move(i));
@@ -138,6 +170,14 @@ bool holds(const std::vector<il::ValueId>& list, il::ValueId v) {
     return false;
 }
 
+std::vector<uint32_t> indices(const RunArmGroup& group) {
+    std::vector<uint32_t> out;
+    for (const RunArmStep& s : group.steps) {
+        if (s.proof != RunArmStep::kNoProof) out.push_back(s.index);
+    }
+    return out;
+}
+
 }  // namespace
 
 TEST_CASE("a run whose members are consecutive becomes one group") {
@@ -168,14 +208,173 @@ TEST_CASE("a run whose members are consecutive becomes one group") {
     CHECK(group.block == 0u);
     CHECK(group.first == 1u);
     CHECK(group.last == 3u);
-    CHECK(group.receiver == recv);
-    CHECK(group.maxIndex == 2u);
-    CHECK(group.index == std::vector<uint32_t>{0, 1, 2});
+    REQUIRE(group.proofs.size() == 1u);
+    CHECK(group.proofs[0].kind == RunArmProof::Kind::Read);
+    CHECK(group.proofs[0].receiver == recv);
+    CHECK(group.proofs[0].maxIndex == 2u);
+    CHECK(indices(group) == std::vector<uint32_t>{0, 1, 2});
     CHECK(group.result == std::vector<il::ValueId>{e0, e1, e2});
     CHECK(arms.startAt(0, 1) == 0u);
     CHECK(arms.startAt(0, 2) == RunArmPlan::kNoGroup);
     CHECK(arms.memberAt(0, 3) == 0u);
     CHECK(arms.memberAt(0, 4) == RunArmPlan::kNoGroup);
+}
+
+TEST_CASE("a read run interleaved with an Array store run is ONE group under TWO proofs") {
+    //   `Matrix4.copy` in miniature: te[i] = me[i], twice. Neither run's members
+    //   are consecutive; together they are the whole span.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId src = fb.param();
+    const il::ValueId dst = fb.param();
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    fb.store(b0, dst, 0, e0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    fb.store(b0, dst, 1, e1);
+    fb.ret(b0, dst);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    const RunArmGroup& group = arms.groups[0];
+    CHECK(group.first == 0u);
+    CHECK(group.last == 3u);
+    CHECK(group.memberCount() == 4u);
+    REQUIRE(group.proofs.size() == 2u);
+    CHECK(group.proofs[0].kind == RunArmProof::Kind::Read);
+    CHECK(group.proofs[0].receiver == src);
+    CHECK(group.proofs[1].kind == RunArmProof::Kind::ArrayStore);
+    CHECK(group.proofs[1].receiver == dst);
+    // Only the reads define anything, and the steps keep program order — read 0,
+    // write 0, read 1, write 1 — which is what makes `m.copy(m)` come out the
+    // same on both arms.
+    CHECK(group.result == std::vector<il::ValueId>{e0, e1});
+    CHECK(group.steps[0].proof == 0u);
+    CHECK(group.steps[1].proof == 1u);
+    CHECK(group.steps[1].value == e0);
+    CHECK(group.steps[3].value == e1);
+}
+
+TEST_CASE("one receiver read and written is still one group") {
+    //   `m.copy(m)`: the source IS the destination. Two proofs about one object,
+    //   and the span holds them in program order, so element i is read before it
+    //   is written and after the element before it was.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId self = fb.param();
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, self, 0);
+    fb.store(b0, self, 0, e0);
+    const il::ValueId e1 = fb.read(b0, self, 1);
+    fb.store(b0, self, 1, e1);
+    fb.ret(b0, self);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    REQUIRE(arms.groups[0].proofs.size() == 2u);
+    CHECK(arms.groups[0].proofs[0].receiver == self);
+    CHECK(arms.groups[0].proofs[1].receiver == self);
+    CHECK(arms.groups[0].last == 3u);
+}
+
+TEST_CASE("arithmetic between two members is duplicated into the span") {
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId recv = fb.param();
+    const il::ValueId x = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, recv, 0);
+    const il::ValueId scaled = fb.mulF64(b0, x, x);
+    const il::ValueId e1 = fb.read(b0, recv, 1);
+    fb.ret(b0, e1);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    const RunArmGroup& group = arms.groups[0];
+    CHECK(group.first == 0u);
+    CHECK(group.last == 2u);
+    CHECK(group.steps.size() == 3u);
+    CHECK(group.steps[1].proof == RunArmStep::kNoProof);
+    // The multiply defines a value like a member does, so the join phis it and
+    // the block after the group reads what the two arms agreed on.
+    CHECK(group.result == std::vector<il::ValueId>{e0, scaled, e1});
+}
+
+TEST_CASE("a collecting non-member ends the span in front of it") {
+    //   The run itself ends at the named read (it collects), so what stands in
+    //   front is a whole run and becomes a group; the read after it opens a run
+    //   of one, which is no run at all.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId recv = fb.param();
+    const il::ValueId other = fb.param();
+    const size_t b0 = fb.block();
+    fb.read(b0, recv, 0);
+    fb.read(b0, recv, 1);
+    fb.namedRead(b0, other);
+    const il::ValueId last = fb.read(b0, recv, 2);
+    fb.ret(b0, last);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    CHECK(arms.groups[0].first == 0u);
+    CHECK(arms.groups[0].last == 1u);
+    CHECK(arms.memberAt(0, 2) == RunArmPlan::kNoGroup);
+    CHECK(arms.memberAt(0, 3) == RunArmPlan::kNoGroup);
+}
+
+TEST_CASE("a run cut by something the fast arm cannot hold gets no group") {
+    //   A named `prop.set` is TRANSPARENT to a run's proof (llvm_recv_proof.h),
+    //   so the run still spans it — but its three bare-store arms are only three
+    //   of its arms, and the miss arm calls. The fast arm cannot hold it, the
+    //   span stops in front of it, and a member of the same run stands after the
+    //   span: the group is refused rather than cut.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId recv = fb.param();
+    const il::ValueId other = fb.param();
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, recv, 0);
+    {
+        il::Instruction i;
+        i.op = il::Op::PropSet;
+        i.operands = {other, e0};
+        i.keyIndex = kNamedKey;
+        fb.push(b0, std::move(i));
+    }
+    const il::ValueId e1 = fb.read(b0, recv, 1);
+    fb.ret(b0, e1);
+    fb.finish();
+
+    // The run is still there — this is about the ARMS refusing it, not about the
+    // proof refusing it.
+    const BlockRunPlan runs = planBlockRuns(module, fb.func, 0);
+    CHECK(runs.reads.at(0).run == 0u);
+    CHECK(runs.reads.at(2).run == 0u);
+    CHECK(planRunArms(module, fb.func).groups.empty());
+}
+
+TEST_CASE("a proof whose receiver the span itself defines is refused") {
+    //   The ladders stand at the group's HEAD, so a receiver the span defines is
+    //   one the ladder would read before it exists.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId recv = fb.param();
+    const il::ValueId x = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    fb.read(b0, recv, 0);
+    fb.read(b0, recv, 1);
+    const il::ValueId boxed = fb.boxF64(b0, x);
+    fb.store(b0, boxed, 0, x);
+    fb.store(b0, boxed, 1, x);
+    fb.ret(b0, boxed);
+    fb.finish();
+
+    CHECK(planRunArms(module, fb.func).groups.empty());
 }
 
 TEST_CASE("a value live across a group is restored at the join and read there") {
@@ -231,33 +430,27 @@ TEST_CASE("a result no reader can reach through its slot needs no store on the f
     CHECK_FALSE(plan.armLocal(e2));
 }
 
-TEST_CASE("a run with anything between two of its members gets no group") {
-    //   A named `prop.set` is TRANSPARENT to a run's proof (llvm_recv_proof.h),
-    //   so the run still spans it — and its members are no longer consecutive,
-    //   which is exactly the case the arms refuse.
+TEST_CASE("a read consumed INSIDE its own span still needs no store on the fast arm") {
+    //   `copy`'s reads go straight into `copy`'s stores. That use reloads on the
+    //   slow arm — which wrote the slot one instruction earlier — and reads the
+    //   fast arm's register on the arm that wrote no slot at all, so it is not a
+    //   reader the fast arm owes anything to.
     il::Module module = makeModule();
     FuncBuilder fb;
-    const il::ValueId recv = fb.param();
-    const il::ValueId other = fb.param();
+    const il::ValueId src = fb.param();
+    const il::ValueId dst = fb.param();
     const size_t b0 = fb.block();
-    const il::ValueId e0 = fb.read(b0, recv, 0);
-    {
-        il::Instruction i;
-        i.op = il::Op::PropSet;
-        i.operands = {other, e0};
-        i.keyIndex = kNamedKey;
-        fb.push(b0, std::move(i));
-    }
-    const il::ValueId e1 = fb.read(b0, recv, 1);
-    fb.ret(b0, e1);
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    fb.store(b0, dst, 0, e0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    fb.store(b0, dst, 1, e1);
+    fb.ret(b0, dst);
     fb.finish();
 
-    // The run is still there — this is about the ARMS refusing it, not about the
-    // proof refusing it.
-    const BlockRunPlan runs = planBlockRuns(module, fb.func, 0);
-    CHECK(runs.reads.at(0).run == 0u);
-    CHECK(runs.reads.at(2).run == 0u);
-    CHECK(planRunArms(module, fb.func).groups.empty());
+    const LiveRootPlan plan = planLiveRoots(fb.func, planRunArms(module, fb.func));
+    REQUIRE(plan.arms.groups.size() == 1u);
+    CHECK(plan.armLocal(e0));
+    CHECK(plan.armLocal(e1));
 }
 
 TEST_CASE("a run of one is no group") {

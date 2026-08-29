@@ -165,12 +165,14 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
     // which writes a counter), `bronze_typeof` (it can intern), and every
     // `bronze_rel_*` (an object operand's `valueOf` is program text).
     //
-    // Soundness against the collector: the heap is mark-sweep and NON-MOVING
-    // (runtime/heap.h), so a Value's raw bits stay valid for as long as the
-    // object lives, and `memory(read)` cannot be sunk past an opaque call —
-    // which is what every collection point is — because such a call may write
-    // what the read reads. Neither of the two ways a readonly call may legally
-    // move can put it after its operand has been collected.
+    // Soundness against the collector: the heap is a SEMISPACE COPYING
+    // collector (runtime/heap.h), so a Value's raw bits are valid only between
+    // collections — but none of the three helpers above allocates, so none of
+    // them is a collection point, and `memory(read)` cannot be sunk past an
+    // opaque call, which is what every collection point is, because such a call
+    // may write what the read reads. Neither of the two ways a readonly call
+    // may legally move can put it on the far side of a collection that moved
+    // its operand.
     //
     // BRONZE_NO_PURE_PREDICATES=1 is the A/B seam.
     if (purePredicateHelpers()) {

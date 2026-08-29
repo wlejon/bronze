@@ -149,12 +149,26 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     return proof;
 }
 
+void emitElementStore(llvm::IRBuilder<>& builder, const ArrayStoreProof& proof, uint32_t index,
+                      llvm::Value* valBits) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    // No test on the value: an Array element slot holds a Value and `arr[i] = v`
+    // coerces nothing, so the bits arrive as they are. The store is tagged
+    // ArrayElementsData, the same family a proven READ of the same array
+    // carries, which is what keeps a read of a slot this run has written from
+    // being hoisted above the write (llvm_alias.h: the family's noalias list
+    // does not name itself).
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, proof.base, builder.getInt64(index));
+    auto* store = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+    tagArrayElementsAccess(store, ctx);
+}
+
 ProvenArrayStore emitProvenArrayElementStore(llvm::IRBuilder<>& builder,
                                              const ArrayStoreProof& proof, uint32_t index,
                                              llvm::Value* valBits, llvm::BasicBlock* doneBb) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
-    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
 
     const std::string tag =
         "astore" + std::to_string(proof.run) + ".e" + std::to_string(index) + ".";
@@ -162,16 +176,8 @@ ProvenArrayStore emitProvenArrayElementStore(llvm::IRBuilder<>& builder,
     llvm::BasicBlock* ladderBb = llvm::BasicBlock::Create(ctx, tag + "ladder", fn);
     builder.CreateCondBr(proof.ok, fastBb, ladderBb);
 
-    // No test on the value: an Array element slot holds a Value and `arr[i] = v`
-    // coerces nothing, so the bits arrive as they are. The store is tagged
-    // ArrayElementsData, the same family a proven READ of the same array
-    // carries, which is what keeps a read of a slot this run has written from
-    // being hoisted above the write (llvm_alias.h: the family's noalias list
-    // does not name itself).
     builder.SetInsertPoint(fastBb);
-    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, proof.base, builder.getInt64(index));
-    auto* store = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
-    tagArrayElementsAccess(store, ctx);
+    emitElementStore(builder, proof, index, valBits);
     llvm::BasicBlock* fastExit = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

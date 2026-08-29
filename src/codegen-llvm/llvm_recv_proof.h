@@ -35,12 +35,14 @@
 // forward unchanged, every other arm carries `false`, and a run that misses
 // once simply finishes on the ladder it would have used anyway.
 //
-// A run whose members are CONSECUTIVE instructions does not have to be emitted
-// that way, and is not: llvm_run_arms.h branches on the proof once and puts the
-// loads on one arm and the ladders on the other, which is what makes the fast
+// A run does not have to be emitted that way, and usually is not:
+// llvm_run_arms.h branches once on the proofs of every run a SPAN of
+// instructions covers and puts the loads, the stores and the arithmetic between
+// them on one arm and the ladders on the other, which is what makes the fast
 // path free of safepoints and so free of root traffic. Everything below is what
-// that arrangement is built out of, and it is still what an interleaved run —
-// `Matrix4.copy`, `Matrix4.toArray` — is emitted as.
+// that arrangement is built out of, and it is still what a site the span rule
+// refuses — a typed-array store run, a run cut by a named `prop.set` — is
+// emitted as.
 //
 // THREE PROOFS AT ONCE. `Matrix4.toArray` interleaves a run of reads off
 // `this.elements` with a run of stores into a Float32Array, and `Matrix4.copy`

@@ -183,7 +183,13 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             // above reads its own: the run's FIRST member pays for the proof in
             // front of its own cache; the rest spend what it left, and a site in
             // no run passes nothing and emits exactly what it always did.
-            const ArrayStoreRunPlan::Site runSite = runPlan_.arrayStores.at(currentILInst_);
+            //
+            // Inside a run-arm group's SLOW ARM there is no run left to spend,
+            // for the reason the PropGet case above gives: the group already
+            // tested every proof it covers once, and this is the arm it chose
+            // when the test said no.
+            const ArrayStoreRunPlan::Site runSite =
+                inRunArm_ ? ArrayStoreRunPlan::Site{} : runPlan_.arrayStores.at(currentILInst_);
             ArrayStoreProof* proofArg = nullptr;
             if (runSite.run == ArrayStoreRunPlan::kNoRun) {
                 arrayStoreProof_ = ArrayStoreProof{};
@@ -224,7 +230,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             // rest branch on what it left. The fast arm is emitted in front of
             // emitElemSet and joins it at a block of this emitter's own, so
             // llvm_elem.cpp keeps emitting exactly the ladder it always did.
-            const StoreRunPlan::Site site = runPlan_.stores.at(currentILInst_);
+            const StoreRunPlan::Site site =
+                inRunArm_ ? StoreRunPlan::Site{} : runPlan_.stores.at(currentILInst_);
             ProvenStore proven;
             llvm::BasicBlock* doneBb = nullptr;
             if (site.run != StoreRunPlan::kNoRun) {
@@ -281,7 +288,7 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             // where the ladder holds and the unguarded form is the fallback,
             // which is exactly what this site emitted before it had a run.
             const ArrayStoreRunPlan::Site runSite =
-                kind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)
+                !inRunArm_ && kind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)
                     ? runPlan_.arrayStores.at(currentILInst_)
                     : ArrayStoreRunPlan::Site{};
             if (runSite.run == ArrayStoreRunPlan::kNoRun) {

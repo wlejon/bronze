@@ -61,11 +61,11 @@
 // it: no LLVM value enters, so the whole module's frames can be laid out before
 // any body is emitted, and a test can assert the answer against hand-built IL.
 //
-// WHAT A RUN-ARM GROUP CHANGES (llvm_run_arms.h). A group is a run of element
-// reads emitted as one proof branch over two straight-line arms, and its join
-// hands every value live across it forward in a register — the fast arm's own,
-// or the slow arm's reload. Two answers follow from that and neither is a
-// weakening of the rule above:
+// WHAT A RUN-ARM GROUP CHANGES (llvm_run_arms.h). A group is a SPAN of element
+// accesses and the arithmetic between them, emitted as one proof branch over
+// two straight-line arms, and its join hands every value live across it forward
+// in a register — the fast arm's own, or the slow arm's reload. Two answers
+// follow from that and neither is a weakening of the rule above:
 //
 //   needsSlot is UNCHANGED. The slow arm really does collect at every member,
 //   so a value live across the group really does need a slot to be forwarded
@@ -73,8 +73,11 @@
 //
 //   anchor treats the group as ONE instruction that does not collect. That is
 //   the fast arm's truth, and the join makes it the slow arm's truth as well.
-//   `armLocal` below then names the results whose slot NOTHING outside the slow
-//   arm ever reads, and the fast arm stores nothing for those at all.
+//   `armLocal` below then names the span's definitions whose slot NOTHING
+//   outside the slow arm ever reads, and the fast arm stores nothing for those
+//   at all. A use INSIDE the same span is not an outside reader: it reloads on
+//   the slow arm, which wrote the slot itself one instruction earlier, and it
+//   reads the fast arm's register on the arm that wrote no slot at all.
 //
 // WHY THE ANCHOR MEETS ITS PREDECESSORS. A register survives into a block whose
 // every predecessor carries the same one — not merely into a block with a
