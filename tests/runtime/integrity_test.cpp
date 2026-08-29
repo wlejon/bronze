@@ -29,10 +29,14 @@
 #include "runtime/map.h"
 #include "runtime/typed_array.h"
 #include "runtime/object.h"
+#include "runtime/heap.h"
+#include "runtime/property_key.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/string.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -308,4 +312,109 @@ TEST_CASE("reading arguments.callee in strict mode throws TypeError") {
     (void)res;
     CHECK(rtExceptionPending());
     bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
+// The conversion into dictionary mode is the one moment every attribute is
+// COPIED rather than looked up, and the language cannot see it happen. An
+// oracle case can only reach it through `preventExtensions` or a `delete`, and
+// `freeze` and `seal` hide a copy that drops attributes because they re-stamp
+// every entry afterwards. So the copy is held here, at the level it is made.
+TEST_CASE("dictionary conversion keeps every attribute the shape node carried") {
+    NonMovingArena arena;
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> self{
+        Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena)))};
+    Rooted<Value> key{Value::fromString(StringHeader::createFromUTF8(heap, "x"))};
+    Rooted<Value> val{Value::fromDouble(1.0)};
+    // `Object.defineProperty(o, 'x', {writable: false, configurable: false})`
+    // on a fresh object: a shape node carries all four attributes, so this
+    // stays out of dictionary mode.
+    self.get().asObject<ObjectHeader>()->setProp(heap, arena, key, val, /*ic=*/nullptr,
+                                                 /*enumerable=*/true, /*defineOwn=*/true,
+                                                 /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                 /*writable=*/false, /*configurable=*/false);
+    const PropertyKey stored = PropertyKey::fromValue(key.get());
+    REQUIRE_FALSE(self.get().asObject<ObjectHeader>()->shape->isDictionary());
+    PropertyInfo before;
+    REQUIRE(self.get().asObject<ObjectHeader>()->shape->lookupProperty(stored, before));
+    CHECK_FALSE(before.writable);
+    CHECK_FALSE(before.configurable);
+    CHECK(before.enumerable);
+
+    ObjectHeader::toDictionary(arena, self);
+
+    Dictionary* d = self.get().asObject<ObjectHeader>()->shape->dict;
+    REQUIRE(d != nullptr);
+    REQUIRE(d->entries.size() == 1);
+    CHECK_FALSE(d->entries[0].writable);
+    CHECK_FALSE(d->entries[0].configurable);
+    CHECK(d->entries[0].enumerable);
+    CHECK_FALSE(d->entries[0].accessor);
+
+    // And the refusal follows from the entry, which is the reason the copy
+    // matters: a `true` written here is a property the language says cannot be
+    // written that a write then lands in.
+    Rooted<Value> other{Value::fromDouble(2.0)};
+    SetRefusal refusal = SetRefusal::None;
+    self.set(Value::fromObject(self.get().asObject<ObjectHeader>()->setProp(
+        heap, arena, key, other, /*ic=*/nullptr, /*enumerable=*/true, /*defineOwn=*/false,
+        /*receiver=*/nullptr, &refusal)));
+    CHECK(refusal == SetRefusal::NotWritable);
+    PropertyInfo after;
+    REQUIRE(self.get().asObject<ObjectHeader>()->shape->lookupProperty(stored, after));
+    CHECK(self.get().asObject<ObjectHeader>()->getSlot(after.slot).asNumber() == 1.0);
+}
+
+// 10.1.9.2 step 2 for the two spellings that have a receiver distinct from the
+// object the walk starts at. The oracle cases pin what a program sees;
+// what they cannot show is that ONE function decides it, which is the property
+// that keeps `Reflect.set` and `super.k = v` from drifting apart.
+TEST_CASE("a set with a distinct receiver lands on the receiver") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> holder{Value(bronze_create_object())};
+    Rooted<Value> receiver{Value(bronze_create_object())};
+    Rooted<Value> key{rtMakeString("k")};
+    Rooted<Value> val{Value::fromDouble(5.0)};
+
+    CHECK(rtOrdinarySetWithReceiver(holder, key, val, receiver) == SetRefusal::None);
+    // The holder is where the walk STARTED; nothing may have been stored there.
+    PropertyInfo onHolder;
+    const PropertyKey stored = PropertyKey::fromValue(key.get());
+    CHECK_FALSE(holder.get().asObject<ObjectHeader>()->shape->lookupProperty(stored, onHolder));
+    PropertyInfo onReceiver;
+    REQUIRE(receiver.get().asObject<ObjectHeader>()->shape->lookupProperty(stored, onReceiver));
+    CHECK(receiver.get().asObject<ObjectHeader>()->getSlot(onReceiver.slot).asNumber() == 5.0);
+}
+
+TEST_CASE("a set with a distinct receiver reports the RECEIVER's refusal") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> holder{Value(bronze_create_object())};
+    Rooted<Value> key{rtMakeString("k")};
+    Rooted<Value> val{Value::fromDouble(5.0)};
+
+    // An existing non-writable property of the receiver: step 2.a.
+    Rooted<Value> frozenReceiver{Value(bronze_create_object())};
+    Rooted<Value> one{Value::fromDouble(1.0)};
+    frozenReceiver.set(Value::fromObject(frozenReceiver.get().asObject<ObjectHeader>()->setProp(
+        rtHeap(), rtArena(), key, one)));
+    freeze(frozenReceiver.get());
+    CHECK(rtOrdinarySetWithReceiver(holder, key, val, frozenReceiver) ==
+          SetRefusal::NotWritable);
+
+    // No such property, and the receiver is closed: step 2.c.ii through
+    // 10.1.6.3 step 2.b. A different test, and the holder is extensible in
+    // both — which is exactly what a version that asked the HOLDER would miss.
+    Rooted<Value> closedReceiver{Value(bronze_create_object())};
+    const uint64_t argv[1] = {closedReceiver.get().rawBits()};
+    rtObjectPreventExtensions(0, 0, 1, argv);
+    CHECK(rtIsExtensible(holder.get()));
+    CHECK(rtOrdinarySetWithReceiver(holder, key, val, closedReceiver) ==
+          SetRefusal::NotExtensible);
+    PropertyInfo onHolder;
+    CHECK_FALSE(holder.get().asObject<ObjectHeader>()->shape->lookupProperty(
+        PropertyKey::fromValue(key.get()), onHolder));
 }

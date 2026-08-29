@@ -87,7 +87,7 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             if (!proto || !thisArg || !val) return false;
             builder_.CreateCall(abi.bronze_super_set,
                                 {proto, emitKeyId(builder_, shared_.tables, inst.keyIndex),
-                                 thisArg, val});
+                                 thisArg, val, builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
         case il::Op::PropDelete: {

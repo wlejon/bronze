@@ -418,6 +418,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         setInst.result = il::kNoValue;
         setInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id, storedBoxed.id};
         setInst.keyIndex = getKeyConstantIndex(sm->property);
+        // The reference this write goes through is strict exactly when the code
+        // it was written in is, which for `super.k = v` is every class body
+        // (15.7) and any other body a directive raised.
+        setInst.immI32 = strictFlag();
         emitInst(ilFn, setInst);
         return storedBoxed;
     }

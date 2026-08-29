@@ -475,6 +475,14 @@ bool rtSamePrototypeAsCurrent(Value obj, Value proto) {
     return bronze_strict_eq(proto.rawBits(), current.rawBits());
 }
 
+// 20.1.2.21 step 4, in one place: both arms below reach it, and a chain that
+// could not be replaced must not be reported differently depending on which
+// storage the receiver keeps its prototype in.
+uint64_t refuseInextensiblePrototype() {
+    return rtThrowTypeError("Cannot set the prototype of an object that is not extensible")
+        .rawBits();
+}
+
 // 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
@@ -494,6 +502,7 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // getter above, which now knows what an array's and a function's
         // prototype is.
         if (rtSamePrototypeAsCurrent(args[0], args[1])) return args[0].rawBits();
+        if (!rtIsExtensible(args[0])) return refuseInextensiblePrototype();
         // Shapeless objects (e.g. functions / closures) cannot alter native dispatch,
         // but TypeScript's __extends and similar inheritance helpers call setPrototypeOf
         // on constructors. Return the object so the call succeeds.
@@ -501,6 +510,22 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> proto{args[1]};
+    // 10.1.2.1 OrdinarySetPrototypeOf steps 2 to 4, in that order. Step 2's
+    // SameValue comes FIRST, so a write of the prototype the object already has
+    // succeeds on a non-extensible object too — it stores nothing, and there is
+    // nothing for [[Extensible]] to forbid. Any other write needs the object to
+    // be extensible, and step 4's `false` is what 20.1.2.21 step 4 turns into a
+    // TypeError. Without this a `preventExtensions`'d object's chain could be
+    // replaced outright: the write landed, and `Object.isExtensible` went on
+    // reporting false about an object whose prototype had just moved.
+    {
+        const uint64_t call[1] = {self.get().rawBits()};
+        const Value current(objectGetPrototypeOf(0, 0, 1, call));
+        if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) {
+            return self.get().rawBits();
+        }
+    }
+    if (!rtIsExtensible(self.get())) return refuseInextensiblePrototype();
     Shape* newRoot = rtRootShapeForPrototype(proto.get());
     ObjectHeader::setPrototype(rtArena(), self, newRoot);
     return self.get().rawBits();

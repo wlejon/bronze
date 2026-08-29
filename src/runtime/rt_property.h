@@ -181,6 +181,25 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
 // the first read of any intrinsic builds it.
 Value rtSymbolReadStart(Value v);
 
+// The one place a refused Set becomes a TypeError: ECMA-262 10.1.9.2 answers
+// false three ways, and 13.15.2 PutValue step 6.d raises for a STRICT
+// reference and discards for a sloppy one. Declared here rather than kept
+// private to rt_prop_write.cpp because `throw` is not always the CODE's
+// strictness: 20.1.2.1 Object.assign spells its copy `Set(to, k, v, true)`, so
+// it raises out of sloppy code too, and it must raise the same three errors a
+// strict `to.k = v` would rather than a fourth opinion about the same refusal.
+void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key);
+
+// 10.1.9.2 OrdinarySetWithOwnDescriptor with a RECEIVER that is not the object
+// the chain walk starts at. `Reflect.set` and `super.k = v` are the two
+// spellings, and step 2 sends a data write to the RECEIVER rather than to the
+// holder — which is the whole content of the operation, so it is answered once
+// (rt_reflect.cpp) rather than restated per spelling. The key must already
+// have been through ToPropertyKey, and `target` must not be a proxy; a
+// pending exception comes back as `None` and stays pending.
+SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
+                                     Rooted<Value>& val, Rooted<Value>& receiver);
+
 // ---- an array's own properties that are not elements (rt_prop_array.cpp) ----
 //
 // `length` and the named ones. Six paths ask — a read, a write, `in`, `delete`,

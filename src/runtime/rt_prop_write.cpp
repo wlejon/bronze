@@ -73,8 +73,10 @@ static const char* primitiveTypeName(Value v) {
 // 13.15.2 PutValue step 6.d raises for a STRICT reference — and into nothing at
 // all for a sloppy one, which is the answer `cases/accessor_properties` pins.
 // One place, because `prop.set` and `elem.set` differ only in how they spell
-// the key and must not differ in what they do with a refusal.
-static void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key) {
+// the key and must not differ in what they do with a refusal — and because the
+// builtins that spell their copy `Set(o, k, v, true)` raise the same three
+// errors out of sloppy code (declared in rt_property.h for them).
+void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key) {
     if (!strict || refusal == SetRefusal::None) return;
     switch (refusal) {
         case SetRefusal::NoSetter:
@@ -389,6 +391,40 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                                              /*enumerable=*/true, /*defineOwn=*/false,
                                              /*receiver=*/nullptr, &refusal);
     rtReportSetRefusal(refusal, strict, keyStr);
+}
+
+// `super.k = v`. The walk starts at the HOME OBJECT's prototype and the write
+// lands on `this` (10.1.9.2 step 2 sends a data write to the RECEIVER), which
+// is why the two objects are separate arguments and why there is no inline
+// cache: an entry describes one shape and this write has two objects.
+//
+// The write used to be handed to `setProp` on the PROTOTYPE with `this` passed
+// only as the setter's receiver — so a data write created the property on the
+// base prototype, where every later instance of the class read back the value
+// one instance had written, and the refusal a frozen `this` owed was never
+// asked for because the prototype was extensible. Both follow from step 2, and
+// the algorithm that implements it is the one `Reflect.set` already needed.
+void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
+                      uint64_t valBits, bool strict) {
+    recordPropCall("bronze_super_set", keyIndex, nullptr);
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        censusRecordAccess(CensusKind::SuperSet, thisBits, keyIndex, 0, nullptr,
+                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
+    }
+    Value protoVal(protoBits);
+    if (!protoVal.isObject() ||
+        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: super property write on a base whose prototype is not an object");
+    }
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("super property write with an unregistered key index");
+
+    Rooted<Value> receiver{Value(thisBits)};
+    Rooted<Value> protoRoot{protoVal};
+    Rooted<Value> key{Value::fromString(keyHeader)};
+    Rooted<Value> val{Value(valBits)};
+    const SetRefusal refusal = rtOrdinarySetWithReceiver(protoRoot, key, val, receiver);
+    rtReportSetRefusal(refusal, strict, rtKeyString(keyIndex));
 }
 
 // A class method, installed on a prototype (or, for a `static`, on the

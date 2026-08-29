@@ -1,0 +1,19 @@
+frozen-existing true TypeError
+frozen-new true TypeError
+1 undefined
+sealed-existing no throw
+sealed-new true TypeError
+5 undefined
+closed-existing no throw
+closed-new true TypeError
+5 undefined
+nonwritable true TypeError
+1
+no-setter true TypeError
+3
+empty-source no throw
+nullish-sources no throw
+no-source no throw
+stops-at-first true TypeError
+second source read 0
+true 1 2

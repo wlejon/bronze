@@ -214,7 +214,10 @@ enum class Op : uint8_t {
     // cache: the receiver and the holder are different objects, and an entry
     // describes one shape.
     SuperGet,   // a = super.get proto, <key_const_index>, thisArg
-    SuperSet,   // super.set proto, <key_const_index>, thisArg, val
+    // `immI32` is the strict flag, on the same rule prop.set below carries one:
+    // `super.k = v` is an ordinary Reference, so a refused Set raises out of it
+    // in strict code and is discarded in sloppy code.
+    SuperSet,   // super.set proto, <key_const_index>, thisArg, val, <strict>
     // `immI32` is 1 when the reference this write goes through is STRICT
     // (ECMA-262 11.2.2 decides which code is; 13.15.2 PutValue step 6.d is what
     // reads it). It is the whole difference between a refused Set — a

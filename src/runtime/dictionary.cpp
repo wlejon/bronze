@@ -77,8 +77,18 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     // conversion moves no data and the object's storage already covers them.
     for (const Shape* curr = old; curr != nullptr; curr = curr->parent) {
         if (!curr->key.valid()) continue;
+        // All FOUR attributes, because a shape node carries all four: a
+        // property defined `writable: false` stays in shape mode
+        // (builtin_object_descriptor.cpp), so copying only `enumerable` and
+        // `accessor` re-granted writability and configurability to it the
+        // moment anything demoted the object — `Object.preventExtensions`, or
+        // a `delete` of some unrelated key. `Object.freeze` and
+        // `Object.seal` hid it by re-stamping every entry afterwards;
+        // `preventExtensions` does not stamp, and left a non-writable
+        // property that could be written and a non-configurable one that
+        // could be deleted, with a descriptor that agreed.
         d.entries.push_back(DictEntry{curr->key, curr->slot_index, curr->enumerable,
-                                      curr->accessor});
+                                      curr->accessor, curr->writable, curr->configurable});
         const uint32_t past = curr->slot_index + curr->slotWidth();
         if (past > d.nextSlot) d.nextSlot = past;
     }

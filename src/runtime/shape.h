@@ -25,9 +25,11 @@ struct PropertyInfo {
     // `slot` holds the getter and `slot + 1` the setter; either may be
     // `undefined` for a half-written accessor.
     bool accessor{false};
-    // True for every property in a shape chain: the two attributes a transition
-    // key does not carry are the DEFAULTS there, and an object that wants
-    // either of them false is in dictionary mode.
+    // The other two attributes of 6.2.6.1. A transition key carries them
+    // (ShapeTransition below), so a shape node answers them for real and a
+    // non-writable property does NOT imply dictionary mode — which is why
+    // anything that reads a node's attributes has to copy all four, not the
+    // two that used to be the whole of it.
     bool writable{true};
     bool configurable{true};
     // How the slot's eight bytes are to be read (runtime/slot_repr.h). Always

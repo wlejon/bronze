@@ -1,0 +1,13 @@
+5 true
+false false
+undefined
+5 6
+8 false
+inherited-readonly true TypeError
+1 false
+frozen-existing true TypeError
+frozen-new true TypeError
+frozen-compound true TypeError
+1 undefined
+false
+3

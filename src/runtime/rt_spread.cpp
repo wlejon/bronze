@@ -179,13 +179,19 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     }
 }
 
-// A copy into a String exotic TARGET that 10.4.3 forbids. `strict` is true
-// because CopyDataProperties spells `Set(to, key, value, true)` (7.3.25 step
-// 5.c.ii, and 20.1.2.1 step 3.c.iii for `Object.assign`), so this throws
-// whatever mode the code performing the spread was written in — which is the
-// one thing that separates it from the same refusal on the assignment path.
+// Every copy this file performs is a THROWING one, and that is a fact about
+// the operation rather than about the code that reached it: 7.3.25
+// CopyDataProperties step 5.c.ii is CreateDataPropertyOrThrow and 20.1.2.1
+// Object.assign step 5.c.ii.2 is `Set(to, nextKey, propValue, true)`. So a
+// refusal here raises out of sloppy code as readily as out of strict, which is
+// the one thing that separates these writes from the same refusal on the
+// assignment path. Spelled once, so no arm below can hold a second opinion:
+// `Object.assign(Object.freeze(o), {a: 1})` used to answer by doing nothing.
+constexpr bool kSpreadWriteThrows = true;
+
+// A copy into a String exotic TARGET that 10.4.3 forbids.
 bool stringTargetRefuses(Value stringData, const std::string& key) {
-    return rtStringDataWriteRefused(stringData, key, /*strict=*/true);
+    return rtStringDataWriteRefused(stringData, key, kSpreadWriteThrows);
 }
 
 // One own property of a [[StringData]], copied into `target` if 10.4.3 makes
@@ -207,7 +213,7 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
     }
     Rooted<Value> key{rtMakeString(keyText)};
     bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                    /*strict=*/false);
+                    kSpreadWriteThrows);
     return !rtExceptionPending();
 }
 
@@ -233,10 +239,19 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
     // A proxy target's [[Set]] is its `set` trap; a direct shape write here
     // would be exactly the bypass the proxy exists to prevent.
     if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
-        rtProxySet(target.get(), key.get(), val.get(), /*strict=*/false);
+        rtProxySet(target.get(), key.get(), val.get(), kSpreadWriteThrows);
         return;
     }
-    target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    SetRefusal refusal = SetRefusal::None;
+    target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
+                                                   /*ic=*/nullptr, /*enumerable=*/true,
+                                                   /*defineOwn=*/false,
+                                                   /*receiver=*/nullptr, &refusal);
+    // A symbol has no spelling a message can quote back, so the position is
+    // named instead of the key — the same substitution the symbol-keyed arm of
+    // `bronze_elem_set` makes.
+    rtReportSetRefusal(refusal, kSpreadWriteThrows,
+                       name.isSymbol() ? "<symbol>" : rtUtf8Chars(name.string()));
 }
 
 }  // namespace
@@ -413,7 +428,13 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/false);
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            kSpreadWriteThrows);
+            // The write can now refuse, and copying the next index after that
+            // raised would be the runtime continuing past an exception — which
+            // `rtThrow` answers by killing the process, not by overwriting the
+            // pending one. Every other arm of this walk already stopped here.
+            if (rtExceptionPending()) return;
         }
         // Then its NAMED own enumerable properties, which 7.3.25 copies like
         // any other and 6.1.7.1 orders after the indices. `[...a]` drops them
@@ -430,7 +451,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            /*strict=*/false);
+                            kSpreadWriteThrows);
             if (rtExceptionPending()) return;
         }
         return;
@@ -455,7 +476,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            /*strict=*/false);
+                            kSpreadWriteThrows);
             if (rtExceptionPending()) return;
         }
         return;
@@ -492,7 +513,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            /*strict=*/false);
+                            kSpreadWriteThrows);
             if (rtExceptionPending()) return;
         }
         return;
@@ -521,7 +542,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            /*strict=*/false);
+                            kSpreadWriteThrows);
             if (rtExceptionPending()) return;
         }
         return;

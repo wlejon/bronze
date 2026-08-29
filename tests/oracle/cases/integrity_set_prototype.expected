@@ -1,0 +1,18 @@
+closed-different true TypeError
+undefined true
+closed-same no throw
+true
+sealed-different true TypeError
+undefined
+frozen-null true TypeError
+true
+open-different no throw
+7 true
+proto-setter-different true TypeError
+undefined true
+proto-setter-same no throw
+proto-setter-primitive no throw
+true
+proto-setter-open no throw
+7
+true

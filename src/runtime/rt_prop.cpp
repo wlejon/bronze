@@ -45,7 +45,6 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/map.h"
 #include "runtime/number_format.h"
@@ -158,7 +157,6 @@ static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
     // `m.hasOwnProperty` and `m.toString` are `Object.prototype`'s, one link up.
     return rtObjectProtoMember(recv, keyStr);
 }
-
 
 extern "C" {
 
@@ -760,31 +758,8 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
         .rawBits();
 }
 
-void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
-                      uint64_t valBits) {
-    recordPropCall("bronze_super_set", keyIndex, nullptr);
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
-        censusRecordAccess(CensusKind::SuperSet, thisBits, keyIndex, 0, nullptr,
-                           BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
-    }
-    Value protoVal(protoBits);
-    if (!protoVal.isObject() ||
-        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal("internal: super property write on a base whose prototype is not an object");
-    }
-    StringHeader* keyHeader = rtKeyHeader(keyIndex);
-    if (!keyHeader) fatal("super property write with an unregistered key index");
-
-    Rooted<Value> receiver{Value(thisBits)};
-    Rooted<Value> protoRoot{protoVal};
-    Rooted<Value> key{Value::fromString(keyHeader)};
-    Rooted<Value> val{Value(valBits)};
-    protoRoot.get()
-        .asObject<ObjectHeader>()
-        ->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
-                  /*defineOwn=*/false, receiver.slot_ptr());
-}
-
+// `super.k = v` is a WRITE, so it lives in rt_prop_write.cpp beside the one
+// answer every spelling of a store gives a refused Set.
 static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
     recordElemCall("bronze_elem_get", objBits, idxBits);
     Value objVal(objBits);

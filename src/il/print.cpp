@@ -447,7 +447,8 @@ std::string print(const Module& module) {
                                ", " + std::to_string(inst.keyIndex) + ", %" +
                                std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" +
-                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0);
+                               std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
+                               ", " + std::to_string(inst.immI32);
                         break;
                     case Op::PropDelete:
                         out += "prop.delete %" +

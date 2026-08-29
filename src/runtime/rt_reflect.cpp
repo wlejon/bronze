@@ -35,6 +35,7 @@
 #include "runtime/gc.h"
 #include "runtime/array.h"
 #include "runtime/heap.h"
+#include "runtime/integrity.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
@@ -157,14 +158,76 @@ static SetDestination setDestination(Rooted<Value>& target, Rooted<Value>& key) 
     return SetDestination::DataOntoReceiver;
 }
 
-// Step 2's own last three tests, asked of the RECEIVER: an own accessor or an
-// own non-writable data property there refuses the write rather than taking it.
-static bool receiverAcceptsData(Rooted<Value>& receiver, Rooted<Value>& key) {
-    if (!receiver.get().isObject()) return false;  // step 2.b
+// Step 2's own last tests, asked of the RECEIVER: an own accessor or an own
+// non-writable data property there refuses the write rather than taking it,
+// and an ABSENT one makes the write a CreateDataProperty (step 2.c.ii) — which
+// is [[DefineOwnProperty]], and 10.1.6.3 step 2.b answers false for a receiver
+// that is not extensible. Missing that last test is what let
+// `Reflect.set(Object.freeze(o), 'new', 1)` answer true about a store that
+// never happened.
+//
+// The reason, not a bare bool: `super.k = v` spends the same answer as a
+// TypeError and has to name which of the three refusals it was.
+static SetRefusal receiverRefusalForData(Rooted<Value>& receiver, Rooted<Value>& key) {
+    if (!receiver.get().isObject()) return SetRefusal::NotExtensible;  // step 2.b
     OwnPropertyDetail existing;
-    if (!rtOwnPropertyOf(receiver, key.get(), existing)) return !rtExceptionPending();
-    if (rtExceptionPending()) return false;
-    return !existing.accessor && existing.writable;
+    if (!rtOwnPropertyOf(receiver, key.get(), existing)) {
+        if (rtExceptionPending()) return SetRefusal::None;
+        return rtIsExtensible(receiver.get()) ? SetRefusal::None : SetRefusal::NotExtensible;
+    }
+    if (rtExceptionPending()) return SetRefusal::None;
+    if (existing.accessor) return SetRefusal::NoSetter;
+    return existing.writable ? SetRefusal::None : SetRefusal::NotWritable;
+}
+
+// 10.1.9.2 OrdinarySetWithOwnDescriptor where the RECEIVER is not the object
+// the chain walk starts at. Two spellings need exactly this and must not hold
+// two opinions about where the write lands: `Reflect.set(target, k, v,
+// receiver)`, which reports the boolean, and `super.k = v`, whose receiver is
+// `this` and whose refusal is 13.15.2's TypeError.
+//
+// The refusal is RETURNED rather than raised, so each caller spends it its own
+// way. A pending exception — a trap, a getter, a `toString` — comes back as
+// `None` and is left pending; every caller tests for it separately.
+//
+// `target` must not be a proxy: 10.5.9 makes a proxy's [[Set]] the trap rather
+// than this algorithm, so the two callers answer that case before arriving.
+SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
+                                     Rooted<Value>& val, Rooted<Value>& receiver) {
+    switch (setDestination(target, key)) {
+        case SetDestination::Refused:
+            // The two ways the walk gives up: a non-writable data property on
+            // the chain (step 2.a), and an exception raised while asking.
+            return rtExceptionPending() ? SetRefusal::None : SetRefusal::NotWritable;
+        case SetDestination::DataOntoReceiver: {
+            const SetRefusal why = receiverRefusalForData(receiver, key);
+            if (why != SetRefusal::None || rtExceptionPending()) return why;
+            // Step 2.c: the write lands on the RECEIVER, as its own property.
+            // Writing it onto the holder instead is what made `super.k = v`
+            // store into the base prototype, where the next instance of the
+            // class read back the previous one's value.
+            bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(),
+                            val.get().rawBits(), /*strict=*/false);
+            return SetRefusal::None;
+        }
+        case SetDestination::Accessor:
+            break;
+    }
+
+    // The setter, run by the funnel with the receiver bound as `this`. A
+    // FUNCTION target keeps its writable properties in the statics object, and
+    // stepping onto it is what puts the receiver in front of `setProp`.
+    Rooted<Value> holder{target.get()};
+    if (receiverRoute(target.get()) == ReceiverRoute::Function) {
+        Value props = target.get().asObject<FunctionHeader>()->properties;
+        if (!props.isObject()) return SetRefusal::NoSetter;
+        holder.set(props);
+    }
+    SetRefusal refusal = SetRefusal::None;
+    holder.get().asObject<ObjectHeader>()->setProp(
+        rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
+        /*defineOwn=*/false, receiver.slot_ptr(), &refusal);
+    return refusal;
 }
 
 // 28.1.6 Reflect.get(target, propertyKey, receiver).
@@ -224,15 +287,18 @@ static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     if (!Value(argv[0]).isObject()) {
         return rtThrowTypeError("Reflect.set called on a value that is not an object").rawBits();
     }
-    if (argc <= 3 || argv[3] == argv[0]) {
-        bronze_elem_set(argv[0], argv[1], argv[2], /*strict=*/false);
-        return Value::fromBool(!rtExceptionPending()).rawBits();
-    }
-
     Rooted<Value> target{Value(argv[0])};
     Rooted<Value> key{Value(argv[1])};
     Rooted<Value> val{Value(argv[2])};
-    Rooted<Value> receiver{Value(argv[3])};
+    // Step 3: an absent receiver IS the target, so the two spellings are one
+    // operation and take one route. There used to be a short-circuit here that
+    // forwarded the three-argument form to `bronze_elem_set` with `strict`
+    // false — and a sloppy Set DISCARDS a refusal rather than reporting it, so
+    // the boolean 28.1.13 answers was computed from an exception that a sloppy
+    // write never raises. `Reflect.set(Object.freeze(o), 'a', 9)` answered true
+    // about a store that did not happen, which is the one answer a predicate
+    // whose whole job is to report the refusal must never give.
+    Rooted<Value> receiver{argc > 3 ? Value(argv[3]) : Value(argv[0])};
     key.set(rtToPropertyKey(key));
     if (rtExceptionPending()) return Value::fromBool(false).rawBits();
 
@@ -244,35 +310,11 @@ static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
         return Value::fromBool(!rtExceptionPending()).rawBits();
     }
 
-    switch (setDestination(target, key)) {
-        case SetDestination::Refused:
-            return Value::fromBool(false).rawBits();
-        case SetDestination::DataOntoReceiver: {
-            if (!receiverAcceptsData(receiver, key)) return Value::fromBool(false).rawBits();
-            bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(),
-                            val.get().rawBits(), /*strict=*/false);
-            return Value::fromBool(!rtExceptionPending()).rawBits();
-        }
-        case SetDestination::Accessor:
-            break;
-    }
-
-    // The setter, run by the funnel with the receiver bound as `this`. A
-    // FUNCTION target keeps its writable properties in the statics object, and
-    // stepping onto it is what puts the receiver in front of `setProp`.
-    Rooted<Value> holder{target.get()};
-    if (receiverRoute(target.get()) == ReceiverRoute::Function) {
-        Value props = target.get().asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return Value::fromBool(false).rawBits();
-        holder.set(props);
-    }
-    SetRefusal refusal = SetRefusal::None;
-    holder.get().asObject<ObjectHeader>()->setProp(
-        rtHeap(), rtArena(), key, val, /*ic=*/nullptr, /*enumerable=*/true,
-        /*defineOwn=*/false, receiver.slot_ptr(), &refusal);
-    // 28.1.13 answers the BOOLEAN [[Set]] returned, and for the accessor arm
-    // the funnel does report it: a setter-less accessor is 10.1.9.2 step 3.b's
-    // false.
+    // 28.1.13 answers the BOOLEAN [[Set]] returned, which is exactly the
+    // absence of a refusal — and an exception raised on the way (a getter, a
+    // `toString`) is neither a true nor a false, so it is reported as false
+    // and left pending for the caller's handler.
+    const SetRefusal refusal = rtOrdinarySetWithReceiver(target, key, val, receiver);
     return Value::fromBool(refusal == SetRefusal::None && !rtExceptionPending()).rawBits();
 }
 
