@@ -62,6 +62,7 @@
 // alike; BRONZE_NO_STORE_PROOF=1 turns off this file alone.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <llvm/IR/BasicBlock.h>
@@ -173,15 +174,35 @@ struct ProvenStore {
     llvm::BasicBlock* fastBb = nullptr;
 };
 
+// THE VALUE TEST, as one expression both spenders of the proof emit. 10.4.5.16
+// runs ToNumber BEFORE it asks whether the index is valid, and a proof has
+// already answered the validity question — so a value that needs converting (an
+// object, a string, a BigInt) must take the ladder that owns that conversion,
+// its ordering, and the out-of-range discard. What the fast path may store is
+// therefore exactly what this answers true for.
+//
+// The test is HOLE-INSENSITIVE in llvm_recv_proof.h's sense: the hole tag and
+// `undefined` both sit above the Number range, so a raw element read gives the
+// same answer as a corrected one.
+llvm::Value* emitStoreValueIsNumber(llvm::IRBuilder<>& builder, llvm::Value* valBits,
+                                    const std::string& name);
+
+// THE STORE ITSELF: the address arithmetic, the kind split, and the two widths.
+// No test of any kind — the caller owes `proof.ok` and `emitStoreValueIsNumber`
+// before it, whether it spends them one member at a time or once for a whole
+// span (llvm_run_arms.h). One function so that the two spenders cannot drift
+// about the conversion: an f64 narrowed to f32 for FLOAT32, stored whole for
+// FLOAT64, at the address the ladder would have computed.
+//
+// Branches internally, so it returns the block the store meets in and leaves
+// the builder there.
+llvm::BasicBlock* emitTypedElementStore(llvm::IRBuilder<>& builder, const StoreProof& proof,
+                                        uint32_t offset, llvm::Value* valBits,
+                                        const std::string& tag);
+
 // The proof's fast arm for one store, emitted in front of the ladder. On
 // return the builder sits in a fresh block — the one emitElemSet should be
 // emitted into — so the caller carries on as if nothing happened.
-//
-// The value is tested for being a Number here and nowhere else: 10.4.5.16 runs
-// ToNumber BEFORE it asks whether the index is valid, and this arm has already
-// answered the validity question, so a value that needs converting (an object,
-// a string, a BigInt) must take the ladder that owns that conversion, its
-// ordering, and the out-of-range discard.
 ProvenStore emitProvenElementStore(llvm::IRBuilder<>& builder, const StoreProof& proof,
                                    uint32_t offset, llvm::Value* valBits,
                                    llvm::BasicBlock* doneBb);

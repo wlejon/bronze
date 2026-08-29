@@ -26,10 +26,11 @@
 //
 // WHAT MAY BE IN A SPAN. Two things, and nothing else:
 //
-//   a MEMBER of a covered run — a constant-index read (llvm_recv_proof.h) or a
-//   constant-index Array element store (llvm_array_store_proof.h). Both proven
+//   a MEMBER of a covered run — a constant-index read (llvm_recv_proof.h), a
+//   constant-index Array element store (llvm_array_store_proof.h), or an
+//   affine-index typed-array store (llvm_store_proof.h). The first two proven
 //   arms are unconditional given the run's own proof: a GEP and a load, a GEP
-//   and a store. The two store runs that are NOT covered are named below.
+//   and a store. The third owes a test the GATE below pays for.
 //
 //   a DUPLICABLE instruction — one that neither collects nor throws and whose
 //   emission is a straight line: the machine constants, f64 and i32 arithmetic,
@@ -39,9 +40,38 @@
 //
 // Anything else ends the span where it stands. A `prop.set` whose only
 // safepoint-free arms are the three bare stores still has a miss arm that
-// calls, and a typed-array store's proven arm tests the VALUE — a condition
-// that is not known until the arm is already running — so neither can be an
-// unconditional step of a fast arm, and neither is one.
+// calls, so it is not an unconditional step of a fast arm and is not one.
+//
+// THE GATE, which is what lets a typed-array store be a member at all. That
+// store's proven arm tests the VALUE for numberness (llvm_store_proof.h: a
+// value that needs converting owes ToNumber, which runs user code), and the
+// answer is not known at the group's head, so the test cannot simply join the
+// AND of the proofs there. But in `Matrix4.toArray` — the shape this exists
+// for — every stored value is a READ MEMBER of the same span, and a proven read
+// is a GEP and a load with no safepoint in it. So the fast path is split in two:
+//
+//     ok ? { loads; is-number of each stored value }  -> gate
+//        : ladders                                    -> slow
+//     all-numeric ? { the span, stores included }     -> fast
+//                 : ladders                           -> slow
+//
+// and the fast arm is unconditional again. NOTHING HAS BEEN STORED when the
+// gate refuses, so the slow arm is entered from the head and from the gate
+// alike and performs the whole span from the top — no resumable mid-span entry,
+// and no store performed twice. The gate's loads are the only work redone, and
+// a proven element load is pure: the proof says the receiver is a dense Array,
+// which is what makes the load the observable answer in the first place.
+//
+// WHAT THE GATE HOLDS is the closure, inside the span, of what each stored
+// value is made of: the read members and duplicable instructions that produce
+// it, and nothing else. Those steps are HOISTED above the typed-array stores
+// between them, which is the one reordering this file performs, and it is legal
+// for a reason the receiver proofs supply: a read member's receiver was proven
+// to be an Array and a store member's to be a TYPED ARRAY, so the two are
+// different objects and the load cannot see the store. An ARRAY store carries
+// no such proof about the read run's receiver — `m.copy(m)` is the counterexample
+// — so a span never holds an Array store and a typed-array store at once, and
+// the mix ends the span instead.
 //
 // WHY ONE TEST FOR SEVERAL RUNS. `Matrix4.copy` reads sixteen elements off one
 // Array and writes them into another, interleaved; `multiplyMatrices` computes
@@ -53,11 +83,13 @@
 // a proven read touches none, and a proven Array store writes an element slot
 // the run's own length and capacity guards already placed inside the block.
 //
-// PROGRAM ORDER IS PRESERVED EXACTLY. The fast arm emits the span's
-// instructions in the order they appear, so `m.copy(m)` — where the source
-// array IS the destination — reads element i, writes element i, reads element
-// i+1, in the same sequence the slow arm does. Nothing is hoisted, so nothing
-// has to be proven not to alias.
+// PROGRAM ORDER IS PRESERVED EXACTLY, apart from the gate's hoist above. The
+// fast arm emits the span's instructions in the order they appear, so
+// `m.copy(m)` — where the source array IS the destination — reads element i,
+// writes element i, reads element i+1, in the same sequence the slow arm does.
+// The two stores keep that order between themselves whatever the gate did with
+// the loads, which is why the hoist needs only the load-against-store argument
+// and not a store-against-store one.
 //
 // WHAT THE ARMS OWE THE JOIN. A value defined before the group and live after
 // it is in a register on the fast path and may have MOVED on the slow path. So
@@ -85,6 +117,10 @@
 // `BRONZE_NO_RUN_ARMS_INTERLEAVED=1` keeps the arms but refuses every span that
 // is not one run's members and nothing else, which is the shape that stood
 // before the span rule — so the two features A/B separately out of one binary.
+// `BRONZE_NO_RUN_ARMS_TYPED_STORES=1` keeps the spans but refuses every
+// typed-array store member, which puts the gate and everything downstream of it
+// back to the shape that stood before it: `Matrix4.toArray` cut at its first
+// store and planned no group at all.
 
 #include <cstddef>
 #include <cstdint>
@@ -96,15 +132,21 @@ namespace bronze::codegen_llvm {
 
 // One run a group covers, and the ladder the group emits for it at its head.
 struct RunArmProof {
-    enum class Kind : uint8_t { Read, ArrayStore };
+    enum class Kind : uint8_t { Read, ArrayStore, TypedStore };
 
     Kind kind = Kind::Read;
     // The run this proof is, and the largest index its one length test clears —
     // both straight from the block's run plan, so the proof the group emits is
-    // the proof the per-member shape would have emitted.
+    // the proof the per-member shape would have emitted. For a TypedStore the
+    // index is an OFFSET off `base`, and the one length test clears
+    // `base + maxIndex`.
     uint32_t run = 0;
     uint32_t maxIndex = 0;
     il::ValueId receiver = il::kNoValue;
+    // The f64 SSA value a TypedStore run's indices are affine over, which its
+    // ladder needs in a register at the group's head. `kNoValue` for the other
+    // two kinds, whose indices are constants in the plan.
+    il::ValueId base = il::kNoValue;
 };
 
 // One instruction of the span, in program order.
@@ -115,9 +157,14 @@ struct RunArmStep {
     uint32_t inst = 0;
     // The proof this step spends, or `kNoProof` for a duplicated non-member.
     uint32_t proof = kNoProof;
-    // A member's element index; the value a store member writes.
+    // A member's element index or offset; the value a store member writes.
     uint32_t index = 0;
     il::ValueId value = il::kNoValue;
+    // Whether the GATE holds this step: it produces, directly or through other
+    // gate steps, a value some typed-array store member of this span writes.
+    // Such a step is emitted once, ahead of the value tests, and the fast arm
+    // reads the register it left rather than emitting it again.
+    bool gate = false;
 };
 
 // One span emitted as two arms.
@@ -144,6 +191,10 @@ struct RunArmGroup {
     // a register the emitter no longer holds is a value that must come out of
     // its slot before the proof branches.
     std::vector<uint32_t> restoreAnchor;
+    // Whether the span holds a typed-array store, and so whether the fast path
+    // is split by a gate. Derived from `proofs` at planning time and kept here
+    // because the emitter asks it once per group rather than once per step.
+    bool gated = false;
 
     // How many steps spend a proof: what the group has to pay for.
     size_t memberCount() const {
@@ -194,6 +245,10 @@ bool runArmsDisabled();
 // Whether a span may hold anything but one run's own members
 // (`BRONZE_NO_RUN_ARMS_INTERLEAVED=1` turns that off). Read once and cached.
 bool interleavedRunArmsEnabled();
+
+// Whether a span may hold a typed-array store member, and so a gate
+// (`BRONZE_NO_RUN_ARMS_TYPED_STORES=1` turns that off). Read once and cached.
+bool typedStoreRunArmsEnabled();
 
 // Whether the fast arm may hold a COPY of this instruction: it can neither
 // collect nor throw, and its emission is a straight line with no edge out of

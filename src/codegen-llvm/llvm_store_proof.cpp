@@ -243,31 +243,24 @@ StoreProof emitStoreProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     return proof;
 }
 
-ProvenStore emitProvenElementStore(llvm::IRBuilder<>& builder, const StoreProof& proof,
-                                   uint32_t offset, llvm::Value* valBits,
-                                   llvm::BasicBlock* doneBb) {
+llvm::Value* emitStoreValueIsNumber(llvm::IRBuilder<>& builder, llvm::Value* valBits,
+                                    const std::string& name) {
+    return builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), name);
+}
+
+llvm::BasicBlock* emitTypedElementStore(llvm::IRBuilder<>& builder, const StoreProof& proof,
+                                        uint32_t offset, llvm::Value* valBits,
+                                        const std::string& tag) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* f32Ty = llvm::Type::getFloatTy(ctx);
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
 
-    const std::string tag =
-        "store" + std::to_string(proof.run) + ".e" + std::to_string(offset) + ".";
-    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, tag + "fast", fn);
     llvm::BasicBlock* f32Bb = llvm::BasicBlock::Create(ctx, tag + "f32", fn);
     llvm::BasicBlock* f64Bb = llvm::BasicBlock::Create(ctx, tag + "f64", fn);
-    llvm::BasicBlock* fastEndBb = llvm::BasicBlock::Create(ctx, tag + "stored", fn);
-    llvm::BasicBlock* ladderBb = llvm::BasicBlock::Create(ctx, tag + "ladder", fn);
+    llvm::BasicBlock* endBb = llvm::BasicBlock::Create(ctx, tag + "stored", fn);
 
-    // The value must already BE a Number. A value that needs converting takes
-    // the ladder, which owns 10.4.5.16's conversion-before-validity order, the
-    // BigInt kinds' TypeError, and the out-of-range discard.
-    llvm::Value* isNum =
-        builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), tag + "isnum");
-    builder.CreateCondBr(builder.CreateAnd(proof.ok, isNum), fastBb, ladderBb);
-
-    builder.SetInsertPoint(fastBb);
     llvm::Value* index = builder.CreateAdd(proof.index0, builder.getInt64(offset));
     llvm::Value* byteOff = builder.CreateShl(index, proof.shift, tag + "off");
     llvm::Value* elemPtr = builder.CreateInBoundsGEP(i8Ty, proof.data, byteOff, tag + "ptr");
@@ -281,15 +274,38 @@ ProvenStore emitProvenElementStore(llvm::IRBuilder<>& builder, const StoreProof&
     auto* s32 = builder.CreateAlignedStore(builder.CreateFPTrunc(dbl, f32Ty, tag + "narrow"),
                                            elemPtr, llvm::Align(4));
     tagTypedArrayAccess(s32, ctx);
-    builder.CreateBr(fastEndBb);
+    builder.CreateBr(endBb);
 
     builder.SetInsertPoint(f64Bb);
     auto* s64 = builder.CreateAlignedStore(dbl, elemPtr, llvm::Align(8));
     tagTypedArrayAccess(s64, ctx);
-    builder.CreateBr(fastEndBb);
+    builder.CreateBr(endBb);
 
-    builder.SetInsertPoint(fastEndBb);
+    builder.SetInsertPoint(endBb);
+    return endBb;
+}
+
+ProvenStore emitProvenElementStore(llvm::IRBuilder<>& builder, const StoreProof& proof,
+                                   uint32_t offset, llvm::Value* valBits,
+                                   llvm::BasicBlock* doneBb) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    const std::string tag =
+        "store" + std::to_string(proof.run) + ".e" + std::to_string(offset) + ".";
+    // The arm is built before the test that selects it, so that the blocks land
+    // in the function in the order a reader of the IR meets them — the store's
+    // own three, then the ladder that stands beside them.
+    llvm::BasicBlock* entryBb = builder.GetInsertBlock();
+    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, tag + "fast", fn);
+    builder.SetInsertPoint(fastBb);
+    llvm::BasicBlock* fastEndBb = emitTypedElementStore(builder, proof, offset, valBits, tag);
+    llvm::BasicBlock* ladderBb = llvm::BasicBlock::Create(ctx, tag + "ladder", fn);
     builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(entryBb);
+    llvm::Value* isNum = emitStoreValueIsNumber(builder, valBits, tag + "isnum");
+    builder.CreateCondBr(builder.CreateAnd(proof.ok, isNum), fastBb, ladderBb);
 
     builder.SetInsertPoint(ladderBb);
     return ProvenStore{fastEndBb};

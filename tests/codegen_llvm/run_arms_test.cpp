@@ -17,6 +17,7 @@
 #include "codegen-llvm/llvm_live_roots.h"
 #include "codegen-llvm/llvm_recv_proof.h"
 #include "codegen-llvm/llvm_run_arms.h"
+#include "codegen-llvm/llvm_store_proof.h"
 #include "il/il.h"
 
 using namespace bronze;
@@ -115,6 +116,40 @@ struct FuncBuilder {
         return next - 1;
     }
 
+    il::ValueId constF64(size_t b, double v) {
+        il::Instruction i;
+        i.op = il::Op::ConstF64;
+        i.type = il::Type::F64;
+        i.result = next++;
+        i.immF64 = v;
+        push(b, std::move(i));
+        return next - 1;
+    }
+
+    il::ValueId addF64(size_t b, il::ValueId x, il::ValueId y) {
+        il::Instruction i;
+        i.op = il::Op::Add;
+        i.type = il::Type::F64;
+        i.result = next++;
+        i.operands = {x, y};
+        push(b, std::move(i));
+        return next - 1;
+    }
+
+    // `recv[base + k] = value`: the shape a typed-array store run is made of,
+    // spelled the way the guarded-region pass spells it — the index boxed off
+    // an add, or the base boxed bare for k == 0.
+    void typedStore(size_t b, il::ValueId recv, il::ValueId base, uint32_t k,
+                    il::ValueId value) {
+        const il::ValueId index =
+            k == 0 ? boxF64(b, base) : boxF64(b, addF64(b, base, constF64(b, k)));
+        il::Instruction i;
+        i.op = il::Op::ElemSet;
+        i.type = il::Type::Void;
+        i.operands = {recv, index, value};
+        push(b, std::move(i));
+    }
+
     // A machine-number multiply: duplicable, so a span spans it.
     il::ValueId mulF64(size_t b, il::ValueId x, il::ValueId y) {
         il::Instruction i;
@@ -174,6 +209,26 @@ std::vector<uint32_t> indices(const RunArmGroup& group) {
     std::vector<uint32_t> out;
     for (const RunArmStep& s : group.steps) {
         if (s.proof != RunArmStep::kNoProof) out.push_back(s.index);
+    }
+    return out;
+}
+
+// Where in its block each step the GATE holds sits: the closure of what the
+// span's typed-array stores write.
+std::vector<uint32_t> gated(const RunArmGroup& group) {
+    std::vector<uint32_t> out;
+    for (const RunArmStep& s : group.steps) {
+        if (s.gate) out.push_back(s.inst);
+    }
+    return out;
+}
+
+std::vector<il::ValueId> storedValues(const RunArmGroup& group, RunArmProof::Kind kind) {
+    std::vector<il::ValueId> out;
+    for (const RunArmStep& s : group.steps) {
+        if (s.proof != RunArmStep::kNoProof && group.proofs[s.proof].kind == kind) {
+            out.push_back(s.value);
+        }
     }
     return out;
 }
@@ -552,6 +607,175 @@ TEST_CASE("a value the join phi'd is read from the phi and not from a slot nobod
     // The join is in b1, so the uses after it read b1's phi.
     CHECK(plan.anchor(1, 2, 0) == 1u);
     CHECK(plan.anchor(1, 3, 0) == 1u);
+}
+
+TEST_CASE("a read run threaded through a typed-array store run is ONE gated group") {
+    //   `Matrix4.toArray` in miniature: three constant-index reads off an Array,
+    //   three affine-index writes into a view, and the index arithmetic between
+    //   them. One group, two proofs, and a GATE holding the loads whose results
+    //   the stores write — and nothing else, because a store defines nothing for
+    //   the closure to pull in.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId src = fb.param();
+    const il::ValueId dst = fb.param();
+    const il::ValueId base = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    fb.typedStore(b0, dst, base, 0, e0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    fb.typedStore(b0, dst, base, 1, e1);
+    const il::ValueId e2 = fb.read(b0, src, 2);
+    fb.typedStore(b0, dst, base, 2, e2);
+    fb.ret(b0, dst);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    const RunArmGroup& group = arms.groups[0];
+    CHECK(group.first == 0u);
+    CHECK(group.last == 12u);
+    CHECK(group.gated);
+    REQUIRE(group.proofs.size() == 2u);
+    CHECK(group.proofs[0].kind == RunArmProof::Kind::Read);
+    CHECK(group.proofs[0].receiver == src);
+    CHECK(group.proofs[0].maxIndex == 2u);
+    CHECK(group.proofs[1].kind == RunArmProof::Kind::TypedStore);
+    CHECK(group.proofs[1].receiver == dst);
+    // The one length test is taken against this base and has to clear
+    // `base + 2`, which is the largest offset any member writes.
+    CHECK(group.proofs[1].base == base);
+    CHECK(group.proofs[1].maxIndex == 2u);
+    CHECK(indices(group) == std::vector<uint32_t>{0, 0, 1, 1, 2, 2});
+    CHECK(storedValues(group, RunArmProof::Kind::TypedStore) ==
+          std::vector<il::ValueId>{e0, e1, e2});
+    // The reads, and only the reads: the box/add/const that make each index are
+    // in the span but not in the gate, because no store writes one of them.
+    CHECK(gated(group) == std::vector<uint32_t>{0, 3, 8});
+}
+
+TEST_CASE("a typed-array store of a value from outside the span leaves the gate empty") {
+    //   Nothing inside the span produces what these stores write, so the gate
+    //   holds no step at all — it is the value TESTS and the branch, and the
+    //   value comes out of the slot the way any operand does.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId dst = fb.param();
+    const il::ValueId base = fb.param(il::Type::F64);
+    const il::ValueId v = fb.param();
+    const size_t b0 = fb.block();
+    fb.typedStore(b0, dst, base, 0, v);
+    fb.typedStore(b0, dst, base, 1, v);
+    fb.ret(b0, dst);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    const RunArmGroup& group = arms.groups[0];
+    // The leading `box.f64` of the base is a duplicable, and a duplicable does
+    // not open a span — the first store does.
+    CHECK(group.first == 1u);
+    CHECK(group.last == 5u);
+    CHECK(group.gated);
+    CHECK(group.memberCount() == 2u);
+    CHECK(gated(group).empty());
+}
+
+TEST_CASE("an offset the one length test cannot name ends the span in front of it") {
+    //   `kMaxStoreOffset` is what makes the bound arithmetic obviously free of
+    //   overflow, so a store past it is in no run — and a step that is neither a
+    //   member nor duplicable stops the span. What the group covers is what its
+    //   one test covers, which is offset 1 and not 65536.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId src = fb.param();
+    const il::ValueId dst = fb.param();
+    const il::ValueId base = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    const il::ValueId e2 = fb.read(b0, src, 2);
+    fb.typedStore(b0, dst, base, 0, e0);
+    fb.typedStore(b0, dst, base, 1, e1);
+    fb.typedStore(b0, dst, base, kMaxStoreOffset + 1, e2);
+    fb.ret(b0, dst);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 1u);
+    const RunArmGroup& group = arms.groups[0];
+    CHECK(group.first == 0u);
+    CHECK(group.last == 8u);
+    REQUIRE(group.proofs.size() == 2u);
+    CHECK(group.proofs[1].kind == RunArmProof::Kind::TypedStore);
+    CHECK(group.proofs[1].maxIndex == 1u);
+    CHECK(arms.memberAt(0, 12) == RunArmPlan::kNoGroup);
+    // Only the two reads the two proven stores write are gated; the third read
+    // is inside the span but feeds a store the span does not hold.
+    CHECK(gated(group) == std::vector<uint32_t>{0, 1});
+}
+
+TEST_CASE("an Array store and a typed-array store never share a span") {
+    //   The gate HOISTS its loads above the stores between them, and only the
+    //   typed-array store carries a proof that says it cannot be the Array those
+    //   loads came off — `m.copy(m)` is the case that says an Array store can.
+    //   So the second kind ends the span rather than joining it.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId src = fb.param();
+    const il::ValueId arr = fb.param();
+    const il::ValueId dst = fb.param();
+    const il::ValueId base = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    fb.store(b0, arr, 0, e0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    fb.store(b0, arr, 1, e1);
+    fb.typedStore(b0, dst, base, 0, e0);
+    fb.typedStore(b0, dst, base, 1, e1);
+    fb.ret(b0, arr);
+    fb.finish();
+
+    const RunArmPlan arms = planRunArms(module, fb.func);
+    REQUIRE(arms.groups.size() == 2u);
+    const RunArmGroup& first = arms.groups[0];
+    CHECK(first.first == 0u);
+    CHECK(first.last == 3u);
+    CHECK_FALSE(first.gated);
+    REQUIRE(first.proofs.size() == 2u);
+    CHECK(first.proofs[0].kind == RunArmProof::Kind::Read);
+    CHECK(first.proofs[1].kind == RunArmProof::Kind::ArrayStore);
+    // The typed stores open a span of their own behind it, gated and holding
+    // nothing else — so neither kind is lost, and no gate hoists a load over an
+    // Array store.
+    const RunArmGroup& second = arms.groups[1];
+    CHECK(second.first == 5u);
+    CHECK(second.last == 9u);
+    CHECK(second.gated);
+    REQUIRE(second.proofs.size() == 1u);
+    CHECK(second.proofs[0].kind == RunArmProof::Kind::TypedStore);
+    CHECK(gated(second).empty());
+}
+
+TEST_CASE("a store run whose base the span itself defines is refused") {
+    //   The store ladder stands at the group's HEAD and takes its one length
+    //   test against the base, so a base the span defines is one the ladder
+    //   would read before it exists — the same rule the receivers are held to.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId src = fb.param();
+    const il::ValueId dst = fb.param();
+    const il::ValueId x = fb.param(il::Type::F64);
+    const size_t b0 = fb.block();
+    const il::ValueId e0 = fb.read(b0, src, 0);
+    const il::ValueId e1 = fb.read(b0, src, 1);
+    const il::ValueId base = fb.mulF64(b0, x, x);
+    fb.typedStore(b0, dst, base, 0, e0);
+    fb.typedStore(b0, dst, base, 1, e1);
+    fb.ret(b0, dst);
+    fb.finish();
+
+    CHECK(planRunArms(module, fb.func).groups.empty());
 }
 
 TEST_CASE("a register survives into a block every predecessor carries it into") {
