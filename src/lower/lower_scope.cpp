@@ -1444,7 +1444,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     cleanupStack_.clear();
     // A function written inside a generator body is not one: its `return` is an
     // ordinary return and it has no frame of the enclosing machine's.
-    auto outerGenerator = std::move(generator_);
+    // Moved field by field behind an explicit engagement test rather than as
+    // one `std::optional` move: gcc's uninitialised-use analysis cannot see
+    // that a disengaged optional's payload is never read by the move, and
+    // reports every field of the context as possibly uninitialised.
+    std::optional<GeneratorContext> outerGenerator;
+    if (generator_.has_value()) outerGenerator.emplace(std::move(*generator_));
     generator_.reset();
     auto outerHandler = currentHandler_;
     currentHandler_ = il::kNoBlock;

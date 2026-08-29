@@ -42,16 +42,6 @@ il::Instruction constF64(il::ValueId result, double value) {
     return inst;
 }
 
-il::Instruction box(il::ValueId result, il::ValueId operand, il::Type of = il::Type::F64) {
-    il::Instruction inst;
-    inst.op = il::Op::Box;
-    inst.type = il::Type::Dynamic;
-    inst.boxType = of;
-    inst.result = result;
-    inst.operands = {operand};
-    return inst;
-}
-
 il::Instruction arith(il::Op op, il::ValueId result, il::ValueId a, il::ValueId b,
                       il::Type type = il::Type::Dynamic) {
     il::Instruction inst;
