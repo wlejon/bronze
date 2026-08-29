@@ -47,10 +47,28 @@
 // depends on whether the store's own run was committed, and the other way
 // round, so all three are settled to a fixpoint in one pass.
 //
+// WHAT A NAMED STORE DOES TO A RUN. `Vector3.applyMatrix4` reads sixteen
+// elements off one `m.elements` and writes `this.x`, `this.y`, `this.z`
+// BETWEEN them, so on the rule above the run is four runs of four and the
+// ladder is paid four times for arithmetic that reads one array once. But a
+// named `prop.set` has three arms that are a shape test and an eight-byte
+// store into a property the object already has — the static slot, the inline
+// slot and the overflow slot — and none of those can move the heap. So such a
+// store is TRANSPARENT the way a run member is: llvm_prop_set.cpp funnels
+// those three arms through one block and hands it back as the join's
+// proof-preserving edge, every other arm (a setter call, a shape transition,
+// bronze_prop_set) leaves the proof dead at the join, and the run spans the
+// store. Measured on the shape it exists for: 39.2 -> 25.6 ns a call.
+//
+// An INDEX key is deliberately not included: its arms below reach the array
+// element store, which can grow the element block and therefore allocate, and
+// a run of those is the Array store planner's business already.
+//
 // Seam: BRONZE_NO_RECV_PROOF=1 turns ALL THREE planners off, so every site
 // emits the ladder alone and the A/B is one environment variable;
-// BRONZE_NO_STORE_PROOF=1 turns off the typed-array store side alone, and
-// BRONZE_NO_ARRAY_STORE_PROOF=1 the Array store side alone.
+// BRONZE_NO_STORE_PROOF=1 turns off the typed-array store side alone,
+// BRONZE_NO_ARRAY_STORE_PROOF=1 the Array store side alone, and
+// BRONZE_NO_SLOT_STORE_CARRY=1 the named-store carry just described.
 
 #include <cstdint>
 #include <string>
@@ -95,6 +113,12 @@ struct BlockRunPlan {
     ReceiverRunPlan reads;
     StoreRunPlan stores;
     ArrayStoreRunPlan arrayStores;
+    // The block this one continues a run chain from, or `kNoBlock` where it
+    // opens its own. The emitter keeps its live proofs across the edge only
+    // when this names the block it has just finished emitting — the plan is
+    // free to be optimistic here, because a proof that is not live makes a site
+    // emit the ladder it would have emitted anyway.
+    il::BlockId continues = il::kNoBlock;
 };
 
 // Plans the read runs, the typed-array store runs and the Array store runs of
@@ -104,8 +128,22 @@ struct BlockRunPlan {
 BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
                            size_t blockIndex);
 
+// The same plan with the named-store carry decided by the caller rather than by
+// the environment. The seam is a process-wide cached read, so a test that wants
+// to see both policies in one run cannot get there through the function above;
+// this is how both stay pinned.
+BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func, size_t blockIndex,
+                           bool carry);
+
 // Whether the read planner is enabled at all (BRONZE_NO_RECV_PROOF).
 bool receiverProofEnabled();
+
+// Whether a NAMED `prop.set` hands a live proof across its join
+// (BRONZE_NO_SLOT_STORE_CARRY). Read by the planner, which must not span a
+// store the emitter is not going to carry, and by llvm_prop_set.cpp, which
+// must not build the join block the planner is not going to use — so the two
+// answer the same question from the same place.
+bool slotStoreCarryEnabled();
 
 // One value re-established at a join: `live` down the proof-preserving edge,
 // `dead` down every other predecessor of `doneBb`. The phi goes at the front

@@ -539,12 +539,27 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
     currentILBlock_ = blockIndex;
     builder_.SetInsertPoint(blocks_[blockIndex]);
 
-    // A receiver proof is an LLVM value defined inside this block, so both the
-    // plan and anything left over from the last one start again here.
+    // A receiver proof is an LLVM value, and a value must dominate its use. It
+    // usually starts again here — but a run may span a straight-line CHAIN of
+    // blocks (llvm_recv_proof.h), and when this block continues the chain the
+    // last one started, the proof from the last one dominates every use in this
+    // one and needs no phi: this block's only predecessor is the block that
+    // just branched here, and it takes no parameters.
+    //
+    // The emitter checks that itself rather than trusting the plan, because the
+    // plan is about the IL and this is about what was actually emitted. Blocks
+    // are emitted in index order, so the check is nearly always satisfied; when
+    // it is not, the proofs die and every site in the block emits its own
+    // ladder, which is slower and not wrong.
     runPlan_ = planBlockRuns(shared_.module, func_, blockIndex);
-    recvProof_ = ReceiverProof{};
-    storeProof_ = StoreProof{};
-    arrayStoreProof_ = ArrayStoreProof{};
+    const bool continuesChain = runPlan_.continues != il::kNoBlock &&
+                                runPlan_.continues == lastEmittedBlock_;
+    if (!continuesChain) {
+        recvProof_ = ReceiverProof{};
+        storeProof_ = StoreProof{};
+        arrayStoreProof_ = ArrayStoreProof{};
+    }
+    lastEmittedBlock_ = static_cast<il::BlockId>(blockIndex);
 
     // A block parameter is a def like any other: the phi's value has to reach
     // its root slot before anything can collect.

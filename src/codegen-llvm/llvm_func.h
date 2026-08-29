@@ -196,9 +196,10 @@ private:
     const ReprPlan& repr_;
     // The receiver runs of the block being emitted, and the proofs currently
     // alive inside them (llvm_recv_proof.h, llvm_store_proof.h,
-    // llvm_array_store_proof.h). Planned per block rather than per function
-    // because a run cannot cross a block: a proof is an LLVM value, and a value
-    // has to dominate every use.
+    // llvm_array_store_proof.h). Planned per block, over the straight-line
+    // CHAIN of blocks the block belongs to: a proof is an LLVM value and a
+    // value has to dominate every use, and a chain member is dominated by its
+    // head because it has one predecessor and takes no parameters.
     //
     // Three of them, because the kernels interleave runs: `Matrix4.toArray`
     // reads off one Array while storing into a typed array, `Matrix4.copy`
@@ -209,6 +210,11 @@ private:
     ReceiverProof recvProof_;
     StoreProof storeProof_;
     ArrayStoreProof arrayStoreProof_;
+    // The IL block whose emission just finished, so `emitBlock` can tell a real
+    // chain edge from a plan that merely hoped for one. `kNoBlock` before the
+    // first block of a function, which is what makes that block open its own
+    // chain whatever the plan says.
+    il::BlockId lastEmittedBlock_ = il::kNoBlock;
     // Whether the instruction just emitted carried the live proofs across a
     // join of its own. Cleared before every instruction, so anything that can
     // collect and did NOT carry them ends them — the invariant is enforced at

@@ -440,6 +440,20 @@ TEST_CASE("canCollect is wider than canThrow, and the gap is allocation") {
     // A property read is the reason the predicate is conservative by default:
     // it can reach a getter, and a getter is user code.
     CHECK(canCollect(Instruction{Op::PropGet, Type::Dynamic}));
+
+    // The two control transfers that stay inside the function. A run may span a
+    // straight-line CHAIN of blocks (llvm_recv_proof.h), and the terminator is
+    // the instruction between one member and the next — so if these collected,
+    // no chain would ever carry a proof past its first block. Neither
+    // allocates: a `jump` writes its arguments into the target's parameters and
+    // a `br` picks between two targets.
+    CHECK_FALSE(canCollect(Instruction{Op::Jump, Type::Void}));
+    CHECK_FALSE(canCollect(Instruction{Op::Branch, Type::Void}));
+
+    // `ret` and `throw` leave the function, so there is nothing after them for
+    // a proof to be good for and the conservative answer costs nothing.
+    CHECK(canCollect(Instruction{Op::Ret, Type::Void}));
+    CHECK(canCollect(Instruction{Op::Throw, Type::Void}));
 }
 
 namespace {

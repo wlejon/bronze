@@ -97,13 +97,13 @@ struct BlockBuilder {
     }
 };
 
-BlockRunPlan planOf(const il::Module& module, BlockBuilder& b) {
+BlockRunPlan planOf(const il::Module& module, BlockBuilder& b, bool carry = true) {
     il::Function func;
     func.name = "f";
     func.returnType = il::Type::Dynamic;
     func.valueCount = b.next;
     func.blocks = {b.block};
-    return planBlockRuns(module, func, 0);
+    return planBlockRuns(module, func, 0, carry);
 }
 
 }  // namespace
@@ -338,22 +338,60 @@ TEST_CASE("the read-modify-write shape: both runs on ONE receiver") {
     CHECK(plan.arrayStores.at(w0).runMaxIndex == 1u);
 }
 
-TEST_CASE("an array store the planner refuses ends the read run standing over it") {
+TEST_CASE("a named store to ANOTHER object is spanned by the read run over it") {
     il::Module module = makeModule();
     BlockBuilder b;
     const il::ValueId target = b.param();
     const il::ValueId source = b.param();
 
-    // Four reads with one NAMED store in the middle. It never becomes a run
-    // member, and a `prop.set` that is not a member is an ordinary
-    // `canCollect` instruction — it reaches bronze_prop_set, which can run a
-    // setter. This is what EVERY constant-index store did to a read run before
-    // this planner existed.
+    // Four reads off `source` with one NAMED store to `target` in the middle.
+    // It joins no array-store run — its key is not an index — but its three
+    // bare-store arms neither allocate nor call, so it hands every live proof
+    // across its own join and the read run spans it. This is the shape
+    // `Vector3.applyMatrix4` is made of.
     std::vector<size_t> reads;
     il::ValueId v = il::kNoValue;
     reads.push_back(b.read(source, 0, v));
     reads.push_back(b.read(source, 1, v));
-    b.store(target, kNamedKey, v);
+    const size_t named = b.store(target, kNamedKey, v);
+    reads.push_back(b.read(source, 2, v));
+    reads.push_back(b.read(source, 3, v));
+
+    const BlockRunPlan plan = planOf(module, b);
+    for (size_t r : reads) CHECK(plan.reads.at(r).run == 0u);
+    CHECK(plan.reads.at(reads[0]).establishes);
+    CHECK(plan.reads.at(reads[0]).runMaxIndex == 3u);
+    CHECK(plan.reads.at(named).run == ReceiverRunPlan::kNoRun);
+    for (const auto& site : plan.arrayStores.sites) {
+        CHECK(site.run == ArrayStoreRunPlan::kNoRun);
+    }
+
+    // BRONZE_NO_SLOT_STORE_CARRY: the store is an ordinary `canCollect`
+    // instruction again and the run breaks in two, which is what every named
+    // store did before this rule. Pinned so the seam is an A/B and not a
+    // slogan.
+    const BlockRunPlan off = planOf(module, b, /*carry=*/false);
+    CHECK(off.reads.at(reads[0]).run == 0u);
+    CHECK(off.reads.at(reads[1]).run == 0u);
+    CHECK(off.reads.at(reads[0]).runMaxIndex == 1u);
+    CHECK(off.reads.at(reads[2]).run == 1u);
+    CHECK(off.reads.at(reads[3]).run == 1u);
+}
+
+TEST_CASE("a named store to the run's OWN receiver still ends the read run") {
+    il::Module module = makeModule();
+    BlockBuilder b;
+    const il::ValueId source = b.param();
+
+    // The proof says `source` is an ARRAY, and `arr.foo = 1` on an array is
+    // precisely the named store that cannot take a bare arm: it reaches
+    // bronze_prop_set to make the side object that holds the name, and that
+    // allocates. So this one run ends here even with the carry on.
+    std::vector<size_t> reads;
+    il::ValueId v = il::kNoValue;
+    reads.push_back(b.read(source, 0, v));
+    reads.push_back(b.read(source, 1, v));
+    b.store(source, kNamedKey, v);
     reads.push_back(b.read(source, 2, v));
     reads.push_back(b.read(source, 3, v));
 
@@ -363,9 +401,6 @@ TEST_CASE("an array store the planner refuses ends the read run standing over it
     CHECK(plan.reads.at(reads[0]).runMaxIndex == 1u);
     CHECK(plan.reads.at(reads[2]).run == 1u);
     CHECK(plan.reads.at(reads[3]).run == 1u);
-    for (const auto& site : plan.arrayStores.sites) {
-        CHECK(site.run == ArrayStoreRunPlan::kNoRun);
-    }
 }
 
 TEST_CASE("an array-store run that fails to commit becomes opaque, and the plan settles again") {

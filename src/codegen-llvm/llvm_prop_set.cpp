@@ -60,7 +60,34 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.done", fn);
 
-    // 0. The static-slot fast path, in front of everything. It is a bare store
+    auto optIdx = parseIndexKey(keyStr);
+
+    // 0a. Where the three BARE-STORE arms meet before `doneBb`: the static-slot
+    //     hit, the inline slot and the overflow slot. Each is a shape test and
+    //     an eight-byte store into an object that already has the property —
+    //     no allocation, no call, no user code — so a RECEIVER PROOF standing
+    //     over this store is still good on the other side of it, and the run of
+    //     reads around it need not end here (llvm_recv_proof.h). Three.js's
+    //     `Vector3.applyMatrix4` is the shape that pays: sixteen reads off one
+    //     `m.elements` split into four runs of four by the `this.x =` stores
+    //     between them.
+    //
+    //     Every OTHER way to `doneBb` is a setter call, a shape transition or
+    //     `bronze_prop_set`, and a derived base pointer survives none of those;
+    //     funnelling only these three through one block is what lets the join
+    //     phi say so with a single incoming edge.
+    //
+    //     Only for a NAMED key. An index key's arms below reach the array
+    //     element store, which can grow the element block and therefore
+    //     allocate, and a run of those belongs to the Array store planner
+    //     anyway.
+    llvm::BasicBlock* slotDoneBb =
+        (!optIdx.has_value() && slotStoreCarryEnabled())
+            ? llvm::BasicBlock::Create(ctx, "ic.set.slotdone", fn)
+            : nullptr;
+    llvm::BasicBlock* bareStoreJoin = slotDoneBb != nullptr ? slotDoneBb : doneBb;
+
+    // 0b. The static-slot fast path, in front of everything. It is a bare store
     //    at a constant offset, which is legal only because the published shape
     //    was checked WRITABLE before the cell was filled. A property that is
     //    not yet installed, or an object of another shape, misses here and
@@ -69,11 +96,9 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     //    a constructor's repeated `this.x = ...` IS the transition path, and it
     //    is not a case a static slot could serve.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
-        builder, tables, objBits, site, doneBb, valBits, valRepr, "set");
+        builder, tables, objBits, site, bareStoreJoin, valBits, valRepr, "set");
 
-    auto optIdx = parseIndexKey(keyStr);
-
-    // 0b. The ARRAY STORE-RUN PROOF's arm (llvm_array_store_proof.h). A run of
+    // 0c. The ARRAY STORE-RUN PROOF's arm (llvm_array_store_proof.h). A run of
     //     adjacent constant-index writes into one Array spends the ladder ONCE,
     //     which leaves each member a GEP and an eight-byte store, and everything
     //     below it is the arm taken when the proof was refused or lost. Nothing
@@ -531,7 +556,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
     auto* sInline = builder.CreateAlignedStore(storeBits, inlineSlotPtr, llvm::Align(8));
     tagObjectSlotAccess(sInline, ctx);
-    builder.CreateBr(doneBb);
+    builder.CreateBr(bareStoreJoin);
 
     builder.SetInsertPoint(overflowHitBb);
     llvm::BasicBlock* overflowCheckCapBb =
@@ -568,7 +593,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
     auto* sOv = builder.CreateAlignedStore(storeBits, overflowSlotPtr, llvm::Align(8));
     tagObjectSlotAccess(sOv, ctx);
-    builder.CreateBr(doneBb);
+    builder.CreateBr(bareStoreJoin);
 
     // 5. Fallback call, then the one-shot publish. After the helper, so that a
     //    constructor's FIRST write — which installs the property and is
@@ -584,12 +609,25 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);
 
+    // The bare-store arms' meeting point, whose only predecessors are the three
+    // stores named at 0a. An empty block LLVM folds away on its own; what it is
+    // here for is to give the join below ONE edge to call proof-preserving.
+    if (slotDoneBb != nullptr) {
+        builder.SetInsertPoint(slotDoneBb);
+        builder.CreateBr(doneBb);
+    }
+
     builder.SetInsertPoint(doneBb);
 
     // What this site left for anything that has to cross its join — this run's
     // own proof just below, and any OTHER live proof, in the caller.
+    //
+    // An Array store run member answers with its own proven arm; a named store
+    // answers with the bare-store join, which is the edge on which nothing
+    // moved the heap. A site that is neither leaves `fastBb` null, and every
+    // proof crossing it dies.
     if (join != nullptr) {
-        join->fastBb = proven.fastBb;
+        join->fastBb = proven.fastBb != nullptr ? proven.fastBb : slotDoneBb;
         join->doneBb = doneBb;
     }
 

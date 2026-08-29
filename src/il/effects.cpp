@@ -191,6 +191,20 @@ bool canCollect(const Instruction& inst) {
         // A machine-number kernel. `Math.sin` reaches libm, which allocates
         // nothing and cannot see a JS heap to move.
         case Op::MathUnary:
+        // The two control transfers that stay inside the function. A `jump`
+        // writes its arguments into the target's block parameters and a `br`
+        // picks between two of them; neither allocates and neither can reach
+        // user code, so a receiver proof made before one is still a valid
+        // derived pointer after it. This matters because a run may span a
+        // straight-line CHAIN of blocks (llvm_recv_proof.h), and the terminator
+        // is the instruction between one member and the next — before chains,
+        // every run ended at its block anyway and this answer cost nothing.
+        //
+        // `ret` and `throw` are NOT here. They leave the function, so there is
+        // nothing after them for a proof to be good for, and the conservative
+        // answer is free.
+        case Op::Jump:
+        case Op::Branch:
             return false;
         // Boxing a number, a bool or an int is a bitcast and a select
         // (llvm_ops.cpp). A STRING box is not boxing at all — it mints the

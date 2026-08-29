@@ -48,6 +48,17 @@ std::optional<uint32_t> storeIndexKeyOf(const il::Module& module, const il::Inst
     return parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
+// A `prop.set` whose key is a NAME rather than an index. Its three bare-store
+// arms neither allocate nor call, llvm_prop_set.cpp hands them back as the
+// join's proof-preserving edge, and so a run of anything spans it. The index
+// case is excluded for the reason the header gives: those arms can grow an
+// element block.
+bool carriesProofAcross(const il::Module& module, const il::Instruction& inst) {
+    if (inst.op != il::Op::PropSet) return false;
+    if (inst.keyIndex >= module.keyConstants.size()) return false;
+    return !parseIndexKey(module.keyConstants[inst.keyIndex]).has_value();
+}
+
 }  // namespace
 
 bool receiverProofEnabled() {
@@ -55,19 +66,44 @@ bool receiverProofEnabled() {
     return enabled;
 }
 
+bool slotStoreCarryEnabled() {
+    static const bool enabled = std::getenv("BRONZE_NO_SLOT_STORE_CARRY") == nullptr;
+    return enabled && receiverProofEnabled();
+}
+
 namespace {
+
+// The straight line of blocks a run may span, flattened into one instruction
+// list so that the scan below is written once and reads the same whether the
+// chain is one block or nine. `owner` and `local` take a flat index back to the
+// block it came from, which is what the typed-array store classifier and the
+// final per-block split still need.
+struct ChainView {
+    const il::Function* func = nullptr;
+    std::vector<size_t> blocks;
+    std::vector<const il::Instruction*> insts;
+    std::vector<uint32_t> owner;
+    std::vector<uint32_t> local;
+    // Each chain member's own map from a value to its defining instruction
+    // INSIDE that member, which is the question `classifyStoreSite` asks.
+    std::vector<std::vector<uint32_t>> defIndex;
+
+    size_t size() const { return insts.size(); }
+    const il::Block& blockOf(size_t flat) const { return func->blocks[blocks[owner[flat]]]; }
+};
 
 // One pass of the joint scan. `transparent[i]` says whether instruction `i` is
 // currently believed to be a committed run member — a site whose fast arm
 // neither allocates nor calls and whose join re-establishes every live proof.
-// Everything else that can collect ends both runs.
-void scanRuns(const il::Module& module, const il::Block& block,
-              const std::vector<uint32_t>& defIndex, const std::vector<bool>& transparent,
-              bool wantStores, bool wantArrayStores, BlockRunPlan& plan) {
+// Everything else that can collect ends both runs. Indices are FLAT over the
+// chain; `planBlockRuns` cuts the result back into per-block plans.
+void scanRuns(const il::Module& module, const ChainView& view,
+              const std::vector<bool>& transparent, bool wantStores, bool wantArrayStores,
+              bool carry, BlockRunPlan& plan) {
     plan = BlockRunPlan{};
-    plan.reads.sites.assign(block.instructions.size(), ReceiverRunPlan::Site{});
-    plan.stores.sites.assign(block.instructions.size(), StoreRunPlan::Site{});
-    plan.arrayStores.sites.assign(block.instructions.size(), ArrayStoreRunPlan::Site{});
+    plan.reads.sites.assign(view.size(), ReceiverRunPlan::Site{});
+    plan.stores.sites.assign(view.size(), StoreRunPlan::Site{});
+    plan.arrayStores.sites.assign(view.size(), ArrayStoreRunPlan::Site{});
 
     std::vector<size_t> readMembers;
     std::vector<uint32_t> readIndices;
@@ -138,12 +174,14 @@ void scanRuns(const il::Module& module, const il::Block& block,
         arrMax = 0;
     };
 
-    for (size_t i = 0; i < block.instructions.size(); ++i) {
-        const auto& inst = block.instructions[i];
+    for (size_t i = 0; i < view.size(); ++i) {
+        const auto& inst = *view.insts[i];
         const il::ValueId recv = receiverOf(inst);
         const std::optional<uint32_t> idx = indexKeyOf(module, inst);
         const StoreSiteShape store =
-            wantStores ? classifyStoreSite(block, defIndex, i) : StoreSiteShape{};
+            wantStores ? classifyStoreSite(view.blockOf(i), view.defIndex[view.owner[i]],
+                                           view.local[i])
+                       : StoreSiteShape{};
         const std::optional<uint32_t> arrIdx =
             wantArrayStores ? storeIndexKeyOf(module, inst) : std::nullopt;
 
@@ -216,6 +254,30 @@ void scanRuns(const il::Module& module, const il::Block& block,
             continue;
         }
 
+        // A named `prop.set` carries every live proof across its own join
+        // instead of ending the runs it stands in (see the header). It joins no
+        // run of its own — there is nothing to prove about a slot store that
+        // the shape guard in front of it does not already ask.
+        //
+        // With one exception, and it is the run about the store's OWN object. A
+        // receiver proof says its receiver is an ARRAY, and a named store to an
+        // array is exactly the store that cannot take a bare arm: `isPlain` is
+        // false, so it reaches bronze_prop_set to make the side object that
+        // holds `arr.foo`, and that allocates. Carrying a proof of that object
+        // across it could only ever hand back a proof the join has already
+        // killed, while making the one ladder in front of the run test a larger
+        // index than the run before the store needed. So that run ends here,
+        // exactly as it did before this rule existed.
+        if (carry && carriesProofAcross(module, inst)) {
+            const il::ValueId target = inst.operands.empty() ? il::kNoValue : inst.operands[0];
+            if (target != il::kNoValue) {
+                if (target == readRecv) commitReads();
+                if (target == storeRecv || target == storeBase) commitStores();
+                if (target == arrRecv) commitArrayStores();
+            }
+            continue;
+        }
+
         // Not a member of any of the three. It ends a run if it can move the
         // heap out from under that run's derived pointer, or if it redefines
         // the receiver — or, for a typed-array store run, the base — the proof
@@ -237,26 +299,130 @@ void scanRuns(const il::Module& module, const il::Block& block,
     commitArrayStores();
 }
 
+// The single predecessor of every block, or kNoBlock where a block has none or
+// more than one. Built from the terminators and the handler edges, which are
+// the only edges this IL has.
+std::vector<il::BlockId> singlePredecessors(const il::Function& func) {
+    const size_t n = func.blocks.size();
+    std::vector<il::BlockId> pred(n, il::kNoBlock);
+    std::vector<uint8_t> count(n, 0);
+    auto edge = [&](size_t from, il::BlockId to) {
+        if (to == il::kNoBlock || to >= n) return;
+        if (count[to] < 2) ++count[to];
+        pred[to] = static_cast<il::BlockId>(from);
+    };
+    for (size_t b = 0; b < n; ++b) {
+        for (const auto& inst : func.blocks[b].instructions) {
+            edge(b, inst.target.block);
+            edge(b, inst.elseTarget.block);
+        }
+        edge(b, func.blocks[b].handler);
+    }
+    for (size_t b = 0; b < n; ++b) {
+        if (count[b] != 1) pred[b] = il::kNoBlock;
+    }
+    return pred;
+}
+
+// May a run continue from `from` into `to`? `to` must be reached from `from`
+// and from nowhere else, take no parameters — a parameter is a phi, and a phi
+// is a value the head does not define — and be the same copy of the same
+// region, because the two copies of a region are alternatives and a `Shared`
+// block is reached from both.
+bool chains(const il::Function& func, const std::vector<il::BlockId>& pred, size_t from,
+            il::BlockId to) {
+    if (to == il::kNoBlock || to >= func.blocks.size()) return false;
+    // The entry block is entered from OUTSIDE the function, and that edge is in
+    // no terminator, so the predecessor count below cannot see it. A back edge
+    // to block 0 would otherwise read as its only predecessor and the chain
+    // would claim a domination that does not exist.
+    if (to == 0) return false;
+    if (pred[to] != static_cast<il::BlockId>(from)) return false;
+    const il::Block& a = func.blocks[from];
+    const il::Block& b = func.blocks[to];
+    return b.params.empty() && b.copyClass == a.copyClass && b.copyRegion == a.copyRegion &&
+           b.handler == a.handler;
+}
+
+// The chain `blockIndex` belongs to, head first. Walking BACK to the head
+// before walking forward is what makes the answer the same whichever member
+// asks, which is what lets the emitter call this once per block and still get
+// one consistent plan for the whole chain.
+std::vector<size_t> runChain(const il::Function& func, const std::vector<il::BlockId>& pred,
+                             size_t blockIndex) {
+    size_t head = blockIndex;
+    for (size_t guard = 0; guard < func.blocks.size(); ++guard) {
+        const il::BlockId p = pred[head];
+        if (p == il::kNoBlock || !chains(func, pred, p, static_cast<il::BlockId>(head))) break;
+        head = p;
+    }
+    std::vector<size_t> chain{head};
+    for (size_t guard = 0; guard < func.blocks.size(); ++guard) {
+        const il::Block& b = func.blocks[chain.back()];
+        if (b.instructions.empty()) break;
+        const il::Instruction& term = b.instructions.back();
+        // The THEN arm first, and the chain takes the first arm it can. Both
+        // arms are dominated by the head, so either would be sound; taking the
+        // then arm is what makes the answer deterministic, and it is the arm a
+        // guarded region's test continues on — `br %ok, next, bail` — which is
+        // the shape this exists for. The other arm plans as its own chain head,
+        // and the two agree because both walk back to the same head and forward
+        // by the same rule.
+        size_t next = SIZE_MAX;
+        for (il::BlockId to : {term.target.block, term.elseTarget.block}) {
+            if (!chains(func, pred, chain.back(), to)) continue;
+            next = to;
+            break;
+        }
+        if (next == SIZE_MAX) break;
+        chain.push_back(next);
+    }
+    return chain;
+}
+
 }  // namespace
 
 BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
                            size_t blockIndex) {
+    return planBlockRuns(module, func, blockIndex, slotStoreCarryEnabled());
+}
+
+BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func, size_t blockIndex,
+                           bool carry) {
     BlockRunPlan plan;
     if (!receiverProofEnabled()) return plan;
     if (blockIndex >= func.blocks.size()) return plan;
-    const il::Block& block = func.blocks[blockIndex];
     const bool wantStores = storeProofEnabled();
     const bool wantArrayStores = arrayStoreProofEnabled();
 
-    // A value's defining instruction inside THIS block, so the store planner
-    // can look through an index's `box.f64` and `add` without a search per
-    // site. A value defined in another block — a parameter, a phi — has no
-    // entry, which is exactly the answer the planner wants for a run base.
-    std::vector<uint32_t> defIndex(func.valueCount, kNoDef);
-    for (size_t i = 0; i < block.instructions.size(); ++i) {
-        const il::ValueId result = block.instructions[i].result;
-        if (result != il::kNoValue && result < defIndex.size()) {
-            defIndex[result] = static_cast<uint32_t>(i);
+    ChainView view;
+    view.func = &func;
+    if (carry) {
+        const std::vector<il::BlockId> pred = singlePredecessors(func);
+        view.blocks = runChain(func, pred, blockIndex);
+    } else {
+        view.blocks = {blockIndex};
+    }
+
+    for (size_t c = 0; c < view.blocks.size(); ++c) {
+        const il::Block& block = func.blocks[view.blocks[c]];
+        // A value's defining instruction inside ITS OWN block, so the store
+        // planner can look through an index's `box.f64` and `add` without a
+        // search per site. A value defined in another block — a parameter, a
+        // phi, an earlier member of this chain — has no entry, which is exactly
+        // the answer the planner wants for a run base.
+        std::vector<uint32_t> defIndex(func.valueCount, kNoDef);
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const il::ValueId result = block.instructions[i].result;
+            if (result != il::kNoValue && result < defIndex.size()) {
+                defIndex[result] = static_cast<uint32_t>(i);
+            }
+        }
+        view.defIndex.push_back(std::move(defIndex));
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            view.insts.push_back(&block.instructions[i]);
+            view.owner.push_back(static_cast<uint32_t>(c));
+            view.local.push_back(static_cast<uint32_t>(i));
         }
     }
 
@@ -265,27 +431,52 @@ BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
     // disagrees. Membership only ever shrinks (dropping a member can split or
     // shorten a run, never lengthen one), so this terminates, and the bound
     // below is a belt on that argument rather than a policy.
-    std::vector<bool> transparent(block.instructions.size(), false);
-    for (size_t i = 0; i < block.instructions.size(); ++i) {
-        const auto& inst = block.instructions[i];
-        transparent[i] = (receiverOf(inst) != il::kNoValue && indexKeyOf(module, inst)) ||
-                         (wantStores && classifyStoreSite(block, defIndex, i).ok) ||
-                         (wantArrayStores && storeIndexKeyOf(module, inst).has_value());
+    std::vector<bool> transparent(view.size(), false);
+    for (size_t i = 0; i < view.size(); ++i) {
+        const auto& inst = *view.insts[i];
+        transparent[i] =
+            (receiverOf(inst) != il::kNoValue && indexKeyOf(module, inst)) ||
+            (wantStores &&
+             classifyStoreSite(view.blockOf(i), view.defIndex[view.owner[i]], view.local[i]).ok) ||
+            (wantArrayStores && storeIndexKeyOf(module, inst).has_value());
     }
 
-    for (size_t round = 0; round <= block.instructions.size(); ++round) {
-        scanRuns(module, block, defIndex, transparent, wantStores, wantArrayStores, plan);
+    BlockRunPlan flat;
+    for (size_t round = 0; round <= view.size(); ++round) {
+        scanRuns(module, view, transparent, wantStores, wantArrayStores, carry, flat);
         bool changed = false;
-        for (size_t i = 0; i < block.instructions.size(); ++i) {
-            const bool member = plan.reads.sites[i].run != ReceiverRunPlan::kNoRun ||
-                                plan.stores.sites[i].run != StoreRunPlan::kNoRun ||
-                                plan.arrayStores.sites[i].run != ArrayStoreRunPlan::kNoRun;
+        for (size_t i = 0; i < view.size(); ++i) {
+            const bool member = flat.reads.sites[i].run != ReceiverRunPlan::kNoRun ||
+                                flat.stores.sites[i].run != StoreRunPlan::kNoRun ||
+                                flat.arrayStores.sites[i].run != ArrayStoreRunPlan::kNoRun;
             if (transparent[i] && !member) {
                 transparent[i] = false;
                 changed = true;
             }
         }
         if (!changed) break;
+    }
+
+    // The slice belonging to the block that asked. Everything else in the plan
+    // is another member's, and the emitter reaches it when it emits that member.
+    size_t base = 0;
+    for (size_t c = 0; c < view.blocks.size(); ++c) {
+        const size_t count = func.blocks[view.blocks[c]].instructions.size();
+        if (view.blocks[c] == blockIndex) {
+            plan.reads.sites.assign(flat.reads.sites.begin() + static_cast<ptrdiff_t>(base),
+                                    flat.reads.sites.begin() + static_cast<ptrdiff_t>(base + count));
+            plan.stores.sites.assign(
+                flat.stores.sites.begin() + static_cast<ptrdiff_t>(base),
+                flat.stores.sites.begin() + static_cast<ptrdiff_t>(base + count));
+            plan.arrayStores.sites.assign(
+                flat.arrayStores.sites.begin() + static_cast<ptrdiff_t>(base),
+                flat.arrayStores.sites.begin() + static_cast<ptrdiff_t>(base + count));
+            // What the emitter has to agree with before it keeps its proofs
+            // across the edge into this block.
+            plan.continues = c == 0 ? il::kNoBlock : static_cast<il::BlockId>(view.blocks[c - 1]);
+            break;
+        }
+        base += count;
     }
     return plan;
 }
