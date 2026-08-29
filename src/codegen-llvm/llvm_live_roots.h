@@ -61,14 +61,43 @@
 // it: no LLVM value enters, so the whole module's frames can be laid out before
 // any body is emitted, and a test can assert the answer against hand-built IL.
 //
+// WHAT A RUN-ARM GROUP CHANGES (llvm_run_arms.h). A group is a run of element
+// reads emitted as one proof branch over two straight-line arms, and its join
+// hands every value live across it forward in a register — the fast arm's own,
+// or the slow arm's reload. Two answers follow from that and neither is a
+// weakening of the rule above:
+//
+//   needsSlot is UNCHANGED. The slow arm really does collect at every member,
+//   so a value live across the group really does need a slot to be forwarded
+//   in. The group costs no frame slot it did not already cost.
+//
+//   anchor treats the group as ONE instruction that does not collect. That is
+//   the fast arm's truth, and the join makes it the slow arm's truth as well.
+//   `armLocal` below then names the results whose slot NOTHING outside the slow
+//   arm ever reads, and the fast arm stores nothing for those at all.
+//
+// WHY THE ANCHOR MEETS ITS PREDECESSORS. A register survives into a block whose
+// every predecessor carries the same one — not merely into a block with a
+// single predecessor. `multiplyMatrices` bails to its slow copy from sixteen
+// different guard blocks, and the block that collects the thirty-three values
+// for that bail has sixteen predecessors and is dominated by the block that
+// defined all of them. The meet is exact intersection, so a value that reaches
+// the meet with one anchor reached it through the block that anchor names, on
+// every path — which is what domination means and what makes the register legal
+// there. A predecessor the walk has not reached yet (a back edge) contributes
+// nothing, and an exception predecessor ends the chain as it always did.
+//
 // THE SEAM. `BRONZE_NO_LIVE_ROOTS=1` returns the plan that roots every
 // `dynamic` value and reloads at every use — exactly the contract that stood
 // before this file — so the A/B is one environment variable out of one binary.
+// `BRONZE_NO_RUN_ARMS=1` keeps this stage but puts the anchor back on the
+// sole-predecessor rule, because the meet above is what the arms are for.
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
+#include "codegen-llvm/llvm_run_arms.h"
 #include "il/il.h"
 
 namespace bronze::codegen_llvm {
@@ -92,6 +121,19 @@ struct LiveRootPlan {
     std::vector<uint32_t> useBase;
     std::vector<uint32_t> blockBase;
 
+    // Per `il::ValueId`: the value is a run-arm group's result whose root slot
+    // is read NOWHERE but inside that group's own slow arm — no use of it
+    // reloads, no handler can read it, and no access site takes its slot's
+    // address. The fast arm may then leave the slot alone entirely, which is
+    // the thirty-two root stores `multiplyMatrices` exists to lose. Empty means
+    // "no value qualifies", which is what the seams return.
+    std::vector<uint8_t> armLocalSlot;
+
+    // The groups this plan was computed against, with their restore lists
+    // filled in (llvm_run_arms.h). The emitter reads both from here so that the
+    // groups it emits and the groups the anchors assume are the same objects.
+    RunArmPlan arms;
+
     // Set when the seam is down. The plan is then the pre-stage contract, and
     // nothing downstream has to know which of the two it is holding.
     bool seamOff = false;
@@ -100,6 +142,12 @@ struct LiveRootPlan {
     // everything, so a caller with no plan gets the old behaviour.
     bool rooted(il::ValueId id) const {
         return needsSlot.empty() || id >= needsSlot.size() || needsSlot[id] != 0;
+    }
+
+    // Whether the fast arm of the group that defines this value may skip the
+    // root store at its def. False for everything this plan does not describe.
+    bool armLocal(il::ValueId id) const {
+        return id < armLocalSlot.size() && armLocalSlot[id] != 0;
     }
 
     // The anchor for one use. `kReload` for anything this plan does not
@@ -115,7 +163,12 @@ struct LiveRootPlan {
 };
 
 // Computes one function's plan. Same IL in, same plan out.
+//
+// The first form plans no run-arm groups, which is the shape a test that is
+// about rooting alone wants; the second takes the groups the emitter will emit
+// and fills their restore lists on the way through.
 LiveRootPlan planLiveRoots(const il::Function& func);
+LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms);
 
 // Every function's plan, indexed like `il::Module::functions`. The whole module
 // at once because the frame layouts are, and for the same reason: a caller has

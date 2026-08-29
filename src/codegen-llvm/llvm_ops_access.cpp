@@ -125,7 +125,13 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             // in front of its own cache; the rest spend what it left, and a
             // site in no run passes nothing and emits exactly what it always
             // did.
-            const ReceiverRunPlan::Site runSite = runPlan_.reads.at(currentILInst_);
+            //
+            // Inside a run-arm group's SLOW ARM there is no run left to spend:
+            // the group already tested the proof once and this is the arm it
+            // chose when the test said no (llvm_run_arms.h). So the site emits
+            // the cache it would have emitted with no run at all.
+            const ReceiverRunPlan::Site runSite =
+                inRunArm_ ? ReceiverRunPlan::Site{} : runPlan_.reads.at(currentILInst_);
             ReceiverProof* proofArg = nullptr;
             if (runSite.run == ReceiverRunPlan::kNoRun) {
                 recvProof_ = ReceiverProof{};

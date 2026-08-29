@@ -621,7 +621,7 @@ ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits
 }
 
 bool holeRawSlotEnabled() {
-    static const bool enabled = std::getenv("BRONZE_HOLE_RAW") != nullptr;
+    static const bool enabled = std::getenv("BRONZE_NO_HOLE_RAW") == nullptr;
     return enabled;
 }
 
@@ -656,6 +656,29 @@ std::vector<uint8_t> planHoleRawSlots(const il::Function& fn) {
     return pays;
 }
 
+std::vector<uint8_t> planHoleRawRegisters(const il::Function& fn) {
+    std::vector<uint8_t> insensitive(fn.valueCount, 0);
+    std::vector<uint8_t> sensitive(fn.valueCount, 0);
+    auto note = [&](il::ValueId v, bool insens) {
+        if (v == il::kNoValue || v >= fn.valueCount) return;
+        (insens ? insensitive : sensitive)[v] = 1;
+    };
+    for (const il::Block& block : fn.blocks) {
+        for (const il::Instruction& inst : block.instructions) {
+            for (size_t i = 0; i < inst.operands.size(); ++i) {
+                note(inst.operands[i], i == 0 && holeInsensitiveUse(inst, inst.operands[0]));
+            }
+            for (il::ValueId v : inst.target.args) note(v, false);
+            for (il::ValueId v : inst.elseTarget.args) note(v, false);
+        }
+    }
+    std::vector<uint8_t> safe(fn.valueCount, 0);
+    for (uint32_t v = 0; v < fn.valueCount; ++v) {
+        safe[v] = insensitive[v] != 0 && sensitive[v] == 0 ? 1 : 0;
+    }
+    return safe;
+}
+
 llvm::Value* emitHoleCorrection(llvm::IRBuilder<>& builder, llvm::Value* raw,
                                 const std::string& name) {
     llvm::Value* rawTag = builder.CreateLShr(raw, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -663,11 +686,32 @@ llvm::Value* emitHoleCorrection(llvm::IRBuilder<>& builder, llvm::Value* raw,
     return builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), raw, name);
 }
 
+llvm::Value* emitElementLoad(llvm::IRBuilder<>& builder, const ReceiverProof& proof,
+                             uint32_t index, bool raw) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    const std::string tag = "recv" + std::to_string(proof.run) + ".e" + std::to_string(index) + ".";
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, proof.base, builder.getInt64(index));
+    auto* bits = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), tag + "raw");
+    tagArrayElementsAccess(bits, ctx);
+    // A hole reads as `undefined`, and that is the only answer a raw load
+    // cannot give for itself. The ladder's other answers — absent, an accessor,
+    // a hit up the prototype chain — cannot arise here: the length test put the
+    // index inside the dense part, and a dense element is a Value or a hole.
+    //
+    // Under `raw` the correction is not spent here. Sixteen reads in a row each
+    // paid a shift, a compare and a select for an answer that every one of
+    // their consumers either discards (a numberness guard is false for the hole
+    // and for `undefined` alike) or reads through a root slot, where the same
+    // three instructions cost nothing because they sit on the edge that leaves
+    // the fast copy.
+    return raw ? static_cast<llvm::Value*>(bits) : emitHoleCorrection(builder, bits, tag + "val");
+}
+
 ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof& proof,
                                  uint32_t index, llvm::BasicBlock* doneBb, bool holeRawSlot) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
-    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
 
     const std::string tag = "recv" + std::to_string(proof.run) + ".e" + std::to_string(index) + ".";
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, tag + "fast", fn);
@@ -675,21 +719,7 @@ ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof
     builder.CreateCondBr(proof.ok, fastBb, ladderBb);
 
     builder.SetInsertPoint(fastBb);
-    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, proof.base, builder.getInt64(index));
-    auto* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), tag + "raw");
-    tagArrayElementsAccess(raw, ctx);
-    // A hole reads as `undefined`, and that is the only answer a raw load
-    // cannot give for itself. The ladder's other answers — absent, an accessor,
-    // a hit up the prototype chain — cannot arise here: the length test put the
-    // index inside the dense part, and a dense element is a Value or a hole.
-    //
-    // Under `holeRawSlot` the correction is not spent here. Sixteen reads in a
-    // row each paid a shift, a compare and a select for an answer that every
-    // one of their consumers either discards (a numberness guard is false for
-    // the hole and for `undefined` alike) or reads through a root slot, where
-    // the same three instructions cost nothing because they sit on the edge
-    // that leaves the fast copy.
-    llvm::Value* value = holeRawSlot ? raw : emitHoleCorrection(builder, raw, tag + "val");
+    llvm::Value* value = emitElementLoad(builder, proof, index, holeRawSlot);
     llvm::BasicBlock* fastExit = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

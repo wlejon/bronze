@@ -79,7 +79,18 @@ private:
     void emitModuleInit();
     void emitFunctionSourceTables();
     bool emitBlock(size_t blockIndex);
+    // One instruction with everything that surrounds it: the operand reloads in
+    // front, the proof bookkeeping and the root store behind, the exception
+    // test last. Its own function because a run-arm group's SLOW ARM is exactly
+    // this, several times, in a block of its own — `forceReload` is what says
+    // so, because the plan's anchors describe the group as one unit that does
+    // not collect and inside the slow arm every ladder does.
+    bool emitInstructionAt(size_t blockIndex, size_t instIndex, bool forceReload);
     bool emitInstruction(const il::Instruction& inst);
+    // A run of element reads as one proof branch over two straight-line arms
+    // (llvm_run_arms.h). Leaves the builder in the join, with every result and
+    // every value live across the run in a register the join phi'd.
+    bool emitRunArmGroup(const RunArmGroup& group);
 
     // Instruction families. Each returns false only after diagnosing.
     bool emitTerminator(const il::Instruction& inst);
@@ -189,6 +200,12 @@ private:
     // `Matrix4.copy`, whose reads go straight into a store and would pay the
     // same select one block later.
     std::vector<uint8_t> holeRawPays_;
+    // Whether the element's own bits may travel in a REGISTER, which is the
+    // stronger question a run-arm group's fast arm has to ask: a slot's bits are
+    // corrected by every reload that needs it, and a register has no reload to
+    // ride. So this is set only where EVERY use is hole-insensitive, and the
+    // fast arm keeps the select for anything else.
+    std::vector<uint8_t> holeRawSafe_;
     // The IL block whose emission last wrote each value's entry in `values_`,
     // or `kNoBlock` for one nothing has written yet. This is what turns the
     // live-root plan's anchor from a claim into a check: an elided reload reads
@@ -265,6 +282,11 @@ private:
     // collect and did NOT carry them ends them — the invariant is enforced at
     // the instruction rather than left to be a property of the plan.
     bool proofsCarried_ = false;
+    // Set while a run-arm group's SLOW ARM is being emitted. The members there
+    // are the ladder they would have been with no run at all: the group already
+    // branched on the proof once, and a second test inside the arm it selected
+    // could only be false.
+    bool inRunArm_ = false;
     // Whether this module drops the environment-record ACCESS guards
     // (llvm_env.h, `envAccessGuardsElided`). A property of the invocation, so
     // it is read once rather than per env instruction.

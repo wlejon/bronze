@@ -86,7 +86,12 @@ bool liveRootsDisabled() {
 }
 
 LiveRootPlan planLiveRoots(const il::Function& func) {
+    return planLiveRoots(func, RunArmPlan{});
+}
+
+LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
     LiveRootPlan plan;
+    plan.arms = std::move(arms);
     const uint32_t n = func.valueCount;
     const size_t blockCount = func.blocks.size();
 
@@ -113,6 +118,10 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
     if (liveRootsDisabled()) {
         plan.seamOff = true;
         plan.needsSlot.assign(n, 1);
+        // The seam is the contract that stood before this stage, and the arms
+        // are part of what this stage buys — a group whose join no anchor
+        // trusts is a branch that saves nothing — so it takes them with it.
+        plan.arms = RunArmPlan{};
         return plan;
     }
     plan.needsSlot.assign(n, 0);
@@ -200,6 +209,12 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
     // instruction — which contains the instruction's own operands, because a
     // helper holds them in registers of its own while it allocates, and the
     // slot is what the collector forwards on its behalf.
+    // What is live the instant a run-arm group finishes, per group. The join
+    // has to hand every one of these forward — the fast arm's register on one
+    // edge, the slow arm's reload on the other — and this backward walk is
+    // already standing exactly where the answer is.
+    std::vector<std::vector<il::ValueId>> liveAfterGroup(plan.arms.groups.size());
+
     for (size_t bi = 0; bi < blockCount; ++bi) {
         const il::Block& block = func.blocks[bi];
         if (handlerOf[bi] != il::kNoBlock) {
@@ -214,6 +229,12 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
         live = liveOut[bi];
         for (size_t i = block.instructions.size(); i-- > 0;) {
             const il::Instruction& inst = block.instructions[i];
+            // `live` here is what is live AFTER this instruction, which for a
+            // group's last member is what its join owes the rest of the block.
+            const uint32_t closing = plan.arms.memberAt(bi, i);
+            if (closing != RunArmPlan::kNoGroup && plan.arms.groups[closing].last == i) {
+                live.forEach([&](uint32_t v) { liveAfterGroup[closing].push_back(v); });
+            }
             if (handlerOf[bi] != il::kNoBlock && raisesToHandler(inst)) {
                 live.unionWith(liveIn[handlerOf[bi]]);
             }
@@ -234,25 +255,75 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
     // collecting instruction invalidates every register at once, because the
     // collector forwards slots and not registers.
     constexpr uint32_t kNone = LiveRootPlan::kReload;
-    std::vector<std::vector<uint32_t>> pendingEntry(blockCount);
+    const bool meetPreds = !runArmsDisabled();
+
+    // The normal predecessors of each block, which is `succs` read the other way
+    // round minus the handler edges — those are carried in `excPreds` and end a
+    // chain wherever they land.
+    std::vector<std::vector<uint32_t>> preds(blockCount);
+    for (uint32_t b = 0; b < blockCount; ++b) {
+        for (const il::Instruction& inst : func.blocks[b].instructions) {
+            if (!il::isTerminator(inst.op)) continue;
+            for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                if (t->block == il::kNoBlock || t->block >= blockCount) continue;
+                preds[t->block].push_back(b);
+            }
+        }
+    }
+
+    // What each block leaves for its successors, kept only for the values that
+    // are live out of it and have a slot — a block's exit map is otherwise the
+    // whole value space and the meet below would be a walk over it per edge.
+    // Value order, because `BitSet::forEach` gives value order, which is what
+    // lets the intersection be a merge.
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> anchorOut(blockCount);
+    std::vector<std::pair<uint32_t, uint32_t>> meet;
+    std::vector<std::pair<uint32_t, uint32_t>> next;
     std::vector<uint32_t> anchor;
     for (uint32_t b = 0; b < blockCount; ++b) {
-        if (!pendingEntry[b].empty()) {
-            anchor = std::move(pendingEntry[b]);
-            pendingEntry[b] = std::vector<uint32_t>{};
-        } else {
-            anchor.assign(n, kNone);
-            if (b == 0) {
-                // A function's parameters arrive in registers and the prologue
-                // stores them, so they are current at entry — except in the
-                // entry point, whose block 0 carries the module's registration
-                // calls in front of its own first instruction, and those
-                // allocate.
-                if (!func.isEntryPoint) {
-                    for (size_t p = 0; p < func.params.size() && p < n; ++p) {
-                        anchor[p] = 0;
+        anchor.assign(n, kNone);
+        if (b == 0) {
+            // A function's parameters arrive in registers and the prologue
+            // stores them, so they are current at entry — except in the
+            // entry point, whose block 0 carries the module's registration
+            // calls in front of its own first instruction, and those
+            // allocate.
+            if (!func.isEntryPoint) {
+                for (size_t p = 0; p < func.params.size() && p < n; ++p) anchor[p] = 0;
+            }
+        } else if (excPreds[b] == 0 && !preds[b].empty()) {
+            // Every predecessor has to have been walked already — a back edge
+            // comes from a block whose exit map is not written yet, and a
+            // register that survives a loop is not a claim this pass makes.
+            bool usable = true;
+            for (uint32_t p : preds[b]) {
+                if (p >= b) usable = false;
+            }
+            // Under the seam the old rule stands: one predecessor and no other
+            // way in. That is the single-element case of the meet, so the two
+            // differ in this line and nowhere else.
+            if (!meetPreds && (normalPreds[b] != 1 || soleNormalPred[b] >= b)) usable = false;
+            if (usable) {
+                meet = anchorOut[preds[b][0]];
+                for (size_t k = 1; k < preds[b].size() && !meet.empty(); ++k) {
+                    const auto& other = anchorOut[preds[b][k]];
+                    next.clear();
+                    size_t x = 0;
+                    size_t y = 0;
+                    while (x < meet.size() && y < other.size()) {
+                        if (meet[x].first < other[y].first) {
+                            ++x;
+                        } else if (other[y].first < meet[x].first) {
+                            ++y;
+                        } else {
+                            if (meet[x].second == other[y].second) next.push_back(meet[x]);
+                            ++x;
+                            ++y;
+                        }
                     }
+                    meet.swap(next);
                 }
+                for (const auto& entry : meet) anchor[entry.first] = entry.second;
             }
         }
         const il::Block& block = func.blocks[b];
@@ -263,6 +334,32 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
             if (p.id != il::kNoValue && p.id < n) anchor[p.id] = b;
         }
         for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const uint32_t opens = plan.arms.startAt(b, i);
+            if (opens != RunArmPlan::kNoGroup) {
+                // THE GROUP, as one instruction that does not collect. Its own
+                // members read nothing out of a register — the slow arm
+                // re-emits them behind ladders that collect, so every use
+                // inside it reloads — and its join hands the rest of the block
+                // both the results and everything that was live across it.
+                RunArmGroup& group = plan.arms.groups[opens];
+                for (uint32_t k = group.first; k <= group.last; ++k) {
+                    const uint32_t base = plan.useBase[plan.blockBase[b] + k];
+                    const uint32_t end = plan.useBase[plan.blockBase[b] + k + 1];
+                    for (uint32_t at = base; at < end; ++at) plan.useAnchor[at] = kNone;
+                }
+                group.restore.clear();
+                for (il::ValueId v : liveAfterGroup[opens]) {
+                    if (v >= n || plan.needsSlot[v] == 0 || anchor[v] == kNone) continue;
+                    bool defined = false;
+                    for (il::ValueId r : group.result) defined = defined || r == v;
+                    if (!defined) group.restore.push_back(v);
+                }
+                for (il::ValueId r : group.result) {
+                    if (r != il::kNoValue && r < n && plan.needsSlot[r] != 0) anchor[r] = b;
+                }
+                i = group.last;
+                continue;
+            }
             const il::Instruction& inst = block.instructions[i];
             uint32_t at = plan.useBase[plan.blockBase[b] + i];
             forEachUse(inst, [&](il::ValueId u) {
@@ -281,15 +378,59 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
                 anchor[inst.result] = b;
             }
         }
-        // A successor this block is the ONLY way into carries the registers
-        // forward: one predecessor means this block dominates it, and a
-        // dominating block's registers are legal to use there. A successor a
-        // handler edge also reaches is not such a block, whatever its
-        // terminator count says.
-        for (uint32_t s : succs[b]) {
-            if (s <= b || excPreds[s] != 0 || normalPreds[s] != 1) continue;
-            if (soleNormalPred[s] != b) continue;
-            pendingEntry[s] = anchor;
+        liveOut[b].forEach([&](uint32_t v) {
+            if (plan.needsSlot[v] != 0 && anchor[v] != kNone) {
+                anchorOut[b].emplace_back(v, anchor[v]);
+            }
+        });
+    }
+
+    // ---- whose slot the fast arm may leave alone --------------------------
+    //
+    // A group result whose slot NOTHING outside the group's own slow arm reads.
+    // Three readers, and all three are asked about here rather than at the
+    // emitter, because the emitter sees one instruction at a time and this is a
+    // property of every use at once:
+    //
+    //   a reloading use     — the plan just answered `kReload` for it, so it
+    //                         will go to the slot and the slot has to be there.
+    //   a handler           — entered from an arbitrary point, reading whatever
+    //                         its live values' slots hold.
+    //   an access receiver  — llvm_ops_access.cpp hands the receiver's slot
+    //                         ADDRESS to the static-slot publish, which re-reads
+    //                         it after the helper that may have moved it.
+    //
+    // A LATER GROUP is not on that list, and deliberately. Two adjacent runs of
+    // sixteen put the first run's results on the second's restore list, and the
+    // second's slow arm reloads them out of slots the first's fast arm never
+    // wrote — so that arm SPILLS them on its way in (llvm_run_arms.cpp) instead
+    // of making the fast path write sixteen words for a path it does not take.
+    if (!plan.arms.empty()) {
+        std::vector<uint8_t> slotRead(n, 0);
+        for (size_t b = 0; b < blockCount; ++b) {
+            if (handlerOf[b] != il::kNoBlock) {
+                liveIn[handlerOf[b]].forEach([&](uint32_t v) { slotRead[v] = 1; });
+            }
+            const il::Block& block = func.blocks[b];
+            for (size_t i = 0; i < block.instructions.size(); ++i) {
+                const il::Instruction& inst = block.instructions[i];
+                if ((inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                    !inst.operands.empty() && inst.operands[0] < n) {
+                    slotRead[inst.operands[0]] = 1;
+                }
+                uint32_t at = plan.useBase[plan.blockBase[b] + i];
+                forEachUse(inst, [&](il::ValueId u) {
+                    if (u != il::kNoValue && u < n && plan.useAnchor[at] == kNone) slotRead[u] = 1;
+                    ++at;
+                });
+            }
+        }
+        plan.armLocalSlot.assign(n, 0);
+        for (const RunArmGroup& group : plan.arms.groups) {
+            for (il::ValueId r : group.result) {
+                if (r == il::kNoValue || r >= n) continue;
+                if (plan.needsSlot[r] != 0 && slotRead[r] == 0) plan.armLocalSlot[r] = 1;
+            }
         }
     }
 
@@ -299,7 +440,9 @@ LiveRootPlan planLiveRoots(const il::Function& func) {
 std::vector<LiveRootPlan> planLiveRoots(const il::Module& module) {
     std::vector<LiveRootPlan> plans;
     plans.reserve(module.functions.size());
-    for (const il::Function& func : module.functions) plans.push_back(planLiveRoots(func));
+    for (const il::Function& func : module.functions) {
+        plans.push_back(planLiveRoots(func, planRunArms(module, func)));
+    }
     return plans;
 }
 

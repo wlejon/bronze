@@ -35,6 +35,13 @@
 // forward unchanged, every other arm carries `false`, and a run that misses
 // once simply finishes on the ladder it would have used anyway.
 //
+// A run whose members are CONSECUTIVE instructions does not have to be emitted
+// that way, and is not: llvm_run_arms.h branches on the proof once and puts the
+// loads on one arm and the ladders on the other, which is what makes the fast
+// path free of safepoints and so free of root traffic. Everything below is what
+// that arrangement is built out of, and it is still what an interleaved run —
+// `Matrix4.copy`, `Matrix4.toArray` — is emitted as.
+//
 // THREE PROOFS AT ONCE. `Matrix4.toArray` interleaves a run of reads off
 // `this.elements` with a run of stores into a Float32Array, and `Matrix4.copy`
 // interleaves a run of reads off one Array with a run of constant-index stores
@@ -208,15 +215,17 @@ ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof
 llvm::Value* emitHoleCorrection(llvm::IRBuilder<>& builder, llvm::Value* raw,
                                 const std::string& name);
 
-// THE SEAM, and it is OPT-IN: `BRONZE_HOLE_RAW=1` moves the correction, and
-// the default build pays it at the read exactly as it always did.
+// THE SEAM: `BRONZE_NO_HOLE_RAW=1` puts the correction back at the read.
 //
-// Off by default because the saving is real on the kernel alone
-// (`bench/mat4_kernel.js`: the ninety-six instructions it takes off
-// `multiplyMatrices`'s read block, about a tenth of the call) and does not
-// surface in the programs the kernel sits inside — `bench/three_math.js` reads
-// neutral within this box's drift — and that gap is not diagnosed. A default
-// is spent on an understood win; until then this is a thing to A/B.
+// ON by default, which it was not when it was written. The saving was always
+// real on the kernel and it stopped at the kernel, because the correction it
+// removed from the read block was paid straight back at the RELOAD in the guard
+// chain — every one of the run's results was reloaded there, so "one select per
+// use that needs it" was one select per read all over again. Run arms
+// (llvm_run_arms.h) are what removed those reloads: the results now travel from
+// the join to their uses in registers, and the uses of a guarded region's reads
+// need no correction, so the select is gone rather than moved. The pair is what
+// carries the whole-program fixtures the correction alone could not.
 bool holeRawSlotEnabled();
 
 // A use that cannot tell an element's own bits from the `undefined` a hole
@@ -243,6 +252,20 @@ bool holeInsensitiveUse(const il::Instruction& inst, il::ValueId v);
 // and no for `Matrix4.copy`, whose reads go straight into a store and would pay
 // the same select one block later.
 std::vector<uint8_t> planHoleRawSlots(const il::Function& fn);
+
+// Per value of `fn`: may the element's own bits travel in a REGISTER? A slot's
+// bits are corrected by whichever reload needs it, and a register has no reload
+// to ride — so this is the ALL question where `planHoleRawSlots` above is the
+// majority one, and it is what a run-arm group's fast arm asks before it hands
+// a raw load to the join phi rather than to a root slot.
+std::vector<uint8_t> planHoleRawRegisters(const il::Function& fn);
+
+// One member of a run, as a straight line: the GEP, the load, and the hole
+// correction unless the caller is carrying raw bits. No branch of its own,
+// which is what makes it the body of a run-arm group's fast arm as well as the
+// arm `emitProvenElementRead` builds under a test.
+llvm::Value* emitElementLoad(llvm::IRBuilder<>& builder, const ReceiverProof& proof,
+                             uint32_t index, bool raw);
 
 // Re-establishes `ok` and `base` at a member's join: the fast arm carries them
 // forward, every other predecessor of `doneBb` carries a proof that is not

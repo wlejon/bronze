@@ -42,6 +42,9 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
       holeRawPays_(holeRawSlotEnabled()
                        ? planHoleRawSlots(shared.module.functions[funcIndex])
                        : std::vector<uint8_t>(shared.module.functions[funcIndex].valueCount, 0)),
+      holeRawSafe_(holeRawSlotEnabled()
+                       ? planHoleRawRegisters(shared.module.functions[funcIndex])
+                       : std::vector<uint8_t>(shared.module.functions[funcIndex].valueCount, 0)),
       regBlock_(shared.module.functions[funcIndex].valueCount, il::kNoBlock),
       slotOf_(shared.plans[funcIndex].slotOf),
       ownSlots_(shared.plans[funcIndex].ownSlots),
@@ -604,53 +607,65 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
     }
 
     for (size_t instIndex = 0; instIndex < block.instructions.size(); ++instIndex) {
-        const auto& inst = block.instructions[instIndex];
-        // Where this instruction sits, for the one emitter that needs its
-        // POSITION and not only its fields: a store spends a `pin.guard`
-        // standing immediately in front of it (llvm_repr.h, `storeValueRepr`).
-        currentILInst_ = instIndex;
-        // The uses in the order the live-root plan enumerated them
-        // (llvm_live_roots.h): operands, then the two block-argument lists.
-        // The two walks must agree position for position, because the plan's
-        // answer is indexed by position and nothing else.
-        size_t useIndex = 0;
-        for (size_t i = 0; i < inst.operands.size(); ++i, ++useIndex) {
-            reload(inst.operands[i], i == 0 && holeInsensitiveUse(inst, inst.operands[0]),
-                   live_.anchor(blockIndex, instIndex, useIndex));
+        // A run whose members are consecutive here is emitted as ONE proof
+        // branch over two straight-line arms (llvm_run_arms.h), which is the
+        // whole span at once and not an instruction at a time.
+        const uint32_t group = live_.arms.startAt(blockIndex, instIndex);
+        if (group != RunArmPlan::kNoGroup) {
+            if (!emitRunArmGroup(live_.arms.groups[group])) return false;
+            instIndex = live_.arms.groups[group].last;
+            continue;
         }
-        for (il::ValueId id : inst.target.args) {
-            reload(id, false, live_.anchor(blockIndex, instIndex, useIndex++));
-        }
-        for (il::ValueId id : inst.elseTarget.args) {
-            reload(id, false, live_.anchor(blockIndex, instIndex, useIndex++));
-        }
-
-        proofsCarried_ = false;
-        if (!emitInstruction(inst)) return false;
-
-        // A proof holds a pointer DERIVED into the heap, which a collection
-        // leaves dangling. A run member carries the live proofs across a join
-        // of its own (llvm_recv_proof.h); anything else that can collect ends
-        // them here, so the rule is enforced at the instruction rather than
-        // resting on the plan being the only thing that says so.
-        if (il::canCollect(inst) && !proofsCarried_) {
-            recvProof_ = ReceiverProof{};
-            storeProof_ = StoreProof{};
-            arrayStoreProof_ = ArrayStoreProof{};
-        }
-
-        if (inst.result != il::kNoValue && inst.result < func_.valueCount &&
-            values_[inst.result]) {
-            regBlock_[inst.result] = static_cast<uint32_t>(blockIndex);
-            if (slotOf_[inst.result] != kNoSlot) {
-                builder_.CreateStore(values_[inst.result], slotAddr(slotOf_[inst.result]));
-            }
-        }
-
-        // AFTER the result store, not after the call: the slot must hold a
-        // value the collector can parse before anything branches away from it.
-        if (il::canThrow(inst)) emitExceptionCheck(blockIndex);
+        if (!emitInstructionAt(blockIndex, instIndex, /*forceReload=*/false)) return false;
     }
+    return true;
+}
+
+bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, bool forceReload) {
+    const auto& inst = func_.blocks[blockIndex].instructions[instIndex];
+    // Where this instruction sits, for the one emitter that needs its
+    // POSITION and not only its fields: a store spends a `pin.guard`
+    // standing immediately in front of it (llvm_repr.h, `storeValueRepr`).
+    currentILInst_ = instIndex;
+    auto anchorAt = [&](size_t useIndex) {
+        return forceReload ? LiveRootPlan::kReload : live_.anchor(blockIndex, instIndex, useIndex);
+    };
+    // The uses in the order the live-root plan enumerated them
+    // (llvm_live_roots.h): operands, then the two block-argument lists.
+    // The two walks must agree position for position, because the plan's
+    // answer is indexed by position and nothing else.
+    size_t useIndex = 0;
+    for (size_t i = 0; i < inst.operands.size(); ++i, ++useIndex) {
+        reload(inst.operands[i], i == 0 && holeInsensitiveUse(inst, inst.operands[0]),
+               anchorAt(useIndex));
+    }
+    for (il::ValueId id : inst.target.args) reload(id, false, anchorAt(useIndex++));
+    for (il::ValueId id : inst.elseTarget.args) reload(id, false, anchorAt(useIndex++));
+
+    proofsCarried_ = false;
+    if (!emitInstruction(inst)) return false;
+
+    // A proof holds a pointer DERIVED into the heap, which a collection
+    // leaves dangling. A run member carries the live proofs across a join
+    // of its own (llvm_recv_proof.h); anything else that can collect ends
+    // them here, so the rule is enforced at the instruction rather than
+    // resting on the plan being the only thing that says so.
+    if (il::canCollect(inst) && !proofsCarried_) {
+        recvProof_ = ReceiverProof{};
+        storeProof_ = StoreProof{};
+        arrayStoreProof_ = ArrayStoreProof{};
+    }
+
+    if (inst.result != il::kNoValue && inst.result < func_.valueCount && values_[inst.result]) {
+        regBlock_[inst.result] = static_cast<uint32_t>(blockIndex);
+        if (slotOf_[inst.result] != kNoSlot) {
+            builder_.CreateStore(values_[inst.result], slotAddr(slotOf_[inst.result]));
+        }
+    }
+
+    // AFTER the result store, not after the call: the slot must hold a
+    // value the collector can parse before anything branches away from it.
+    if (il::canThrow(inst)) emitExceptionCheck(blockIndex);
     return true;
 }
 
