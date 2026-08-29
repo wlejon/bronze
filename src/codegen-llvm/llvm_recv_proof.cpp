@@ -220,15 +220,23 @@ void scanRuns(const il::Module& module, const ChainView& view,
             wantStores ? classifyStoreSite(view.blockOf(i), view.defIndex[view.owner[i]],
                                            view.local[i])
                        : StoreSiteShape{};
-        const std::optional<uint32_t> arrIdx =
-            wantArrayStores ? arrayStoreIndexOf(module, view, i) : std::nullopt;
+        // A flag and a value rather than one `std::optional`: gcc's
+        // uninitialised-use analysis loses track of an optional that is built
+        // through a conditional and reports the later reads of it.
+        bool hasArrIdx = false;
+        uint32_t arrIdx = 0;
+        if (wantArrayStores) {
+            if (const std::optional<uint32_t> found = arrayStoreIndexOf(module, view, i)) {
+                hasArrIdx = true;
+                arrIdx = *found;
+            }
+        }
 
         // A run member is transparent to the OTHER runs' proofs; anything else
         // that can move the heap ends them. Asked before this instruction joins
         // a run of its own, because the question is about the proofs it does
         // not carry.
-        const bool member = (recv != il::kNoValue && idx.has_value()) || store.ok ||
-                            arrIdx.has_value();
+        const bool member = (recv != il::kNoValue && idx.has_value()) || store.ok || hasArrIdx;
         const bool opaque = !member || !transparent[i];
 
         if (recv != il::kNoValue && idx.has_value()) {
@@ -272,7 +280,7 @@ void scanRuns(const il::Module& module, const ChainView& view,
             continue;
         }
 
-        if (arrIdx.has_value()) {
+        if (hasArrIdx) {
             if (opaque && il::canCollect(inst)) {
                 commitReads();
                 commitStores();
@@ -280,15 +288,15 @@ void scanRuns(const il::Module& module, const ChainView& view,
             const il::ValueId target = inst.operands[0];
             if (!arrMembers.empty() && target == arrRecv) {
                 arrMembers.push_back(i);
-                arrIndices.push_back(*arrIdx);
-                arrMax = std::max(arrMax, *arrIdx);
+                arrIndices.push_back(arrIdx);
+                arrMax = std::max(arrMax, arrIdx);
                 continue;
             }
             commitArrayStores();
             arrRecv = target;
-            arrMax = *arrIdx;
+            arrMax = arrIdx;
             arrMembers.push_back(i);
-            arrIndices.push_back(*arrIdx);
+            arrIndices.push_back(arrIdx);
             continue;
         }
 
