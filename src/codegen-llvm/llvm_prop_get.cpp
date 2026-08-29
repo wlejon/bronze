@@ -39,7 +39,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
                          const ModuleTables& tables, llvm::Value* objBits,
                          llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
                          bool monomorphic, const StaticSite& site, std::string_view keyStr,
-                         ReceiverProof* proof) {
+                         ReceiverProof* proof, ProofJoin* join) {
     // Not branched on here: `monomorphic` is an identity proof, and the
     // sequence below is an inline cache, which is what an unproven site wants
     // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
@@ -659,21 +659,20 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (taI8Bb) result->addIncoming(taI8Val, taI8Bb);
     if (taU8Bb) result->addIncoming(taU8Val, taU8Bb);
 
+    // What this site left for anything that has to cross its join — this run's
+    // own proof just below, and any OTHER live proof, in the caller.
+    if (join != nullptr) {
+        join->fastBb = proven.fastBb;
+        join->doneBb = doneBb;
+    }
+
     // The proof that reaches the NEXT member of the run: carried forward by the
     // fast arm, and false down every other edge into this block — a member that
     // missed may have run a getter, and a getter can collect, which is exactly
-    // what the derived base pointer cannot survive.
-    if (proof != nullptr && proof->live()) {
-        if (proven.fastBb != nullptr) {
-            rejoinReceiverProof(builder, *proof, proven.fastBb, doneBb);
-        } else {
-            // A live proof that this site did not carry: the site is still a
-            // property read, so it can still collect, and there is no fast arm
-            // to thread the base pointer through. Drop it rather than let a
-            // later member branch on a pointer a getter may have moved.
-            *proof = ReceiverProof{};
-        }
-    }
+    // what the derived base pointer cannot survive. A live proof this site did
+    // not carry simply dies: the site is still a property read, so it can still
+    // collect, and there is no fast arm to thread the base pointer through.
+    if (proof != nullptr) rejoinReceiverProof(builder, *proof, proven.fastBb, doneBb);
     return result;
 }
 

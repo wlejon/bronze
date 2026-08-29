@@ -1,6 +1,7 @@
-// The IL operations that become a runtime helper call, an inlined property
-// access, or a constant. Arithmetic is llvm_arith.cpp; control flow is the
-// terminator half of llvm_func.cpp.
+// The IL operations that become a runtime helper call or a constant.
+// Arithmetic is llvm_arith.cpp; control flow is the terminator half of
+// llvm_func.cpp; the calls are llvm_ops_call.cpp; every op that reads or
+// writes a property of an object is llvm_ops_access.cpp.
 
 #include <string>
 
@@ -23,22 +24,6 @@
 #include "codegen-llvm/llvm_repr.h"
 
 namespace bronze::codegen_llvm {
-
-namespace {
-
-// The four IL fields the static-slot emitters read, in the one struct they take
-// — so a site's guard form is decided in one place instead of at each of the
-// two call sites below.
-StaticSite staticSiteOf(const il::Instruction& inst) {
-    StaticSite site;
-    site.slot = inst.staticSlot;
-    site.cellIndex = inst.staticCellIndex;
-    site.familyLo = inst.familyLo;
-    site.familySpan = inst.familySpan;
-    return site;
-}
-
-}  // namespace
 
 bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
     const AbiFns& abi = shared_.abi;
@@ -511,46 +496,19 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                          {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             }
             return true;
-        case il::Op::SuperGet: {
-            if (!needs(2, false, "Invalid operands for SuperGet")) return false;
-            const char* what = "Undefined operand in SuperGet instruction";
-            llvm::Value* proto = operand(inst, 0, what);
-            llvm::Value* thisArg = operand(inst, 1, what);
-            if (!proto || !thisArg) return false;
-            callWith(abi.bronze_super_get,
-                     {proto, emitKeyId(builder_, shared_.tables, inst.keyIndex), thisArg});
-            return true;
-        }
-        case il::Op::SuperSet: {
-            if (!needs(3, false, "Invalid operands for SuperSet")) return false;
-            const char* what = "Undefined operand in SuperSet instruction";
-            llvm::Value* proto = operand(inst, 0, what);
-            llvm::Value* thisArg = operand(inst, 1, what);
-            llvm::Value* val = operand(inst, 2, what);
-            if (!proto || !thisArg || !val) return false;
-            builder_.CreateCall(abi.bronze_super_set,
-                                {proto, emitKeyId(builder_, shared_.tables, inst.keyIndex),
-                                 thisArg, val});
-            return true;
-        }
-        case il::Op::PropDelete: {
-            if (!needs(1, false, "Invalid operands for PropDelete")) return false;
-            llvm::Value* target = operand(inst, 0, "Undefined operand in PropDelete instruction");
-            if (!target) return false;
-            callWith(abi.bronze_prop_delete,
-                     {target, emitKeyId(builder_, shared_.tables, inst.keyIndex),
-                      builder_.getInt1(inst.immI32 != 0)});
-            return true;
-        }
-        case il::Op::ElemDelete: {
-            if (!needs(2, false, "Invalid operands for ElemDelete")) return false;
-            const char* what = "Undefined operand in ElemDelete instruction";
-            llvm::Value* target = operand(inst, 0, what);
-            llvm::Value* index = operand(inst, 1, what);
-            if (!target || !index) return false;
-            callWith(abi.bronze_elem_delete, {target, index, builder_.getInt1(inst.immI32 != 0)});
-            return true;
-        }
+        // The access family — every op that reads or writes a property of an
+        // object — is llvm_ops_access.cpp, where the receiver proofs live.
+        case il::Op::SuperGet:
+        case il::Op::SuperSet:
+        case il::Op::PropDelete:
+        case il::Op::ElemDelete:
+        case il::Op::PropGet:
+        case il::Op::PropSet:
+        case il::Op::ElemGet:
+        case il::Op::ElemSet:
+        case il::Op::ElemGetTyped:
+        case il::Op::ElemSetTyped:
+            return emitAccessOp(inst);
         case il::Op::GlobalGet:
             if (inst.result != il::kNoValue) {
                 // The helper's committed fast path — a cached, non-undefined
@@ -923,99 +881,6 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 builder_.CreateCall(toStderr ? abi.bronze_print_spread_err : abi.bronze_print_spread,
                                     {values_[inst.operands[0]]});
             }
-            return true;
-        }
-
-        case il::Op::PropGet: {
-            if (!needs(1, true, "Invalid operands for PropGet")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined object in PropGet instruction");
-            if (!obj) return false;
-            // A site inference proved monomorphic gets the guard inlined here;
-            // an unproven one keeps the plain call, so the inline form never
-            // grows into a polymorphic guard chain in the object file. This may
-            // SPLIT the current block.
-            const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
-                                            ? shared_.module.keyConstants[inst.keyIndex]
-                                            : "";
-            // Where this site sits in its block's receiver runs
-            // (llvm_recv_proof.h). The run's FIRST member pays for the proof
-            // in front of its own cache; the rest spend what it left, and a
-            // site in no run passes nothing and emits exactly what it always
-            // did.
-            const ReceiverRunPlan::Site runSite = runPlan_.at(currentILInst_);
-            ReceiverProof* proofArg = nullptr;
-            if (runSite.run == ReceiverRunPlan::kNoRun) {
-                recvProof_ = ReceiverProof{};
-            } else {
-                if (runSite.establishes) {
-                    recvProof_ = emitReceiverProof(builder_, obj, inst.operands[0], runSite.run,
-                                                   runSite.runMaxIndex);
-                }
-                if (recvProof_.live() && recvProof_.run == runSite.run) proofArg = &recvProof_;
-            }
-            values_[inst.result] =
-                emitPropGet(builder_, abi, globals_, shared_.tables, obj,
-                            rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
-                            inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg);
-            if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
-            return true;
-        }
-        case il::Op::PropSet: {
-            if (!needs(2, false, "Invalid operands for PropSet")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined operand in PropSet instruction");
-            llvm::Value* val = operand(inst, 1, "Undefined operand in PropSet instruction");
-            if (!obj || !val) return false;
-            const std::string& keyStr = inst.keyIndex < shared_.module.keyConstants.size()
-                                            ? shared_.module.keyConstants[inst.keyIndex]
-                                            : "";
-            // What the VALUE is made of decides which of stage R1's
-            // representation tests this site emits (llvm_repr.h). Asked with
-            // the store's POSITION, because a `pin.guard` standing immediately
-            // in front of it proves the value on the path that reaches the
-            // store and on no other.
-            const ValueRepr valRepr = storeValueRepr(func_, repr_, currentILBlock_,
-                                                     currentILInst_, inst.operands[1]);
-            emitPropSet(builder_, abi, globals_, shared_.tables, obj, rootSlotAddrOf(inst, 0),
-                        inst.keyIndex, val, inst.icIndex, inst.immI32 != 0, inst.icMonomorphic,
-                        staticSiteOf(inst), valRepr, keyStr);
-            return true;
-        }
-        case il::Op::ElemGet: {
-            if (!needs(2, true, "Invalid operands for ElemGet")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGet instruction");
-            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGet instruction");
-            if (!obj || !idx) return false;
-            values_[inst.result] = emitElemGet(builder_, abi, obj, idx);
-            return true;
-        }
-        case il::Op::ElemSet: {
-            if (!needs(3, false, "Invalid operands for ElemSet")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemSet instruction");
-            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSet instruction");
-            llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSet instruction");
-            if (!obj || !idx || !val) return false;
-            emitElemSet(builder_, abi, obj, idx, val, inst.immI32 != 0);
-            return true;
-        }
-        // The proven forms: `immI32` is the types::TypedArrayElem number, 0
-        // for Float64Array and 1 for Float32Array — the only two lowering
-        // emits (lower_typed_elem.cpp). The index and value are f64 SSA.
-        case il::Op::ElemGetTyped: {
-            if (!needs(2, true, "Invalid operands for ElemGetTyped")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGetTyped instruction");
-            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGetTyped instruction");
-            if (!obj || !idx) return false;
-            values_[inst.result] =
-                emitTypedElemGet(builder_, shared_.abi, obj, idx, static_cast<uint32_t>(inst.immI32));
-            return true;
-        }
-        case il::Op::ElemSetTyped: {
-            if (!needs(3, false, "Invalid operands for ElemSetTyped")) return false;
-            llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemSetTyped instruction");
-            llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSetTyped instruction");
-            llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSetTyped instruction");
-            if (!obj || !idx || !val) return false;
-            emitTypedElemSet(builder_, shared_.abi, obj, idx, val, static_cast<uint32_t>(inst.immI32));
             return true;
         }
 

@@ -44,63 +44,179 @@ bool receiverProofEnabled() {
     return enabled;
 }
 
-ReceiverRunPlan planReceiverRuns(const il::Module& module, const il::Function& func,
-                                 size_t blockIndex) {
-    ReceiverRunPlan plan;
-    if (!receiverProofEnabled()) return plan;
-    if (blockIndex >= func.blocks.size()) return plan;
-    const auto& block = func.blocks[blockIndex];
+namespace {
 
-    std::vector<size_t> members;
-    il::ValueId receiver = il::kNoValue;
-    uint32_t maxIndex = 0;
-    uint32_t nextRun = 0;
+// One pass of the joint scan. `transparent[i]` says whether instruction `i` is
+// currently believed to be a committed run member — a site whose fast arm
+// neither allocates nor calls and whose join re-establishes every live proof.
+// Everything else that can collect ends both runs.
+void scanRuns(const il::Module& module, const il::Block& block,
+              const std::vector<uint32_t>& defIndex, const std::vector<bool>& transparent,
+              bool wantStores, BlockRunPlan& plan) {
+    plan = BlockRunPlan{};
+    plan.reads.sites.assign(block.instructions.size(), ReceiverRunPlan::Site{});
+    plan.stores.sites.assign(block.instructions.size(), StoreRunPlan::Site{});
 
-    auto commit = [&]() {
-        if (members.size() >= kMinRunLength) {
-            if (plan.sites.size() < block.instructions.size()) {
-                plan.sites.resize(block.instructions.size());
-            }
-            for (size_t i = 0; i < members.size(); ++i) {
-                auto& site = plan.sites[members[i]];
-                site.run = nextRun;
+    std::vector<size_t> readMembers;
+    std::vector<uint32_t> readIndices;
+    il::ValueId readRecv = il::kNoValue;
+    uint32_t readMax = 0;
+    uint32_t nextReadRun = 0;
+
+    std::vector<size_t> storeMembers;
+    std::vector<uint32_t> storeOffsets;
+    il::ValueId storeRecv = il::kNoValue;
+    il::ValueId storeBase = il::kNoValue;
+    uint32_t storeMax = 0;
+    uint32_t nextStoreRun = 0;
+
+    auto commitReads = [&]() {
+        if (readMembers.size() >= kMinRunLength) {
+            for (size_t i = 0; i < readMembers.size(); ++i) {
+                auto& site = plan.reads.sites[readMembers[i]];
+                site.run = nextReadRun;
                 site.establishes = (i == 0);
-                site.runMaxIndex = maxIndex;
+                site.runMaxIndex = readMax;
             }
-            ++nextRun;
+            ++nextReadRun;
         }
-        members.clear();
-        receiver = il::kNoValue;
-        maxIndex = 0;
+        readMembers.clear();
+        readIndices.clear();
+        readRecv = il::kNoValue;
+        readMax = 0;
+    };
+    auto commitStores = [&]() {
+        if (storeMembers.size() >= kMinRunLength) {
+            for (size_t i = 0; i < storeMembers.size(); ++i) {
+                auto& site = plan.stores.sites[storeMembers[i]];
+                site.run = nextStoreRun;
+                site.establishes = (i == 0);
+                site.runMaxOffset = storeMax;
+                site.offset = storeOffsets[i];
+                site.base = storeBase;
+            }
+            ++nextStoreRun;
+        }
+        storeMembers.clear();
+        storeOffsets.clear();
+        storeRecv = il::kNoValue;
+        storeBase = il::kNoValue;
+        storeMax = 0;
     };
 
     for (size_t i = 0; i < block.instructions.size(); ++i) {
         const auto& inst = block.instructions[i];
         const il::ValueId recv = receiverOf(inst);
         const std::optional<uint32_t> idx = indexKeyOf(module, inst);
+        const StoreSiteShape store =
+            wantStores ? classifyStoreSite(block, defIndex, i) : StoreSiteShape{};
+
+        // A run member is transparent to the OTHER run's proof; anything else
+        // that can move the heap ends it. Asked before this instruction joins
+        // a run of its own, because the question is about the proof it does
+        // not carry.
+        const bool member = (recv != il::kNoValue && idx.has_value()) || store.ok;
+        const bool opaque = !member || !transparent[i];
 
         if (recv != il::kNoValue && idx.has_value()) {
-            if (!members.empty() && recv == receiver) {
-                members.push_back(i);
-                maxIndex = std::max(maxIndex, *idx);
+            if (opaque && il::canCollect(inst)) commitStores();
+            if (!readMembers.empty() && recv == readRecv) {
+                readMembers.push_back(i);
+                readIndices.push_back(*idx);
+                readMax = std::max(readMax, *idx);
                 continue;
             }
             // A different receiver, or the first candidate in the block: the
             // run in hand is finished and this access opens the next one.
-            commit();
-            receiver = recv;
-            maxIndex = *idx;
-            members.push_back(i);
+            commitReads();
+            readRecv = recv;
+            readMax = *idx;
+            readMembers.push_back(i);
+            readIndices.push_back(*idx);
             continue;
         }
 
-        // Not a member. It ends the run if it can move the heap out from under
-        // the derived pointer, or if it redefines the receiver the proof was
-        // made about.
-        if (members.empty()) continue;
-        if (il::canCollect(inst) || inst.result == receiver) commit();
+        if (store.ok) {
+            if (opaque && il::canCollect(inst)) commitReads();
+            if (!storeMembers.empty() && store.receiver == storeRecv && store.base == storeBase) {
+                storeMembers.push_back(i);
+                storeOffsets.push_back(store.offset);
+                storeMax = std::max(storeMax, store.offset);
+                continue;
+            }
+            commitStores();
+            storeRecv = store.receiver;
+            storeBase = store.base;
+            storeMax = store.offset;
+            storeMembers.push_back(i);
+            storeOffsets.push_back(store.offset);
+            continue;
+        }
+
+        // Not a member of either. It ends a run if it can move the heap out
+        // from under that run's derived pointer, or if it redefines the
+        // receiver — or, for a store run, the base — the proof was made about.
+        if (il::canCollect(inst)) {
+            commitReads();
+            commitStores();
+            continue;
+        }
+        if (inst.result != il::kNoValue) {
+            if (inst.result == readRecv) commitReads();
+            if (inst.result == storeRecv || inst.result == storeBase) commitStores();
+        }
     }
-    commit();
+    commitReads();
+    commitStores();
+}
+
+}  // namespace
+
+BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
+                           size_t blockIndex) {
+    BlockRunPlan plan;
+    if (!receiverProofEnabled()) return plan;
+    if (blockIndex >= func.blocks.size()) return plan;
+    const il::Block& block = func.blocks[blockIndex];
+    const bool wantStores = storeProofEnabled();
+
+    // A value's defining instruction inside THIS block, so the store planner
+    // can look through an index's `box.f64` and `add` without a search per
+    // site. A value defined in another block — a parameter, a phi — has no
+    // entry, which is exactly the answer the planner wants for a run base.
+    std::vector<uint32_t> defIndex(func.valueCount, kNoDef);
+    for (size_t i = 0; i < block.instructions.size(); ++i) {
+        const il::ValueId result = block.instructions[i].result;
+        if (result != il::kNoValue && result < defIndex.size()) {
+            defIndex[result] = static_cast<uint32_t>(i);
+        }
+    }
+
+    // The fixpoint the header describes. Start optimistic — every candidate
+    // site is assumed to become a run member — and re-scan whenever a scan
+    // disagrees. Membership only ever shrinks (dropping a member can split or
+    // shorten a run, never lengthen one), so this terminates, and the bound
+    // below is a belt on that argument rather than a policy.
+    std::vector<bool> transparent(block.instructions.size(), false);
+    for (size_t i = 0; i < block.instructions.size(); ++i) {
+        const auto& inst = block.instructions[i];
+        transparent[i] = (receiverOf(inst) != il::kNoValue && indexKeyOf(module, inst)) ||
+                         (wantStores && classifyStoreSite(block, defIndex, i).ok);
+    }
+
+    for (size_t round = 0; round <= block.instructions.size(); ++round) {
+        scanRuns(module, block, defIndex, transparent, wantStores, plan);
+        bool changed = false;
+        for (size_t i = 0; i < block.instructions.size(); ++i) {
+            const bool member = plan.reads.sites[i].run != ReceiverRunPlan::kNoRun ||
+                                plan.stores.sites[i].run != StoreRunPlan::kNoRun;
+            if (transparent[i] && !member) {
+                transparent[i] = false;
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
     return plan;
 }
 
@@ -235,26 +351,31 @@ ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof
     return ProvenRead{fastExit, value};
 }
 
+llvm::Value* phiAtJoin(llvm::BasicBlock* doneBb, llvm::BasicBlock* fastBb, llvm::Value* live,
+                       llvm::Value* dead, const std::string& name) {
+    llvm::IRBuilder<> phiBuilder(doneBb, doneBb->getFirstNonPHIIt());
+    llvm::PHINode* phi = phiBuilder.CreatePHI(live->getType(), 2, name);
+    for (llvm::BasicBlock* pred : llvm::predecessors(doneBb)) {
+        phi->addIncoming(pred == fastBb ? live : dead, pred);
+    }
+    return phi;
+}
+
 void rejoinReceiverProof(llvm::IRBuilder<>& builder, ReceiverProof& proof,
                          llvm::BasicBlock* fastBb, llvm::BasicBlock* doneBb) {
     if (!proof.live()) return;
+    if (fastBb == nullptr) {
+        proof = ReceiverProof{};
+        return;
+    }
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
-
-    llvm::IRBuilder<> phiBuilder(doneBb, doneBb->getFirstNonPHIIt());
     const std::string tag = "recv" + std::to_string(proof.run) + ".";
-    llvm::PHINode* okPhi = phiBuilder.CreatePHI(phiBuilder.getInt1Ty(), 2, tag + "ok.live");
-    llvm::PHINode* basePhi = phiBuilder.CreatePHI(ptrTy, 2, tag + "base.live");
-    llvm::Value* poison = llvm::PoisonValue::get(ptrTy);
 
-    for (llvm::BasicBlock* pred : llvm::predecessors(doneBb)) {
-        const bool viaFast = pred == fastBb;
-        okPhi->addIncoming(viaFast ? proof.ok : phiBuilder.getFalse(), pred);
-        basePhi->addIncoming(viaFast ? proof.base : poison, pred);
-    }
-
-    proof.ok = okPhi;
-    proof.base = basePhi;
+    proof.ok = phiAtJoin(doneBb, fastBb, proof.ok, llvm::ConstantInt::getFalse(ctx),
+                         tag + "ok.live");
+    proof.base =
+        phiAtJoin(doneBb, fastBb, proof.base, llvm::PoisonValue::get(ptrTy), tag + "base.live");
     (void)builder;
 }
 

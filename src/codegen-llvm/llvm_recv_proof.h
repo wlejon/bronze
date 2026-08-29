@@ -35,16 +35,30 @@
 // forward unchanged, every other arm carries `false`, and a run that misses
 // once simply finishes on the ladder it would have used anyway.
 //
-// Seam: BRONZE_NO_RECV_PROOF=1 turns the planner off, so every site emits the
-// ladder alone and the A/B is one environment variable.
+// TWO PROOFS AT ONCE. `Matrix4.toArray` interleaves a run of reads off
+// `this.elements` with a run of stores into a Float32Array, so neither run is
+// a contiguous stretch of instructions and each run's members sit inside the
+// other's span. A run member is TRANSPARENT to the other run's proof: its fast
+// arm neither allocates nor calls, and its join re-establishes every live
+// proof and not only its own. Anything else that `il::canCollect` ends both.
+// That is why the two plans are computed together below rather than one per
+// file — whether a store is transparent to a read run depends on whether the
+// store's own run was committed, and the other way round, so the two are
+// settled to a fixpoint in one pass.
+//
+// Seam: BRONZE_NO_RECV_PROOF=1 turns BOTH planners off, so every site emits
+// the ladder alone and the A/B is one environment variable;
+// BRONZE_NO_STORE_PROOF=1 turns off the store side alone.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
+#include "codegen-llvm/llvm_store_proof.h"
 #include "il/il.h"
 
 namespace bronze::codegen_llvm {
@@ -72,14 +86,35 @@ struct ReceiverRunPlan {
     }
 };
 
-// Plans the runs of one block. Returns an empty plan when the seam is off or
-// the block holds no run worth proving. The module comes along because the
-// planner has to read each site's KEY to know it is an index at all.
-ReceiverRunPlan planReceiverRuns(const il::Module& module, const il::Function& func,
-                                 size_t blockIndex);
+// Both of one block's plans. Empty when the seams are off or the block holds
+// no run worth proving.
+struct BlockRunPlan {
+    ReceiverRunPlan reads;
+    StoreRunPlan stores;
+};
 
-// Whether the planner is enabled at all (BRONZE_NO_RECV_PROOF).
+// Plans the read runs and the store runs of one block together, to the
+// fixpoint the header describes. The module comes along because the planner
+// has to read each read site's KEY to know it is an index at all.
+BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
+                           size_t blockIndex);
+
+// Whether the read planner is enabled at all (BRONZE_NO_RECV_PROOF).
 bool receiverProofEnabled();
+
+// One value re-established at a join: `live` down the proof-preserving edge,
+// `dead` down every other predecessor of `doneBb`. The phi goes at the front
+// of `doneBb`, so it may be called for several proofs at the same join.
+llvm::Value* phiAtJoin(llvm::BasicBlock* doneBb, llvm::BasicBlock* fastBb, llvm::Value* live,
+                       llvm::Value* dead, const std::string& name);
+
+// Where a site that offered a proof-preserving edge left it. `fastBb` is null
+// for a site that offered none, which is what tells every proof crossing that
+// site to die rather than to be carried.
+struct ProofJoin {
+    llvm::BasicBlock* fastBb = nullptr;
+    llvm::BasicBlock* doneBb = nullptr;
+};
 
 // The live proof, carried by the emitter across a run's members.
 //

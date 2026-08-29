@@ -88,6 +88,11 @@ private:
     bool emitConstruct(const il::Instruction& inst);
     bool emitCall(const il::Instruction& inst);
     bool emitArithmetic(const il::Instruction& inst);
+    // The ACCESS family (llvm_ops_access.cpp): every op that reads or writes a
+    // property of an object, by name or by index — including the two receiver
+    // proofs, which are a property of a RUN of accesses and so belong beside
+    // the accesses themselves.
+    bool emitAccessOp(const il::Instruction& inst);
     // The private-element family (llvm_private.cpp). Its own unit because it
     // is one mechanism with six instructions, not six unrelated helpers.
     bool emitPrivateOp(const il::Instruction& inst);
@@ -189,12 +194,23 @@ private:
     // frame layout above was derived from it; the property emitters spend it
     // at the store-side representation tests.
     const ReprPlan& repr_;
-    // The receiver runs of the block being emitted, and the proof currently
-    // alive inside one (llvm_recv_proof.h). Planned per block rather than per
-    // function because a run cannot cross a block: the proof is an LLVM value,
-    // and a value has to dominate every use.
-    ReceiverRunPlan runPlan_;
+    // The receiver runs of the block being emitted, and the proofs currently
+    // alive inside them (llvm_recv_proof.h, llvm_store_proof.h). Planned per
+    // block rather than per function because a run cannot cross a block: a
+    // proof is an LLVM value, and a value has to dominate every use.
+    //
+    // Two of them, because `Matrix4.toArray` interleaves a run of reads off
+    // one array with a run of stores into another: each run's members sit
+    // inside the other's span, and a single slot would let each kill the other
+    // at its first member.
+    BlockRunPlan runPlan_;
     ReceiverProof recvProof_;
+    StoreProof storeProof_;
+    // Whether the instruction just emitted carried the live proofs across a
+    // join of its own. Cleared before every instruction, so anything that can
+    // collect and did NOT carry them ends them — the invariant is enforced at
+    // the instruction rather than left to be a property of the plan.
+    bool proofsCarried_ = false;
     // Whether this module drops the environment-record ACCESS guards
     // (llvm_env.h, `envAccessGuardsElided`). A property of the invocation, so
     // it is read once rather than per env instruction.

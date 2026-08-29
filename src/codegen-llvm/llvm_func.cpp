@@ -541,8 +541,9 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
 
     // A receiver proof is an LLVM value defined inside this block, so both the
     // plan and anything left over from the last one start again here.
-    runPlan_ = planReceiverRuns(shared_.module, func_, blockIndex);
+    runPlan_ = planBlockRuns(shared_.module, func_, blockIndex);
     recvProof_ = ReceiverProof{};
+    storeProof_ = StoreProof{};
 
     // A block parameter is a def like any other: the phi's value has to reach
     // its root slot before anything can collect.
@@ -562,7 +563,18 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         for (il::ValueId id : inst.target.args) reload(id);
         for (il::ValueId id : inst.elseTarget.args) reload(id);
 
+        proofsCarried_ = false;
         if (!emitInstruction(inst)) return false;
+
+        // A proof holds a pointer DERIVED into the heap, which a collection
+        // leaves dangling. A run member carries the live proofs across a join
+        // of its own (llvm_recv_proof.h); anything else that can collect ends
+        // them here, so the rule is enforced at the instruction rather than
+        // resting on the plan being the only thing that says so.
+        if (il::canCollect(inst) && !proofsCarried_) {
+            recvProof_ = ReceiverProof{};
+            storeProof_ = StoreProof{};
+        }
 
         if (inst.result != il::kNoValue && inst.result < func_.valueCount &&
             slotOf_[inst.result] != kNoSlot && values_[inst.result]) {
