@@ -1,0 +1,17 @@
+own: value=1 writable=true enumerable=false configurable=false
+undefined-value: value=undefined writable=true enumerable=true configurable=true
+no-value: value=1 writable=true enumerable=true configurable=true
+inherited: value=7 writable=false enumerable=true configurable=false
+deep: value=3 writable=true enumerable=false configurable=false
+accessor-fields: value=42 writable=true enumerable=true configurable=false
+getter calls: value=1 writable=1 enumerable=1
+inherited-accessor: value=inh writable=false enumerable=false configurable=false
+inherited getter calls: 1
+dictionary: value=11 writable=true enumerable=false configurable=false
+string-wrapper: value=9 writable=false enumerable=false configurable=false
+defines-accessor: get=function set=undefined enumerable=true configurable=true
+read: 5
+defineProperties j: value=1 writable=false enumerable=true configurable=true
+defineProperties k: value=2 writable=false enumerable=false configurable=false
+proto-pollution: value=4 writable=false enumerable=false configurable=true
+after-cleanup: value=4 writable=false enumerable=false configurable=false

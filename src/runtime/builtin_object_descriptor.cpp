@@ -64,8 +64,111 @@ std::string keyText(PropertyKey key) {
     return key.isSymbol() ? rtSymbolDescriptiveString(key.toValue()) : rtUtf8Chars(key.string());
 }
 
-Value readField(Rooted<Value>& desc, const char* name, bool& present) {
-    Rooted<Value> key{rtMakeString(name)};
+// ---- reading a descriptor's six fields --------------------------------------
+//
+// 6.2.6.5 ToPropertyDescriptor asks HasProperty and then Get, once for each of
+// six field names. A constructor decodes one descriptor per object it makes —
+// three.js gives every `Object3D` six through `Object.defineProperties` and a
+// seventh through `defineProperty` — so the decode is not a cold path, and
+// spelled as the two generic calls it was mostly string work: `rtMakeString`
+// built the field's name, `bronze_has_property` converted it back to text and
+// built a SECOND heap string from that, walked, and `getProp` walked again.
+// Two heap strings, a `std::string` and two chain walks per field, before the
+// descriptor's own contents were looked at.
+//
+// The names are six constants. They go through the key registry, which interns
+// by text and hands back the immortal arena string it already holds — so the
+// decode allocates nothing, and the two questions are answered in ONE walk,
+// because for an ordinary descriptor both answers are the slot the walk finds.
+// A shape key is matched by content (`PropertyKey::matches`), so what the walk
+// spends per link is a length test and a memcmp of at most twelve bytes.
+
+// The six fields, and the order the decode reads them in. That order is
+// observable, because a descriptor may spell a field as a getter, and it is
+// NOT 6.2.6.5's — which reads enumerable, configurable, value, writable, get,
+// set. `kDescFieldNames` is indexed by this enum.
+enum class DescField : uint8_t { Value, Get, Set, Writable, Enumerable, Configurable };
+constexpr size_t kDescFieldCount = 6;
+constexpr const char* kDescFieldNames[kDescFieldCount] = {"value",    "get",        "set",
+                                                          "writable", "enumerable", "configurable"};
+
+// BRONZE_NO_DESC_FIELDS=1 puts the decode back on a freshly built name and the
+// pair of generic calls, so one binary A/Bs the whole of the above.
+bool descFieldFastPath() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("BRONZE_NO_DESC_FIELDS");
+        return !(env && std::strcmp(env, "1") == 0);
+    }();
+    return enabled;
+}
+
+// The field's name as the immortal arena string the key registry holds for it.
+// The registry is per-thread and so is this memo of it; an arena string never
+// moves and is never freed, so holding the header is the same promise
+// `rtKeyHeader` already makes to the property path.
+PropertyKey descFieldKey(DescField field) {
+    static thread_local StringHeader* memo[kDescFieldCount] = {};
+    const size_t i = static_cast<size_t>(field);
+    if (memo[i] == nullptr) {
+        memo[i] = rtKeyHeader(bronze_register_key_string(kDescFieldNames[i]));
+    }
+    return PropertyKey::forString(memo[i]);
+}
+
+// What one walk of the descriptor's chain could answer.
+enum class FieldFound : uint8_t { Present, Absent, Generic };
+
+// HasProperty and Get over `desc`'s prototype chain, in one walk.
+//
+// The walk is `plainObjectHas`'s (rt_operator.cpp) step for step, because that
+// is the walk `bronze_has_property` reaches for a plain receiver and the
+// presence answer has to be the same answer. Where the walk cannot also produce
+// what Get would return — an ACCESSOR, whose Get runs user code, or a holder
+// that is not an ordinary object, whose value does not come out of a slot — it
+// answers `Generic` and the caller runs the two generic calls as before.
+FieldFound lookupField(Value descVal, PropertyKey name, Value& out) {
+    auto* hdr = descVal.asObject<HeapObjectHeader>();
+    for (uint32_t depth = 0; depth <= 1000; ++depth) {
+        auto* holder = reinterpret_cast<ObjectHeader*>(hdr);
+        PropertyInfo info;
+        if (holder->shape != nullptr && holder->shape->lookupProperty(name, info)) {
+            if (info.accessor || hdr->flags != HeapKind::Plain) return FieldFound::Generic;
+            out = holder->getSlot(info.slot);
+            return FieldFound::Present;
+        }
+        ObjectHeader* next = holder->protoAncestor(1);
+        if (next == nullptr) return FieldFound::Absent;
+        hdr = reinterpret_cast<HeapObjectHeader*>(next);
+    }
+    fatal("prototype chain too deep (a cycle?)");
+}
+
+// `ordinary` is false for a String wrapper, which answers `length` and its
+// indices beside its shape and so is not fully described by the walk above.
+// None of the six names is such a key, but that is a fact about the RECEIVER
+// and is asked once per descriptor rather than assumed six times.
+Value readField(Rooted<Value>& desc, DescField field, bool ordinary, bool& present) {
+    // The key is taken BEFORE the descriptor is read: interning one the first
+    // time a thread asks for it allocates, and an argument list gives no order
+    // to evaluate the two in — so a raw `desc.get()` beside the call could be
+    // the address the collector had just moved away from.
+    const PropertyKey name = descFieldKey(field);
+    if (ordinary && descFieldFastPath()) {
+        Value out;
+        switch (lookupField(desc.get(), name, out)) {
+            case FieldFound::Present:
+                present = true;
+                return out;
+            case FieldFound::Absent:
+                present = false;
+                return Value::fromUndefined();
+            case FieldFound::Generic:
+                break;
+        }
+    }
+    Rooted<Value> key{descFieldFastPath()
+                          ? name.toValue()
+                          : rtMakeString(kDescFieldNames[static_cast<size_t>(field)])};
     present = bronze_has_property(key.get().rawBits(), desc.get().rawBits());
     if (!present) return Value::fromUndefined();
     return desc.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
@@ -130,12 +233,15 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
 
     bool hasValue = false, hasGet = false, hasSet = false;
     bool hasWritable = false, hasEnumerable = false, hasConfigurable = false;
-    Rooted<Value> value{readField(desc, "value", hasValue)};
-    Rooted<Value> getter{readField(desc, "get", hasGet)};
-    Rooted<Value> setter{readField(desc, "set", hasSet)};
-    Rooted<Value> writableV{readField(desc, "writable", hasWritable)};
-    Rooted<Value> enumerableV{readField(desc, "enumerable", hasEnumerable)};
-    Rooted<Value> configurableV{readField(desc, "configurable", hasConfigurable)};
+    Value wrapped;
+    const bool ordinary = !rtStringWrapperData(desc.get(), wrapped);
+    Rooted<Value> value{readField(desc, DescField::Value, ordinary, hasValue)};
+    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, hasGet)};
+    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, hasSet)};
+    Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, hasWritable)};
+    Rooted<Value> enumerableV{readField(desc, DescField::Enumerable, ordinary, hasEnumerable)};
+    Rooted<Value> configurableV{
+        readField(desc, DescField::Configurable, ordinary, hasConfigurable)};
 
     if ((hasGet || hasSet) && (hasValue || hasWritable)) {
         return rtThrowTypeError(

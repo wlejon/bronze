@@ -6,6 +6,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -541,5 +542,102 @@ TEST_CASE("a chain the epoch does not cover is refused a negative entry") {
         proto.get()->shape->used_as_prototype = false;
         CHECK_FALSE(inst.get()->chainIsCacheable());
         proto.get()->shape->used_as_prototype = true;
+    }
+}
+
+TEST_CASE("Object.defineProperty reads its descriptor's fields off the whole chain") {
+    // 6.2.6.5 asks HasProperty and then Get for each of six field names, and
+    // the decode answers both from one walk of the descriptor's prototype chain
+    // wherever the field is a data slot. What that walk owes the pair of
+    // generic calls it stands in for is here: an INHERITED field is a mentioned
+    // field, and a field whose value is `undefined` is mentioned too — the
+    // question is presence, not truthiness, and collapsing the two silently
+    // freezes a property the descriptor meant to leave alone.
+    ShadowStackFrame frame;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
+
+    auto setField = [](Rooted<Value>& obj, const char* name, Value v) {
+        Rooted<Value> key{runtime::rtMakeString(name)};
+        Rooted<Value> val{v};
+        obj.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), key,
+                                                    val);
+    };
+    auto define = [](Rooted<Value>& target, const char* name, Rooted<Value>& desc) {
+        Rooted<Value> key{runtime::rtMakeString(name)};
+        const uint64_t args[3] = {target.get().rawBits(), key.get().rawBits(),
+                                  desc.get().rawBits()};
+        runtime::rtObjectDefineProperty(0, 0, 3, args);
+    };
+    auto lookup = [](Rooted<Value>& obj, const char* name, PropertyInfo& out) {
+        Rooted<Value> key{runtime::rtMakeString(name)};
+        auto* o = obj.get().asObject<ObjectHeader>();
+        return o->shape != nullptr &&
+               o->shape->lookupProperty(PropertyKey::fromValue(key.get()), out);
+    };
+
+    SUBCASE("a field inherited from the descriptor's prototype is a mentioned field") {
+        Rooted<Value> descProto{Value(bronze_create_object())};
+        setField(descProto, "enumerable", Value::fromBool(true));
+        Rooted<Value> desc{Value::fromObject(ObjectHeader::create(
+            heap, arena, runtime::rtRootShapeForPrototype(descProto.get())))};
+        setField(desc, "value", Value::fromDouble(7));
+
+        Rooted<Value> target{Value(bronze_create_object())};
+        define(target, "c", desc);
+
+        PropertyInfo info;
+        REQUIRE(lookup(target, "c", info));
+        CHECK(target.get().asObject<ObjectHeader>()->getSlot(info.slot).asNumber() == 7.0);
+        // `enumerable` came off the prototype; the two the descriptor is silent
+        // about default to false on a new property (10.1.6.3 step 3).
+        CHECK(info.enumerable);
+        CHECK_FALSE(info.writable);
+        CHECK_FALSE(info.configurable);
+    }
+
+    SUBCASE("`value: undefined` edits the value and leaves the attributes alone") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        {
+            Rooted<Value> full{Value(bronze_create_object())};
+            setField(full, "value", Value::fromDouble(1));
+            setField(full, "writable", Value::fromBool(true));
+            setField(full, "enumerable", Value::fromBool(true));
+            setField(full, "configurable", Value::fromBool(true));
+            define(target, "b", full);
+        }
+        {
+            Rooted<Value> onlyValue{Value(bronze_create_object())};
+            setField(onlyValue, "value", Value::fromUndefined());
+            define(target, "b", onlyValue);
+        }
+        PropertyInfo info;
+        REQUIRE(lookup(target, "b", info));
+        CHECK(target.get().asObject<ObjectHeader>()->getSlot(info.slot).isUndefined());
+        CHECK(info.writable);
+        CHECK(info.enumerable);
+        CHECK(info.configurable);
+    }
+
+    SUBCASE("an empty descriptor mentions nothing and edits nothing") {
+        Rooted<Value> target{Value(bronze_create_object())};
+        {
+            Rooted<Value> full{Value(bronze_create_object())};
+            setField(full, "value", Value::fromDouble(1));
+            setField(full, "writable", Value::fromBool(true));
+            setField(full, "enumerable", Value::fromBool(true));
+            setField(full, "configurable", Value::fromBool(true));
+            define(target, "b", full);
+        }
+        {
+            Rooted<Value> empty{Value(bronze_create_object())};
+            define(target, "b", empty);
+        }
+        PropertyInfo info;
+        REQUIRE(lookup(target, "b", info));
+        CHECK(target.get().asObject<ObjectHeader>()->getSlot(info.slot).asNumber() == 1.0);
+        CHECK(info.writable);
+        CHECK(info.enumerable);
+        CHECK(info.configurable);
     }
 }
