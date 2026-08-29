@@ -1,4 +1,5 @@
 #include "codegen-llvm/llvm_recv_proof.h"
+#include "il/key.h"
 
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -35,7 +36,7 @@ il::ValueId receiverOf(const il::Instruction& inst) {
 std::optional<uint32_t> indexKeyOf(const il::Module& module, const il::Instruction& inst) {
     if (inst.op != il::Op::PropGet) return std::nullopt;
     if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
-    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+    return il::parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
 // The index a constant-index `prop.set` writes, for the Array store planner —
@@ -46,7 +47,7 @@ std::optional<uint32_t> storeIndexKeyOf(const il::Module& module, const il::Inst
     if (inst.op != il::Op::PropSet) return std::nullopt;
     if (inst.operands.size() < 2) return std::nullopt;
     if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
-    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+    return il::parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
 // A `prop.set` whose key is a NAME rather than an index. Its three bare-store
@@ -57,7 +58,7 @@ std::optional<uint32_t> storeIndexKeyOf(const il::Module& module, const il::Inst
 bool carriesProofAcross(const il::Module& module, const il::Instruction& inst) {
     if (inst.op != il::Op::PropSet) return false;
     if (inst.keyIndex >= module.keyConstants.size()) return false;
-    return !parseIndexKey(module.keyConstants[inst.keyIndex]).has_value();
+    return !il::parseIndexKey(module.keyConstants[inst.keyIndex]).has_value();
 }
 
 }  // namespace
@@ -527,8 +528,16 @@ BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func, s
     return plan;
 }
 
-ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
-                                il::ValueId receiver, uint32_t run, uint32_t maxIndex) {
+namespace {
+
+// The ladder itself, with the label prefix a parameter so that the two things
+// that spend it — a run's proof and the IL's own `is.dense_array` — are legible
+// apart in the IR. One body, because the CLAIM has to be the same one: the
+// region pass reorders reads on the strength of `is.dense_array`, and the reads
+// it reordered are then compiled against this proof.
+ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                             il::ValueId receiver, uint32_t run, uint32_t maxIndex,
+                             const std::string& tag) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -536,8 +545,6 @@ ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
-
-    const std::string tag = "recv" + std::to_string(run) + ".";
 
     // Every test below reads a field the test before it proved was there — the
     // header only after the tag says there is one, the elements object only
@@ -626,6 +633,21 @@ ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits
     proof.ok = okPhi;
     proof.base = basePhi;
     return proof;
+}
+
+}  // namespace
+
+ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                                il::ValueId receiver, uint32_t run, uint32_t maxIndex) {
+    return emitArrayProof(builder, objBits, receiver, run, maxIndex,
+                          "recv" + std::to_string(run) + ".");
+}
+
+llvm::Value* emitDenseArrayTest(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                                uint32_t maxIndex) {
+    // The base pointer is dropped, not computed and ignored: nothing reads it,
+    // so the phi and the GEP behind it die with the first pass over the block.
+    return emitArrayProof(builder, objBits, il::kNoValue, 0, maxIndex, "dense.").ok;
 }
 
 bool holeRawSlotEnabled() {

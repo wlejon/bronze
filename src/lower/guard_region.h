@@ -169,6 +169,57 @@ namespace bronze::lower {
 // definition comes after it cannot: a guard in front of its own definition has
 // nothing to read, so the later point is forced rather than chosen.
 // `setFromEuler` is the first shape: nine values, one chain, one trampoline.
+//
+// ---------------------------------------------------------------------------
+// READ RUNS: WHEN A LATER GUARD POINT IS ALLOWED
+//
+// Coalescing above only ever moves a guard EARLIER, and that is why it does
+// nothing for `Vector3.applyMatrix4`. Its source reads and consumes one element
+// at a time — `e[3]*x + e[7]*y + ...` — so each read's first promoted use is the
+// instruction after it, the next read is defined past that point, and sixteen
+// reads take sixteen points. The fast copy is then sixteen blocks of one read
+// each, and the backend's run-arm planner (codegen-llvm/llvm_run_arms.h) needs a
+// SPAN OF ONE BLOCK to put a run on one arm: it finds runs of one and plans
+// nothing. `multiplyMatrices` gets its single merged point for a reason that is
+// about its source and not about this pass — it declares all thirty-two
+// elements before it multiplies any of them.
+//
+// So the rule here is the mirror of coalescing: a guard point may move LATER,
+// past a RUN OF CONSTANT-INDEX READS off one receiver, when nothing between the
+// reads is observable in the fast copy. What is between them in `applyMatrix4`
+// is exactly the coercions this pass deletes and the arithmetic it promotes, so
+// the fast copy of the whole run is reads, bitcasts and `fmul`.
+//
+// GUARDING LATER IS NOT FREE, and the reason is the SLOW COPY. A failed guard
+// enters the slow copy in front of the FIRST read of the run, and the slow copy
+// then performs every read again. Reading `e[7]` twice is observable in general
+// — `{ get "7"() {...} }` is an accepted program, and a plain object with an
+// index-named accessor is exactly what a `prop.get` of an index key may find.
+//
+// THE LICENCE IS `is.dense_array` (il.h), tested once in front of the run's
+// first read. It is the same four tests the backend's receiver proof makes
+// before it turns such a read into a load, so what it says is precisely "these
+// reads are loads". Loads may be re-run and may be reordered against each
+// other, which is the whole of what the merged point needs. It gets its own
+// split so that its failing edge enters the slow copy BEFORE the first read: on
+// that edge nothing has been read at all, so the slow copy's own reads are the
+// program's only ones.
+//
+// The two edges then share one trampoline, because they carry the same values:
+// everything live at the run's first read is defined before it, and the fast
+// copy defines nothing between the two guards that the slow copy wants.
+//
+// WHAT THE FAST COPY DOES SPECULATIVELY. Each read's `unbox.f64 raw` now stands
+// in front of the test that licenses it, because its uses do. A raw unbox is a
+// bitcast: over a value that is not a Number it produces a double nobody can
+// look at, since every value it feeds is either promoted arithmetic (also
+// unread on the failing edge) or the boxed form the trampoline recomputes from
+// the ORIGINAL box. The trampoline carries values live at the run's first read
+// and every one of those is defined before any speculation began.
+//
+// THE SEAM is `BRONZE_NO_REGION_RUN_GUARDS=1`: with it set no point is ever
+// merged past a read run, every read keeps its own point, and the pass emits
+// what it emitted before this rule.
 
 // What the pass did, counted. Every refusal is counted by REASON, because a
 // pass that proves nothing emits exactly the code it replaced and the whole
@@ -191,6 +242,10 @@ struct GuardRegionStats {
     // ratio of this to `guards` is what an entry region is bought for.
     uint32_t unboxFolded = 0;
     uint32_t promoted = 0;    // values carried as f64 in a fast copy
+    // Guard points that a READ RUN merged, one `is.dense_array` each. Read
+    // against `guardPoints`: what the merge buys is the points that are NOT
+    // there, and this says how many tests were spent buying them.
+    uint32_t runGuards = 0;
     uint32_t blocksAdded = 0;
     uint32_t blocksPruned = 0;  // blocks the duplication left unreachable
 
@@ -302,6 +357,18 @@ struct RegionPlan {
     // several candidates share one entry here.
     std::vector<std::vector<uint32_t>> splitsOf;  // by block id
 
+    // Parallel to `splitsOf`: what each point is. `receiver == kNoValue` is an
+    // ordinary point, whose `is.number` chain stands at the split itself.
+    // Otherwise the point is a merged READ RUN — see the header — and the fast
+    // copy tests `receiver` at the split, performs everything up to
+    // `guardIndex`, and tests the values there.
+    struct RunGuard {
+        il::ValueId receiver = il::kNoValue;
+        uint32_t maxIndex = 0;
+        uint32_t guardIndex = 0;
+    };
+    std::vector<std::vector<RunGuard>> runGuardsOf;  // by block id
+
     // Everything a guard licenses: promotable arithmetic whose result is a
     // candidate, plus every checked `unbox.f64` of one. It is the numerator of
     // the profitability ratio, and counting the unboxes is what makes a
@@ -310,6 +377,27 @@ struct RegionPlan {
     uint32_t promotedUseCount = 0;
     uint32_t guardCount = 0;
 };
+
+// Rewrites `plan.splitsOf` and `plan.runGuardsOf` for one block, merging the
+// points a RUN OF CONSTANT-INDEX READS separates and reassigning the candidates
+// they held to the merged point. `keys` is the module's key pool, which is what
+// says a `prop.get`'s key is an index at all — read through `il::parseIndexKey`
+// so that this pass and the backend's run planner cannot disagree.
+//
+// `types` and `isCandidate` are the plan's own, passed rather than re-derived
+// because the caller already has them. Returns the number of points removed.
+uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::string>& keys,
+                            const std::vector<il::Type>& types, il::BlockId block,
+                            std::vector<Candidate>& candidates, RegionPlan& plan);
+
+// THE SEAM for the merge above (`BRONZE_NO_REGION_RUN_GUARDS`), read once.
+bool regionRunGuardsDisabled();
+
+// Boxed result over boxed operands, in the `+ - * / % **` family plus unary
+// `neg`: the arithmetic a guard promotes to `f64`. Shared because SELECTION
+// counts it as the work a guard licenses and the READ-RUN rule has to know that
+// the fast copy will have rewritten it into something that runs no user code.
+bool isPromotableArith(const il::Instruction& inst, const std::vector<il::Type>& types);
 
 // A CHECKED `unbox.f64 %v` with `%v` dynamic by `types`: ToNumber (7.1.4) over
 // a value nothing proved, which can call a `valueOf`, can throw, and is
@@ -327,7 +415,8 @@ il::Function withPreheader(const il::Function& fn);
 // Selects the whole-function region of `prepped` — a function `withPreheader`
 // has already been applied to. False when there is none to take, with the
 // reason counted in `stats`.
-bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, RegionPlan& plan);
+bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
+                       GuardRegionStats& stats, RegionPlan& plan);
 
 // Selects the regions of one function, innermost-first, and returns them in
 // header order. Empty when the function has none. Counts its own refusals.
@@ -338,7 +427,8 @@ bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, Reg
 // several nests: without it the second look at the function finds the natural
 // loop the trampoline edge made out of the SLOW copy and duplicates that, which
 // is the region this pass just built, a second time.
-std::vector<RegionPlan> selectRegions(const il::Function& fn, GuardRegionStats& stats,
+std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
+                                      GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt);
 
 // Applies one plan to `fn`. Returns false when the rewrite would not have been

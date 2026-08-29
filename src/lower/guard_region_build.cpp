@@ -36,6 +36,16 @@ il::Instruction makeIsNumber(il::ValueId result, il::ValueId operand) {
     return inst;
 }
 
+il::Instruction makeIsDenseArray(il::ValueId result, il::ValueId operand, uint32_t maxIndex) {
+    il::Instruction inst;
+    inst.op = il::Op::IsDenseArray;
+    inst.type = il::Type::Bool;
+    inst.result = result;
+    inst.operands = {operand};
+    inst.immI32 = static_cast<int32_t>(maxIndex);
+    return inst;
+}
+
 il::Instruction makeRawUnbox(il::ValueId result, il::ValueId operand) {
     il::Instruction inst;
     inst.op = il::Op::Unbox;
@@ -325,11 +335,21 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     struct GuardPoint {
         uint32_t index = 0;
         std::vector<il::ValueId> guarded;  // ascending, one `is.number` each
+        // A merged READ RUN (guard_region.h): the split at `index` carries an
+        // `is.dense_array` on `run.receiver` and the `is.number` chain stands at
+        // `run.guardIndex`, with the whole run between them. `kNoValue` here is
+        // an ordinary point, whose chain stands at the split itself.
+        RegionPlan::RunGuard run;
     };
     std::vector<std::vector<GuardPoint>> guardPoints(blockCount);
     std::vector<std::vector<std::pair<uint32_t, il::ValueId>>> inlineUnbox(blockCount);
     for (il::BlockId b : plan.blocks) {
-        for (uint32_t index : plan.splitsOf[b]) guardPoints[b].push_back(GuardPoint{index, {}});
+        for (size_t j = 0; j < plan.splitsOf[b].size(); ++j) {
+            GuardPoint point;
+            point.index = plan.splitsOf[b][j];
+            if (j < plan.runGuardsOf[b].size()) point.run = plan.runGuardsOf[b][j];
+            guardPoints[b].push_back(std::move(point));
+        }
     }
     for (const Candidate& c : plan.candidates) {
         if (c.kind == CandidateKind::UseGuard) {
@@ -338,6 +358,21 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             }
         } else if (c.kind == CandidateKind::PinElided && c.guardBlock != plan.entryPred) {
             inlineUnbox[c.guardBlock].push_back({c.guardIndex, c.value});
+        }
+    }
+    // A run point's candidates are USED before they are tested, so each one's
+    // `unbox.f64 raw` goes where its definition is rather than behind the
+    // guard. It is a bitcast over bits the test has not looked at yet, and what
+    // reads it is either arithmetic nothing on the failing edge reads or the
+    // trampoline's re-box of the ORIGINAL value (guard_region.h).
+    uint32_t runGuardCount = 0;
+    for (il::BlockId b : plan.blocks) {
+        for (const GuardPoint& point : guardPoints[b]) {
+            if (point.run.receiver == il::kNoValue) continue;
+            ++runGuardCount;
+            for (il::ValueId v : point.guarded) {
+                inlineUnbox[b].push_back({defs[v].index + 1, v});
+            }
         }
     }
     for (auto& points : inlineUnbox) std::sort(points.begin(), points.end());
@@ -380,12 +415,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // extra test at a shared split point.
     std::vector<std::vector<il::BlockId>> fastPartId(blockCount);
     std::vector<std::vector<std::vector<il::BlockId>>> fastChainId(blockCount);
+    // A run point's own block: the reads, between the receiver test that
+    // licenses them and the value tests that spend them.
+    std::vector<std::vector<il::BlockId>> fastRunId(blockCount);
     for (il::BlockId b : plan.blocks) {
         const size_t parts = guardPoints[b].size() + 1;
         fastPartId[b].resize(parts);
         fastChainId[b].resize(guardPoints[b].size());
+        fastRunId[b].assign(guardPoints[b].size(), il::kNoBlock);
         fastPartId[b][0] = nextBlock++;
         for (size_t j = 0; j < guardPoints[b].size(); ++j) {
+            if (guardPoints[b][j].run.receiver != il::kNoValue) fastRunId[b][j] = nextBlock++;
             const size_t extra = guardPoints[b][j].guarded.size();
             fastChainId[b][j].resize(extra == 0 ? 0 : extra - 1);
             for (size_t k = 0; k + 1 < extra; ++k) fastChainId[b][j][k] = nextBlock++;
@@ -469,6 +509,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     if (entryConvId != il::kNoBlock) classify(entryConvId, il::CopyClass::Fast);
     for (il::BlockId b : plan.blocks) {
         for (il::BlockId id : fastPartId[b]) classify(id, il::CopyClass::Fast);
+        for (il::BlockId id : fastRunId[b]) {
+            if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
+        }
         for (const auto& chain : fastChainId[b]) {
             for (il::BlockId id : chain) classify(id, il::CopyClass::Fast);
         }
@@ -647,18 +690,12 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 il::BlockParam{fastOf[param.id], promote ? il::Type::F64 : param.type});
         }
 
-        size_t cursor = 0;
-        for (size_t j = 0; j <= guardPoints[b].size(); ++j) {
-            il::Block& part = out[fastPartId[b][j]];
-            // The doubles the guard just before this part licensed.
-            if (j > 0) {
-                for (il::ValueId v : guardPoints[b][j - 1].guarded) {
-                    part.instructions.push_back(makeRawUnbox(rawOf[v], fastOf[v]));
-                }
-            }
-            const size_t limit = j < guardPoints[b].size() ? guardPoints[b][j].index
-                                                           : source.instructions.size();
-            for (size_t i = cursor; i < limit; ++i) {
+        // One stretch of the source into one fast block. A run point makes a
+        // block's fast copy a chain of THREE — up to the receiver test, the run
+        // itself, then the rest — so the body is a function of the block it
+        // writes into rather than of the loop variable below.
+        auto emitRange = [&](il::Block& part, size_t from, size_t to) {
+            for (size_t i = from; i < to; ++i) {
                 for (const auto& [index, value] : inlineUnbox[b]) {
                     if (index == i) {
                         part.instructions.push_back(makeRawUnbox(rawOf[value], fastOf[value]));
@@ -714,15 +751,49 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 }
                 part.instructions.push_back(std::move(inst));
             }
+        };
+
+        size_t cursor = 0;
+        for (size_t j = 0; j <= guardPoints[b].size(); ++j) {
+            il::Block* part = &out[fastPartId[b][j]];
+            // The doubles the guard just before this part licensed. A RUN point
+            // licensed its doubles where they were defined instead, so there is
+            // nothing owed here for one.
+            if (j > 0 && guardPoints[b][j - 1].run.receiver == il::kNoValue) {
+                for (il::ValueId v : guardPoints[b][j - 1].guarded) {
+                    part->instructions.push_back(makeRawUnbox(rawOf[v], fastOf[v]));
+                }
+            }
+            const size_t limit = j < guardPoints[b].size() ? guardPoints[b][j].index
+                                                           : source.instructions.size();
+            emitRange(*part, cursor, limit);
             cursor = limit;
 
             if (j == guardPoints[b].size()) break;
+
+            // A RUN POINT'S FIRST TEST: the receiver, in front of the run's
+            // first read. Its failing edge is the same trampoline the value
+            // tests use, and it is the edge on which NOTHING has been read —
+            // which is what makes the value tests' edge, where everything has,
+            // sound to re-run in the slow copy.
+            const RegionPlan::RunGuard& run = guardPoints[b][j].run;
+            if (run.receiver != il::kNoValue) {
+                const il::ValueId dense = newValue();
+                part->instructions.push_back(makeIsDenseArray(
+                    dense, fastDyn(run.receiver, *part, &boxCache), run.maxIndex));
+                part->instructions.push_back(
+                    makeBranch(dense, fastRunId[b][j], trampolineId[b][j]));
+                part = &out[fastRunId[b][j]];
+                emitRange(*part, cursor, run.guardIndex);
+                cursor = run.guardIndex;
+            }
+
             // The guard itself: one test per value, chained, every failing edge
             // landing on the one trampoline for this point. Nothing has been
             // computed between the tests, so they all leave with the same
             // values.
             const auto& guarded = guardPoints[b][j].guarded;
-            il::Block* testBlock = &part;
+            il::Block* testBlock = part;
             for (size_t k = 0; k < guarded.size(); ++k) {
                 const il::ValueId cond = newValue();
                 testBlock->instructions.push_back(makeIsNumber(cond, fastOf[guarded[k]]));
@@ -787,6 +858,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
 
     stats.promoted += static_cast<uint32_t>(plan.candidates.size());
     stats.guards += emittedGuards;
+    stats.runGuards += runGuardCount;
     stats.unboxFolded += foldedCount;
     stats.blocksPruned += pruned;
     for (il::BlockId b : plan.blocks) {

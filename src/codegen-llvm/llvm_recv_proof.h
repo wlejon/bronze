@@ -190,6 +190,15 @@ struct ReceiverProof {
 ReceiverProof emitReceiverProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
                                 il::ValueId receiver, uint32_t run, uint32_t maxIndex);
 
+// The same ladder as an i1 and nothing else: what `il::Op::IsDenseArray` is.
+// The guarded-region pass emits that instruction in front of a run of reads it
+// intends to perform before testing any of their values, and the answer here is
+// what says those reads are LOADS — re-runnable, reorderable against each other,
+// and free of user code. Same predicate as the proof above by construction, so
+// a run the region pass merged is a run this backend can prove.
+llvm::Value* emitDenseArrayTest(llvm::IRBuilder<>& builder, llvm::Value* objBits,
+                                uint32_t maxIndex);
+
 // What the fast arm left behind: the block that reaches `doneBb` carrying
 // `value`, for the caller's phi to take an incoming from.
 struct ProvenRead {

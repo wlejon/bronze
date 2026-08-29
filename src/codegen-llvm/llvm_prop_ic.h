@@ -27,10 +27,9 @@ namespace bronze::codegen_llvm {
 // lifetime, told to LLVM so a second read of it folds into the first.
 void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx);
 
-// Is this compile-time key string a canonical array index (6.1.7)? Leading
-// zeros and anything past 2^32-2 are not, so `a["01"]` and `a["4294967295"]`
-// take the named-property path both the read and the write send them down.
-std::optional<uint32_t> parseIndexKey(std::string_view key);
+// `il::parseIndexKey` (il/key.h) is what answers "is this key a canonical array
+// index": it moved into `il` when the guarded-region pass began asking the same
+// question, because the two passes have to give the same answer exactly.
 
 struct IcWayScanResult {
     // The matched way's entry pointer, as a PHI over the ways that could have

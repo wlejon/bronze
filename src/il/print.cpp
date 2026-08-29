@@ -61,6 +61,7 @@ const char* opName(Op op) {
         case Op::In: return "in";
         case Op::IsNullish: return "is.nullish";
         case Op::IsNumber: return "is.number";
+        case Op::IsDenseArray: return "is.dense_array";
         case Op::Ret: return "ret";
         case Op::Throw: return "throw";
         case Op::ExcTake: return "exc.take";
@@ -406,6 +407,13 @@ std::string print(const Module& module) {
                         break;
                     case Op::TemplateCached:
                         out += "template.cached " + std::to_string(inst.immI32);
+                        break;
+                    // The largest index the claim covers is the whole content
+                    // of this instruction beside its receiver, so it prints.
+                    case Op::IsDenseArray:
+                        out += "is.dense_array %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
+                               std::to_string(inst.immI32);
                         break;
                     case Op::TemplateObject:
                         out += "template.object %" +

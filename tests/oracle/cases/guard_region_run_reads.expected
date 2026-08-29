@@ -1,0 +1,12 @@
+dense 4325
+coercible 4325
+valueOf 4325
+valueOfCalls 1
+getters 4325
+getterLog g0,g1,g2,g3
+mutating 40325
+short NaN
+aliasing 40325
+nullish true
+string NaN
+dense again 4325

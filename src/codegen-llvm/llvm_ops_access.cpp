@@ -319,6 +319,25 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                              /*ownsStore=*/false, /*ownsArrayStore=*/true);
             return true;
         }
+        // The claim, not an access: the proof ladder with its base pointer
+        // dropped. It lives here because the ladder does — the guarded-region
+        // pass emits this in front of a run of reads it has already reordered,
+        // and the two must be the same four tests or the reordering is licensed
+        // by something the reads were not compiled against.
+        //
+        // It leaves the builder in the ladder's join, exactly as a property
+        // access leaves it in the access's join, and it carries no proof of its
+        // own: `il::canCollect` says false for it, so every live proof crossing
+        // it stays live in a register that still dominates its use.
+        case il::Op::IsDenseArray: {
+            if (!needs(1, true, "Invalid operands for IsDenseArray")) return false;
+            llvm::Value* obj = operand(inst, 0, "Undefined operand in IsDenseArray instruction");
+            if (!obj) return false;
+            if (!require(inst.immI32 >= 0, "Negative index in IsDenseArray")) return false;
+            values_[inst.result] =
+                emitDenseArrayTest(builder_, obj, static_cast<uint32_t>(inst.immI32));
+            return true;
+        }
         default:
             return require(false, "Instruction is not an access op");
     }

@@ -118,6 +118,8 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
     return types;
 }
 
+}  // namespace
+
 // PROMOTABLE ARITHMETIC: boxed result, boxed operands. `Pow` is here because
 // its promoted form is `bronze_pow` over two doubles rather than the dynamic
 // helper that has to run 13.15.3 first, and `Neg` because it is the one UNARY
@@ -134,6 +136,8 @@ bool isPromotableArith(const il::Instruction& inst, const std::vector<il::Type>&
     }
     return inst.result != il::kNoValue;
 }
+
+namespace {
 
 // Union-find over value ids: the candidate closure is a connected-components
 // problem, and a refusal drops a whole component because the reason to refuse
@@ -203,8 +207,9 @@ struct Pending {
 // `inRegion` and `entryRegion` filled in; everything else is decided here.
 // False means refused, with the reason counted.
 // ---------------------------------------------------------------------------
-bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il::Type>& types,
-                   const std::vector<DefSite>& defs, RegionPlan& plan, GuardRegionStats& stats) {
+bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys, const Cfg& cfg,
+                   const std::vector<il::Type>& types, const std::vector<DefSite>& defs,
+                   RegionPlan& plan, GuardRegionStats& stats) {
     // 1. A handler inside the region, or a region block that IS a handler.
     // Refused both ways: a handler takes no parameters, so there is nowhere for
     // a trampoline's values to arrive, and an edge into the middle of the
@@ -566,6 +571,16 @@ bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il:
         std::sort(splits.begin(), splits.end());
         splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
     }
+
+    // READ RUNS, last: it rewrites the points coalescing settled and the
+    // candidates that sit at them, so it wants both finished and sorted. The
+    // candidate list is re-sorted afterwards because nothing here reorders it —
+    // only `guardIndex` changes — but the guard chains are read in point order
+    // and a point that moved has to find its members again.
+    plan.runGuardsOf.assign(fn.blocks.size(), {});
+    for (il::BlockId b : plan.blocks) {
+        mergeReadRunGuards(fn, keys, types, b, plan.candidates, plan);
+    }
     return true;
 }
 
@@ -591,6 +606,7 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"dup", {before.duplicated, after.duplicated}},
         {"guards", {before.guards, after.guards}},
         {"points", {before.guardPoints, after.guardPoints}},
+        {"runGuards", {before.runGuards, after.runGuards}},
         {"unboxFolded", {before.unboxFolded, after.unboxFolded}},
         {"handler", {before.refusedHandler, after.refusedHandler}},
         {"singleEntry", {before.refusedSingleEntry, after.refusedSingleEntry}},
@@ -640,12 +656,13 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
                              s.refusedEntrySplit + s.refusedSsa + s.refusedMachine +
                              s.refusedCopyPred;
     std::fprintf(stderr,
-                 "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u elidedBox=%u "
+                 "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
+                 "elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
                  "placement %u, entrySplit %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
-                 s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
+                 s.runGuards, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
                  s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
                  s.refusedEntrySplit, s.refusedSsa, s.refusedMachine, s.refusedCopyPred);
@@ -653,7 +670,8 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
 
 // ---------------------------------------------------------------------------
 
-std::vector<RegionPlan> selectRegions(const il::Function& fn, GuardRegionStats& stats,
+std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<std::string>& keys,
+                                      GuardRegionStats& stats,
                                       const std::vector<uint8_t>& alreadyBuilt) {
     std::vector<RegionPlan> plans;
     if (fn.blocks.empty()) return plans;
@@ -717,7 +735,7 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, GuardRegionStats& 
         if (overlapsBuilt) continue;
         ++stats.regions;
 
-        if (!analyzeRegion(fn, cfg, types, defs, plan, stats)) continue;
+        if (!analyzeRegion(fn, keys, cfg, types, defs, plan, stats)) continue;
         // The region's single outside predecessor is where the entry chain is
         // spliced, and the chain RE-PASSES that edge's arguments — on the fast
         // edge as doubles, on a failed guard as the boxes they were. A
@@ -764,7 +782,8 @@ il::Function withPreheader(const il::Function& fn) {
     return out;
 }
 
-bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, RegionPlan& plan) {
+bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
+                       GuardRegionStats& stats, RegionPlan& plan) {
     if (prepped.blocks.size() < 2) return false;
     // Refused by NAME and not by shape: a resume machine's entry dispatches on
     // an index held in the frame, so every one of its blocks is reachable from
@@ -802,7 +821,7 @@ bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, Reg
 
     const std::vector<il::Type> types = valueTypes(prepped);
     const std::vector<DefSite> defs = computeDefSites(prepped);
-    return analyzeRegion(prepped, cfg, types, defs, plan, stats);
+    return analyzeRegion(prepped, keys, cfg, types, defs, plan, stats);
 }
 
 namespace {
@@ -812,7 +831,8 @@ namespace {
 // A function of its own so that the module loop above it can bracket it — the
 // per-function trace is the difference between the counters before and after
 // this call, which a body full of `continue` could not report.
-bool examineFunction(il::Function& fn, GuardRegionStats& stats) {
+bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
+                     GuardRegionStats& stats) {
     size_t originalInsts = 0;
     for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
     size_t added = 0;
@@ -825,7 +845,7 @@ bool examineFunction(il::Function& fn, GuardRegionStats& stats) {
         // counting those again would report one loop as several.
         GuardRegionStats discard;
         std::vector<RegionPlan> plans =
-            selectRegions(fn, attempt == 0 ? stats : discard, alreadyBuilt);
+            selectRegions(fn, keys, attempt == 0 ? stats : discard, alreadyBuilt);
         if (plans.empty()) break;
 
         const RegionPlan& plan = plans.front();
@@ -856,7 +876,7 @@ bool examineFunction(il::Function& fn, GuardRegionStats& stats) {
     // caps in `analyzeRegion` are the size bound instead.
     il::Function prepped = withPreheader(fn);
     RegionPlan plan;
-    if (!selectEntryRegion(prepped, stats, plan)) return false;
+    if (!selectEntryRegion(prepped, keys, stats, plan)) return false;
     std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
     const size_t blocksBefore = prepped.blocks.size();
     if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) return false;
@@ -883,7 +903,7 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
     for (il::Function& fn : module.functions) {
         ++stats.functions;
         const GuardRegionStats before = stats;
-        if (examineFunction(fn, stats)) changed = true;
+        if (examineFunction(fn, module.keyConstants, stats)) changed = true;
         if (!guardRegionTraceOn()) continue;
         const std::string delta = traceDelta(before, stats);
         if (!delta.empty()) {

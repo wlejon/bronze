@@ -1,4 +1,5 @@
 #include "codegen-llvm/llvm_run_arms.h"
+#include "il/key.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -28,7 +29,7 @@ std::optional<uint32_t> readIndexOf(const il::Module& module, const il::Instruct
     if (inst.result == il::kNoValue) return std::nullopt;
     if (inst.operands.empty()) return std::nullopt;
     if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
-    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+    return il::parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
 // The element index an Array store member writes. Only the `prop.set` spelling:
@@ -41,7 +42,7 @@ std::optional<uint32_t> arrayStoreIndexOf(const il::Module& module, const il::In
     if (inst.op != il::Op::PropSet) return std::nullopt;
     if (inst.operands.size() < 2) return std::nullopt;
     if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
-    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+    return il::parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
 }  // namespace

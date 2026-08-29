@@ -57,6 +57,11 @@ bool canThrow(const Instruction& inst) {
         // pass's whole barrier, and a barrier that could raise would need the
         // slow copy to be reachable from two places rather than one.
         case Op::IsNumber:
+        // A tag test, a kind byte, a length compare and a null check on the
+        // element block. The same reasoning: the guarded-region pass puts it in
+        // front of a run's first read, and a barrier that could raise would
+        // give the slow copy a second way in.
+        case Op::IsDenseArray:
         case Op::TypeOf:
         case Op::Box:
         // The pin census is an INSTRUMENT (src/runtime/pin_census.h): it
@@ -187,6 +192,10 @@ bool canCollect(const Instruction& inst) {
         // constant: no allocation, no user code, nothing for a receiver proof
         // to have to give up its derived pointer for.
         case Op::IsNumber:
+        // Four loads off the receiver's own header and a compare each. It
+        // allocates nothing and runs nothing, which is what lets it stand
+        // inside a receiver proof's run without ending it.
+        case Op::IsDenseArray:
         // `typeof` is NOT here, though its answer is one of eleven immortal
         // strings and reading a tag allocates nothing. The table is built
         // LAZILY, on the first `typeof` the process runs

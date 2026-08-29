@@ -9,6 +9,7 @@
 // llvm_prop_ic.h, which is where a guard both must agree on lives.
 
 #include "codegen-llvm/llvm_prop.h"
+#include "il/key.h"
 
 #include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -66,7 +67,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
 
-    const std::optional<uint32_t> optIdx = parseIndexKey(keyStr);
+    const std::optional<uint32_t> optIdx = il::parseIndexKey(keyStr);
 
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.

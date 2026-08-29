@@ -190,6 +190,14 @@ enum class Op : uint8_t {
     // terminator, and the block on the true edge is where the `unbox.f64 raw`
     // it licenses lives.
     IsNumber,   // a: bool = is.number b     (b: dynamic)
+    // The DENSE-ARRAY TEST: does this receiver answer every constant-index read
+    // up to `immI32` out of its own element block, with no user code and no
+    // allocation? It is to a constant-index read what `is.number` is to a
+    // coercion, so one test covers a run of reads. It compiles to the backend's
+    // own receiver proof (llvm_recv_proof.h), so it claims nothing the reads it
+    // stands in front of were not already going to assume; the pass in
+    // `src/lower/guard_region.h` is its only producer and says why.
+    IsDenseArray,  // a: bool = is.dense_array b, <immI32: max index>
     Ret,        // ret [a]
     // `throw v`: stores v into the pending-exception cell and goes to this
     // block's handler. A terminator, because it is a way OUT of the block like

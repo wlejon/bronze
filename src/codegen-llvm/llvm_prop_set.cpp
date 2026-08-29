@@ -15,6 +15,7 @@
 // build anyway.
 
 #include "codegen-llvm/llvm_prop.h"
+#include "il/key.h"
 
 #include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -60,7 +61,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.done", fn);
 
-    auto optIdx = parseIndexKey(keyStr);
+    auto optIdx = il::parseIndexKey(keyStr);
 
     // 0a. Where the three BARE-STORE arms meet before `doneBb`: the static-slot
     //     hit, the inline slot and the overflow slot. Each is a shape test and
