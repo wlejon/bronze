@@ -18,8 +18,6 @@
 
 namespace bronze::codegen_llvm {
 
-namespace {
-
 const il::Instruction* defOf(const il::Block& block, const std::vector<uint32_t>& defIndex,
                             il::ValueId id) {
     if (id == il::kNoValue || id >= defIndex.size()) return nullptr;
@@ -27,6 +25,8 @@ const il::Instruction* defOf(const il::Block& block, const std::vector<uint32_t>
     if (at == kNoDef || at >= block.instructions.size()) return nullptr;
     return &block.instructions[at];
 }
+
+namespace {
 
 // A `const.f64` whose value is a non-negative integer inside the offset
 // window, as that integer. Anything else — a fraction, a negative, a NaN, an

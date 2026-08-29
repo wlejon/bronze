@@ -276,9 +276,10 @@ ValueRepr storeValueRepr(const il::Function& func, const ReprPlan& plan, size_t 
     const auto& insts = func.blocks[blockIndex].instructions;
     if (instIndex == 0 || instIndex > insts.size()) return own;
     // The IMMEDIATELY preceding instruction, and nothing further back. A
-    // `pin.guard` proves its value on the path that falls out of it, and the
-    // exception check `il::canThrow` puts between the two is what makes that
-    // path the only one reaching this store. One instruction of reach is all
+    // `pin.guard` proves its value on the path that falls out of it, and its
+    // violating arm leaves for the handler rather than merging back
+    // (llvm_pin.h), which is what makes that path the only one reaching this
+    // store. One instruction of reach is all
     // lowering ever emits (`lower_prop.cpp` emits the guard directly in front of
     // the store), and widening it would mean re-deriving which control edges
     // rejoin in between — a dominance question this plan deliberately does not

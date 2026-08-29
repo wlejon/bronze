@@ -541,8 +541,14 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, false, "Invalid operands for PinGuard")) return false;
             llvm::Value* val = operand(inst, 0, "Undefined operand in PinGuard instruction");
             if (!val) return false;
+            // The barrier owns its own raise: the violating arm goes straight
+            // to this block's handler, which is where the exception check after
+            // a throwing instruction would have sent it (llvm_pin.h). That is
+            // why `il::canThrow` and `il::canCollect` both answer no for the
+            // branching form — there is no returning path through the raise.
             emitPinGuard(builder_, abi, shared_.tables, val, inst.keyIndex,
-                         static_cast<il::PinBarrier>(inst.immI32));
+                         static_cast<il::PinBarrier>(inst.immI32),
+                         unwindTargetFor(currentILBlock_));
             return true;
         }
         // The PIN CENSUS observation (src/runtime/pin_census.h). One plain call

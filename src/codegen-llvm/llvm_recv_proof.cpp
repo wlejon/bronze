@@ -4,6 +4,7 @@
 #include "codegen-llvm/llvm_prop_ic.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -91,6 +92,43 @@ struct ChainView {
     size_t size() const { return insts.size(); }
     const il::Block& blockOf(size_t flat) const { return func->blocks[blocks[owner[flat]]]; }
 };
+
+// The index a constant-index ARRAY ELEMENT store writes, in whichever of the
+// two forms the front end spelled it:
+//
+//   - a `prop.set` against the key "3", which is how `te[3] = v` lowers when
+//     nothing is known about `te` (storeIndexKeyOf above);
+//   - an `elem.set.typed` of the PINNED plain-array kind, which is how the same
+//     line lowers under a `--pins ... numeric-elements` manifest, with the
+//     index a `const.f64` in the same block.
+//
+// Both write one Value into one element slot of one Array, so both are members
+// of the same run and spend the same proof. The pinned form joined no run at
+// all until this was written, and paid dearly for it: it derives its element
+// address from the receiver itself — a reload from a root slot after every
+// intervening read — so `Matrix4.copy` under `Matrix4.elements:
+// numeric-elements` re-derived the base eleven instructions at a time, sixteen
+// times, where the unpinned build derived it once and spent a GEP per store.
+//
+// The run is established with the FULL ladder in both cases (llvm_pin.h says
+// what the pin licenses; this planner does not spend it). That is what lets the
+// two forms share a run without a homogeneity rule: a pinned member whose proof
+// did not hold falls back to exactly the unguarded store it emitted before, and
+// an unpinned member never skips a test the pin paid for.
+std::optional<uint32_t> arrayStoreIndexOf(const il::Module& module, const ChainView& view,
+                                          size_t flat) {
+    const il::Instruction& inst = *view.insts[flat];
+    if (inst.op == il::Op::PropSet) return storeIndexKeyOf(module, inst);
+    if (inst.op != il::Op::ElemSetTyped || inst.operands.size() < 3) return std::nullopt;
+    if (inst.immI32 != il::kElemKindPlainArrayF64) return std::nullopt;
+    const il::Instruction* idxDef =
+        defOf(view.blockOf(flat), view.defIndex[view.owner[flat]], inst.operands[1]);
+    if (idxDef == nullptr || idxDef->op != il::Op::ConstF64) return std::nullopt;
+    const double v = idxDef->immF64;
+    if (!(v >= 0.0) || !std::isfinite(v) || v != std::floor(v)) return std::nullopt;
+    if (v > static_cast<double>(kMaxStoreOffset)) return std::nullopt;
+    return static_cast<uint32_t>(v);
+}
 
 // One pass of the joint scan. `transparent[i]` says whether instruction `i` is
 // currently believed to be a committed run member — a site whose fast arm
@@ -183,7 +221,7 @@ void scanRuns(const il::Module& module, const ChainView& view,
                                            view.local[i])
                        : StoreSiteShape{};
         const std::optional<uint32_t> arrIdx =
-            wantArrayStores ? storeIndexKeyOf(module, inst) : std::nullopt;
+            wantArrayStores ? arrayStoreIndexOf(module, view, i) : std::nullopt;
 
         // A run member is transparent to the OTHER runs' proofs; anything else
         // that can move the heap ends them. Asked before this instruction joins
@@ -438,7 +476,7 @@ BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func, s
             (receiverOf(inst) != il::kNoValue && indexKeyOf(module, inst)) ||
             (wantStores &&
              classifyStoreSite(view.blockOf(i), view.defIndex[view.owner[i]], view.local[i]).ok) ||
-            (wantArrayStores && storeIndexKeyOf(module, inst).has_value());
+            (wantArrayStores && arrayStoreIndexOf(module, view, i).has_value());
     }
 
     BlockRunPlan flat;

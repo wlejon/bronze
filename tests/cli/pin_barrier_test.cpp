@@ -394,6 +394,57 @@ TEST_CASE("a guarded element store spends its guard on the raw store") {
 #endif
 }
 
+TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
+    if (barriersOff()) return;
+    // The barrier raises by LEAVING for the block's handler rather than by
+    // merging back and letting an exception check catch it (llvm_pin.h), and
+    // this is the case that says the handler it leaves for is the right one:
+    // the `try` is in the function doing the storing, so the destination is an
+    // IL handler block and not the function's unwind.
+    //
+    // It is also the case that says a run of pinned element stores STOPS at the
+    // violating member. The four stores are one array-store run behind one
+    // proof (llvm_array_store_proof.h), so a raise that left the proof's fast
+    // arm running would show up here as an element written after the throw.
+    const std::string src =
+        "class M { constructor(e) { this.elements = e; } }\n"
+        "function copyPart(dst, src, bad) {\n"
+        "  const te = dst.elements;\n"
+        "  const me = src.elements;\n"
+        "  try {\n"
+        "    te[0] = me[0];\n"
+        "    te[1] = me[1];\n"
+        "    te[2] = bad;\n"
+        "    te[3] = me[3];\n"
+        "    return 'no-throw';\n"
+        "  } catch (e) { return 'caught ' + (e instanceof TypeError) + ' ' + e.message; }\n"
+        "}\n"
+        "const dst = new M([0, 0, 0, 0]);\n"
+        "const a = new M([5, 6, 7, 8]);\n"
+        "const b = new M([1, 2, 3, 4]);\n"
+        "console.log(copyPart(dst, a, 9));\n"
+        "console.log('ok ' + dst.elements.join(','));\n"
+        "console.log(copyPart(dst, b, 'boom'));\n"
+        "console.log('after ' + dst.elements.join(','));\n";
+    const std::string manifest = "M.elements: numeric-elements\n";
+
+    const std::string il = ilWithPins("elem_run_try", src, manifest);
+    CHECK(il.find("elem.set.typed") != std::string::npos);
+    CHECK(il.find("<numeric-elements element>: number") != std::string::npos);
+
+#if BRONZE_WITH_LLVM
+    const std::string out = buildAndRun("elem_run_try", src, manifest);
+    CHECK(out.find("no-throw") != std::string::npos);
+    CHECK(out.find("ok 5,6,9,8") != std::string::npos);
+    CHECK(out.find("caught true pin '<numeric-elements element>: number' violated") !=
+          std::string::npos);
+    // The members BEFORE the violation wrote 1 and 2; the member AFTER it did
+    // not write `b`'s 4 over the 8 that was there. An element 3 of 4 would mean
+    // control carried on down the proof's fast arm past the raise.
+    CHECK(out.find("after 1,2,9,8") != std::string::npos);
+#endif
+}
+
 // ---- the seam ---------------------------------------------------------------
 
 TEST_CASE("the pin text a barrier names reads back as a line of the manifest") {

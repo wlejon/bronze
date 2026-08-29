@@ -37,7 +37,8 @@ llvm::Value* emitShapeTest(llvm::IRBuilder<>& builder, llvm::Value* bits, il::Pi
 }  // namespace
 
 void emitPinGuard(llvm::IRBuilder<>& builder, const AbiFns& abi, const ModuleTables& tables,
-                  llvm::Value* bits, uint32_t keyIndex, il::PinBarrier kind) {
+                  llvm::Value* bits, uint32_t keyIndex, il::PinBarrier kind,
+                  llvm::BasicBlock* unwind) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
 
@@ -56,9 +57,13 @@ void emitPinGuard(llvm::IRBuilder<>& builder, const AbiFns& abi, const ModuleTab
     auto* br = builder.CreateCondBr(emitShapeTest(builder, bits, kind), okBb, badBb);
     br->setMetadata(llvm::LLVMContext::MD_prof, keptWeights(ctx));
 
+    // The raise and the departure, in that order and in one block. Leaving here
+    // rather than merging is the whole of what makes the kept path free (see
+    // llvm_pin.h): the store this guard precedes is skipped because control
+    // never comes back to it, not because a cell test after it fires.
     builder.SetInsertPoint(badBb);
     builder.CreateCall(abi.bronze_pin_violation, {emitKeyId(builder, tables, keyIndex), bits});
-    builder.CreateBr(okBb);
+    builder.CreateBr(unwind);
 
     builder.SetInsertPoint(okBb);
 }

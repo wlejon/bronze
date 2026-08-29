@@ -35,17 +35,31 @@ namespace bronze::codegen_llvm {
 // `Op::PinGuard`: test `bits` against `kind` and raise a TypeError naming the
 // manifest line `keyIndex` when it fails.
 //
-// The failing edge MERGES rather than ending in `unreachable`, unlike the
-// environment access tripwire beside it, and the difference is the point:
-// that tripwire reports a LOWERING bug and can never return, while this one
-// reports a PROGRAM the manifest lied about and is catchable. Raising in this
-// runtime is a pending cell plus a return, so the merge is where control comes
-// back — and `il::canThrow` puts the exception check immediately after the
-// instruction, which is what makes the store this precedes get skipped.
+// The violating arm RAISES AND LEAVES, to `unwind` — the block the pending-cell
+// test after any throwing instruction would have branched to, so a violation
+// inside a `try` still reaches that handler and one outside it still pops the
+// root frame and returns. It does not merge back, and that is what makes the
+// barrier free where it is kept: the guard's kept edge is the ONLY edge that
+// falls out of it, so nothing after it stands at a join, `il::canCollect` and
+// `il::canThrow` both answer no for this form, and every receiver proof, every
+// cached array header and every unreloaded root slot survives the guard.
 //
-// Leaves the builder in the merge block.
+// It was not always so. When the violating arm merged back and leaned on the
+// exception check to skip the store, a `numeric-elements` manifest put a
+// possible collection between every element read of `Matrix4.copy` and the
+// next: no run of reads survived one, so all sixteen took the property ladder
+// the unpinned build proved away in one, and each of the sixteen raw stores
+// re-derived the element base from a reloaded receiver. The pin made that
+// kernel 2.4x SLOWER than no pin at all.
+//
+// Leaves the builder in the kept block.
+//
+// `unwind` is ignored by the `DenseArray` form, whose whole test is a call: it
+// returns on both outcomes, so `il::canThrow` still puts the ordinary check
+// after it.
 void emitPinGuard(llvm::IRBuilder<>& builder, const AbiFns& abi, const ModuleTables& tables,
-                  llvm::Value* bits, uint32_t keyIndex, il::PinBarrier kind);
+                  llvm::Value* bits, uint32_t keyIndex, il::PinBarrier kind,
+                  llvm::BasicBlock* unwind);
 
 // The boxed wrapper's form of the same claim for a `param <owner>(<p>): number`
 // entry: check `bits`, and hand back the double.

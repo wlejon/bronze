@@ -254,8 +254,45 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemSetTyped instruction");
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSetTyped instruction");
             if (!obj || !idx || !val) return false;
-            emitTypedElemSet(builder_, shared_.abi, obj, idx, val,
-                             static_cast<uint32_t>(inst.immI32));
+            const auto kind = static_cast<uint32_t>(inst.immI32);
+            // The PINNED plain-array store is an Array element store like any
+            // other, so it joins the Array store runs (llvm_recv_proof.cpp,
+            // `arrayStoreIndexOf`). Its own unguarded form derives the element
+            // address from the receiver every time — and the receiver is a root
+            // slot reload after every intervening read — where the run's proof
+            // derives a base once and spends a GEP. So the proven arm is taken
+            // where the ladder holds and the unguarded form is the fallback,
+            // which is exactly what this site emitted before it had a run.
+            const ArrayStoreRunPlan::Site runSite =
+                kind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)
+                    ? runPlan_.arrayStores.at(currentILInst_)
+                    : ArrayStoreRunPlan::Site{};
+            if (runSite.run == ArrayStoreRunPlan::kNoRun) {
+                if (kind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+                    arrayStoreProof_ = ArrayStoreProof{};
+                }
+                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+                return true;
+            }
+            if (runSite.establishes) {
+                arrayStoreProof_ = emitArrayStoreProof(builder_, obj, inst.operands[0],
+                                                       runSite.run, runSite.runMaxIndex);
+            }
+            if (!arrayStoreProof_.live() || arrayStoreProof_.run != runSite.run) {
+                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+                return true;
+            }
+            llvm::BasicBlock* doneBb =
+                llvm::BasicBlock::Create(shared_.ctx, "pes.done", llvmFunc_);
+            ProvenArrayStore proven =
+                emitProvenArrayElementStore(builder_, arrayStoreProof_, runSite.index,
+                                            emitBoxDouble(builder_, val), doneBb);
+            emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+            builder_.CreateBr(doneBb);
+            builder_.SetInsertPoint(doneBb);
+            rejoinArrayStoreProof(arrayStoreProof_, proven.fastBb, doneBb);
+            carryOtherProofs(ProofJoin{proven.fastBb, doneBb}, /*ownsRead=*/false,
+                             /*ownsStore=*/false, /*ownsArrayStore=*/true);
             return true;
         }
         default:

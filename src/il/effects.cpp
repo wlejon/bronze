@@ -130,6 +130,14 @@ bool canThrow(const Instruction& inst) {
         // half to test for.
         case Op::BitNot:
             return true;
+        // A `--pins` write barrier RAISES, but the branching forms raise and
+        // LEAVE: the violating arm calls bronze_pin_violation and branches to
+        // the block's handler itself, so there is no returning path for a cell
+        // test to catch and no reason to emit one (llvm_pin.h). The
+        // `numeric-elements` FIELD form is a plain call that returns on both
+        // outcomes, and it keeps the ordinary check.
+        case Op::PinGuard:
+            return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
         case Op::Unbox:
             // `unbox.f64` is ToNumber (7.1.4) — generated code's only numeric
             // coercion — and ToNumber runs ToPrimitive on an object and throws
@@ -235,6 +243,14 @@ bool canCollect(const Instruction& inst) {
             return inst.type == Type::F64 && !inst.rawUnbox && !inst.nullishUnbox;
         case Op::ToInt32:
             return inst.boxType == Type::Dynamic;
+        // The pin barrier's branching forms are one unsigned compare against a
+        // constant on the path that continues; the TypeError they mint is on
+        // the arm that LEAVES for the handler and never comes back, so nothing
+        // a proof holds is stale after one. That is what lets a run of element
+        // reads span the barrier a `numeric-elements` manifest puts between
+        // every store and the next read. The FIELD form is a call that returns.
+        case Op::PinGuard:
+            return static_cast<PinBarrier>(inst.immI32) == PinBarrier::DenseArray;
         // Everything else — every call, every property access, every
         // allocation, and anything added after this was written.
         default:

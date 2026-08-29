@@ -129,6 +129,19 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
 // instruction emits, because a Float64Array can hold any NaN bit pattern and
 // a non-canonical one would read back as a tagged pointer.
 llvm::Value* emitBoxDouble(llvm::IRBuilder<>& builder, llvm::Value* d) {
+    // Boxing a double that was BITCAST OUT OF A VALUE is the identity, and the
+    // Box instruction states the argument in full (llvm_ops.cpp): the two
+    // emitters that produce such a double — the raw unbox and the pinned
+    // plain-array element read — both carry the claim that the source bits are
+    // a Number, and a Number's Value carries a canonical NaN by construction,
+    // so the select below could only ever choose the arm the bits came from.
+    // `te[i] = me[i]` between two pinned matrices is the shape that reaches
+    // here: sixteen loads, each turned into a double and immediately asked
+    // whether it is a NaN it cannot be.
+    if (auto* cast = llvm::dyn_cast<llvm::BitCastInst>(d);
+        cast != nullptr && cast->getSrcTy()->isIntegerTy(64)) {
+        return cast->getOperand(0);
+    }
     llvm::Value* isNan = builder.CreateFCmpUNO(d, d);
     llvm::Value* bits = builder.CreateBitCast(d, builder.getInt64Ty());
     return builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), bits);

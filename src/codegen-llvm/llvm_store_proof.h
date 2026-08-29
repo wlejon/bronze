@@ -124,6 +124,12 @@ constexpr uint32_t kNoDef = UINT32_MAX;
 StoreSiteShape classifyStoreSite(const il::Block& block, const std::vector<uint32_t>& defIndex,
                                  size_t instIndex);
 
+// A value's defining instruction inside ONE block, or null for a value that
+// came from anywhere else. Shared with the Array-store planner, which asks the
+// same question of a pinned element store's `const.f64` index.
+const il::Instruction* defOf(const il::Block& block, const std::vector<uint32_t>& defIndex,
+                             il::ValueId id);
+
 // Whether the store-side planner is enabled (BRONZE_NO_STORE_PROOF, and
 // BRONZE_NO_RECV_PROOF which turns off both sides at once).
 bool storeProofEnabled();

@@ -83,6 +83,45 @@ struct BlockBuilder {
         return block.instructions.size() - 1;
     }
 
+    // `const.f64 k`, the form a pinned element store's index arrives in.
+    il::ValueId constIndex(double k) {
+        il::Instruction i;
+        i.op = il::Op::ConstF64;
+        i.type = il::Type::F64;
+        i.result = next++;
+        i.immF64 = k;
+        block.instructions.push_back(i);
+        return i.result;
+    }
+
+    // `recv[k] = value` under a `--pins ... numeric-elements` manifest, which
+    // is an `elem.set.typed` of the pinned plain-array kind against a
+    // `const.f64` index rather than a PropSet against a key.
+    size_t pinnedStore(il::ValueId recv, il::ValueId index, il::ValueId value) {
+        il::Instruction i;
+        i.op = il::Op::ElemSetTyped;
+        i.type = il::Type::Void;
+        i.result = il::kNoValue;
+        i.operands = {recv, index, value};
+        i.immI32 = il::kElemKindPlainArrayF64;
+        block.instructions.push_back(i);
+        return block.instructions.size() - 1;
+    }
+
+    // The `--pins` write barrier lowering puts in front of every pinned
+    // element store. It raises and LEAVES (llvm_pin.h), so it can neither
+    // collect nor throw back into the run and no run ends at one.
+    size_t pinGuard(il::ValueId value) {
+        il::Instruction i;
+        i.op = il::Op::PinGuard;
+        i.type = il::Type::Void;
+        i.result = il::kNoValue;
+        i.operands = {value};
+        i.immI32 = static_cast<int32_t>(il::PinBarrier::Number);
+        block.instructions.push_back(i);
+        return block.instructions.size() - 1;
+    }
+
     // An instruction that cannot collect but DEFINES a value — what a test
     // needs to redefine a receiver without also ending the run for the other
     // reason.
@@ -433,4 +472,96 @@ TEST_CASE("an array-store run that fails to commit becomes opaque, and the plan 
     for (const auto& site : plan.arrayStores.sites) {
         CHECK(site.run == ArrayStoreRunPlan::kNoRun);
     }
+}
+
+// ---- the pinned element store, which is the same store spelled differently --
+
+TEST_CASE("a run of pinned element stores is an array-store run like any other") {
+    il::Module module = makeModule();
+    BlockBuilder b;
+    const il::ValueId target = b.param();
+    const il::ValueId value = b.param();
+
+    std::vector<size_t> at;
+    for (uint32_t k = 0; k < 4; ++k) {
+        at.push_back(b.pinnedStore(target, b.constIndex(k), value));
+    }
+
+    const BlockRunPlan plan = planOf(module, b);
+    for (size_t i = 0; i < at.size(); ++i) {
+        const ArrayStoreRunPlan::Site site = plan.arrayStores.at(at[i]);
+        CHECK(site.run == 0u);
+        CHECK(site.establishes == (i == 0));
+        CHECK(site.runMaxIndex == 3u);
+        CHECK(site.index == static_cast<uint32_t>(i));
+    }
+}
+
+TEST_CASE("the pin barrier in front of each member does not end the run") {
+    il::Module module = makeModule();
+    BlockBuilder b;
+    const il::ValueId target = b.param();
+    const il::ValueId source = b.param();
+
+    // `Matrix4.copy` under `numeric-elements`, instruction for instruction:
+    // read, barrier, store, four times over. The barrier stands between every
+    // store and the next read, and it raises by LEAVING (llvm_pin.h) — so it
+    // ends neither the read run nor the store run.
+    std::vector<size_t> reads;
+    std::vector<size_t> stores;
+    il::ValueId v = il::kNoValue;
+    for (uint32_t k = 0; k < 4; ++k) {
+        reads.push_back(b.read(source, k, v));
+        b.pinGuard(v);
+        stores.push_back(b.pinnedStore(target, b.constIndex(k), v));
+    }
+
+    const BlockRunPlan plan = planOf(module, b);
+    for (size_t i = 0; i < reads.size(); ++i) {
+        CHECK(plan.reads.at(reads[i]).run == 0u);
+        CHECK(plan.reads.at(reads[i]).establishes == (i == 0));
+        CHECK(plan.reads.at(reads[i]).runMaxIndex == 3u);
+        CHECK(plan.arrayStores.at(stores[i]).run == 0u);
+        CHECK(plan.arrayStores.at(stores[i]).establishes == (i == 0));
+        CHECK(plan.arrayStores.at(stores[i]).index == static_cast<uint32_t>(i));
+    }
+}
+
+TEST_CASE("a pinned element store the planner cannot name an index for joins no run") {
+    il::Module module = makeModule();
+    BlockBuilder b;
+    const il::ValueId target = b.param();
+    const il::ValueId value = b.param();
+    // A loop index, a fraction and a negative: three indices the one length
+    // test in front of a run could not be written against.
+    const il::ValueId dynamicIndex = b.param();
+
+    const size_t s0 = b.pinnedStore(target, dynamicIndex, value);
+    const size_t s1 = b.pinnedStore(target, b.constIndex(1.5), value);
+    const size_t s2 = b.pinnedStore(target, b.constIndex(-1.0), value);
+
+    const BlockRunPlan plan = planOf(module, b);
+    CHECK(plan.arrayStores.at(s0).run == ArrayStoreRunPlan::kNoRun);
+    CHECK(plan.arrayStores.at(s1).run == ArrayStoreRunPlan::kNoRun);
+    CHECK(plan.arrayStores.at(s2).run == ArrayStoreRunPlan::kNoRun);
+}
+
+TEST_CASE("a pinned store and a keyed store into the same array share one run") {
+    il::Module module = makeModule();
+    BlockBuilder b;
+    const il::ValueId target = b.param();
+    const il::ValueId value = b.param();
+
+    // Which is sound because the run is established with the FULL ladder in
+    // both cases: the pinned member spends a proof it did not need, and the
+    // keyed member never spends one the pin paid for.
+    const size_t keyed = b.store(target, 0, value);
+    const size_t pinned = b.pinnedStore(target, b.constIndex(1), value);
+
+    const BlockRunPlan plan = planOf(module, b);
+    CHECK(plan.arrayStores.at(keyed).run == 0u);
+    CHECK(plan.arrayStores.at(keyed).establishes);
+    CHECK(plan.arrayStores.at(pinned).run == 0u);
+    CHECK(plan.arrayStores.at(pinned).index == 1u);
+    CHECK(plan.arrayStores.at(pinned).runMaxIndex == 1u);
 }

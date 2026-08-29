@@ -128,9 +128,9 @@ void reprStatsReport();
 // Separate from `plan.at(value)` because a store may spend one more fact than
 // the value itself carries: a `pin.guard <v>, number` immediately in front of
 // the store proves the value is a Number ON THE PATH THAT REACHES THE STORE,
-// and nowhere else. The guard's failing edge leaves an exception pending and
-// `il::canThrow` puts the check between the two instructions, so the store is
-// skipped — which is what makes a FLOW fact usable by a flow-insensitive plan
+// and nowhere else. The guard's failing edge raises and LEAVES for the block's
+// handler (llvm_pin.h), so the kept edge is the only one that reaches the store
+// at all — which is what makes a FLOW fact usable by a flow-insensitive plan
 // without leaking into the value's own answer (`planRepr` deliberately does not
 // record it, because the same value read in a handler is not proven anything).
 //
