@@ -906,11 +906,16 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     for (const il::Function& ilFunc : module.functions) {
         reprPlans.push_back(codegen_llvm::planRepr(ilFunc));
     }
+    // And the LIVE-ROOT plans beside them, read by the same frame layout: which
+    // values a collection can ever see, and which uses may read a register
+    // instead of a slot (llvm_live_roots.h).
+    const std::vector<codegen_llvm::LiveRootPlan> livePlans =
+        codegen_llvm::planLiveRoots(module);
     std::vector<codegen_llvm::FramePlan> plans;
     plans.reserve(module.functions.size());
     for (size_t i = 0; i < module.functions.size(); ++i) {
         plans.push_back(codegen_llvm::planFrame(module.functions[i], moduleHasNewTarget,
-                                                reprPlans[i], &diags));
+                                                reprPlans[i], livePlans[i], &diags));
         // The overlay's tripwire (llvm_frame.h). It fires only on a bug in the
         // guarded-region pass, and what it would otherwise produce is a frame
         // slot two live values share — so it stops here rather than emitting.
@@ -923,7 +928,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     const FunctionEmitter::Context shared{ctx,     module,   abi,   tables,
                                           entries, wrappers, diags, plans,
                                           regions, inlineVariants, moduleHasNewTarget,
-                                          reprPlans};
+                                          reprPlans, livePlans};
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const bool frameless = regions.isMergeTarget[i];
         FunctionEmitter emitter(shared, static_cast<uint32_t>(i),

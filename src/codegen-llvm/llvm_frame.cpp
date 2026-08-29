@@ -68,7 +68,7 @@ namespace bronze::codegen_llvm {
 // comparison per use.
 
 FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr,
-                    DiagnosticSink* diags) {
+                    const LiveRootPlan& live, DiagnosticSink* diags) {
     FramePlan plan;
     plan.slotOf.assign(func.valueCount, kNoFrameSlot);
     const uint32_t n = func.valueCount;
@@ -78,9 +78,14 @@ FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const Rep
     // address is not rooted (llvm_repr.h). It is the same rule the `Dynamic`
     // test already was, refined by the one thing the collector actually asks:
     // a slot exists to be FORWARDED, and a boxed double has nothing to forward.
+    //
+    // And a value no collection can ever SEE is not rooted either
+    // (llvm_live_roots.h): the two plans answer the same question — can this
+    // slot ever be the thing that saves the value — from the bits and from the
+    // control flow, and either answer alone is enough to drop it.
     auto isRooted = [&](il::ValueId id, il::Type ty) {
         return id != il::kNoValue && id < n && ty == il::Type::Dynamic &&
-               !reprNeverPointer(repr.at(id));
+               !reprNeverPointer(repr.at(id)) && live.rooted(id);
     };
 
     // Which copy of which guarded region each value belongs to. A function

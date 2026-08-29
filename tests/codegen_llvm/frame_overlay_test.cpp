@@ -172,7 +172,7 @@ TEST_CASE("a value read from the other copy trips the frame planner") {
     DiagnosticSink diags;
     const codegen_llvm::FramePlan plan =
         codegen_llvm::planFrame(fn, /*moduleHasNewTarget=*/false, codegen_llvm::planRepr(fn),
-                                &diags);
+                                codegen_llvm::LiveRootPlan{}, &diags);
     CHECK(plan.crossCopyUse);
     REQUIRE(diags.hasErrors());
     const std::string message = diags.all().front().message;

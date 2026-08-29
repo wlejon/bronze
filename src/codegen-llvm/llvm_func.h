@@ -58,6 +58,10 @@ public:
         // stage R2). Indexed like `plans`, and planned beside them for the same
         // reason: the frame layout is derived from it.
         const std::vector<ReprPlan>& reprPlans;
+        // Where a collection can see each value, and where a use may read its
+        // register instead of its slot (llvm_live_roots.h). Indexed like
+        // `plans`, and planned beside them for the frame layout's sake too.
+        const std::vector<LiveRootPlan>& livePlans;
     };
 
     // `frameless` emits the body against a region of the CALLER's frame,
@@ -103,7 +107,13 @@ private:
     // `holeInsensitive` says the one use this reload is for cannot tell an
     // element's own bits from the `undefined` a hole reads as, so a hole-raw
     // slot hands its bits over uncorrected (llvm_func.h, `holeRawSlot_`).
-    void reload(il::ValueId id, bool holeInsensitive = false);
+    // `anchor` is the plan's answer for this use (llvm_live_roots.h): the IL
+    // block the register was last written in, or `kReload`. The load is skipped
+    // only when the emitter's own record agrees with it — the plan is about the
+    // IL and `values_` is about what was emitted, and a disagreement costs a
+    // load rather than soundness.
+    void reload(il::ValueId id, bool holeInsensitive = false,
+                uint32_t anchor = LiveRootPlan::kReload);
     llvm::Value* slotAddr(uint32_t slot);
     // The base of the region a merged callee's slots live in — this function's
     // own slots end exactly there. Null when it has no frame at all.
@@ -179,6 +189,13 @@ private:
     // `Matrix4.copy`, whose reads go straight into a store and would pay the
     // same select one block later.
     std::vector<uint8_t> holeRawPays_;
+    // The IL block whose emission last wrote each value's entry in `values_`,
+    // or `kNoBlock` for one nothing has written yet. This is what turns the
+    // live-root plan's anchor from a claim into a check: an elided reload reads
+    // a register, and a register is only legal where the block that produced it
+    // dominates the use — which the plan guarantees for the block it names, and
+    // for no other.
+    std::vector<uint32_t> regBlock_;
 
     const std::vector<uint32_t>& slotOf_;
     uint32_t argvBase_ = 0;
@@ -218,6 +235,10 @@ private:
     // frame layout above was derived from it; the property emitters spend it
     // at the store-side representation tests.
     const ReprPlan& repr_;
+    // Where a collection can see this function's values, and which uses may
+    // read a register (llvm_live_roots.h). The frame layout above was derived
+    // from the first half; `emitBlock` spends the second.
+    const LiveRootPlan& live_;
     // The receiver runs of the block being emitted, and the proofs currently
     // alive inside them (llvm_recv_proof.h, llvm_store_proof.h,
     // llvm_array_store_proof.h). Planned per block, over the straight-line

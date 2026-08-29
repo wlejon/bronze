@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "codegen-llvm/llvm_live_roots.h"
 #include "codegen-llvm/llvm_repr.h"
 #include "il/il.h"
 #include "support/diagnostics.h"
@@ -80,11 +81,17 @@ struct FramePlan {
 // Under `BRONZE_NO_REPR_CODEGEN=1` the plan is empty and the layout is exactly
 // what it was before the stage.
 //
+// `live` is what llvm_live_roots.h adds: a `dynamic` value no collection can
+// ever see — nothing that `il::canCollect` admits stands between its def and
+// its last use — needs no slot either, for the same reason and with the same
+// saving. A default-constructed plan roots everything, which is the layout
+// before that stage and what a test that is about something else wants.
+//
 // `diags` is where the copy-class tripwire reports; passing none leaves
 // `FramePlan::crossCopyUse` as the only signal, which is what a unit test wants
 // and what no build should ever see set.
 FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr,
-                    DiagnosticSink* diags = nullptr);
+                    const LiveRootPlan& live = LiveRootPlan{}, DiagnosticSink* diags = nullptr);
 
 // Which direct edges become one frame, and how big each function's frame has
 // to be as a result.

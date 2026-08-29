@@ -454,6 +454,15 @@ TEST_CASE("canCollect is wider than canThrow, and the gap is allocation") {
     // a proof to be good for and the conservative answer costs nothing.
     CHECK(canCollect(Instruction{Op::Ret, Type::Void}));
     CHECK(canCollect(Instruction{Op::Throw, Type::Void}));
+
+    // `typeof` never throws and reads nothing but a tag, and it still collects:
+    // its eleven answers are interned on the FIRST call the process makes
+    // (runtime/rt_operator.cpp, `typeofString`), and interning allocates. Which
+    // `typeof` in a program is the first one is not a static fact, so every one
+    // of them is a collection point — and a receiver proof spanning one would
+    // hold a derived pointer across the interning of eight strings.
+    CHECK_FALSE(canThrow(Instruction{Op::TypeOf, Type::Dynamic}));
+    CHECK(canCollect(Instruction{Op::TypeOf, Type::Dynamic}));
 }
 
 namespace {

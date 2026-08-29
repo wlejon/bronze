@@ -28,6 +28,7 @@ bronze_add_module(codegen_llvm
     llvm_env_reach.cpp
     llvm_env_promote.cpp
         llvm_frame.cpp
+        llvm_live_roots.cpp
         llvm_func.cpp
         llvm_math.cpp
         llvm_ops.cpp
@@ -47,6 +48,7 @@ bronze_add_module(codegen_llvm
     TEST_SOURCES
         ../../tests/codegen_llvm/codegen_llvm_test.cpp
         ../../tests/codegen_llvm/frame_overlay_test.cpp
+        ../../tests/codegen_llvm/live_roots_test.cpp
         ../../tests/codegen_llvm/repr_test.cpp
         ../../tests/codegen_llvm/store_proof_test.cpp
         ../../tests/codegen_llvm/array_store_proof_test.cpp

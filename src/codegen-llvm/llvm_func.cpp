@@ -42,6 +42,7 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
       holeRawPays_(holeRawSlotEnabled()
                        ? planHoleRawSlots(shared.module.functions[funcIndex])
                        : std::vector<uint8_t>(shared.module.functions[funcIndex].valueCount, 0)),
+      regBlock_(shared.module.functions[funcIndex].valueCount, il::kNoBlock),
       slotOf_(shared.plans[funcIndex].slotOf),
       ownSlots_(shared.plans[funcIndex].ownSlots),
       // A frameless variant fills a region the CALLER already sized and
@@ -52,6 +53,7 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
       frameless_(frameless),
       funcIndex_(funcIndex),
       repr_(shared.reprPlans[funcIndex]),
+      live_(shared.livePlans[funcIndex]),
       envGuardsElided_(envAccessGuardsElided()) {
     argvBase_ = shared.plans[funcIndex].argvBase;
     constructSelfSlot_ = shared.plans[funcIndex].constructSelfSlot;
@@ -83,11 +85,24 @@ llvm::Value* FunctionEmitter::rootSlotAddrOf(const il::Instruction& inst, size_t
     return slotAddr(slot);
 }
 
-void FunctionEmitter::reload(il::ValueId id, bool holeInsensitive) {
+void FunctionEmitter::reload(il::ValueId id, bool holeInsensitive, uint32_t anchor) {
     if (id == il::kNoValue || id >= func_.valueCount) return;
     uint32_t slot = slotOf_[id];
     if (slot == kNoSlot) return;
+    // Nothing has collected since the register was written, and the register
+    // was written where the plan says it was — so it still names the object the
+    // slot names, and the load is the load this stage exists to remove.
+    //
+    // A HOLE-RAW slot is the one value the register and the slot disagree
+    // about on purpose: the slot holds the element's own bits and the reload is
+    // where the correction is spent, so a use that can tell a hole from
+    // `undefined` reads through the slot however current the register is.
+    if (anchor != LiveRootPlan::kReload && regBlock_[id] == anchor && values_[id] != nullptr &&
+        (holeRawSlot_[id] == 0 || holeInsensitive)) {
+        return;
+    }
     llvm::Value* loaded = builder_.CreateLoad(i64Ty_, slotAddr(slot));
+    regBlock_[id] = static_cast<uint32_t>(currentILBlock_);
     // A hole-raw slot holds the element's own bits, so the correction the read
     // arm did not spend is spent here — once per USE rather than once per read,
     // which is what puts it on the edge that leaves a fast copy and off the
@@ -162,6 +177,7 @@ void FunctionEmitter::createBlockPhis() {
             llvm::PHINode* phi = builder_.CreatePHI(mapILType(param.type, shared_.ctx), 0,
                                                     "p" + std::to_string(param.id));
             values_[param.id] = phi;
+            regBlock_[param.id] = static_cast<uint32_t>(bIdx);
             blockPhis_[bIdx].push_back(phi);
         }
     }
@@ -430,6 +446,9 @@ bool FunctionEmitter::emit() {
         if (argIdx < func_.params.size()) {
             arg.setName(func_.params[argIdx].name);
             values_[argIdx] = &arg;
+            // An argument dominates the whole function, so the plan may name
+            // block 0 as a parameter's anchor and be right about it.
+            regBlock_[argIdx] = 0;
         } else if (argIdx == func_.params.size()) {
             arg.setName("__region");
             parentSlots_ = &arg;
@@ -590,12 +609,21 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         // POSITION and not only its fields: a store spends a `pin.guard`
         // standing immediately in front of it (llvm_repr.h, `storeValueRepr`).
         currentILInst_ = instIndex;
-        for (size_t i = 0; i < inst.operands.size(); ++i) {
-            reload(inst.operands[i],
-                   i == 0 && holeInsensitiveUse(inst, inst.operands[0]));
+        // The uses in the order the live-root plan enumerated them
+        // (llvm_live_roots.h): operands, then the two block-argument lists.
+        // The two walks must agree position for position, because the plan's
+        // answer is indexed by position and nothing else.
+        size_t useIndex = 0;
+        for (size_t i = 0; i < inst.operands.size(); ++i, ++useIndex) {
+            reload(inst.operands[i], i == 0 && holeInsensitiveUse(inst, inst.operands[0]),
+                   live_.anchor(blockIndex, instIndex, useIndex));
         }
-        for (il::ValueId id : inst.target.args) reload(id);
-        for (il::ValueId id : inst.elseTarget.args) reload(id);
+        for (il::ValueId id : inst.target.args) {
+            reload(id, false, live_.anchor(blockIndex, instIndex, useIndex++));
+        }
+        for (il::ValueId id : inst.elseTarget.args) {
+            reload(id, false, live_.anchor(blockIndex, instIndex, useIndex++));
+        }
 
         proofsCarried_ = false;
         if (!emitInstruction(inst)) return false;
@@ -612,8 +640,11 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         }
 
         if (inst.result != il::kNoValue && inst.result < func_.valueCount &&
-            slotOf_[inst.result] != kNoSlot && values_[inst.result]) {
-            builder_.CreateStore(values_[inst.result], slotAddr(slotOf_[inst.result]));
+            values_[inst.result]) {
+            regBlock_[inst.result] = static_cast<uint32_t>(blockIndex);
+            if (slotOf_[inst.result] != kNoSlot) {
+                builder_.CreateStore(values_[inst.result], slotAddr(slotOf_[inst.result]));
+            }
         }
 
         // AFTER the result store, not after the call: the slot must hold a

@@ -187,8 +187,14 @@ bool canCollect(const Instruction& inst) {
         // constant: no allocation, no user code, nothing for a receiver proof
         // to have to give up its derived pointer for.
         case Op::IsNumber:
-        // Reads a tag and names it from a table of immortal strings.
-        case Op::TypeOf:
+        // `typeof` is NOT here, though its answer is one of eleven immortal
+        // strings and reading a tag allocates nothing. The table is built
+        // LAZILY, on the first `typeof` the process runs
+        // (runtime/rt_operator.cpp, `typeofString`): that one call interns
+        // eight strings, and interning allocates. One `typeof` in a program is
+        // therefore a collection point, and which one it is is not a static
+        // fact — so every one of them is.
+        //
         // One aligned load from the module's own template-slot table.
         case Op::TemplateCached:
         // Bounds-checked load and store on a view the compiler proved: the
