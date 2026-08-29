@@ -46,7 +46,11 @@ namespace bronze::lower {
 //
 // THE SEAM is `BRONZE_NO_GUARDED_REGIONS=1`, read by the COMPILER once per
 // process: with it set the pass selects nothing and the module is byte-identical
-// to what it was. `BRONZE_GUARDED_REGION_STATS=1` prints one line to stderr.
+// to what it was. `BRONZE_GUARDED_REGION_STATS=1` prints one line to stderr,
+// and `BRONZE_GUARDED_REGION_TRACE=1` one line per function that built or
+// refused something — the counters say how often a reason fired, and only the
+// trace says which functions, which is what decides whether a reason is worth a
+// rule.
 //
 // ---------------------------------------------------------------------------
 // THE ENTRY REGION
@@ -79,14 +83,26 @@ namespace bronze::lower {
 // and the copy is pure growth.
 //
 // One thing an entry region owes that a loop region does not: EVERY GUARD POINT
-// MUST BE IN THE HEADER. An entry region's slow copy has no entry of its own —
-// the fast copy is the function's — so the only way into it is a trampoline,
-// and the only block a trampoline lands in is the tail of a split. Everything
-// the slow copy defines before its first split is therefore orphaned, and the
-// mechanism that re-supplies those values is the tail's parameters plus a
-// rename in everything the SPLIT BLOCK dominates. That covers the whole region
-// exactly when the split block is the header, which dominates every region
-// block by the region's own definition. A guard point anywhere else is refused.
+// MUST BE IN A BLOCK THAT DOMINATES WHAT IT REACHES. An entry region's slow copy
+// has no entry of its own — the fast copy is the function's — so the only way
+// into it is a trampoline, and the only block a trampoline lands in is the tail
+// of a split. Everything the slow copy defines before a split is therefore
+// orphaned, and the mechanism that re-supplies those values is the tail's
+// parameters plus a rename in the blocks that read them.
+//
+// The parameters take care of themselves: a value defined before the split and
+// read after it is live at the split, and the tail takes one for every value
+// live there. So does a value defined in a block the prefix orphans whole — a
+// block that cannot reach the split but whose definition is read past it
+// dominates the split block, so that value is live at the split as well. What
+// is a condition is the RENAME, which is found on a block's dominator chain:
+// the split block has to dominate every region block reachable from it.
+//
+// The header satisfies that by the region's own definition, and used to be the
+// whole rule. It is not the only block that does — the join after a DEFAULTED
+// PARAMETER dominates everything under it too, which is what makes
+// `Quaternion.setFromEuler` reachable at all: `(euler, update = true)` puts a
+// branch in front of the block its six sines and cosines are computed in.
 //
 // The orphaned prefix is then pruned. Dominance is not defined over a block the
 // entry cannot reach, so a rewrite that kept it could not be certified — and
@@ -113,6 +129,18 @@ namespace bronze::lower {
 // GUARD COALESCING
 //
 // A guard's placement is the LATEST point that dominates its promoted uses.
+// Inside the defining block that point is in front of the first use there; when
+// every use is in a block BELOW — six sines and cosines computed in a header and
+// consumed only in `switch` arms, which is `Quaternion.setFromEuler` — it is the
+// end of the defining block, in front of the terminator. That still reaches
+// them: the fast copy of one block is a chain of parts whose only exits are the
+// guard branches, and a failed guard leaves for the slow copy and never comes
+// back, so the last part of a block's chain dominates the fast copy of every
+// block that block dominates. A use in a block the definition does NOT dominate
+// has no site at all and refuses the region (`refusedPlacement`) — in practice
+// that is an unreachable region block, since an entry region is every block of
+// the function and dominance is not defined over one the entry cannot reach.
+//
 // Placing each candidate's guard at its own first use is correct and, on a
 // straight-line kernel, quadratic: thirty-two guards interleaved with the
 // arithmetic means thirty-two block splits, thirty-two trampolines, and each
@@ -133,6 +161,14 @@ namespace bronze::lower {
 // chain of thirty-two tests, then the entire arithmetic in one block, and one
 // trampoline that carries no promoted value at all because every partial
 // product is computed after it.
+//
+// An end-of-block point is just another point in this rule and gets no
+// preference. A candidate whose uses are all below and whose definition
+// PRECEDES the block's first promoted use joins that earlier point — the same
+// "guarding earlier is free" that the paragraph above rests on. One whose
+// definition comes after it cannot: a guard in front of its own definition has
+// nothing to read, so the later point is forced rather than chosen.
+// `setFromEuler` is the first shape: nine values, one chain, one trampoline.
 
 // What the pass did, counted. Every refusal is counted by REASON, because a
 // pass that proves nothing emits exactly the code it replaced and the whole
@@ -167,8 +203,14 @@ struct GuardRegionStats {
     uint32_t refusedNonNumeric = 0;
     uint32_t refusedTooFew = 0;
     uint32_t refusedGrowth = 0;
-    uint32_t refusedPlacement = 0;  // a guard site with no promoted use in its own block
-    uint32_t refusedSsa = 0;        // the rewrite would not have been dominance-correct
+    // A candidate with a promoted use in a block its definition does not
+    // dominate. There is no single point in the region that reaches every such
+    // use and is reached by the definition, so there is no guard site at all —
+    // as opposed to `refusedEntrySplit`, where a site exists and the entry
+    // region cannot enter its own slow copy at it.
+    uint32_t refusedPlacement = 0;
+    uint32_t refusedEntrySplit = 0;  // an entry region wanting a split outside its header
+    uint32_t refusedSsa = 0;         // the rewrite would not have been dominance-correct
     uint32_t refusedMachine = 0;    // a generator/async resume body, refused by name
     // The region's one outside predecessor is already a copy of an earlier
     // region in this same function, so the entry chain's re-passes of that

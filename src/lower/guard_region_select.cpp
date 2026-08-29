@@ -77,10 +77,9 @@ constexpr size_t kMaxRegionBlocks = 64;
 // interleaved rounds: 33.8 s mean at 700 against 33.8 s at 400).
 //
 // The next function up is `Quaternion.setFromEuler` at 406, which this cap
-// admits and `refusedPlacement` then declines for a different reason — its
-// guard points are not all in the header — so raising the cap further buys
-// nothing until that is addressed. Above it there is nothing but module top
-// level, which runs once.
+// admits and which the placement rules now reach: 150 of the graph's folded
+// coercions are its. Above it there is nothing but module top level, which runs
+// once.
 constexpr size_t kMaxRegionInsts = 700;
 // The per-function growth budget is "no more than the function's own size", and
 // this is the floor under it. Without one the budget refuses exactly the case
@@ -166,6 +165,28 @@ bool pinProvesNumberAt(const il::Block& block, uint32_t index, il::ValueId value
     const auto& prev = block.instructions[index - 1];
     return prev.op == il::Op::PinGuard && !prev.operands.empty() && prev.operands[0] == value &&
            prev.immI32 == static_cast<int32_t>(il::PinBarrier::Number);
+}
+
+// Does `from` dominate every region block reachable from it? The question an
+// entry region's split placement turns on: `renameAt` (guard_region_build.cpp)
+// finds a split's renames by walking a block's DOMINATOR chain, so a block that
+// reads the split block's orphaned definitions without being dominated by it
+// would read a name the pruning removed.
+bool dominatesReachable(const Cfg& cfg, const RegionPlan& plan, il::BlockId from) {
+    std::vector<uint8_t> seen(plan.inRegion.size(), 0);
+    std::vector<il::BlockId> stack{from};
+    seen[from] = 1;
+    while (!stack.empty()) {
+        const il::BlockId b = stack.back();
+        stack.pop_back();
+        for (il::BlockId s : cfg.succs[b]) {
+            if (s >= seen.size() || seen[s] || !plan.inRegion[s]) continue;
+            if (!cfg.dominates(from, s)) return false;
+            seen[s] = 1;
+            stack.push_back(s);
+        }
+    }
+    return true;
 }
 
 // A candidate waiting to be assigned to a coalesced guard point in its own
@@ -383,21 +404,50 @@ bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il:
             continue;
         }
 
+        // WHERE the guard may go. It has to reach every promoted use, so the
+        // only sites that serve a use in another block are sites in a block
+        // that DOMINATES that use — and the definition's own block is the only
+        // block on offer, since a guard before the definition has nothing to
+        // test. A use the definition's block does not dominate therefore has
+        // no site at all, and the region is refused.
         uint32_t first = UINT32_MAX;
-        bool reachable = true;
+        bool dominatesUses = true;
+        bool anyUse = false;
         for (const auto& [useBlock, useIndex] : promotedUses[v]) {
+            anyUse = true;
             if (useBlock == def.block) {
                 first = std::min(first, useIndex);
             } else if (!cfg.dominates(def.block, useBlock)) {
-                reachable = false;
+                dominatesUses = false;
             }
         }
-        if (first == UINT32_MAX || !reachable) {
-            // A guard that has to dominate uses in several blocks needs a
-            // placement search this chunk does not have, and one that would sit
-            // in a block it is not used in is a split paid for nothing.
+        // A candidate is seeded by arithmetic or by a coercion and both of
+        // those are uses, so a candidate with no promoted use is not a shape
+        // the closure can produce. It is refused rather than placed anywhere,
+        // because "the latest point that reaches every use" is not defined over
+        // an empty set.
+        if (!dominatesUses || !anyUse) {
             ++stats.refusedPlacement;
             return false;
+        }
+        if (first == UINT32_MAX) {
+            // Every promoted use is in a block this one dominates: the guard
+            // goes at the END of the definition's block, in front of the
+            // terminator. `Quaternion.setFromEuler` is this case and nothing
+            // else — six sines and cosines computed in the header, every
+            // product of them in a `switch` arm.
+            //
+            // That point reaches all of those uses because the fast copy of one
+            // block is a CHAIN of parts whose only exits are the guard branches
+            // themselves, and a failed guard leaves for the slow copy and never
+            // comes back. So the last part of this block's chain dominates the
+            // fast copy of every block this block dominates, which is where the
+            // uses are.
+            //
+            // Always at or after the point the value exists at: a terminator is
+            // `ret`/`jump`/`br`/`throw` (il effects.cpp) and none of those
+            // carries a result, so a definition is never the last instruction.
+            first = static_cast<uint32_t>(fn.blocks[def.block].instructions.size()) - 1;
         }
         // The PIN question is asked at the candidate's own first use and not at
         // whatever coalesced point it lands on: a barrier reaches one
@@ -450,20 +500,38 @@ bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il:
     // An entry region's slow copy has NO ENTRY of its own — the fast copy is
     // the function's — so the only way into it is a trampoline, and the only
     // block a trampoline lands in is the tail of a split. Everything the slow
-    // copy defines before the first split is therefore orphaned, and the values
-    // it defined are re-supplied to its own tail as parameters and renamed in
-    // everything the SPLIT BLOCK dominates. That covers the whole region
-    // exactly when the split block is the HEADER, which dominates every block
-    // in the region by the region's own definition. A guard point anywhere else
-    // leaves the header's definitions unreachable and unrenamed in a block that
-    // still reads them, so it is refused rather than mis-built.
+    // copy defines before a split is therefore orphaned and pruned, and what
+    // re-supplies it is the tail's PARAMETERS plus a rename in the blocks that
+    // read them.
     //
-    // A loop region is not exposed to this: its slow copy keeps its own back
-    // edge, so its header stays reachable and nothing is orphaned.
+    // Those two halves have to meet, and only the second is a condition. The
+    // first is free: a value defined before a split and read after it is live
+    // at the split by definition, and the tail takes a parameter for exactly
+    // the values `liveBefore` reports there. So is the case of a value defined
+    // in a block the prefix orphans WHOLE — a block that cannot reach the split
+    // but whose definition is read past it dominates the split block, so that
+    // value is live at the split too.
+    //
+    // The second is this check. `renameAt` finds a split's renames by walking a
+    // block's DOMINATOR chain, so the split block must dominate every region
+    // block reachable from it — otherwise a surviving reader keeps the name of
+    // a definition the pruning removed, and the rewrite is discarded by
+    // `dominanceHolds` at best.
+    //
+    // The header satisfies that by the region's own definition, which is why it
+    // used to be the whole rule. It is not the only block that can: the join
+    // after a DEFAULTED PARAMETER dominates everything below it too, and that
+    // is the shape of `Quaternion.setFromEuler` — `(euler, update = true)`, so
+    // its six sines and cosines are computed one block under the header and
+    // every product of them is a `switch` arm below that.
+    //
+    // A loop region is not exposed to any of this: its slow copy keeps its own
+    // back edge, so its header stays reachable and nothing is orphaned.
     if (plan.entryRegion) {
         for (il::BlockId b : plan.blocks) {
-            if (b != plan.header && !plan.splitsOf[b].empty()) {
-                ++stats.refusedPlacement;
+            if (b == plan.header || plan.splitsOf[b].empty()) continue;
+            if (!dominatesReachable(cfg, plan, b)) {
+                ++stats.refusedEntrySplit;
                 return false;
             }
         }
@@ -501,6 +569,51 @@ bool analyzeRegion(const il::Function& fn, const Cfg& cfg, const std::vector<il:
     return true;
 }
 
+// The aggregate counters say how often a reason fired; they cannot say WHERE,
+// and "where" is what decides whether a reason is worth a rule — fifty refusals
+// spread over cold constructors are not the same fact as five over the
+// functions a benchmark spends its time in. This is the per-function view, off
+// unless asked for, and deterministic because it walks the module's functions
+// in order and prints one line each.
+bool guardRegionTraceOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BRONZE_GUARDED_REGION_TRACE");
+        return env != nullptr && std::strcmp(env, "1") == 0;
+    }();
+    return on;
+}
+
+// The counters that moved while one function was examined, as `reason=n` pairs.
+// Empty when nothing moved, which is the common case and the one worth not
+// printing.
+std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& after) {
+    const std::pair<const char*, std::pair<uint32_t, uint32_t>> fields[] = {
+        {"dup", {before.duplicated, after.duplicated}},
+        {"guards", {before.guards, after.guards}},
+        {"points", {before.guardPoints, after.guardPoints}},
+        {"unboxFolded", {before.unboxFolded, after.unboxFolded}},
+        {"handler", {before.refusedHandler, after.refusedHandler}},
+        {"singleEntry", {before.refusedSingleEntry, after.refusedSingleEntry}},
+        {"nonNumeric", {before.refusedNonNumeric, after.refusedNonNumeric}},
+        {"tooFew", {before.refusedTooFew, after.refusedTooFew}},
+        {"growth", {before.refusedGrowth, after.refusedGrowth}},
+        {"placement", {before.refusedPlacement, after.refusedPlacement}},
+        {"entrySplit", {before.refusedEntrySplit, after.refusedEntrySplit}},
+        {"ssa", {before.refusedSsa, after.refusedSsa}},
+        {"machine", {before.refusedMachine, after.refusedMachine}},
+        {"copyPred", {before.refusedCopyPred, after.refusedCopyPred}},
+    };
+    std::string out;
+    for (const auto& [label, counts] : fields) {
+        if (counts.second == counts.first) continue;
+        if (!out.empty()) out += ' ';
+        out += label;
+        out += '=';
+        out += std::to_string(counts.second - counts.first);
+    }
+    return out;
+}
+
 }  // namespace
 
 bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& types) {
@@ -524,17 +637,18 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
     const uint32_t refused = s.refusedHandler + s.refusedSingleEntry + s.refusedNonNumeric +
                              s.refusedTooFew + s.refusedGrowth + s.refusedPlacement +
-                             s.refusedSsa + s.refusedMachine + s.refusedCopyPred;
+                             s.refusedEntrySplit + s.refusedSsa + s.refusedMachine +
+                             s.refusedCopyPred;
     std::fprintf(stderr,
                  "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
-                 "placement %u, ssa %u, machine %u, copyPred %u)\n",
+                 "placement %u, entrySplit %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
                  s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
                  s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
-                 s.refusedSsa, s.refusedMachine, s.refusedCopyPred);
+                 s.refusedEntrySplit, s.refusedSsa, s.refusedMachine, s.refusedCopyPred);
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +805,70 @@ bool selectEntryRegion(const il::Function& prepped, GuardRegionStats& stats, Reg
     return analyzeRegion(prepped, cfg, types, defs, plan, stats);
 }
 
+namespace {
+
+// One function's whole examination: its loop regions until the growth budget or
+// the attempt limit stops it, and the entry region when none of them was taken.
+// A function of its own so that the module loop above it can bracket it — the
+// per-function trace is the difference between the counters before and after
+// this call, which a body full of `continue` could not report.
+bool examineFunction(il::Function& fn, GuardRegionStats& stats) {
+    size_t originalInsts = 0;
+    for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
+    size_t added = 0;
+    std::vector<uint8_t> alreadyBuilt(fn.blocks.size(), 0);
+    bool changed = false;
+
+    for (int attempt = 0; attempt < kMaxRegionsPerFunction; ++attempt) {
+        // Counted on the FIRST look at a function only. Every later look
+        // re-derives the same answers for the regions it did not take, and
+        // counting those again would report one loop as several.
+        GuardRegionStats discard;
+        std::vector<RegionPlan> plans =
+            selectRegions(fn, attempt == 0 ? stats : discard, alreadyBuilt);
+        if (plans.empty()) break;
+
+        const RegionPlan& plan = plans.front();
+        size_t regionInsts = 0;
+        for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
+        // The per-FUNCTION budget: what the duplication adds may not exceed
+        // what was there, so no function can be more than doubled however
+        // many loops it has — with the small-function floor above under it.
+        const size_t estimate = regionInsts + 4 * plan.guardCount + 2 * plan.blocks.size();
+        if (added + estimate > std::max(originalInsts, kGrowthFloor)) {
+            if (attempt == 0) ++stats.refusedGrowth;
+            break;
+        }
+
+        const size_t blocksBefore = fn.blocks.size();
+        if (!buildGuardedRegion(fn, plan, stats, alreadyBuilt)) break;
+        added += estimate;
+        if (fn.blocks.size() > blocksBefore) {
+            stats.blocksAdded += static_cast<uint32_t>(fn.blocks.size() - blocksBefore);
+        }
+        changed = true;
+    }
+
+    if (changed) return true;
+    // The entry region, on a copy with a preheader in front of it. There is no
+    // growth budget to meet here and there cannot be: a whole-function copy
+    // exceeds "adds no more than the function had" by construction. The region
+    // caps in `analyzeRegion` are the size bound instead.
+    il::Function prepped = withPreheader(fn);
+    RegionPlan plan;
+    if (!selectEntryRegion(prepped, stats, plan)) return false;
+    std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
+    const size_t blocksBefore = prepped.blocks.size();
+    if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) return false;
+    if (prepped.blocks.size() > blocksBefore) {
+        stats.blocksAdded += static_cast<uint32_t>(prepped.blocks.size() - blocksBefore);
+    }
+    fn = std::move(prepped);
+    return true;
+}
+
+}  // namespace
+
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
@@ -704,59 +882,13 @@ bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
     bool changed = false;
     for (il::Function& fn : module.functions) {
         ++stats.functions;
-        size_t originalInsts = 0;
-        for (const auto& block : fn.blocks) originalInsts += block.instructions.size();
-        size_t added = 0;
-        std::vector<uint8_t> alreadyBuilt(fn.blocks.size(), 0);
-        bool builtHere = false;
-
-        for (int attempt = 0; attempt < kMaxRegionsPerFunction; ++attempt) {
-            // Counted on the FIRST look at a function only. Every later look
-            // re-derives the same answers for the regions it did not take, and
-            // counting those again would report one loop as several.
-            GuardRegionStats discard;
-            std::vector<RegionPlan> plans =
-                selectRegions(fn, attempt == 0 ? stats : discard, alreadyBuilt);
-            if (plans.empty()) break;
-
-            const RegionPlan& plan = plans.front();
-            size_t regionInsts = 0;
-            for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
-            // The per-FUNCTION budget: what the duplication adds may not exceed
-            // what was there, so no function can be more than doubled however
-            // many loops it has — with the small-function floor above under it.
-            const size_t estimate = regionInsts + 4 * plan.guardCount + 2 * plan.blocks.size();
-            if (added + estimate > std::max(originalInsts, kGrowthFloor)) {
-                if (attempt == 0) ++stats.refusedGrowth;
-                break;
-            }
-
-            const size_t blocksBefore = fn.blocks.size();
-            if (!buildGuardedRegion(fn, plan, stats, alreadyBuilt)) break;
-            added += estimate;
-            if (fn.blocks.size() > blocksBefore) {
-                stats.blocksAdded += static_cast<uint32_t>(fn.blocks.size() - blocksBefore);
-            }
-            changed = true;
-            builtHere = true;
+        const GuardRegionStats before = stats;
+        if (examineFunction(fn, stats)) changed = true;
+        if (!guardRegionTraceOn()) continue;
+        const std::string delta = traceDelta(before, stats);
+        if (!delta.empty()) {
+            std::fprintf(stderr, "[guard-fn] %s %s\n", fn.name.c_str(), delta.c_str());
         }
-
-        if (builtHere) continue;
-        // The entry region, on a copy with a preheader in front of it. There is
-        // no growth budget to meet here and there cannot be: a whole-function
-        // copy exceeds "adds no more than the function had" by construction.
-        // The region caps in `analyzeRegion` are the size bound instead.
-        il::Function prepped = withPreheader(fn);
-        RegionPlan plan;
-        if (!selectEntryRegion(prepped, stats, plan)) continue;
-        std::vector<uint8_t> entryBuilt(prepped.blocks.size(), 0);
-        const size_t blocksBefore = prepped.blocks.size();
-        if (!buildGuardedRegion(prepped, plan, stats, entryBuilt)) continue;
-        if (prepped.blocks.size() > blocksBefore) {
-            stats.blocksAdded += static_cast<uint32_t>(prepped.blocks.size() - blocksBefore);
-        }
-        fn = std::move(prepped);
-        changed = true;
     }
     return changed;
 }

@@ -1,0 +1,18 @@
+XYZ -> 39
+  log f,f,f,g,g,g,17,22
+YXZ -> 18
+  log f,f,f,g,g,g,15,3
+ZZZ -> 16
+  log f,f,f,g,g,g,9,7
+XYZ no-update -> -5
+  log f,f,f,g,g,g,17,22
+ZZZ string -> S134S240
+  log f,f,f,g,g,g,S134,S240
+XYZ string -> NaNS120
+  log f,f,f,g,g,g,NaN,S120
+ZZZ throwing valueOf -> throw TypeError: boom
+  log f,f,f,g,g,g,v
+ZZZ replaced f -> 5X37
+  log f,f,f,g,g,g,5X3,7
+ZZZ after replacement -> 16
+  log f,f,f,g,g,g,9,7
