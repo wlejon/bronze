@@ -86,6 +86,13 @@ struct RunArmGroup {
     // the plan trusts — the fast arm hands its register to the join, the slow
     // arm reloads out of the slot. Filled by planLiveRoots.
     std::vector<il::ValueId> restore;
+    // The block whose emission the plan believes wrote each restored value's
+    // register, parallel to `restore`. The arms hand that register to a phi and
+    // to a spill with no per-use fallback in front of either, so the emitter
+    // checks the belief against its own `regBlock_` the way `reload` does —
+    // a register the emitter no longer holds is a value that must come out of
+    // its slot before the proof branches.
+    std::vector<uint32_t> restoreAnchor;
 
     size_t size() const { return index.size(); }
 };

@@ -87,6 +87,19 @@
 // there. A predecessor the walk has not reached yet (a back edge) contributes
 // nothing, and an exception predecessor ends the chain as it always did.
 //
+// AND WHY THE MEET IS NOT ENOUGH ON ITS OWN. Domination says the register would
+// be legal; it does not say the emitter still HOLDS it. The emitter keeps one
+// register per value and emits blocks in INDEX order, which the CFG does not
+// follow — a guarded region lays its slow copy out as a low-numbered block that
+// only the bottom of the fast copy branches to (src/lower/guard_region.h), so
+// that copy's own reloads run between the block an anchor names and the block
+// that wants to read it, and leave the emitter holding a register from neither.
+// `reload` catches that per use and goes to the slot. A run-arm group's join has
+// no per-use fallback in front of it, and its results' slots are elided on the
+// strength of no use ever reloading, so the same question is asked here once:
+// an anchor survives the meet only while nothing emitted since has overwritten
+// the register it names.
+//
 // THE SEAM. `BRONZE_NO_LIVE_ROOTS=1` returns the plan that roots every
 // `dynamic` value and reloads at every use — exactly the contract that stood
 // before this file — so the A/B is one environment variable out of one binary.

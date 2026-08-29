@@ -133,6 +133,29 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
     llvm::Value* obj = values_[group.receiver];
     if (!require(obj != nullptr, "Undefined receiver for a proven element run")) return false;
 
+    // Every restored value into a register that dominates both arms, BEFORE the
+    // proof branches. The plan names the block whose emission wrote each one and
+    // the emitter holds the block that actually did; where the two agree the
+    // register is the answer and nothing is emitted, which is every case the
+    // plan describes. Where they do not — a block the plan's meet never saw was
+    // emitted in between and overwrote the entry — the register names a
+    // definition that reaches neither arm, and the slot every reloading use goes
+    // to is what the join has to phi instead. An ARM-LOCAL value has no such
+    // slot to fall back on, by construction: its own group's fast arm skipped
+    // the store because the plan said no use would ever read one. So a mismatch
+    // there is the plan contradicting itself, and it is diagnosed rather than
+    // compiled into a load of a word nothing wrote.
+    for (size_t k = 0; k < group.restore.size(); ++k) {
+        const il::ValueId v = group.restore[k];
+        if (v >= func_.valueCount || slotOf_[v] == kNoSlot) continue;
+        if (regBlock_[v] == group.restoreAnchor[k] && values_[v] != nullptr) continue;
+        if (!require(!live_.armLocal(v),
+                     "Live-root plan promised a register for an arm-local value")) {
+            return false;
+        }
+        reload(v, /*holeInsensitive=*/false, LiveRootPlan::kReload);
+    }
+
     ReceiverProof proof =
         emitReceiverProof(builder_, obj, group.receiver, group.run, group.maxIndex);
     const StoreProof enteringStore = storeProof_;

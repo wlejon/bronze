@@ -280,6 +280,25 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
     std::vector<std::pair<uint32_t, uint32_t>> meet;
     std::vector<std::pair<uint32_t, uint32_t>> next;
     std::vector<uint32_t> anchor;
+
+    // WHICH BLOCK'S EMISSION STILL HOLDS THE REGISTER. The meet above is a
+    // statement about the CFG: on every path to this block the last write of v
+    // was in block X, so X dominates here and X's register is legal. The
+    // EMITTER, though, keeps one register per value and walks blocks in INDEX
+    // order — and index order is not the CFG's order. A guarded region emits its
+    // slow copy as a low-numbered block reachable only from the bottom of the
+    // fast copy (src/lower/guard_region.h), so that block's own reloads run
+    // BETWEEN X and here and leave the emitter's `regBlock_` naming a block that
+    // dominates nothing on this path. `FunctionEmitter::reload` catches that per
+    // use and goes to the slot, but a run-arm group's join hands its restore
+    // registers straight to a phi and to the slow arm's spill with no such
+    // fallback, and its results' slots are elided on the strength of no use ever
+    // reloading. Both need the anchor to be one the emitter still HOLDS, so this
+    // mirrors `regBlock_` across the whole walk and the meet keeps only the
+    // entries the two agree on.
+    std::vector<uint32_t> written(n, kNone);
+    for (size_t p = 0; p < func.params.size() && p < n; ++p) written[p] = 0;
+
     for (uint32_t b = 0; b < blockCount; ++b) {
         anchor.assign(n, kNone);
         if (b == 0) {
@@ -323,7 +342,9 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                     }
                     meet.swap(next);
                 }
-                for (const auto& entry : meet) anchor[entry.first] = entry.second;
+                for (const auto& entry : meet) {
+                    if (written[entry.first] == entry.second) anchor[entry.first] = entry.second;
+                }
             }
         }
         const il::Block& block = func.blocks[b];
@@ -331,7 +352,10 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
         // everything in the block, and its incomings are the registers each
         // predecessor's branch had just made current.
         for (const il::BlockParam& p : block.params) {
-            if (p.id != il::kNoValue && p.id < n) anchor[p.id] = b;
+            if (p.id != il::kNoValue && p.id < n) {
+                anchor[p.id] = b;
+                written[p.id] = b;
+            }
         }
         for (size_t i = 0; i < block.instructions.size(); ++i) {
             const uint32_t opens = plan.arms.startAt(b, i);
@@ -348,14 +372,32 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                     for (uint32_t at = base; at < end; ++at) plan.useAnchor[at] = kNone;
                 }
                 group.restore.clear();
+                group.restoreAnchor.clear();
                 for (il::ValueId v : liveAfterGroup[opens]) {
                     if (v >= n || plan.needsSlot[v] == 0 || anchor[v] == kNone) continue;
                     bool defined = false;
                     for (il::ValueId r : group.result) defined = defined || r == v;
-                    if (!defined) group.restore.push_back(v);
+                    if (!defined) {
+                        group.restore.push_back(v);
+                        group.restoreAnchor.push_back(anchor[v]);
+                    }
                 }
                 for (il::ValueId r : group.result) {
-                    if (r != il::kNoValue && r < n && plan.needsSlot[r] != 0) anchor[r] = b;
+                    if (r != il::kNoValue && r < n && plan.needsSlot[r] != 0) {
+                        anchor[r] = b;
+                        written[r] = b;
+                    }
+                }
+                // The join phi'd every restored value too, and that phi is the
+                // register the rest of the block reads — not the one the value
+                // arrived in. Saying so is what keeps the plan and the emitter
+                // holding the same register: without it a use after the group
+                // would be sent to a slot the fast arm never wrote, because the
+                // value's own group elided that store on the strength of no use
+                // reloading (`armLocalSlot` below).
+                for (il::ValueId v : group.restore) {
+                    anchor[v] = b;
+                    written[v] = b;
                 }
                 i = group.last;
                 continue;
@@ -369,13 +411,18 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                         answer = anchor[u];
                     } else {
                         anchor[u] = b;  // this use reloads, so the register is current after it
+                        written[u] = b;
                     }
                 }
                 plan.useAnchor[at++] = answer;
             });
+            // A collection forwards slots and not registers, so it ends every
+            // anchor — but it writes no register, so it changes nothing about
+            // WHICH block last wrote one.
             if (il::canCollect(inst)) std::fill(anchor.begin(), anchor.end(), kNone);
             if (inst.result != il::kNoValue && inst.result < n && plan.needsSlot[inst.result] != 0) {
                 anchor[inst.result] = b;
+                written[inst.result] = b;
             }
         }
         liveOut[b].forEach([&](uint32_t v) {

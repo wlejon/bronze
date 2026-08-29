@@ -271,6 +271,96 @@ TEST_CASE("a run of one is no group") {
     CHECK(planRunArms(module, fb.func).groups.empty());
 }
 
+TEST_CASE("a block emitted between the anchor and the group leaves no register to restore") {
+    //   b0: jump b2
+    //   b1: %2 = is.number %0        the SLOW COPY, reached only from b2's else
+    //       ret %0
+    //   b2: %3 = prop.get %1, "0"    ] the group
+    //       %4 = prop.get %1, "1"    ]
+    //       %5 = is.number %3
+    //       br %5, b3, b1
+    //   b3: %6 = is.number %0
+    //       ret %0
+    //
+    // A guarded region's slow copy is a LOW-numbered block reachable only from
+    // the bottom of the fast copy (src/lower/guard_region.h), and blocks are
+    // emitted in index order — so b1's own reload of %0 runs between b0, which
+    // the meet names as %0's anchor, and b2, which wants to hand %0's register
+    // to its join. The register b1 left dominates neither arm, and a plan that
+    // put %0 on the restore list would be asking the join to phi it.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId out = fb.param();
+    const il::ValueId src = fb.param();
+    const size_t b0 = fb.block();
+    const size_t b1 = fb.block();
+    const size_t b2 = fb.block();
+    const size_t b3 = fb.block();
+    fb.jump(b0, b2);
+    fb.isNumber(b1, out);
+    fb.ret(b1, out);
+    const il::ValueId e0 = fb.read(b2, src, 0);
+    fb.read(b2, src, 1);
+    const il::ValueId guard = fb.isNumber(b2, e0);
+    fb.branch(b2, guard, b3, b1);
+    fb.isNumber(b3, out);
+    fb.ret(b3, out);
+    fb.finish();
+
+    const LiveRootPlan plan = planLiveRoots(fb.func, planRunArms(module, fb.func));
+    REQUIRE(plan.arms.groups.size() == 1u);
+    CHECK(plan.arms.groups[0].block == 2u);
+    // %0 is live across the group and does have a slot — what it does not have
+    // is a register the emitter still holds.
+    CHECK(plan.needsSlot[out] == 1);
+    CHECK(plan.arms.groups[0].restore.empty());
+    CHECK(plan.arms.groups[0].restoreAnchor.size() == plan.arms.groups[0].restore.size());
+    // And every use of it goes back to the slot, in the slow copy and after the
+    // group alike.
+    CHECK(plan.anchor(1, 0, 0) == LiveRootPlan::kReload);
+    CHECK(plan.anchor(3, 0, 0) == LiveRootPlan::kReload);
+}
+
+TEST_CASE("a value the join phi'd is read from the phi and not from a slot nobody wrote") {
+    //   b0: %2 = prop.get %0, "0"    ] group 0, whose results are arm-local
+    //       %3 = prop.get %0, "1"    ]
+    //       %4 = is.number %2
+    //       jump b1
+    //   b1: %5 = prop.get %1, "0"    ] group 1, which carries %2 across itself
+    //       %6 = prop.get %1, "1"    ]
+    //       %7 = is.number %2
+    //       ret %2
+    //
+    // Group 0's fast arm writes %2's slot NOWHERE — no use reloads it, so
+    // `armLocalSlot` lets the store go. Group 1's slow arm spills it on the way
+    // in and its join phis it, which is the register the block after the join
+    // holds. Naming group 0's block as the anchor there would send that use to
+    // the slot instead, and the slot has never been written.
+    il::Module module = makeModule();
+    FuncBuilder fb;
+    const il::ValueId recvA = fb.param();
+    const il::ValueId recvB = fb.param();
+    const size_t b0 = fb.block();
+    const size_t b1 = fb.block();
+    const il::ValueId e0 = fb.read(b0, recvA, 0);
+    fb.read(b0, recvA, 1);
+    fb.isNumber(b0, e0);
+    fb.jump(b0, b1);
+    fb.read(b1, recvB, 0);
+    fb.read(b1, recvB, 1);
+    fb.isNumber(b1, e0);
+    fb.ret(b1, e0);
+    fb.finish();
+
+    const LiveRootPlan plan = planLiveRoots(fb.func, planRunArms(module, fb.func));
+    REQUIRE(plan.arms.groups.size() == 2u);
+    CHECK(holds(plan.arms.groups[1].restore, e0));
+    CHECK(plan.armLocal(e0));
+    // The join is in b1, so the uses after it read b1's phi.
+    CHECK(plan.anchor(1, 2, 0) == 1u);
+    CHECK(plan.anchor(1, 3, 0) == 1u);
+}
+
 TEST_CASE("a register survives into a block every predecessor carries it into") {
     //   b0: %0 = create.object
     //       %1 = create.object      the safepoint that gives %0 its slot
