@@ -35,20 +35,22 @@
 // forward unchanged, every other arm carries `false`, and a run that misses
 // once simply finishes on the ladder it would have used anyway.
 //
-// TWO PROOFS AT ONCE. `Matrix4.toArray` interleaves a run of reads off
-// `this.elements` with a run of stores into a Float32Array, so neither run is
-// a contiguous stretch of instructions and each run's members sit inside the
-// other's span. A run member is TRANSPARENT to the other run's proof: its fast
-// arm neither allocates nor calls, and its join re-establishes every live
-// proof and not only its own. Anything else that `il::canCollect` ends both.
-// That is why the two plans are computed together below rather than one per
-// file — whether a store is transparent to a read run depends on whether the
-// store's own run was committed, and the other way round, so the two are
-// settled to a fixpoint in one pass.
+// THREE PROOFS AT ONCE. `Matrix4.toArray` interleaves a run of reads off
+// `this.elements` with a run of stores into a Float32Array, and `Matrix4.copy`
+// interleaves a run of reads off one Array with a run of constant-index stores
+// into another — so no run is a contiguous stretch of instructions and each
+// run's members sit inside the others' spans. A run member is TRANSPARENT to
+// the other runs' proofs: its fast arm neither allocates nor calls, and its
+// join re-establishes every live proof and not only its own. Anything else that
+// `il::canCollect` ends all three. That is why the plans are computed together
+// below rather than one per file — whether a store is transparent to a read run
+// depends on whether the store's own run was committed, and the other way
+// round, so all three are settled to a fixpoint in one pass.
 //
-// Seam: BRONZE_NO_RECV_PROOF=1 turns BOTH planners off, so every site emits
-// the ladder alone and the A/B is one environment variable;
-// BRONZE_NO_STORE_PROOF=1 turns off the store side alone.
+// Seam: BRONZE_NO_RECV_PROOF=1 turns ALL THREE planners off, so every site
+// emits the ladder alone and the A/B is one environment variable;
+// BRONZE_NO_STORE_PROOF=1 turns off the typed-array store side alone, and
+// BRONZE_NO_ARRAY_STORE_PROOF=1 the Array store side alone.
 
 #include <cstdint>
 #include <string>
@@ -58,6 +60,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
+#include "codegen-llvm/llvm_array_store_proof.h"
 #include "codegen-llvm/llvm_store_proof.h"
 #include "il/il.h"
 
@@ -86,16 +89,18 @@ struct ReceiverRunPlan {
     }
 };
 
-// Both of one block's plans. Empty when the seams are off or the block holds
-// no run worth proving.
+// All three of one block's plans. Empty when the seams are off or the block
+// holds no run worth proving.
 struct BlockRunPlan {
     ReceiverRunPlan reads;
     StoreRunPlan stores;
+    ArrayStoreRunPlan arrayStores;
 };
 
-// Plans the read runs and the store runs of one block together, to the
-// fixpoint the header describes. The module comes along because the planner
-// has to read each read site's KEY to know it is an index at all.
+// Plans the read runs, the typed-array store runs and the Array store runs of
+// one block together, to the fixpoint the header describes. The module comes
+// along because the planner has to read each read and Array-store site's KEY to
+// know it is an index at all.
 BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
                            size_t blockIndex);
 

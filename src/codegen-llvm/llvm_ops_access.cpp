@@ -2,7 +2,7 @@
 // by name (`o.x`), by index (`o[i]`), on a proven view (`elem.get.typed`), or
 // through a home object (`super.x`). Peeled off llvm_ops.cpp the way
 // llvm_ops_call.cpp peels off the call family, and for a stronger reason than
-// size: the two RECEIVER PROOFS are a property of a RUN of accesses rather
+// size: the three RECEIVER PROOFS are a property of a RUN of accesses rather
 // than of any one of them, so the code that establishes, spends and re-joins
 // them belongs beside the accesses and nowhere else.
 
@@ -13,6 +13,7 @@
 #include <llvm/IR/Function.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_array_store_proof.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_prop.h"
@@ -55,10 +56,14 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
     // one proof-preserving edge carries it, every other predecessor kills it.
     // A null `fastBb` means nothing preserved anything, and every proof dies —
     // which is the honest answer for a site that reached a helper.
-    auto carryOtherProofs = [&](const ProofJoin& join, bool ownsRead, bool ownsStore) {
+    auto carryOtherProofs = [&](const ProofJoin& join, bool ownsRead, bool ownsStore,
+                                bool ownsArrayStore) {
         if (join.doneBb == nullptr) return;
         if (!ownsRead) rejoinReceiverProof(builder_, recvProof_, join.fastBb, join.doneBb);
         if (!ownsStore) rejoinStoreProof(storeProof_, join.fastBb, join.doneBb);
+        if (!ownsArrayStore) {
+            rejoinArrayStoreProof(arrayStoreProof_, join.fastBb, join.doneBb);
+        }
         proofsCarried_ = join.fastBb != nullptr;
     };
 
@@ -136,7 +141,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj,
                             rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
                             inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg, &join);
-            carryOtherProofs(join, /*ownsRead=*/proofArg != nullptr, /*ownsStore=*/false);
+            carryOtherProofs(join, /*ownsRead=*/proofArg != nullptr, /*ownsStore=*/false,
+                             /*ownsArrayStore=*/false);
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }
@@ -155,9 +161,30 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             // store and on no other.
             const ValueRepr valRepr = storeValueRepr(func_, repr_, currentILBlock_,
                                                      currentILInst_, inst.operands[1]);
+            // Where this site sits in its block's ARRAY STORE runs
+            // (llvm_array_store_proof.h). Read exactly as the PropGet case
+            // above reads its own: the run's FIRST member pays for the proof in
+            // front of its own cache; the rest spend what it left, and a site in
+            // no run passes nothing and emits exactly what it always did.
+            const ArrayStoreRunPlan::Site runSite = runPlan_.arrayStores.at(currentILInst_);
+            ArrayStoreProof* proofArg = nullptr;
+            if (runSite.run == ArrayStoreRunPlan::kNoRun) {
+                arrayStoreProof_ = ArrayStoreProof{};
+            } else {
+                if (runSite.establishes) {
+                    arrayStoreProof_ = emitArrayStoreProof(builder_, obj, inst.operands[0],
+                                                           runSite.run, runSite.runMaxIndex);
+                }
+                if (arrayStoreProof_.live() && arrayStoreProof_.run == runSite.run) {
+                    proofArg = &arrayStoreProof_;
+                }
+            }
+            ProofJoin join;
             emitPropSet(builder_, abi, globals_, shared_.tables, obj, rootSlotAddrOf(inst, 0),
                         inst.keyIndex, val, inst.icIndex, inst.immI32 != 0, inst.icMonomorphic,
-                        staticSiteOf(inst), valRepr, keyStr);
+                        staticSiteOf(inst), valRepr, keyStr, proofArg, &join);
+            carryOtherProofs(join, /*ownsRead=*/false, /*ownsStore=*/false,
+                             /*ownsArrayStore=*/proofArg != nullptr);
             return true;
         }
         case il::Op::ElemGet: {
@@ -204,7 +231,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 builder_.SetInsertPoint(doneBb);
                 ProofJoin join{proven.fastBb, doneBb};
                 rejoinStoreProof(storeProof_, join.fastBb, join.doneBb);
-                carryOtherProofs(join, /*ownsRead=*/false, /*ownsStore=*/true);
+                carryOtherProofs(join, /*ownsRead=*/false, /*ownsStore=*/true,
+                                 /*ownsArrayStore=*/false);
             }
             return true;
         }

@@ -37,6 +37,17 @@ std::optional<uint32_t> indexKeyOf(const il::Module& module, const il::Instructi
     return parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
+// The index a constant-index `prop.set` writes, for the Array store planner —
+// `te[3] = v`, which the front end spells as a PropSet against the key "3".
+// Read from the KEY and never from an operand: a `prop.set` whose key is not an
+// index is a named write and belongs to no run.
+std::optional<uint32_t> storeIndexKeyOf(const il::Module& module, const il::Instruction& inst) {
+    if (inst.op != il::Op::PropSet) return std::nullopt;
+    if (inst.operands.size() < 2) return std::nullopt;
+    if (inst.keyIndex >= module.keyConstants.size()) return std::nullopt;
+    return parseIndexKey(module.keyConstants[inst.keyIndex]);
+}
+
 }  // namespace
 
 bool receiverProofEnabled() {
@@ -52,10 +63,11 @@ namespace {
 // Everything else that can collect ends both runs.
 void scanRuns(const il::Module& module, const il::Block& block,
               const std::vector<uint32_t>& defIndex, const std::vector<bool>& transparent,
-              bool wantStores, BlockRunPlan& plan) {
+              bool wantStores, bool wantArrayStores, BlockRunPlan& plan) {
     plan = BlockRunPlan{};
     plan.reads.sites.assign(block.instructions.size(), ReceiverRunPlan::Site{});
     plan.stores.sites.assign(block.instructions.size(), StoreRunPlan::Site{});
+    plan.arrayStores.sites.assign(block.instructions.size(), ArrayStoreRunPlan::Site{});
 
     std::vector<size_t> readMembers;
     std::vector<uint32_t> readIndices;
@@ -69,6 +81,12 @@ void scanRuns(const il::Module& module, const il::Block& block,
     il::ValueId storeBase = il::kNoValue;
     uint32_t storeMax = 0;
     uint32_t nextStoreRun = 0;
+
+    std::vector<size_t> arrMembers;
+    std::vector<uint32_t> arrIndices;
+    il::ValueId arrRecv = il::kNoValue;
+    uint32_t arrMax = 0;
+    uint32_t nextArrRun = 0;
 
     auto commitReads = [&]() {
         if (readMembers.size() >= kMinRunLength) {
@@ -103,6 +121,22 @@ void scanRuns(const il::Module& module, const il::Block& block,
         storeBase = il::kNoValue;
         storeMax = 0;
     };
+    auto commitArrayStores = [&]() {
+        if (arrMembers.size() >= kMinRunLength) {
+            for (size_t i = 0; i < arrMembers.size(); ++i) {
+                auto& site = plan.arrayStores.sites[arrMembers[i]];
+                site.run = nextArrRun;
+                site.establishes = (i == 0);
+                site.runMaxIndex = arrMax;
+                site.index = arrIndices[i];
+            }
+            ++nextArrRun;
+        }
+        arrMembers.clear();
+        arrIndices.clear();
+        arrRecv = il::kNoValue;
+        arrMax = 0;
+    };
 
     for (size_t i = 0; i < block.instructions.size(); ++i) {
         const auto& inst = block.instructions[i];
@@ -110,16 +144,22 @@ void scanRuns(const il::Module& module, const il::Block& block,
         const std::optional<uint32_t> idx = indexKeyOf(module, inst);
         const StoreSiteShape store =
             wantStores ? classifyStoreSite(block, defIndex, i) : StoreSiteShape{};
+        const std::optional<uint32_t> arrIdx =
+            wantArrayStores ? storeIndexKeyOf(module, inst) : std::nullopt;
 
-        // A run member is transparent to the OTHER run's proof; anything else
-        // that can move the heap ends it. Asked before this instruction joins
-        // a run of its own, because the question is about the proof it does
+        // A run member is transparent to the OTHER runs' proofs; anything else
+        // that can move the heap ends them. Asked before this instruction joins
+        // a run of its own, because the question is about the proofs it does
         // not carry.
-        const bool member = (recv != il::kNoValue && idx.has_value()) || store.ok;
+        const bool member = (recv != il::kNoValue && idx.has_value()) || store.ok ||
+                            arrIdx.has_value();
         const bool opaque = !member || !transparent[i];
 
         if (recv != il::kNoValue && idx.has_value()) {
-            if (opaque && il::canCollect(inst)) commitStores();
+            if (opaque && il::canCollect(inst)) {
+                commitStores();
+                commitArrayStores();
+            }
             if (!readMembers.empty() && recv == readRecv) {
                 readMembers.push_back(i);
                 readIndices.push_back(*idx);
@@ -137,7 +177,10 @@ void scanRuns(const il::Module& module, const il::Block& block,
         }
 
         if (store.ok) {
-            if (opaque && il::canCollect(inst)) commitReads();
+            if (opaque && il::canCollect(inst)) {
+                commitReads();
+                commitArrayStores();
+            }
             if (!storeMembers.empty() && store.receiver == storeRecv && store.base == storeBase) {
                 storeMembers.push_back(i);
                 storeOffsets.push_back(store.offset);
@@ -153,21 +196,45 @@ void scanRuns(const il::Module& module, const il::Block& block,
             continue;
         }
 
-        // Not a member of either. It ends a run if it can move the heap out
-        // from under that run's derived pointer, or if it redefines the
-        // receiver — or, for a store run, the base — the proof was made about.
+        if (arrIdx.has_value()) {
+            if (opaque && il::canCollect(inst)) {
+                commitReads();
+                commitStores();
+            }
+            const il::ValueId target = inst.operands[0];
+            if (!arrMembers.empty() && target == arrRecv) {
+                arrMembers.push_back(i);
+                arrIndices.push_back(*arrIdx);
+                arrMax = std::max(arrMax, *arrIdx);
+                continue;
+            }
+            commitArrayStores();
+            arrRecv = target;
+            arrMax = *arrIdx;
+            arrMembers.push_back(i);
+            arrIndices.push_back(*arrIdx);
+            continue;
+        }
+
+        // Not a member of any of the three. It ends a run if it can move the
+        // heap out from under that run's derived pointer, or if it redefines
+        // the receiver — or, for a typed-array store run, the base — the proof
+        // was made about.
         if (il::canCollect(inst)) {
             commitReads();
             commitStores();
+            commitArrayStores();
             continue;
         }
         if (inst.result != il::kNoValue) {
             if (inst.result == readRecv) commitReads();
             if (inst.result == storeRecv || inst.result == storeBase) commitStores();
+            if (inst.result == arrRecv) commitArrayStores();
         }
     }
     commitReads();
     commitStores();
+    commitArrayStores();
 }
 
 }  // namespace
@@ -179,6 +246,7 @@ BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
     if (blockIndex >= func.blocks.size()) return plan;
     const il::Block& block = func.blocks[blockIndex];
     const bool wantStores = storeProofEnabled();
+    const bool wantArrayStores = arrayStoreProofEnabled();
 
     // A value's defining instruction inside THIS block, so the store planner
     // can look through an index's `box.f64` and `add` without a search per
@@ -201,15 +269,17 @@ BlockRunPlan planBlockRuns(const il::Module& module, const il::Function& func,
     for (size_t i = 0; i < block.instructions.size(); ++i) {
         const auto& inst = block.instructions[i];
         transparent[i] = (receiverOf(inst) != il::kNoValue && indexKeyOf(module, inst)) ||
-                         (wantStores && classifyStoreSite(block, defIndex, i).ok);
+                         (wantStores && classifyStoreSite(block, defIndex, i).ok) ||
+                         (wantArrayStores && storeIndexKeyOf(module, inst).has_value());
     }
 
     for (size_t round = 0; round <= block.instructions.size(); ++round) {
-        scanRuns(module, block, defIndex, transparent, wantStores, plan);
+        scanRuns(module, block, defIndex, transparent, wantStores, wantArrayStores, plan);
         bool changed = false;
         for (size_t i = 0; i < block.instructions.size(); ++i) {
             const bool member = plan.reads.sites[i].run != ReceiverRunPlan::kNoRun ||
-                                plan.stores.sites[i].run != StoreRunPlan::kNoRun;
+                                plan.stores.sites[i].run != StoreRunPlan::kNoRun ||
+                                plan.arrayStores.sites[i].run != ArrayStoreRunPlan::kNoRun;
             if (transparent[i] && !member) {
                 transparent[i] = false;
                 changed = true;

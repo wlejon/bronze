@@ -12,6 +12,7 @@ bronze_add_module(codegen_llvm
         llvm_prop_ic.cpp
         llvm_recv_proof.cpp
         llvm_store_proof.cpp
+        llvm_array_store_proof.cpp
         llvm_static_slot.cpp
         llvm_prop_get.cpp
         llvm_prop_set.cpp
@@ -48,6 +49,7 @@ bronze_add_module(codegen_llvm
         ../../tests/codegen_llvm/frame_overlay_test.cpp
         ../../tests/codegen_llvm/repr_test.cpp
         ../../tests/codegen_llvm/store_proof_test.cpp
+        ../../tests/codegen_llvm/array_store_proof_test.cpp
         ../../tests/codegen_llvm/env_promotion_test.cpp
 )
 

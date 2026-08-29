@@ -52,10 +52,20 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 // Property writes. The inline paths are the own-slot hit and the
 // shape-transition hit (a constructor body's repeated property add); every
 // guard miss falls back to bronze_prop_set.
+// `proof`, when live, is a receiver already proven a dense, open Array long
+// enough for this index (llvm_array_store_proof.h): the write then emits a
+// two-instruction arm in front of the whole ladder below, and updates the proof
+// in place with the version that reaches its foot. Null, or not live, changes
+// nothing.
+// `join`, when non-null, is filled with the join this site built and the one
+// edge that preserved a proof across it — which is what lets the CALLER carry
+// any OTHER live proof (the read run this store run is threaded through) across
+// the same join, or kill it when there was no such edge.
 void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
                  const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
                  uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
                  bool monomorphic, const StaticSite& site, ValueRepr valRepr,
-                 std::string_view keyStr = {});
+                 std::string_view keyStr = {}, ArrayStoreProof* proof = nullptr,
+                 ProofJoin* join = nullptr);
 
 }  // namespace bronze::codegen_llvm

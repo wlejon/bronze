@@ -544,6 +544,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
     runPlan_ = planBlockRuns(shared_.module, func_, blockIndex);
     recvProof_ = ReceiverProof{};
     storeProof_ = StoreProof{};
+    arrayStoreProof_ = ArrayStoreProof{};
 
     // A block parameter is a def like any other: the phi's value has to reach
     // its root slot before anything can collect.
@@ -574,6 +575,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         if (il::canCollect(inst) && !proofsCarried_) {
             recvProof_ = ReceiverProof{};
             storeProof_ = StoreProof{};
+            arrayStoreProof_ = ArrayStoreProof{};
         }
 
         if (inst.result != il::kNoValue && inst.result < func_.valueCount &&

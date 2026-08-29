@@ -1,0 +1,23 @@
+copy: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 len=16
+self: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
+scale: 2,4,6,8,5,6,7,8,9,10,11,12,13,14,15,16
+order: 2,3,2
+short: 1,2,3,undefined,undefined,4 len=6 keys=0|1|2|5 has3=false
+long: 1,2,3,0,0,4,0,0
+shifted: 100,200,300,4,5,400,7 len=7
+hole: has2=false keys=5 at2=undefined
+filled: 10,20,30,4,5,60 has2=true keys=0|1|2|3|4|5
+frozen-sloppy: 1,2,3,4,5,6
+frozen-strict: 1,2,3,4,5,6 threw=TypeError
+sealed: 10,20,30,4,5,60
+named: 10,20,30,4,5,60 foo=1
+canonical: 1,2,3 len=3 keys=0|1|2|01
+shrunk: 10,20,30,undefined,undefined,60 len=6 keys=0|1|2|5
+typed: 1,2,3,0,0,4,0,0
+object: 0|1|2|5 abcd
+arguments: 10,20,30,4,5,60 len=6
+nocoerce: same=true calls=0 plus1=8 after=1
+getter: 99,11,77,13
+alloc: 1,2,3,4 sink=300
+throwmid: 1,2,0,0 caught=boom
+split: 1,2,3,4 ticks=1

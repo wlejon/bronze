@@ -195,17 +195,20 @@ private:
     // at the store-side representation tests.
     const ReprPlan& repr_;
     // The receiver runs of the block being emitted, and the proofs currently
-    // alive inside them (llvm_recv_proof.h, llvm_store_proof.h). Planned per
-    // block rather than per function because a run cannot cross a block: a
-    // proof is an LLVM value, and a value has to dominate every use.
+    // alive inside them (llvm_recv_proof.h, llvm_store_proof.h,
+    // llvm_array_store_proof.h). Planned per block rather than per function
+    // because a run cannot cross a block: a proof is an LLVM value, and a value
+    // has to dominate every use.
     //
-    // Two of them, because `Matrix4.toArray` interleaves a run of reads off
-    // one array with a run of stores into another: each run's members sit
-    // inside the other's span, and a single slot would let each kill the other
-    // at its first member.
+    // Three of them, because the kernels interleave runs: `Matrix4.toArray`
+    // reads off one Array while storing into a typed array, `Matrix4.copy`
+    // reads off one Array while storing into another. Each run's members sit
+    // inside the others' spans, and a single slot would let each kill the
+    // others at its first member.
     BlockRunPlan runPlan_;
     ReceiverProof recvProof_;
     StoreProof storeProof_;
+    ArrayStoreProof arrayStoreProof_;
     // Whether the instruction just emitted carried the live proofs across a
     // join of its own. Cleared before every instruction, so anything that can
     // collect and did NOT carry them ends them — the invariant is enforced at

@@ -6,6 +6,13 @@
 // Apart from the reads in llvm_prop_get.cpp because the two are independent
 // emitters that share no state and no block — only the cache primitives in
 // llvm_prop_ic.h, which is where a guard both must agree on lives.
+//
+// The one exception is the ARRAY STORE-RUN PROOF's arm, which sits in front of
+// everything below and belongs to a RUN of stores rather than to this one
+// (llvm_array_store_proof.h). It arrives as a parameter for the reason the read
+// twin's does: the proof is established, spent and re-joined by the emitter in
+// llvm_ops_access.cpp, and this file only lends it the join it was going to
+// build anyway.
 
 #include "codegen-llvm/llvm_prop.h"
 
@@ -30,7 +37,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
                  const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
                  uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
                  bool monomorphic, const StaticSite& site, ValueRepr valRepr,
-                 std::string_view keyStr) {
+                 std::string_view keyStr, ArrayStoreProof* proof, ProofJoin* join) {
     // See the read twin: an identity proof does not change what is emitted; the
     // LAYOUT proof beside it does.
     (void)monomorphic;
@@ -64,6 +71,19 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
         builder, tables, objBits, site, doneBb, valBits, valRepr, "set");
 
+    auto optIdx = parseIndexKey(keyStr);
+
+    // 0b. The ARRAY STORE-RUN PROOF's arm (llvm_array_store_proof.h). A run of
+    //     adjacent constant-index writes into one Array spends the ladder ONCE,
+    //     which leaves each member a GEP and an eight-byte store, and everything
+    //     below it is the arm taken when the proof was refused or lost. Nothing
+    //     is emitted when there is no live proof, which is every site outside a
+    //     run.
+    ProvenArrayStore proven;
+    if (proof != nullptr && proof->live() && optIdx.has_value()) {
+        proven = emitProvenArrayElementStore(builder, *proof, *optIdx, valBits, doneBb);
+    }
+
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
@@ -79,7 +99,6 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
                                                               BRONZE_ABI_OBJ_FLAGS_OFFSET);
     llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.set.flags");
 
-    auto optIdx = parseIndexKey(keyStr);
     if (optIdx.has_value()) {
         uint32_t idx = *optIdx;
         llvm::BasicBlock* arrElemBb = llvm::BasicBlock::Create(ctx, "ic.set.arr", fn);
@@ -566,6 +585,20 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
+
+    // What this site left for anything that has to cross its join — this run's
+    // own proof just below, and any OTHER live proof, in the caller.
+    if (join != nullptr) {
+        join->fastBb = proven.fastBb;
+        join->doneBb = doneBb;
+    }
+
+    // The proof that reaches the NEXT member of the run: carried forward by the
+    // fast arm alone. Every other predecessor of `doneBb` got here through an
+    // arm that can call bronze_prop_set and therefore collect, which is what
+    // the derived base pointer cannot survive.
+    if (proof != nullptr) rejoinArrayStoreProof(*proof, proven.fastBb, doneBb);
+
     (void)staticGuard;
 }
 
