@@ -43,6 +43,7 @@ bronze_add_module(codegen_llvm
         support
     TEST_SOURCES
         ../../tests/codegen_llvm/codegen_llvm_test.cpp
+        ../../tests/codegen_llvm/frame_overlay_test.cpp
         ../../tests/codegen_llvm/repr_test.cpp
         ../../tests/codegen_llvm/env_promotion_test.cpp
 )

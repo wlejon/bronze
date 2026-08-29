@@ -170,6 +170,10 @@ struct GuardRegionStats {
     uint32_t refusedPlacement = 0;  // a guard site with no promoted use in its own block
     uint32_t refusedSsa = 0;        // the rewrite would not have been dominance-correct
     uint32_t refusedMachine = 0;    // a generator/async resume body, refused by name
+    // The region's one outside predecessor is already a copy of an earlier
+    // region in this same function, so the entry chain's re-passes of that
+    // edge's arguments would cross a copy boundary (il.h `CopyClass`).
+    uint32_t refusedCopyPred = 0;
 };
 
 // Rewrites every function of `module` in place. Returns true when it changed

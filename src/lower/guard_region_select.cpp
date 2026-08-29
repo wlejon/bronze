@@ -60,7 +60,28 @@ constexpr uint32_t kMinEntryUses = 2;
 // growth budget below cannot apply to a whole-function copy, which exceeds it
 // by construction.
 constexpr size_t kMaxRegionBlocks = 64;
-constexpr size_t kMaxRegionInsts = 400;
+// 700 and not 400 since the frame overlay landed (codegen-llvm/llvm_frame.h).
+// What the old cap was paying for was the DUPLICATED GC ROOT SLOTS: the fast
+// and slow copies each got a full set of pinned slots although only one of them
+// can run, so a big region cost twice its roots. Overlaying the two copies took
+// that back — the three.js graph went from 11,448 root slots to 9,830, and
+// `Matrix4.multiplyMatrices` from a 71-slot frame to 38 — and what a bigger
+// region now costs is instructions, which is what the per-function growth
+// budget below already bounds for a loop region.
+//
+// The number is `Matrix4.invert` (677 instructions, 292 checked unboxes): the
+// sampler's #1 on `bench/three_math.js` at 22%, refused by the old cap, and
+// worth 292 of the 1214 folded coercions on the whole graph on its own. Raising
+// the cap to reach it moved that benchmark from 24.6 ms to 22.0 (best of six
+// interleaved rounds) and cost no measurable compile time on the graph (four
+// interleaved rounds: 33.8 s mean at 700 against 33.8 s at 400).
+//
+// The next function up is `Quaternion.setFromEuler` at 406, which this cap
+// admits and `refusedPlacement` then declines for a different reason — its
+// guard points are not all in the header — so raising the cap further buys
+// nothing until that is addressed. Above it there is nothing but module top
+// level, which runs once.
+constexpr size_t kMaxRegionInsts = 700;
 // The per-function growth budget is "no more than the function's own size", and
 // this is the floor under it. Without one the budget refuses exactly the case
 // the pass exists for: in `sumProps` the loop IS the function, so a copy of it
@@ -503,17 +524,17 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
     const uint32_t refused = s.refusedHandler + s.refusedSingleEntry + s.refusedNonNumeric +
                              s.refusedTooFew + s.refusedGrowth + s.refusedPlacement +
-                             s.refusedSsa + s.refusedMachine;
+                             s.refusedSsa + s.refusedMachine + s.refusedCopyPred;
     std::fprintf(stderr,
                  "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
-                 "placement %u, ssa %u, machine %u)\n",
+                 "placement %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
                  s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
                  s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
-                 s.refusedSsa, s.refusedMachine);
+                 s.refusedSsa, s.refusedMachine, s.refusedCopyPred);
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +604,20 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, GuardRegionStats& 
         ++stats.regions;
 
         if (!analyzeRegion(fn, cfg, types, defs, plan, stats)) continue;
+        // The region's single outside predecessor is where the entry chain is
+        // spliced, and the chain RE-PASSES that edge's arguments — on the fast
+        // edge as doubles, on a failed guard as the boxes they were. A
+        // predecessor that is itself one copy of an earlier region would make
+        // those re-passes read that copy's values from a block belonging to
+        // this region's fast copy, which is the one thing the copy-class
+        // invariant forbids (il.h `CopyClass`). It is reachable — a loop whose
+        // exit edge lands directly on the next loop's header — and it is cheap
+        // to decline.
+        if (plan.entryPred < fn.blocks.size() &&
+            fn.blocks[plan.entryPred].copyClass != il::CopyClass::Shared) {
+            ++stats.refusedCopyPred;
+            continue;
+        }
         plans.push_back(std::move(plan));
     }
 

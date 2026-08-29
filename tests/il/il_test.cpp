@@ -441,3 +441,111 @@ TEST_CASE("canCollect is wider than canThrow, and the gap is allocation") {
     // it can reach a getter, and a getter is user code.
     CHECK(canCollect(Instruction{Op::PropGet, Type::Dynamic}));
 }
+
+namespace {
+
+// `f()` as the guarded-region pass leaves it: b1 is the slow copy of region 0,
+// b2 and b3 are its fast copy, and b0 is the preheader both are entered from.
+// Nothing crosses between the copies, so this is the shape the verifier must
+// ACCEPT — the test below then makes one value cross and asks for the refusal.
+Function twoCopyFunction() {
+    Function fn;
+    fn.name = "f";
+    fn.returnType = Type::Dynamic;
+    fn.valueCount = 6;
+
+    Block b0;
+    b0.id = 0;
+    b0.instructions.push_back({Op::ConstBool, Type::Bool, 0, {}, 0, 0, 0});
+    Instruction br{Op::Branch, Type::Void, kNoValue, {0}, 0, 0, 0};
+    br.target.block = 2;
+    br.elseTarget.block = 1;
+    b0.instructions.push_back(std::move(br));
+
+    Block b1;
+    b1.id = 1;
+    b1.copyClass = CopyClass::Slow;
+    b1.copyRegion = 0;
+    b1.instructions.push_back({Op::CreateObject, Type::Dynamic, 1, {}, 0, 0, 0});
+    b1.instructions.push_back({Op::Ret, Type::Void, kNoValue, {1}, 0, 0, 0});
+
+    Block b2;
+    b2.id = 2;
+    b2.copyClass = CopyClass::Fast;
+    b2.copyRegion = 0;
+    b2.instructions.push_back({Op::CreateObject, Type::Dynamic, 2, {}, 0, 0, 0});
+    Instruction jump{Op::Jump, Type::Void, kNoValue, {}, 0, 0, 0};
+    jump.target.block = 3;
+    b2.instructions.push_back(std::move(jump));
+
+    Block b3;
+    b3.id = 3;
+    b3.copyClass = CopyClass::Fast;
+    b3.copyRegion = 0;
+    b3.instructions.push_back({Op::Ret, Type::Void, kNoValue, {2}, 0, 0, 0});
+
+    fn.blocks = {std::move(b0), std::move(b1), std::move(b2), std::move(b3)};
+    return fn;
+}
+
+Module oneFunction(Function fn) {
+    Module m;
+    m.name = "test";
+    m.functions.push_back(std::move(fn));
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("the verifier refuses a value read from the other copy of a region") {
+    // THE COPY-CLASS INVARIANT (il.h `CopyClass`). `planFrame` overlays the GC
+    // root slots of a region's two copies because control can only ever be in
+    // one of them, so a value that crossed between them would be two live
+    // values in one slot — a use-after-move that appears only under collection
+    // pressure. It is refused here instead.
+    {
+        bronze::DiagnosticSink diags;
+        CHECK(verify(oneFunction(twoCopyFunction()), diags));
+        CHECK_FALSE(diags.hasErrors());
+    }
+
+    // %2 is defined in the fast copy; b1 is the slow one.
+    {
+        Function fn = twoCopyFunction();
+        fn.blocks[1].instructions[1].operands[0] = 2;
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(oneFunction(std::move(fn)), diags));
+        REQUIRE(diags.hasErrors());
+        const std::string message = diags.all().front().message;
+        CHECK(message.find("%2") != std::string::npos);
+        CHECK(message.find("b2 (fast 0)") != std::string::npos);
+        CHECK(message.find("b1 (slow 0)") != std::string::npos);
+    }
+
+    // A value defined OUTSIDE every copy is readable from both: that is what a
+    // function parameter and a preheader value are, and the whole rewrite
+    // depends on it.
+    {
+        Function fn = twoCopyFunction();
+        fn.blocks[0].instructions[0] = {Op::CreateObject, Type::Dynamic, 0, {}, 0, 0, 0};
+        fn.blocks[0].instructions[1].operands[0] = 3;
+        fn.blocks[0].instructions.insert(fn.blocks[0].instructions.begin() + 1,
+                                         {Op::ConstBool, Type::Bool, 3, {}, 0, 0, 0});
+        fn.blocks[1].instructions[1].operands[0] = 0;
+        fn.blocks[3].instructions[0].operands[0] = 0;
+        bronze::DiagnosticSink diags;
+        CHECK(verify(oneFunction(std::move(fn)), diags));
+        CHECK_FALSE(diags.hasErrors());
+    }
+
+    // A block that claims a region without being a copy of one is two fields
+    // saying different things, and neither is a fact the frame overlay can key
+    // on.
+    {
+        Function fn = twoCopyFunction();
+        fn.blocks[0].copyRegion = 0;
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(oneFunction(std::move(fn)), diags));
+        CHECK(diags.all().front().message.find("copy class shared") != std::string::npos);
+    }
+}

@@ -910,7 +910,11 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     plans.reserve(module.functions.size());
     for (size_t i = 0; i < module.functions.size(); ++i) {
         plans.push_back(codegen_llvm::planFrame(module.functions[i], moduleHasNewTarget,
-                                                reprPlans[i]));
+                                                reprPlans[i], &diags));
+        // The overlay's tripwire (llvm_frame.h). It fires only on a bug in the
+        // guarded-region pass, and what it would otherwise produce is a frame
+        // slot two live values share — so it stops here rather than emitting.
+        if (plans.back().crossCopyUse) return false;
     }
     const codegen_llvm::RegionPlan regions = codegen_llvm::planRegions(module, plans);
     std::vector<llvm::Function*> inlineVariants;

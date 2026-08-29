@@ -423,6 +423,64 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     std::vector<il::Block> out(nextBlock);
     for (il::BlockId b = 0; b < nextBlock; ++b) out[b].id = b;
 
+    // ---- the copy classes -------------------------------------------------
+    // Which of the two copies each new block is (il.h `CopyClass`), and of
+    // which region. `planFrame` overlays the GC root slots of the two copies of
+    // one region on the strength of it, and the IL verifier is what makes that
+    // a proof: it rejects a value defined in one copy and read in the other.
+    //
+    // The index is per FUNCTION and one past the highest a previous rewrite of
+    // this same function used, so a function with several loops gets several
+    // disjoint pairs. Only the two copies of the SAME region are known to be
+    // mutually exclusive — two regions are two loops, and a value pinned across
+    // both of them is defined outside both and is shared.
+    //
+    // Set on `out` and nowhere else: a rewrite the dominance check discards
+    // below never reaches `fn`, so a refusal leaves every block's class exactly
+    // as it was.
+    uint32_t region = 0;
+    for (const il::Block& block : src.blocks) {
+        if (block.copyRegion != il::kNoCopyRegion) {
+            region = std::max(region, block.copyRegion + 1);
+        }
+    }
+    auto classify = [&](il::BlockId id, il::CopyClass cls) {
+        out[id].copyClass = cls;
+        out[id].copyRegion = region;
+    };
+    for (size_t b = 0; b < blockCount; ++b) {
+        if (plan.inRegion[b]) {
+            // The original region blocks and the tails they were split into:
+            // the slow copy, reachable only through a trampoline or a failed
+            // entry guard.
+            classify(slowHeadId[b], il::CopyClass::Slow);
+            for (il::BlockId tail : slowTailId[b]) classify(tail, il::CopyClass::Slow);
+        } else {
+            // Outside this region, so it keeps whatever a PREVIOUS rewrite of
+            // this function made it — the preheader, the exits and the blocks
+            // of another region's pair all pass through here unchanged.
+            out[slowHeadId[b]].copyClass = src.blocks[b].copyClass;
+            out[slowHeadId[b]].copyRegion = src.blocks[b].copyRegion;
+        }
+    }
+    for (il::BlockId id : entryTestId) {
+        if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
+    }
+    if (entryConvId != il::kNoBlock) classify(entryConvId, il::CopyClass::Fast);
+    for (il::BlockId b : plan.blocks) {
+        for (il::BlockId id : fastPartId[b]) classify(id, il::CopyClass::Fast);
+        for (const auto& chain : fastChainId[b]) {
+            for (il::BlockId id : chain) classify(id, il::CopyClass::Fast);
+        }
+        // A trampoline is FAST: it reads the fast copy's values and boxes them,
+        // and what it hands to the slow tail it hands as block ARGUMENTS, which
+        // are uses on this side of the edge.
+        for (il::BlockId id : trampolineId[b]) classify(id, il::CopyClass::Fast);
+        for (il::BlockId id : exitTrampolineId[b]) {
+            if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
+        }
+    }
+
     // ---- the slow copy ----------------------------------------------------
     for (size_t b = 0; b < blockCount; ++b) {
         const il::Block& source = src.blocks[b];

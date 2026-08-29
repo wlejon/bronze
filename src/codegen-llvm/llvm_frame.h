@@ -43,6 +43,7 @@
 
 #include "codegen-llvm/llvm_repr.h"
 #include "il/il.h"
+#include "support/diagnostics.h"
 
 namespace bronze::codegen_llvm {
 
@@ -59,6 +60,14 @@ struct FramePlan {
     uint32_t ownSlots = 0;
     // The inline `new` fast path's fresh-instance slot, or kNoFrameSlot.
     uint32_t constructSelfSlot = kNoFrameSlot;
+    // A `dynamic` value was read from a block belonging to a different copy of
+    // a guarded region than the one that defines it (il.h `CopyClass`), so the
+    // overlay's premise — the two copies never coexist — does not hold and the
+    // layout above cannot be trusted. The IL verifier refuses such a module
+    // before this runs, so this is a tripwire on a bug in the pass rather than
+    // a diagnosis of a program: the backend stops rather than emit a frame
+    // whose slots two live values share.
+    bool crossCopyUse = false;
 };
 
 // Lays out one IL function's frame. Pure: same IL in, same layout out.
@@ -70,7 +79,12 @@ struct FramePlan {
 // every use of it performs both go, and the frame shrinks by one slot for each.
 // Under `BRONZE_NO_REPR_CODEGEN=1` the plan is empty and the layout is exactly
 // what it was before the stage.
-FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr);
+//
+// `diags` is where the copy-class tripwire reports; passing none leaves
+// `FramePlan::crossCopyUse` as the only signal, which is what a unit test wants
+// and what no build should ever see set.
+FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr,
+                    DiagnosticSink* diags = nullptr);
 
 // Which direct edges become one frame, and how big each function's frame has
 // to be as a result.

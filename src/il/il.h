@@ -713,10 +713,41 @@ bool canThrow(const Instruction& inst);
 // than a dangling pointer.
 bool canCollect(const Instruction& inst);
 
+// Which copy of a guarded numeric region a block belongs to
+// (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
+// whose numbers are carried as `f64` and leaves the original blocks as the SLOW
+// copy, entered only through one-way trampolines. The two are MUTUALLY
+// EXCLUSIVE: control enters the fast copy at most once per region entry and,
+// once it has left through a trampoline, never returns.
+//
+// It is a fact about the block and not about the function, so it lives here: it
+// travels with the block through every copy, move and renumbering the pass and
+// the pruner perform, which a parallel vector on `Function` would have to be
+// kept in step with by hand at each of them.
+//
+// What reads it is `planFrame` (codegen-llvm/llvm_frame.h): two values that can
+// never both be live may share one GC root slot, and the two copies of one
+// region are exactly that. What makes that a proof rather than a hope is the
+// verifier, which rejects a value defined in one copy and used in the other.
+enum class CopyClass : uint8_t {
+    Shared,  // outside every region — including a region's preheader and exits
+    Fast,    // the fast copy proper, its guard chains and its trampolines
+    Slow,    // an original region block, or the tail of one split for a guard
+};
+
+// `Block::copyRegion` when the block belongs to no region's copy.
+inline constexpr uint32_t kNoCopyRegion = UINT32_MAX;
+
 struct Block {
     BlockId id = 0;
     std::vector<BlockParam> params;
     std::vector<Instruction> instructions;
+    // Which copy this block is, and of WHICH region: one function can hold
+    // several disjoint fast/slow pairs, and only the two copies of the SAME
+    // region are known to be mutually exclusive. `Shared` always carries
+    // `kNoCopyRegion`; the two together are the block's copy identity.
+    CopyClass copyClass = CopyClass::Shared;
+    uint32_t copyRegion = kNoCopyRegion;
     // Where control goes if an exception becomes pending inside this block: the
     // innermost enclosing handler, or `kNoBlock` for "leave the function". It
     // sits on the block rather than on each call so that lowering emits no test

@@ -68,6 +68,22 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             return false;
         }
 
+        // A copy class and a region index are one fact in two fields, so the
+        // two states that spell nothing — a shared block claiming a region, a
+        // copy claiming none — are rejected rather than interpreted. The frame
+        // overlay keys on the pair.
+        if ((block.copyClass == CopyClass::Shared) !=
+            (block.copyRegion == kNoCopyRegion)) {
+            diags.error(Span{}, "Function " + fn.name + ": block b" + std::to_string(bIdx) +
+                                    " has copy class " +
+                                    (block.copyClass == CopyClass::Shared ? "shared" : "fast/slow") +
+                                    " but region index " +
+                                    (block.copyRegion == kNoCopyRegion
+                                         ? std::string("none")
+                                         : std::to_string(block.copyRegion)));
+            return false;
+        }
+
         // A handler is a real edge the backend materializes, and it is entered
         // from the middle of a block — so it can carry no arguments, and there
         // is therefore nowhere for a parameter's incoming value to come from.
@@ -128,6 +144,51 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         if (loc.blockIdx == useBlockIdx && loc.instIdx >= static_cast<int>(useInstIdx)) {
             diags.error(Span{}, "Function " + fn.name + ": within-block use-after-def of %" + std::to_string(id));
             return false;
+        }
+        // THE COPY-CLASS INVARIANT (il.h `CopyClass`). A guarded numeric region
+        // exists as two copies that are mutually exclusive: control enters the
+        // fast one at most once per region entry and, once it has left through
+        // a trampoline, never comes back. So a value defined in one copy of a
+        // region may be read only in that same copy of that same region, and a
+        // value defined outside every copy — a function parameter, a preheader
+        // value — may be read anywhere.
+        //
+        // A trampoline's block ARGUMENTS are uses in the trampoline, which is
+        // fast, and the slow tail's parameters are the definitions on the other
+        // side; so the one place the two copies meet already satisfies this
+        // without an exception for it.
+        //
+        // It is checked here because `planFrame` OVERLAYS the two copies' GC
+        // root slots on the strength of it (codegen-llvm/llvm_frame.h). A
+        // violation would be two live values in one slot, which is a
+        // use-after-move that only appears under collection pressure — so it is
+        // a hard error at the earliest point that can see it, not a lint.
+        //
+        // Function parameters are exempt by id: they are recorded against block
+        // 0 for the ordering check above, and block 0 is not where they live.
+        if (id >= static_cast<ValueId>(fn.params.size())) {
+            const Block& defBlock = fn.blocks[loc.blockIdx];
+            const Block& useBlock = fn.blocks[useBlockIdx];
+            if (defBlock.copyClass != CopyClass::Shared &&
+                (defBlock.copyClass != useBlock.copyClass ||
+                 defBlock.copyRegion != useBlock.copyRegion)) {
+                auto where = [](const Block& b) {
+                    std::string out = "b" + std::to_string(b.id);
+                    switch (b.copyClass) {
+                        case CopyClass::Shared: return out + " (shared)";
+                        case CopyClass::Fast:
+                            return out + " (fast " + std::to_string(b.copyRegion) + ")";
+                        case CopyClass::Slow:
+                            return out + " (slow " + std::to_string(b.copyRegion) + ")";
+                    }
+                    return out;
+                };
+                diags.error(Span{}, "Function " + fn.name + ": %" + std::to_string(id) +
+                                        " is defined in " + where(defBlock) +
+                                        " and used in " + where(useBlock) +
+                                        ", which is a different copy of a guarded region");
+                return false;
+            }
         }
         return true;
     };

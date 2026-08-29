@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 
 namespace bronze::codegen_llvm {
 
@@ -38,8 +40,35 @@ namespace bronze::codegen_llvm {
 // def overwrites it, so a collection in between forwards one object that is
 // no longer reachable from the program — the same one cycle of float the
 // frame already had, not a new hazard.
+//
+// ---- the guarded-region overlay --------------------------------------
+//
+// The rule above — "a value used outside its defining block keeps a slot to
+// itself" — costs double where a guarded numeric region has duplicated a body
+// (src/lower/guard_region.h): the fast copy and the slow copy each get a full
+// set of pinned slots, though only one of them can ever run. On the three.js
+// graph that was +28.5% root slots graph-wide, and `Matrix4.multiplyMatrices`
+// went from a 37-slot frame to a 71-slot one with 71 unrolled prologue stores.
+//
+// The two copies of ONE region are mutually exclusive: control enters the fast
+// copy at most once per region entry and, once it has left through a
+// trampoline, never returns; and no value defined in either copy is ever read
+// outside it. So their pinned values are laid out FROM THE SAME BASE and the
+// frame advances by the larger of the two counts.
+//
+// Only within one region. Two regions of one function are two loops, either of
+// which may run, so they get disjoint bases — and a value live across both is
+// defined outside both and is shared anyway, which is why nothing is lost by
+// being conservative there.
+//
+// What makes this a proof and not a hope is the IL verifier, which rejects a
+// value defined in one copy and used in the other outright. The walk below
+// re-checks it as it goes, because a frame bug is a use-after-move that only
+// appears under collection pressure and the cost of asking again is one
+// comparison per use.
 
-FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr) {
+FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const ReprPlan& repr,
+                    DiagnosticSink* diags) {
     FramePlan plan;
     plan.slotOf.assign(func.valueCount, kNoFrameSlot);
     const uint32_t n = func.valueCount;
@@ -52,6 +81,37 @@ FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const Rep
     auto isRooted = [&](il::ValueId id, il::Type ty) {
         return id != il::kNoValue && id < n && ty == il::Type::Dynamic &&
                !reprNeverPointer(repr.at(id));
+    };
+
+    // Which copy of which guarded region each value belongs to. A function
+    // parameter is shared by definition — it dominates both copies — and
+    // everything else takes the class of the block that defines it. Filled in
+    // its own pass so that the use walk below can ask about a value before it
+    // has reached the definition.
+    struct Copy {
+        il::CopyClass cls = il::CopyClass::Shared;
+        uint32_t region = il::kNoCopyRegion;
+        bool operator==(const Copy& other) const {
+            return cls == other.cls && region == other.region;
+        }
+    };
+    std::vector<Copy> copyOf(n);
+    for (const auto& block : func.blocks) {
+        const Copy here{block.copyClass, block.copyRegion};
+        for (const auto& param : block.params) {
+            if (param.id < n) copyOf[param.id] = here;
+        }
+        for (const auto& inst : block.instructions) {
+            if (inst.result != il::kNoValue && inst.result < n) copyOf[inst.result] = here;
+        }
+    }
+    auto copyName = [](const Copy& c) {
+        switch (c.cls) {
+            case il::CopyClass::Shared: return std::string("shared");
+            case il::CopyClass::Fast: return "fast " + std::to_string(c.region);
+            case il::CopyClass::Slow: return "slow " + std::to_string(c.region);
+        }
+        return std::string("shared");
     };
 
     // Where each rooted value is defined, and whether any use is somewhere
@@ -69,6 +129,7 @@ FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const Rep
     bool hasConstruct = false;
     for (uint32_t b = 0; b < func.blocks.size(); ++b) {
         const auto& block = func.blocks[b];
+        const Copy here{block.copyClass, block.copyRegion};
         for (const auto& param : block.params) {
             if (isRooted(param.id, param.type)) pinned[param.id] = true;
         }
@@ -87,6 +148,21 @@ FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const Rep
             // and hand its slot to the next def.
             auto noteUse = [&](il::ValueId use) {
                 if (use == il::kNoValue || use >= n) return;
+                // The invariant the overlay below rests on, re-asked at every
+                // use. The verifier already refused this module if it does not
+                // hold; asking again here is what keeps the two facts — "these
+                // values never coexist" and "these values share a slot" — in
+                // the same file.
+                if (copyOf[use].cls != il::CopyClass::Shared && !(copyOf[use] == here)) {
+                    plan.crossCopyUse = true;
+                    if (diags != nullptr) {
+                        diags->error(Span{}, "Function " + func.name + ": %" +
+                                                 std::to_string(use) + " is defined in the " +
+                                                 copyName(copyOf[use]) + " copy and used in b" +
+                                                 std::to_string(b) + " (" + copyName(here) +
+                                                 "), so its GC root slot cannot be overlaid");
+                    }
+                }
                 if (defBlock[use] != b) {
                     // Defined in another block, or not yet seen here at all
                     // (a value this block only reads). Either way its life is
@@ -122,18 +198,46 @@ FramePlan planFrame(const il::Function& func, bool moduleHasNewTarget, const Rep
     }
 
     // The pinned values first, in the order they appear, so a frame's layout
-    // stays a function of the IL and nothing else.
-    uint32_t pinnedCount = 0;
-    auto pin = [&](il::ValueId id, il::Type ty) {
-        if (!isRooted(id, ty) || !pinned[id]) return;
-        if (plan.slotOf[id] == kNoFrameSlot) plan.slotOf[id] = pinnedCount++;
+    // stays a function of the IL and nothing else. Collected in that order and
+    // laid out afterwards, because the overlay needs both copies' counts before
+    // it can say where the region after this one starts.
+    struct RegionPins {
+        std::vector<il::ValueId> fast;
+        std::vector<il::ValueId> slow;
+    };
+    std::vector<il::ValueId> sharedPins;
+    // Ordered, not hashed: the frame layout is an output and iteration order
+    // decides it.
+    std::map<uint32_t, RegionPins> regionPins;
+    std::vector<bool> collected(n, false);
+    auto collect = [&](il::ValueId id, il::Type ty) {
+        if (!isRooted(id, ty) || !pinned[id] || collected[id]) return;
+        collected[id] = true;
+        switch (copyOf[id].cls) {
+            case il::CopyClass::Shared: sharedPins.push_back(id); break;
+            case il::CopyClass::Fast: regionPins[copyOf[id].region].fast.push_back(id); break;
+            case il::CopyClass::Slow: regionPins[copyOf[id].region].slow.push_back(id); break;
+        }
     };
     for (size_t p = 0; p < func.params.size(); ++p) {
-        pin(static_cast<il::ValueId>(p), func.params[p].type);
+        collect(static_cast<il::ValueId>(p), func.params[p].type);
     }
     for (const auto& block : func.blocks) {
-        for (const auto& param : block.params) pin(param.id, param.type);
-        for (const auto& inst : block.instructions) pin(inst.result, inst.type);
+        for (const auto& param : block.params) collect(param.id, param.type);
+        for (const auto& inst : block.instructions) collect(inst.result, inst.type);
+    }
+
+    uint32_t pinnedCount = 0;
+    for (il::ValueId id : sharedPins) plan.slotOf[id] = pinnedCount++;
+    for (const auto& [region, pins] : regionPins) {
+        // Both copies start at the same base. The frame advances by the larger
+        // of the two, so the smaller copy simply leaves the top of the band
+        // unused while it is running.
+        uint32_t fastCount = 0;
+        for (il::ValueId id : pins.fast) plan.slotOf[id] = pinnedCount + fastCount++;
+        uint32_t slowCount = 0;
+        for (il::ValueId id : pins.slow) plan.slotOf[id] = pinnedCount + slowCount++;
+        pinnedCount += std::max(fastCount, slowCount);
     }
 
     // Then the block-local temporaries, out of a pool every block reuses:
