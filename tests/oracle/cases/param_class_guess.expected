@@ -1,0 +1,16 @@
+named|1,2,3,10,20,30
+pt|1,2,3,1,2,3
+sub|1,2,3,4,5,6
+literal|1,2,3,7,8,9
+reordered|1,2,3,70,80,90
+other|1,2,3,100,200,300
+proto|1,2,3,11,22,33
+getter|1,2,3,1,55,3
+dict|1,2,3,1,2,3
+proxy|1,2,3,11,22,33
+number|1,2,3,undefined,undefined,undefined
+traps|x.y.z
+null|TypeError|1,2,3,0,0,0
+threw|RangeError|1,2,3,1,2,0
+bump|2
+locked|TypeError|41

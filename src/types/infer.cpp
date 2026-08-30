@@ -167,6 +167,19 @@ bool widenMethods(ModuleContext& mod) {
                 m.signature.params[p] = widened;
                 changed = true;
             }
+            // The parameter's SHAPE claim, folded in the same round and by the
+            // same rule, so it converges with everything else. A method that
+            // does not speak positionally has no parameter to claim for, and
+            // `Dynamic` is how that is spelled here: it is above every object in
+            // the lattice, so the fold stays monotone and the claim stays off.
+            if (p < m.paramShapes.size()) {
+                const Type shape = speaks ? join(m.paramShapes[p], m.observedParamShapes[p])
+                                          : Type::dynamic();
+                if (shape != m.paramShapes[p]) {
+                    m.paramShapes[p] = shape;
+                    changed = true;
+                }
+            }
         }
         const Type widenedReturn =
             speaks ? join(m.signature.returnType, m.observedReturn) : Type::dynamic();
@@ -261,6 +274,7 @@ void resetObservations(ModuleContext& mod) {
     }
     for (auto& m : mod.methods.methods()) {
         m.observedParams.assign(m.signature.params.size(), Type::never());
+        m.observedParamShapes.assign(m.signature.params.size(), Type::never());
         m.observedReturn = Type::never();
     }
     for (auto& c : mod.ctors.ctors()) {

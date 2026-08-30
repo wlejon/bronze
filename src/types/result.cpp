@@ -34,6 +34,11 @@ uint32_t InferenceResult::staticSlotAt(const ast::Expr* receiver,
     return classLayouts.slotOf(t.shapeClass(), field);
 }
 
+ShapeClassId InferenceResult::guessedParamShapeAt(const ast::Expr* receiver) const {
+    const auto it = guessedParamShapes.find(receiver);
+    return it == guessedParamShapes.end() ? kNoShapeClass : it->second;
+}
+
 Type InferenceResult::typeOfBindingAt(const ast::Stmt* mergePoint,
                                       const std::string& name) const {
     const auto point = mergeBindings.find(mergePoint);

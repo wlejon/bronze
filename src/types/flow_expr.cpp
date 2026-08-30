@@ -4,6 +4,7 @@
 // lives in flow.cpp; the seam is argued in flow_analyzer.h.
 
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,30 @@ std::string classRefusalKey(const InferenceResult& result, ShapeClassId cls,
         cl != nullptr ? cl->name : result.shapes.describe(cls);
     return receiver + "." + field + ": " +
            result.classLayouts.fieldValueRefusal(cls, field);
+}
+
+// `BRONZE_NO_PARAM_CLASS_GUESS=1` stops the parameter shape claim being made at
+// all, which puts every method parameter's property sites back on the inline
+// cache. Compile-time, like the static-shape and family-guard seams, because
+// what it gates is a SHAPE OF EMITTED CODE.
+bool paramClassGuessOff() {
+    static const bool off = std::getenv("BRONZE_NO_PARAM_CLASS_GUESS") != nullptr;
+    return off;
+}
+
+// This site's contribution to what class parameter `i` receives.
+//
+// Only an argument that NAMES a class says anything: a `Dynamic` argument is
+// the absence of an observation, not an observation of absence, and the guard
+// this feeds decides the question at run time for whatever the argument
+// actually is. Two callers naming different classes leave an object with no
+// class, which is how "the callers disagree" is spelled, and no claim is made.
+void contributeShape(MethodInfo& target, size_t i, const std::vector<Type>& args) {
+    if (paramClassGuessOff()) return;
+    if (i >= args.size() || i >= target.observedParamShapes.size()) return;
+    if (!args[i].is(TypeKind::Object) || args[i].shapeClass() == kNoShapeClass) return;
+    target.observedParamShapes[i] =
+        join(target.observedParamShapes[i], Type::object(args[i].shapeClass()));
 }
 
 }  // namespace
@@ -595,6 +620,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
 
         auto contributeArgs = [&](MethodInfo& target) {
             for (size_t i = 0; i < target.observedParams.size(); ++i) {
+                contributeShape(target, i, args);
                 if (i < args.size()) {
                     if (target.hasDefault.size() > i && target.hasDefault[i] &&
                         args[i].is(TypeKind::Undefined)) {
@@ -655,6 +681,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
 
     auto contributeArgs = [&](MethodInfo& target) {
         for (size_t i = 0; i < target.observedParams.size(); ++i) {
+            contributeShape(target, i, args);
             if (i < args.size()) {
                 if (target.hasDefault.size() > i && target.hasDefault[i] &&
                     args[i].is(TypeKind::Undefined)) {
@@ -843,6 +870,21 @@ void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
             }
         }
         if (isParam) {
+            // The SHAPE claim rides on exactly this refusal: a parameter whose
+            // type the join could not prove is the only place it is worth
+            // having, and `safeParamNames` is the name-to-position map that is
+            // safe to read one from — it is empty for a parameter the body
+            // rebinds, which is the case where this identifier is not the
+            // parameter at all.
+            for (size_t p = 0; p < self.safeParamNames.size(); ++p) {
+                if (self.safeParamNames[p] != id.name) continue;
+                if (p >= self.paramShapes.size()) break;
+                const Type shape = self.paramShapes[p];
+                if (shape.is(TypeKind::Object) && shape.shapeClass() != kNoShapeClass) {
+                    mod_.result->guessedParamShapes.emplace(&id, shape.shapeClass());
+                }
+                break;
+            }
             std::string reason;
             if (!self.plainParams) {
                 reason = "the method's parameter list is not plain";

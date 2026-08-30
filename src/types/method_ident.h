@@ -38,6 +38,28 @@ struct MethodInfo {
     std::vector<bool> hasDefault;
     std::vector<std::string> safeParamNames;
     bool unreached = false;
+
+    // Per parameter: the object identity every call site that NAMED ONE agreed
+    // on, `Never` while none has, and an object with no class once two named
+    // different ones. Joined over the arguments that carry a shape class and
+    // over nothing else — a `Dynamic` argument, a number, a string contribute
+    // nothing at all, which is what makes this a different fact from
+    // `signature.params` rather than a weaker version of one.
+    //
+    // It is NOT a type and never enters the lattice. `signature.params` keeps
+    // exactly the value type the join proves, so every unbox, every primitive
+    // field claim and every calling convention is unchanged by this. The one
+    // thing it licenses is the property-site SHAPE GUARD (`claimStaticSlot`):
+    // the receivers whose shape matches take the constant-offset load, and
+    // every other receiver — including one from a caller this compilation could
+    // not name — fails the compare and takes the inline cache it takes today.
+    // A wrong guess costs a miss, which is the same trade `Type::
+    // objectIdentityOnly` records, spent here without widening any type.
+    //
+    // `BRONZE_NO_PARAM_CLASS_GUESS=1` stops the claim being made (read in
+    // flow_expr.cpp, where the contribution is).
+    std::vector<Type> observedParamShapes;
+    std::vector<Type> paramShapes;
 };
 
 // Forward declaration

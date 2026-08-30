@@ -764,7 +764,45 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
     }
 
     const uint32_t slot = inference_->staticSlotAt(&inferenceExpr(receiver), key);
-    if (slot == types::ClassLayoutTable::kNoSlot) return std::nullopt;
+    if (slot == types::ClassLayoutTable::kNoSlot) {
+        // The receiver has no type to name a slot with — and for a METHOD
+        // PARAMETER that is not the end of it. Some caller passed a value this
+        // compilation could not name (a receiver it could not resolve, a
+        // callback the host invokes), so the join proves nothing and the
+        // parameter's TYPE stays `dynamic`; every value claim in the program is
+        // unchanged by what follows. What the callers that DID name a class
+        // agreed on is a different fact (`method_ident.h` `paramShapes`), and it
+        // buys exactly one thing: the same family guard a guessed identity gets.
+        //
+        // Sound for the reason that guard is sound anywhere. It asks the runtime
+        // whether the shape in hand is one of the layouts that BEGIN with this
+        // class's fields, and the runtime stamps a shape only after verifying
+        // that prefix name by name. A receiver of any other shape — including
+        // the one from the caller the join could not see, including a number or
+        // a string — fails the compare and takes the inline cache the site takes
+        // today. Being wrong costs a miss; it cannot produce a wrong load.
+        //
+        // A CELL is not on offer, for the reason the next paragraph gives: it
+        // pins the first shape and misses on every other one forever, which is
+        // the wrong trade for a class that was guessed rather than watched.
+        const types::ShapeClassId guess =
+            inference_->guessedParamShapeAt(&inferenceExpr(receiver));
+        if (familyGuardDisabled_ || guess == types::kNoShapeClass) return std::nullopt;
+        const uint32_t guessed = inference_->classLayouts.slotOf(guess, key);
+        if (guessed == types::ClassLayoutTable::kNoSlot) return std::nullopt;
+        const types::ClassLayout* fam = inference_->classLayouts.familyMemberOf(guess);
+        if (fam == nullptr) return std::nullopt;
+        if (forWrite && guessed < fam->fieldWritable.size() && !fam->fieldWritable[guessed]) {
+            return std::nullopt;
+        }
+        buildClassFamilyTable();
+        StaticSlotSite site;
+        site.slot = guessed;
+        site.cellIndex = 0;
+        site.familyLo = fam->familyIndex;
+        site.familySpan = fam->familySpan;
+        return site;
+    }
 
     // An identity the interprocedural pass GUESSED does not get a CELL.
     //

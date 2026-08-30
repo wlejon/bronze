@@ -86,6 +86,17 @@ struct InferenceResult {
     // consumer types anything from it.
     std::unordered_map<const ast::Expr*, std::string> identRefusals;
 
+    // A read of a METHOD PARAMETER whose type the join could not prove, and the
+    // class every call site that named one passed there (method_ident.h
+    // `paramShapes`). Deliberately NOT a type and deliberately not in
+    // `exprTypes`: the parameter's type stays exactly what the join proved, so
+    // nothing here can widen a value claim, change a calling convention or
+    // license an unbox. The single consumer is `claimStaticSlot`, which spends
+    // it on the property-site FAMILY guard — a shape compare the runtime
+    // performs, whose answer for a receiver of any other shape is the inline
+    // cache that site takes today.
+    std::unordered_map<const ast::Expr*, ShapeClassId> guessedParamShapes;
+
     // Per merge point: the binding types the join at that point produced.
     // See `typeOfBindingAt` for what a merge point is and what the entry
     // covers. The inner map is ordered only so the analysis can compare
@@ -257,6 +268,11 @@ struct InferenceResult {
     // class, and for every key that class does not install on the instance
     // (a prototype method, an inherited accessor, an absent name).
     uint32_t staticSlotAt(const ast::Expr* receiver, const std::string& field) const;
+
+    // The class every call site that named one passes to the method parameter
+    // this expression reads, or `kNoShapeClass`. See `guessedParamShapes` for
+    // what may be spent on it, which is one shape guard and nothing else.
+    ShapeClassId guessedParamShapeAt(const ast::Expr* receiver) const;
 
     // The type a binding is proven to hold at a control-flow MERGE POINT.
     //

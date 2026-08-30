@@ -1,0 +1,16 @@
+sum|6
+scaled|150
+sub|6|150
+tag|n|7
+keys|position,scale,tag,id
+loose|6
+strict|TypeError|6
+same-class|60
+literal|24
+reordered|240
+number|NaN
+nullish|TypeError
+accessor|600|3
+blank|undefined|TypeError|3|slot,after
+lazy|1.2.3
+singular|14|11|held,extra

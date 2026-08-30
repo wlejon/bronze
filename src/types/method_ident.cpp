@@ -378,6 +378,8 @@ void MethodTable::build(const ast::Module& module) {
             info.signature.params.assign(paramCount, Type::never());
             info.observedParams.assign(paramCount, Type::never());
             info.sawSkippedDynamicArg.assign(paramCount, false);
+            info.observedParamShapes.assign(paramCount, Type::never());
+            info.paramShapes.assign(paramCount, Type::never());
             info.hasDefault.assign(paramCount, false);
             info.safeParamNames.assign(paramCount, std::string());
             RebindScan rebound;
