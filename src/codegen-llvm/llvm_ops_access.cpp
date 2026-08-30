@@ -99,6 +99,21 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                       builder_.getInt1(inst.immI32 != 0)});
             return true;
         }
+        // The descriptor's four data fields ride in the mask, so the site is a
+        // plain call: no proof to arm, no cache slot to spend. A constructor
+        // runs this once per object, but each key is a different key, so there
+        // is nothing for an inline cache to be right about twice.
+        case il::Op::DefineOwnAttr: {
+            if (!needs(2, false, "Invalid operands for DefineOwnAttr")) return false;
+            const char* what = "Undefined operand in DefineOwnAttr instruction";
+            llvm::Value* target = operand(inst, 0, what);
+            llvm::Value* value = operand(inst, 1, what);
+            if (!target || !value) return false;
+            builder_.CreateCall(abi.bronze_define_own_attr,
+                                {target, emitKeyId(builder_, shared_.tables, inst.keyIndex),
+                                 value, builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
+            return true;
+        }
         case il::Op::ElemDelete: {
             if (!needs(2, false, "Invalid operands for ElemDelete")) return false;
             const char* what = "Undefined operand in ElemDelete instruction";

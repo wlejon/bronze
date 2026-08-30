@@ -248,6 +248,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             emitInst(ilFn, inst);
             return Value{res, il::Type::Dynamic};
         }
+        // `Object.defineProperties(o, { ... })` with descriptors the compiler
+        // can read: a run of defines instead of seven allocations and
+        // thirty-six field reads (lower_define_props.cpp). Nullopt is "not a
+        // call it takes", and the general lowering below is what it falls to.
+        if (auto defined = lowerDefinePropertiesLiteral(call, *mem, ilFn)) return defined;
     }
 
     // `Math.sqrt(x)` and its bit-exact siblings on the PROVEN pristine

@@ -159,6 +159,28 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * constructor by a static_assert in rt_object.cpp. */
 #define BRONZE_ABI_UNINITIALIZED_BITS 0xFFFA000000000000ull
 
+/* A property descriptor that a compile-time literal already settled, as the
+ * mask `bronze_define_own_attr` takes in place of the object 6.2.6.5 would
+ * have decoded.
+ *
+ * Each of the four data fields needs TWO bits and not one, because 10.1.6.3
+ * distinguishes a field the descriptor OMITS from a field it sets to false: an
+ * omitted `writable` leaves an existing property's writability alone and
+ * defaults to false only on a new one, so "absent" and "present and false" are
+ * different programs. HAS says the literal wrote the field; the second bit
+ * carries what it wrote.
+ *
+ * `get` and `set` have no bits: an accessor descriptor is not lowered this
+ * way, and a mask that could not spell one is what makes that refusal
+ * checkable here rather than only at the call site. */
+#define BRONZE_ABI_DESC_HAS_VALUE        0x01u
+#define BRONZE_ABI_DESC_HAS_WRITABLE     0x02u
+#define BRONZE_ABI_DESC_WRITABLE         0x04u
+#define BRONZE_ABI_DESC_HAS_ENUMERABLE   0x08u
+#define BRONZE_ABI_DESC_ENUMERABLE       0x10u
+#define BRONZE_ABI_DESC_HAS_CONFIGURABLE 0x20u
+#define BRONZE_ABI_DESC_CONFIGURABLE     0x40u
+
 /*
  * X(name, RET, PARAMS)
  *   RET    — one BRONZE_ABI_* type token (BRONZE_ABI_VOID for none)
@@ -215,6 +237,24 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_method_def_computed, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_accessor_def,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_accessor_def_computed, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
+    /* ONE key of an `Object.defineProperties(o, { k: {...}, ... })` whose
+     * descriptors are object literals: 10.1.6.3 [[DefineOwnProperty]] driven
+     * from a BRONZE_ABI_DESC_* mask instead of from a descriptor object.
+     *
+     * It exists because no other helper can say what the mask says. The two
+     * definition helpers above fix their attributes (a method is writable and
+     * configurable, an accessor's `enumerable` is their only choice) and
+     * neither runs 10.1.6.3's validation, so neither can refuse a
+     * redefinition; `bronze_prop_set` is an assignment and cannot name an
+     * attribute at all. Handing this the mask is what lets the six descriptor
+     * objects three.js builds per `Object3D` never be built — the literal
+     * already decided every field, and 6.2.6.5's job was to find that out.
+     *
+     * `target` is checked exactly as `Object.defineProperties` checks it, and
+     * with the same member name in the message, so a non-object throws the
+     * same TypeError here as there. Refusals are 20.1.2.4's: a TypeError, not
+     * a boolean. */ \
+    X(bronze_define_own_attr,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_get_new_target,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_import_meta,         BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     X(bronze_super_call,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \

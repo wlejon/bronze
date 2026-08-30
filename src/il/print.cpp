@@ -99,6 +99,7 @@ const char* opName(Op op) {
         case Op::MethodDefComputed: return "method.def.computed";
         case Op::AccessorDef: return "accessor.def";
         case Op::AccessorDefComputed: return "accessor.def.computed";
+        case Op::DefineOwnAttr: return "define.own.attr";
         case Op::GetNewTarget: return "get.new_target";
         case Op::ImportMeta: return "import.meta";
         case Op::SuperCall: return "call.super";
@@ -411,6 +412,38 @@ std::string print(const Module& module) {
                                std::to_string(inst.operands.size() > 3 ? inst.operands[3] : 0) +
                                ", " + (inst.immI32 ? "enumerable" : "non-enumerable");
                         break;
+                    // The mask spelled out, in 6.2.6.5's own field order, and
+                    // only for the fields the descriptor HAS: "absent" and
+                    // "present and false" are different programs (10.1.6.3
+                    // step 4), so a dump that printed all four would hide the
+                    // one distinction this instruction exists to carry. `{}`
+                    // prints as an empty list, which is what a generic
+                    // descriptor is.
+                    case Op::DefineOwnAttr: {
+                        out += "define.own.attr %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.keyIndex) + ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", {";
+                        const auto mask = static_cast<uint32_t>(inst.immI32);
+                        std::string fields;
+                        auto field = [&](uint32_t hasBit, uint32_t valueBit, const char* name) {
+                            if ((mask & hasBit) == 0) return;
+                            if (!fields.empty()) fields += ",";
+                            fields += name;
+                            if (valueBit != 0) {
+                                fields += (mask & valueBit) != 0 ? "=true" : "=false";
+                            }
+                        };
+                        field(BRONZE_ABI_DESC_HAS_VALUE, 0, "value");
+                        field(BRONZE_ABI_DESC_HAS_WRITABLE, BRONZE_ABI_DESC_WRITABLE, "writable");
+                        field(BRONZE_ABI_DESC_HAS_ENUMERABLE, BRONZE_ABI_DESC_ENUMERABLE,
+                              "enumerable");
+                        field(BRONZE_ABI_DESC_HAS_CONFIGURABLE, BRONZE_ABI_DESC_CONFIGURABLE,
+                              "configurable");
+                        out += fields + "}";
+                        break;
+                    }
                     case Op::GetNewTarget:
                         out += "get.new_target";
                         break;

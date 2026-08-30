@@ -1,0 +1,6 @@
+1 k {"value":1,"writable":false,"enumerable":true,"configurable":false}
+2 0 {"value":1,"writable":false,"enumerable":false,"configurable":false}
+3 {"value":1,"writable":false,"enumerable":false,"configurable":false}
+4 TypeError false
+5 2 {"value":2,"writable":true,"enumerable":false,"configurable":false}
+6 1 {"value":1,"writable":false,"enumerable":true,"configurable":false}

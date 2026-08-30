@@ -508,6 +508,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         case il::Op::ElemSet:
         case il::Op::ElemGetTyped:
         case il::Op::ElemSetTyped:
+        // A property WRITE — one with attributes an assignment cannot name —
+        // so it belongs with the accesses even though it arms no proof.
+        case il::Op::DefineOwnAttr:
         // Not an access, but the CLAIM a run of accesses is licensed by, and it
         // must be emitted out of the same ladder they are proven with.
         case il::Op::IsDenseArray:

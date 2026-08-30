@@ -30,6 +30,7 @@
 #include "runtime/array.h"
 #include "runtime/dictionary.h"
 #include "runtime/exception.h"
+#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
@@ -220,101 +221,63 @@ bool refuseDefine(bool throwOnRefusal, const std::string& message) {
     return false;
 }
 
+// A descriptor after 6.2.6.5 has run, or as a compile-time literal already
+// settled it: which of the six fields the descriptor HAS, and the three
+// attribute booleans it wanted. The `value`, `get` and `set` payloads travel
+// separately because they are Values and have to be rooted by their caller.
+//
+// It is the seam between the two halves of 10.1.6.3's one caller. Reading a
+// descriptor object is a program the descriptor's author wrote (each field may
+// be a getter, and the order is observable); applying the result is the
+// specification's own algorithm over storage. Only the first half has anything
+// to do with objects, which is what lets a caller that already knows the
+// answer — `bronze_define_own_attr` — skip it without a second copy of the
+// second half drifting away from this one.
+struct DecodedDescriptor {
+    bool hasValue = false;
+    bool hasWritable = false;
+    bool hasEnumerable = false;
+    bool hasConfigurable = false;
+    bool hasGet = false;
+    bool hasSet = false;
+    bool wantWritable = false;
+    bool wantEnumerable = false;
+    bool wantConfigurable = false;
+};
+
 }  // namespace
 
-// ECMA-262 10.1.6.3 DefineOwnProperty, for the one caller that can express a
-// full descriptor. Plain data and accessor properties on shape-chain objects
-// extend their shape transition tree rather than unconditionally degrading
-// to dictionary mode.
+// ECMA-262 10.1.6.3 DefineOwnProperty over a descriptor that is already
+// decoded. Plain data and accessor properties on shape-chain objects extend
+// their shape transition tree rather than unconditionally degrading to
+// dictionary mode.
 //
 // The RESULT is the boolean [[DefineOwnProperty]] answers, not a throw: the two
 // members defined over it disagree about what a refusal means (20.1.2.4 raises,
-// 28.1.3 returns false), and only the ERRORS OF THE DECODE — a non-object
-// target, a descriptor that is not an object, a `get` that is not callable —
-// are raised for both. `throwOnRefusal` chooses which of the two this call is.
-bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
-    RootedArgs args(argc, argv);
-    if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
-        return false;
-    }
-    if (!rtObjectIsPlain(args[2])) {
-        rtThrowTypeError("Property description must be an object");
-        return false;
-    }
-    Rooted<Value> self{args[0]};
-    Rooted<Value> desc{args[2]};
-
-    Rooted<Value> target{self.get()};
-    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        rtEnsureFunctionProperties(self);
-        target.set(self.get().asObject<FunctionHeader>()->properties);
-    }
-
-    bool hasValue = false, hasGet = false, hasSet = false;
-    bool hasWritable = false, hasEnumerable = false, hasConfigurable = false;
-    Value wrapped;
-    const bool ordinary = !rtStringWrapperData(desc.get(), wrapped);
-    // 6.2.6.5 steps 3 through 8, in the order it states them. The order is
-    // observable whenever a field is spelled as a getter: one such getter can
-    // see which fields have already been asked for, and can add a field the
-    // decode has not reached yet, so reading `value` before `enumerable` is a
-    // different program than reading it after.
-    //
-    // Every one of the six is spelled `? HasProperty(...)` / `? Get(...)`, and
-    // the `?` is the reason for the test between each pair. A field getter that
-    // throws — or a Proxy descriptor's `has` trap — is an ABRUPT COMPLETION:
-    // 6.2.6.5 returns it, so the remaining fields are never read (their getters
-    // must not run) and 10.1.6.3 never runs at all. `readField` has no way to
-    // spell an abrupt completion — it answers `undefined`, which is also what a
-    // present field holding `undefined` looks like — so the completion is the
-    // pending exception, and continuing past it defined a property out of a
-    // descriptor the program never finished handing over.
-    Rooted<Value> enumerableV{readField(desc, DescField::Enumerable, ordinary, hasEnumerable)};
-    if (rtExceptionPending()) return false;
-    Rooted<Value> configurableV{
-        readField(desc, DescField::Configurable, ordinary, hasConfigurable)};
-    if (rtExceptionPending()) return false;
-    Rooted<Value> value{readField(desc, DescField::Value, ordinary, hasValue)};
-    if (rtExceptionPending()) return false;
-    Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, hasWritable)};
-    if (rtExceptionPending()) return false;
-    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, hasGet)};
-    if (rtExceptionPending()) return false;
-    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, hasSet)};
-    if (rtExceptionPending()) return false;
-
-    // 6.2.6.5 steps 7.c and 8.c: a `get` or `set` that is PRESENT and is
-    // neither callable nor `undefined` does not describe an accessor, so the
-    // descriptor is rejected before anything is defined. This is an error of
-    // the DECODE and not a refusal — `Reflect.defineProperty` raises it too.
-    if (hasGet && !getter.get().isUndefined() && !rtIsCallableValue(getter.get())) {
-        rtThrowTypeError("Getter must be a function");
-        return false;
-    }
-    if (hasSet && !setter.get().isUndefined() && !rtIsCallableValue(setter.get())) {
-        rtThrowTypeError("Setter must be a function");
-        return false;
-    }
-
-    if ((hasGet || hasSet) && (hasValue || hasWritable)) {
-        rtThrowTypeError(
-            "Invalid property descriptor. Cannot both specify accessors and a value or "
-            "writable attribute");
-        return false;
-    }
+// 28.1.3 returns false). `throwOnRefusal` chooses which of the two this call
+// is; the errors of the DECODE are raised by the decode, above this.
+//
+// `target` must already be the object that HOLDS the properties — a function's
+// statics box rather than the function — and `name` must already be interned.
+static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
+                                   const DecodedDescriptor& d, Rooted<Value>& value,
+                                   Rooted<Value>& getter, Rooted<Value>& setter,
+                                   bool throwOnRefusal) {
+    const bool hasValue = d.hasValue;
+    const bool hasWritable = d.hasWritable;
+    const bool hasEnumerable = d.hasEnumerable;
+    const bool hasConfigurable = d.hasConfigurable;
+    const bool hasGet = d.hasGet;
+    const bool hasSet = d.hasSet;
+    const bool wantWritable = d.wantWritable;
+    const bool wantEnumerable = d.wantEnumerable;
+    const bool wantConfigurable = d.wantConfigurable;
     const bool accessor = hasGet || hasSet;
     // 6.2.6.1 IsGenericDescriptor: a descriptor that names neither a data field
     // nor an accessor field. 10.1.6.3 lets one through every kind test — it
     // changes attributes and says nothing about what the property HOLDS — so it
     // must not be read as "an accessor descriptor with no accessors".
     const bool descGeneric = !hasValue && !hasWritable && !hasGet && !hasSet;
-    const bool wantWritable = hasWritable && bronze_truthy(writableV.get().rawBits());
-    const bool wantEnumerable = hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
-    const bool wantConfigurable = hasConfigurable && bronze_truthy(configurableV.get().rawBits());
-
-    // The key is built before the object is disturbed, and interned so the
-    // entry can hold it forever.
-    PropertyKey name = rtInternPropertyKey(args[1]);
 
     auto* obj = target.get().asObject<ObjectHeader>();
 
@@ -337,8 +300,13 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     const bool configurable =
         hasConfigurable ? wantConfigurable : (present && current.configurable);
     if (shapeDefineEnabled() && obj->shape && !obj->shape->isDictionary()) {
-        PropertyInfo existing;
-        bool hasExisting = obj->shape->lookupProperty(name, existing);
+        // The same lookup the defaults above already made: this branch is
+        // reached only when the shape is not a dictionary, which is exactly the
+        // case `present` answered with `lookupProperty`. Asking twice is a
+        // chain walk and a key compare per define, and a constructor that
+        // defines six properties pays it six times.
+        const bool hasExisting = present;
+        const PropertyInfo& existing = current;
         if (!hasExisting) {
             Rooted<Value> keyRoot{name.toValue()};
             if (accessor) {
@@ -495,6 +463,90 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     entry->writable = writable;
     entry->configurable = configurable;
     return true;
+}
+
+// ECMA-262 6.2.6.5 ToPropertyDescriptor followed by 10.1.6.3, which is what
+// `Object.defineProperty` and `Reflect.defineProperty` are each a thin wrapper
+// over. The errors of the DECODE — a non-object target, a descriptor that is
+// not an object, a `get` that is not callable — are raised for both, and only
+// the REFUSAL is the boolean `throwOnRefusal` chooses the meaning of.
+bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
+    RootedArgs args(argc, argv);
+    if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
+        return false;
+    }
+    if (!rtObjectIsPlain(args[2])) {
+        rtThrowTypeError("Property description must be an object");
+        return false;
+    }
+    Rooted<Value> self{args[0]};
+    Rooted<Value> desc{args[2]};
+
+    Rooted<Value> target{self.get()};
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        target.set(self.get().asObject<FunctionHeader>()->properties);
+    }
+
+    DecodedDescriptor d;
+    Value wrapped;
+    const bool ordinary = !rtStringWrapperData(desc.get(), wrapped);
+    // 6.2.6.5 steps 3 through 8, in the order it states them. The order is
+    // observable whenever a field is spelled as a getter: one such getter can
+    // see which fields have already been asked for, and can add a field the
+    // decode has not reached yet, so reading `value` before `enumerable` is a
+    // different program than reading it after.
+    //
+    // Every one of the six is spelled `? HasProperty(...)` / `? Get(...)`, and
+    // the `?` is the reason for the test between each pair. A field getter that
+    // throws — or a Proxy descriptor's `has` trap — is an ABRUPT COMPLETION:
+    // 6.2.6.5 returns it, so the remaining fields are never read (their getters
+    // must not run) and 10.1.6.3 never runs at all. `readField` has no way to
+    // spell an abrupt completion — it answers `undefined`, which is also what a
+    // present field holding `undefined` looks like — so the completion is the
+    // pending exception, and continuing past it defined a property out of a
+    // descriptor the program never finished handing over.
+    Rooted<Value> enumerableV{readField(desc, DescField::Enumerable, ordinary, d.hasEnumerable)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> configurableV{
+        readField(desc, DescField::Configurable, ordinary, d.hasConfigurable)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> value{readField(desc, DescField::Value, ordinary, d.hasValue)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, d.hasWritable)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, d.hasGet)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, d.hasSet)};
+    if (rtExceptionPending()) return false;
+
+    // 6.2.6.5 steps 7.c and 8.c: a `get` or `set` that is PRESENT and is
+    // neither callable nor `undefined` does not describe an accessor, so the
+    // descriptor is rejected before anything is defined. This is an error of
+    // the DECODE and not a refusal — `Reflect.defineProperty` raises it too.
+    if (d.hasGet && !getter.get().isUndefined() && !rtIsCallableValue(getter.get())) {
+        rtThrowTypeError("Getter must be a function");
+        return false;
+    }
+    if (d.hasSet && !setter.get().isUndefined() && !rtIsCallableValue(setter.get())) {
+        rtThrowTypeError("Setter must be a function");
+        return false;
+    }
+
+    if ((d.hasGet || d.hasSet) && (d.hasValue || d.hasWritable)) {
+        rtThrowTypeError(
+            "Invalid property descriptor. Cannot both specify accessors and a value or "
+            "writable attribute");
+        return false;
+    }
+    d.wantWritable = d.hasWritable && bronze_truthy(writableV.get().rawBits());
+    d.wantEnumerable = d.hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
+    d.wantConfigurable = d.hasConfigurable && bronze_truthy(configurableV.get().rawBits());
+
+    // The key is built before the object is disturbed, and interned so the
+    // entry can hold it forever.
+    PropertyKey name = rtInternPropertyKey(args[1]);
+    return applyDecodedDescriptor(target, name, d, value, getter, setter, throwOnRefusal);
 }
 
 // 20.1.2.4 Object.defineProperty: DefinePropertyOrThrow, so a refusal is the
@@ -741,5 +793,137 @@ uint64_t rtObjectDefineProperties(uint64_t, uint64_t, uint32_t argc, const uint6
     rtObjectDefineFromDescriptors(target, descriptors);
     return target.get().rawBits();
 }
+
+namespace {
+
+// Are the six descriptor fields of a fresh object literal exactly the ones the
+// literal WROTE?
+//
+// 6.2.6.5 reads each field with HasProperty and Get, and both walk the
+// descriptor's prototype chain — so `{ value: v }` describes a non-enumerable
+// property only while nothing on `Object.prototype` answers `enumerable`. A
+// program that puts one there has changed what every descriptor literal in it
+// means, and a lowering that read the literal's own text would not have
+// noticed.
+//
+// The answer is memoized on the prototype's SHAPE, which is what makes the
+// question affordable: a shape is immutable and installing a property
+// transitions to a different one, so a pointer compare is a proof that nothing
+// was added since the walk. Two conditions narrow where that proof holds — a
+// dictionary shape is mutated in place, and the memo answers for the whole
+// chain rather than for one link — and outside them the six lookups are
+// simply repeated.
+bool literalDescriptorFieldsAreOwnOnly() {
+    // The keys first: interning one allocates the first time a thread asks for
+    // it, and an allocation moves the object the walk below holds a pointer to.
+    PropertyKey fields[kDescFieldCount];
+    for (size_t f = 0; f < kDescFieldCount; ++f) {
+        fields[f] = descFieldKey(static_cast<DescField>(f));
+    }
+
+    const Value protoVal = rtObjectPrototype();
+    if (!protoVal.isObject()) return true;
+    auto* proto = protoVal.asObject<ObjectHeader>();
+
+    static thread_local Shape* verified = nullptr;
+    const bool memoizable = proto->shape != nullptr && !proto->shape->isDictionary() &&
+                            proto->protoAncestor(1) == nullptr;
+    if (memoizable && proto->shape == verified) return true;
+
+    ObjectHeader* link = proto;
+    for (uint32_t depth = 0; link != nullptr && depth <= 1000; ++depth) {
+        if (link->shape != nullptr) {
+            PropertyInfo info;
+            for (const PropertyKey& key : fields) {
+                if (link->shape->lookupProperty(key, info)) return false;
+            }
+        }
+        link = link->protoAncestor(1);
+    }
+    if (memoizable) verified = proto->shape;
+    return true;
+}
+
+}  // namespace
+
+extern "C" {
+
+// One key of an `Object.defineProperties(o, { k: { ... }, ... })` whose
+// descriptors were all object literals, so 6.2.6.5's answer was a compile-time
+// fact and `mask` is that fact (BRONZE_ABI_DESC_*).
+//
+// What it saves is the descriptor OBJECTS: three.js gives every `Object3D` six
+// of them, each allocated, each then read back one field name at a time. What
+// it must not change is anything else, so the target is checked with the same
+// predicate and the same member name the generic member uses, and the define
+// itself is 10.1.6.3 through the same `applyDecodedDescriptor` the decode
+// hands its result to.
+void bronze_define_own_attr(uint64_t objBits, uint32_t keyIndex, uint64_t valBits,
+                            uint32_t mask) {
+    Value objVal(objBits);
+    // 20.1.2.3 step 1. The lowering emits a run of these for one call, and the
+    // first of them stands where the member's own check stood, so a target
+    // that is not an object throws before any key of the literal is defined.
+    if (!rtObjectRequirePropertyTable(objVal, "defineProperties")) return;
+
+    StringHeader* keyHeader = rtKeyHeader(keyIndex);
+    if (!keyHeader) fatal("property definition with an unregistered key index");
+
+    Rooted<Value> self{objVal};
+    Rooted<Value> value{Value(valBits)};
+
+    // An inherited descriptor field is a real program, and the only way to keep
+    // it observable is to let the generic member see it: the fields the literal
+    // wrote go into a real descriptor object, whose prototype is the polluted
+    // one, and 6.2.6.5 reads it as it would have.
+    if (!literalDescriptorFieldsAreOwnOnly()) {
+        Rooted<Value> key{Value::fromString(keyHeader)};
+        Rooted<Value> desc{Value(bronze_create_object())};
+        if (mask & BRONZE_ABI_DESC_HAS_VALUE) putField(desc, "value", value);
+        Rooted<Value> flag{Value::fromUndefined()};
+        if (mask & BRONZE_ABI_DESC_HAS_WRITABLE) {
+            flag.set(Value::fromBool((mask & BRONZE_ABI_DESC_WRITABLE) != 0));
+            putField(desc, "writable", flag);
+        }
+        if (mask & BRONZE_ABI_DESC_HAS_ENUMERABLE) {
+            flag.set(Value::fromBool((mask & BRONZE_ABI_DESC_ENUMERABLE) != 0));
+            putField(desc, "enumerable", flag);
+        }
+        if (mask & BRONZE_ABI_DESC_HAS_CONFIGURABLE) {
+            flag.set(Value::fromBool((mask & BRONZE_ABI_DESC_CONFIGURABLE) != 0));
+            putField(desc, "configurable", flag);
+        }
+        const uint64_t call[3] = {self.get().rawBits(), key.get().rawBits(),
+                                  desc.get().rawBits()};
+        rtObjectDefineProperty(0, 0, 3, call);
+        return;
+    }
+
+    Rooted<Value> target{self.get()};
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        target.set(self.get().asObject<FunctionHeader>()->properties);
+    }
+
+    DecodedDescriptor d;
+    d.hasValue = (mask & BRONZE_ABI_DESC_HAS_VALUE) != 0;
+    d.hasWritable = (mask & BRONZE_ABI_DESC_HAS_WRITABLE) != 0;
+    d.hasEnumerable = (mask & BRONZE_ABI_DESC_HAS_ENUMERABLE) != 0;
+    d.hasConfigurable = (mask & BRONZE_ABI_DESC_HAS_CONFIGURABLE) != 0;
+    d.wantWritable = (mask & BRONZE_ABI_DESC_WRITABLE) != 0;
+    d.wantEnumerable = (mask & BRONZE_ABI_DESC_ENUMERABLE) != 0;
+    d.wantConfigurable = (mask & BRONZE_ABI_DESC_CONFIGURABLE) != 0;
+
+    // No accessor half can reach here: the mask has no bits for `get` or `set`,
+    // and the lowering refuses a descriptor literal that names either.
+    Rooted<Value> noGetter{Value::fromUndefined()};
+    Rooted<Value> noSetter{Value::fromUndefined()};
+    // 20.1.2.3.1 step 5 is DefinePropertyOrThrow, so a refusal is 20.1.2.4's
+    // TypeError and the keys already defined stay defined.
+    applyDecodedDescriptor(target, PropertyKey::forString(keyHeader), d, value, noGetter,
+                           noSetter, /*throwOnRefusal=*/true);
+}
+
+}  // extern "C"
 
 }  // namespace bronze::runtime

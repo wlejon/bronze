@@ -1,0 +1,10 @@
+1 true undefined {"writable":false,"enumerable":false,"configurable":false}
+2 2 {"value":2,"writable":true,"enumerable":true,"configurable":true}
+3 2 {"value":2,"writable":true,"enumerable":true,"configurable":true}
+4 TypeError locked,first L
+5 ok 1
+6 TypeError 1
+7 TypeError false
+8 ok 2
+9 TypeError false
+10 set 0 {"value":"set","writable":true,"enumerable":false,"configurable":false}

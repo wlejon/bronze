@@ -1,0 +1,4 @@
+1 target,a,b,c true {"a":1,"b":2,"c":3}
+2 TypeError t2,a2
+3 TypeError a3
+4 fresh,p,q {"p":"P","q":"Q"}

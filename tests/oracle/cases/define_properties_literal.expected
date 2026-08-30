@@ -1,0 +1,10 @@
+1 position,scale
+2 position,scale,modelViewMatrix,normalMatrix
+3 {"position":{"x":1},"scale":{"s":2}}
+4 {"value":{"x":1},"writable":false,"enumerable":true,"configurable":true}
+5 {"value":"M","writable":false,"enumerable":false,"configurable":false}
+6 position,scale
+7 M
+8 false M
+9 true false
+10 TypeError N

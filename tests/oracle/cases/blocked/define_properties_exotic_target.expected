@@ -1,0 +1,4 @@
+1 a,b 1 2
+2 10,99,30 3 n
+3 {"value":99,"writable":true,"enumerable":true,"configurable":true}
+4 {"value":"n","writable":false,"enumerable":false,"configurable":false}

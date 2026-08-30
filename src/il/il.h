@@ -6,6 +6,10 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+// What a `census.record` site observes. Its own header — the runtime's census
+// table is the other half of that fact — included here so an instruction's
+// readers still find `CensusSite` where they always did.
+#include "il/census_site.h"
 // The pin claims the IL carries (`PinBarrier`, `kElemKindPlainArrayF64`).
 // Included here rather than left to each user, because every one of them
 // reaches these names through this header and a seam is not an occasion to
@@ -34,28 +38,6 @@ enum class Type : uint8_t {
     Dynamic,  // boundary-only boxed value; using it is an explicit opt-in
 };
 const char* typeName(Type t);
-
-// What one `Op::CensusRecord` observes, carried in the instruction's `immI32`
-// and in the module's census site table (src/runtime/pin_census.h, stage C1).
-//
-// The low byte says which MANIFEST FORM the site's key names, because the
-// forms admit different kinds and the kind is decided at exit from the tags. A
-// census site exists only where lowering ran out of static answers: an env
-// slot the fixpoint refused, a parameter no proof typed, a return the
-// convention left Dynamic, a store to a field whose type is unknown. That is
-// what makes the census complementary to the proofs rather than a duplicate of
-// them (stage E4's HANDOFF (c)).
-enum class CensusSite : uint8_t {
-    EnvSlot = BRONZE_ABI_CENSUS_ENV_SLOT,
-    Field = BRONZE_ABI_CENSUS_FIELD,
-    Param = BRONZE_ABI_CENSUS_PARAM,
-    Return = BRONZE_ABI_CENSUS_RETURN,
-    // Not a form: a store to a field NAME through a receiver inference could
-    // not type. It can never become an entry — it names no class — and what it
-    // does is mark every entry for a field of that name `@observed`, because
-    // B1's barrier cannot reach this store (src/types/pins.h).
-    OpaqueFieldStore = BRONZE_ABI_CENSUS_OPAQUE,
-};
 
 enum class Op : uint8_t {
     ConstF64,   // a = const.f64 <imm>
@@ -309,6 +291,16 @@ enum class Op : uint8_t {
     MethodDefComputed,  // method.def.computed obj, key, v
     AccessorDef,  // accessor.def obj, <key_const_index>, getter, setter, <enumerable>
     AccessorDefComputed, // accessor.def.computed obj, key, getter, setter, <enumerable>
+    // One key of an `Object.defineProperties(o, {...})` whose descriptors were
+    // all object LITERALS, so what each of them says is a compile-time fact.
+    // `immI32` is that fact — the BRONZE_ABI_DESC_* mask of which of `value`,
+    // `writable`, `enumerable` and `configurable` the literal wrote and what
+    // the three booleans were — and the operand is the `value` expression,
+    // already evaluated. The descriptor object is never built and 6.2.6.5 never
+    // runs; the helper hands the same decoded fields to the same 10.1.6.3 the
+    // generic member reaches, so a refusal is the same TypeError in the same
+    // place (src/lower/lower_define_props.cpp).
+    DefineOwnAttr,  // define.own.attr obj, <key_const_index>, v, <attr_mask>
     GetNewTarget, // a = get.new_target
     // `import.meta` (13.3.12). `keyIndex` names the module's URL, which
     // lowering resolved from the file id the linker stamped on the expression

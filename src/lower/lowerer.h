@@ -1136,6 +1136,14 @@ private:
     Value emitUpdateOld(Value oldVal, il::Function& ilFn);
     Value emitUpdateStep(Value oldNumeric, ast::UnaryOp op, il::Function& ilFn);
 
+    // lower_define_props.cpp. `Object.defineProperties(o, { ... })` whose every
+    // descriptor is an object literal the compiler can read. Nullopt is "not a
+    // call I take", never an error: the caller emits the generic call it always
+    // emitted.
+    std::optional<Value> lowerDefinePropertiesLiteral(const ast::Call* call,
+                                                      const ast::MemberAccess& callee,
+                                                      il::Function& ilFn);
+
     // --- lower_expr_binary.cpp: the binary operator families ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
     // lower_concat_chain.cpp. Nullopt is "not a spine I take", never an error.
