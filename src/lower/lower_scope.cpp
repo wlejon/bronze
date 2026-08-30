@@ -967,6 +967,8 @@ private:
 void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
                                       const std::vector<ast::StmtPtr>& stmts) {
     if (inference_ == nullptr || closureParamProofDisabled()) return;
+    // `lowerFunctionBody` opened this body's frame before calling in.
+    if (provenClosureParams_.empty()) return;
 
     bool anyDeclaration = false;
     for (const auto& stmt : stmts) {
@@ -992,7 +994,6 @@ void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
         if (fnDecl == nullptr || fnDecl->isGenerator || fnDecl->isAsync) continue;
         if (fnDecl->name.empty() || fnDecl->params.empty()) continue;
         if (rebound.contains(fnDecl->name)) continue;
-        if (provenClosureParams_.contains(fnDecl)) continue;
         bool shapeFits = true;
         for (const auto& p : fnDecl->params) {
             if (p.defaultValue || p.isRest || p.pattern || p.name.empty()) shapeFits = false;
@@ -1017,7 +1018,7 @@ void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
         }
         bool any = false;
         for (const bool p : proven) any = any || p;
-        if (any) provenClosureParams_.emplace(fnDecl, std::move(proven));
+        if (any) provenClosureParams_.back().emplace(fnDecl, std::move(proven));
     }
 }
 
@@ -1026,8 +1027,14 @@ void Lowerer::applyProvenClosureParams(const ast::Node& site,
                                        il::Function& fn) const {
     const auto* decl = dynamic_cast<const ast::FunctionDecl*>(&site);
     if (decl == nullptr) return;
-    const auto it = provenClosureParams_.find(decl);
-    if (it == provenClosureParams_.end()) return;
+    // The innermost open frame is the one planned for the statement list this
+    // declaration is a member of: the enclosing body is mid-lowering, and every
+    // body nested inside it has closed its own frame again. The module top level
+    // is not lowered through `lowerFunctionBody` and so opens no frame at all.
+    if (provenClosureParams_.empty()) return;
+    const auto& plan = provenClosureParams_.back();
+    const auto it = plan.find(decl);
+    if (it == plan.end()) return;
     const size_t base = fn.firstSourceParam();
     for (size_t i = 0; i < params.size() && i < it->second.size() && i + base < fn.params.size();
          ++i) {

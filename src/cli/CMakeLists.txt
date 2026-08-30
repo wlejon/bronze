@@ -29,8 +29,13 @@ if(BRONZE_BUILD_TESTS)
                                    ../../tests/cli/performance_now_test.cpp
                                    ../../tests/cli/pin_barrier_test.cpp
                                    ../../tests/cli/pin_census_test.cpp
-                                   ../../tests/cli/numeric_arith_boundary_test.cpp)
+                                   ../../tests/cli/numeric_arith_boundary_test.cpp
+                                   ../../tests/cli/lowering_determinism_test.cpp)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
+    # The determinism test needs a graph big enough for the hazard to have room
+    # to happen in, and the vendored three.js one is already in the tree.
+    target_compile_definitions(bronze_cli_tests PRIVATE
+        TEST_THREEJS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/oracle/threejs")
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)
         target_compile_definitions(bronze_cli_tests PRIVATE _CRT_SECURE_NO_WARNINGS)

@@ -336,11 +336,22 @@ private:
     // was and its conversion is the checked unbox.
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
-    // What `planClosureParamNumbers` proved, keyed by the declaration node.
-    // Accumulated across the whole module and never cleared: a nested
-    // declaration appears in exactly one enclosing statement list, so one entry
-    // per function is all there can be.
-    std::unordered_map<const ast::FunctionDecl*, std::vector<bool>> provenClosureParams_;
+    // What `planClosureParamNumbers` proved for ONE function body, keyed by the
+    // declaration node. A nested declaration appears in exactly one enclosing
+    // statement list, so a frame holds one entry per function.
+    using ProvenParamPlan = std::unordered_map<const ast::FunctionDecl*, std::vector<bool>>;
+    // One frame per function body being lowered, innermost last, opened and
+    // closed by `lowerFunctionBody`.
+    //
+    // The frame CANNOT outlive its body, because the key is a node ADDRESS and a
+    // body's nodes are not always the module tree's: a class constructor is
+    // lowered from a copy that dies with `lowerClass` (the `cloneOrigins_` note
+    // says why the copy exists). An entry left behind by a dead copy is answered
+    // for whatever node the allocator puts at that address next, which types a
+    // parameter f64 on the evidence of call sites in an unrelated function — and
+    // only on the runs where the addresses happen to collide, so the compiler
+    // stops being a function of its input.
+    std::vector<ProvenParamPlan> provenClosureParams_;
     // BRONZE_NO_NUMERIC_ARITH=1, a BigInt in reach, or a host boundary no
     // `assumeNoBigInt` covers. Gates ONE decision in `lowerBinary`: whether
     // `*`, `-`, `/`, `%` over a boxed operand produce a boxed result or an f64
@@ -479,6 +490,12 @@ private:
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                            bool isGenerator = false, bool isAsync = false);
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
+    // The body proper. Reached only through `lowerFunctionBody`, which is the
+    // one place that opens and closes this body's closure-parameter plan frame,
+    // so that no early `return false` in here can leave the frame behind.
+    bool lowerBodyWithPlan(const std::vector<ast::Param>& params,
+                           const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
+                           bool isGenerator, bool isAsync);
 
     // --- lower_unresolved.cpp: names that resolve to nothing ---
     bool resolvesName(const std::string& name) const;
@@ -682,7 +699,8 @@ private:
     //
     // For every plain `function f(...)` declared directly in `stmts`, decides
     // which of its parameters are Numbers at every call. The rule and its
-    // refusals are in lower_scope.cpp; the result is consumed by
+    // refusals are in lower_scope.cpp; the result fills the frame
+    // `lowerFunctionBody` opened for `stmts`, and is consumed from there by
     // `applyProvenClosureParams` when the declaration is lowered.
     void planClosureParamNumbers(const std::vector<ast::Param>& params,
                                  const std::vector<ast::StmtPtr>& stmts);

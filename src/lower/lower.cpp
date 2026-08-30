@@ -727,7 +727,22 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
     return false;
 }
 
+// The closure-parameter plan is made for THIS body and consumed while THIS body
+// is lowered, so it lives in a frame that opens and closes here. Keyed by node
+// address, it must not survive the nodes it names — a class constructor's body
+// is a copy that dies with `lowerClass`, and an entry outliving that copy is
+// later answered for whatever the allocator puts at the same address. See the
+// note on `provenClosureParams_`.
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
+                                const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
+                                bool isGenerator, bool isAsync) {
+    provenClosureParams_.emplace_back();
+    const bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator, isAsync);
+    provenClosureParams_.pop_back();
+    return ok;
+}
+
+bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator, bool isAsync) {
     // Bodies lower one at a time (the state resets below assume it), so a
