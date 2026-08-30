@@ -81,6 +81,15 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
 // property from being visible to one and not the other.
 uint64_t rtObjectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 
+// 10.1.6.3 [[DefineOwnProperty]] itself, answering the BOOLEAN the internal
+// method answers. Exported for `Reflect.defineProperty` (28.1.3), which returns
+// that boolean where `Object.defineProperty` raises a TypeError for it —
+// `throwOnRefusal` is which of the two this call is. The errors of the DECODE
+// (a target that is not an object, a descriptor that is not one, a `get` that
+// is not callable) are raised either way and come back as `false` with an
+// exception pending.
+bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal);
+
 // The four descriptor members themselves, in the shape the namespace table
 // installs them in.
 uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);

@@ -1,7 +1,10 @@
-// Property reads on a PRIMITIVE receiver — a string, a number, a boolean, a
-// symbol. Its own translation unit for the reason rt_prop.cpp is split by
-// receiver kind at all: this is one kind, and it is the one whose answer does
-// not come from the receiver.
+// Property access on a PRIMITIVE receiver — a string, a number, a boolean, a
+// symbol, a BigInt — in BOTH directions. Its own translation unit for the
+// reason rt_prop.cpp is split by receiver kind at all: this is one kind, and it
+// is the one whose answer does not come from the receiver. The read and the
+// write are the same question asked twice, and both are answered by naming the
+// box's prototype rather than by building the box, so they belong together
+// rather than one to each of rt_prop.cpp and rt_prop_write.cpp.
 //
 // 7.3.2 GetV boxes a primitive and reads the box. bronze does not build the
 // box, because for every member that exists it is unobservable — so what these
@@ -21,6 +24,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/bigint.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
@@ -157,6 +161,77 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
     // "a property that happens to be absent", so it may not answer `undefined`.
     fatal("unsupported: a property read on this value kind is not implemented "
           "(an array hole is not a value)");
+}
+
+// ---- the write half ---------------------------------------------------------
+
+// The intrinsic prototype 7.1.18 ToObject's box would have — the same five the
+// read side walks, asked as one question because the write has no per-kind
+// step above the chain except a String's own keys. `undefined` for a value no
+// program can hold.
+static Value wrapperPrototype(Value v) {
+    if (v.isString()) return rtStringPrototype();
+    if (v.isNumber()) return rtNumberPrototype();
+    if (v.isBool()) return rtBooleanPrototype();
+    if (v.isSymbol()) return rtSymbolPrototype();
+    if (v.isBigInt()) return rtBigIntPrototype();
+    return Value::fromUndefined();
+}
+
+// The receiver's kind, for the message of a write that cannot be performed.
+// Not `typeof`'s answer: this only ever names a primitive, and it is a
+// diagnostic rather than an operator, so it does not want typeof's rooted
+// string table.
+static const char* primitiveTypeName(Value v) {
+    if (v.isString()) return "a string";
+    if (v.isNumber()) return "a number";
+    if (v.isBool()) return "a boolean";
+    return "this value";
+}
+
+// 13.15.2 PutValue steps 6-8: the base is boxed, [[Set]] runs on the box with
+// the PRIMITIVE as the receiver, and only a STRICT reference turns a false
+// answer into a TypeError. 10.1.9.2 step 2.b then answers false for every data
+// write, because the receiver is not an object and a new own property has
+// nowhere to go — so `"abc".x = 1` in sloppy code stores nothing and raises
+// nothing, which is what the language says and what a `catch`-free program
+// depends on. This is the one place bronze reports a refusal in strict code and
+// not in sloppy, and it is not a silent discard: the box is unreachable the
+// moment the statement ends, so nothing was ever storable and there is no state
+// a later read could disagree with. A read of the same name afterwards is
+// `undefined`, which is what the branches above answer.
+//
+// An ACCESSOR on the box's chain is a different step — 10.1.9.2 step 3 — and
+// still runs, with the primitive as `this`. That is why this goes through the
+// same OrdinarySet the receiver-distinct spellings use rather than answering
+// from the receiver's kind alone: a setter inherited from `Number.prototype`
+// is user code with a right to run, and skipping it would be the silent wrong
+// answer this whole file exists to avoid.
+void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string& keyStr,
+                      Rooted<Value>& val, bool strict) {
+    // 10.4.3.4 and 10.4.3.5: a String box's own `length` and its indices are
+    // non-writable own properties, and they are not on the chain the walk
+    // below sees — the same step the read side takes before `protoMember`.
+    if (recv.get().isString() && rtStringDataWriteRefused(recv.get(), keyStr, strict)) return;
+    const Value proto = wrapperPrototype(recv.get());
+    if (!proto.isObject()) {
+        fatal("unsupported: a property write on this value kind is not implemented "
+              "(an array hole is not a value)");
+    }
+    Rooted<Value> protoRoot{proto};
+    const SetRefusal refusal = rtOrdinarySetWithReceiver(protoRoot, key, val, recv);
+    if (refusal == SetRefusal::NotExtensible) {
+        // Step 2.b's false, which for a primitive receiver is EVERY data write
+        // — so the message names the receiver rather than repeating
+        // `rtReportSetRefusal`'s sentence about extensibility, which would be
+        // true of the unreachable box and not of what the program wrote.
+        if (strict) {
+            rtThrowTypeError("Cannot create property '" + keyStr + "' on " +
+                             primitiveTypeName(recv.get()));
+        }
+        return;
+    }
+    rtReportSetRefusal(refusal, strict, keyStr);
 }
 
 }  // namespace bronze::runtime

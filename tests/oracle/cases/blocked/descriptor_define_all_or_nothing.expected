@@ -1,0 +1,4 @@
+1 RangeError [] a,b
+2 RangeError [] a
+3 TypeError []
+4 ok ["a","b"] 1 2

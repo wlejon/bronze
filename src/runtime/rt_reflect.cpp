@@ -465,8 +465,18 @@ static uint64_t reflectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t arg
     return rtObjectGetOwnPropertyDescriptor(0, 0, argc, argv);
 }
 
+// 28.1.3 Reflect.defineProperty: the BOOLEAN [[DefineOwnProperty]] answers,
+// where `Object.defineProperty` answers the target and turns a refusal into a
+// TypeError. The distinction is the whole reason the member exists — a program
+// that wants to know whether the define landed cannot ask a member that throws
+// — so a refused define must come back as `false` and not as an exception.
+// What still throws is what 28.1.3 throws before the define is attempted: a
+// target that is not an object (step 1) and a descriptor ToPropertyDescriptor
+// rejects (step 3).
 static uint64_t reflectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return rtObjectDefineProperty(0, 0, argc, argv);
+    const bool defined = rtObjectDefineOwnProperty(argc, argv, /*throwOnRefusal=*/false);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(defined).rawBits();
 }
 
 static thread_local Value g_reflectNamespace = Value::fromUndefined();

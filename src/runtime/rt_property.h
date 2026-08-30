@@ -105,6 +105,15 @@ bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key);
 Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                         struct InlineCacheSite* ic);
 
+// And the WRITE half of the same receiver kind, in the same file, because the
+// two are one question about one kind: where does the answer come from when it
+// does not come from the receiver? `key` is the name as a value, `keyStr` the
+// same name as text for the message, and `strict` decides whether 13.15.2 step
+// 8's false becomes a TypeError or nothing at all. Both spellings of the write
+// call it, so a refusal cannot be built into one of them and not the other.
+void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string& keyStr,
+                      Rooted<Value>& val, bool strict);
+
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //
 // A key means the same thing whichever direction it is used in, so the READ

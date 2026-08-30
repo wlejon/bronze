@@ -35,7 +35,6 @@
 // EVERY FUNCTION HERE IS A GC POINT. `rtOwnPropertyOf` on a proxy target runs
 // that proxy's own trap, and building a message allocates a string. So each
 // takes its operands as roots, and each re-reads through them.
-#include <cmath>
 #include <string>
 #include <vector>
 
@@ -60,24 +59,10 @@ namespace bronze::runtime {
 
 namespace {
 
-// 7.2.11 SameValue, which is `===` with the two numeric corrections: NaN is the
-// same value as NaN, and +0 is NOT the same value as -0. Every invariant that
-// compares a trap's answer against a stored one uses it — `Object.is`'s
-// relation, not `===`'s — so a `get` trap answering -0 for a frozen +0 is the
-// TypeError 10.5.8 step 10 names.
-bool sameValue(Value a, Value b) {
-    if (a.isNumber() && b.isNumber()) {
-        const double x = a.asNumber();
-        const double y = b.asNumber();
-        if (std::isnan(x) && std::isnan(y)) return true;
-        if (x == 0.0 && y == 0.0) return std::signbit(x) == std::signbit(y);
-        return x == y;
-    }
-    // Every non-numeric case is SameValueZero's: a string by contents, a BigInt
-    // by value, everything else by identity. The two relations differ on
-    // nothing but the zeroes, so the rest is not written twice.
-    return sameValueZero(a, b);
-}
+// 7.2.11 SameValue (map.h) is what every invariant below compares a trap's
+// answer against a stored one with — `Object.is`'s relation, not `===`'s — so a
+// `get` trap answering -0 for a frozen +0 is the TypeError 10.5.8 step 10
+// names.
 
 // A key as text for a diagnostic. `Symbol(desc)` for a symbol — the only
 // spelling one has (20.4.3.3.1).

@@ -1,0 +1,16 @@
+1 4 v=4 w=false e=true c=true
+2 4 v=4 w=true e=false c=true []
+3 4 v=4 w=true e=true c=false
+4 4 v=4 w=false e=false c=false
+5 4 v=4 w=true e=true c=true
+6 undefined v=undefined w=true e=true c=true
+7 got g=function s=undefined e=false c=true
+8 9 g=undefined s=function e=true c=false
+9 4 v=4 w=true e=false c=true
+10 4 6 v=4 w=false e=true c=true v=6 w=true e=false c=true
+11 true 4 v=4 w=true e=true c=false
+12 undefined v=undefined w=false e=true c=false
+13 keep v=keep w=false e=false c=true
+14 v=1 w=false e=true c=false
+15 TypeError
+16 1 v=1 w=false e=true c=false

@@ -182,6 +182,24 @@ bool sameValueZero(Value a, Value b) noexcept {
     return a.rawBits() == b.rawBits();
 }
 
+bool sameValue(Value a, Value b) noexcept {
+    if (a.isNumber() && b.isNumber()) {
+        const double x = a.asNumber();
+        const double y = b.asNumber();
+        if (std::isnan(x) && std::isnan(y)) return true;
+        // The one line that is not SameValueZero's: 7.2.11 step 1.b.i tells the
+        // zeroes apart, and they compare equal as doubles, so the SIGN is what
+        // has to be asked. Not a raw-bit compare of the pair — a NaN has many
+        // encodings and the clause above has already said they are one value.
+        if (x == 0.0 && y == 0.0) return std::signbit(x) == std::signbit(y);
+        return x == y;
+    }
+    // 7.2.11 step 2 hands every other pair to SameValueNonNumber, which is
+    // SameValueZero's non-numeric half exactly: a string by contents, a BigInt
+    // by value, everything else by identity.
+    return sameValueZero(a, b);
+}
+
 uint32_t MapHeader::capacity() const noexcept {
     if (!entries.isPointer()) return 0;
     const auto* hdr = entries.asObject<HeapObjectHeader>();

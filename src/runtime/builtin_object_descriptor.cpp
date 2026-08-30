@@ -33,7 +33,9 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
+#include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -83,14 +85,14 @@ std::string keyText(PropertyKey key) {
 // A shape key is matched by content (`PropertyKey::matches`), so what the walk
 // spends per link is a length test and a memcmp of at most twelve bytes.
 
-// The six fields, and the order the decode reads them in. That order is
-// observable, because a descriptor may spell a field as a getter, and it is
-// NOT 6.2.6.5's — which reads enumerable, configurable, value, writable, get,
-// set. `kDescFieldNames` is indexed by this enum.
-enum class DescField : uint8_t { Value, Get, Set, Writable, Enumerable, Configurable };
+// The six fields, in the order 6.2.6.5 reads them. That order is OBSERVABLE —
+// a descriptor may spell a field as a getter, and one getter may add or change
+// a field the decode has not reached yet — so it is the specification's and not
+// a convenience. `kDescFieldNames` is indexed by this enum.
+enum class DescField : uint8_t { Enumerable, Configurable, Value, Writable, Get, Set };
 constexpr size_t kDescFieldCount = 6;
-constexpr const char* kDescFieldNames[kDescFieldCount] = {"value",    "get",        "set",
-                                                          "writable", "enumerable", "configurable"};
+constexpr const char* kDescFieldNames[kDescFieldCount] = {"enumerable", "configurable", "value",
+                                                          "writable",   "get",          "set"};
 
 // BRONZE_NO_DESC_FIELDS=1 puts the decode back on a freshly built name and the
 // pair of generic calls, so one binary A/Bs the whole of the above.
@@ -208,19 +210,36 @@ bool dictAttributes(Value objVal, PropertyKey name, PropertyInfo& out) {
     return true;
 }
 
+// A [[DefineOwnProperty]] that REFUSED. 20.1.2.4 `Object.defineProperty` turns
+// the refusal into a TypeError (step 4 is `DefinePropertyOrThrow`); 28.1.3
+// `Reflect.defineProperty` returns the boolean instead and must not throw for
+// it. So a refusal is a VALUE here and becomes a throw only at the entry point
+// that asked for one.
+bool refuseDefine(bool throwOnRefusal, const std::string& message) {
+    if (throwOnRefusal) rtThrowTypeError(message);
+    return false;
+}
+
 }  // namespace
 
 // ECMA-262 10.1.6.3 DefineOwnProperty, for the one caller that can express a
 // full descriptor. Plain data and accessor properties on shape-chain objects
 // extend their shape transition tree rather than unconditionally degrading
 // to dictionary mode.
-uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+//
+// The RESULT is the boolean [[DefineOwnProperty]] answers, not a throw: the two
+// members defined over it disagree about what a refusal means (20.1.2.4 raises,
+// 28.1.3 returns false), and only the ERRORS OF THE DECODE — a non-object
+// target, a descriptor that is not an object, a `get` that is not callable —
+// are raised for both. `throwOnRefusal` chooses which of the two this call is.
+bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
     RootedArgs args(argc, argv);
     if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
-        return Value::fromUndefined().rawBits();
+        return false;
     }
     if (!rtObjectIsPlain(args[2])) {
-        return rtThrowTypeError("Property description must be an object").rawBits();
+        rtThrowTypeError("Property description must be an object");
+        return false;
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> desc{args[2]};
@@ -235,21 +254,60 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
     bool hasWritable = false, hasEnumerable = false, hasConfigurable = false;
     Value wrapped;
     const bool ordinary = !rtStringWrapperData(desc.get(), wrapped);
-    Rooted<Value> value{readField(desc, DescField::Value, ordinary, hasValue)};
-    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, hasGet)};
-    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, hasSet)};
-    Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, hasWritable)};
+    // 6.2.6.5 steps 3 through 8, in the order it states them. The order is
+    // observable whenever a field is spelled as a getter: one such getter can
+    // see which fields have already been asked for, and can add a field the
+    // decode has not reached yet, so reading `value` before `enumerable` is a
+    // different program than reading it after.
+    //
+    // Every one of the six is spelled `? HasProperty(...)` / `? Get(...)`, and
+    // the `?` is the reason for the test between each pair. A field getter that
+    // throws — or a Proxy descriptor's `has` trap — is an ABRUPT COMPLETION:
+    // 6.2.6.5 returns it, so the remaining fields are never read (their getters
+    // must not run) and 10.1.6.3 never runs at all. `readField` has no way to
+    // spell an abrupt completion — it answers `undefined`, which is also what a
+    // present field holding `undefined` looks like — so the completion is the
+    // pending exception, and continuing past it defined a property out of a
+    // descriptor the program never finished handing over.
     Rooted<Value> enumerableV{readField(desc, DescField::Enumerable, ordinary, hasEnumerable)};
+    if (rtExceptionPending()) return false;
     Rooted<Value> configurableV{
         readField(desc, DescField::Configurable, ordinary, hasConfigurable)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> value{readField(desc, DescField::Value, ordinary, hasValue)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, hasWritable)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, hasGet)};
+    if (rtExceptionPending()) return false;
+    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, hasSet)};
+    if (rtExceptionPending()) return false;
+
+    // 6.2.6.5 steps 7.c and 8.c: a `get` or `set` that is PRESENT and is
+    // neither callable nor `undefined` does not describe an accessor, so the
+    // descriptor is rejected before anything is defined. This is an error of
+    // the DECODE and not a refusal — `Reflect.defineProperty` raises it too.
+    if (hasGet && !getter.get().isUndefined() && !rtIsCallableValue(getter.get())) {
+        rtThrowTypeError("Getter must be a function");
+        return false;
+    }
+    if (hasSet && !setter.get().isUndefined() && !rtIsCallableValue(setter.get())) {
+        rtThrowTypeError("Setter must be a function");
+        return false;
+    }
 
     if ((hasGet || hasSet) && (hasValue || hasWritable)) {
-        return rtThrowTypeError(
-                   "Invalid property descriptor. Cannot both specify accessors and a value or "
-                   "writable attribute")
-            .rawBits();
+        rtThrowTypeError(
+            "Invalid property descriptor. Cannot both specify accessors and a value or "
+            "writable attribute");
+        return false;
     }
     const bool accessor = hasGet || hasSet;
+    // 6.2.6.1 IsGenericDescriptor: a descriptor that names neither a data field
+    // nor an accessor field. 10.1.6.3 lets one through every kind test — it
+    // changes attributes and says nothing about what the property HOLDS — so it
+    // must not be read as "an accessor descriptor with no accessors".
+    const bool descGeneric = !hasValue && !hasWritable && !hasGet && !hasSet;
     const bool wantWritable = hasWritable && bronze_truthy(writableV.get().rawBits());
     const bool wantEnumerable = hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
     const bool wantConfigurable = hasConfigurable && bronze_truthy(configurableV.get().rawBits());
@@ -286,35 +344,57 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
             if (accessor) {
                 ObjectHeader::defineAccessor(rtHeap(), rtArena(), target, keyRoot, getter, setter,
                                              enumerable, configurable);
-                return self.get().rawBits();
+                return true;
             } else {
                 SetRefusal refusal = SetRefusal::None;
                 target.get().asObject<ObjectHeader>()->setProp(
                     rtHeap(), rtArena(), keyRoot, value, /*ic=*/nullptr, enumerable,
                     /*defineOwn=*/true, /*receiver=*/nullptr, &refusal, writable, configurable);
                 if (refusal == SetRefusal::NotExtensible) {
-                    return rtThrowTypeError("Cannot define property, object is not extensible").rawBits();
+                    return refuseDefine(throwOnRefusal,
+                                        "Cannot define property, object is not extensible");
                 }
-                return self.get().rawBits();
+                return true;
             }
         } else {
             if (!existing.configurable) {
-                if (existing.accessor != accessor) {
-                    return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                // 10.1.6.3 step 4, over a property whose attributes a SHAPE
+                // carries. A GENERIC descriptor passes the kind test (4.c) —
+                // it says nothing about the kind — which is what lets
+                // `{ enumerable: true }` describe an accessor without claiming
+                // to be one.
+                if (!descGeneric && existing.accessor != accessor) {
+                    return refuseDefine(throwOnRefusal,
+                                        "Cannot redefine property: " + keyText(name));
                 }
                 if (!existing.accessor) {
-                    if (!existing.writable && (hasWritable && writable)) {
-                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
-                    }
-                    if (!existing.writable && hasValue &&
-                        obj->getSlot(existing.slot).rawBits() != value.get().rawBits()) {
-                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    // 4.a and 4.b: the two attributes a non-configurable
+                    // property may not be given, whatever kind it is.
+                    if (hasConfigurable && configurable) {
+                        return refuseDefine(throwOnRefusal,
+                                            "Cannot redefine property: " + keyText(name));
                     }
                     if (hasEnumerable && existing.enumerable != enumerable) {
-                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                        return refuseDefine(throwOnRefusal,
+                                            "Cannot redefine property: " + keyText(name));
                     }
-                    if (hasConfigurable && existing.configurable != configurable) {
-                        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+                    if (!existing.writable) {
+                        // 4.e: a frozen property still accepts a redefinition
+                        // that CHANGES NOTHING, which is why the value is
+                        // compared rather than the presence of the field. The
+                        // relation is 7.2.11 SameValue and not a bit compare:
+                        // two strings with the same characters are the same
+                        // value and two distinct heap strings are not the same
+                        // pointer, so `defineProperty(frozen, k, {value: s})`
+                        // refused a redefinition to the value already there.
+                        if (hasWritable && writable) {
+                            return refuseDefine(throwOnRefusal,
+                                                "Cannot redefine property: " + keyText(name));
+                        }
+                        if (hasValue && !sameValue(obj->getSlot(existing.slot), value.get())) {
+                            return refuseDefine(throwOnRefusal,
+                                                "Cannot redefine property: " + keyText(name));
+                        }
                     }
                     if (existing.writable && hasValue) {
                         obj->setSlot(existing.slot, value.get());
@@ -329,7 +409,7 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
                         ObjectHeader::toDictionary(rtArena(), target);
                         entryOf(target.get(), name)->writable = false;
                     }
-                    return self.get().rawBits();
+                    return true;
                 }
             } else if (existing.accessor == accessor && existing.enumerable == enumerable &&
                        existing.writable == writable && existing.configurable == configurable) {
@@ -340,32 +420,91 @@ uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_
                 } else if (hasValue) {
                     obj->setSlot(existing.slot, value.get());
                 }
-                return self.get().rawBits();
+                return true;
             }
         }
     }
 
     ObjectHeader::toDictionary(rtArena(), target);
     DictEntry* existing = entryOf(target.get(), name);
-    if (!existing && !target.get().asObject<ObjectHeader>()->shape->dict->extensible) {
-        return rtThrowTypeError("Cannot define property, object is not extensible").rawBits();
+    if (!existing) {
+        if (!target.get().asObject<ObjectHeader>()->shape->dict->extensible) {
+            return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
+        }
+    } else if (!existing->configurable) {
+        // 10.1.6.3 step 4, the same five tests the shape branch above spells,
+        // over the storage a dictionary uses. A non-configurable property is
+        // not simply closed: it still accepts a redefinition that changes
+        // NOTHING, and a writable one still accepts the demotion to
+        // non-writable, so what decides is a comparison and not the presence
+        // of the field. Refusing on presence alone is what made
+        // `defineProperty(Object.freeze({x: 1}), 'x', {value: 1})` a TypeError.
+        auto* live = target.get().asObject<ObjectHeader>();
+        bool valid = true;
+        if (hasConfigurable && configurable) {
+            valid = false;  // 4.a
+        } else if (hasEnumerable && existing->enumerable != enumerable) {
+            valid = false;  // 4.b
+        } else if (!descGeneric && existing->accessor != accessor) {
+            valid = false;  // 4.c
+        } else if (existing->accessor) {
+            // 4.d, and SameValue on each half: the same accessor function
+            // redefined onto itself is a define that changes nothing.
+            valid = (!hasGet || sameValue(getter.get(), live->getSlot(existing->slot))) &&
+                    (!hasSet || sameValue(setter.get(), live->getSlot(existing->slot + 1)));
+        } else if (!existing->writable) {
+            // 4.e, as above.
+            valid = !(hasWritable && writable) &&
+                    (!hasValue || sameValue(value.get(), live->getSlot(existing->slot)));
+        }
+        if (!valid) {
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
+        }
     }
-    if (existing && !existing->configurable) {
-        return rtThrowTypeError("Cannot redefine property: " + keyText(name)).rawBits();
+
+    // 10.1.6.3 step 4: a GENERIC descriptor does not change the property's
+    // KIND, so `{ enumerable: false }` on an accessor leaves an accessor.
+    const bool resultAccessor = (descGeneric && existing) ? existing->accessor : accessor;
+    // And step 5 sets only the fields the descriptor HAS. What it omits keeps
+    // the value the property already holds — an absent `value` on a live data
+    // property, an absent `get` on a live accessor — which is what separates a
+    // partial redefinition from a replacement. Writing `value` unconditionally
+    // is what turned `defineProperty(o, 'a', {writable: false})` into a store
+    // of `undefined` over whatever `o.a` was.
+    //
+    // Read here, because `dictDefine` below can move the object and reallocate
+    // the slots it is being read out of.
+    Rooted<Value> keptValue{Value::fromUndefined()};
+    Rooted<Value> keptSetter{Value::fromUndefined()};
+    if (existing != nullptr && existing->accessor == resultAccessor) {
+        auto* live = target.get().asObject<ObjectHeader>();
+        keptValue.set(live->getSlot(existing->slot));
+        if (resultAccessor) keptSetter.set(live->getSlot(existing->slot + 1));
     }
 
     uint32_t slot = 0;
-    ObjectHeader* live =
-        ObjectHeader::dictDefine(rtHeap(), rtArena(), target, name, enumerable, accessor, slot);
-    if (accessor) {
-        live->setSlot(slot, hasGet ? getter.get() : Value::fromUndefined());
-        live->setSlot(slot + 1, hasSet ? setter.get() : Value::fromUndefined());
+    ObjectHeader* live = ObjectHeader::dictDefine(rtHeap(), rtArena(), target, name, enumerable,
+                                                  resultAccessor, slot);
+    if (resultAccessor) {
+        live->setSlot(slot, hasGet ? getter.get() : keptValue.get());
+        live->setSlot(slot + 1, hasSet ? setter.get() : keptSetter.get());
     } else {
-        live->setSlot(slot, value.get());
+        live->setSlot(slot, hasValue ? value.get() : keptValue.get());
     }
     DictEntry* entry = entryOf(target.get(), name);
     entry->writable = writable;
     entry->configurable = configurable;
+    return true;
+}
+
+// 20.1.2.4 Object.defineProperty: DefinePropertyOrThrow, so a refusal is the
+// TypeError, and the answer is the target itself.
+uint64_t rtObjectDefineProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{args[0]};
+    if (!rtObjectDefineOwnProperty(argc, argv, /*throwOnRefusal=*/true)) {
+        return Value::fromUndefined().rawBits();
+    }
     return self.get().rawBits();
 }
 

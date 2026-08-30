@@ -1,0 +1,18 @@
+1 two 2
+2 v=two w=false e=false c=true
+3 v=2 w=false e=false c=true
+4 anon 0
+5 arrow 1
+6 f1 0
+7 f2 0
+8 TypeError
+9 TypeError
+10 TypeError
+11 v=f1 w=false e=false c=true v=0 w=false e=false c=true
+12 t o f3
+13 given
+14 K 0 v=K w=false e=false c=true
+15 TypeError K
+16 meth 3
+17 b 2
+18 1 [1]

@@ -1,0 +1,33 @@
+1 enumerable,configurable,value,writable
+2 enumerable,configurable,get,set G
+3 late true
+4 v false
+5 TypeError
+6 TypeError
+7 ok
+8 TypeError
+9 TypeError
+10 ok
+11 TypeError
+12 ok
+13 ok
+14 TypeError
+15 ok
+16 TypeError
+17 TypeError
+18 ok
+19 TypeError
+20 TypeError
+21 1 abc 0 NaN
+22 true 2
+23 false 1
+24 true
+25 false false
+26 TypeError
+27 TypeError
+28 TypeError
+29 true
+30 RangeError false true
+31 RangeError false false
+32 RangeError false false a,b
+33 RangeError false

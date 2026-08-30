@@ -32,6 +32,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/accessor.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/elem_ic.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -53,22 +54,12 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 #include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
-
-// The receiver's kind, for the message of a write that cannot be performed.
-// Not `typeof`'s answer: this only ever names a primitive, and it is a
-// diagnostic rather than an operator, so it does not want typeof's rooted
-// string table.
-static const char* primitiveTypeName(Value v) {
-    if (v.isString()) return "a string";
-    if (v.isNumber()) return "a number";
-    if (v.isBool()) return "a boolean";
-    return "this value";
-}
 
 // The three ways ECMA-262 10.1.9.2 answers false, turned into the TypeError
 // 13.15.2 PutValue step 6.d raises for a STRICT reference — and into nothing at
@@ -138,17 +129,17 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                          rtKeyString(keyIndex) + "')");
         return;
     }
-    // A write to a property of a primitive. 6.2.5.6 PutValue throws for a
-    // STRICT reference and discards for a sloppy one, and bronze throws for
-    // both — deliberately, and not because `strict` is unavailable here: it is
-    // a parameter now. The two lines above have just said that discarding a
-    // write is worse than answering `undefined`, and a receiver that can never
-    // hold the property is the case where that is most true. It is the one
-    // place strict and sloppy are answered the same way on purpose; the house
-    // rule prefers the loud answer to the silent one.
+    // A write to a property of a primitive: `rtPrimitiveWrite`
+    // (rt_prop_primitive.cpp, beside the read that asks the same question of
+    // the same receiver kind), which is 13.15.2's answer and is the same for
+    // both spellings of the write.
     if (!objVal.isObject()) {
-        rtThrowTypeError("Cannot create property '" + rtKeyString(keyIndex) +
-                         "' on " + primitiveTypeName(objVal));
+        Rooted<Value> recv{objVal};
+        Rooted<Value> val{valVal};
+        StringHeader* named = rtKeyHeader(keyIndex);
+        if (!named) fatal("property write with an unregistered key index");
+        Rooted<Value> key{Value::fromString(named)};
+        rtPrimitiveWrite(recv, key, rtKeyString(keyIndex), val, strict);
         return;
     }
 
@@ -750,11 +741,11 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
               "shape at all)");
     }
     // A write through `o[i]` to something that is not an object, answered
-    // exactly as `bronze_prop_set` answers `o.k` — the same two TypeErrors, in
-    // the same order. They are one operation with two spellings, and the read
-    // side has already been made to agree (`cases/string_index`); a `fatal`
-    // here would kill a process where the `o.k` spelling of the same write is
-    // a value a `catch` can hold.
+    // exactly as `bronze_prop_set` answers `o.k`: the nullish TypeError first,
+    // then `rtPrimitiveWrite`. They are one operation with two spellings, and the
+    // read side has already been made to agree (`cases/string_index`); a
+    // `fatal` here would kill a process where the `o.k` spelling of the same
+    // write is a value a `catch` can hold.
     if (!objVal.isObject()) {
         Rooted<Value> recv{objVal};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
@@ -765,8 +756,8 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                              " (setting '" + keyText + "')");
             return;
         }
-        rtThrowTypeError("Cannot create property '" + keyText + "' on " +
-                         primitiveTypeName(recv.get()));
+        Rooted<Value> val{Value(valBits)};
+        rtPrimitiveWrite(recv, key, keyText, val, strict);
         return;
     }
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
@@ -874,6 +865,18 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             }
             auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
             fn->prototype = val.get();
+            return;
+        }
+        // 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength make `name` and
+        // `length` NON-WRITABLE own properties of every function, so the write
+        // is discarded in sloppy code and a TypeError in strict — never a
+        // store. `bronze_prop_set` has always said so for `f.name = v`; without
+        // it here the same write spelled `f[k] = v` landed in the statics
+        // table, which the read consults FIRST, and the two spellings of one
+        // assignment disagreed about whether it happened.
+        if (reinterpret_cast<FunctionHeader*>(hdr)->name != nullptr &&
+            (keyText == "length" || keyText == "name")) {
+            rtReportSetRefusal(SetRefusal::NotWritable, strict, keyText);
             return;
         }
         rtEnsureFunctionProperties(fnRoot);

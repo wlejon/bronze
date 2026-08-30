@@ -138,4 +138,11 @@ struct MapHeader {
 // compare would get wrong the other way.
 bool sameValueZero(Value a, Value b) noexcept;
 
+// ECMA-262 7.2.11 SameValue: the relation above with the one correction that
+// separates it from SameValueZero — `+0` and `-0` are NOT the same value. It
+// lives beside its sibling because the two differ over nothing but the zeroes,
+// and every caller that compares a STORED value against a proposed one wants
+// this one: 10.1.6.3's redefinition test and 10.5's proxy invariants both.
+bool sameValue(Value a, Value b) noexcept;
+
 }  // namespace bronze

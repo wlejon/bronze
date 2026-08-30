@@ -26,6 +26,13 @@
 // 3. null and undefined are the same throw from one clause earlier — 7.3.4
 //    ToObject, reached before any property is considered — so `null[0] = 1` and
 //    `null.k = 1` agree with each other too.
+//
+// The empty export is what makes this file the module the paragraph above
+// relies on: an entry file with no `import` or `export` is compiled as a
+// Script, whose top level is sloppy and DISCARDS these writes (13.15.2 step 8
+// throws only for a strict reference). `cases/primitive_receiver_store` pins
+// that other answer.
+export {};
 const s = "abc";
 try {
   s.k = 1;

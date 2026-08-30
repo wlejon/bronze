@@ -1,0 +1,20 @@
+1 undefined abc 3
+2 undefined 5
+3 undefined true
+4 undefined 7
+5 undefined symbol
+6 undefined undefined undefined
+7 TypeError
+8 TypeError
+9 TypeError
+10 TypeError
+11 TypeError
+12 TypeError
+13 TypeError
+14 TypeError
+15 abc 3 a
+16 TypeError
+17 TypeError
+18 undefined undefined
+19 set:hit
+20 set:again

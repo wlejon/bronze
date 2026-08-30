@@ -160,6 +160,7 @@ bronze_add_module(runtime
         ../../tests/runtime/regexp_test.cpp
         ../../tests/runtime/arguments_test.cpp
         ../../tests/runtime/integrity_test.cpp
+        ../../tests/runtime/descriptor_define_test.cpp
         ../../tests/runtime/math_random_test.cpp
         ../../tests/runtime/namespace_test.cpp
         ../../tests/runtime/native_base_test.cpp
