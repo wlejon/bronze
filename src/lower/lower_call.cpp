@@ -388,6 +388,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             recordCall(call->span.file, false, "callee is method / property access");
             inst.icMonomorphic = mono;
+            inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(inst, *mem->object);
             emitInst(ilFn, inst);
             calleeVal = Value{getRes, il::Type::Dynamic};
@@ -403,6 +404,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
             inst.icMonomorphic = mono;
+            inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             inst.type = il::Type::Dynamic;
             inst.result = callRes;
 

@@ -274,6 +274,9 @@ private:
     types::Type inferredType(const ast::Expr& expr) const;
     bool provenNumber(const ast::Expr& expr) const;
     bool monomorphicPropSite(const ast::Expr& receiver) const;
+    // Whether this receiver can be a function object, so the backend knows to
+    // emit the statics arm here and nowhere else (`il::Instruction::icFnRecv`).
+    bool functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const;
     // Did inference prove this call reaches a pristine builtin Math method?
     // (module-wide taint scan clean, name unshadowed at the site)
     bool pristineMathCall(const ast::Expr& call) const;

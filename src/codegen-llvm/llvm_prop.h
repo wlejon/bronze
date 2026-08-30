@@ -42,12 +42,18 @@ namespace bronze::codegen_llvm {
 // edge that preserved a proof across it — which is what lets the CALLER carry
 // any OTHER live proof (a store run's, interleaved with this read run) across
 // the same join, or kill it when there was no such edge.
+// `fnRecvHint` is `il::Instruction::icFnRecv`: lowering saw a class- or
+// function-declaration binding as the receiver, so this site may see a FUNCTION
+// object and is worth giving the arm that reads one's statics box. A hint, not
+// a proof — the emitted code still tests the receiver's flags. False just
+// leaves the arm out, which is the helper call every site made before it.
 llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          const AbiGlobals& globals, const ModuleTables& tables,
                          llvm::Value* objBits, llvm::Value* objSlot, uint32_t keyIndex,
                          uint32_t icIndex, bool monomorphic, const StaticSite& site,
                          std::string_view keyStr = {}, ReceiverProof* proof = nullptr,
-                         ProofJoin* join = nullptr, bool holeRawSlot = false);
+                         ProofJoin* join = nullptr, bool holeRawSlot = false,
+                         bool fnRecvHint = false);
 
 // Property writes. The inline paths are the own-slot hit and the
 // shape-transition hit (a constructor body's repeated property add); every

@@ -158,6 +158,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     const bool mono = monomorphicPropSite(*mem.object);
     recordPropertyAccess(mem.span.file, mono, mono ? "" : propBailReason(*mem.object));
     getInst.icMonomorphic = mono;
+    getInst.icFnRecv = functionBindingReceiver(*mem.object, keyIdx);
     stampStaticSlot(getInst, *mem.object);
     emitInst(ilFn, getInst);
 
@@ -245,6 +246,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         const bool mono = monomorphicPropSite(*idxAccess.object);
             recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
             getInst.icMonomorphic = mono;
+            getInst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
             stampStaticSlot(getInst, *idxAccess.object);
         } else {
             const bool native = provenArrayOrTypedArray(*idxAccess.object);

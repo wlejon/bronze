@@ -393,6 +393,7 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     const bool mono = monomorphicPropSite(*mem->object);
     recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
     inst.icMonomorphic = mono;
+    inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
     stampStaticSlot(inst, *mem->object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
@@ -462,6 +463,7 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     const bool mono = monomorphicPropSite(*idxAccess.object);
     recordPropertyAccess(idxAccess.span.file, mono, mono ? "" : propBailReason(*idxAccess.object));
     inst.icMonomorphic = mono;
+    inst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
     stampStaticSlot(inst, *idxAccess.object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};

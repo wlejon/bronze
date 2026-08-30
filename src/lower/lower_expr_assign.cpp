@@ -43,6 +43,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             const bool mono = monomorphicPropSite(*mem->object);
             recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
+            getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             Value curVal{curId, il::Type::Dynamic};
@@ -144,6 +145,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             const bool mono = monomorphicPropSite(*mem->object);
             recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
+            getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             curVal = Value{cur, il::Type::Dynamic};
@@ -215,6 +217,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 const bool mono = monomorphicPropSite(*idxAccess->object);
                 recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
+                getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
                 const bool native = provenArrayOrTypedArray(*idxAccess->object);
@@ -336,6 +339,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 const bool mono = monomorphicPropSite(*idxAccess->object);
                 recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
+                getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
             } else {
                 const bool native = provenArrayOrTypedArray(*idxAccess->object);

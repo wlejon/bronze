@@ -3,6 +3,8 @@
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_alias.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <utility>
 
@@ -14,6 +16,14 @@
 
 namespace bronze::codegen_llvm {
 
+bool fnStaticsIcDisabled() {
+    static const bool off = [] {
+        const char* env = std::getenv("BRONZE_NO_FN_STATICS_IC");
+        return env != nullptr && std::strcmp(env, "1") == 0;
+    }();
+    return off;
+}
+
 void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
     load->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
 }
@@ -21,7 +31,8 @@ void markInvariant(llvm::LoadInst* load, llvm::LLVMContext& ctx) {
 IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
                               llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
                               llvm::Value* flags, llvm::Value* polyEnabledField,
-                              llvm::BasicBlock* slowBb, const std::string& prefix) {
+                              llvm::BasicBlock* slowBb, const std::string& prefix,
+                              llvm::BasicBlock* notPlainBb) {
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
@@ -32,7 +43,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
                              prefix + ".way.isplain");
-    builder.CreateCondBr(isPlain, scanBb, slowBb);
+    builder.CreateCondBr(isPlain, scanBb, notPlainBb != nullptr ? notPlainBb : slowBb);
 
     builder.SetInsertPoint(scanBb);
     llvm::Value* shapePtr =

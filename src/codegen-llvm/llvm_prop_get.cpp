@@ -40,7 +40,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
                          const ModuleTables& tables, llvm::Value* objBits,
                          llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
                          bool monomorphic, const StaticSite& site, std::string_view keyStr,
-                         ReceiverProof* proof, ProofJoin* join, bool holeRawSlot) {
+                         ReceiverProof* proof, ProofJoin* join, bool holeRawSlot,
+                         bool fnRecvHint) {
     // Not branched on here: `monomorphic` is an identity proof, and the
     // sequence below is an inline cache, which is what an unproven site wants
     // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
@@ -376,8 +377,41 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     // 3. Plain object guard, then the site's ways
     builder.SetInsertPoint(plainCheckBb);
+
+    // 3-. THE FUNCTION-STATICS ARM, on the edge a NON-PLAIN receiver already
+    //     took. A function's `static` members do not live in the
+    //     FunctionHeader; they live in a side object hanging off `properties`,
+    //     with its own shape and its own slots. So `Object3D.DEFAULT_UP` and
+    //     `Object.defineProperty` are ordinary own properties of an ordinary
+    //     plain object that simply is not the receiver — and the way scan's
+    //     `flags == PLAIN` gate sent every one of them to the helper forever,
+    //     with no fill and no second chance.
+    //
+    //     It is a SECOND, self-contained scan rather than a receiver
+    //     substituted into the first, and the difference is measured rather
+    //     than stylistic: merging the two put one compare and three PHIs in
+    //     front of every plain read, which cost the scene-graph benchmarks
+    //     many times what the arm can ever return. Hanging it off the
+    //     not-plain edge leaves the plain path's instructions exactly as they
+    //     were.
+    //
+    //     Emitted ONLY where lowering said the receiver can be a function
+    //     (`il::Instruction::icFnRecv` — a class or function declaration's
+    //     binding, or a provided global). That gate is not an optimisation of
+    //     the arm, it is the condition on which the arm is affordable at all:
+    //     emitting it at every read measurably slowed pure-math code, whose
+    //     hot receivers are `this` and locals and can never be functions, in
+    //     block placement and live ranges around a path they never take.
+    //     Skipping is always sound — it is the helper, which is the answer
+    //     this arm exists to avoid asking for, never a different one.
+    llvm::BasicBlock* fnArmBb = nullptr;
+    if (!fnStaticsIcDisabled() && fnRecvHint) {
+        fnArmBb = llvm::BasicBlock::Create(ctx, "ic.fn.arm", fn);
+    }
+
     IcWayScanResult way = emitIcWayScan(builder, ctx, fn, entry, hdr, flags,
-                                        globals.bronze_poly_ic_enabled, slowBb, "ic.get");
+                                        globals.bronze_poly_ic_enabled, slowBb, "ic.get",
+                                        fnArmBb);
     llvm::Value* shape = way.shape;
     // Every field below is read off the MATCHED way, never off the site: with
     // four ways a site's word 1 is way 0's slot, and reading it after way 2
@@ -412,6 +446,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // way the key could have appeared on a prototype since the entry was filled
     // (bronze_abi.h states the pair as the entry's whole validity condition).
     builder.SetInsertPoint(nonZeroDepthBb);
+
     llvm::BasicBlock* absentEpochBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.epoch", fn);
     llvm::BasicBlock* flaggedDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.flagged", fn);
     builder.CreateCondBr(
@@ -598,6 +633,107 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     tagObjectSlotAccess(overflowValLoaded, ctx);
     builder.CreateBr(doneBb);
 
+    // 4b. The function-statics arm's own scan and slot load.
+    //
+    // DEPTH 0 ONLY, and the refusal is the arm's whole soundness argument. An
+    // entry at any other depth is a claim about the wrong chain or the wrong
+    // receiver, and the ways are shared with plain receivers, which do fill all
+    // of them:
+    //
+    //   - depth > 0 would walk the BOX's prototype chain. For a class that is
+    //     the base class's box (`extends` links them), so it would answer an
+    //     inherited static — right value, wrong provenance: the runtime reaches
+    //     those BELOW `Function.prototype`'s own methods, so a base's `static
+    //     call` would start shadowing `Function.prototype.call` from the wrong
+    //     side of the order.
+    //   - the ACCESSOR flag would dispatch a `static get` with the BOX as its
+    //     receiver. The language says the receiver is the CLASS, which is
+    //     exactly why the runtime hands `getProp` the function's own slot.
+    //   - the ABSENT flag was filled by a plain receiver that happened to share
+    //     the box's shape, and says nothing about the function ladder's tables.
+    //
+    // The box pointer is loaded and dereferenced with no call between, and is
+    // never stored: only the arena's immortal shape goes in the entry, so a
+    // collection that moves the box cannot invalidate one.
+    llvm::BasicBlock* fnDoneBb = nullptr;
+    llvm::Value* fnStaticsVal = nullptr;
+    if (fnArmBb != nullptr) {
+        builder.SetInsertPoint(fnArmBb);
+        llvm::BasicBlock* fnBoxBb = llvm::BasicBlock::Create(ctx, "ic.fn.box", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION),
+                                 "ic.fn.isfn"),
+            fnBoxBb, slowBb);
+
+        // A function nothing has ever written a static to has no box at all
+        // (`properties` stays undefined until one is written), which is the
+        // miss the helper already answers.
+        builder.SetInsertPoint(fnBoxBb);
+        llvm::Value* boxPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, hdr, BRONZE_ABI_FN_PROPERTIES_OFFSET);
+        llvm::Value* boxVal =
+            builder.CreateAlignedLoad(i64Ty, boxPtr, llvm::Align(8), "ic.fn.props");
+        llvm::Value* boxTag = builder.CreateLShr(boxVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::BasicBlock* fnScanBb = llvm::BasicBlock::Create(ctx, "ic.fn.scan", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), fnScanBb,
+            slowBb);
+
+        builder.SetInsertPoint(fnScanBb);
+        llvm::Value* boxAddr =
+            builder.CreateAnd(boxVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* boxHdr = builder.CreateIntToPtr(boxAddr, ptrTy, "ic.fn.box.hdr");
+        // The box's OWN flags go to the scan rather than a forced constant, so
+        // the plain-object gate is the same test it is everywhere else and a
+        // box that is somehow not plain fails it and takes the helper.
+        llvm::Value* boxFlagsPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, boxHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        llvm::Value* boxFlags =
+            builder.CreateAlignedLoad(i16Ty, boxFlagsPtr, llvm::Align(2), "ic.fn.box.flags");
+
+        // WAY 0 ONLY, and not for want of the rest. A full `emitIcWayScan` here
+        // is a second poly ladder at EVERY property read in the program, which
+        // measured +5.5% on a three.js binary and cost three_math more than the
+        // arm returns anywhere. A site reading a static is reading it off one
+        // class the overwhelming majority of the time, and the runtime's
+        // move-to-front install (`slotForInstall`) puts the shape that just
+        // missed at way 0 — so the monomorphic case, which is the case, hits on
+        // one compare. A site that really does rotate over several classes
+        // misses here and is answered by the helper, which still fills.
+        llvm::Value* boxShapePtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, boxHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        llvm::Value* boxShape =
+            builder.CreateAlignedLoad(ptrTy, boxShapePtr, llvm::Align(8), "ic.fn.box.shape");
+        llvm::Value* way0Shape =
+            builder.CreateAlignedLoad(ptrTy, entry, llvm::Align(8), "ic.fn.way0");
+        llvm::Value* boxIsPlain = builder.CreateICmpEQ(
+            boxFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "ic.fn.box.isplain");
+        llvm::BasicBlock* fnHitBb = llvm::BasicBlock::Create(ctx, "ic.fn.hit", fn);
+        builder.CreateCondBr(
+            builder.CreateAnd(boxIsPlain, builder.CreateICmpEQ(boxShape, way0Shape),
+                              "ic.fn.way0.ok"),
+            fnHitBb, slowBb);
+
+        builder.SetInsertPoint(fnHitBb);
+        llvm::Value* fnSlotWordPtr = builder.CreateConstInBoundsGEP1_32(
+            i64Ty, entry,
+            static_cast<unsigned>(BRONZE_ABI_IC_SLOTWORD_OFFSET / sizeof(uint64_t)));
+        llvm::Value* fnSlotWord =
+            builder.CreateAlignedLoad(i64Ty, fnSlotWordPtr, llvm::Align(8), "ic.fn.slotword");
+        llvm::BasicBlock* fnLoadBb = llvm::BasicBlock::Create(ctx, "ic.fn.load", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(builder.CreateLShr(fnSlotWord, 32), builder.getInt64(0),
+                                 "ic.fn.depthzero"),
+            fnLoadBb, slowBb);
+
+        builder.SetInsertPoint(fnLoadBb);
+        fnDoneBb = llvm::BasicBlock::Create(ctx, "ic.fn.done", fn);
+        fnStaticsVal = emitObjectSlotLoad(
+            builder, ctx, fn, boxHdr, builder.CreateTrunc(fnSlotWord, i32Ty, "ic.fn.slot32"),
+            slowBb, fnDoneBb, "ic.fn.slot");
+        builder.CreateBr(doneBb);
+    }
+
     // 5. Fallback call — and, for a static site, the one-shot publish that
     //    turns the layout claim into a shape pointer the guard above can hit.
     //    It runs AFTER the helper deliberately: on the very first execution the
@@ -616,6 +752,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb,
     // getUndefBb, absentHitBb
     unsigned phiCount = 7;
+    if (fnDoneBb) phiCount++;
     if (proven.fastBb) phiCount++;
     if (staticGuard.hitBb) phiCount++;
     if (arrLenBb) phiCount++;
@@ -638,6 +775,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     result->addIncoming(inlineVal, inlineHitBb);
     result->addIncoming(overflowValLoaded, overflowAccessBb);
     result->addIncoming(slowVal, slowDoneBb);
+    if (fnDoneBb) result->addIncoming(fnStaticsVal, fnDoneBb);
     if (proven.fastBb) result->addIncoming(proven.value, proven.fastBb);
     if (staticGuard.hitBb) result->addIncoming(staticGuard.value, staticGuard.hitBb);
     result->addIncoming(protoHitVal, protoLoadSuccessBb);

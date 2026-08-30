@@ -56,15 +56,32 @@ struct IcWayScanResult {
 // the shape word of an array or a function header is a different field
 // entirely, and comparing it against a cached Shape* is a match this cache
 // must never be able to make.
+//
+// `notPlainBb` is where a NON-plain receiver goes; the default is `slowBb`,
+// which is what every caller wanted while the plain object was the only kind
+// with a shape. A caller that can answer for another kind — the read's
+// function-statics arm — passes its own block instead, and gets the plain
+// path's instruction sequence unchanged in exchange: the extension hangs off
+// an edge that was already a branch to the helper, so nothing is added in
+// front of the hit every other receiver takes.
 IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx,
                               llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
                               llvm::Value* flags, llvm::Value* polyEnabledField,
-                              llvm::BasicBlock* slowBb, const std::string& prefix);
+                              llvm::BasicBlock* slowBb, const std::string& prefix,
+                              llvm::BasicBlock* notPlainBb = nullptr);
 
 struct ProtoWalkResult {
     llvm::Value* holderHdr{nullptr};
     llvm::BasicBlock* latchBb{nullptr};
 };
+
+// THE SEAM for the function-statics arm of a property read
+// (`BRONZE_NO_FN_STATICS_IC=1`), read once and cached. With it down, a read
+// whose receiver is a FUNCTION goes straight to the helper the way it did
+// before the arm existed. The runtime reads the SAME variable
+// (rt_property.h `fnStaticsIcReadSeam`) and stops warming entries with it, so
+// one binary A/Bs the whole mechanism rather than half of it.
+bool fnStaticsIcDisabled();
 
 // Walks `depth` steps along the prototype chain starting from `startShape`.
 // If any check fails (null root, non-object proto, non-plain proto, dictionary

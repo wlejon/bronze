@@ -6,6 +6,11 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+// The pin claims the IL carries (`PinBarrier`, `kElemKindPlainArrayF64`).
+// Included here rather than left to each user, because every one of them
+// reaches these names through this header and a seam is not an occasion to
+// make twenty files say where they now live.
+#include "il/il_pin.h"
 
 namespace bronze::il {
 
@@ -29,28 +34,6 @@ enum class Type : uint8_t {
     Dynamic,  // boundary-only boxed value; using it is an explicit opt-in
 };
 const char* typeName(Type t);
-
-// What one `Op::PinGuard` tests, carried in the instruction's `immI32`.
-//
-// One enum per PIN KIND that has a read-side claim a write can contradict
-// (src/types/pins.h). It lives here rather than in `types::PinKind` because
-// the backend emits the test and the backend does not know about manifests:
-// what reaches it is a SHAPE to check, not the declaration that asked for it.
-enum class PinBarrier : uint8_t {
-    // `<class>.<field>: number`, `function <fn>.<binding>: number`,
-    // `param <owner>(<p>): number`, `return <owner>: number`, and the value
-    // of a `numeric-elements` ELEMENT store. The read spends this claim on a
-    // raw unbox, so a violation is a pointer's bits read as a double.
-    Number,
-    // `<class>.<field>: number-or-nullish`. The read stays boxed; what the
-    // claim licenses is the branchless coercion, so a violation is a wrong
-    // ToNumber rather than a wrong read.
-    NumberOrNullish,
-    // The FIELD half of `<class>.<field>: numeric-elements`: the slot holds a
-    // plain JS Array. The element half is `Number`, checked at each element
-    // store; see src/types/pins.h for what this pair does and does not reach.
-    DenseArray,
-};
 
 // What one `Op::CensusRecord` observes, carried in the instruction's `immI32`
 // and in the module's census site table (src/runtime/pin_census.h, stage C1).
@@ -587,6 +570,25 @@ struct Instruction {
     // branch), so the guard is what makes the proof sound, not a redundancy on
     // top.
     bool icMonomorphic = false;
+    // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
+    // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
+    // `MathUtils.generateUUID`, a class name used inside its own body —
+    // rather than `this`, a parameter, or a local holding an instance. So the
+    // receiver can be a FUNCTION object at run time, and a function's members
+    // do not live where every other receiver's do: a `static` sits in a side
+    // object hanging off the FunctionHeader, with its own shape and slots.
+    //
+    // It is a HINT and never a proof. The binding can be reassigned, shadowed
+    // by a `with`, or hold something else entirely, so generated code still
+    // tests the receiver's flags — what the bit decides is only whether the
+    // arm that handles a function receiver is EMITTED at this site.
+    //
+    // That is worth a bit of its own because the arm is not free to emit
+    // everywhere. Emitting it at every read measurably slowed pure-math code,
+    // in block placement and live ranges around the cache, for an arm those
+    // reads can never take. False is always sound; it is the helper, which is
+    // the answer the arm exists to avoid asking for and never a different one.
+    bool icFnRecv = false;
     // Unbox: the operand is PROVEN to be a Number, so the conversion is a
     // bitcast and nothing else — no tag test, no branch, no ToNumber helper, no
     // phi. bronze's Value is NaN-boxed with the doubles at the bottom of the
@@ -987,13 +989,5 @@ struct Module {
     // what `--no-fn-source` does — the ranges above stay, and address nothing.
     std::vector<std::string> sourceTexts;
 };
-
-// The PINNED element kind: a plain dense JS array whose reads and writes are
-// ASSUMED in-bounds, hole-free and numeric — no guard of any kind is emitted.
-// Granted by a `--pins ... numeric-elements` declaration (types/pins.h), or by
-// the blanket `BRONZE_UNSOUND_PINS` measurement mode. Nothing PROVES the
-// assumption; enforcement is meant to move to the write paths. Deliberately
-// outside the types::TypedArrayElem range so nothing sound can collide with it.
-inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 
 }  // namespace bronze::il

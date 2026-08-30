@@ -18,6 +18,7 @@ bronze_add_module(lower
                  ../../tests/lower/lower_strict_test.cpp
                  ../../tests/lower/lower_env_slot_test.cpp
                  ../../tests/lower/lower_direct_method_test.cpp
+                 ../../tests/lower/lower_fn_recv_test.cpp
                  ../../tests/lower/lower_stable_closure_call_test.cpp
                  ../../tests/lower/lower_closure_param_test.cpp
                  ../../tests/lower/guard_region_test.cpp

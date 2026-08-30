@@ -327,6 +327,12 @@ std::string print(const Module& module) {
                         // claim about the receiver. Visible in the canonical
                         // text because it is what --infer-stats counts.
                         if (inst.icMonomorphic) out += ", mono";
+                        // The receiver is a class- or function-declaration
+                        // BINDING, so it can be a function object and its
+                        // members can live in a statics box. A hint, not a
+                        // proof — but it decides whether the backend emits the
+                        // arm that reads one, so the canonical text names it.
+                        if (inst.icFnRecv) out += ", fn-recv";
                         // The stronger claim, and the one that changes emitted
                         // code: a proven class layout put this key at a
                         // constant instance slot, so the site carries a
@@ -509,6 +515,7 @@ std::string print(const Module& module) {
                         out += ", " + std::to_string(inst.keyIndex) + ", " +
                                std::to_string(inst.icIndex);
                         if (inst.icMonomorphic) out += ", mono";
+                        if (inst.icFnRecv) out += ", fn-recv";
                         if (inst.directTarget != Instruction::kNoDirectTarget) {
                             out += ", direct @" + std::to_string(inst.directTarget);
                         }

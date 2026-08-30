@@ -75,6 +75,7 @@ bronze_add_module(runtime
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp
+        rt_prop_function.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp
         rt_prop_map.cpp
@@ -132,6 +133,7 @@ bronze_add_module(runtime
         ../../tests/runtime/string_test.cpp
         ../../tests/runtime/unicode_case_test.cpp
         ../../tests/runtime/symbol_test.cpp
+        ../../tests/runtime/global_statics_test.cpp
         ../../tests/runtime/shape_test.cpp
         ../../tests/runtime/slot_repr_test.cpp
         ../../tests/runtime/object_test.cpp

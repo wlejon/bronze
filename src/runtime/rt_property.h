@@ -114,6 +114,22 @@ Value rtPrimitiveMember(Value objVal, const std::string& keyStr, StringHeader* k
 void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string& keyStr,
                       Rooted<Value>& val, bool strict);
 
+// A property read on a FUNCTION receiver (rt_prop_function.cpp): a class
+// constructor, an ordinary function, one of the interned intrinsic singletons.
+// Its own file for the same reason the primitive one is: it is one receiver
+// kind, and it is the kind whose answer comes from four places in a fixed
+// order rather than from a shape and a slot. `site` is the read's inline-cache
+// site, which this may warm when the answer turns out to be an own data
+// property of the function's statics object — the one step of that order that
+// IS a shape and a slot.
+uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
+                          struct InlineCacheSite* site);
+
+// THE SEAM. `BRONZE_NO_FN_STATICS_IC=1` stops the statics fill above, so that
+// one binary A/Bs it together with codegen's half of the same variable. Latched
+// at heap init beside the other seams that are not in the ABI's TLS block.
+void fnStaticsIcReadSeam() noexcept;
+
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //
 // A key means the same thing whichever direction it is used in, so the READ

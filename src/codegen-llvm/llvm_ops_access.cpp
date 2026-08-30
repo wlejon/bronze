@@ -156,7 +156,7 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj,
                             rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
                             inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg, &join,
-                            holeRawSlot);
+                            holeRawSlot, inst.icFnRecv);
             if (holeRawSlot) holeRawSlot_[inst.result] = 1;
             carryOtherProofs(join, /*ownsRead=*/proofArg != nullptr, /*ownsStore=*/false,
                              /*ownsArrayStore=*/false);

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "abi/bronze_global_statics.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -148,6 +149,74 @@ bool Lowerer::pristineMathCall(const ast::Expr& call) const {
 bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
     const types::Type t = inferredType(receiver);
     return t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass;
+}
+
+// Can this site's receiver be a FUNCTION OBJECT — a class constructor, a
+// declared function, a provided global like `Object` — rather than an
+// instance? (`il::Instruction::icFnRecv`.)
+//
+// A HINT, and the header says why that is enough: it decides only whether the
+// backend EMITS the arm that reads a function's statics box, never what that
+// arm answers. Generated code still tests the receiver's flags, so a `true`
+// here that turns out to be an ordinary object costs a branch, and a `false`
+// costs the helper — which is what every site paid before the arm existed.
+//
+// Only a bare IDENTIFIER qualifies. `this.x`, a parameter, an element read, a
+// chained member — none of them can be a class binding, and those are the
+// sites that dominate a math kernel's inner loop. Emitting the arm at all of
+// them measurably slowed pure-math code for a path they can never take, which
+// is the whole reason this predicate exists rather than the arm being
+// unconditional.
+bool Lowerer::functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const {
+    const auto* id = dynamic_cast<const ast::Ident*>(&receiver);
+    if (id == nullptr) return false;
+    // `prototype` is answered before the box and never out of it. The runtime
+    // reads the FunctionHeader's own slot (rt_prop_function.cpp) without ever
+    // looking at the statics object, so no entry for this key can be
+    // installed; and the backend already has a dedicated inline branch for a
+    // function receiver's `prototype` (llvm_prop_get.cpp), so an arm here is
+    // the same question asked twice with only one of the two able to answer.
+    //
+    // Not a tidy-up. three.js r160 opens `Vector3`, `Euler` and `Matrix4`
+    // with `Vector3.prototype.isVector3 = true` INSIDE the constructor, which
+    // put a guaranteed-dead arm in the three most-run constructors of the math
+    // benchmark. `length` and `name` are answered outside the box too, but
+    // only for a function that has not defined them — `class C { static
+    // name() {} }` really does put `name` in the box — so they stay.
+    if (keyIndex < keyStrings_.size() && keyStrings_[keyIndex] == "prototype") return false;
+    // A function DECLARATION's own name, which is a function object by 15.2.
+    if (functionIndices_.contains(id->name)) return true;
+    // A provided global — but only the few that keep their statics in a real
+    // box, which is an allowlist and not a matter of being a function object.
+    //
+    // Most of the provided globals answer their members from a C table:
+    // `Math.max` (21.3) and `JSON.stringify` (25.5) because they are ordinary
+    // objects and not functions at all, `Array.isArray`, `String.fromCharCode`
+    // and `Number.EPSILON` because `rtGlobalConstructorMember` decides them
+    // ahead of any box and the runtime REFUSES to cache a receiver it can
+    // answer for. A read off any of them reaches the arm, pays its loads and
+    // its compare, and falls through to the helper every single time — so
+    // hinting one is a cost with no reachable benefit, and the most expensive
+    // instance was the hottest statics read in the three.js math benchmark.
+    //
+    // Stating the fillable ones positively means a global added to
+    // `isProvidedGlobal` tomorrow costs nothing until someone measures it.
+    if (isProvidedGlobal(id->name)) return abi::isStaticsBoxGlobal(id->name);
+    // A CLASS DECLARATION's binding. Asked by name against the layout table
+    // rather than by type, because the table knows every class the module
+    // declares — including the ones whose layout inference could not prove,
+    // which are exactly the wild ones a statics read is likely to sit on. An
+    // import is not a separate case: the linker flattens and renames
+    // module-level bindings before inference, so a class from another file
+    // reaches here as an ordinary module-scope declaration.
+    if (inference_ != nullptr && inference_->classLayouts.byName(id->name) != nullptr) {
+        return true;
+    }
+    // Whatever else inference managed to type as a function — a module-scope
+    // `function` expression assigned to a binding, a re-export. Absent under
+    // `--no-infer`, where no arm is emitted at all and every such read is the
+    // helper call it has always been.
+    return inferredType(receiver).is(types::TypeKind::Function);
 }
 
 // The IL type of a block parameter at a control-flow merge: an if/else join, a

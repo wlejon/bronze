@@ -6,6 +6,7 @@
 #include "runtime/gc.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 
 #ifdef _WIN32
@@ -221,6 +222,11 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     // BRONZE_NO_ELEM_SET_IC, read by elem_ic.cpp because its flag is not in the
     // ABI block, but read HERE so every seam is settled at one first touch.
     runtime::elemSetCacheReadSeam();
+
+    // BRONZE_NO_FN_STATICS_IC, read here for the same reason: the flag lives in
+    // rt_prop_function.cpp rather than in the ABI's TLS block, and every seam is
+    // settled at one first touch.
+    runtime::fnStaticsIcReadSeam();
 
     const char* env_no_callout = std::getenv("BRONZE_NO_DIRECT_CALLOUT");
     if (env_no_callout && std::strcmp(env_no_callout, "1") == 0) {
