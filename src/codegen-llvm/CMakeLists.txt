@@ -57,6 +57,7 @@ bronze_add_module(codegen_llvm
         ../../tests/codegen_llvm/run_arms_test.cpp
         ../../tests/codegen_llvm/hole_raw_test.cpp
         ../../tests/codegen_llvm/env_promotion_test.cpp
+        ../../tests/codegen_llvm/partition_pack_test.cpp
 )
 
 target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
